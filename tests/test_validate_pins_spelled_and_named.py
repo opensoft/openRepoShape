@@ -25,6 +25,24 @@ commit `5017830`:
     LOCKSTEP RULE. It is `pin-submodule-unreadable`, by name, as #827
     refuses a leg checkout this user cannot search.
 
+What #919 left, #968, from rv919's review of #952 at `8a7671b3`:
+
+  * gh's stderr that is not UTF-8 ended the run in a `UnicodeDecodeError`
+    traceback. It is read with `errors="replace"`, as `git_out` reads git's,
+    and the JSON on stdout stays strict: a byte that is not UTF-8 there, or
+    JSON that is not a tree listing, is `gh-response-unreadable`.
+  * `gh-response-unreadable` and `gh-tree-truncated` name the repository
+    as `gh-unreadable` does.
+  * A leg's git directory this user cannot search, a `.git` directory or
+    the one a gitfile names under `.git/modules/`, ended in
+    `pin-commit-unresolvable` under THE LOCKSTEP RULE. It is
+    `pin-submodule-unreadable`, by name.
+  * `contracts` replaced by a file, a FIFO or a symlink that leads to no
+    directory made every pin "does not exist" under THE LOCKSTEP RULE. The
+    refusal names what stands there, with a remedy of its own.
+  * rv919's surviving mutants r2 (a socket named as a FIFO) and r4 (an
+    empty remedy where none was given) each fail a row now.
+
 THE HARNESS is `tests/test_validate_pins_named_and_spelled.py`'s: the gate
 runs as the copy a real scaffold wrote (`validate`), and in-process as that
 copy loaded as a module (`validator`). A stub `gh` is a `#!` script, so its
@@ -39,7 +57,11 @@ the backslash of each escape the gate prints.
 from __future__ import annotations
 
 import errno
+import hashlib
+import json
 import os
+import socket
+import stat
 import subprocess
 import sys
 from pathlib import Path
@@ -146,17 +168,44 @@ def declared_with_a_pin(project: Path) -> None:
         "digest_definition: sorted-ls-tree-r-v1\n").encode("utf-8"))
 
 
-def gh_saying(where: Path, said: str, status: int) -> dict:
+def as_bytes(said: str | bytes) -> bytes:
+    """`said` as the bytes a child writes: UTF-8 where it is text."""
+    return said if isinstance(said, bytes) else said.encode("utf-8")
+
+
+def gh_saying(where: Path, said: str | bytes, status: int) -> dict:
     """The environment of a run whose `gh`, first on PATH, prints `said` on
     stderr and exits `status`. The script is written as bytes, so its ESC
-    and CR are the bytes themselves."""
+    and CR, and a byte that is not UTF-8, are the bytes themselves."""
     bin_dir = where / "gh-bin"
     bin_dir.mkdir()
     gh = bin_dir / "gh"
-    gh.write_bytes(b"#!/bin/sh\nprintf '%s' '" + said.encode("utf-8")
+    gh.write_bytes(b"#!/bin/sh\nprintf '%s' '" + as_bytes(said)
                    + b"' >&2\nexit " + str(status).encode("ascii") + b"\n")
     gh.chmod(0o755)
     return {"PATH": f"{bin_dir}{os.pathsep}{os.environ['PATH']}"}
+
+
+def skips_of_a_run(project: Path, where: Path, said: str | bytes) -> list:
+    """The `skip` lines of the project's own gate, run with a `gh` that
+    prints `said` on stderr and exits 1, failing the row on a traceback."""
+    result = run_script(project / "scripts" / "validate-pins.py",
+                        cwd=project, env=gh_saying(where, said, 1))
+    assert "Traceback" not in result.stderr, result.stderr
+    assert result.returncode == 0, result.stdout + result.stderr
+    assert result.stdout.endswith(LF + "pins ok" + LF), result.stdout
+    return [line for line in result.stdout.split(LF)
+            if line.startswith("  skip ")]
+
+
+def the_skip(named: str) -> str:
+    """The `skip` line for the pin `declared_with_a_pin` writes, where `gh`
+    could not read it and printed what the detail names as `named`."""
+    return (f"  skip openXdox: pin commit {COMMIT[:12]} digest NOT rechecked "
+            "— no local checkout (gh-unreadable: `gh api` could not read "
+            f"testorg/openXdox @ {COMMIT}: {named}). A --pin-source, "
+            "SHAPE_PIN_SOURCE_OPENXDOX, or a checkout at ../openXdox beside "
+            "this assembly root would verify it offline.")
 
 
 @WINDOWS_SKIP
@@ -164,34 +213,39 @@ def test_gh_s_stderr_in_the_skip_line_is_spelled_on_one_line(project,
                                                              tmp_path):
     """U177: a `gh` that exits 1 printing an ESC, a CR and two line feeds.
     The skip is ONE line, gh's text spelled: the ESC and each break are
-    escapes, the CR's too, since gh's stderr is read in text mode and the
-    CR is a line break by then. No control reaches stdout, and the run
-    still passes: a skip is never a finding."""
+    escapes, the CR's too, since a CR is read as a line break, as text mode
+    read one. No control reaches stdout, and the run still passes: a skip
+    is never a finding."""
     declared_with_a_pin(project)
-    env = gh_saying(tmp_path, "one" + ESC + "[31mred" + CR + "two" + LF
-                    + "three" + LF, 1)
-    result = run_script(project / "scripts" / "validate-pins.py",
-                        cwd=project, env=env)
-    skips = [line for line in result.stdout.split(LF)
-             if line.startswith("  skip ")]
-    assert skips == [
-        f"  skip openXdox: pin commit {COMMIT[:12]} digest NOT rechecked — "
-        "no local checkout (gh-unreadable: `gh api` could not read "
-        f"testorg/openXdox @ {COMMIT}: one{BS}x1b[31mred{BS}ntwo{BS}nthree)."
-        " A --pin-source, SHAPE_PIN_SOURCE_OPENXDOX, or a checkout at "
-        "../openXdox beside this assembly root would verify it offline."], \
-        result.stdout
-    assert ESC not in result.stdout, result.stdout
-    assert CR not in result.stdout, result.stdout
-    assert result.returncode == 0, result.stdout + result.stderr
-    assert result.stdout.endswith(LF + "pins ok" + LF), result.stdout
+    skips = skips_of_a_run(project, tmp_path, "one" + ESC + "[31mred" + CR
+                           + "two" + LF + "three" + LF)
+    assert skips == [the_skip(f"one{BS}x1b[31mred{BS}ntwo{BS}nthree")]
+    assert ESC not in LF.join(skips), skips
+    assert CR not in LF.join(skips), skips
 
 
-def gh_answering(monkeypatch, status: int, stderr: str) -> None:
+@WINDOWS_SKIP
+def test_gh_s_stderr_that_is_not_utf_8_is_a_skip_and_no_traceback(project,
+                                                                 tmp_path):
+    """#968, rv919's probe: a `gh` that exits 1 printing a byte that is not
+    UTF-8. Both of gh's streams were read in text mode, strictly, so the
+    run ended in a `UnicodeDecodeError` traceback, exit 1, where a skip
+    belongs. gh's stderr is words for a person: the byte is U+FFFD, as
+    `git_out` replaces one of git's, and the run passes with its skip."""
+    declared_with_a_pin(project)
+    skips = skips_of_a_run(project, tmp_path,
+                           b"bad" + bytes([0xFF]) + b"byte")
+    assert skips == [the_skip("bad" + chr(0xFFFD) + "byte")]
+
+
+def gh_answering(monkeypatch, status: int, stderr: str | bytes,
+                 stdout: str | bytes = b"") -> None:
     """`subprocess.run` answering as a `gh` that exits `status` and prints
-    `stderr`, in-process, so a row runs on every platform."""
+    `stdout` and `stderr`, in-process, so a row runs on every platform. The
+    streams are bytes, as `tree_digest_from_gh` reads them (#968)."""
     def gh(argv, **_kwargs):
-        return subprocess.CompletedProcess(argv, status, "", stderr)
+        return subprocess.CompletedProcess(argv, status, as_bytes(stdout),
+                                           as_bytes(stderr))
 
     monkeypatch.setattr(subprocess, "run", gh)
 
@@ -211,6 +265,9 @@ GH_SAID = [
     pytest.param("caf" + chr(0xe9) + " " + chr(0x65e5) + chr(0x672c),
                  "caf" + chr(0xe9) + " " + chr(0x65e5) + chr(0x672c),
                  id="utf-8-unchanged"),
+    pytest.param(b"caf" + bytes([0xE9]) + b" ok" + CR.encode("ascii")
+                 + LF.encode("ascii"), "caf" + chr(0xFFFD) + " ok",
+                 id="not-utf-8"),
 ]
 
 
@@ -244,6 +301,115 @@ def test_gh_unreadable_names_the_repository_spelled(validator, monkeypatch,
         "HTTP 404: Not Found")
 
 
+def refusal_of_gh_saying(validator, monkeypatch, stdout: bytes,
+                         repository: str = "testorg/openXdox"):
+    """The `Refusal` of `tree_digest_from_gh` where `gh` exits 0 printing
+    `stdout`, failing the row if it returns a digest or raises anything
+    else."""
+    gh_answering(monkeypatch, 0, b"", stdout)
+    with pytest.raises(validator.Refusal) as caught:
+        validator.tree_digest_from_gh(repository, COMMIT)
+    return caught.value
+
+
+def test_gh_json_that_is_not_utf_8_is_unreadable_and_no_traceback(
+        validator, monkeypatch):
+    """#968: the JSON stays strict, as #217 asks, since it becomes a digest
+    and a replaced byte would be a wrong one. A byte that is not UTF-8 there
+    is `gh-response-unreadable`, naming the decoder's reason, where it was a
+    `UnicodeDecodeError` traceback."""
+    said = b'{"tree": [], "x": "' + bytes([0xFF]) + b'"}'
+    with pytest.raises(UnicodeDecodeError) as decoding:
+        said.decode("utf-8")
+    refusal = refusal_of_gh_saying(validator, monkeypatch, said)
+    assert refusal.code == "gh-response-unreadable"
+    assert refusal.detail == f"testorg/openXdox @ {COMMIT}: {decoding.value}"
+
+
+#: A repository, and how every gh refusal names it: `repr`'d where a
+#: character in it is not printable, and as it is where none is.
+REPOSITORIES = [
+    *(pytest.param(param.values[0], repr(param.values[0]), id=param.id)
+      for param in UNPRINTABLE if param.id != "undecodable-byte"),
+    pytest.param("testorg/openXdox", "testorg/openXdox", id="printable"),
+]
+
+
+@pytest.mark.parametrize("repository, named", REPOSITORIES)
+@pytest.mark.parametrize("stdout, code, detail", [
+    pytest.param(b"not json", "gh-response-unreadable",
+                 "{named} @ {commit}: Expecting value: line 1 column 1 "
+                 "(char 0)", id="not-json"),
+    pytest.param(b'{"truncated": true, "tree": []}', "gh-tree-truncated",
+                 "the forge truncated its tree listing for {named} @ "
+                 "{commit}, so the digest would be computed over a PARTIAL "
+                 "tree", id="truncated"),
+    pytest.param(b"[]", "gh-response-unreadable",
+                 "{named} @ {commit}: the answer is not a tree listing "
+                 "(AttributeError: 'list' object has no attribute 'get')",
+                 id="not-a-listing"),
+])
+def test_every_gh_refusal_names_the_repository_spelled(
+        validator, monkeypatch, repository, named, stdout, code, detail):
+    """#968: `gh-response-unreadable` and `gh-tree-truncated` named the
+    repository raw, where `gh-unreadable` spelled it (#919), and a
+    `validate-pins.py` skip line prints each detail. Each is `shown_path`'s
+    now, and so is JSON that is not a listing; a printable repository is
+    named byte for byte as it was."""
+    refusal = refusal_of_gh_saying(validator, monkeypatch, stdout, repository)
+    assert refusal.code == code
+    assert refusal.detail == detail.format(named=named, commit=COMMIT)
+
+
+#: JSON that is not gh's tree listing, and the error that ended the run in a
+#: traceback for it.
+NOT_A_LISTING = [
+    pytest.param(b"[]", "AttributeError", id="a-list"),
+    pytest.param(b"null", "AttributeError", id="null"),
+    pytest.param(b'{"tree": 5}', "TypeError", id="tree-a-number"),
+    pytest.param(b'{"tree": ["x"]}', "AttributeError", id="a-row-no-mapping"),
+    pytest.param(b'{"tree": [{"type": "blob", "sha": "a", "path": "p"}]}',
+                 "KeyError", id="a-row-without-its-mode"),
+    pytest.param(b'{"tree": [{"mode": "100644", "type": "blob", "sha": "a", '
+                 b'"path": "' + BS.encode("ascii") + b'ud800"}]}',
+                 "UnicodeEncodeError", id="a-lone-surrogate"),
+]
+
+
+@pytest.mark.parametrize("stdout, error", NOT_A_LISTING)
+def test_json_that_is_not_a_tree_listing_is_unreadable(validator, monkeypatch,
+                                                       stdout, error):
+    """#968: JSON that is not the listing's object (a list, a row that is
+    no mapping or lacks a column, a path holding a lone surrogate) is what
+    gh said, `gh-response-unreadable` naming the repository, where `.get`,
+    a subscript or `.encode` ended the run in a traceback."""
+    refusal = refusal_of_gh_saying(validator, monkeypatch, stdout)
+    assert refusal.code == "gh-response-unreadable"
+    assert refusal.detail.startswith(
+        f"testorg/openXdox @ {COMMIT}: the answer is not a tree listing "
+        f"({error}: "), refusal.detail
+
+
+def test_a_tree_listing_digests_as_it_always_did(validator, monkeypatch):
+    """The control: a listing, CR LF between its lines, digests as the
+    definition says: each row that is no tree as `<mode> <type> <sha>`, a
+    TAB and its path, UTF-8, sorted, and each ended by a line feed."""
+    rows = [{"mode": "100644", "type": "blob", "sha": "b" * 40,
+             "path": "caf" + chr(0xE9) + ".txt"},
+            {"mode": "040000", "type": "tree", "sha": "c" * 40, "path": "d"},
+            {"mode": "100755", "type": "blob", "sha": "a" * 40,
+             "path": "d/run.sh"}]
+    listing = (CR + LF).join(["{", '"truncated": false,', '"tree": '
+                              + json.dumps(rows, ensure_ascii=False), "}", ""])
+    gh_answering(monkeypatch, 0, b"", listing)
+    records = sorted(
+        f"{row['mode']} {row['type']} {row['sha']}{chr(9)}{row['path']}"
+        .encode("utf-8") for row in rows if row["type"] != "tree")
+    assert validator.tree_digest_from_gh("testorg/openXdox", COMMIT) == (
+        hashlib.sha256(b"".join(record + LF.encode("ascii")
+                                for record in records)).hexdigest())
+
+
 # --- U178: what stands where a file should be --------------------------------
 
 def made_directory(path: Path) -> None:
@@ -267,16 +433,31 @@ def made_link_to_a_directory(path: Path) -> None:
     os.symlink("directory-w919", path)
 
 
+def made_socket(path: Path) -> None:
+    """A socket bound at `path` by its name, from inside its directory: the
+    whole path of a socket must fit in about a hundred bytes, and a
+    temporary directory's need not (rv919's r2). Closed, it stays."""
+    here = Path.cwd()
+    os.chdir(path.parent)
+    try:
+        with socket.socket(socket.AF_UNIX) as bound:
+            bound.bind(path.name)
+    finally:
+        os.chdir(here)
+
+
 POSIX_NODES = pytest.mark.skipif(
     os.name == "nt",
-    reason="a FIFO needs os.mkfifo, and Windows makes a symlink only with a "
-           "privilege")
+    reason="a FIFO needs os.mkfifo, a socket's name AF_UNIX, and Windows "
+           "makes a symlink only with a privilege")
 
 #: What can stand in a file's place, and the words after the file's name.
 NOT_FILES = [
     pytest.param(made_directory, "is a directory, not a file",
                  id="directory"),
     pytest.param(made_fifo, "is a FIFO, not a file", id="fifo",
+                 marks=POSIX_NODES),
+    pytest.param(made_socket, "is a socket, not a file", id="socket",
                  marks=POSIX_NODES),
     pytest.param(made_link_to_nothing, "is a symlink to nothing, not a file",
                  id="symlink-to-nothing", marks=POSIX_NODES),
@@ -287,12 +468,15 @@ NOT_FILES = [
                  id="symlink-to-a-directory", marks=POSIX_NODES),
 ]
 
+#: What the leg pin's refusal says before "does not exist".
+LEG_PIN_SAID = ("leg 'spec' declares testorg/Atlas-spec at 'spec' but "
+                "contracts/spec-pin.yaml")
+
 #: Each site that REFUSES, as `(the file, the code, what its line says before
 #: what stands there)`: the words before "does not exist", which stay.
 REFUSALS = [
-    pytest.param("contracts/spec-pin.yaml", "pin-missing",
-                 "leg 'spec' declares testorg/Atlas-spec at 'spec' but "
-                 "contracts/spec-pin.yaml", id="leg-pin"),
+    pytest.param("contracts/spec-pin.yaml", "pin-missing", LEG_PIN_SAID,
+                 id="leg-pin"),
     pytest.param(SHAPE_PIN, "shape-pin-missing", SHAPE_PIN, id="shape-pin"),
     pytest.param(NEUTRAL_PIN, "neutral-pin-missing",
                  f"project.yaml declares a pin on 'openXdox' but "
@@ -361,8 +545,7 @@ def test_what_stands_in_a_shape_copys_place_is_named(project, make, what):
 #: each site always had.
 ABSENT = [
     pytest.param("contracts/spec-pin.yaml",
-                 "REFUSED pin-missing: leg 'spec' declares testorg/Atlas-spec "
-                 "at 'spec' but contracts/spec-pin.yaml does not exist\n"
+                 f"REFUSED pin-missing: {LEG_PIN_SAID} does not exist\n"
                  f"{REMEDIATION}\n", 2, id="leg-pin"),
     pytest.param(SHAPE_PIN, f"REFUSED shape-pin-missing: {SHAPE_PIN} does not "
                  f"exist\n{REMEDIATION}\n", 2, id="shape-pin"),
@@ -396,6 +579,145 @@ def test_a_file_that_is_not_there_keeps_its_words_byte_for_byte(
     assert result.returncode == code, result.stdout + result.stderr
 
 
+#: A remedy no site gives, standing for the lockstep one that `Refusal` gave
+#: every refusal built without one before #370.
+OLD_DEFAULT = "Remediation: the default of a repo_shape.py older than #370."
+
+
+def refusals_defaulting(monkeypatch, validator) -> None:
+    """`Refusal`, where the gate builds one, as a `repo_shape.py` older than
+    #370 builds it: with a remedy of its own where none is given."""
+    class Defaulting(validator.Refusal):
+        def __init__(self, code, detail, remediation=OLD_DEFAULT):
+            super().__init__(code, detail, remediation)
+
+    monkeypatch.setattr(validator, "Refusal", Defaulting)
+
+
+@pytest.mark.parametrize("relative, code", [
+    pytest.param("contracts/spec-pin.yaml", "pin-missing", id="leg-pin"),
+    pytest.param(SHAPE_PIN, "shape-pin-missing", id="shape-pin"),
+    pytest.param("project.yaml", "manifest-missing", id="manifest"),
+])
+def test_a_refusal_with_no_remedy_of_its_own_is_built_with_none(
+        validator, project, monkeypatch, relative, code):
+    """rv919's r4: a file that is not there, at a site that names no remedy
+    of its own, is refused with none, and not with an empty one. Beside the
+    `repo_shape.py` of today the two print the same, which is why the
+    mutant lived; beside one older than #370, the default is the lockstep
+    remedy, and an empty one printed a blank line in its place (#370,
+    #610)."""
+    (project / relative).unlink()
+    refusals_defaulting(monkeypatch, validator)
+    refusal = refusal_of_the_run(validator, project)
+    assert refusal.code == code
+    assert refusal.remediation == OLD_DEFAULT
+
+
+# --- #968: what stands where `contracts` should be ---------------------------
+
+def made_file(path: Path) -> None:
+    path.write_bytes(b"not a directory")
+
+
+def made_link_to_a_file(path: Path) -> None:
+    (path.parent / "file-w968").write_bytes(b"not a directory")
+    os.symlink("file-w968", path)
+
+
+#: What can stand where the directory that holds a pin should be, and the
+#: words after its name.
+NOT_DIRECTORIES = [
+    pytest.param(made_file, "which is a file, not a directory", id="file"),
+    pytest.param(made_fifo, "which is a FIFO, not a directory", id="fifo",
+                 marks=POSIX_NODES),
+    pytest.param(made_socket, "which is a socket, not a directory",
+                 id="socket", marks=POSIX_NODES),
+    pytest.param(made_link_to_nothing,
+                 "which is a symlink to nothing, not a directory",
+                 id="symlink-to-nothing", marks=POSIX_NODES),
+    pytest.param(made_loop, "which is a symlink loop, not a directory",
+                 id="symlink-loop", marks=POSIX_NODES),
+    pytest.param(made_link_to_a_file,
+                 "which is a symlink to a file, not a directory",
+                 id="symlink-to-a-file", marks=POSIX_NODES),
+]
+
+#: The remedy where the directory that holds a pin is not a directory.
+NOT_A_DIRECTORY_REMEDY = (
+    READS + "Something that is not a directory stands where the directory "
+    "that holds it should be: move it aside, or take it away if nobody wants "
+    "it, and restore the directory from the project's history. " + AGAIN)
+
+
+def contracts_replaced(project: Path, make) -> None:
+    """`contracts` moved aside, and `make` putting what it makes at its
+    name."""
+    (project / "contracts").rename(project / "contracts-aside-w968")
+    make(project / "contracts")
+
+
+@pytest.mark.parametrize("make, what", NOT_DIRECTORIES)
+def test_what_stands_where_contracts_should_be_is_named(project, make, what):
+    """#968: `contracts` replaced by a file, a FIFO, a socket or a symlink
+    that leads to no directory. Nothing can be at any pin's name, so each
+    was "does not exist" under the lockstep remedy, which moves a pin and
+    puts back no directory. The first pin asked, the leg's, names what
+    stands there, with a remedy that says to move it aside and restore the
+    directory. The whole of stderr, exit 2, nothing on stdout, and nothing
+    written."""
+    contracts_replaced(project, make)
+    before = tree_bytes(project)
+    result = validate(project)
+    assert result.stderr == (
+        f"REFUSED pin-missing: {LEG_PIN_SAID} is under contracts, {what}\n"
+        f"{NOT_A_DIRECTORY_REMEDY}\n"), result.stderr
+    assert result.returncode == 2, result.stdout + result.stderr
+    assert result.stdout == "", result.stdout
+    assert tree_bytes(project) == before, "a validator writes nothing"
+
+
+def shape_pin_checked(validator, root: Path) -> None:
+    validator._check_shape_pin_header(root, {}, validator.Report())
+
+
+def neutral_pin_checked(validator, root: Path) -> None:
+    validator._check_neutral_pin_entry_and_load(root, "openXdox",
+                                                validator.Report())
+
+
+@pytest.mark.parametrize("check, code, said", [
+    pytest.param(shape_pin_checked, "shape-pin-missing", SHAPE_PIN,
+                 id="shape-pin"),
+    pytest.param(neutral_pin_checked, "neutral-pin-missing",
+                 f"project.yaml declares a pin on 'openXdox' but "
+                 f"{NEUTRAL_PIN}", id="neutral-pin"),
+])
+def test_every_pin_site_names_what_stands_where_contracts_should_be(
+        validator, project, check, code, said):
+    """The shape pin's and a neutral-product pin's sites, which a run
+    reaches only after every leg's, each asked in-process with `contracts`
+    a file, on every platform."""
+    contracts_replaced(project, made_file)
+    with pytest.raises(validator.Refusal) as caught:
+        check(validator, project)
+    assert caught.value.code == code
+    assert caught.value.detail == (
+        f"{said} is under contracts, which is a file, not a directory")
+    assert caught.value.remediation == NOT_A_DIRECTORY_REMEDY
+
+
+def test_contracts_that_is_not_there_keeps_its_words(project):
+    """The control: no `contracts` at all is the leg pin that "does not
+    exist", under the lockstep remedy, byte for byte as it always was."""
+    contracts_replaced(project, lambda _path: None)
+    result = validate(project)
+    assert result.stderr == (
+        f"REFUSED pin-missing: {LEG_PIN_SAID} does not exist\n"
+        f"{REMEDIATION}\n"), result.stderr
+    assert result.returncode == 2, result.stdout + result.stderr
+
+
 # --- U179: a leg's `.git` gitfile this user cannot open ----------------------
 
 @CANNOT_RUN_AS_ROOT
@@ -407,22 +729,34 @@ def test_a_leg_gitfile_this_user_cannot_open_is_refused_by_name(project):
     advice; nothing is written, and the mode is put back in a `finally`."""
     assert (project / "spec" / ".git").is_file(), \
         "fixture drift: a recursive clone's leg holds a gitfile"
+    assert_the_checkout_refused(project, "spec/.git", 0, "spec/.git")
+
+
+def assert_the_checkout_refused(project: Path, relative: str, mode: int,
+                                named: str) -> None:
+    """The project's own gate, `relative` at `mode` (put back after): ONE
+    `pin-submodule-unreadable` naming `named`, with the leg checkout's
+    remedy and the permission advice, exit 2, and nothing written."""
     before = tree_bytes(project)
-    with mode_of(project, "spec/.git", 0):
+    with mode_of(project, relative, mode):
         result = validate(project)
     assert result.stderr == (
-        "REFUSED pin-submodule-unreadable: spec/.git: cannot be read "
+        f"REFUSED pin-submodule-unreadable: {named}: cannot be read "
         f"(Permission denied)\n{CHECKOUT_READS}{PERMISSION}{AGAIN}\n"), \
         result.stderr
     assert result.returncode == 2, result.stdout + result.stderr
     assert tree_bytes(project) == before, "a validator writes nothing"
 
 
-@pytest.mark.parametrize("failure, advice", [
+#: A refused `stat` or open, and the advice its refusal gives.
+CAUSES = [
     pytest.param(PermissionError(errno.EACCES, "Permission denied"),
                  PERMISSION, id="permission"),
     pytest.param(os_error(errno.EIO), OTHER, id="io-error"),
-])
+]
+
+
+@pytest.mark.parametrize("failure, advice", CAUSES)
 def test_a_leg_gitfile_whose_open_is_refused_is_refused_on_every_python(
         validator, project, monkeypatch, failure, advice):
     """The same gitfile in-process, so on every platform and as root: its
@@ -460,3 +794,120 @@ def test_a_git_that_is_no_regular_file_is_not_opened(validator, tmp_path,
     make(dotgit)
     failing(monkeypatch, "open", {".git": AssertionError("opened")})
     assert validator._gitfile_opens(dotgit) is True
+
+
+# --- #968: a leg's git directory this user cannot search ---------------------
+
+#: A directory this user cannot search: no mode bit at all, and read alone.
+UNSEARCHABLE = pytest.mark.parametrize("mode", [0, stat.S_IRUSR],
+                                       ids=["000", "r--"])
+
+
+@CANNOT_RUN_AS_ROOT
+@UNSEARCHABLE
+def test_the_git_directory_a_leg_gitfile_names_unsearchable_is_refused(
+        project, mode):
+    """#968: `.git/modules/spec`, where the leg's readable gitfile says its
+    git directory is, at mode 000 or r--. Git said `fatal: not a git
+    repository`, and the run ended `pin-commit-unresolvable` under THE
+    LOCKSTEP RULE, which says the pinned commit is missing. It is
+    `pin-submodule-unreadable`, naming that directory."""
+    assert_the_checkout_refused(project, ".git/modules/spec", mode,
+                                ".git/modules/spec")
+
+
+def leg_with_its_own_git_directory(project: Path) -> None:
+    """The leg's git directory moved from `.git/modules/spec` into the leg as
+    `spec/.git`, where a checkout git has not absorbed keeps it, and its
+    `worktree` line dropped, since the leg is that directory's own work tree
+    now. The file is edited as text: no `git config` is run."""
+    dotgit = project / "spec" / ".git"
+    dotgit.unlink()
+    (project / ".git" / "modules" / "spec").rename(dotgit)
+    config = dotgit / "config"
+    lines = config.read_bytes().split(LF.encode("ascii"))
+    config.write_bytes(LF.encode("ascii").join(
+        line for line in lines if not line.strip().startswith(b"worktree")))
+
+
+@CANNOT_RUN_AS_ROOT
+@UNSEARCHABLE
+def test_a_leg_git_directory_this_user_cannot_search_is_refused(project,
+                                                               mode):
+    """#968: `spec/.git` a directory, the leg's own, at mode 000 or r--. Git
+    passed over it and walked up to the root's own repository, so the run
+    ended `pin-commit-unresolvable` with an empty reason, under THE LOCKSTEP
+    RULE. It is `pin-submodule-unreadable`, naming `spec/.git`. The control
+    first: searchable, the same leg passes."""
+    leg_with_its_own_git_directory(project)
+    passed = validate(project)
+    assert passed.returncode == 0, passed.stdout + passed.stderr
+    assert_the_checkout_refused(project, "spec/.git", mode, "spec/.git")
+
+
+@pytest.mark.parametrize("failure, advice", CAUSES)
+def test_a_leg_git_directory_whose_stat_is_refused_is_refused_everywhere(
+        validator, project, monkeypatch, failure, advice):
+    """The same in-process, so on every platform and as root: the `stat` of
+    the `HEAD` in the git directory the gitfile names, refused, each cause
+    with its own advice."""
+    failing(monkeypatch, "stat", {"HEAD": failure})
+    refusal = refusal_of_the_run(validator, project)
+    assert refusal.code == "pin-submodule-unreadable"
+    assert refusal.detail == (
+        f".git/modules/spec: cannot be read ({failure.strerror})")
+    assert refusal.remediation == CHECKOUT_READS + advice + AGAIN
+
+
+def test_a_leg_git_directory_with_no_head_is_left_to_git(validator, project,
+                                                        monkeypatch):
+    """A `HEAD` that is not there is no refusal of this check's: git answers
+    for that git directory, as it always did, and here git reads it, so the
+    run finds nothing."""
+    failing(monkeypatch, "stat", {"HEAD": os_error(errno.ENOENT)})
+    report = validator.Report()
+    validator._run_all_checks(project, report, [])
+    assert report.findings == []
+
+
+@pytest.mark.parametrize("written, named", [
+    pytest.param(b"gitdir: ../.git/modules/spec" + LF.encode("ascii"),
+                 "../.git/modules/spec", id="relative"),
+    pytest.param(b"gitdir: ../m" + (CR + LF).encode("ascii"), "../m",
+                 id="cr-lf"),
+    pytest.param(b"gitdir: ../m", "../m", id="no-line-end"),
+    pytest.param(b"gitdir: ../m" + (LF + LF).encode("ascii"), "../m",
+                 id="blank-line-after"),
+])
+def test_a_gitfile_names_its_git_directory_as_git_reads_it(
+        validator, tmp_path, written, named):
+    """The `gitdir: ` line, its line ends stripped as git strips them, joined
+    to the gitfile's own directory, its `..` left for the system to follow
+    as it follows git's."""
+    dotgit = tmp_path / "leg" / ".git"
+    dotgit.parent.mkdir()
+    dotgit.write_bytes(written)
+    assert validator._leg_git_dir(dotgit) == dotgit.parent / named
+
+
+def test_a_gitfile_may_name_its_git_directory_whole(validator, tmp_path):
+    """An absolute `gitdir: ` is that directory, wherever the gitfile is."""
+    dotgit = tmp_path / "leg" / ".git"
+    dotgit.parent.mkdir()
+    elsewhere = tmp_path / "elsewhere"
+    dotgit.write_bytes(b"gitdir: " + os.fsencode(str(elsewhere)))
+    assert validator._leg_git_dir(dotgit) == elsewhere
+
+
+def test_a_git_directory_is_its_own_and_a_gitfile_naming_none_is_gits(
+        validator, tmp_path):
+    """A `.git` that is a directory is the leg's git directory; a gitfile
+    with no `gitdir: ` line names none, and git refuses it as it always
+    did."""
+    leg = tmp_path / "leg"
+    (leg / ".git").mkdir(parents=True)
+    assert validator._leg_git_dir(leg / ".git") == leg / ".git"
+    other = tmp_path / "other" / ".git"
+    other.parent.mkdir()
+    other.write_bytes(b"not a gitfile" + LF.encode("ascii"))
+    assert validator._leg_git_dir(other) is None
