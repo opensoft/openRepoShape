@@ -282,6 +282,12 @@ def _git_runs(unread: str) -> Iterator[None]:
                       f"({exc.strerror or exc})", GIT_NOT_RUNNABLE) from exc
 
 
+#: What `_argument_fault` calls a character that does not print, or white
+#: space (#715): git takes the name, and no person can tell it from the name
+#: without it, so `_say_not_tried` gives it a line of its own.
+UNSEEN = "a character that does not print or is white space"
+
+
 def _argument_fault(branch: str) -> str | None:
     """What stops `branch` being an argument to a command, or `None` (#455).
 
@@ -322,12 +328,29 @@ def _argument_fault(branch: str) -> str | None:
     is not UTF-8 for ANY of them, so a lone surrogate is never handed to git
     there either, where a `CreateProcess` would pass it on mangled. The answer
     is `os.fsencode`'s own, so it is the system's and not a list kept here.
+
+    NOR IS A CHARACTER THAT DOES NOT PRINT, OR WHITE SPACE (#715), `UNSEEN`,
+    which `validate-manifest.py` refuses in a branch too (`siblings.py` asks
+    `isprintable()` alone, so a space it takes).
+    git takes `main` followed by U+00A0, and since #715 the reader reads that
+    no-break space as YAML does, where it used to strip it: so this step made
+    a second `main` beside the first in every leg and checked it out. Asked
+    once the name holds neither a NUL nor a lone surrogate, and never of a
+    surrogate, so the byte-carrying ones above still reach git. Asked
+    BEFORE `UNWRITABLE`, for that fault's reason: a name holding such a
+    character is not good under any encoding, so the line that calls a
+    name good is never said of it (`"日本 x"` under `LC_ALL=C` is named
+    for its space, which the root's own validator names too).
     """
     for char in branch:
         if char == "\x00":
             return "U+0000, a NUL"
         if "\ud800" <= char <= "\udfff" and _fsencoded_length(char) != 1:
             return f"U+{ord(char):04X}, a lone surrogate"
+    for char in branch:
+        if not "\ud800" <= char <= "\udfff" and (
+                not char.isprintable() or char.isspace()):
+            return f"U+{ord(char):04X}, {UNSEEN}"
     unwritable = next((char for char in branch
                        if _fsencoded_length(char) == 0), None)
     if unwritable is None:
@@ -353,6 +376,10 @@ def _say_not_tried(where: str, named: str, fault: str,
     stays where it is, and the line says which of the three places the
     person's value can have come from holds it (#455).
 
+    `UNSEEN` (#715) has its own words: git takes `main` followed by U+00A0,
+    so "which no command can be given" would be wrong of it, and the name
+    to give is the one without that character.
+
     A character this system's encoding cannot write (`UNWRITABLE`, #710) is
     a branch step (a) DID NOT TRY, not one it could not create: the branch
     can be there already, made by a run under UTF-8 (RV824's N2). Where git
@@ -364,6 +391,14 @@ def _say_not_tried(where: str, named: str, fault: str,
     git's lines (`_git_refuses_in_utf8`): the name is not called good, git's
     words are said, and #455's way out follows, since the name itself has
     to change (RV824's S1)."""
+    if fault.endswith(UNSEEN):
+        print(f"  {where}: could not create branch {named}: it holds "
+              f"{fault}, which no person can tell from the name without it; "
+              "the leg is left as it is")
+        print("          the branch is the leg's `branch:`, else `--branch`, "
+              "else `tracking_branch`. Give that one a name with no such "
+              "character and run bootstrap again.")
+        return
     unwritable = fault.endswith(UNWRITABLE)
     tried = "did not try" if unwritable else "could not create"
     print(f"  {where}: {tried} branch {named}: it holds {fault}, which no "
