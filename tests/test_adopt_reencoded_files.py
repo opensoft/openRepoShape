@@ -39,8 +39,9 @@ from pathlib import Path
 
 import pytest
 
-from conftest import (ADOPT, findings, git, make_source_repo, planned,
-                      refused_before_any_leg, run_script)
+from conftest import (ADOPT, appended_to_command_scope, findings, git,
+                      make_source_repo, planned, refused_before_any_leg,
+                      run_script)
 from test_adopt_nested_attributes import (EMPTY_TREE, GITHUB_ATTRIBUTES,
                                           REENCODED, ROOT, ROOT_ATTRIBUTES,
                                           SOURCE, adopted_by_execute, checked,
@@ -101,12 +102,10 @@ def raw_plan(base: Path, files: dict, answers: dict) -> Path:
 
 def configure(monkeypatch: pytest.MonkeyPatch, pairs) -> None:
     """Each `(key, value)` of `pairs` in git's command scope, after what
-    the environment holds, for this process and every git it starts."""
-    held = int(os.environ.get("GIT_CONFIG_COUNT") or 0)
-    for n, (key, value) in enumerate(pairs, held):
-        monkeypatch.setenv(f"GIT_CONFIG_KEY_{n}", key)
-        monkeypatch.setenv(f"GIT_CONFIG_VALUE_{n}", value)
-    monkeypatch.setenv("GIT_CONFIG_COUNT", str(held + len(pairs)))
+    the environment holds, for this process and every git it starts:
+    appended by `appended_to_command_scope` (#758)."""
+    for name, value in appended_to_command_scope(os.environ, pairs).items():
+        monkeypatch.setenv(name, value)
 
 
 @pytest.fixture(scope="module")
@@ -424,15 +423,19 @@ def env_steering(tmp_path: Path, steer: dict) -> subprocess.CompletedProcess:
 
 
 @pytest.mark.parametrize("steer", [
-    pytest.param({"GIT_ATTR_SOURCE": "HEAD"}, id="git-attr-source-head"),
-    pytest.param({"GIT_ATTR_SOURCE": EMPTY_TREE},
+    pytest.param(lambda: {"GIT_ATTR_SOURCE": "HEAD"},
+                 id="git-attr-source-head"),
+    pytest.param(lambda: {"GIT_ATTR_SOURCE": EMPTY_TREE},
                  id="git-attr-source-the-empty-tree"),
-    pytest.param(command_scope("attr.tree", EMPTY_TREE),
+    pytest.param(lambda: command_scope("attr.tree", EMPTY_TREE),
                  id="attr-tree-in-the-command-scope")])
 def test_no_tree_this_machine_names_steers_the_question(tmp_path, steer):
     """The throwaway repository has no commit for `HEAD` to name, and the
-    empty tree would make git read no rule: neither is inherited."""
-    result = env_steering(tmp_path, steer)
+    empty tree would make git read no rule: neither is inherited. `steer`
+    is built here, at the test: `command_scope` appends to the entries the
+    environment holds WHEN IT IS CALLED, and at collection those are not the
+    session's (#835)."""
+    result = env_steering(tmp_path, steer())
     assert "REFUSED" not in result.stderr, result.stderr
     assert f"FINDING {REENCODED_FILES}: {KEPT_GROUP}" in result.stderr, \
         result.stderr

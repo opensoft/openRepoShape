@@ -57,16 +57,15 @@ other branch keeps its commits, so the move loses no commit: `branch -f` moves
 the tracking branch to the pin and the checkout puts the leg on it, as from the
 pin; the other branch is not touched. One line under the `fast-forwarded` one
 says the leg left that branch and that it keeps its commits (or has none yet),
-since the next commit made in the leg is on the tracking branch now; no other
-start prints it, and nor does a refusal. From another branch the checkout
-changes files, so git can refuse it over a local edit or an untracked file,
-which a checkout from the pin never meets: the branch is then left at the pin
-and HEAD where it was, and the next run meets the branch-at-the-pin state. Two
-things are NOT refused, as in the branch-at-the-pin and missing-branch cases
-(#458's to rule on): an IGNORED file at a path the pin tracks is overwritten,
-and a merge in progress on the other branch is ended, its `MERGE_HEAD` removed
-and its staged result carried onto `main`. A leg detached at a commit that is
-not the pin is still left, whatever it holds.
+since the next commit made in the leg is on the tracking branch now; the
+branch-at-the-pin path prints it under `on main` too (#704), and no other start
+prints it, nor does a refusal. From another branch the checkout changes files,
+so git can refuse it over a local edit or an untracked file, which a checkout
+from the pin never meets: the branch is then left at the pin and HEAD where it
+was, and the next run meets the branch-at-the-pin state. An IGNORED file in the
+way and an operation in progress are refused too, on every path (#704):
+`tests/test_bootstrap_leg_moves.py`. A leg detached at a commit that is not the
+pin is still left, whatever it holds.
 
 EACH TEST GOES THE WAY A PERSON DOES: a scaffold into bare repositories on
 disk, cloned recursively and bootstrapped, so each leg is on `main` at its
@@ -85,12 +84,14 @@ from __future__ import annotations
 import os
 import shlex
 import shutil
+import subprocess
 from pathlib import Path
 
 import pytest
 
-from conftest import (ORG, PROJECT, REPO, SCAFFOLD, cloned_just_pushed, git,
-                      run_script)
+from conftest import (ORG, PROJECT, REPO, SCAFFOLD, appended_to_command_scope,
+                      cloned_just_pushed, git, run_script)
+from test_bootstrap_spelling import needs_a_byte_name
 
 BUMP = REPO / "scripts" / "bump-leg.py"
 MAIN = "refs/heads/main"
@@ -148,10 +149,7 @@ def configured(key: str, value: str) -> dict:
     and `GIT_CONFIG_VALUE_<n>` (git 2.31), never `git config`. APPENDED to
     what the environment holds: the Windows job sets two entries already
     (`.github/workflows/tests.yml`), and a count of 1 would drop both."""
-    held = int(os.environ.get("GIT_CONFIG_COUNT") or 0)
-    return {"GIT_CONFIG_COUNT": str(held + 1),
-            f"GIT_CONFIG_KEY_{held}": key,
-            f"GIT_CONFIG_VALUE_{held}": value}
+    return appended_to_command_scope(os.environ, [(key, value)])
 
 
 def failing_post_checkout(tmp_path: Path) -> dict:
@@ -494,15 +492,17 @@ def test_a_branch_another_worktree_has_checked_out_is_not_reset(
 
 def test_the_branch_is_spelled_in_the_lines_that_name_it(root):
     """A tracking branch git accepts and a terminal should not be handed
-    raw (U+2028), in the two lines that name it here: the checkout that is
-    neither, and the fast-forward. The validators are skipped, as in
+    raw (the byte 0xff, U+DCFF: since #715 step (a) refuses a U+2028), in
+    the two lines that name it here: the checkout that is neither, and
+    the fast-forward. The validators are skipped, as in
     `tests/test_bootstrap_spelling.py`: they are not what is asked."""
+    needs_a_byte_name(root.parent)
     manifest = root / "project.yaml"
     text = manifest.read_bytes()
     assert text.count(b'tracking_branch: "main"\n') == 1, text
     manifest.write_bytes(text.replace(b'tracking_branch: "main"\n',
-                                      b'tracking_branch: "tb\\u2028x"\n'))
-    named = r"tb\u2028x"
+                                      b'tracking_branch: "tb\\udcffx"\n'))
+    named = r"tb\udcffx"
     leg = root / "spec"
     old = rev(leg)
 
@@ -510,7 +510,7 @@ def test_the_branch_is_spelled_in_the_lines_that_name_it(root):
         result = run_script(root / "scripts" / "bootstrap.py",
                             "--skip-validators", cwd=root)
         assert result.returncode == 0, result.stderr + result.stdout
-        assert "\u2028" not in result.stdout, result.stdout
+        assert "\udcff" not in result.stdout, result.stdout
         return result.stdout
 
     assert f"branch {named} created at {old[:12]}" in printed()
@@ -537,13 +537,18 @@ def test_the_branch_and_its_upstream_are_spelled_in_the_move_back(root):
     """The line that moves a branch back names the branch, its upstream and
     a command with both in it; each is spelled (#391). The state is built
     by hand: a commit past the pin, a remote-tracking ref at it, the branch
-    tracking that ref, and the leg detached at the pin."""
+    tracking that ref, and the leg detached at the pin. Named with the byte
+    0xff since #715, as the test above is, and read from `tracking_branch:`;
+    the line is asked as the escape it must print, not as `spelled` makes
+    it. Its upstream is read as the system decodes it since #824 (#710), and
+    HEAD is read here as bytes, which git's answer is."""
+    needs_a_byte_name(root.parent)
     manifest = root / "project.yaml"
     text = manifest.read_bytes()
     assert text.count(b'tracking_branch: "main"\n') == 1, text
     manifest.write_bytes(text.replace(b'tracking_branch: "main"\n',
-                                      b'tracking_branch: "tb\\u2028x"\n'))
-    raw = "tb\u2028x"
+                                      b'tracking_branch: "tb\\udcffx"\n'))
+    raw = "tb\udcffx"
     leg = root / "spec"
     pin = rev(leg)
     tree = rev(leg, f"{pin}^{{tree}}")
@@ -555,12 +560,14 @@ def test_the_branch_and_its_upstream_are_spelled_in_the_move_back(root):
 
     result = skip_validators(root)
     assert result.returncode == 0, result.stderr + result.stdout
-    assert "\u2028" not in result.stdout, result.stdout
-    command = r"git -C spec merge --ff-only 'origin/tb\u2028x'"
-    assert moved_back(ahead, pin, r"tb\u2028x", command=command) in (
+    assert "\udcff" not in result.stdout, result.stdout
+    command = r"git -C spec merge --ff-only 'origin/tb\udcffx'"
+    assert moved_back(ahead, pin, r"tb\udcffx", command=command) in (
         result.stdout), result.stdout
     assert rev(leg, f"refs/heads/{raw}") == pin and rev(leg) == pin
-    assert head_ref(leg) is not None
+    head = subprocess.run(["git", "symbolic-ref", "--quiet", "HEAD"],
+                          cwd=str(leg), capture_output=True, check=True)
+    assert head.stdout == b"refs/heads/" + os.fsencode(raw) + b"\n"
 
 
 # --- a fresh clone of a leg whose remote moved past the pin -----------------
@@ -882,7 +889,9 @@ def test_a_leg_on_another_branch_with_its_own_branch_at_the_pin_is_as_it_was(
     is made. `fast_forward_to_pin` did not do the same for a branch BEHIND
     the pin until #603 (D1, option A of its checklist triage) made the two
     one rule: the T7 tests at the end of this module are this test's twins
-    for a branch behind the pin."""
+    for a branch behind the pin. The line under `on main` says the leg left
+    `elsewhere`, as T7's does under `fast-forwarded`; it said nothing of the
+    branch, and the next commit was on `main` unannounced (#704)."""
     leg, new = branch_at_the_new_pin(root, bootstrapped["remotes"], tmp_path,
                                      "advance-other-branch")
     git("checkout", "-q", "-b", "elsewhere", cwd=leg)
@@ -890,8 +899,8 @@ def test_a_leg_on_another_branch_with_its_own_branch_at_the_pin_is_as_it_was(
 
     result = bootstrap(root)
     assert result.returncode == 0, result.stderr + result.stdout
-    assert f"  [spec] spec: on main at {new[:12]} (branch tip == pin)\n" in (
-        result.stdout), result.stdout
+    assert (f"  [spec] spec: on main at {new[:12]} (branch tip == pin)\n"
+            + left_branch()) in result.stdout, result.stdout
     assert head_ref(leg) == MAIN and rev(leg) == new
     assert rev(leg, "refs/heads/elsewhere") != new, "its commit is on it"
 
@@ -1291,9 +1300,8 @@ def test_a_checkout_off_another_branch_git_refuses_leaves_main_at_the_pin(
 
     git("checkout", "-q", "--", EDITED, cwd=leg)
     again = skip_validators(root)
-    assert f"  [spec] spec: on main at {new[:12]} (branch tip == pin)\n" in (
-        again.stdout), again.stdout
-    assert LEFT not in again.stdout, "P9 says nothing of the branch it left"
+    assert (f"  [spec] spec: on main at {new[:12]} (branch tip == pin)\n"
+            + left_branch()) in again.stdout, "P9 says the branch it left"
     assert head_ref(leg) == MAIN and rev(leg) == new
 
 
@@ -1334,8 +1342,8 @@ def test_a_leg_on_a_branch_with_no_commit_yet_is_placed_as_on_any_branch(
     """HEAD on a branch with NO COMMIT YET (`git switch --orphan`): there is
     no commit to keep, and `place_at_pin` checks `main` out from it, so a
     `main` behind the pin does the same (#603). The four lines side by side:
-    free, `main` goes to the pin and the leg onto it, T7 says the leg left a
-    branch with no commit yet and P9 says nothing of it; with an untracked
+    free, `main` goes to the pin and the leg onto it, and T7 and P9 both say
+    the leg left a branch with no commit yet (P9 since #704); with an untracked
     file in the way, git refuses the checkout, HEAD stays on the unborn
     branch, `main` is at the pin and nothing is said of the leg leaving."""
     old = rev(root / "spec")
@@ -1368,11 +1376,9 @@ def test_a_leg_on_a_branch_with_no_commit_yet_is_placed_as_on_any_branch(
         assert (leg / ADDED).read_bytes() == b"mine\n"
         assert LEFT not in result.stdout
     else:
-        assert ((fast_forwarded(old, new) + left_branch("orphan", True)
-                 if where == "behind" else
+        assert ((fast_forwarded(old, new) if where == "behind" else
                  f"  [spec] spec: on main at {new[:12]} (branch tip == pin)\n")
-                in result.stdout), result.stdout
-        assert (LEFT in result.stdout) == (where == "behind")
+                + left_branch("orphan", True) in result.stdout), result.stdout
         assert head_ref(leg) == MAIN and rev(leg) == new
         assert git("status", "--porcelain", cwd=leg).stdout == ""
 

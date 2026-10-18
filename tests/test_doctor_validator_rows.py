@@ -23,8 +23,11 @@ the restore line #298 gave the unloaded-manifest row, and the gate is the
 row's why.
 
 EVERY ASSERTION IS ON WHAT A COMMAND DOES -- the row's status, its `detail`,
-the verdict, and a NEXT that is run -- and never on the words of a row's
-`why`, the sentence beside its NEXT (#277). The fixtures are those of
+the verdict, and a NEXT that is run -- and not on the prose of a row's `why`,
+the sentence beside its NEXT (#277). Where a row's why is the only place a
+command or a fact is named, the test reads the why for that and no more: the
+gate to run after the cure (#697, #750), the file, the commit a deletion comes
+back from. The fixtures are those of
 `tests/test_shape_doctor.py`, imported, so the standard, the project and the
 holder are the ones every other doctor test reads.
 
@@ -37,6 +40,7 @@ from __future__ import annotations
 
 import json
 import os
+import re
 import shlex
 import shutil
 import subprocess
@@ -912,6 +916,297 @@ def test_the_unloaded_manifest_row_prints_the_same_restore_line(
                                       "tree")
     row = rows_of(doctor(standard, root, "--json"))[row_id]
     assert row["next"] == doctor_module(standard).restore_from_head(root, LOST)
+
+
+# --- #750: the lockstep line of the legs and members rows is the cure too ---
+#
+# `lockstep_next` named the root's own gate for a gitlink off its pin, and
+# that gate dies on `import repo_shape` where the root lost it: the line the
+# `pins` and `family` rows beside it had just stopped printing (#697).
+
+#: Per gate case: the row that hands over its lockstep line, how the root's
+#: gitlink is put off its pin, and the finding the gate prints for it.
+LOCKSTEP_OF = {
+    "pins": ("legs", make_gitlink_moved, "pin-gitlink-mismatch"),
+    "family": ("members", make_member_gitlink_mismatch,
+               "member-gitlink-mismatch"),
+}
+
+
+def lockstep_lost(case: str, project: Path, holder: dict, tmp_path: Path,
+                  committed: bool = False) -> tuple[Path, str]:
+    """`(root, the row that hands over the lockstep line)` for a root with a
+    gitlink off its pin and its own `case` gate's `scripts/repo_shape.py`
+    lost: in the tree, which HEAD still holds, or `committed`."""
+    row_id, off_its_pin, _finding = LOCKSTEP_OF[case]
+    root = lost_gate(case, project, holder, tmp_path, committed)
+    off_its_pin(root)
+    return root, row_id
+
+
+@pytest.mark.parametrize("case", sorted(LOCKSTEP_OF))
+def test_the_lockstep_line_of_a_root_that_lost_repo_shape_is_the_cure(
+        standard, project, holder, tmp_path, case):
+    """The `legs` or `members` NEXT is the line the gate's own row prints,
+    and the gate it used to be is the why's."""
+    root, row_id = lockstep_lost(case, project, holder, tmp_path)
+    rows = rows_of(doctor(standard, root, "--json"))
+    row = rows[row_id]
+    assert row["status"] == "FINDING", row
+    assert row["next"] == doctor_module(standard).restore_from_head(root, LOST)
+    assert row["next"] == rows[case]["next"], (row["next"], rows[case]["next"])
+    assert rerun_of(standard, root, case) in row["why"], row["why"]
+
+
+@WINDOWS_SKIP
+@pytest.mark.skipif(shutil.which("sh") is None, reason="needs sh")
+@pytest.mark.parametrize("case", sorted(LOCKSTEP_OF))
+def test_the_cure_pasted_and_then_the_lockstep_line_both_run(
+        standard, project, holder, tmp_path, case):
+    """Both lines PASTED as printed, from `/` with no `PYTHONPATH`: the cure
+    exits 0, and the row then names the lockstep gate, which prints its own
+    finding for the gitlink and exits 1, where it died on
+    `ModuleNotFoundError` before."""
+    root, row_id = lockstep_lost(case, project, holder, tmp_path)
+    row = rows_of(doctor(standard, root, "--json"))[row_id]
+    restored = pasted_from_elsewhere(row["next"], tmp_path)
+    assert restored.returncode == 0, restored.stdout + restored.stderr
+    after = rows_of(doctor(standard, root, "--json"))[row_id]
+    assert after["next"] == rerun_of(standard, root, case), after["next"]
+    gate = pasted_from_elsewhere(after["next"], tmp_path)
+    whole = gate.stdout + gate.stderr
+    assert gate.returncode == 1, whole
+    assert LOCKSTEP_OF[case][2] in whole, whole
+    assert "ModuleNotFoundError" not in whole, whole
+
+
+@pytest.mark.parametrize("case", sorted(LOCKSTEP_OF))
+def test_a_lockstep_line_whose_repo_shape_left_head_too_is_no_line(
+        standard, project, holder, tmp_path, case):
+    """HEAD does not hold a file whose deletion was COMMITTED, so no line puts
+    it back and the gate would only crash again: the row has no NEXT, and its
+    why says where the file comes back from, names the gate to run then, and
+    keeps the sentence about why no checkout cures the gitlink."""
+    root, row_id = lockstep_lost(case, project, holder, tmp_path,
+                                 committed=True)
+    row = rows_of(doctor(standard, root, "--json"))[row_id]
+    assert row["status"] == "FINDING", row
+    assert row["next"] is None, row
+    for said in (LOST, "parent of the commit", "No submodule update cures",
+                 rerun_of(standard, root, case)):
+        assert said in row["why"], (said, row["why"])
+
+
+# --- #776: the agent-files WHY names no gate that dies on the lost file -----
+#
+# The `agent-files` row of a pinned copy that is gone says to restore it and
+# then run `validate-pins.py` "to confirm the digest": a line that dies on
+# `import repo_shape` where the root lost that file, as the rows above did,
+# and one a family holder has no copy of. The holder's own gate is
+# `validate-family.py`, as its validator row has it.
+
+#: The copy the row is about: pinned, so its absence is a FINDING.
+AGENT_COPY = "AGENTS-shape.md"
+#: What the row's WHY says before it names a gate, which no case changes.
+AGENT_FILES_WHY = ("the pin has a `files:` row for it, so it was deleted "
+                   "rather than never copied; restore it from this "
+                   "repository's own history")
+#: The two kinds of root the row runs in, by the gate row each one's gate is.
+AGENT_GATES = ["pins", "family"]
+
+
+def argv_of(line: str) -> list:
+    """A line the row printed, as the argv it runs: `shlex` on POSIX, where a
+    path with a blank is quoted, and `split` on Windows, where the paths here
+    need no quoting and a backslash is no escape."""
+    return line.split() if os.name == "nt" else shlex.split(line)
+
+
+def agent_files_lost(case: str, project: Path, holder: dict, tmp_path: Path,
+                     committed: bool = False) -> Path:
+    """The root whose own `case` gate lost its `scripts/repo_shape.py`
+    (`committed`, or not) and whose pinned `AGENTS-shape.md` is deleted from
+    the tree, which HEAD still holds."""
+    root = lost_gate(case, project, holder, tmp_path, committed)
+    (root / AGENT_COPY).unlink()
+    return root
+
+
+def agent_files_row(standard: Path, root: Path) -> dict:
+    row = rows_of(doctor(standard, root, "--json"))["agent-files"]
+    assert row["status"] == "FINDING", row
+    return row
+
+
+@pytest.mark.parametrize("case", AGENT_GATES)
+def test_the_agent_files_why_of_a_root_that_lost_repo_shape_names_the_cure(
+        standard, project, holder, tmp_path, case):
+    """The row's NEXT is what it was. The gate it names to confirm the digest
+    dies on the import before the file is back; the WHY says to put the file
+    back first, and the three lines it names, run in its order -- the NEXT,
+    the cure, the gate -- end with the gate passing. In a holder the gate is
+    `validate-family.py`."""
+    root = agent_files_lost(case, project, holder, tmp_path)
+    row = agent_files_row(standard, root)
+    module = doctor_module(standard)
+    restore = module.restore_from_head(root, LOST)
+    gate = rerun_of(standard, root, case)
+    assert row["next"] == (f"git -C {module.quote_arg(root)} checkout -- "
+                           f"{AGENT_COPY}"), row["next"]
+    assert row["why"].startswith(AGENT_FILES_WHY + ". "), row["why"]
+    assert f". First `{restore}`: " in row["why"], row["why"]
+    assert f"`{gate}` once the file is back, to confirm" in row["why"]
+    dies = run_argv(argv_of(gate))
+    assert dies.returncode == 1, dies.stdout + dies.stderr
+    assert "ModuleNotFoundError" in dies.stdout + dies.stderr
+    for line in (row["next"], restore, gate):
+        ran = run_argv(argv_of(line))
+        assert ran.returncode == 0, (line, ran.stdout + ran.stderr)
+
+
+@pytest.mark.parametrize("case", AGENT_GATES)
+def test_the_agent_files_why_where_head_lacks_repo_shape_says_why_and_no_cure(
+        standard, project, holder, tmp_path, case):
+    """HEAD does not hold a file whose deletion was COMMITTED, so the WHY has
+    no cure to offer: it says where the file comes back from, and the gate to
+    run then, to confirm the digest. The NEXT is still the copy's own."""
+    root = agent_files_lost(case, project, holder, tmp_path, committed=True)
+    row = agent_files_row(standard, root)
+    gate = rerun_of(standard, root, case)
+    assert row["next"] is not None, row
+    assert "First `" not in row["why"], row["why"]
+    for said in (f". HEAD does not hold {LOST}", "parent of the commit",
+                 f"`{gate}` once the file is back, to confirm the digest"):
+        assert said in row["why"], (said, row["why"])
+
+
+@pytest.mark.parametrize("case", AGENT_GATES)
+def test_the_agent_files_why_of_a_root_that_keeps_repo_shape_names_its_gate(
+        standard, project, holder, tmp_path, case):
+    """The control: the root's own gate and the same two arguments, spelled
+    out here. For an assembly root this is the WHY it always was, byte for
+    byte; a holder is told its own `validate-family.py`, which exits 0 when
+    run after the NEXT, and not an assembly-root gate it has no copy of."""
+    root = own_root("family" if case == "family" else "manifest", project,
+                    holder, tmp_path)
+    (root / AGENT_COPY).unlink()
+    module = doctor_module(standard)
+    own = root / TEMPLATE_FALLBACK[case]["own"]
+    row = agent_files_row(standard, root)
+    assert row["why"] == (
+        f"{AGENT_FILES_WHY}, then `{module.PYTHON} {module.quote_arg(own)} "
+        f"--root {module.quote_arg(root)}` to confirm the digest"), row["why"]
+    for line in (row["next"], rerun_of(standard, root, case)):
+        ran = run_argv(argv_of(line))
+        assert ran.returncode == 0, (line, ran.stdout + ran.stderr)
+
+
+def without_its_own_gate(case: str, project: Path, holder: dict,
+                         tmp_path: Path, pin_row: bool = True) -> Path:
+    """The root with no gate of its own to name, and `AGENTS-shape.md` gone.
+    The shape pin keeps its `files:` row for the gate, as every scaffolded
+    root's does, unless `pin_row` is False."""
+    root = own_root("family" if case == "family" else "manifest", project,
+                    holder, tmp_path)
+    own = TEMPLATE_FALLBACK[case]["own"]
+    git("rm", "-q", "--", own, cwd=root)
+    (root / AGENT_COPY).unlink()
+    if not pin_row:
+        pin = root / "contracts" / "shape-pin.yaml"
+        row = re.compile(rb'(?m)^  - path: ' + re.escape(own.encode())
+                         + rb'\n    sha256: "[0-9a-f]{64}"\n')
+        edited, removed = row.subn(b"", pin.read_bytes())
+        assert removed == 1, own
+        pin.write_bytes(edited)
+    return root
+
+
+@pytest.mark.parametrize("case", AGENT_GATES)
+def test_the_agent_files_why_of_a_root_with_no_gate_names_the_standards(
+        standard, project, holder, tmp_path, case):
+    """A root with no gate of its own has the standard's template copy named,
+    with the `PYTHONPATH` it needs, as the validator rows name it, and not a
+    file the root does not have; and the WHY says that copy also reports the
+    gate the root lacks, the pin having a row for it."""
+    root = without_its_own_gate(case, project, holder, tmp_path)
+    shape = standard.resolve()
+    spec = TEMPLATE_FALLBACK[case]
+    line = doctor_module(standard).validator_command(
+        shape, shape / spec["template"], False, ["--root", root])
+    assert agent_files_row(standard, root)["why"] == (
+        f"{AGENT_FILES_WHY}, then `{line}` to confirm the digest. Until "
+        f"{spec['own']} is back that exits 1, reporting the file as pinned "
+        "but absent")
+
+
+@WINDOWS_SKIP
+@pytest.mark.skipif(shutil.which("sh") is None, reason="needs sh")
+@pytest.mark.parametrize("case", AGENT_GATES)
+def test_the_template_line_the_agent_files_why_names_reports_the_missing_gate(
+        standard, project, holder, tmp_path, case):
+    """Pasted after the NEXT, from `/`, the standard's line does confirm the
+    restored copy, and exits 1 for the gate the root lacks, as the WHY says."""
+    root = without_its_own_gate(case, project, holder, tmp_path)
+    row = agent_files_row(standard, root)
+    restored = pasted_from_elsewhere(row["next"], tmp_path)
+    assert restored.returncode == 0, restored.stdout + restored.stderr
+    shape = standard.resolve()
+    line = doctor_module(standard).validator_command(
+        shape, shape / TEMPLATE_FALLBACK[case]["template"], False,
+        ["--root", root])
+    gate = pasted_from_elsewhere(line, tmp_path)
+    whole = gate.stdout + gate.stderr
+    assert gate.returncode == 1, whole
+    assert "shape-copy-missing" in whole, whole
+    assert TEMPLATE_FALLBACK[case]["own"] in whole, whole
+
+
+@pytest.mark.parametrize("case", AGENT_GATES)
+def test_the_agent_files_why_says_nothing_of_a_gate_the_pin_has_no_row_for(
+        standard, project, holder, tmp_path, case):
+    """The root has no gate of its own, and the shape pin has no `files:` row
+    for it either: the standard's copy has nothing to report missing, so the
+    WHY names the line and carries no sentence about an exit 1 for the gate."""
+    root = without_its_own_gate(case, project, holder, tmp_path, pin_row=False)
+    shape = standard.resolve()
+    line = doctor_module(standard).validator_command(
+        shape, shape / TEMPLATE_FALLBACK[case]["template"], False,
+        ["--root", root])
+    assert agent_files_row(standard, root)["why"] == (
+        f"{AGENT_FILES_WHY}, then `{line}` to confirm the digest")
+
+
+@WINDOWS_SKIP
+@pytest.mark.skipif(shutil.which("sh") is None, reason="needs sh")
+@pytest.mark.parametrize("case", AGENT_GATES)
+def test_the_template_line_for_a_gate_the_pin_has_no_row_for_passes(
+        standard, project, holder, tmp_path, case):
+    """Pasted after the NEXT, from `/`, the standard's line confirms the
+    restored copy and exits 0: nothing is pinned and absent, so the WHY was
+    right to say nothing of an exit 1."""
+    root = without_its_own_gate(case, project, holder, tmp_path, pin_row=False)
+    row = agent_files_row(standard, root)
+    restored = pasted_from_elsewhere(row["next"], tmp_path)
+    assert restored.returncode == 0, restored.stdout + restored.stderr
+    shape = standard.resolve()
+    line = doctor_module(standard).validator_command(
+        shape, shape / TEMPLATE_FALLBACK[case]["template"], False,
+        ["--root", root])
+    gate = pasted_from_elsewhere(line, tmp_path)
+    whole = gate.stdout + gate.stderr
+    assert gate.returncode == 0, whole
+    assert "shape-copy-missing" not in whole, whole
+
+
+@pytest.mark.parametrize("case", AGENT_GATES)
+def test_the_agent_files_why_names_no_gate_where_no_line_can_be_named(
+        standard, project, holder, tmp_path, case):
+    """Neither copy of the gate is readable: nothing is said of one, as the
+    lockstep rows print no line there (#276)."""
+    hollow = standard_under(standard, tmp_path, "hollow")
+    (hollow / TEMPLATE_FALLBACK[case]["template"]).unlink()
+    root = without_its_own_gate(case, project, holder, tmp_path)
+    assert agent_files_row(hollow, root)["why"] == AGENT_FILES_WHY
 
 
 # --- #278: the lockstep line of the `legs` and `members` rows ----------------

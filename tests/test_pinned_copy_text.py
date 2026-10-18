@@ -771,15 +771,35 @@ def test_the_pinned_scripts_spell_a_path_as_the_library_does(path):
         assert module._shown(path) == shown_path(path), script
 
 
-@pytest.mark.parametrize("script", [TEMPLATE_PINS, VALIDATOR, TEMPLATE_FAMILY],
-                         ids=["validate-pins", "validate-repository-naming",
-                              "validate-family"])
-def test_no_pinned_script_imports_what_an_older_library_lacks(script):
+#: Every pinned script that imports from `repo_shape`, each beside whatever
+#: copy of it the root or the holder kept.
+PINNED_IMPORTERS = {
+    "validate-pins": TEMPLATE_PINS,
+    "validate-repository-naming": VALIDATOR,
+    "validate-family": TEMPLATE_FAMILY,
+    "validate-manifest": (REPO / "templates" / "assembly-root" / "scripts" /
+                          "validate-manifest.py"),
+    "siblings": REPO / "templates" / "family-root" / "scripts" / "siblings.py",
+    "assembly-bootstrap": (REPO / "templates" / "assembly-root" / "scripts" /
+                           "bootstrap.py"),
+    "family-bootstrap": (REPO / "templates" / "family-root" / "scripts" /
+                         "bootstrap.py"),
+}
+
+#: What a kept `repo_shape.py` may predate: `shown_path`, new with this bump
+#: (#610), and `host_shell_dialect`, new with v1.1.1's (#711).
+NEWER_THAN_A_KEPT_LIBRARY = ("shown_path", "host_shell_dialect")
+
+
+@pytest.mark.parametrize("name", sorted(PINNED_IMPORTERS))
+def test_no_pinned_script_imports_what_an_older_library_lacks(name):
     """THE SKEW RULE. A root re-copies its pinned files one row at a time
     (`update-shape.py apply --accept-local` keeps a copy), so a script may
-    meet a `repo_shape.py` older than itself. `shown_path` is new with this
-    bump (#610): a script that imported it would end in an `ImportError`
-    before it checked a pin, a name or a member."""
+    meet a `repo_shape.py` older than itself. A script that imported a name
+    of `NEWER_THAN_A_KEPT_LIBRARY` would end in an `ImportError` before it
+    checked a pin, a name or a member, or, for `siblings.py` and a
+    holder's `bootstrap.py`, before it placed or fetched one."""
+    script = PINNED_IMPORTERS[name]
     imported = {alias.name
                 for node in ast.walk(ast.parse(script.read_text(
                     encoding="utf-8")))
@@ -787,4 +807,5 @@ def test_no_pinned_script_imports_what_an_older_library_lacks(script):
                 and node.module == "repo_shape"
                 for alias in node.names}
     assert imported, f"{script.name} imports nothing from repo_shape?"
-    assert "shown_path" not in imported
+    for newer in NEWER_THAN_A_KEPT_LIBRARY:
+        assert newer not in imported, (script, newer)

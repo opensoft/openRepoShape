@@ -34,9 +34,11 @@ WHAT THIS MODULE OWNS
   - `spelled` and `escape_unencodable_stdout` — how both roots'
     `bootstrap.py` print a person's text: what a terminal must not be handed
     raw is escaped, and a stdout that cannot encode it never raises (#391).
-  - `shell_quoted` and `shell_line` — how `scripts/family.py` and a holder's
-    `scripts/siblings.py` spell a path in a command a person pastes, so that
-    it reaches the command as ONE argument in `sh` or PowerShell (#486).
+  - `shell_quoted` and `shell_line` — how `scripts/family.py` spells a path
+    in a command a person pastes, so that it reaches the command as ONE
+    argument in `sh` or PowerShell (#486), and
+    `host_shell_dialect`, which of the two a line printed here is for: Git
+    Bash on Windows gets `sh`'s (#711).
 
 This file is COPIED into a scaffolded assembly root by `scaffold-project.py`
 and its sha256 is recorded in that project's `contracts/shape-pin.yaml`, so an
@@ -179,7 +181,21 @@ class YamlError(Exception):
 
     Raising rather than guessing is the whole point: a validator that silently
     mis-reads its own contract file is worse than one that will not start.
+
+    `line` AND `remediation` ARE FOR `load_yaml`, WHICH NAMES A FILE (#708).
+    Where the fix is one edit of the value, the same in every file, the
+    refusal carries it (`_indicator_refusal`); every other refusal carries
+    none. Such a refusal is raised where the value is read, which knows no
+    line, so the block reader records the line it read the value on
+    (`_block_value`), and `load_yaml` names it. It stays out of the words:
+    a tool that asks the reader about ONE rendered line (`k: @a`) quotes
+    those words in a sentence of its own, where `line 1:` would be noise.
     """
+
+    def __init__(self, message: str, remediation: str = ""):
+        super().__init__(message)
+        self.line: int | None = None
+        self.remediation = remediation
 
 
 # ---------------------------------------------------------------------------
@@ -193,10 +209,11 @@ class YamlError(Exception):
 # with the `-` and `+` chomping indicators accepted and `-` honoured).
 #
 # REFUSED (raises YamlError): tabs used for indentation, anchors and aliases
-# (`&`, `*`), tags (`!`), merge keys (`<<`), explicit keys (`? `), a
-# single-pair mapping in a flow sequence (`[a: b]`, #392), and more than one
-# document. Each of those has a meaning this reader would have to invent, and
-# an invented meaning in a validator is a wrong answer with a confident tone.
+# (`&`, `*`), tags (`!`), merge keys (`<<`), explicit keys (`? `), an empty
+# block key (`: a`, #715), a single-pair mapping in a flow sequence (`[a: b]`,
+# #392), and more than one document. Each of those has a meaning this reader
+# would have to invent, and an invented meaning in a validator is a wrong
+# answer with a confident tone.
 #
 # A QUOTE OPENS A QUOTED SCALAR ONLY WHERE A SCALAR BEGINS, as in YAML; in
 # the middle of a plain scalar (`it's`) it is a character of it (#249). A
@@ -217,7 +234,22 @@ class YamlError(Exception):
 # `@a: 1`, and `|` or `>` opening a plain scalar. See `_scalar`,
 # `_refuse_entry_indicator` and `_split_flow`.
 
-_DASH_RE = re.compile(r"^-(\s+|$)")
+#: YAML'S WHITE SPACE IS THE SPACE AND THE TAB (#715), and every strip of a
+#: line below names it. `str.strip()` with no argument, like the regex `\s`,
+#: also takes U+001F and sixteen Unicode spaces (U+00A0 NO-BREAK SPACE,
+#: U+1680, U+2000 to U+200A, U+202F, U+205F and U+3000 IDEOGRAPHIC SPACE),
+#: which YAML keeps as text. So `k: \u3000]` was read as `k: ]` and refused
+#: quoting `']'`, a text the file does not hold, `k: [a,\u3000,b]` was
+#: refused as an empty entry, and `k: \xa0` read as no value, where PyYAML
+#: reads `'\u3000]'`, `['a', '\u3000', 'b']` and `'\xa0'`. U+001F, a control
+#: character, is now text, as a raw ESC or NUL already is. The other
+#: characters `str.strip()` takes are line breaks to `str.splitlines`, which
+#: ends a line at them, so none of them reaches a strip.
+_YAML_WHITE = " \t"
+
+#: A sequence entry's `-`, then YAML's white space (`_YAML_WHITE`, #715) or
+#: the end of the line: `-\u3000a` is a plain scalar, and no entry.
+_DASH_RE = re.compile(r"^-([ \t]+|$)")
 
 
 class _Rec:
@@ -315,8 +347,8 @@ def _strip_comment(text: str) -> str:
     (`_unquoted`), at the start of the text or after a space or tab."""
     for i, ch in _unquoted(text):
         if ch == "#" and (i == 0 or text[i - 1] in " \t"):
-            return text[:i].rstrip()
-    return text.rstrip()
+            return text[:i].rstrip(_YAML_WHITE)
+    return text.rstrip(_YAML_WHITE)
 
 
 def _split_key(text: str) -> tuple[str, str] | None:
@@ -333,14 +365,15 @@ def _split_key(text: str) -> tuple[str, str] | None:
     bracket = False
     for i, ch in _unquoted(text):
         if ch in "[{":
-            if not text[:i].strip():
+            if not text[:i].strip(_YAML_WHITE):
                 return None  # a flow collection cannot be a key in this subset
             bracket = True
         elif ch == ":" and (i + 1 == len(text) or text[i + 1] in " \t"):
+            key = text[:i].strip(_YAML_WHITE)
             if bracket:
                 raise YamlError("a key holding `[` or `{` is not supported: "
-                                f"{text[:i].strip()!r}")
-            return _unquote_key(text[:i].strip()), text[i + 1:].strip()
+                                f"{key!r}")
+            return _unquote_key(key), text[i + 1:].strip(_YAML_WHITE)
     return None
 
 
@@ -501,13 +534,24 @@ _INDICATOR_ROLES = {
 def _indicator_refusal(text: str) -> YamlError:
     """The refusal of the plain scalar `text`, which opens with an indicator
     YAML does not let open one (#392, #393): the indicator, what it does, and
-    the scalar. One `?` opens an explicit key, refused in #252's words."""
+    the scalar. One `?` opens an explicit key, refused in #252's words.
+
+    IT SAYS WHAT TO DO (#708). The likeliest hand to meet it is an adoption
+    plan's `resolution:`, which AGENTS.md asks for in words, and a reason
+    such as `` `adopt-project.py` reads it `` read as text until #392 and
+    #393. Whatever the file, the value is kept by writing it between double
+    quotes, spelled by `double_quoted`, the writer this reader takes back
+    unchanged, or by rewording it, so the refusal carries that remedy."""
     char = text[0]
+    remedy = ("Remediation: unquoted, YAML does not read this value as text, "
+              "so this reader refuses it rather than guess. Write it in "
+              f"double quotes, as {double_quoted(text)}, or reword it so that "
+              "it opens with another character, and run the command again.")
     if char == "?":
-        return YamlError(f"explicit keys are not supported: {text!r}")
+        return YamlError(f"explicit keys are not supported: {text!r}", remedy)
     shown = "a backtick" if char == "`" else f"`{char}`"
     return YamlError(f"a plain scalar cannot open with {shown}, which "
-                     f"{_INDICATOR_ROLES[char]} in YAML: {text!r}")
+                     f"{_INDICATOR_ROLES[char]} in YAML: {text!r}", remedy)
 
 
 def _scalar(raw: str) -> Any:
@@ -526,7 +570,7 @@ def _scalar(raw: str) -> Any:
     a scalar (`k: a]`, `- see [1]`, `k: a, b`), and every quoted scalar
     (`k: "]"`), read as before.
     """
-    text = raw.strip()
+    text = raw.strip(_YAML_WHITE)
     if text == "" or text in ("null", "~", "Null", "NULL"):
         return None
     if text[0] in "\"'":
@@ -571,7 +615,7 @@ def _refuse_flow_indicator(text: str) -> None:
                         f"which ends it in YAML: {text!r}")
 
 
-def _refuse_entry_indicator(text: str) -> None:
+def _refuse_entry_indicator(text: str, remedy: bool = True) -> None:
     """Refuse a flow ENTRY -- an item of a flow sequence, or an entry of a
     flow mapping, whose key it opens -- that opens with an indicator (#392).
 
@@ -588,11 +632,24 @@ def _refuse_entry_indicator(text: str) -> None:
     indicator, as in YAML and #252: `[-]`, `[-a]`, `{-: 1}` and `{?a: b}`
     read as they did. A `]` or `}` is left to `_refuse_flow_indicator`, which
     names it in #301's words.
+
+    A KEY THAT IS A LONE `?` IS REFUSED WITH THEM (#715): a `?` whose `:`
+    opens a value, with a space, a tab or nothing after it. `k: {?: 1}` read
+    the key `'?'`, where PyYAML reads an explicit key that has no key,
+    `{None: 1}`, while the lone `?` of `[?]`, `{?}` and `{a: ?}` was
+    refused as one; `[?: 1]` was refused as a single pair. Both are now
+    #252's refusal. `{?:a}` holds no `: `, and `[?:a]` is a `?` with text
+    after it, the text #252 keeps for `?a`; a block `?: 1` is the key `'?'`
+    to PyYAML too.
     """
     first, after = text[:1], text[1:2]
     if (first in ":#@`%" or first in "-?" and after in (" ", "\t")
+            or text.startswith("?:") and text[2:3] in ("", " ", "\t")
             or text == "?"):
-        raise _indicator_refusal(text)
+        refusal = _indicator_refusal(text)
+        if not remedy:
+            refusal.remediation = ""
+        raise refusal
 
 
 def _flow_value(text: str, item: bool = False) -> Any:
@@ -620,26 +677,44 @@ def _flow_value(text: str, item: bool = False) -> Any:
     cannot spell. So
     `pins: [openGlass: x]` is a typo, refused as one. `{a: b}` in a sequence
     is a flow mapping and reads, and `[a:b]` is the text `a:b`, as before.
+
+    AN ITEM WITH A SECOND `:` OPENING A VALUE IS NO PAIR AT ALL (#715).
+    YAML ends the pair's plain value at that `:`, and PyYAML refuses
+    `[a: b: c]` as invalid, so the single-pair words named a mapping the
+    file does not hold. It is refused as invalid YAML. `[a:b: c]`, whose key
+    is `a:b`, and `[a: "b: c"]`, whose value is quoted, are single pairs and
+    keep those words.
     """
     if text.startswith(("[", "{")):
         return _flow(text)
     _refuse_flow_indicator(text)
     if item:
         _refuse_entry_indicator(text)
-        if _split_key(text) is not None:
+        pair = _split_key(text)
+        if pair is not None:
+            # A QUOTED item skipped the test above, so its value is asked
+            # here, before it is split again (#715): `["a": b[: c]` names
+            # the `[` in #301's words, not a key holding it. A value that
+            # OPENS a flow collection is not a plain scalar: `["a": [b]]`
+            # is a single pair to YAML, and keeps the single-pair words.
+            if not pair[1].startswith(("[", "{")):
+                _refuse_flow_indicator(pair[1])
+            if _split_key(pair[1]) is not None:
+                raise YamlError("a flow sequence entry with a second `:` "
+                                f"opening a value is not valid YAML: {text!r}")
             raise YamlError("a single-pair mapping in a flow sequence is not "
                             f"supported: {text!r}")
     return _scalar(text)
 
 
 def _flow(text: str) -> Any:
-    text = text.strip()
+    text = text.strip(_YAML_WHITE)
     if text.startswith("[") and text.endswith("]"):
-        body = text[1:-1].strip()
+        body = text[1:-1].strip(_YAML_WHITE)
         return [] if not body else [_flow_value(p, item=True)
                                     for p in _split_flow(body)]
     if text.startswith("{") and text.endswith("}"):
-        body = text[1:-1].strip()
+        body = text[1:-1].strip(_YAML_WHITE)
         out: dict[str, Any] = {}
         if body:
             for part in _split_flow(body):
@@ -679,7 +754,9 @@ def _split_key_flow(text: str) -> tuple[str, str] | None:
     refuses both. `_refuse_flow_indicator` refuses them; a quoted key is
     still text.
     """
-    _refuse_entry_indicator(text)
+    # A MAPPING ENTRY opens its KEY: quoting the whole entry, as the
+    # remedy would spell it, reads as an entry without a key (#708).
+    _refuse_entry_indicator(text, remedy=False)
     kv = _split_key(text)
     if kv is not None and not text.startswith(('"', "'")):
         _refuse_flow_indicator(kv[0])
@@ -710,9 +787,9 @@ def _split_flow(body: str) -> list[str]:
         elif ch in "]}":
             depth -= 1
         elif ch == "," and depth == 0:
-            parts.append(body[start:i].strip())
+            parts.append(body[start:i].strip(_YAML_WHITE))
             start = i + 1
-    parts.append(body[start:].strip())
+    parts.append(body[start:].strip(_YAML_WHITE))
     if len(parts) > 1 and parts[-1] == "":
         parts.pop()
     if "" in parts:
@@ -736,9 +813,9 @@ def _significant_text(raw: str, line: int) -> str | None:
     refused outright, and a blank line or a whole-line comment carries no
     record at all.
     """
-    if "\t" in raw[: len(raw) - len(raw.lstrip())]:
+    if "\t" in raw[: len(raw) - len(raw.lstrip(_YAML_WHITE))]:
         raise YamlError(f"line {line}: tab used for indentation")
-    stripped = raw.strip()
+    stripped = raw.strip(_YAML_WHITE)
     if not stripped or stripped.startswith("#"):
         return None
     return stripped
@@ -777,16 +854,25 @@ def _peel_dashes(recs: list[_Rec], indent: int, content: str,
 
 
 def _refuse_unsupported(content: str, line: int) -> None:
-    """The two constructs this reader will not guess at, refused by name.
+    """The three constructs this reader will not guess at, refused by name.
 
     Split out of `_tokenise` for #135. An explicit key and a merge key each
     have a meaning the reader would have to invent, and an invented meaning in
     a validator is a wrong answer with a confident tone.
+
+    SO DOES AN EMPTY KEY (#715): a line, or a sequence item, that opens with
+    a `:` opening a value, `: a` or `- :`. PyYAML refuses it, and this
+    reader read the key `''`, which no reader gives: `- :` was
+    `[{'': None}]`. Its flow twin, `{: a}`, is refused by
+    `_refuse_entry_indicator` (#392). A quoted empty key, `"": a`, is the
+    key `''` to PyYAML too, and still reads.
     """
     if content.startswith("? "):
         raise YamlError(f"line {line}: explicit keys are not supported")
     if content.startswith("<<"):
         raise YamlError(f"line {line}: merge keys are not supported")
+    if content.startswith(":") and content[1:2] in ("", " ", "\t"):
+        raise YamlError(f"line {line}: empty keys are not supported")
 
 
 def _opens_block_scalar(kv: tuple[str, str] | None) -> bool:
@@ -808,13 +894,15 @@ def _block_scalar_body(raw_lines: list[str], i: int,
     Split out of `_tokenise` for #135. The body is every following line MORE
     INDENTED than the key, with the first such line's column taken as the
     block's own indentation and stripped from all of them. A blank line
-    belongs to the body whatever its column, because it has none.
+    belongs to the body whatever its column, because it has none. A line of
+    Unicode spaces at the block's own indentation or deeper is not blank
+    (#715): it is text, as YAML reads it.
     """
     body: list[str] = []
     block_indent = None
     while i < len(raw_lines):
         nxt = raw_lines[i]
-        if nxt.strip() == "":
+        if nxt.strip(_YAML_WHITE) == "":
             body.append("")
             i += 1
             continue
@@ -921,7 +1009,7 @@ def _parse_sequence(recs: list[_Rec], i: int, indent: int) -> tuple[list[Any], i
             if not rec.dash and rec.block is None \
                     and _split_key(rec.text) is None:
                 # A plain or flow SCALAR item (`- openAvatar`, `- [a, b]`).
-                value = _flow(rec.text) if rec.text[:1] in "[{" else _scalar(rec.text)
+                value = _block_value(rec.text, rec.line)
                 i += 1
             else:
                 value, i = _parse_nodes(recs, i, rec.indent)
@@ -971,18 +1059,69 @@ def _parse_mapping(recs: list[_Rec], i: int, indent: int) -> tuple[dict, int]:
         i += 1
         if rest == "":
             out[key], i = _nested_value(recs, i, indent)
-        elif rest[0] in "[{":
-            out[key] = _flow(rest)
-        elif rest == "-":
-            raise _indicator_refusal(rest)
         else:
-            out[key] = _scalar(rest)
+            out[key] = _block_value(rest, rec.line)
     return out, i
 
 
+def _block_value(text: str, line: int) -> Any:
+    """A block mapping's value or a block sequence's scalar item, read on
+    `line`: a flow collection where `text` opens one, and otherwise a
+    scalar. A lone `-` is `_parse_mapping`'s refusal, made here: no
+    sequence item is one, because `_peel_dashes` takes `- -` for two
+    entries.
+
+    THE ONE PLACE A VALUE'S REFUSAL LEARNS ITS LINE (#708). `_scalar` and
+    `_flow` read text and know no line, so their refusals named the file
+    and not where in it: an adoption plan whose `resolution:` opened with
+    a backtick was `REFUSED yaml-unparsable: <plan>: a plain scalar cannot
+    open with a backtick ...`, among the hundreds of lines a plan holds.
+    The line is recorded on the refusal (`YamlError.line`), never put in
+    its words, where the refusal carries a remedy (`_indicator_refusal`'s):
+    one that tells a person to edit a value says where it is. The others
+    keep the words they had, which the naming gate's `declared-unverified`
+    reason and the root's `validate-pins.py` print, and tests quote, whole.
+    """
+    try:
+        if text[0] in "[{":
+            return _flow(text)
+        if text == "-":
+            raise _indicator_refusal(text)
+        return _scalar(text)
+    except YamlError as exc:
+        if exc.remediation:
+            exc.line = line
+        raise
+
+
+#: U+FEFF, the BYTE-ORDER MARK, which a Windows editor may start a file a
+#: person saved with (#855): `parse_yaml` takes it off.
+BYTE_ORDER_MARK = "\ufeff"
+
+
 def parse_yaml(text: str) -> Any:
-    """Parse the supported YAML subset. Raises `YamlError` on anything else."""
-    recs = _tokenise(text)
+    """Parse the supported YAML subset. Raises `YamlError` on anything else.
+
+    A BYTE-ORDER MARK AT THE START IS NO PART OF THE TEXT (#855), and every
+    one there is taken off. YAML 1.2.2 allows a mark at the start of a
+    document and none inside one (5.2; 9.1.1's `l-document-prefix` is a
+    mark, then comment lines). Kept, it was the first character of the
+    first key, so a `project.yaml` that says `schema_version: 1` was
+    `schema_version is None` to `validate-manifest.py`, and a file whose
+    first line is a comment was refused at line 1.
+
+    HERE, NOT IN `load_yaml`'S DECODE, because one file read two ways is
+    worse than either answer. The readers of a pin at a commit
+    (`shape-doctor.py`'s `pin_at`, `update-shape.py`'s `_committed_pin`,
+    `adopt-project.py`'s `_pinned_shape_paths`) and `pin_values_in` hand
+    this the text of no file `load_yaml` read: with the mark taken off
+    there alone, `pin_at` read a pin every validator reads as broken, and
+    the doctor's NEXT put back the pin from before it. Every mark goes, as
+    `shape_advisory.py` takes them off, so the two agree. `load_yaml` still
+    decodes as `utf-8`, so the byte its refusal names is counted from the
+    file's first byte, the mark's three included. The tools write no mark.
+    """
+    recs = _tokenise(text.lstrip(BYTE_ORDER_MARK))
     if not recs:
         return None
     value, end = _parse_nodes(recs, 0, recs[0].indent)
@@ -999,11 +1138,20 @@ def load_yaml(path: Path) -> Any:
     and only then fails to decode it, so the `OSError` clause never sees it
     and, uncaught, it left every reader as a Python traceback (#192) rather
     than the `REFUSED yaml-unreadable` line a missing file already gets.
+
+    AN `OSError` NAMES THE FILE ONCE (#712). `str()` of one is `[Errno 13]
+    Permission denied: '<path>'`, so `<path>: <that>` named the path twice,
+    the second time in Python's quoting. The line is `<path>: cannot be read
+    (<the system's reason>)`, the words `validate-pins.py` gives a workflow
+    file it cannot open (#359), and the refusal is still raised `from` the
+    `OSError`, which that validator reads to name the file relative to its
+    root.
     """
     try:
         text = Path(path).read_text(encoding="utf-8")
     except OSError as exc:
-        raise Refusal("yaml-unreadable", f"{path}: {exc}") from exc
+        raise Refusal("yaml-unreadable",
+                      f"{path}: cannot be read ({_os_reason(exc)})") from exc
     except UnicodeDecodeError as exc:
         raise Refusal(
             "yaml-unreadable",
@@ -1016,7 +1164,12 @@ def load_yaml(path: Path) -> Any:
     try:
         return parse_yaml(text)
     except YamlError as exc:
-        raise Refusal("yaml-unparsable", f"{path}: {exc}") from exc
+        # The remedy a value's refusal carries, and the line it was read on
+        # (#708): with neither, a plan that read as text before #392 and
+        # #393 ended `check` with a refusal a person could not act on.
+        where = "" if exc.line is None else f"line {exc.line}: "
+        raise Refusal("yaml-unparsable", f"{path}: {where}{exc}",
+                      exc.remediation) from exc
 
 
 # ---------------------------------------------------------------------------
@@ -3280,10 +3433,44 @@ SHELL_BARE_NT = re.compile(r"[A-Za-z0-9_./:%+=\\-]+")
 POWERSHELL_SINGLE_QUOTES = frozenset("'‘’‚‛")
 
 
+def host_shell_dialect(name: str | None = None, environ=None) -> str:
+    """Which shell a line printed on this host is quoted for, as the
+    `platform` `shell_quoted` takes: `"nt"` for PowerShell's dialect, and
+    `"posix"` for `sh`'s (#711). `name` and `environ` are `os.name` and
+    `os.environ` when None, so a test can ask about any host from any host.
+
+    THE RULE. A Windows host (`os.name` is `nt`) is PowerShell's, unless its
+    environment has a non-empty `MSYSTEM`: then the tool was run from Git
+    Bash, or another MSYS2 shell, which reads a line as `sh` does, so the
+    line gets `sh`'s quoting. Every other host is `sh`'s. It is asked each
+    time a line is quoted, not once at import, so the answer is the
+    environment's the line is printed in.
+
+    WHY `MSYSTEM`. Under Git Bash `os.name` is `nt`, as it is under
+    PowerShell, because the Python Git Bash runs is the same Windows Python,
+    so `os.name` cannot tell the two shells apart. Git Bash and every MSYS2
+    shell set `MSYSTEM` (`MINGW64`, `UCRT64`, `CLANGARM64`, `MSYS`, ...) and
+    hand it to every program they start; PowerShell and cmd.exe do not set
+    it. An EMPTY `MSYSTEM` names no MSYS2 shell, so it is not Git Bash.
+
+    WHAT IT DOES NOT COVER. A PowerShell or cmd.exe started from inside Git
+    Bash inherits `MSYSTEM`, so a tool run there is answered `sh`'s and
+    prints `sh`'s quoting into PowerShell: nothing the tool can read tells
+    that PowerShell from Git Bash, and this does not try. It answers the
+    quoting and the shell syntax around a word, and nothing about the
+    machine: `PYTHON` stays `python` under Git Bash, which runs the Windows
+    Python, and a path keeps its Windows spelling.
+    """
+    name = os.name if name is None else name
+    environ = os.environ if environ is None else environ
+    return "nt" if name == "nt" and not environ.get("MSYSTEM") else "posix"
+
+
 def shell_quoted(value: object, platform: str | None = None) -> str:
     """`value` as ONE word of a command a person pastes into the shell of
-    `platform` (`os.name` when None): bare where that shell reads every
-    character of it as itself, else whole, in single quotes (#486).
+    `platform` (`host_shell_dialect()` when None, #711): bare where that
+    shell reads every character of it as itself, else whole, in single
+    quotes (#486).
 
     THE DOCTOR'S RULE, `shape-doctor.py`'s `quote_arg`, which has quoted
     every path its NEXT lines print since #101/#102: `sh` and PowerShell are
@@ -3312,7 +3499,7 @@ def shell_quoted(value: object, platform: str | None = None) -> str:
     `quote_arg` still leaves it bare: a known gap, named where #486 lands.
     """
     text = str(value)
-    windows = (os.name if platform is None else platform) == "nt"
+    windows = (host_shell_dialect() if platform is None else platform) == "nt"
     bare = SHELL_BARE_NT if windows else SHELL_BARE_POSIX
     if not text.startswith("=") and bare.fullmatch(text):
         return text

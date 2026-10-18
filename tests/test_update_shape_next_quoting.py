@@ -261,7 +261,8 @@ def test_the_branch_next_line_is_one_argv(project, make_root, name):
     assert result.returncode == 0, result.stdout + result.stderr
     title, body = pr_words(project)
     assert argv_of(next_line_of(result.stdout)) == [
-        "git", "-C", str(root.resolve()), "push", "-u", "origin", branch,
+        "git", "-C", str(root.resolve()), "push", "-u", "origin",
+        f"refs/heads/{branch}:refs/heads/{branch}",
         "&&", "gh", "pr", "create", "--repo", f"{ORG}/{PROJECT}", "--base",
         "main", "--head", branch, "--title", title, "--body", body]
 
@@ -337,7 +338,8 @@ def test_the_branch_is_quoted_even_where_its_alphabet_makes_that_a_no_op(
         words = argv_of(capsys.readouterr().out.strip())
         assert words[words.index("--head") + 1] == branch, words
         if not push:
-            assert words[words.index("push") + 3] == branch, words
+            assert words[words.index("push") + 3] == (
+                f"refs/heads/{branch}:refs/heads/{branch}"), words
 
 
 # --- a plain root prints what it always printed -----------------------------
@@ -351,8 +353,10 @@ def test_the_branch_is_quoted_even_where_its_alphabet_makes_that_a_no_op(
 def test_a_plain_root_prints_the_bytes_it_always_printed(project, make_root):
     """THE LINES BEFORE #325, spelled out by hand: for a root and an upstream
     that need no quoting, not one byte of any of the three lines moved. The
-    one change since is on purpose: the `gh pr create` the branch line ends
-    with carries `--title` and `--body` (#535), after everything it had."""
+    two changes since are on purpose: the `gh pr create` the branch line ends
+    with carries `--title` and `--body` (#535), after everything it had, and
+    its push names the branch in full, `refs/heads/<b>:refs/heads/<b>`, so a
+    tag of the same name cannot take it (#674)."""
     root = make_root("plain")
     for path in (root.resolve(), project["upstream"].resolve()):
         assert shlex.quote(str(path)) == str(path), (
@@ -373,7 +377,8 @@ def test_a_plain_root_prints_the_bytes_it_always_printed(project, make_root):
     assert branched.returncode == 0, branched.stdout + branched.stderr
     title, body = pr_words(project)
     assert next_line_of(branched.stdout) == (
-        f"NEXT  git -C {pushing.resolve()} push -u origin {branch} && "
+        f"NEXT  git -C {pushing.resolve()} push -u origin "
+        f"refs/heads/{branch}:refs/heads/{branch} && "
         f"gh pr create --repo {ORG}/{PROJECT} --base main --head {branch} "
         f"--title {shlex.quote(title)} --body {shlex.quote(body)}")
 
@@ -454,7 +459,8 @@ def test_the_commands_apply_prints_run_when_they_are_pasted(project, make_root,
 @pytest.mark.parametrize("name", PASTED)
 def test_the_branch_line_pushes_and_opens_when_it_is_pasted(project, make_root,
                                                             tmp_path, name):
-    """`git -C <root> push -u origin <branch> && gh pr create ...`: the push
+    """`git -C <root> push -u origin refs/heads/<branch>:refs/heads/<branch>
+    && gh pr create ...` (#674 names the branch in full): the push
     has to reach the root's own remote for the `&&` to let `gh` run, so a
     `gh` that ran at all is the proof that the root arrived whole."""
     root = make_root(name)

@@ -85,6 +85,12 @@ TAKEN = (f"REFUSED member-path-taken: {MOUNT} already exists in the family "
          "Remediation: this is a half-finished add or a hand-made directory. "
          "Remove it (`git rm -r` if it is tracked), then re-run.")
 
+#: What a printed `--sparse` says it needs (#685): `git mv --sparse` of the
+#: one entry a sparse checkout keeps off disk says `bad source` before git
+#: 2.38, and `git rm --sparse` came with git 2.34.
+NEEDS_GIT_2_38 = "which needs git 2.38 or later"
+NEEDS_GIT_2_34 = "which needs git 2.34 or later"
+
 #: The part of the remedy for a `members/` a hand renamed `Members/`.
 MOVE_BACK = ("move `Members` back to members/, since it holds checkouts of "
              "members git tracks under members/ (`mv -- Members members`)")
@@ -103,8 +109,8 @@ def index_part(*, rename=(), sparse=(), unstage=(), commit="") -> str:
         said.append("rename what the index holds with `git mv`, entry by "
                     f"entry ({each('git mv', rename)})")
     if sparse:
-        said.append("rename what the sparse checkout keeps off disk with "
-                    "`git mv --sparse`, entry by entry "
+        said.append("rename what the sparse checkout leaves out with "
+                    f"`git mv --sparse`, {NEEDS_GIT_2_38}, entry by entry "
                     f"({each('git mv --sparse', sparse)})")
     if unstage:
         said.append("take what has nothing on disk in that spelling out of "
@@ -138,17 +144,23 @@ def remedy_of(*parts: str) -> str:
             + said[0].upper() + said[1:] + "; then re-run.")
 
 
-def refused_untouched(offline, root, remotes, *extra):
+def refused_untouched(offline, root, remotes, *extra, status=True):
     """`add` of the spare member, refused before anything about the member
     is printed or read, with the holder exactly as it was: the snapshot, the
     index byte for byte, no `gh` call and no throwaway clone left. Returns
-    the refusal's two lines."""
-    before, index = snapshot(root), index_bytes(root)
+    the refusal's two lines.
+
+    `status=False` is passed to `snapshot`, which then asks no `git status`,
+    for a holder where git 2.45.1 and later refuse it: a gitlink the index
+    holds that is a symbolic link on disk (`expected submodule path
+    'Members/IRRS' not to be a symbolic link`). The rest of the snapshot is
+    kept."""
+    before, index = snapshot(root, status=status), index_bytes(root)
     result = offline.add(root, SPARE, *extra, remotes=remotes)
     assert result.returncode == 2, result.stdout + result.stderr
     assert result.stdout == ""
     assert index_bytes(root) == index
-    assert snapshot(root) == before
+    assert snapshot(root, status=status) == before
     offline.assert_left_nothing()
     return refusal(result.stderr)
 
@@ -327,21 +339,23 @@ def git_version() -> tuple[int, int]:
     return int(found.group(1)), int(found.group(2))
 
 
-@pytest.mark.skipif(git_version() < (2, 34),
-                    reason="`git mv --sparse` came with git 2.34")
 def test_an_entry_a_sparse_checkout_keeps_off_disk_takes_git_mv_sparse(
         family, holder, offline):
     """A SPARSE CHECKOUT (#574's review, S2): an entry the checkout keeps
     off disk (`skip-worktree`) is refused by `git mv` as `not under version
     control` and by `git rm --cached` as outside the sparse-checkout
     definition. `git mv --sparse` renames it, keeping what it holds, and the
-    rename is committed."""
+    rename is committed. The text says that needs git 2.38 or later, on
+    every git (#685); it is typed only there."""
     plant(holder, "100644", "Members/README")
     git("update-index", "--skip-worktree", "--", "Members/README", cwd=holder)
     said, remedy = refused_untouched(offline, holder, family["remotes"])
     assert said == DIR_VARIANT + "in the index: `Members/README` (a file)"
     assert remedy == remedy_of(index_part(sparse=["Members/README"],
                                           commit="the rename"))
+    if git_version() < (2, 38):
+        pytest.skip("`git mv --sparse` of one entry kept off disk says `bad "
+                    "source` before git 2.38")
     assert type_remedy(holder, remedy) == [
         "git mv --sparse -- Members/README renamed-1", "git commit"]
     added(offline, holder, family["remotes"])
@@ -448,7 +462,8 @@ def test_a_name_head_holds_that_is_not_utf8_is_shown_replaced(
         holder, SPARE, family_module._members_on_disk(holder)) == [
         ("Members/\N{REPLACEMENT CHARACTER}", "a file",
          "in HEAD and no longer in the index",
-         "Members/\N{REPLACEMENT CHARACTER}", False, "git commit", True)]
+         "Members/\N{REPLACEMENT CHARACTER}", False, "git commit", True, "",
+         False, "", False, (), False, (), False)]
 
 
 # --- the disk (#364) ---------------------------------------------------------
