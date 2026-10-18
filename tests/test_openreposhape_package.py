@@ -78,9 +78,9 @@ from test_openreposhape_command import command_env
 # THE LAUNCHER'S VALUES NO LINE CAN PRINT AS THEY READ (#837, #866), and
 # what its refusals say of them, for the package's own checks (#939).
 from test_openreposhape_command import (
-    ESCAPE, LOCALES, MISDRAWN, NOT_CONTROLS, RLO, SHARING_ITS_BYTES,
-    UNPRINTABLE_VALUES, assert_refused_saying, ref_drawn_as_another,
-    repo_drawn_as_another,
+    ESCAPE, LOCALES, MISDRAWN, NO_NON_ASCII_INTO_GIT_BASH, NOT_CONTROLS, RLO,
+    SHARING_ITS_BYTES, UNPRINTABLE_VALUES, assert_refused_saying,
+    ref_drawn_as_another, repo_drawn_as_another,
 )
 
 #: The launcher's cases this module runs again, named once more: they are
@@ -597,6 +597,7 @@ def test_version_refuses_a_repository_or_ref_no_line_can_print(
     assert assert_refused_saying(result, said) == f"REFUSED: {said}"
 
 
+@NO_NON_ASCII_INTO_GIT_BASH
 @pytest.mark.parametrize("locale", LOCALES)
 @pytest.mark.parametrize("name", NOT_CONTROLS)
 def test_version_prints_a_repository_holding_none_of_the_list(cmd, name,
@@ -675,6 +676,28 @@ def test_a_run_that_clones_refuses_the_value_before_any_git_call(
     result, calls = run_logging_git(tmp_path, entry, args, env)
     assert calls == [], calls
     assert assert_refused_saying(result, said) == f"REFUSED: {said}"
+
+
+@pytest.mark.parametrize("entry, args", CLONING_RUNS)
+def test_with_both_values_bad_a_run_names_the_repository_first(
+        tmp_path, entry, args):
+    """The launcher's order for `--version`
+    (`test_bad_values_are_refused_in_the_order_the_check_states`), for each
+    run that reaches the clone (#939's Direction, rv947's NIT-1): with a
+    repository holding U+202E and a ref holding an escape, the one refusal
+    is the repository's, as the launcher's is, with no `git` call and
+    neither value echoed. `prepare` asked the ref first, so these runs
+    named the ref's fault."""
+    said = repo_drawn_as_another("U+202E")
+    result, calls = run_logging_git(
+        tmp_path, entry, args,
+        {"OPENREPOSHAPE_REPO": "acme/r" + RLO + "forged",
+         "OPENREPOSHAPE_REF": "v1" + ESCAPE + "[31mforged"})
+    assert calls == [], calls
+    refusal = assert_refused_saying(result, said)
+    assert refusal == f"REFUSED: {said}"
+    assert refusal.startswith("REFUSED: OPENREPOSHAPE_REPO holds ")
+    assert "OPENREPOSHAPE_REF" not in refusal
 
 
 @pytest.mark.parametrize("ref, said", [

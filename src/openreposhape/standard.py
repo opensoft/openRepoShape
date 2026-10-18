@@ -693,9 +693,9 @@ def verify(standard: Standard, digest: str, env: dict) -> None:
 def prepare(typed_ref: str = "") -> Standard:
     """The standard this run uses, cloned if it has to be and checked.
 
-    In order: BESIDE a checkout, that checkout, untouched. Otherwise the ref
-    is checked before anything reaches git; git must be there, because the
-    standard is a clone; the commit is the stamp's, the 40-hex ref's, or what
+    In order: BESIDE a checkout, that checkout, untouched. Otherwise the
+    repository and then the ref are checked before anything reaches git; git
+    must be there, because the standard is a clone; the commit is the stamp's, the 40-hex ref's, or what
     the remote says the ref is; a clone of it already in the cache is used,
     and one that is not is made; and the clone is verified, against the
     stamped digest where nothing overrode the stamp.
@@ -704,9 +704,12 @@ def prepare(typed_ref: str = "") -> Standard:
     if beside is not None:
         return Standard(beside, beside=True)
     stamp = read_stamp()
-    wanted = target(stamp, typed_ref)
+    # The repository is asked before the ref, as the launcher and
+    # `--version` ask them: with both bad, the repository's is the one
+    # refusal (#939, "the repository first").
     repo = repository()
     url = clone_url(repo)
+    wanted = target(stamp, typed_ref)
     env = child_environment()
     if shutil.which("git", path=env.get("PATH")) is None:
         raise Refusal(
