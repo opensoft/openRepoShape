@@ -421,7 +421,12 @@ options:
                         `source-ambiguous` refuses a name that is also a path
                         here, as `acme/Atlas` is beside a directory
                         `acme/Atlas`: pass `./acme/Atlas` for the directory,
-                        or the url for the repository.
+                        or the url for the repository. The path is a
+                        repository's top-level directory (`git rev-parse
+                        --show-toplevel` prints it): `source-not-top-level`
+                        refuses a file, or a directory inside a repository.
+                        `source-unresolvable` refuses an empty value, and one
+                        that is neither a path that exists nor an `org/repo`.
   --project PROJECT     the assembly-root name; for an in-place adoption it is
                         the source repository's own name
   --org ORG             the organisation the source repository is in, which
@@ -573,7 +578,8 @@ options:
                         `plan` made (`source.cloned: true`) and is gone or no
                         longer whole, its `source.repository` is cloned again,
                         and any other `local_path` that is gone is refused as
-                        `plan-source-gone`.
+                        `plan-source-gone`; one that is a file, or a directory
+                        inside a repository, as `source-not-top-level`.
   --local-remote-dir LOCAL_REMOTE_DIR
                         the directory `execute --local-remote-dir` will be
                         given (the TEST path): each relative submodule url the
@@ -616,7 +622,8 @@ options:
                         `plan` made (`source.cloned: true`) and is gone or no
                         longer whole, its `source.repository` is cloned again,
                         and any other `local_path` that is gone is refused as
-                        `plan-source-gone`.
+                        `plan-source-gone`; one that is a file, or a directory
+                        inside a repository, as `source-not-top-level`.
   --local-remote-dir LOCAL_REMOTE_DIR
                         create the legs as bare repositories here instead of
                         calling `gh` (the TEST path)
