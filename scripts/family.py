@@ -415,22 +415,21 @@ class Family:
         (`_checked_manifest_committed`), and this refusal is only reached
         once the shape it names is committed.
 
-        THE `members:` LINE IS ANY THE HOLDER'S READER READS AS ONE WITH NO
-        ROWS (`_opens_members`, #920), so `members: null` is found as
-        `members:` is.
+        THE `members:` LINE is `members:`, `members: []`, or `members:` and
+        one word the holder's reader reads as null (`_opens_members`, #920),
+        so `members: null` is found as `members:` is.
+
+        EVERY SUCH LINE IS COUNTED FIRST, and anything but one is refused
+        (#920, lane 5's review of #957, SHOULD 1). The rewrite stopped at the
+        first and never counted a second, so a `members: []` above `name:`,
+        with the real block still at the end, which the reader takes as the
+        last of two keys and the holder's gate passes, was cut off there with
+        exit 0: every key below it went, and the gate then failed the
+        commit. With the null words found, `members: null` did the same.
         """
         text = self.path.read_text(encoding="utf-8")
         lines = text.splitlines()
-        out: list[str] = []
-        seen = 0
-        for line in lines:
-            if _opens_members(line):
-                seen += 1
-                out.append("members: []" if not rows else "members:")
-                for row in rows:
-                    out.extend(_member_lines(row))
-                break
-            out.append(line)
+        seen = sum(1 for line in lines if _opens_members(line))
         if seen != 1:
             raise Refusal(
                 "family-members-unrecognised",
@@ -441,6 +440,14 @@ class Family:
                 "file and everything below it belongs to this tool; fix it by "
                 "hand this once and commit that (`git commit -- "
                 f"{MANIFEST}`), then run the same command again.")
+        out: list[str] = []
+        for line in lines:
+            if _opens_members(line):
+                out.append("members: []" if not rows else "members:")
+                for row in rows:
+                    out.extend(_member_lines(row))
+                break
+            out.append(line)
         return "\n".join(out) + "\n"
 
 
@@ -6837,14 +6844,16 @@ def _rewrite_members(family: Family, rows: list[dict], what: str) -> None:
             "room, then run the same command again.") from exc
 
 
-#: What `member-gitlink-misplaced` tells the human to do (#920), and what it
-#: says more where the commit was not taken back.
+#: What `member-gitlink-misplaced` tells the human to do (#920), then how it
+#: ends: where the branch is back where `add` found it, so `undo` has put the
+#: holder back, and where it is not.
 GITLINK_MISPLACED_REMEDIATION = (
     "Remediation: `add` asks git for the gitlink at `members/<Project>` and "
     "nowhere else, and every cause known to record it elsewhere, another "
     "spelling of `members/` in the index, in HEAD or on disk, is refused "
     "before the mount, so this cause is not one of them. Find what moved it, "
     "such as a hook or a setting like `core.ignorecase`, and mend that")
+GITLINK_TAKEN_BACK = ", then run the same command again."
 GITLINK_NOT_TAKEN_BACK = (
     ". The commit and the mount are still there, for the reason above: `git "
     "log` shows what the branch holds, and taking them out is yours to do "
@@ -6861,10 +6870,12 @@ def _gitlinks_at(root: Path, commit: str | None) -> dict[str, str]:
 
 
 def _checked_gitlink_committed(root: Path, project: str, path: str,
-                               head: str, rollback: MountRollback) -> None:
+                               commit: str, head: str,
+                               rollback: MountRollback) -> None:
     """Refuse `member-gitlink-misplaced` unless `head`, the commit `add` has
     just made, records a gitlink at exactly `path`, after taking that commit
     back (`MountRollback.take_back`) for the caller's `undo` (#920).
+    `commit` is the member's, the one the pin records.
 
     THE COMMIT ITSELF IS ASKED, AFTER THE FACT. `.gitmodules` and
     `family.yaml` name `members/<Project>`, but git records the gitlink where
@@ -6874,16 +6885,30 @@ def _checked_gitlink_committed(root: Path, project: str, path: str,
     (#363). #574 refuses each such case variant before the mount, and this
     is option 2 of #363, which PR #574 left out: whatever the cause, a
     commit that records no gitlink at the path is never left on the branch.
-    It reads the commit's whole tree, and its parent's, with no pathspec
-    (`git ls-tree -r`), so no pathspec setting can narrow either, and names
-    each gitlink the commit holds that its parent does not: the path git
-    chose.
+    It reads the whole tree of the commit, and of the one the branch named
+    before the mount (`rollback.head`), with no pathspec (`git ls-tree -r`),
+    so no pathspec setting can narrow either. The path git chose is each
+    gitlink the commit holds at a path the earlier one does not, or that
+    records `commit`, so another member's gitlink, moved by the same cause,
+    is never named as this one's (lane 5's review of #957, NIT 2).
+
+    A BRANCH BACK WHERE `add` FOUND IT holds no commit of this command's: a
+    `post-commit` hook took it off. That is said as it is, and `undo` puts
+    the holder back as for any refusal before the commit (NIT 1).
     """
+    if head == rollback.head:
+        raise Refusal(
+            "member-gitlink-misplaced",
+            f"the branch names {head[:12]} again, where this command found "
+            "it: the commit this command made is not on it, so no gitlink at "
+            f"`{path}` is either, while {GITMODULES} and {MANIFEST} name "
+            f"`{path}`.", GITLINK_MISPLACED_REMEDIATION + GITLINK_TAKEN_BACK)
     made = _gitlinks_at(root, head)
     if path in made:
         return
     before = _gitlinks_at(root, rollback.head)
-    chosen = [name for name, oid in made.items() if before.get(name) != oid]
+    chosen = [name for name, oid in made.items()
+              if name not in before or oid == commit]
     where = (f"{project}'s gitlink at "
              + " and ".join(f"`{shown_path(name)}`" for name in chosen)
              + f", not at `{path}`" if chosen else
@@ -6894,8 +6919,7 @@ def _checked_gitlink_committed(root: Path, project: str, path: str,
         f"the commit {head[:12]} records {where}, while {GITMODULES} and "
         f"{MANIFEST} name `{path}`, so a fresh clone would leave the member "
         "empty." + said, GITLINK_MISPLACED_REMEDIATION
-        + (", then run the same command again." if taken else
-           GITLINK_NOT_TAKEN_BACK))
+        + (GITLINK_TAKEN_BACK if taken else GITLINK_NOT_TAKEN_BACK))
 
 
 def _mount_and_pin(family: Family, repository: str, project: str, path: str,
@@ -6968,8 +6992,8 @@ def _mount_and_pin(family: Family, repository: str, project: str, path: str,
         "project: its own assembly root, its own legs, its own gate. "
         "Membership confers nothing.\n",
         [GITMODULES, path, MANIFEST], trailers=trailers)
-    rollback.step = f"reading where the commit records {project}'s gitlink"
-    _checked_gitlink_committed(family.root, project, path, head, rollback)
+    _checked_gitlink_committed(family.root, project, path, commit, head,
+                               rollback)
     return commit, digest, project_id, head
 
 

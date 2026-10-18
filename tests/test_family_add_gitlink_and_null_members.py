@@ -37,7 +37,7 @@ from conftest import git
 #: The family fixture and its names, imported from the module that owns
 #: them; importing a fixture gives this module its own instance of it.
 from test_family import (  # noqa: F401
-    ORG, SPARE, family, holder, manifest,
+    NAME, ORG, SPARE, family, holder, manifest,
 )
 #: The offline environment, the in-process module, and the holder's
 #: snapshot, from the module that tests every other refusal after the mount.
@@ -83,20 +83,50 @@ UNWOUND = UNDONE.format(
 MADE_RE = re.compile(r"REFUSED member-gitlink-misplaced: the commit "
                      r"([0-9a-f]{12}) records ")
 
-#: Two `pre-commit` hooks, each a cause `add` cannot know before the mount,
-#: with what the refusal says the commit records: one takes the member's
-#: gitlink out of the commit, and one records it at `parked/<Project>`.
-#: git runs the hook on the index it commits, and reads that index again
-#: after it, so what the hook stages is what the commit holds.
+#: The commit of the member's gitlink, as a `pre-commit` hook reads it, then
+#: the gitlink taken out of the commit.
+OUT = (f"sha=$(git rev-parse :{MOUNT}) || exit 1\n"
+       f"git rm -q --cached -- {MOUNT}\n")
+
+#: A blob of the hook's own, for a file at or under the mount path.
+BLOB = "blob=$(echo a file | git hash-object -w --stdin) || exit 1\n"
+
+#: `pre-commit` hooks, each a cause `add` cannot know before the mount, with
+#: what the refusal says the commit records. git runs the hook on the index
+#: it commits, and reads that index again after it, so what the hook stages
+#: is what the commit holds. The commit holds: no gitlink; the member's at
+#: `parked/<Project>`; another commit there, at a path the holder did not
+#: have; a file at the mount path; a folder there; another
+#: member's gitlink moved to another commit, which is not this member's
+#: (lane 5's review of #957, NIT 2); and the member's commit at another
+#: member's path, which is.
 HOOKS = {
     "takes it out": (
-        f"git rm -q --cached -- {MOUNT}\n",
-        f"no new gitlink, at `{MOUNT}` or anywhere else"),
+        OUT, f"no new gitlink, at `{MOUNT}` or anywhere else"),
     "moves it": (
-        f"sha=$(git rev-parse :{MOUNT}) || exit 1\n"
-        f"git rm -q --cached -- {MOUNT}\n"
-        f'git update-index --add --cacheinfo "160000,$sha,parked/{SPARE}"\n',
+        OUT + "git update-index --add --cacheinfo "
+        f'"160000,$sha,parked/{SPARE}"\n',
         f"{SPARE}'s gitlink at `parked/{SPARE}`, not at `{MOUNT}`"),
+    "parks another commit": (
+        OUT + "git update-index --add --cacheinfo "
+        f'"160000,$(git rev-parse HEAD),parked/{SPARE}"\n',
+        f"{SPARE}'s gitlink at `parked/{SPARE}`, not at `{MOUNT}`"),
+    "a file there": (
+        OUT + BLOB
+        + f'git update-index --add --cacheinfo "100644,$blob,{MOUNT}"\n',
+        f"no new gitlink, at `{MOUNT}` or anywhere else"),
+    "a folder there": (
+        OUT + BLOB
+        + f'git update-index --add --cacheinfo "100644,$blob,{MOUNT}/README"'
+        "\n",
+        f"no new gitlink, at `{MOUNT}` or anywhere else"),
+    "another member moved": (
+        OUT + 'git update-index --cacheinfo "160000,$(git rev-parse HEAD),'
+        'members/IRRS"\n',
+        f"no new gitlink, at `{MOUNT}` or anywhere else"),
+    "onto another member": (
+        OUT + 'git update-index --cacheinfo "160000,$sha,members/IRRS"\n',
+        f"{SPARE}'s gitlink at `members/IRRS`, not at `{MOUNT}`"),
 }
 
 #: A hook is a `#!/bin/sh` file git runs, which git for Windows runs only
@@ -243,6 +273,32 @@ def test_a_commit_the_branch_has_moved_on_from_is_never_taken_back(
     offline.assert_left_nothing()
 
 
+@POSIX_HOOKS
+def test_a_commit_a_hook_took_off_the_branch_is_said_as_it_is(
+        family, holder, offline, tmp_path):
+    """A `post-commit` HOOK THAT TAKES THE COMMIT OFF ITSELF (lane 5's review
+    of #957, NIT 1): `git reset --soft HEAD~1` leaves the branch where `add`
+    found it, with the mount still staged. The refusal says the branch holds
+    no commit of the command's, the mount is unwound as before any commit,
+    and the remedy says to run the command again, which is what is true:
+    the holder is as it was. It used to say "It was NOT taken back" and
+    "The commit and the mount are still there" over a clean holder."""
+    hooked(holder, tmp_path, "post-commit", "git reset -q --soft HEAD~1\n")
+    was = head(holder)
+    before = snapshot(holder)
+
+    result = offline.add(holder, SPARE, remotes=family["remotes"])
+    assert result.returncode == 2, result.stdout + result.stderr
+    assert refusal(result.stderr) == (
+        f"REFUSED member-gitlink-misplaced: the branch names {was[:12]} "
+        "again, where this command found it: the commit this command made "
+        f"is not on it, so no gitlink at `{MOUNT}` is either, while "
+        f".gitmodules and family.yaml name `{MOUNT}`. " + UNWOUND,
+        MISPLACED_REMEDIATION + TAKEN_BACK)
+    assert_unchanged(holder, before, SPARE)
+    offline.assert_left_nothing()
+
+
 def test_take_back_moves_no_branch_that_names_another_commit(holder,
                                                              family_module):
     """THE VALUE `git update-ref` MUST FIND. `take_back` is handed a commit
@@ -265,6 +321,29 @@ def test_take_back_moves_no_branch_that_names_another_commit(holder,
         " It was NOT taken back: `git update-ref -m family.py add: "
         f"{made[:12]} taken back HEAD {was} {made}` in "), said
     assert head(holder) == other
+
+
+def test_take_back_deletes_no_first_commit_it_did_not_make(tmp_path,
+                                                            family_module):
+    """THE SAME VALUE ON A BRANCH THAT HAD NO COMMIT (lane 5's review of
+    #957, NIT 5, R4). The branch is deleted only while it names the commit
+    handed to `take_back`. Where another first commit is on it by then, git
+    refuses, and the branch keeps that commit."""
+    root = unborn_holder(tmp_path)
+    rollback = family_module.MountRollback(root, MOUNT)
+    tree = git("write-tree", cwd=root).stdout.strip()
+    made = git("commit-tree", "-m", "this command's", tree,
+               cwd=root).stdout.strip()
+    other = git("commit-tree", "-m", "anybody else's", tree,
+                cwd=root).stdout.strip()
+    git("update-ref", "HEAD", other, cwd=root)
+
+    taken, said = rollback.take_back(made)
+    assert taken is False
+    assert said.startswith(
+        " It was NOT taken back: `git update-ref -m family.py add: "
+        f"{made[:12]} taken back -d HEAD {made}` in "), said
+    assert head(root) == other
 
 
 @POSIX_HOOKS
@@ -370,3 +449,78 @@ def test_a_null_with_more_than_one_word_is_still_a_hand_edit(
     with pytest.raises(family_module.Refusal) as caught:
         held.rewritten([])
     assert caught.value.code == "family-members-unrecognised"
+
+
+
+def test_a_word_the_reader_refuses_is_no_members_line(tmp_path,
+                                                      family_module):
+    """`_opens_members` asks the reader of the word, and a word it refuses
+    (`@x`) opens no block. Through the command `Family.open` refuses such a
+    file first, so this is asked of the rewrite alone (lane 5's review of
+    #957, NIT 5, R5): the one real `members: []` is found, and nothing
+    raises."""
+    text = "kind: family-manifest\nmembers: @x\nmembers: []\n"
+    (tmp_path / "family.yaml").write_text(text, encoding="utf-8")
+    held = family_module.Family(tmp_path, {"members": []})
+    assert held.rewritten([]) == text
+
+
+#: What `family-members-unrecognised` tells the human to do.
+UNRECOGNISED_REMEDIATION = (
+    "Remediation: the manifest was hand-edited into a shape this tool does "
+    "not recognise. `members:` is the LAST block in the file and everything "
+    "below it belongs to this tool; fix it by hand this once and commit that "
+    "(`git commit -- family.yaml`), then run the same command again.")
+
+
+def a_line_above_the_name(root: Path, line: str) -> None:
+    """`line` at the margin above `family.yaml`'s `name:`, with the real
+    `members:` block still at the end, committed, as a person commits a
+    hand edit before a verb (#684)."""
+    path = root / "family.yaml"
+    text = path.read_text(encoding="utf-8")
+    assert text.count("\nname: ") == 1
+    path.write_bytes(text.replace("\nname: ", f"\n{line}\nname: ")
+                     .encode("utf-8"))
+    git("commit", "-q", "-m", "a line above name:", "--", "family.yaml",
+        cwd=root)
+
+
+@pytest.mark.parametrize("line", ["members: null", "members: []"])
+def test_a_second_members_line_above_the_block_is_refused(family, holder,
+                                                          offline, line):
+    """LANE 5'S REVIEW OF #957, SHOULD 1. The reader takes the last of two
+    `members:` keys, so `Family.open` and the holder's gate both accept this
+    file. The rewrite stopped at the first such line and cut the manifest
+    off there, every key below it gone, with exit 0, for `members: []` on
+    main and for `members: null` with this branch. Every line is counted
+    first now, so both are refused before the mount with a count that is
+    true, and nothing moves."""
+    a_line_above_the_name(holder, line)
+    before = snapshot(holder)
+
+    result = offline.add(holder, SPARE, remotes=family["remotes"])
+    assert result.returncode == 2, result.stdout + result.stderr
+    assert result.stdout == ""
+    assert refusal(result.stderr) == (
+        "REFUSED family-members-unrecognised: "
+        f"{holder.resolve() / 'family.yaml'} has 2 `members:` line(s) where "
+        "exactly one was expected, so this tool will not rewrite it",
+        UNRECOGNISED_REMEDIATION)
+    assert_unchanged(holder, before, SPARE)
+    offline.assert_left_nothing()
+
+
+def test_a_members_line_in_a_comment_is_not_counted(family, holder, offline):
+    """The control: a `# members: null` above `name:` is a comment, so the
+    block is the one line counted, the member is added, and every key is
+    kept."""
+    a_line_above_the_name(holder, "# members: null")
+
+    result = offline.add(holder, SPARE, remotes=family["remotes"])
+    assert result.returncode == 0, result.stdout + result.stderr
+    assert manifest(holder)["name"] == NAME
+    assert SPARE in [row["project"] for row in manifest(holder)["members"]]
+    assert "\n# members: null\nname: " in (holder / "family.yaml").read_text(
+        encoding="utf-8")
+    offline.assert_left_nothing()
