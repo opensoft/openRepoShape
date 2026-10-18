@@ -142,7 +142,7 @@ A PATH THIS USER CANNOT READ IS NEVER ABSENT (#430). Every guard asks the
 operating system for the path's `stat` (`_is_a`), the same answer on every
 Python, and one it refuses is refused by name, `<path>: cannot be read
 (<reason>)`, with a cure for the cause, exit 2: a member's checkout or what
-is on disk at any gitlink `checkout-unreadable`, the shape pin
+is on disk at any gitlink `member-unreadable`, the shape pin
 `shape-pin-unreadable`, a shape copy `shape-copy-unreadable` and
 `family.yaml` `family-manifest-unreadable`. A member's `project.yaml` is
 the finding `member-manifest-unreadable`, exit 1, as one that cannot be
@@ -446,7 +446,7 @@ PATHS_READ = (f"{MANIFEST}, the shape pin, every copy it lists, each "
 #: holder records, the checkout `git mv` moved. The one new code: no code
 #: here meant "a checkout cannot be read", and `member-uninitialized`, what
 #: Python 3.14 made of it, sent the person after a checkout that is there.
-CHECKOUT_UNREADABLE = "checkout-unreadable"
+MEMBER_UNREADABLE = "member-unreadable"
 
 
 def _advice(exc: OSError) -> str:
@@ -494,25 +494,25 @@ def _asked(path: Path, kind: Callable[[int], bool], code: str,
 
 def _checked_out(checkout: Path, path: str) -> bool:
     """Whether a `.git` entry is in `checkout`, the gitlink path `path`
-    (what `exists()` asked of it), or `checkout-unreadable` naming
+    (what `exists()` asked of it), or `member-unreadable` naming
     `<path>/.git` where its `stat` was refused (#430)."""
-    return _asked(checkout / ".git", _any_kind, CHECKOUT_UNREADABLE,
+    return _asked(checkout / ".git", _any_kind, MEMBER_UNREADABLE,
                   f"{path}/.git")
 
 
 def _checkout_gone(root: Path, path: str) -> bool:
     """`_gone` of the `.git` at the gitlink path `path`, or
-    `checkout-unreadable` naming it where its `stat` was refused for any
+    `member-unreadable` naming it where its `stat` was refused for any
     reason but `ENOENT` (#430)."""
     try:
         return _gone(root / path / ".git")
     except OSError as exc:
-        raise _unreadable(CHECKOUT_UNREADABLE, f"{path}/.git", exc) from exc
+        raise _unreadable(MEMBER_UNREADABLE, f"{path}/.git", exc) from exc
 
 
 def _anything_at(where: Path, named: str) -> bool:
     """Whether anything is at `where`, a symbolic link that leads nowhere
-    included, as `os.path.lexists` answered it, or `checkout-unreadable`
+    included, as `os.path.lexists` answered it, or `member-unreadable`
     naming it as `named` where its `stat` was refused (#430).
 
     `os.path.lexists` answered False to ANY `OSError`, on every Python, so
@@ -521,7 +521,7 @@ def _anything_at(where: Path, named: str) -> bool:
     finds nothing is `os.path.islink` asked, to tell a link that leads
     nowhere from no name at all, and its `lstat` needs no more access than
     that `stat` had."""
-    return (_asked(where, _any_kind, CHECKOUT_UNREADABLE, named)
+    return (_asked(where, _any_kind, MEMBER_UNREADABLE, named)
             or os.path.islink(where))
 
 
@@ -1083,7 +1083,7 @@ def _staged_over(root: Path, path: str, commit: str) -> bool:
     moved, staged, it refused (`the following file has changes staged in
     the index`, exit 1; lane 1's SHOULD on #889, round 2)."""
     # A path whose `stat` is refused, in a folder this user cannot search,
-    # is `checkout-unreadable` (`_anything_at`, #430): `os.path.lexists`
+    # is `member-unreadable` (`_anything_at`, #430): `os.path.lexists`
     # read it as nothing there, and the refusal went unsaid.
     return (_anything_at(root / path, path)
             and _head_records(root, path) != commit)
@@ -1097,7 +1097,7 @@ def _on_disk(root: Path, path: str) -> bool:
     took it over an empty directory and over nothing. A directory this user
     cannot list is taken to hold something: `-f`, with `--cached`, touches
     no file. A path whose `stat` is refused, in a folder this user cannot
-    search, is `checkout-unreadable` (`_anything_at`, #430): asked with
+    search, is `member-unreadable` (`_anything_at`, #430): asked with
     `os.path.lexists`, it was nothing on disk, and the `-f` git needs there
     was not printed."""
     where = root / path
@@ -1105,7 +1105,7 @@ def _on_disk(root: Path, path: str) -> bool:
         return False
     # After that `stat`, `lstat` needs no more access: a link is on disk.
     if os.path.islink(where) or not _asked(where, stat.S_ISDIR,
-                                            CHECKOUT_UNREADABLE, path):
+                                            MEMBER_UNREADABLE, path):
         return True
     try:
         with os.scandir(where) as entries:
@@ -1117,7 +1117,7 @@ def _on_disk(root: Path, path: str) -> bool:
 def _held_as(root: Path, path: str) -> str:
     """What the `-f` sentence says is on disk at `path` (`_forced_said`):
     `CHECKOUT` where a `.git` entry is there, else `NO_CHECKOUT`, and
-    `checkout-unreadable` where its `stat` was refused (`_anything_at`,
+    `member-unreadable` where its `stat` was refused (`_anything_at`,
     #430): a checkout this user cannot search was said to be no checkout.
     Asked only where the `-f` is printed."""
     return (CHECKOUT if _anything_at(root / path / ".git", f"{path}/.git")
@@ -1329,7 +1329,7 @@ def _check_member_tree(member: Path, pin: dict, path: str, commit: str,
     rv681's P2: on the remote, the fetch put it in the store and the gate
     passed; on none, the fetch and `git submodule update` both exit 128).
 
-    A CHECKOUT THIS USER CANNOT SEARCH is `checkout-unreadable`, naming its
+    A CHECKOUT THIS USER CANNOT SEARCH is `member-unreadable`, naming its
     `.git` (`_checked_out`, #430): it ended the run in a traceback up to
     Python 3.13, and on 3.14 was `member-uninitialized`, whose update then
     failed (`could not open '<path>/.git' for writing`) on the checkout
@@ -1460,7 +1460,7 @@ def _check_member_checkout(root: Path, asked: Gitlinked, report: Report,
     finding of its own. `stop` is what `member-uninitialized` says first
     where git's init would stop at a gitlink it has no url for
     (`_init_stop_said`). A checkout this user cannot search is
-    `checkout-unreadable` (`_checked_out`, #430): on Python 3.14 it was
+    `member-unreadable` (`_checked_out`, #430): on Python 3.14 it was
     one not checked out, and its digest and identity were not asked.
     """
     member = root / asked.path
@@ -3289,7 +3289,7 @@ def _moved_checkouts(root: Path, path: str, gitlinks: dict[str, str],
 
     NONE IS AT `path` ONLY WHERE NOTHING IS (`_checkout_gone`, ENOENT
     alone), and a `.git` this user cannot search, at `path` or at another
-    gitlink, is `checkout-unreadable` (#430): on Python 3.14 a checkout
+    gitlink, is `member-unreadable` (#430): on Python 3.14 a checkout
     under a folder it cannot search was none, or named nothing, so the
     checkout `git mv` moved went unnamed again."""
     if not _checkout_gone(root, path):
@@ -3301,7 +3301,7 @@ def _moved_checkouts(root: Path, path: str, gitlinks: dict[str, str],
     clones = [other for other in others
               if other.casefold() == path.casefold()
               and _asked(root / other / ".git", stat.S_ISDIR,
-                         CHECKOUT_UNREADABLE, f"{other}/.git")]
+                         MEMBER_UNREADABLE, f"{other}/.git")]
     return moved, clones
 
 
@@ -3330,18 +3330,18 @@ def _names_store(root: Path, path: str, store: str) -> bool:
     """Whether the `.git` at the gitlink path `path` is a FILE that names
     `store` (`_store`), read as git reads one: `gitdir: <path>`, trailing
     blanks stripped, the path relative to the file's directory unless it is
-    absolute. One whose `stat` or read is refused is `checkout-unreadable`
+    absolute. One whose `stat` or read is refused is `member-unreadable`
     (#430): it was a `.git` that named no store, so the checkout `git mv`
     moved there went unnamed."""
     gitfile = root / path / ".git"
     named = f"{path}/.git"
-    if not store or not _asked(gitfile, stat.S_ISREG, CHECKOUT_UNREADABLE,
+    if not store or not _asked(gitfile, stat.S_ISREG, MEMBER_UNREADABLE,
                                named):
         return False
     try:
         text = gitfile.read_bytes().decode("utf-8", "surrogateescape")
     except OSError as exc:
-        raise _unreadable(CHECKOUT_UNREADABLE, named, exc) from exc
+        raise _unreadable(MEMBER_UNREADABLE, named, exc) from exc
     text = text.rstrip()
     if not text.startswith("gitdir: "):
         return False
@@ -3471,7 +3471,7 @@ def _put_back_lines(root: Path, path: str,
     `section`, the lines for `.gitmodules` (`_section_back`, #879); and
     its checkout, where none is there: where NOTHING is there
     (`_checkout_gone`, ENOENT alone), and a `.git` this user cannot search
-    is `checkout-unreadable` (#430). On Python 3.14 that checkout was none,
+    is `member-unreadable` (#430). On Python 3.14 that checkout was none,
     and the update printed for it failed (`could not open '<path>/.git'
     for writing`) on the checkout that is there."""
     lines = [([f"git reset -q -- {shlex.quote(path)}"], "its gitlink"),

@@ -65,7 +65,7 @@ from test_validate_family_unnamed_mounts import (
 
 OTHER_ROW = f"members/{OTHER}"
 HAND = f"members/{SPARE}"
-CHECKOUT = "checkout-unreadable"
+MEMBER_UNREADABLE = "member-unreadable"
 
 #: What the remedy of a refusal for want of permission says, and what one
 #: for any other reason says in its place, never told to `chmod`.
@@ -229,11 +229,11 @@ def test_what_is_not_there_is_said_as_it_always_was(holder, request, made,
 # --- a refused `stat`, as Python 3.14 answers it (everywhere, root too) -----
 
 @pytest.mark.parametrize("made,names,refusal,named", [
-    pytest.param(as_made, (".git",), CHECKOUT, f"{ROW}/.git",
+    pytest.param(as_made, (".git",), MEMBER_UNREADABLE, f"{ROW}/.git",
                  id="member-checkout"),
-    pytest.param(pins_alone, (".git",), CHECKOUT, f"{ROW}/.git",
+    pytest.param(pins_alone, (".git",), MEMBER_UNREADABLE, f"{ROW}/.git",
                  id="member-checkout-pins"),
-    pytest.param(sections_out(ROW, OTHER_ROW), (".git",), CHECKOUT,
+    pytest.param(sections_out(ROW, OTHER_ROW), (".git",), MEMBER_UNREADABLE,
                  f"{ROW}/.git", id="unregistered-member-checkout"),
     pytest.param(as_made, ("shape-pin.yaml",), "shape-pin-unreadable",
                  "contracts/shape-pin.yaml", id="shape-pin"),
@@ -241,13 +241,13 @@ def test_what_is_not_there_is_said_as_it_always_was(holder, request, made,
                  ".github/workflows/validate.yml", id="shape-copy"),
     pytest.param(as_made, ("family.yaml",), "family-manifest-unreadable",
                  "family.yaml", id="family-yaml"),
-    pytest.param(removal_staged, (".git",), CHECKOUT, f"{ROW}/.git",
+    pytest.param(removal_staged, (".git",), MEMBER_UNREADABLE, f"{ROW}/.git",
                  id="staged-removal-checkout"),
-    pytest.param(moved_to_the_variant, ("IRRS",), CHECKOUT, VARIANT_PATH,
-                 id="variant-on-disk"),
-    pytest.param(moved_to_the_variant, (".git",), CHECKOUT,
+    pytest.param(moved_to_the_variant, ("IRRS",), MEMBER_UNREADABLE,
+                 VARIANT_PATH, id="variant-on-disk"),
+    pytest.param(moved_to_the_variant, (".git",), MEMBER_UNREADABLE,
                  f"{VARIANT_PATH}/.git", id="variant-checkout"),
-    pytest.param(hand_mount_staged, (SPARE,), CHECKOUT, HAND,
+    pytest.param(hand_mount_staged, (SPARE,), MEMBER_UNREADABLE, HAND,
                  id="hand-mount-staged"),
 ])
 def test_a_path_whose_stat_is_refused_is_refused_by_name(
@@ -309,7 +309,7 @@ def test_the_member_tree_asked_alone_names_the_checkout(holder, monkeypatch):
     refused_stat(monkeypatch, ".git")
     refusal = refusal_of(module, module._check_member_tree, holder / ROW, {},
                          ROW, "0" * 40, "IRRS", module.Report(), "")
-    assert refusal.code == CHECKOUT
+    assert refusal.code == MEMBER_UNREADABLE
     assert refusal.detail == f"{ROW}/.git: cannot be read (Permission denied)"
 
 
@@ -332,7 +332,7 @@ def test_the_staged_removal_asks_the_row_s_own_checkout_alone(
     assert getattr(module, asked)(*args) == there
     refused_stat(monkeypatch, ".git")
     refusal = refusal_of(module, getattr(module, asked), *args)
-    assert refusal.code == CHECKOUT
+    assert refusal.code == MEMBER_UNREADABLE
     assert refusal.detail == f"{ROW}/.git: cannot be read (Permission denied)"
 
 
@@ -362,7 +362,7 @@ def test_a_git_file_that_cannot_be_read_names_no_store_by_name(
     refused_stat(monkeypatch, ".git")
     refusal = refusal_of(module, module._names_store, holder, OTHER_ROW,
                          store)
-    assert refusal.code == CHECKOUT
+    assert refusal.code == MEMBER_UNREADABLE
     assert CURE in refusal.remediation
 
 
@@ -395,8 +395,8 @@ def test_a_file_where_the_checkout_should_be_is_no_place_to_update(
     (holder / ROW).rmdir()
     (holder / ROW).write_text("in the way\n", encoding="utf-8")
     result = validate(holder, "--no-members")
-    assert_refused(result.returncode, result.stderr, CHECKOUT, f"{ROW}/.git",
-                   "Not a directory")
+    assert_refused(result.returncode, result.stderr, MEMBER_UNREADABLE,
+                   f"{ROW}/.git", "Not a directory")
 
 
 def test_a_stray_whose_rm_takes_no_f_asks_nothing_of_its_git(
@@ -428,13 +428,13 @@ def test_a_stray_whose_rm_takes_no_f_asks_nothing_of_its_git(
 
 @needs_a_mode
 @pytest.mark.parametrize("made,folder,mode,refusal,named,after", [
-    pytest.param(as_made, ROW, 0, CHECKOUT, f"{ROW}/.git", [],
+    pytest.param(as_made, ROW, 0, MEMBER_UNREADABLE, f"{ROW}/.git", [],
                  id="member-000"),
-    pytest.param(as_made, ROW, 0o444, CHECKOUT, f"{ROW}/.git", [],
+    pytest.param(as_made, ROW, 0o444, MEMBER_UNREADABLE, f"{ROW}/.git", [],
                  id="member-444"),
-    pytest.param(as_made, "members", 0, CHECKOUT, f"{ROW}/.git", [],
+    pytest.param(as_made, "members", 0, MEMBER_UNREADABLE, f"{ROW}/.git", [],
                  id="members-000"),
-    pytest.param(sections_out(ROW), ROW, 0, CHECKOUT, f"{ROW}/.git",
+    pytest.param(sections_out(ROW), ROW, 0, MEMBER_UNREADABLE, f"{ROW}/.git",
                  ["member-gitmodules-absent"], id="unregistered-member-000"),
     pytest.param(policy_elsewhere, "contracts", 0, "shape-pin-unreadable",
                  "contracts/shape-pin.yaml", [], id="contracts-000"),
@@ -446,20 +446,22 @@ def test_a_stray_whose_rm_takes_no_f_asks_nothing_of_its_git(
     pytest.param(as_made, ".github/workflows/validate.yml", 0,
                  "shape-copy-unreadable", ".github/workflows/validate.yml",
                  [], id="shape-copy-000"),
-    pytest.param(removal_staged, ROW, 0, CHECKOUT, f"{ROW}/.git",
+    pytest.param(removal_staged, ROW, 0, MEMBER_UNREADABLE, f"{ROW}/.git",
                  ["member-gitlink-removal-staged"],
                  id="staged-removal-000"),
-    pytest.param(removal_staged_not_checked_out, OTHER_ROW, 0, CHECKOUT,
-                 f"{OTHER_ROW}/.git", ["member-gitlink-removal-staged"],
+    pytest.param(removal_staged_not_checked_out, OTHER_ROW, 0,
+                 MEMBER_UNREADABLE, f"{OTHER_ROW}/.git",
+                 ["member-gitlink-removal-staged"],
                  id="other-checkout-000"),
-    pytest.param(moved_to_the_variant, "Members", 0, CHECKOUT, VARIANT_PATH,
+    pytest.param(moved_to_the_variant, "Members", 0, MEMBER_UNREADABLE,
+                 VARIANT_PATH,
                  ["member-gitlink-unnamed", "gitmodules-path-unnamed",
                   "member-gitlink-removal-staged"], id="variant-folder-000"),
-    pytest.param(moved_to_the_variant, VARIANT_PATH, 0, CHECKOUT,
+    pytest.param(moved_to_the_variant, VARIANT_PATH, 0, MEMBER_UNREADABLE,
                  f"{VARIANT_PATH}/.git",
                  ["member-gitlink-unnamed", "gitmodules-path-unnamed",
                   "member-gitlink-removal-staged"], id="variant-000"),
-    pytest.param(hand_mount_staged, "members", 0, CHECKOUT, HAND,
+    pytest.param(hand_mount_staged, "members", 0, MEMBER_UNREADABLE, HAND,
                  ["member-gitlink-unnamed"], id="hand-mount-folder-000"),
 ])
 def test_a_folder_this_user_cannot_search_is_refused_by_name(
