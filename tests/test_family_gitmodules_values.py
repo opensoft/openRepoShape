@@ -43,6 +43,14 @@ head 40ba4208 first:
   nor bootstrap: a relative one cut bootstrap's reading short there, and
   an absolute one's file was read as the blob's own.
 
+AND ITS SECOND, each reproduced on its first's head 1b87c57d first:
+
+- A key git takes no value for, a bare `url` line, inside a section of
+  the index's or HEAD's file: `git config --blob` takes it, git's reading
+  stops there, and the cure was the section written back, which cannot
+  cure, the key staying in the file. The cure is the file put back with
+  that key named, to be given a value or taken out, typed as printed.
+
 THE SAME FAMILY, OFFLINE RULES AND STATES as
 `test_family_bootstrap_gate_order.py` (#648), whose helpers are imported:
 a plain clone of the holder, `git submodule update` given the fixture's
@@ -552,10 +560,19 @@ def git_reads_up_to_the_line(clone, env, place: str) -> None:
     error and no die, reads the entries before it, registers the paths it
     read a url for, and finds none where `CUT_AT` says."""
     _, registered, no_url = CUT_AT[place]
+    git_update_said(clone, env, registered, no_url)
+
+
+def git_update_said(clone, env, registered, no_url, *,
+                    stops: bool = True) -> None:
+    """Git's update in `clone`, no credential: where it `stops`, it calls a
+    line of the blob it reads bad, an error and no die, and reads no
+    further; it registers the paths `registered` names, and finds no url
+    for `no_url`, or for no path where that is None."""
     update = raw(clone, env, "submodule", "update", "--init", "--recursive",
                  check=False)
     said = update.stderr.decode("utf-8", "replace")
-    assert "bad config line" in said, said
+    assert ("bad config line" in said) is stops, said
     assert tuple(re.findall(r"registered for path '([^']*)'", said)) == (
         registered), said
     assert re.findall(r"No url found for submodule path '([^']*)'",
@@ -574,19 +591,23 @@ def cut_clone(family, holder, env, tmp_path, lose, place: str):
     return clone, data
 
 
-def put_back_mended_and_committed(root, env, lost: str,
-                                  mended: bytes) -> None:
-    """(a)'s cure for a blob git read only up to a line it cannot parse,
-    followed: its command typed as printed (`PUT_BACK`), which puts the
-    file git read in the work tree, the line and all, where `git config
-    -f .gitmodules --list` says where it breaks; mended by hand, the line
-    taken out, which leaves `mended`; and committed."""
+def put_back_mended_and_committed(root, env, lost: str, mended: bytes,
+                                  line: bytes = UNPARSED_LINE) -> None:
+    """(a)'s cure for a blob git read only up to `line`, followed: its
+    command typed as printed (`PUT_BACK`), which puts the file git read in
+    the work tree, the line and all, where `git config -f .gitmodules
+    --list` says where it breaks, a line it cannot parse, or takes it, a
+    key with no value (`BARE_AT`), which (a) names for that; mended by
+    hand, the line taken out, which leaves `mended`; and committed."""
     type_line(root, env, PUT_BACK[lost][0])
     put_back = (root / GITMODULES).read_bytes()
-    assert put_back.replace(UNPARSED_LINE, b"", 1) == mended, put_back
+    assert put_back.replace(line, b"", 1) == mended, put_back
     listed = raw(root, env, "config", "-f", GITMODULES, "--list",
                  check=False)
-    assert b"bad config line" in listed.stderr, listed.stderr
+    if line == UNPARSED_LINE:
+        assert b"bad config line" in listed.stderr, listed.stderr
+    else:
+        assert listed.returncode == 0, listed.stderr
     (root / GITMODULES).write_bytes(mended)
     raw(root, env, "add", "--", GITMODULES)
     commit_all(root, env, "The line git cannot parse mended as printed")
@@ -643,6 +664,94 @@ def test_a_line_git_cannot_parse_earlier_in_a_blob_is_read_up_to_as_git_does(
     if not cut:
         return
     put_back_mended_and_committed(clone, env, lost, data)
+    assert_the_credential_s_skip(clone, env)
+    assert_a_good_holder_s_run(clone, fetching(env))
+
+
+#: A key with no value put before a section's url (round 2 of #877): in
+#: the first section, MEMBER's, or a later one, OTHER's. `(the section,
+#: the key, the paths git's update registers, the path it finds no url
+#: for, the rows (a) names)`. Git takes no `url`, `path`, `update` or
+#: `ignore` with no value: in a blob it calls the line bad, an error and
+#: no die, and reads no further, where `git config --blob` takes the key
+#: and exits 0. A boolean with no value is true, and git reads on: no row
+#: is named, and the members are the credential's.
+BARE_AT = {
+    "url-in-the-first-section": (
+        MEMBER, "url", (), f"members/{MEMBER}",
+        ((f"members/{MEMBER}", NO_URL), (f"members/{OTHER}", NO_SECTION))),
+    "url-in-a-later-section": (
+        OTHER, "url", (f"members/{MEMBER}",), f"members/{OTHER}",
+        (STOPS_AT_OTHER, (f"members/{OTHER}", NO_URL))),
+    "update-in-a-later-section": (
+        OTHER, "update", (f"members/{MEMBER}",), f"members/{OTHER}",
+        (STOPS_AT_OTHER, (f"members/{OTHER}", NO_URL))),
+    "shallow-in-a-later-section": (
+        OTHER, "shallow", (f"members/{MEMBER}", f"members/{OTHER}"), None,
+        None),
+}
+
+
+def git_reads_every_section(root, env) -> None:
+    """Git's update with no credential, once the cure is committed: it
+    reads the work tree's file whole, registers every member, and fails
+    on their fetch alone."""
+    update = raw(root, env, "submodule", "update", "--init", "--recursive",
+                 check=False)
+    said = update.stderr.decode("utf-8", "replace")
+    assert update.returncode != 0, "premise: no credential"
+    assert "No url found" not in said and "bad config line" not in said, said
+    for project in (MEMBER, OTHER):
+        raw(root, env, "config", "--get", f"submodule.members/{project}.url")
+
+
+def bare_cure(lost: str, project: str, key: str) -> str:
+    """What (a) says cures a blob git read only up to `project`'s `key`
+    with no value, where git read the file `lost` names (`PUT_BACK`)."""
+    command, whose = PUT_BACK[lost]
+    return (f"`{command}` puts back {whose} .gitmodules, which git read "
+            f"only up to `submodule.members/{project}.{key}`, a key with no "
+            f"value: give it a value git takes, {TAKES[key]}, or take that "
+            "line out, and commit it.")
+
+
+@pytest.mark.parametrize("lost", LOST)
+@pytest.mark.parametrize("place", BARE_AT)
+def test_a_bare_key_in_a_blob_is_read_up_to_and_named_in_the_cure(
+        family, holder, offline, tmp_path, lost, place):
+    """ROUND 2 OF #877. A key git takes no value for, put before a
+    section's url in the index's file, or HEAD's, which git reads where
+    the work tree has none, and no credential: git's update calls the line
+    bad and reads no further, so its init dies at the first section it
+    read no url for, and `git config --blob` takes the key and exits 0.
+    Bootstrap stopped where git stops (#819) and wrote the unread section
+    back, which cannot cure: the key stays in the file. It names the file
+    put back, and that key, to be given a value or taken out: typed as
+    printed, `git config -f` takes the key, the line is taken out and the
+    file committed, git's update reads every section and fails on the
+    fetch alone, the run is the credential's skip, and with the
+    credential a good holder's. A boolean with no value is true, and
+    git reads on: the credential's skip, as before."""
+    project, key, registered, no_url, left = BARE_AT[place]
+    line = f"\t{key}\n".encode()
+    env = isolated(offline, tmp_path)
+    clone, data = edited_clone(
+        holder, env, family, tmp_path,
+        lambda data: url_edited(data, project, lambda url: line + url))
+    LOST[lost](clone, env)
+    git_update_said(clone, env, registered, no_url, stops=left is not None)
+    if left is None:
+        assert_the_credential_s_skip(clone, env)
+        return
+
+    result = bootstrap(clone, env, "--skip-members")
+
+    assert result.returncode == 1, result.stdout + result.stderr
+    assert result.stderr.splitlines()[-2:] == [
+        not_fetched(*left, cure=bare_cure(lost, project, key)),
+        failed_on(MEMBER, OTHER)], result.stderr
+    put_back_mended_and_committed(clone, env, lost, data, line)
+    git_reads_every_section(clone, env)
     assert_the_credential_s_skip(clone, env)
     assert_a_good_holder_s_run(clone, fetching(env))
 

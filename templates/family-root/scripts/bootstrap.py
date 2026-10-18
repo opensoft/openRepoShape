@@ -69,9 +69,11 @@ WHAT IT DOES, in order:
       --cached` takes out one outside members/, which the validator does
       not read; and where the gitlink is a row's own, with one section,
       the line says to write its section back. Where git read the index's
-      or HEAD's file only up to a line it cannot parse, a section or url
-      it did not read may be past that line, so for those three the line
-      says to put that file back, mend the line and commit it, and writes
+      or HEAD's file only up to a line it cannot parse, or up to a key it
+      takes no value for (a bare `url` line, which `git config --list`
+      takes), a section or url it did not read may be past that line, so
+      for those three the line says to put that file back, mend the line
+      or give the key a value or take it out, and commit it, and writes
       no section back (#856).
 
   (b) RUNS EACH MEMBER'S OWN `make bootstrap`. Each member is a whole project
@@ -138,9 +140,9 @@ NO_SECTION = f"no section of {GITMODULES} gives that path"
 NO_URL = "git has no url for that path"
 EXITED_0 = "git exited 0 and checked nothing out there"
 STOPPED = "git stopped at {}, a gitlink it has no url for"
-#: The whys a `.gitmodules` git read only up to a line it cannot parse may
-#: be the cause of, since what it did not read is past that line
-#: (`Gitmodules.cut`, #856).
+#: The whys a `.gitmodules` git read only up to a line it cannot parse, or
+#: up to a key with no value it stops at, may be the cause of, since what
+#: it did not read is past that line (`Gitmodules.cut`, #856).
 CUT_WHYS = frozenset({NO_SECTION, NO_URL, STOPPED})
 #: HEAD's `.gitmodules`, as `git config --blob` is given it.
 HEAD_GITMODULES = f"HEAD:{GITMODULES}"
@@ -345,14 +347,14 @@ def cures(left: list[tuple[dict, str, str]], stopper: str | None,
       clone chose. `--init` with the path registers a member a subset
       clone left out, and `--checkout` overrides an `update = none`.
     - The index's or HEAD's `.gitmodules`, a blob, which git read only up
-      to a line it cannot parse (`Gitmodules.cut`, #856), for a row with
-      no section or no url there, or the gitlink git stopped at
-      (`CUT_WHYS`): that file put back, mended and committed, which
-      `gitmodules_cures` says. A section or url git did not read may be
-      past the line, so no other cure is said for those: a section
-      written back where the work tree holds no file would be the only
-      one in it, and `validate-family.py` reads HEAD's file alone, not
-      the index's."""
+      to a line it cannot parse, or up to a key with no value it stops at
+      (`Gitmodules.cut`, #856), for a row with no section or no url there,
+      or the gitlink git stopped at (`CUT_WHYS`): that file put back,
+      mended and committed, which `gitmodules_cures` says. A section or
+      url git did not read may be past the line, so no other cure is said
+      for those: a section written back where the work tree holds no file
+      would be the only one in it, and `validate-family.py` reads HEAD's
+      file alone, not the index's."""
     whys = {why for _, _, why in left}
     said = gitmodules_cures(whys, modules)
     if modules.cut:
@@ -401,11 +403,14 @@ def gitmodules_cures(whys: set[str], modules: Gitmodules) -> list[str]:
     """`cures`' sentences for a `.gitmodules` git reads nothing from, each
     in the order `cures` says them (#648, #768): a merge left unmerged,
     for a row `whys` names so; each value git dies on; a work tree file
-    git cannot parse. And for a blob git read only up to such a line,
-    where a row `whys` names is one of `CUT_WHYS` (#856): the command
-    that puts that file back in the work tree, `git checkout` from the
-    index where git read the index's, which keeps what was staged, and
-    from HEAD where it read HEAD's, then the file mended and committed."""
+    git cannot parse. And for a blob git read only up to such a line, or
+    up to a key with no value it stops at, where a row `whys` names is
+    one of `CUT_WHYS` (#856): the command that puts that file back in the
+    work tree, `git checkout` from the index where git read the index's,
+    which keeps what was staged, and from HEAD where it read HEAD's, then
+    the file mended, or the key given a value git takes (`TAKES`) or its
+    line taken out, and committed. `git config -f .gitmodules --list`
+    takes a key with no value, so it is pointed at for the line alone."""
     said = []
     if UNMERGED in whys:
         said.append(f"Resolve the merge in {GITMODULES} and `git add "
@@ -427,11 +432,15 @@ def gitmodules_cures(whys: set[str], modules: Gitmodules) -> list[str]:
         head = modules.cut == HEAD_GITMODULES
         put_back = shlex.join(["git", "checkout", *(["HEAD"] if head else []),
                                "--", GITMODULES])
-        said.append(f"`{put_back}` puts back "
-                    f"{'HEAD' if head else 'the index'}'s {GITMODULES}, "
-                    "which git read only up to a line it cannot parse: mend "
-                    f"it by hand (`git config -f {GITMODULES} --list` says "
-                    "where it breaks), and commit it.")
+        whose = f"{'HEAD' if head else 'the index'}'s {GITMODULES}"
+        key = modules.cut_key
+        mend = (f"`{spelled(key)}`, a key with no value: give it a value "
+                f"git takes, {TAKES[key.rpartition('.')[2]]}, or take that "
+                "line out" if key else
+                "a line it cannot parse: mend it by hand (`git config -f "
+                f"{GITMODULES} --list` says where it breaks)")
+        said.append(f"`{put_back}` puts back {whose}, which git read only "
+                    f"up to {mend}, and commit it.")
     return said
 
 
@@ -467,7 +476,10 @@ class Gitmodules(NamedTuple):
     `HEAD:.gitmodules` or the index's object id, where it read an entry
     before it (`gitmodules_listed`, #856): the three hold what it read,
     and `cures` writes no section back. Empty where git read the whole
-    file, or nothing."""
+    file, or nothing. `cut_key` is the `submodule.<name>.<key>` with no
+    value that cut it, where that is what git stopped at
+    (`ends_blob_reading`), a line `git config --list` takes, and empty
+    where a line it cannot parse did."""
 
     given: Counter
     read: dict[str, str]
@@ -476,6 +488,7 @@ class Gitmodules(NamedTuple):
     refused: tuple[tuple[str, str | None], ...] = ()
     unreadable: bool = False
     cut: str = ""
+    cut_key: str = ""
 
 
 def gitmodules_sections(root: Path) -> Gitmodules:
@@ -485,7 +498,9 @@ def gitmodules_sections(root: Path) -> Gitmodules:
     the index's, then HEAD's (`gitmodules_source`, #768), each of the
     last two, a blob, up to a line git cannot parse, as git reads it,
     and `cut` where it read an entry before that line
-    (`gitmodules_listed`, #856). Nothing where none holds one, or git
+    (`gitmodules_listed`, #856), or up to a key with no value git stops
+    at, `cut` and `cut_key` (`gitmodules_entries`). Nothing where none
+    holds one, or git
     cannot read it: git has no url for any submodule then either.
     Nothing, and `unreadable`, where that is the
     work tree's file and `git config --list` cannot parse it: git dies
@@ -508,14 +523,15 @@ def gitmodules_sections(root: Path) -> Gitmodules:
     if listed is None:
         return nothing._replace(unreadable=os.path.isfile(root / GITMODULES))
     printed, cut = listed
-    entries = gitmodules_entries(root, printed, source[0] == "--blob")
+    entries, ended = gitmodules_entries(root, printed, source[0] == "--blob")
     refused = tuple(dict.fromkeys(
         (f"submodule.{name}.{key}", value)
         for name, key, value, ignored in entries
         if not ignored and refused_value(root, key, value)))
     if refused:
         return nothing._replace(refused=refused)
-    return read_sections(entries)._replace(cut=source[1] if cut else "")
+    return read_sections(entries)._replace(
+        cut=source[1] if cut or ended else "", cut_key=ended)
 
 
 def gitmodules_source(root: Path) -> list[str] | None:
@@ -587,7 +603,8 @@ def gitmodules_listed(root: Path, source: list[str]
 
 
 def gitmodules_entries(root: Path, listed: bytes, blob: bool
-                       ) -> list[tuple[str, str, str | None, bool]]:
+                       ) -> tuple[list[tuple[str, str, str | None, bool]],
+                                  str]:
     """`(name, key, value, ignored)` for each `submodule.<name>.<key>` that
     `git config -z --list` printed in `listed`, in file order, as git's
     submodule reader meets them: None for a key with no value, and
@@ -595,7 +612,8 @@ def gitmodules_entries(root: Path, listed: bytes, blob: bool
     a `..` component, split on `/` and on a backslash (git warns `ignoring
     suspicious submodule name`), a value git would die on included. In the
     index's or HEAD's file, a `blob`, git reads nothing after a key it
-    refuses with no value (`ends_blob_reading`)."""
+    refuses with no value (`ends_blob_reading`), and that key, as
+    `submodule.<name>.<key>`, is returned beside them; else nothing."""
     entries: list[tuple[str, str, str | None, bool]] = []
     for record in listed.split(b"\0"):
         key, valued, value = record.decode("utf-8",
@@ -607,9 +625,9 @@ def gitmodules_entries(root: Path, listed: bytes, blob: bool
         ignored = not name or ".." in name.replace("\\", "/").split("/")
         if blob and not ignored and not valued and ends_blob_reading(
                 root, variable):
-            break
+            return entries, f"submodule.{name}.{variable}"
         entries.append((name, variable, value if valued else None, ignored))
-    return entries
+    return entries, ""
 
 
 def ends_blob_reading(root: Path, key: str) -> bool:
@@ -617,7 +635,12 @@ def ends_blob_reading(root: Path, key: str) -> bool:
     HEAD's `.gitmodules`, a blob, where `bad config line` is an error and
     no die (#768): each key git refuses with no value, but a `branch` only
     where git does not crash on it (`crashes_on_branch`); before 2.43.1
-    git crashes on it there too, and `refused_value` names it."""
+    git crashes on it there too, and `refused_value` names it. Measured on
+    git 2.43.0 (#856): a bare `url`, `path`, `update` or `ignore` in a
+    blob is `missing value` and `bad config line`, and git reads no
+    further; a bare `branch` crashes it (exit 139); a bare `shallow`,
+    `fetchRecurseSubmodules` or `active` is read as true, and git reads
+    on."""
     return key in NO_VALUE_REFUSED and (key != "branch"
                                         or not crashes_on_branch(root))
 
