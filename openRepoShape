@@ -449,7 +449,7 @@ export_path_line() {
 # THE CHARACTERS A TERMINAL DRAWS AS SOMETHING OTHER THAN THEMSELVES (#837),
 # by code point, a range as its first and last. A value holding one is
 # refused wherever this command would print it, without printing it:
-# `install_commands` refuses such a directory, `shape_checkout` such a
+# `install_commands` refuses such a directory, `checked_repo` such a
 # repository and `ref_fault` such a ref. Every line that printed it would
 # show another value: laid out as a terminal lays out a line (fribidi),
 # `~/` U+202E `.local/bin` reads `~/nib/lacol.`, `/opt/tools-1` U+200F
@@ -776,6 +776,43 @@ find_python() {
 	return 1
 }
 
+# $OPENREPOSHAPE_REPO, CHECKED ONCE, BEFORE ANY RUN BUT `--help` (#866), by
+# `refuse_bad_values`. This is the guard `shape_checkout` held until then,
+# and it is `setup.sh`'s, for its reason: the value reaches a `git clone`
+# command line, where a leading `-` is an option rather than a repository and
+# a control character could forge a line of output before this script has
+# said a word. The refusal does not echo the value back. The leading `-` is
+# looked for in the URL `shape_clone_url` makes, which is what a clone is
+# handed: an owner/name, a URL, an scp address and a path each pass in the
+# form a clone takes, and only a URL or an scp address typed with a leading
+# `-` keeps it there.
+#
+# THE CHARACTERS ARE LOOKED FOR IN $REPO AS TYPED TOO (#866, rv866's
+# SHOULD-1). `$(…)` drops the newlines at the end of what it captures, so a
+# URL, an scp address or a path ending in a newline came out of
+# `shape_clone_url` without it, passed, and was printed by `--version` and
+# sent by the fetch with it. An owner/name keeps it inside the URL, before
+# `.git`, so only those three forms lost it.
+#
+# A CHARACTER A TERMINAL DRAWS AS SOMETHING OTHER THAN ITSELF IS REFUSED
+# FIRST (#837), in words that name it by its code point and nothing else of
+# the value. First, because `[![:print:]]` is the locale's: under `C` it
+# matches every byte past ASCII, and under a UTF-8 locale none of these
+# characters, so after it the words would change with the locale.
+#
+# install.sh's `checked_repo` is stricter, an owner/name and nothing else,
+# because it builds only github.com URLs from the value.
+checked_repo() {
+	local url misdrawn
+	url="$(shape_clone_url)"
+	misdrawn="$(LC_ALL=C; misdrawn_characters "$REPO")"
+	[ -z "$misdrawn" ] ||
+		die "OPENREPOSHAPE_REPO holds a character a terminal draws as something other than itself ($misdrawn): one that is invisible, is drawn as another character, ends a line or reorders the text around it. This tool will not put it on a \`git clone\` command line. Set it to a URL or a path."
+	case "$url$REPO" in
+	-* | *[![:print:]]*) die "OPENREPOSHAPE_REPO is not a value this tool will put on a \`git clone\` command line: it starts with '-' or carries a control character. Set it to a URL or a path." ;;
+	esac
+}
+
 # A CHECKOUT OF THE STANDARD, made the way `setup.sh` self-bootstraps one:
 # `git clone` of `shape_clone_url`, into the temporary directory `workdir`
 # owns, checked out at $REF when one was named: by $OPENREPOSHAPE_REF, or by
@@ -787,26 +824,11 @@ find_python() {
 # standard's tip -- a comparison a one-commit history cannot make at all. The
 # scaffold has no such need, so it stays shallow and this does not.
 #
-# The guard on $SHAPE_REPO is `setup.sh`'s, for its reason: the value reaches
-# a `git clone` command line, where a leading `-` is an option rather than a
-# repository and a control character could forge a line of output before this
-# script has said a word. The refusal does not echo the value back.
-#
-# A CHARACTER A TERMINAL DRAWS AS SOMETHING OTHER THAN ITSELF IS REFUSED
-# FIRST (#837), before the clone's refusal names `$REPO`, and in words that
-# name it by its code point and nothing else of the value. First, because
-# `[![:print:]]` is the locale's: under `C` it matches every byte past ASCII,
-# and under a UTF-8 locale none of these characters, so after it the words
-# would change with the locale.
+# $OPENREPOSHAPE_REPO HAS PASSED `checked_repo` BEFORE THIS RUNS (#866), as
+# every run but `--help` checks it once, and nothing between changes it.
 shape_checkout() {
-	local url misdrawn
+	local url
 	url="$(shape_clone_url)"
-	misdrawn="$(LC_ALL=C; misdrawn_characters "$url")"
-	[ -z "$misdrawn" ] ||
-		die "OPENREPOSHAPE_REPO holds a character a terminal draws as something other than itself ($misdrawn): one that is invisible, is drawn as another character, ends a line or reorders the text around it. This tool will not put it on a \`git clone\` command line. Set it to a URL or a path."
-	case "$url" in
-	-* | *[![:print:]]*) die "OPENREPOSHAPE_REPO is not a value this tool will put on a \`git clone\` command line: it starts with '-' or carries a control character. Set it to a URL or a path." ;;
-	esac
 	workdir openRepoShape-doctor
 	SHAPE_DIR="$WORKDIR/shape"
 	git clone --quiet -- "$url" "$SHAPE_DIR" ||
@@ -843,26 +865,46 @@ shape_checkout() {
 #
 # A CHARACTER A TERMINAL DRAWS AS SOMETHING OTHER THAN ITSELF (#837) is a
 # fault between the length and the control character, named by its code
-# point and never echoed, as `shape_checkout` refuses one: before the
+# point and never echoed, as `checked_repo` refuses one: before the
 # control check, whose `[![:print:]]` is the locale's, so the words do not
 # change with the locale, and before the shape, which echoes the value.
+# Those two are `ref_character_fault`'s, below.
 ref_fault() {
-	local ref="$1" what="$2" misdrawn
+	local ref="$1" what="$2" fault
 	if [ -z "$ref" ]; then
 		printf '%s' "$what is empty, which is not a branch, tag or commit this tool will pass to \`git checkout\`."
 	elif [ "${#ref}" -gt 255 ]; then
 		printf '%s' "$what is ${#ref} characters long; a branch, tag or commit this tool will pass to \`git checkout\` is at most 255 characters."
 	else
-		misdrawn="$(LC_ALL=C; misdrawn_characters "$ref")"
-		if [ -n "$misdrawn" ]; then
-			printf '%s' "$what holds a character a terminal draws as something other than itself ($misdrawn): one that is invisible, is drawn as another character, ends a line or reorders the text around it. No branch, tag or commit this tool will pass to \`git checkout\` holds one."
+		fault="$(ref_character_fault "$ref" "$what")"
+		if [ -n "$fault" ]; then
+			printf '%s' "$fault"
 			return 0
 		fi
 		case "$ref" in
-		*[![:print:]]*) printf '%s' "$what carries a control character, which is not a branch, tag or commit this tool will pass to \`git checkout\`." ;;
 		[!A-Za-z0-9]* | *..* | *.lock | *[!A-Za-z0-9._/-]*) printf '%s' "$what is '$ref', which is not a branch, tag or commit this tool will pass to \`git checkout\`: a ref starts with a letter or digit, uses only letters, digits, '.', '_', '/', '-', has no '..' and does not end in '.lock'." ;;
 		esac
 	fi
+}
+
+# WHICH CHARACTER OF A REF NO LINE CAN PRINT AS IT READS, IF ANY (#866): a
+# character a terminal draws as something other than itself, then a control
+# character, in `ref_fault`'s order and words, which ask this between the
+# length and the shape. `refuse_bad_values` asks it alone of
+# $OPENREPOSHAPE_REF, before any run: a ref of any length and shape prints
+# as it reads, and an install that does not record the ref takes one that
+# names no ref at all (workBenches', `record_ref`), so those two are left to
+# where a ref is used.
+ref_character_fault() {
+	local ref="$1" what="$2" misdrawn
+	misdrawn="$(LC_ALL=C; misdrawn_characters "$ref")"
+	if [ -n "$misdrawn" ]; then
+		printf '%s' "$what holds a character a terminal draws as something other than itself ($misdrawn): one that is invisible, is drawn as another character, ends a line or reorders the text around it. No branch, tag or commit this tool will pass to \`git checkout\` holds one."
+		return 0
+	fi
+	case "$ref" in
+	*[![:print:]]*) printf '%s' "$what carries a control character, which is not a branch, tag or commit this tool will pass to \`git checkout\`." ;;
+	esac
 }
 
 checked_ref() {
@@ -930,6 +972,23 @@ read_recorded_ref
 
 refuse_bad_record() {
 	[ -z "$RECORD_FAULT" ] || die "$RECORD_FAULT"
+}
+
+# THE REPOSITORY AND THE REF, CHECKED ONCE, BEFORE ANY LINE NAMES EITHER AND
+# BEFORE ANY REQUEST CARRIES THEM (#866). `--version` printed both as typed,
+# and a scaffold run and `--install` sent them in the fetch and named them in
+# its refusal, so an escape or U+202E in either reached the terminal as it
+# was. The record is refused first, as before, then $OPENREPOSHAPE_REPO by
+# `checked_repo` and $OPENREPOSHAPE_REF by `ref_character_fault`, each in the
+# words it already had. Called once the arguments are read, and by
+# `--version`, which answers inside the argument loop. `--help` answers
+# before both, because it names the variables and never their values.
+refuse_bad_values() {
+	local fault
+	refuse_bad_record
+	checked_repo
+	fault="$(ref_character_fault "$REF" "\$OPENREPOSHAPE_REF")"
+	[ -z "$fault" ] || die "$fault"
 }
 
 # `--doctor`: RUN THE STANDARD'S OWN SCRIPT, never a reimplementation here.
@@ -1079,7 +1138,7 @@ run_doctor() {
 while [ $# -gt 0 ]; do
 	case "$1" in
 	-h | --help) usage; exit 0 ;;
-	--version) refuse_bad_record; say "openRepoShape ($REPO @ $REF)"; exit 0 ;;
+	--version) refuse_bad_values; say "openRepoShape ($REPO @ $REF)"; exit 0 ;;
 	# TWO MODES IS A REFUSAL, NEVER LAST-WINS. `--doctor <path> --install`
 	# used to enter the install path and silently drop the diagnosis, and
 	# the other order dropped the install (Copilot, PR #96). Each of these
@@ -1187,8 +1246,9 @@ while [ $# -gt 0 ]; do
 done
 
 # A BROKEN RECORD IS REFUSED HERE, after `--help` has had its chance and
-# before any run that would use the ref it should have named (#564).
-refuse_bad_record
+# before any run that would use the ref it should have named (#564), and so
+# are a repository and a ref no line can print as they read (#866).
+refuse_bad_values
 
 if [ "$MODE" = "doctor" ]; then
 	# ONE PATH AND THE DOCTOR'S TWO FLAGS, NOTHING ELSE. Every other
