@@ -116,6 +116,16 @@ WHAT IT DOES, in order:
       Where (a) cannot start git, the run STOPS there, exit 2, refused
       `git-not-runnable` as `validate-family.py` refuses it (#694): each
       member's own bootstrap runs git too, so (b) would only say it again.
+      And where (a) or (b) cannot ask whether a row's member is checked
+      out, or whether it has a `Makefile`, because the operating system
+      refused the `stat` of its `.git` or its `Makefile` (a `members/` this
+      user cannot search), the run STOPS there, exit 2, refused
+      `member-unreadable`, naming the path and the cure (#430). On Python
+      3.14 that member read as NOT CHECKED OUT, or as having no Makefile,
+      and was skipped, and the run said `family bootstrap ok`; before it,
+      the run ended in a `PermissionError` traceback. A `family.yaml` whose
+      `stat` is refused is `family-manifest-unreadable`, never
+      `family-manifest-missing`.
 
 THE FAMILY CONFERS NOTHING and neither does this command. It fetches, it
 delegates, and it says what it could not reach.
@@ -124,13 +134,16 @@ delegates, and it says what it could not reach.
 from __future__ import annotations
 
 import argparse
+import errno
 import os
 import re
 import shlex
 import shutil
+import stat
 import subprocess
 import sys
 from collections import Counter
+from collections.abc import Callable
 from pathlib import Path
 from typing import NamedTuple
 
@@ -207,6 +220,100 @@ CREDENTIAL_ENV = ("SHAPE_LEGS_APP_TOKEN", "SHAPE_LEGS_TOKEN")
 #: Both spellings a submodule URL may carry, rewritten to an authenticated
 #: HTTPS one for the duration of a single command.
 REWRITE_TARGETS = ("https://github.com/", "git@github.com:")
+
+#: The `OSError`s that `Path.is_file()` and `Path.exists()` answered False to
+#: on Python 3.9 to 3.13 (pathlib's `_ignore_error`), because each means there
+#: is nothing at the name to open: no such file, a part of the path that is
+#: not a directory, a bad descriptor, a symlink loop, and Windows' "not
+#: ready", "invalid name" and "cannot resolve". Every other one was raised.
+_ABSENT_ERRNOS = (errno.ENOENT, errno.ENOTDIR, errno.EBADF, errno.ELOOP)
+_ABSENT_WINERRORS = (21, 123, 1921)
+
+#: What a path the operating system refused for ANOTHER reason than
+#: permission is told: an I/O error, a name longer than the filesystem
+#: takes, a file replaced while this ran. No `chmod` puts one right.
+#: `validate-pins.py`'s words for the same refusal (#712, #430).
+OTHER_REASON = (
+    "Where the operating system gave another reason, put a regular file this "
+    "user can open back in its place, or take away one nobody wants, and make "
+    "sure nothing is changing the directory while this runs. ")
+
+
+def _is_a(path: Path, kind: Callable[[int], bool]) -> bool:
+    """Whether `path` is there and of `kind` (`stat.S_ISREG`, `_anything`),
+    raising the `OSError` of a `stat` the operating system REFUSED (#430).
+
+    NOT `Path.is_file()` OR `Path.exists()`, whose answer depends on the
+    Python. Up to 3.13 they raised a refused `stat` (`PermissionError`), and
+    `make bootstrap` ended in that traceback; from 3.14 they answer False to
+    ANY `OSError`. On 3.14 a member mounted under a `members/` this user
+    cannot search was NOT CHECKED OUT, skipped, beside the advice to set a
+    credential, and one whose `Makefile` could not be reached had none, and
+    the run said `family bootstrap ok` over members nothing ran in. Asked
+    here, every Python answers as 3.9 to 3.13 did, and a refused `stat` is a
+    refusal that names the path (`unreadable`). A name the system cannot
+    take at all (a NUL in a row's `path:`) is no file, as `exists()`
+    answered it. This file's own copy, as each pinned copy keeps one (#370,
+    #610): `bump-leg.py` has the same.
+    """
+    try:
+        mode = path.stat().st_mode
+    except OSError as exc:
+        if (exc.errno in _ABSENT_ERRNOS
+                or getattr(exc, "winerror", None) in _ABSENT_WINERRORS):
+            return False
+        raise
+    except ValueError:
+        return False
+    return kind(mode)
+
+
+def _anything(mode: int) -> bool:
+    """Any kind of file at all: what `Path.exists()` asks of a `.git`,
+    which is a file in a mounted member and a folder in a clone (#430)."""
+    return stat.S_IFMT(mode) != 0
+
+
+def unreadable(code: str, named: str, exc: OSError, what: str) -> Refusal:
+    """`code`'s refusal of a path this command must ask about and the
+    operating system will not let it: its `stat` refused (`_is_a`), as in a
+    folder this user cannot search (#430). The line is `validate-pins.py`'s
+    `_cannot_read`, `<named>: cannot be read (<the system's reason>)`, with
+    `named` relative to the holder and spelled; `what` says what was not
+    done, and why the question matters. THE ADVICE FOLLOWS THE CAUSE, in
+    `validate-pins.py`'s words: a permission (`PermissionError`, which is
+    `EACCES` and `EPERM`) is put right by the mode or the owner, and any
+    other cause is `OTHER_REASON`, which is not told to `chmod`."""
+    advice = (
+        "Make what this user may not open readable by this user: `chmod u+r` "
+        "on a file, `chmod u+rx` on a directory (and on every directory above "
+        "it), or fix who owns it. "
+        if isinstance(exc, PermissionError) else OTHER_REASON)
+    return Refusal(
+        code,
+        f"{named}: cannot be read ({exc.strerror or type(exc).__name__})",
+        f"Remediation: {what} A path this command cannot read is a question "
+        f"it cannot answer, never a pass. {advice}Then run the same command "
+        "again.")
+
+
+def checked_out(root: Path, row: dict) -> bool:
+    """Whether the row's member is checked out: its mount holds a `.git`,
+    asked as `_is_a` asks it, or the `member-unreadable` refusal naming that
+    `.git` where its `stat` was refused (#430). (a) asks it of every row
+    (`unfetchable`) and (b) before it runs anything in the member
+    (`run_member_target`); on Python 3.14 the answer was "not checked out",
+    and the member was skipped."""
+    git_dir = member_path(root, row) / ".git"
+    try:
+        return _is_a(git_dir, _anything)
+    except OSError as exc:
+        raise unreadable(
+            "member-unreadable", spelled(f"{row_path(row)}/.git"), exc,
+            "Each row's mount is asked whether git checked its member out "
+            "before anything is run in it, and this one could not be asked, "
+            "so the run stopped there: no member's command was run after "
+            "it.") from exc
 
 
 def credential() -> tuple[str, str]:
@@ -911,10 +1018,11 @@ def unfetchable(root: Path, rows: list[dict], exited_0: bool
     same, and git's init asked where it stopped, for `fetch_members` to
     ask why git updated none (`updated_none`): this returned before
     `init_stop` there, so a run whose update git's init stopped said
-    `family bootstrap ok` (#879)."""
+    `family bootstrap ok` (#879). A row whose mount cannot be asked is
+    refused, `member-unreadable` (`checked_out`, #430)."""
     left: dict[str, dict] = {}
     for row in rows:
-        if not (member_path(root, row) / ".git").exists():
+        if not checked_out(root, row):
             left.setdefault(row_path(row), row)
     if not left and exited_0:
         return [], None, Gitmodules(Counter(), {}, {})
@@ -974,8 +1082,21 @@ def updated_none(stopper: str | None, modules: Gitmodules) -> str | None:
 
 
 def members_of(root: Path) -> tuple[str, list[dict]]:
+    """`(name:, the member rows)` out of `family.yaml`, or a refusal.
+
+    A `family.yaml` whose `stat` the operating system refused is
+    `family-manifest-unreadable`, naming it and the cure (#430), never
+    `family-manifest-missing`, which Python 3.14 said of it, whose remedy
+    sends a person to the wrong kind of root."""
     manifest_path = root / MANIFEST
-    if not manifest_path.is_file():
+    try:
+        present = _is_a(manifest_path, stat.S_ISREG)
+    except OSError as exc:
+        raise unreadable(
+            "family-manifest-unreadable", MANIFEST, exc,
+            f"{MANIFEST} declares this holder's members, and which they are "
+            "cannot be told without it.") from exc
+    if not present:
         raise Refusal(
             "family-manifest-missing",
             f"{manifest_path} does not exist, so there is no declaration of "
@@ -1027,11 +1148,20 @@ def run_member_target(root: Path, row: dict, target: str) -> str | None:
     project = spelled(row.get("project") or "?")
     path = member_path(root, row)
     named = spelled(target)
-    if not (path / ".git").exists():
+    if not checked_out(root, row):
         print(f"  [{project}] {spelled(path.name)}: NOT CHECKED OUT; skipped. "
               "See the fetch above.")
         return None
-    if not (path / "Makefile").is_file():
+    try:
+        has_makefile = _is_a(path / "Makefile", stat.S_ISREG)
+    except OSError as exc:
+        # One it cannot reach is no "no Makefile" (#430), which Python 3.14
+        # said of it, and `family bootstrap ok` after.
+        raise unreadable(
+            "member-unreadable", spelled(f"{row_path(row)}/Makefile"), exc,
+            f"`make {named}` was not run in {project}, nor in any member "
+            "after it.") from exc
+    if not has_makefile:
         print(f"  [{project}] no Makefile; skipped. A member without one is "
               "not misconfigured — it simply has nothing for this command to "
               "call.")
@@ -1153,7 +1283,15 @@ def main(argv: list[str] | None = None) -> int:
               "`family.py add` is what puts one here.")
     else:
         for row in rows:
-            failure = run_member_target(root, row, args.members_make)
+            try:
+                failure = run_member_target(root, row, args.members_make)
+            except Refusal as exc:
+                # Only `member-unreadable` reaches here (#430). Stdout
+                # first, so a log of both streams reads in the order the run
+                # went.
+                sys.stdout.flush()
+                print(str(exc), file=sys.stderr)
+                return 2
             if failure:
                 failed.append(failure)
 
