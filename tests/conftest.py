@@ -1201,6 +1201,25 @@ def skip_message(call, *args) -> str | None:
     return None
 
 
+def skip_where_the_environment_cannot_carry(value: str) -> None:
+    """Skip where this system's file name encoding cannot encode `value`, as
+    under `LC_ALL=C PYTHONUTF8=0 PYTHONCOERCECLOCALE=0` (ASCII). It is asked of
+    a file name (`make_file` cannot write `caf\\u00e9.yml`, and `mkdir` cannot
+    make `\\u202ecaf`), of an environment value and of a command-line
+    argument: `subprocess` puts each one through `os.fsencode` before it
+    starts the child, so a `user.name` of `Jos\\u00e9` or a branch
+    `main\\u00a0` raises `UnicodeEncodeError` in the test and not in the tool
+    (#757, #853, #854). Text that is ASCII, or a lone surrogate that
+    `os.fsencode` gives back as its byte, is carried. Asked through the `os`
+    module at call time, so a test emulates ASCII with
+    `monkeypatch.setattr(os, "fsencode", ...)`."""
+    try:
+        os.fsencode(value)
+    except UnicodeEncodeError:
+        pytest.skip(f"this system's file name encoding "
+                    f"({sys.getfilesystemencoding()}) cannot spell {value!r}")
+
+
 # --- the `gh` guard (#296) ---------------------------------------------------
 #
 # NO TEST REACHES THE OPERATOR'S `gh`, and the doctor's `machine` row is still

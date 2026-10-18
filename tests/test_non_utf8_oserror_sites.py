@@ -41,9 +41,11 @@ it did. No Windows or macOS run was made:
   EDQUOT, fails here;
 - Windows, by an `os.fsencode` that gives a surrogate three bytes: the three
   tests that ask the helper skip before the disk is touched;
-- git failing under the U+202E directory fails the test, and under the
-  directory named with a byte that is not UTF-8 still skips it (#757 kept that
-  second skip, and it is a known limit: a full disk skips there).
+- git failing under the U+202E directory fails the test. Under the directory
+  named with a byte that is not UTF-8 it fails the test too since #853, which
+  dropped the second skip #757 kept there:
+  `tests/test_non_utf8_git_failures.py` holds that, for each test that makes
+  a source repository under such a directory.
 """
 
 from __future__ import annotations
@@ -59,7 +61,8 @@ import test_bootstrap_leg_moves as leg_moves
 import test_cli_reference as cli_reference
 import test_doctor_validator_verdicts as doctor_verdicts
 import test_non_utf8_git_reads as non_utf8_git_reads
-from conftest import skip_message, windows_fsencode
+from conftest import (skip_message, skip_where_the_environment_cannot_carry,
+                      windows_fsencode)
 # The fixtures and the two functions of #757's callers file, which ask the same
 # questions of the same helper.
 from test_non_utf8_name_callers import (  # noqa: F401 - fixtures
@@ -283,8 +286,6 @@ def test_make_file_raises_any_other_error_of_the_disk(
 BIDI = chr(0x202E)
 BIDI_TEST = (template_values
              .test_execute_refuses_a_local_source_directory_holding_a_bidi_control)
-BYTE_TEST = (template_values
-             .test_execute_refuses_a_local_source_directory_that_is_not_utf8)
 
 
 def test_a_disk_that_refuses_the_bidi_directory_fails_the_test(
@@ -292,7 +293,10 @@ def test_a_disk_that_refuses_the_bidi_directory_fails_the_test(
     """U+202E is valid text: no probe is asked, and the directory is made with
     no guard, so what the disk answers to it is raised, whichever errno it is.
     It was a skip that said "no directory here is named ..." for a full disk
-    or a read-only one."""
+    or a read-only one. Skipped where this system's file name encoding cannot
+    spell U+202E (ASCII under `LC_ALL=C`): the test skips there before it
+    asks the disk (#854)."""
+    skip_where_the_environment_cannot_carry(BIDI)
     disk = a_disk_that_refuses(monkeypatch, errno.EACCES)
     raised_for_every_errno(disk, BIDI_TEST, tmp_path)
 
@@ -303,26 +307,13 @@ def test_a_failure_of_git_under_the_bidi_directory_fails_the_test(
     where git cannot (a disk that filled after the `mkdir`), the failure is
     raised, as the name is valid text and not the cause. It was a skip that
     said "git will not work under ...". Skipped where this system's file name
-    encoding cannot spell U+202E (ASCII under `LC_ALL=C`): the directory is
-    really made here, and `mkdir` raises `UnicodeEncodeError` first."""
-    non_utf8_git_reads.skip_where_the_environment_cannot_carry(BIDI)
+    encoding cannot spell U+202E (ASCII under `LC_ALL=C`): the test skips
+    there before it makes the directory (#854)."""
+    skip_where_the_environment_cannot_carry(BIDI)
     monkeypatch.setattr(template_values, "make_source_repo",
                         a_source_git_cannot_make)
     error = the_error_of(AssertionError, BIDI_TEST, tmp_path)
     assert str(error) == GIT_FAILED
-
-
-@pytest.mark.usefixtures("a_disk_that_takes_the_probe")
-def test_a_failure_of_git_under_the_byte_directory_still_skips_the_test(
-        tmp_path, monkeypatch):
-    """The control, and the known limit: #757 kept the second skip for a name
-    that is not UTF-8, which git may not work under, so a disk that filled
-    after the `mkdir` still reads as SKIPPED there."""
-    monkeypatch.setattr(template_values, "make_source_repo",
-                        a_source_git_cannot_make)
-    reason = skip_message(BYTE_TEST, tmp_path)
-    assert reason is not None, "the test went on past git's failure"
-    assert "git will not work under" in reason, reason
 
 
 # --- the sweep itself -------------------------------------------------------

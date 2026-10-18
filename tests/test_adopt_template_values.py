@@ -51,7 +51,8 @@ import pytest
 
 from conftest import (ADOPT, REPO, WINDOWS_SKIP, blank_unnamed_pin_sources,
                       make_source_repo, resolve,
-                      skip_where_a_name_cannot_be_not_utf_8)
+                      skip_where_a_name_cannot_be_not_utf_8,
+                      skip_where_the_environment_cannot_carry)
 
 sys.path.insert(0, str(REPO / "scripts"))
 import shape_materialize  # noqa: E402
@@ -246,8 +247,7 @@ MOVE_REMEDIATION = (
     b"again")
 
 
-def refused_then_moved(base: Path, parent: Path, reason: bytes,
-                       skip_where_git_fails: bool = True) -> None:
+def refused_then_moved(base: Path, parent: Path, reason: bytes) -> None:
     """A source in the directory `parent`: `plan` and `check` pass it, as
     #247 made them, and `execute` refuses its path as the assembly root's
     clone URL, giving `reason`, before any leg exists. Then the remediation
@@ -255,17 +255,12 @@ def refused_then_moved(base: Path, parent: Path, reason: bytes,
     `plan --source <its new path>`, `check` and `execute` run again -- ends
     `adoption verified`.
 
-    A source repository that git cannot make under `parent` skips the test
-    where `skip_where_git_fails` is true, for a name that is not UTF-8, which
-    git may not work under. A name that is valid text asks for it false, and
-    the failure is raised: the cause is the disk or git, never the name
-    (#834)."""
-    try:
-        source = make_source_repo(parent / "Thing")
-    except AssertionError as exc:
-        if not skip_where_git_fails:
-            raise
-        pytest.skip(f"git will not work under {parent.name!r} here: {exc}")
+    The source repository is made under `parent` with no guard: the caller
+    has asked whether this system can carry the name, and git works under
+    any directory a system carries, so a failure of git there (a disk that
+    filled after the `mkdir`) is the test's own and is raised, for a name
+    that is not UTF-8 (#853) as for one that is valid text (#834)."""
+    source = make_source_repo(parent / "Thing")
     runs = plan_check_execute(base, source)
     assert_no_traceback_and_no_leg(base, runs)
     assert runs["plan"].returncode == 0, said(runs["plan"])
@@ -300,8 +295,8 @@ def test_execute_refuses_a_local_source_directory_that_is_not_utf8(tmp_path):
     once said to clone the source to a UTF-8 path and pass that with
     --source, which ended in a traceback: the clone's `origin` is the old
     path, which `_remote_repository` reads as UTF-8. Skipped where no
-    directory can be named with the byte 0xE9 (Windows, macOS's APFS) or
-    git will not work in one."""
+    directory can be named with the byte 0xE9 (Windows, macOS's APFS); a
+    failure of git under it fails the test (#853)."""
     skip_where_a_name_cannot_be_not_utf_8(tmp_path)
     parent = Path(os.fsdecode(os.path.join(os.fsencode(tmp_path),
                                            b"caf\xe9")))
@@ -315,15 +310,18 @@ def test_execute_refuses_a_local_source_directory_holding_a_bidi_control(
     """A source under a directory whose name begins with U+202E RIGHT-TO-LEFT
     OVERRIDE: on main `execute` adopted it, and the shape's README showed
     the rest of its `git clone` line reversed. Now it is refused as the
-    byte is, and moving the source adopts. Nothing here is guarded: U+202E
-    is valid text, which a POSIX disk, NTFS and APFS hold and git works
-    under (reasoned, not run, on the last two), so an error of the disk when
-    the directory is made, and a failure of git when the source is, are the
-    test's own and are raised, not skipped (#834)."""
+    byte is, and moving the source adopts. Skipped where this system's file
+    name encoding cannot spell U+202E (ASCII under `LC_ALL=C`), which is
+    asked before the `mkdir`, where it raised `UnicodeEncodeError` (#854).
+    Nothing else is guarded: U+202E is valid text, which a POSIX disk, NTFS
+    and APFS hold and git works under (reasoned, not run, on the last two),
+    so an error of the disk when the directory is made, and a failure of git
+    when the source is, are the test's own and are raised, not skipped
+    (#834)."""
     parent = tmp_path / "\u202ecaf"
+    skip_where_the_environment_cannot_carry(parent.name)
     parent.mkdir()
-    refused_then_moved(tmp_path, parent, b"a bidirectional control",
-                       skip_where_git_fails=False)
+    refused_then_moved(tmp_path, parent, b"a bidirectional control")
 
 
 # --- `check` and `execute`: a plan value edited by hand ----------------------
