@@ -63,9 +63,9 @@ from test_family_remove_gitmodules import verb_args
 from test_family_tracking_branch import on_main  # noqa: F401
 from test_validate_family_branch_step import BRANCH_LEFT
 from test_validate_family_unnamed_mounts import (
-    GITLINK_REMEDY, GITLINK_SAID, VARIANT, codes, commands, findings, removal,
-    spare_commits, stage_gitlink, stage_unmerged_gitlink, take_out_as_printed,
-    with_section,
+    GITLINK_REMEDY, GITLINK_SAID, GITLINK_SAID_FETCHED, VARIANT, codes,
+    commands, findings, removal, spare_commits, stage_gitlink,
+    stage_unmerged_gitlink, take_out_as_printed, with_section,
 )
 
 MEMBER = MEMBERS[0]
@@ -142,7 +142,7 @@ def test_a_hand_mounts_staged_removal_is_committed_and_added_as_printed(
 
     assert again.returncode == 1, again.stdout + again.stderr
     staged, *section = findings(again)
-    assert staged == (GITLINK_SAID.format(path=HAND, commit=at)
+    assert staged == (GITLINK_SAID_FETCHED.format(path=HAND, commit=at)
                       + STAGED_HAND_MOUNT + f"\n    {switch}\n    {add}")
     retyped = raw(holder, env, *shlex.split(rm)[1:], check=False)
     assert retyped.returncode == 128, retyped.stderr
