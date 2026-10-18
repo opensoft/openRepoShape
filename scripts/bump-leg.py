@@ -123,6 +123,9 @@ from repo_shape import (  # noqa: E402
     COMMIT_RE, SAFE_PATH_RE, Refusal, checked_value, git_out, load_yaml,
     recorded_gitlink, repo_basename, shown_path, spelled, tree_digest,
 )
+# On its own line, so the list above, which other changes extend, is
+# not a line two of them both rewrite (#715).
+from shape_materialize import readable_branch  # noqa: E402
 from shape_materialize import (  # noqa: E402
     CommandFailed, captured_child_environment, check_program, commit_trailers,
     escape_what_stdout_cannot_encode, is_nested_key, pin_values_in,
@@ -243,7 +246,21 @@ class Project:
 
     @property
     def tracking(self) -> str:
-        return str(self.data.get("tracking_branch") or "main")
+        """The tracking branch, read through `readable_branch` (#715): a
+        name holding a character that does not print or is white space is
+        `unseen-branch`, exit 2, and any other name is taken as it is.
+
+        Compared raw, `tracking_branch: main` followed by U+00A0, which the
+        reader reads as YAML does since #715, was not `main`, so
+        `_branch_to_bump_from` let a commit be made on `main`. This tool
+        never hands the name to a command: it compares it
+        (`_branch_to_bump_from`, the dry run's last line) and prints it. So
+        `checked_value`'s pattern, which #823's first fix round read it
+        through, is not asked: it refused `feature/` and CJK, `a&b` and
+        every other name git creates and the root's own gate passes. Every
+        run asks this before it fetches or writes."""
+        return readable_branch("tracking_branch",
+                               self.data.get("tracking_branch") or "main")
 
 
 # ---------------------------------------------------------------------------
