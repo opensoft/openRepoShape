@@ -128,17 +128,31 @@ DOCUMENTS = ("AGENTS.md",)
 #: `<user>-wip` are not names and never need an entry below.
 CODE_SHAPE = re.compile(r"[a-z]+(-[a-z0-9]+)+")
 
+#: The four commands the openreposhape package places beside its
+#: `openRepoShape` (#563), from `pyproject.toml`'s `[project.scripts]`:
+#: AGENTS.md names them as commands an assistant runs, and no tool prints
+#: one alone. The reason, spelled once, for their four entries below.
+PACKAGE_COMMAND = (
+    "a command the openreposhape package places (#563, `pyproject.toml`'s "
+    "`[project.scripts]`), named so an assistant knows it runs the tool of "
+    "that name; a command, not a code, and no tool prints it alone")
+
 #: A code-shaped name `AGENTS.md` spells that is NOT a code a tool prints,
 #: each with its reason. Verdict words a tool prints are checked, never
 #: listed here. The test fails an entry that a tool does print and an entry
 #: no document names any more, so the list cannot rot into a place where a
-#: misspelling hides. It may be EMPTY: the day `AGENTS.md` stops citing the
-#: ruling id below, the entry goes and the dict is `{}`.
+#: misspelling hides. It may be EMPTY: an entry goes the day `AGENTS.md`
+#: stops naming it (the ruling id, or one of the package's commands), and
+#: once none is left the dict is `{}`.
 NOT_A_CODE_A_TOOL_PRINTS = {
     "prefer-triad-project-shape": (
         "an openxFactory ruling id (Brett Heap, 2026-10-06), cited so a "
         "reader can find the ruling; the tools name it in comments and "
         "docstrings and print it nowhere"),
+    "scaffold-project": PACKAGE_COMMAND,
+    "adopt-project": PACKAGE_COMMAND,
+    "update-shape": PACKAGE_COMMAND,
+    "shape-doctor": PACKAGE_COMMAND,
 }
 
 #: Where a failure says to put a name that is no code, so the three messages

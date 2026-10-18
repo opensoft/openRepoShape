@@ -53,7 +53,7 @@ one today, and the generator refuses to write this file if one ever appears.
 
 ## Run from a checkout of the standard
 
-Every command below is typed at the root of a clone of this repository. `openRepoShape` is also the one file `--install` places on `PATH`, and is the only entry point that needs no checkout at all.
+Every command below is typed at the root of a clone of this repository. `openRepoShape` is also the one file `--install` places on `PATH`, and needs no checkout at all. `pipx install openreposhape` (#563) places a Python `openRepoShape` with the same modes, whose own `--help` says what differs (its `--install` refuses and names `pipx upgrade openreposhape`), and four commands that need no checkout either: `scaffold-project`, `adopt-project`, `update-shape` and `shape-doctor` each run the tool of that name below, with every argument unchanged, from a clone of the standard at the package's own release commit, so their flags are the ones below.
 
 ### `setup.sh`
 
@@ -366,7 +366,9 @@ options:
                         --pin and no --referent-chain to read it, it is
                         refused as `pin-source-unused`; an empty value is
                         refused as `pin-source-no-path`, and `.` means this
-                        directory.
+                        directory. A --pin's digest is read only at a clone's
+                        top level, or a bare clone's: any other path is
+                        refused as `pin-source-not-a-clone`.
   --work-dir WORK_DIR   where the working trees are built (default: a
                         temporary directory)
   --no-next-steps       leave out the closing NEXT STEPS (the clone, the cd
@@ -516,6 +518,9 @@ options:
                         Given with no --pin to read it, the flag is refused as
                         `pin-source-unused`; an empty value is refused as
                         `pin-source-no-path`, and `.` means this directory.
+                        `pin-source-not-a-clone` refuses any other path than a
+                        clone's top level, or a bare clone's, where a --pin's
+                        digest is read.
   --allow-empty-leg {spec,code}
                         record in the plan that this leg having NO path is
                         intended, so it may be SEEDED from the shape's

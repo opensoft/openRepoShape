@@ -11,7 +11,6 @@ pull-request ruleset.
 from __future__ import annotations
 
 import importlib.util
-import os
 import re
 import shlex
 import shutil
@@ -21,8 +20,8 @@ from pathlib import Path
 
 import pytest
 
-from conftest import (ADOPT, REPO, cloned_just_pushed, git, make_source_repo,
-                      resolve, run_script, write_plan)
+from conftest import (ADOPT, REPO, cloned_just_pushed, git, insteadof_args,
+                      make_source_repo, resolve, run_script, write_plan)
 
 sys.path.insert(0, str(REPO / "scripts"))
 from repo_shape import load_yaml  # noqa: E402
@@ -243,21 +242,16 @@ def pasted(line: str, cwd: Path, remotes: Path) -> subprocess.CompletedProcess:
     object files one by one, and maintenance a push left running can pack
     them away mid-copy (`failed to copy file`, on the macOS runner). So
     `--no-local` reads the root through git, and each leg's plain path under
-    `remotes`, as `.gitmodules` records it (the directory resolved, in both
-    of a Windows path's spellings), is read as its `file://` URI. Every
-    printed argument is kept as printed, `-c protocol.file.allow=always`
-    among them; a URI is the `file` transport too, so a line without it is
-    refused here as it is refused pasted."""
+    `remotes`, as `.gitmodules` records it (`insteadof_args`: the directory
+    resolved, in both of a Windows path's spellings), is read as its
+    `file://` URI. Every printed argument is kept as printed, `-c
+    protocol.file.allow=always` among them; a URI is the `file` transport
+    too, so a line without it is refused here as it is refused pasted."""
     argv = shlex.split(line)
-    resolved = remotes.resolve()
-    uri = resolved.as_uri().rstrip("/") + "/"
-    prefixes = dict.fromkeys([os.path.join(str(resolved), ""),
-                              resolved.as_posix().rstrip("/") + "/"])
     at = argv.index("clone")
     return subprocess.run(
-        [*argv[:at], *(arg for prefix in prefixes
-                       for arg in ("-c", f"url.{uri}.insteadOf={prefix}")),
-         "clone", "--no-local", *argv[at + 1:]],
+        [*argv[:at], *insteadof_args(remotes), "clone", "--no-local",
+         *argv[at + 1:]],
         cwd=str(cwd), capture_output=True, encoding="utf-8", errors="replace",
         check=False)
 
