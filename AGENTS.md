@@ -23,9 +23,9 @@ hand-edited; `tests/test_cli_reference.py` fails when the two disagree.
 types `yes` at its prompt; you never answer it for them. No terminal: section 2.
 
 **Never answer an install prompt.** The preflight asks `Type yes to continue:`
-for each thing it offers to run — an install, `gh auth login`, `gh auth
-setup-git`. The human types it; you never install software or log in for them.
-The one-line install (`install.sh`) is theirs to run: relay it, never run it.
+for each offer — an install, `gh auth login`, `gh auth setup-git` — and the
+human types it; you never install software or log in for them. The one-line
+`install.sh` and `pipx install openreposhape` are theirs: relay, never run.
 
 **Never pass `--allow-upstream-org` on your own initiative.** It guards only
 `--org opensoft`, the namespace of openRepoShape's upstream owner. If setup.sh
@@ -60,11 +60,13 @@ curl -fsSL https://raw.githubusercontent.com/opensoft/openRepoShape/main/setup.s
       --visibility <private|public|internal> --elected-by '<Name>'
 ```
 
-`openRepoShape <Project> --org <org> --visibility <…> --elected-by '<Name>'`
-is the same run through the installed command, still without `--yes`. With no
-arguments it prints its usage and exits 1, and `--install` ends with a
-read-only `machine:` block naming anything missing; neither installs anything.
-Relay the block; the human runs `--preflight` if they want the offers.
+`openRepoShape <Project> --org <org> --visibility <…> --elected-by '<Name>'` is
+the same run through the installed command, still without `--yes`, whether
+`install.sh` or `pipx install openreposhape` (native Windows too) placed it;
+pipx adds `scaffold-project`, `adopt-project`, `update-shape` and
+`shape-doctor`, the tools below by name. Bare, it prints its usage and exits 1;
+the bash one's `--install` ends with a read-only `machine:` block naming
+anything missing, and installs nothing: relay it; the human runs `--preflight`.
 
 On Windows without WSL2, `Invoke-WebRequest https://raw.githubusercontent.com/opensoft/openRepoShape/main/setup-project.py -OutFile setup-project.py`
 then `py setup-project.py <Project> --org <org> --visibility <…> --elected-by '<Name>'`
@@ -217,7 +219,7 @@ no `--dry-run` to do first. The one exception to "writes nothing" is
 The checks are a REGISTRY with an empty `fix` slot in each of them, which is
 where a repair mode will hang; nothing in it writes today. Installed,
 `openRepoShape --doctor` takes `--json` and `--placement-plan <file>` as well,
-and KEEPS its temporary clone of the standard for the NEXT lines that name it:
+and KEEPS its clone of the standard for the NEXT lines that name it:
 its last line names that directory, the human's to delete once those have run.
 
 1. **Read the verdict, then read the rows.** `COMPLIANT`, `COMPLIANT, SHAPE
@@ -265,8 +267,8 @@ its last line names that directory, the human's to delete once those have run.
    never changes the verdict: it says whether THIS workstation can run the fixes
    the other rows named. Relay a missing prerequisite; `openRepoShape
    --preflight` offers only the `gh` set-up, and the human types that yes.
-7. `--json` is the same report as one object, alone on stdout, each row
-   carrying its `id`, for when you have to act on a row rather than quote it.
+7. `--json` is the same report as one object, alone on stdout, each row with
+   its `id`, to act on a row. A `next` with `$'…'` needs bash or zsh, not `sh`.
 
 ## Updating a project's shape
 
@@ -290,8 +292,7 @@ git -C <path> push -u origin shape/update-<sha>   # then open a pull request
    `upstream-removed`, `unmapped` or `copy-missing`; `apply` refuses the last
    three. A file with no row is not a shape copy and is none of your business.
 2. **Show the human the verdicts and let them say yes.** Re-pinning records
-   which openRepoShape this project is a copy of. Do not pass `--yes` on your
-   own initiative.
+   which openRepoShape this project is a copy of. Never pass `--yes` yourself.
 3. **Never pass `--accept-local` to make a refusal go away.** It re-pins a
    locally edited file FROM THE PROJECT'S OWN BYTES, which makes the drift
    `validate-pins.py` reports today invisible. Whether the project keeps its
@@ -366,8 +367,7 @@ git -C <path> push -u origin <branch>   # then open a pull request
 
 A FAMILY is a holder that pins other projects' ASSEMBLY ROOTS as submodules
 under `members/`. It is not a project — no legs — and membership confers
-nothing. Use one when the parts DEPLOY SEPARATELY; one project is what parts
-that ship together already are.
+nothing. Use one when the parts DEPLOY SEPARATELY.
 
 ```sh
 python3 scripts/family.py init --org <org> --family <Name> --into .. [--reuse-empty-repo]
@@ -391,13 +391,15 @@ python3 scripts/family.py siblings --family-root <path>
    deliberate and reads like a mistake until somebody explains it.
 2. **A family pins ASSEMBLY ROOTS, never legs.** `--member <org>/<Project>`,
    never `<Project>-spec`: a leg has no `project.yaml`, and is rightly refused.
-3. **Each of `add`, `bump` and `remove` writes ONE commit** moving the
-   gitlink and the pin together, on a branch you make first (see above): the
-   tracking branch is refused (`family-on-tracking-branch`). Push the branch
-   as its `NEXT` line says and land it as a pull request; never suggest a
-   push to the default branch. Never hand-edit `family.yaml`'s `members:`
-   block — the tool rewrites it wholesale. `bump` takes the same repeatable
-   `--trailer "<Key>: <value>"` as `update-shape.py apply`.
+   A holder keeps `members/` in ONE spelling on every disk: `add` refuses
+   `family-members-dir-variant` (`member-path-taken` for a variant of the
+   member's own path) until a human renames what sits under another spelling.
+3. **Each of `add`, `bump` and `remove` writes ONE commit** moving the gitlink
+   and the pin together, on a branch made first (`family-on-tracking-branch`
+   refuses the tracking branch). Push it as its `NEXT` line says and land it as
+   a pull request; never suggest a push to the default branch. Never hand-edit
+   `family.yaml`'s `members:` block, which the tool rewrites wholesale, but for
+   a row repair `validate-family.py` names; the commit is then the person's.
 4. **The member must be scaffolded or adopted FIRST.** A family cannot make a
    project out of a repository; it can only pin one that already is.
 5. **`make siblings` in the holder — or `family.py siblings --family-root
