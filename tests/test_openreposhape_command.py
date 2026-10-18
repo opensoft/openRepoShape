@@ -1873,8 +1873,8 @@ def test_a_ref_is_refused_before_a_directory_is_made_for_the_clone(
         assert "could not make a temporary directory" not in result.stderr
         return
     assert result.returncode == 2, result.stdout + result.stderr
-    assert f"REFUSED: could not make a temporary directory under {missing}." \
-        in result.stderr
+    assert "REFUSED: could not make a temporary directory under " \
+        f"{bash_path(missing)}." in result.stderr
 
 
 def test_a_checkout_without_the_doctor_refuses_by_name(tmp_path):
