@@ -1033,10 +1033,11 @@ def test_a_blocker_a_sparse_checkout_marks_or_leaves_out_is_set_aside_too(
 def test_a_link_pointing_nowhere_at_the_variant_is_still_moved_out(
         family, holder, offline, tmp_path):
     """Codex's P2 2 on #828: the closing `mv` failed, exit 1, where nothing
-    is at the variant, so its guard now begins `[ ! -e <variant> ] && [ !
-    -L <variant> ]`, and every typing of a state with nothing there types
-    it, as printed, moving nothing. The second test keeps what the guard did
-    before for a link there pointing nowhere, which `-e` takes for nothing:
+    is at the variant, so its guard asks `[ ! -e <variant> ]`, after `[ !
+    -L <variant> ]` in #839's form, and every typing of a state with nothing
+    there types it, as printed, moving nothing. The second test keeps what
+    the guard did before for a link there pointing nowhere, which `-e`
+    takes for nothing:
     #646's state with the removal staged, so HEAD alone holds the variant,
     and a link `Members/IRRS -> nowhere`. (With the variant's gitlink still
     in the index, git 2.45.1 and later refuse the link itself: `git status`

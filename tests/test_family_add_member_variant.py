@@ -23,7 +23,8 @@ out of the holder of what a case-sensitive disk leaves at the variant,
 guarded by tests a POSIX shell runs so that it moves nothing, and exits 0,
 where nothing is there (Codex's P2 2 on #828), and moves nothing where that
 directory is the row's own (macOS and Windows) or a checkout, which is
-deleted, or for a clone of its own moved, by hand; and last `git submodule
+deleted, or for a clone of its own moved, by hand, while it always moves a
+symbolic link there (#839's form, rv865b's NIT 4); and last `git submodule
 update --init --recursive` where nothing is checked out at the row's path
 (#761).
 
@@ -75,12 +76,15 @@ SUBMODULE = "git submodule update --init --recursive"
 
 def guarded(name: str = VARIANT, row: str = ROW) -> str:
     """The closing `mv` of a directory left at `name`, the variant of
-    `row`'s path, guarded by the tests a POSIX shell runs (#761, as
-    `validate-family.py` guards it, #681): it moves nothing where nothing is
-    there, not even a link pointing nowhere (Codex's P2 on #828), where the
-    two names are one directory, or where it holds a `.git` entry."""
-    return (f"[ ! -e {name} ] && [ ! -L {name} ] || [ {name} -ef {row} ] || "
-            f"[ -e {name}/.git ] || mv -- {name} ../{name.replace('/', '-')}")
+    `row`'s path, guarded by the tests a POSIX shell runs (#761), in the
+    form `validate-family.py` prints (#839): it moves a symbolic link there
+    always, the link alone, even one pointing nowhere or at the row's own
+    directory (rv865b's NIT 4), and otherwise nothing where nothing is
+    there (Codex's P2 on #828), where the two names are one directory, or
+    where it holds a `.git` entry."""
+    return (f"[ ! -L {name} ] && {{ [ ! -e {name} ] || [ {name} -ef {row} ] "
+            f"|| [ -e {name}/.git ]; }} || mv -- {name} "
+            f"../{name.replace('/', '-')}")
 
 
 MOVE_OUT = guarded()
@@ -160,7 +164,9 @@ def moved_back(rows: dict, commit: bool = True, sparse: bool = False,
         "there out of the holder, in a POSIX shell (Git Bash on Windows), "
         f"{moved}, which moves "
         "nothing where nothing is there, where the two names are one "
-        "directory or where it holds a .git entry, a checkout",
+        "directory or where it holds a .git entry, a checkout, and moves a "
+        "symbolic link there wherever it points, the link and never what it "
+        "points at",
         "a checkout there that git submodule add or git mv made holds a .git "
         "file naming its store by a path relative to it, which a move would "
         "leave pointing nowhere: its commits are kept under this holder's "
@@ -211,14 +217,24 @@ def variant(root: Path, row: str = ROW, spelled: str = VARIANT,
     return commit
 
 
-def typed_in_sh(root: Path, command: str) -> None:
-    """`command` typed into a POSIX shell in `root`, as printed: exit 0."""
-    typed = subprocess.run(["sh", "-c", command], cwd=str(root),
+def typed_in_sh(root: Path, command: str, shell: str = "sh") -> None:
+    """`command` typed into a POSIX shell in `root`, as printed: exit 0.
+    `shell` names it, `sh` unless a test asks for `dash` or `bash`."""
+    typed = subprocess.run([shell, "-c", command], cwd=str(root),
                            capture_output=True, check=False)
     assert typed.returncode == 0, (command, typed.stderr)
 
 
-def typed_as_printed(root: Path, said: str, by_hand=None) -> list[str]:
+def remedy_parts(said: str) -> list[str]:
+    """The remedy's parts, in their order: what follows `on every disk.`,
+    split at each `; ` outside backticks, since the closing guard holds one
+    inside its braces (#839's form)."""
+    text = said.split(" on every disk. ", 1)[1]
+    return re.split(r"; (?=[^`]*(?:`[^`]*`[^`]*)*$)", text)
+
+
+def typed_as_printed(root: Path, said: str, by_hand=None,
+                     shell: str = "sh") -> list[str]:
     """EVERY COMMAND `said` PRINTS, TYPED AS PRINTED, in its order, and the
     commit each part asks for, as `type_remedy` types #574's: `<new name>`
     filled in `renamed-N` for a `git mv` and `../moved-N` for a `mv`. `git
@@ -227,14 +243,14 @@ def typed_as_printed(root: Path, said: str, by_hand=None) -> list[str]:
     each guarded one (#761), is typed into a POSIX shell AS PRINTED, whether
     or not its source is there (Codex's P2 on #828: a guard that skipped an
     absent source here hid an `mv` that failed, exit 1, where the variant is
-    not on disk), and must exit 0. `by_hand`, where given, is what a
-    person does by hand where the text says to (#761), run after the last
-    such part. A local member is cloned with `protocol.file.allow`, the
-    suite's one concession to bare repositories as origins. Returns what was
-    typed."""
+    not on disk), and must exit 0, in `shell` (`typed_in_sh`). `by_hand`,
+    where given, is what a person does by hand where the text says to
+    (#761), run after the last such part. A local member is cloned with
+    `protocol.file.allow`, the suite's one concession to bare repositories
+    as origins. Returns what was typed."""
     typed: list[str] = []
     count = {"git": 0, "mv": 0}
-    parts = said.split(" on every disk. ", 1)[1].split("; ")
+    parts = remedy_parts(said)
     last_by_hand = max((index for index, part in enumerate(parts)
                         if "by hand" in part),
                        default=None)
@@ -261,7 +277,7 @@ def typed_as_printed(root: Path, said: str, by_hand=None) -> list[str]:
                     os.rename(root / argv[2], root / argv[3])
                 command = shlex.join(argv)
             elif argv[0] in ("mv", "["):
-                typed_in_sh(root, command)
+                typed_in_sh(root, command, shell)
             elif argv[0] == "git" and (" -- " in command or argv[1] in (
                     "update-index", "config")):
                 git(*argv[1:], cwd=root)
