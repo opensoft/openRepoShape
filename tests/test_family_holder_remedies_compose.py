@@ -68,10 +68,12 @@ the value finding's put-back serves the removal after it (NIT 6).
 LANE 1'S REVIEW OF #889, ROUND 2, TAKEN HERE: a hand mount's `git rm`
 writes nothing into a `.gitmodules` that is gone, so a removal after it
 puts the file back itself rather than write a section into no file (MUST
-2); a clone at no case variant of the row's path is not said to be one
-`family.py add` refuses (the NIT, lane 1's mutant MY3); and a hand mount's
-`git rm` says it refuses a gitlink staged at a commit HEAD does not record
-there (the SHOULD).
+2); and a clone at no case variant of the row's path is not said to be one
+`family.py add` refuses (the NIT, lane 1's mutant MY3). The SHOULD, a hand
+mount's `git rm` over a gitlink staged at a commit HEAD does not record
+there, is #936's, whose rows are in
+`tests/test_family_hand_mount_git_rm_lines.py`, with the helpers at the end
+of this file for its states.
 
 THE SAME FAMILY, OFFLINE RULES AND HELPERS as
 `tests/test_family_holder_bootstrap_texts.py` (#839) and
@@ -1406,21 +1408,6 @@ def test_round2_nit_a_clone_at_no_case_variant_is_not_said_refused(
     ends_well(holder, env, family, tmp_path)
 
 
-#: What a hand mount's text says of its `git rm` where git refuses the
-#: gitlink as staged (lane 1's SHOULD on #889, round 2), with git's two
-#: refusals (its NIT 1, round 3), and elsewhere.
-STAGED_REFUSED = (
-    "take it out with the second, which refuses while its checkout holds "
-    "changes, and while the index stages it at a commit HEAD does not record "
-    "there, as it does here (the following file has changes staged in the "
-    "index, or, where what is on disk differs too, has staged content "
-    "different from both the file and the HEAD, exit 1), and takes its "
-    ".gitmodules section out too")
-PLAIN_REFUSED = ("take it out with the second, which refuses while its "
-                 "checkout holds changes and takes its .gitmodules section "
-                 "out too")
-
-
 def moved_by_git_mv(root: Path, env: dict, family) -> str:
     """`git mv members/IRRS members/IRRS2`, staged. Returns the new path."""
     raw(root, env, "mv", "--", ROW, f"{ROW}2")
@@ -1467,59 +1454,3 @@ def moved_back_and_added(root: Path, env: dict, family) -> str:
     raw(root / path, env, "checkout", "-q", "HEAD~1")
     raw(root, env, "add", "--", path)
     return path
-
-
-#: `(the state, whether a plain git rm refuses its gitlink as staged)`:
-#: measured on git 2.43, it took one staged over nothing on disk, and one
-#: committed with its checkout. Where it refuses, the first three say `has
-#: changes staged in the index`, and the others, whose disk differs from
-#: what is staged, `has staged content different from both the file and
-#: the HEAD` (lane 1's NIT 1 on #889, round 3).
-STAGED_STATES = {
-    "git-mv": (moved_by_git_mv, True),
-    "an-empty-directory": (staged_by_hand(Path.mkdir), True),
-    "head-records-another-commit": (moved_back_and_added, True),
-    "git-mv-and-a-commit-in-it": (moved_with_a_commit, True),
-    "a-directory-holding-a-file": (staged_by_hand(holding_a_file), True),
-    "nothing-on-disk": (staged_by_hand(lambda where: None), False),
-    "committed-with-its-checkout": (committed_with_its_checkout, False),
-}
-
-
-def git_refusal(stderr: bytes) -> str:
-    """What `git rm` said it refused, after "the following file ", up to
-    its colon, on one line: git wraps the longer of its two refusals."""
-    said = stderr.decode("utf-8").split("the following file ", 1)[1]
-    return " ".join(said.split(":", 1)[0].split())
-
-
-@pytest.mark.parametrize("make, refused", STAGED_STATES.values(),
-                         ids=STAGED_STATES)
-def test_round2_should_a_hand_mount_s_git_rm_says_it_refuses_a_staged_gitlink(
-        family, holder, offline, tmp_path, make, refused):
-    """Lane 1's SHOULD on #889, round 2: a gitlink no row names, staged at
-    a commit HEAD does not record there, as `git mv members/IRRS
-    members/IRRS2` leaves one, or as one staged by hand over an empty
-    directory. The hand mount's `git rm -- <path>` exits 1 there, as
-    before this change, where its text said only that it refuses while
-    its checkout holds changes. It says that refusal too now, in every
-    mode, and not where nothing is on disk or HEAD records the gitlink as
-    staged, which git takes. No line takes such a gitlink out: `-f` would
-    take the checkout's changes with it. Round 3 (lane 1's NITs 1 and 2):
-    the text quotes the refusal git prints, either of two, and a gitlink
-    HEAD records at another commit gets it too."""
-    env = cloning(offline, tmp_path, family)
-    path = make(holder, env, family)
-
-    found = found_alike(holder, *MODES)
-
-    mount = found[0]
-    assert mount.startswith(f"FINDING member-gitlink-unnamed: {path} "), mount
-    assert (STAGED_REFUSED if refused else PLAIN_REFUSED) in mount, mount
-    switch, removal, _ = commands(mount)
-    assert removal == f"git rm -- {path}"
-    type_line(holder, env, switch)
-    typed = raw(holder, env, *shlex.split(removal)[1:], check=False)
-    assert typed.returncode == int(refused), typed.stderr
-    if refused:
-        assert git_refusal(typed.stderr) in mount, typed.stderr
