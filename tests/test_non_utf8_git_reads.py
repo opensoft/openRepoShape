@@ -43,6 +43,7 @@ checkout.
 
 from __future__ import annotations
 
+import errno
 import os
 import shutil
 import subprocess
@@ -54,6 +55,7 @@ import pytest
 from conftest import (ORG, PROJECT, REPO, appended_to_command_scope,
                       cloned_just_pushed, git, run_script, skip_message,
                       skip_where_fsencode_gives_a_surrogate_no_byte,
+                      skip_where_the_environment_cannot_carry,
                       windows_fsencode)
 from test_bump_leg import branched, bump
 
@@ -94,13 +96,25 @@ def make_file(path: Path, data: bytes = b"on: [push]\n") -> None:
     system that carries the byte and a filesystem that stores it (Linux does;
     APFS refuses it, and on Windows `os.fsencode` makes no byte of it, which
     is asked FIRST: NTFS most likely takes the surrogate, and the file would
-    then not be the one the test means). A name that is UTF-8 is written."""
+    then not be the one the test means). A name that is UTF-8 is written.
+
+    Two answers are the system's, each skipped on a reason of its own: a
+    file name encoding that cannot spell the name (`UnicodeError`: ASCII
+    under `LC_ALL=C`) and a disk that refuses the name (EILSEQ: macOS).
+    Every other `OSError`, a full disk (ENOSPC), a read-only one (EROFS)
+    or a folder nobody can write in (EACCES), is the test's own and is
+    raised (#834)."""
     skip_where_fsencode_gives_a_surrogate_no_byte(path.name)
     try:
         path.write_bytes(data)
-    except (OSError, UnicodeError) as exc:
-        pytest.skip("this filesystem cannot hold a file name that is not "
-                    f"UTF-8: {exc}")
+    except UnicodeError as exc:
+        pytest.skip("this system's file name encoding cannot spell "
+                    f"{path.name!r}: {exc}")
+    except OSError as exc:
+        if exc.errno != errno.EILSEQ:
+            raise
+        pytest.skip("this filesystem refuses a file name that is not "
+                    f"UTF-8 (EILSEQ): {exc}")
 
 
 def test_make_file_skips_where_fsencode_makes_no_byte_and_writes_nothing(
@@ -498,22 +512,6 @@ POSIX_ENVIRONMENT_ONLY = pytest.mark.skipif(
     reason="a POSIX environment's bytes; Windows' is UTF-16 and git for "
            "Windows converts it")
 LEGACY_NAME = "Jos\udce9"
-
-
-def skip_where_the_environment_cannot_carry(value: str) -> None:
-    """Skip where this system's file name encoding cannot encode `value`, as
-    under `LC_ALL=C PYTHONUTF8=0 PYTHONCOERCECLOCALE=0` (ASCII). It is asked of
-    a file name (`make_file` cannot write `caf\\u00e9.yml`) and of an
-    environment value: `subprocess` puts each one through `os.fsencode`
-    before it starts the child, so a `user.name` of `Jos\\u00e9` raises
-    `UnicodeEncodeError` in the test and not in the tool (#757). Text that is
-    ASCII, or a lone surrogate that `os.fsencode` gives back as its byte, is
-    carried."""
-    try:
-        os.fsencode(value)
-    except UnicodeEncodeError:
-        pytest.skip(f"this system's file name encoding "
-                    f"({sys.getfilesystemencoding()}) cannot carry {value!r}")
 
 
 REFUSED = "REFUSED family-unwritable-value: "

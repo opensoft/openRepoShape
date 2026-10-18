@@ -98,7 +98,14 @@ THREE SUBCOMMANDS, BECAUSE THE MIDDLE ONE IS A HUMAN.
            either leg's name, where a name GitHub only redirects (a
            repository renamed or moved away) is free -- a NOTE and no
            finding where gh cannot answer, so that `check` stays usable
-           offline. It prints what will happen and changes nothing.
+           offline. Before that, it asks what `execute` asks of the three
+           names, the organisation and the topic (#863): a name the disk
+           cannot hold, and without `--local-remote-dir` a name, an
+           `org:` or a topic GitHub will not take, each a finding under
+           `execute`'s code; after a name or an `org:` found there, whose
+           fix renames both legs, the legs are not asked about, and after
+           a topic they are. It prints what will happen and changes
+           nothing.
   execute  asks about both legs before it makes either (#798), then
            creates the two legs, extracts them with `git filter-repo`, makes
            the one split commit on a branch of the source, sets the
@@ -147,7 +154,11 @@ bytes with its `.git`) is refused the same way. Without `--local-remote-dir`
 `org:` over the 39 it keeps an organisation's name to (`adopt-org-too-long`),
 and an id whose `xf-project-<id>` topic is over its 50
 (`adopt-topic-too-long`), which `gh repo edit --add-topic` refused only once
-both legs and the split were pushed.
+both legs and the split were pushed; and an `org:` holding a character GitHub
+gives no organisation (`.`), ending in a hyphen or holding two in a row
+(`adopt-bad-org`, #863). `check` finds each of these, the disk's included,
+under the same code: `execute` passed what `check` had called `plan ok`
+(#863). Both read one list, `_what_cannot_be_held`.
 
 WHY `git filter-repo` AND NOT A VENDORED COPY. Extracting history correctly is
 a solved problem with one correct implementation, and a vendored copy of it
@@ -274,6 +285,8 @@ from shape_materialize import (  # noqa: E402
     GITHUB_PROJECT_MAX, GITHUB_TOPIC_MAX, refuse_a_topic_github_cannot_set,
     refuse_an_owner_github_cannot_have,
 )
+# And the characters GitHub gives an organisation's name (#863).
+from shape_materialize import refuse_an_owner_github_cannot_spell  # noqa: E402
 # Whether a value this tool writes into a file is text a file can hold
 # (#255), asked beside `one_printable_line`, the trailer's question.
 from shape_materialize import unwritable_reason  # noqa: E402
@@ -10616,14 +10629,34 @@ def cmd_check(args) -> int:
         if renamed is not None and exc.remediation == renamed:
             remediation.append(renamed)
     else:
+        # WHAT THE DISK OR GITHUB WILL NOT HOLD (#863): the names, the
+        # organisation and the topic, `execute`'s one list, which it refuses
+        # the first of before either leg exists, each a finding here under
+        # its code. Only `execute` asked them, so `check` said `plan ok` over
+        # a plan `execute` then refused.
+        held, held_fixes, held_codes = _held_findings(
+            plan, names, local_remote_dir, naming)
+        findings.extend(held)
+        remediation.extend(held_fixes)
         # LAST, as `execute` asks it last, right before it makes either leg
         # (#798), and only of names `execute` would get that far with: what
         # stands in the way of the two leg repositories, of the disk under
         # `--local-remote-dir` and otherwise of GitHub, with `gh repo view
-        # --json nameWithOwner`.
+        # --json nameWithOwner`. NOT ASKED AFTER A FINDING ABOVE WHOSE FIX
+        # RENAMES THE LEGS (`RENAMES_THE_LEGS`): a name too long is mended
+        # with a shorter --project, and an `org:` too long or misspelled
+        # with another `org:`, so `<org>/<Project>-spec` and `-code` change,
+        # and the question asked now would be asked of two repositories the
+        # mended plan does not name. A topic finding is mended with another
+        # `id:`, which names no repository: the legs keep their names, the
+        # question is still the right one, and asked beside it, one round
+        # shows both (#871's review, S1), as it is asked beside the
+        # manifest's and the split branch's findings, which `execute`
+        # refuses first too.
         # A question gh cannot answer is a NOTE here, not a finding.
-        legs, fixes, unasked = _leg_remote_findings(plan, names,
-                                                    local_remote_dir)
+        legs, fixes, unasked = (
+            ([], [], []) if RENAMES_THE_LEGS.intersection(held_codes)
+            else _leg_remote_findings(plan, names, local_remote_dir))
         findings.extend(legs)
         remediation.extend(fixes)
         notes = [*notes, *unasked]
@@ -11467,6 +11500,38 @@ def _leg_remote_findings(plan: Plan, names: dict,
     return findings, list(dict.fromkeys(fixes)), notes
 
 
+#: The codes of `_what_cannot_be_held` whose fix changes the names the two
+#: leg repositories are asked under, `<org>/<Project>-spec` and
+#: `<org>/<Project>-code` (#871's review, S1): `adopt-name-too-long` is
+#: mended with a shorter --project, `adopt-org-too-long` and `adopt-bad-org`
+#: with another `org:`. `check` asks #861's leg question only where none of
+#: them is found. `adopt-topic-too-long` is not one: it is mended with
+#: another `id:`, and an id names no repository.
+RENAMES_THE_LEGS = frozenset({"adopt-name-too-long", "adopt-org-too-long",
+                              "adopt-bad-org"})
+
+
+def _held_findings(plan: Plan, names: dict, local_remote_dir: Path | None,
+                   naming: NamingPolicy
+                   ) -> tuple[list[str], list[str], list[str]]:
+    """`check`'s `(findings, remediation, codes)` for what the disk or
+    GitHub will not hold of the three names, the organisation and the topic:
+    every refusal of `_what_cannot_be_held`, the list `execute` refuses the
+    first of (#863), each as a FINDING under its code, and the codes, which
+    say whether the leg question is still asked (`RENAMES_THE_LEGS`). Asked
+    only of an `org:` `execute` would get that far with: another is
+    `unsafe-value`, refused first in `_repository_urls`."""
+    try:
+        org = checked_value("org", _plan_org(plan))
+    except Refusal:
+        return [], [], []
+    refused = list(_what_cannot_be_held(plan, names, org,
+                                        local_remote_dir is not None, naming))
+    return ([f"FINDING {exc.code}: {exc.detail}" for exc in refused],
+            list(dict.fromkeys(exc.remediation for exc in refused)),
+            [exc.code for exc in refused])
+
+
 def _make_the_remote_dir(remote_dir: Path) -> None:
     """`--local-remote-dir`'s `mkdir`, after the question said it can be
     made (`folder_in_the_way`): what fails here anyway -- a file put there
@@ -11996,17 +12061,63 @@ def _plan_org(plan: Plan) -> str:
     return str(plan.get("org"))
 
 
-def _repository_urls(args, plan: Plan, names: dict,
-                     source: Source) -> tuple[bool, dict, dict]:
+def _repository_urls(args, plan: Plan, names: dict, source: Source,
+                     naming: NamingPolicy | None = None
+                     ) -> tuple[bool, dict, dict]:
     """Where the three repositories are: `(local, repositories, urls)`.
 
     Split out of `cmd_execute` for #138. The assembly root's URL is the SOURCE
     itself under `--local-remote-dir`, because an in-place adoption pushes its
-    split branch back to the repository it read.
+    split branch back to the repository it read. What the disk or GitHub will
+    not hold of them is refused here, the first of `_what_cannot_be_held`,
+    the list `check` finds each of (#863). `naming` gives the topic, and is
+    loaded when not given.
     """
     org = checked_value("org", _plan_org(plan))
     repositories = {role: f"{org}/{name}" for role, name in names.items()}
     local = args.local_remote_dir is not None
+    refused = next(_what_cannot_be_held(plan, names, org, local, naming), None)
+    if refused is not None:
+        raise refused
+    return (local, repositories,
+            _remote_urls(org, names, args.local_remote_dir, source))
+
+
+def _what_cannot_be_held(plan: Plan, names: dict, org: str, local: bool,
+                         naming: NamingPolicy | None = None):
+    """Each `Refusal` of what the disk or GitHub will not hold of the three
+    names, the organisation and the topic, in the order `execute` asks them,
+    one at a time: the names, and without `--local-remote-dir` the `org:`,
+    its length and then its characters, and the topic.
+
+    ONE LIST, TWO READERS (#863). `execute` refuses the first one
+    (`_repository_urls`), before either leg exists; `check` finds every one,
+    under the same code (`_held_findings`). Only `execute` asked them, so a
+    plan `check` called `plan ok` was refused by `execute` for a name the
+    disk or GitHub will not take, an organisation or a topic: one list, as
+    `_refuse_what_check_finds` makes `check` and `execute` read one list of
+    the manifest's values, means the two cannot disagree again. It is a
+    generator, so `execute` asks nothing after the first refusal."""
+    asked = [lambda: _refuse_names_nothing_keeps(names, org, local)]
+    if not local:
+        named = f"{plan.path}: `org:`"
+        asked += [
+            lambda: refuse_an_owner_github_cannot_have(
+                "adopt-org-too-long", org, named, ORG_REMEDIATION),
+            lambda: refuse_an_owner_github_cannot_spell(
+                "adopt-bad-org", org, named, ORG_SPELLING_REMEDIATION),
+            lambda: _refuse_the_plans_topic(plan, naming)]
+    for ask in asked:
+        try:
+            ask()
+        except Refusal as exc:
+            yield exc
+
+
+def _refuse_names_nothing_keeps(names: dict, org: str, local: bool) -> None:
+    """`adopt-name-too-long`: a name the disk or GitHub will not hold
+    (#261, #838), asked by `_what_cannot_be_held` for `execute` and `check`
+    alike (#863)."""
     # Each name is a directory's too: the work directory's for all three, and
     # under `--local-remote-dir` a bare `<name>.git` for the two new legs. A
     # name of 247 to 250 characters passed every check and died in
@@ -12032,13 +12143,7 @@ def _repository_urls(args, plan: Plan, names: dict,
         # repository's to rename, and keeps "Use a shorter --project"
         # (#859's re-review, NIT 3).
         raise Refusal(exc.code, exc.detail, _rename_first(
-            repositories["assembly"], SOURCE_NAME_TOO_LONG)) from None
-    if not local:
-        refuse_an_owner_github_cannot_have(
-            "adopt-org-too-long", org, f"{plan.path}: `org:`",
-            ORG_REMEDIATION)
-    return (local, repositories,
-            _remote_urls(org, names, args.local_remote_dir, source))
+            f"{org}/{names['assembly']}", SOURCE_NAME_TOO_LONG)) from None
 
 
 #: How `adopt-org-too-long` and `adopt-topic-too-long` are told to go on
@@ -12049,6 +12154,12 @@ ORG_REMEDIATION = (
     "re-run `plan` with --org, as GitHub spells the organisation, the "
     "`<org>` of `https://github.com/<org>`: GitHub gives no user or "
     f"organisation a name of more than {GITHUB_OWNER_MAX} characters.")
+#: How `adopt-bad-org` is told to go on (#863): `ORG_REMEDIATION`'s way out,
+#: without the number, which is not what it broke.
+ORG_SPELLING_REMEDIATION = (
+    "Remediation: no repository was created. Fix `org:` in the plan, or "
+    "re-run `plan` with --org, as GitHub spells the organisation, the "
+    "`<org>` of `https://github.com/<org>`.")
 TOPIC_REMEDIATION = (
     "Remediation: no repository was created. Fix `id:` in the plan, or "
     f"re-run `plan` with an explicit --id, of at most {GITHUB_ID_MAX} "
@@ -12080,13 +12191,29 @@ def _a_leg_named_after_a_long_root(names: dict) -> bool:
         for role in ("spec", "code"))
 
 
+def _refuse_the_plans_topic(plan: Plan,
+                            naming: NamingPolicy | None = None) -> None:
+    """`_refuse_a_topic_github_cannot_set` of the topic the plan's id gives,
+    for `_what_cannot_be_held` (#863). An id that is no project id is
+    `plan-bad-id`, which `Plan.project_id` refuses where it always was, and
+    no topic is asked of it here."""
+    try:
+        project_id = plan.project_id
+    except Refusal:
+        return
+    naming = naming or NamingPolicy.load(NAMING_POLICY)
+    _refuse_a_topic_github_cannot_set(plan, naming.topic_for(project_id))
+
+
 def _refuse_a_topic_github_cannot_set(plan: Plan, topic: str) -> None:
     """`adopt-topic-too-long`: an id whose `xf-project-<id>` topic GitHub
     will not set (#838), refused before `_confirm` and before either leg
-    exists. `_set_the_topic` sets it on all three only once both legs and
-    the split are pushed, so an id over 39 characters, which a project name
-    of 40 or more gives by default, ended the run there, exit 2, with the
-    adoption pushed and the topic unset. Asked in GitHub mode alone: under
+    exists, with the names and the organisation (`_what_cannot_be_held`,
+    #863), and found by `check` alike. `_set_the_topic` sets it on all
+    three only once both legs and the split are pushed, so an id over 39
+    characters, which a project name of 40 or more gives by default, ended
+    the run there, exit 2, with the adoption pushed and the topic unset.
+    Asked in GitHub mode alone: under
     `--local-remote-dir` no topic is set. The id is named by where it came
     from, `id:` or `DERIVED_ID`, as `_id_field` names it."""
     named = "`id:`" if plan.get("id") is not None else DERIVED_ID
@@ -12966,7 +13093,8 @@ def cmd_execute(args) -> int:
     # every value below becomes an argument to `git` or `gh`, so each one is
     # validated before it is used rather than after something has gone wrong.
     spec_path, code_path, branch, tracking = _checked_plan_values(plan)
-    local, repositories, urls = _repository_urls(args, plan, names, source)
+    local, repositories, urls = _repository_urls(args, plan, names, source,
+                                                 naming)
     _refuse_an_unwritable_clone_url(urls["assembly"])
     paths_for = _leg_paths(plan)
     _refuse_what_check_finds(plan, source, args.local_remote_dir)
@@ -12988,9 +13116,9 @@ def cmd_execute(args) -> int:
         _extracts_a_leg(paths_for))
     for line in plan.seeding_record_disagreements(seeded):
         print(line)
+    # The topic GitHub will not set was refused in `_repository_urls`, with
+    # the names and the organisation, as `check` finds them (#863).
     topic = naming.topic_for(plan.project_id)
-    if not local:
-        _refuse_a_topic_github_cannot_set(plan, topic)
     print(_topics_line(topic, local))
     _confirm(args, plan, names)
 

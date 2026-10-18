@@ -869,6 +869,16 @@ shape_checkout() {
 # control check, whose `[![:print:]]` is the locale's, so the words do not
 # change with the locale, and before the shape, which echoes the value.
 # Those two are `ref_character_fault`'s, below.
+#
+# THE SHAPE IS GIT'S RULE PART BY PART (#874), as `setup.sh`'s and
+# `install.sh`'s are: no `..`, no empty part between slashes, no part that
+# starts with `.` or ends in `.lock`, and no name that ends in `.`, which is
+# what `git check-ref-format --branch` asks of each part and not of the whole
+# name alone. It is asked where a ref is USED, and each use is a gate: a
+# record it refuses is refused before any request (`read_recorded_ref`), a
+# ref an install would record is refused before anything is placed, and the
+# doctor's checkout is refused before `git checkout`. A ref that passes here
+# is one `setup.sh` is handed, by name, on its way to `git clone`.
 ref_fault() {
 	local ref="$1" what="$2" fault
 	if [ -z "$ref" ]; then
@@ -882,7 +892,7 @@ ref_fault() {
 			return 0
 		fi
 		case "$ref" in
-		[!A-Za-z0-9]* | *..* | *.lock | *[!A-Za-z0-9._/-]*) printf '%s' "$what is '$ref', which is not a branch, tag or commit this tool will pass to \`git checkout\`: a ref starts with a letter or digit, uses only letters, digits, '.', '_', '/', '-', has no '..' and does not end in '.lock'." ;;
+		[!A-Za-z0-9]* | *..* | */.* | *.lock | *.lock/* | *//* | */ | *. | *[!A-Za-z0-9._/-]*) printf '%s' "$what is '$ref', which is not a branch, tag or commit this tool will pass to \`git checkout\`: a ref starts with an ASCII letter or digit, uses only ASCII letters, digits, '.', '_', '/', '-', has no '..' (git reads it as a revision range), no empty part between slashes ('//', or a '/' at the end), no part that starts with '.' or ends in '.lock' (the name git gives the lock file it writes beside a ref), and does not end in '.'." ;;
 		esac
 	fi
 }

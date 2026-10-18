@@ -53,7 +53,9 @@ import test_clone_url_bytes as clone_url_bytes
 import test_non_utf8_git_reads as non_utf8_git_reads
 import test_stdout_encoding as stdout_encoding
 from conftest import (NOT_UTF_8_PROBE, skip_message,
-                      skip_where_a_name_cannot_be_not_utf_8, windows_fsencode)
+                      skip_where_a_name_cannot_be_not_utf_8,
+                      skip_where_the_environment_cannot_carry,
+                      windows_fsencode)
 # The fixture of `test_adopt_plan_escapes.py`, `adopt-project.py` loaded as a
 # module, which two of its tests ask for.
 from test_adopt_plan_escapes import adopter  # noqa: F401 - fixture
@@ -113,12 +115,14 @@ def refusing(code: int, *, probe: bool):
     return mkdir
 
 
-def fail_where_the_caller_ends(call, *args) -> None:
+def fail_where_the_caller_ends(call, *args, said: str = "") -> None:
     """Fail where `call(*args)` ends without an error, SKIPPED or not: the
     caller was to raise. A `pytest.raises` block may hold one call and no
-    more (python:S5778), so the failure is made here and not beside it."""
+    more (python:S5778), so the failure is made here and not beside it.
+    `said` goes in front of the message, for a caller that asks the same
+    question many times and says which one failed (#834)."""
     reason = skip_message(call, *args)
-    pytest.fail("the caller ended "
+    pytest.fail(said + "the caller ended "
                 + (f"SKIPPED: {reason}" if reason else "without an error"))
 
 
@@ -279,17 +283,18 @@ def test_make_files_utf8_name_test_skips_where_the_encoding_is_ascii(
 def test_a_write_the_disk_refuses_still_fails_the_make_file_test(
         tmp_path, monkeypatch, code):
     """The name is plain UTF-8, so a refused write is the disk's and not the
-    encoding's: the test FAILS on its assert, as it does without this change.
-    A skip on `make_file`'s own "filesystem" reason would end it SKIPPED, and
-    no run fails on that."""
-    non_utf8_git_reads.skip_where_the_environment_cannot_carry(
-        non_utf8_git_reads.UTF8)
+    encoding's: `make_file` raises it (#834), and the test FAILS on it. A
+    skip on `make_file`'s own "filesystem" reason would end it SKIPPED, and
+    no run fails on that; before #834 it did skip, and the test failed on
+    its assert that the call is not a skip."""
+    skip_where_the_environment_cannot_carry(non_utf8_git_reads.UTF8)
 
     def write_bytes(self, data):
         raise OSError(code, os.strerror(code), str(self))
     monkeypatch.setattr(Path, "write_bytes", write_bytes)
-    with pytest.raises(AssertionError):
+    with pytest.raises(OSError) as raised:
         fail_where_the_caller_ends(MAKE_FILE_TEST, tmp_path, monkeypatch)
+    assert raised.value.errno == code
 
 
 @pytest.mark.parametrize("value", ["Jos\u00e9", "Mehr\u200cdad", "\u202eevil"],
@@ -297,8 +302,7 @@ def test_a_write_the_disk_refuses_still_fails_the_make_file_test(
 def test_a_user_name_the_encoding_cannot_carry_skips_where_it_is_ascii(
         monkeypatch, value):
     monkeypatch.setattr(os, "fsencode", ascii_fsencode)
-    reason = skip_message(
-        non_utf8_git_reads.skip_where_the_environment_cannot_carry, value)
+    reason = skip_message(skip_where_the_environment_cannot_carry, value)
     assert reason is not None, f"{value!r} was carried by an ASCII encoding"
     assert "file name encoding" in reason, reason
 
@@ -311,9 +315,8 @@ def test_a_user_name_the_encoding_carries_is_not_skipped_even_where_it_is_ascii(
     """ASCII text, a lone surrogate that is a byte, and the control characters
     are the environment's own: the tests of them still run."""
     monkeypatch.setattr(os, "fsencode", ascii_fsencode)
-    assert skip_message(
-        non_utf8_git_reads.skip_where_the_environment_cannot_carry,
-        value) is None
+    assert skip_message(skip_where_the_environment_cannot_carry,
+                        value) is None
 
 
 @pytest.mark.parametrize("test, args", [
