@@ -470,7 +470,8 @@ def seed_tree(role: str, values: dict, tracking: str, scratch: Path) -> str:
 #: `only_commit` nothing, and its first push waited at the same prompt
 #: (#915). With the prompt off, the credential git would ask a person for is
 #: a failure in git's own words: `_held_seed` reads it as a leg git cannot
-#: read, and a push prints it as any refused push is printed.
+#: read, and a push, a first run's as a re-run's, is refused with how to give
+#: git a login (`_refused_push`).
 #:
 #: ssh, a credential helper and an askpass program are not turned off: they
 #: are how people give git a credential, and each of them still asks under
@@ -656,6 +657,21 @@ def _reusable_remotes(names: dict, urls: dict, repositories: dict,
     return reused
 
 
+#: Where git reaches GitHub over ssh, the clause each remedy for git's access
+#: names beside `gh auth setup-git` (#915): `_exists_remedy`'s for a leg git
+#: could not read, and `_login_remedy`'s for a push git had no login for.
+#: `ssh -T` is asked as git asks: of the host and the port the rule names,
+#: with whatever `core.sshCommand` adds. `ssh -T git@github.com`, which this
+#: named first, asks the default host, port and key, so it said nothing true
+#: of a rule naming a `Host` alias of `~/.ssh/config`, or `ssh.github.com`
+#: on port 443, or of a key that `core.sshCommand` gives by `-i` (RV971).
+SSH_KEY_CLAUSE = ("where a `url.<base>.insteadOf` rule in your git config "
+                  "sends `https://github.com/` over ssh, git logs in with an "
+                  "ssh key instead, and `ssh -T` against the host and port "
+                  "your rule names, with anything your `core.sshCommand` "
+                  "adds, says whether GitHub takes yours")
+
+
 def _exists_remedy(role: str, empty: bool, reuse_flag: bool,
                    seeded: bool = False, unread: str | None = None) -> str:
     """The remedy line for a remote that is already there.
@@ -670,19 +686,16 @@ def _exists_remedy(role: str, empty: bool, reuse_flag: bool,
     setup-git` gives git's https the login `gh` has, and does nothing for an
     operator whose git config rewrites `https://github.com/` to ssh: there
     git logs in with an ssh key, and the command named is still the https
-    URL this run gave git. So the ssh key's clause stands beside the
-    `setup-git` one, each saying where it applies.
+    URL this run gave git. So the ssh key's clause (`SSH_KEY_CLAUSE`) stands
+    beside the `setup-git` one, each saying where it applies.
     """
     if role != "assembly":
         if unread:
             return (f"Remediation: git could not read it ({unread}), so "
                     "whether its one commit is the seed this scaffold pushes "
                     "cannot be asked. Let git read it (on GitHub, `gh auth "
-                    "setup-git` gives git the login `gh` has; where a "
-                    "`url.<base>.insteadOf` rule in your git config sends "
-                    "`https://github.com/` over ssh, git logs in with an ssh "
-                    "key instead, and `ssh -T git@github.com` says whether "
-                    "GitHub takes yours), then re-run: with "
+                    "setup-git` gives git the login `gh` has; "
+                    + SSH_KEY_CLAUSE + "), then re-run: with "
                     "--reuse-empty-repo a leg whose one commit is that seed "
                     "is reused, and a leg holding anything else is still "
                     "refused. There is no --force.")
@@ -1654,13 +1667,66 @@ def _take_held_seed(work: Path, url: str, seed: str, tracking: str) -> str:
     return seed
 
 
+#: What git says when a push needed a login it could not get (#915). Every
+#: push runs under `REMOTE_ENV`, so where git would have asked the terminal
+#: for a username or a password it dies `could not read Username for
+#: '<url>': terminal prompts disabled`, or `Password` where the URL names
+#: the user; a credential helper with nothing stored for the host is asked
+#: first and answers nothing. These are git's own words, untranslated in
+#: any locale: gettext translates only the `fatal: ` before them (git 2.43,
+#: asked under a catalogue that translates each of these words). So they are
+#: found without `LC_ALL=C`, which a push does not take: its output is
+#: printed whole for a person to read.
+NO_LOGIN = ("terminal prompts disabled", "could not read Username",
+            "could not read Password")
+
+
+def _login_remedy(repo: str, reused: bool) -> str:
+    """How to give git the login a push could not get, then the re-run
+    (#915). Printed before `RULESET_HINT`, whose one exit is the same re-run.
+    With the prompt off, a first scaffold's push that git has no login for
+    is refused where git used to ask for one, and leaves the three
+    repositories empty; the re-run is refused the same way until git has a
+    login, so the hint alone named an exit that could not finish (RV971).
+    On GitHub git logs in over https with the login `gh auth setup-git`
+    gives it or a token a credential helper holds, and over ssh with a key
+    (`SSH_KEY_CLAUSE`). A run that was itself the re-run (`reused`) is
+    re-run as it was."""
+    again = ("the same command with a new --work-dir or none" if reused else
+             "the same command with --reuse-empty-repo added (after `--` "
+             "through setup.sh) and a new --work-dir or none")
+    return (f"\nRemediation: git could not get a login for {repo}: every "
+            "push this scaffold makes runs with git's terminal prompt off, "
+            "so where git would have asked you for one the push is refused, "
+            "and a credential helper with nothing stored for the host "
+            "answers nothing. Give git a login first (on GitHub, `gh auth "
+            "setup-git` gives git the login `gh` has, or store a token for "
+            "the host in your credential helper; " + SSH_KEY_CLAUSE + "), "
+            f"then re-run {again}: it reuses the repositories this run left "
+            "empty, and a leg whose one commit is the seed this scaffold "
+            "pushes.")
+
+
+def _refused_push(failed: CommandFailed, what: str, repo: str,
+                  tracking: str, reused: bool) -> None:
+    """What a refused push prints, a leg's and the root's (#462, #915): the
+    command and git's output, then, where git could not get a login
+    (`NO_LOGIN`), how to give it one and the re-run (`_login_remedy`), then
+    `RULESET_HINT` for `repo` and `tracking`. Any other refusal, a ruleset's
+    above all, prints what it always printed."""
+    print(failed.loudly(what), file=sys.stderr)
+    if any(words in failed.output for words in NO_LOGIN):
+        print(_login_remedy(repo, reused), file=sys.stderr)
+    print(RULESET_HINT.format(repo=repo, tracking=tracking), file=sys.stderr)
+
+
 def _seed_legs(args, values: dict, names: dict, repositories: dict,
                urls: dict, work_root: Path, reused: dict) -> dict | None:
     """(l) The two legs: template, one commit, push.
 
     Returns the four template values the assembly root's own templates name —
-    or None when a push was REFUSED, having already said so on stderr and
-    printed the ruleset hint. Split out of `_scaffold` for #138. A leg
+    or None when a push was REFUSED, having already said so on stderr
+    (`_refused_push`). Split out of `_scaffold` for #138. A leg
     `reused` maps to its seed is put at that commit (`_take_held_seed`).
     """
     display = values["PROJECT_NAME"]
@@ -1693,17 +1759,18 @@ def _seed_legs(args, values: dict, names: dict, repositories: dict,
                 # every name git accepts is pushed as the branch it is, and
                 # `-u` still records `origin/<branch>` as its upstream.
                 # `adopt-project.py` pushes `HEAD:refs/heads/<branch>` too.
-                # Under `REMOTE_ENV` (#915): a reuse re-run whose legs are
-                # empty asks `only_commit` nothing, and this push waited at
-                # git's `Username for '...':` prompt.
+                # Under `REMOTE_ENV` (#915), a first run's and a re-run's: a
+                # reuse re-run whose legs are empty asks `only_commit`
+                # nothing, and this push waited at git's `Username for
+                # '...':` prompt. A login git cannot get is named by
+                # `_refused_push`.
                 run(["git", "push", "-q", "-u", "origin",
                      f"HEAD:refs/heads/{args.tracking_branch}"], cwd=work,
                     env=REMOTE_ENV)
             except CommandFailed as exc:
-                print(exc.loudly(f"pushing the {role} leg"), file=sys.stderr)
-                print(RULESET_HINT.format(repo=repositories[role],
-                                          tracking=args.tracking_branch),
-                      file=sys.stderr)
+                _refused_push(exc, f"pushing the {role} leg",
+                              repositories[role], args.tracking_branch,
+                              args.reuse_empty_repo)
                 return None
         print(f"  {role:<9} {commit[:12]} tree {leg_digests[role][:12]}… "
               f"-> {urls[role]}")
@@ -1720,7 +1787,7 @@ def _build_assembly_root(args, values: dict, names: dict, repositories: dict,
     """(m) The assembly root: manifest, the two legs mounted, three pins.
 
     Returns False when the push was REFUSED, having already said so on stderr
-    and printed the ruleset hint. Split out of `_scaffold` for #138.
+    (`_refused_push`). Split out of `_scaffold` for #138.
     """
     display = values["PROJECT_NAME"]
     shape_commit = values["SHAPE_COMMIT"]
@@ -1820,10 +1887,9 @@ def _build_assembly_root(args, values: dict, names: dict, repositories: dict,
                  f"HEAD:refs/heads/{args.tracking_branch}"], cwd=assembly,
                 env=REMOTE_ENV)
         except CommandFailed as exc:
-            print(exc.loudly("pushing the assembly root"), file=sys.stderr)
-            print(RULESET_HINT.format(repo=repositories["assembly"],
-                                      tracking=args.tracking_branch),
-                  file=sys.stderr)
+            _refused_push(exc, "pushing the assembly root",
+                          repositories["assembly"], args.tracking_branch,
+                          args.reuse_empty_repo)
             return False
     print(f"  assembly  {run(['git', 'rev-parse', 'HEAD'], cwd=assembly)[:12]} "
           f"-> {urls['assembly']}")
