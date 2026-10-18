@@ -1235,12 +1235,14 @@ def on_a_branch_that_is_not_utf_8(repo: Path) -> dict:
     return held_by_git(repo)
 
 
-def windows_fsencode(text: str | bytes) -> bytes:
+def windows_fsencode(text: str | bytes | os.PathLike) -> bytes:
     """`os.fsencode` as Windows has it: UTF-8 with `surrogatepass`, so every
-    lone surrogate is the three bytes of a sequence that is not UTF-8. Bytes
-    go through as they are, as `os.fsencode` passes them on every system. For
+    lone surrogate is the three bytes of a sequence that is not UTF-8. A path
+    is taken as the real `os.fsencode` takes it (`os.fspath` first), and
+    bytes go through as they are, as it passes them on every system. For
     `monkeypatch.setattr(os, "fsencode", windows_fsencode)`, which puts the
     guard above in front of a test that Linux would let through."""
+    text = os.fspath(text)
     if isinstance(text, bytes):
         return text
     return text.encode("utf-8", "surrogatepass")
@@ -1257,6 +1259,25 @@ def skip_message(call, *args) -> str | None:
     except pytest.skip.Exception as skipped:
         return skipped.msg
     return None
+
+
+def skip_where_the_environment_cannot_carry(value: str) -> None:
+    """Skip where this system's file name encoding cannot encode `value`, as
+    under `LC_ALL=C PYTHONUTF8=0 PYTHONCOERCECLOCALE=0` (ASCII). It is asked of
+    a file name (`make_file` cannot write `caf\\u00e9.yml`, and `mkdir` cannot
+    make `\\u202ecaf`), of an environment value and of a command-line
+    argument: `subprocess` puts each one through `os.fsencode` before it
+    starts the child, so a `user.name` of `Jos\\u00e9` or a branch
+    `main\\u00a0` raises `UnicodeEncodeError` in the test and not in the tool
+    (#757, #853, #854). Text that is ASCII, or a lone surrogate that
+    `os.fsencode` gives back as its byte, is carried. Asked through the `os`
+    module at call time, so a test emulates ASCII with
+    `monkeypatch.setattr(os, "fsencode", ...)`."""
+    try:
+        os.fsencode(value)
+    except UnicodeEncodeError:
+        pytest.skip(f"this system's file name encoding "
+                    f"({sys.getfilesystemencoding()}) cannot spell {value!r}")
 
 
 # --- the `gh` guard (#296) ---------------------------------------------------
@@ -2398,3 +2419,92 @@ def refusal_detail(stderr: str, code: str) -> list[str]:
             if lines[at].startswith("Remediation:")]
     assert ends, stderr
     return lines[starts[0]:ends[0]]
+
+
+# --- git's rule for a ref, part by part, in the shell copies (#874) ----------
+
+#: THE TABLE the three shell copies of the ref rule are held to, one answer
+#: each: `setup.sh`'s `--shape-ref`, `install.sh`'s version and `openRepoShape`'s
+#: `ref_fault` (`tests/test_setup_sh.py`, `tests/test_install_sh.py` and
+#: `tests/test_openreposhape_command.py` read it). A name, and whether git
+#: takes it as a branch name. Git asks its rule of each part between slashes,
+#: not of the whole name alone: no empty part (`a//b`, `a/b/`), no part that
+#: starts with `.` (`a/.b`) or ends in `.lock` (`a.lock/b`), no `..`, and no
+#: name that ends in `.`. Each name is spelled with a letter or digit first
+#: and letters, digits, `.`, `_`, `/` and `-` after, the characters a copy
+#: takes, so what is asked is the shape and nothing else. The old line,
+#: `*..* | *.lock`, tested only the whole name: it took the first thirteen
+#: names below, which git refuses.
+REF_PARTS = [pytest.param(name, takes, id=name) for name, takes in (
+    # What the issue names: refused by git, and by no copy before #874.
+    ("a.lock/b", False), ("x/y.lock/z", False), ("release.lock/v1", False),
+    ("a/.b", False), ("a/.b/c", False), ("a//b", False), ("a/b/", False),
+    ("a.lock/", False), ("a.", False),
+    # rv873's two: a part that starts with `.`, deeper in the name.
+    ("a/b/.c/d", False), ("x/.y/z/w", False),
+    # The same kind, and taken by the old line too: a name that ends in `.`
+    # after a `/`, and a part that is a `.`.
+    ("a/b.", False), ("a/.", False),
+    # Refused before #874 as well, and refused still.
+    ("topic.lock", False), ("a..b", False), ("a/..", False),
+    ("a/b.lock", False), (".lock", False), ("/a", False),
+    # What must still pass: the refs this repository's tests and docs hand
+    # a copy, a commit's 40 hex digits, and workBenches' sentinel.
+    ("main", True), ("v1.0.0", True), ("v1.1.0", True),
+    ("topic.locked", True), ("feature/x-y_z", True),
+    ("0123456789abcdef0123456789abcdef01234567", True),
+    ("pinned-by-workBenches-no-fetch", True),
+    # What must still pass, next to the rule's edges: a part that only
+    # RESEMBLES a refused one, and a `.` that ends a part but not the name.
+    ("a.lockb", True), ("a.lock-x/b", True), ("a/b.lockb/c", True),
+    ("a./b", True), ("a/lock/b", True), ("refs/tags/v1.0", True),
+    ("v1.0.0-rc.1", True),
+    # What must still pass, with a part that starts with an upper-case
+    # letter, `_` or `-`: git takes each, and a copy that refused one would
+    # be refusing what git takes (`Feature/ABC-123`, `fix/_tmp`, `fix/-wip`).
+    ("Feature/ABC-123", True), ("fix/_tmp", True), ("fix/-wip", True),
+)]
+
+#: THE ONE SENTENCE each copy's refusal ends with, word for word the same in
+#: all three (#874): the rule it applied, in `setup-project.py`'s words where
+#: they fit (`why_not_a_ref`, #857). The words say ASCII because the patterns
+#: are, as `setup-project.py`'s `REF_RE` words do: "letters" alone describe
+#: `Caf\xe9` as a value that passes (rv811, rv874).
+REF_RULE_WORDS = (
+    "a ref starts with an ASCII letter or digit, uses only ASCII letters, "
+    "digits, '.', '_', '/', '-', has no '..' (git reads it as a revision "
+    "range), no empty part between slashes ('//', or a '/' at the end), no "
+    "part that starts with '.' or ends in '.lock' (the name git gives the "
+    "lock file it writes beside a ref), and does not end in '.'.")
+
+
+def git_takes_ref(name: str) -> bool:
+    """Whether the git that runs this suite takes `name` as a branch name.
+    ASKED of `git check-ref-format --branch`, never copied, so a git that
+    changes its mind changes the answer here and a table row is the one thing
+    to fix (#874)."""
+    proc = subprocess.run(["git", "check-ref-format", "--branch", name],
+                          capture_output=True, text=True, check=False)
+    return proc.returncode == 0
+
+
+def assert_a_copy_answers_as_git_does(copy: str, name: str, takes: bool,
+                                      copy_takes: bool) -> None:
+    """THE ONE ANSWER (#874): git, the table's row and the shell copy `copy`
+    all take `name` or all refuse it. Git is asked first, so a row that
+    no longer says what this git says is named as the row and not as the
+    copy."""
+    asked = git_takes_ref(name)
+    assert asked == takes, (
+        f"the table says git {'takes' if takes else 'refuses'} {name!r}, but "
+        f"this git {'takes' if asked else 'refuses'} it")
+    assert copy_takes == asked, (
+        f"{copy} {'takes' if copy_takes else 'refuses'} {name!r}, and git "
+        f"{'takes' if asked else 'refuses'} it")
+
+
+def assert_the_refusal_states_the_ref_rule(said: str, opening: str) -> None:
+    """A copy's refusal opens with its own words and the name (`opening`) and
+    goes on to `REF_RULE_WORDS`, the whole rule it applied."""
+    assert opening in said, said
+    assert REF_RULE_WORDS in said, said

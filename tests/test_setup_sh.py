@@ -55,6 +55,11 @@ from conftest import (CHAIN_LINK_TREES,
 from conftest import (STEP_FOUR_WORDS,
                       assert_step_four_speaks_in_the_plans_words)
 
+from conftest import (REF_PARTS, assert_a_copy_answers_as_git_does,
+                      assert_the_refusal_states_the_ref_rule)
+
+from test_openreposhape_command import fake_github
+
 SETUP = REPO / "setup.sh"
 DEGRADE_LINE = "authority is not wallet-carried in this org"
 
@@ -915,6 +920,51 @@ def test_a_shape_ref_that_is_not_a_ref_is_refused_by_the_shim(tmp_path, ref):
                             cwd=outside, extra_env={"OPENREPOSHAPE_REPO": str(REPO)})
     assert result.returncode == 2, result.stderr + result.stdout
     assert "--shape-ref" in result.stderr
+
+
+@pytest.mark.parametrize("name, takes", REF_PARTS)
+def test_the_shim_takes_a_shape_ref_as_git_does_before_any_clone(
+        tmp_path, name, takes):
+    """GIT'S RULE FOR A REF IS PER PART, AND THE SHIM HOLDS IT BEFORE THE
+    CLONE (#874). Its shape `case` tested only the whole name (`*..*`,
+    `*.lock`), so `a.lock/b`, `a/.b` and `a//b` printed `(0) self-bootstrap`,
+    cloned the standard, and ended in git's own `pathspec ... did not match`.
+    Each name of the table goes to the shim and, through `git
+    check-ref-format --branch`, to git, and the two must answer alike.
+
+    `OPENREPOSHAPE_REPO` is a path nothing is at, so a ref the shim takes
+    goes on to `git clone` and fails there, offline and at once: it has
+    taken the ref when it printed `(0) self-bootstrap`. A ref it refuses
+    prints neither that nor a `git clone` line, exits 2 with the rule it
+    applied, and leaves nothing in `$TMPDIR`. A `gh` and a `curl` that log
+    and fail stand first on `$PATH`, and neither is called.
+    """
+    outside = make_outside_checkout(tmp_path)
+    temporary = tmp_path / "tmp"
+    temporary.mkdir()
+    network = tmp_path / "network.log"
+    result = run_bare_setup(outside / "setup.sh",
+                            "--org", "demoorg", "--project", "Sample", "--yes",
+                            "--shape-ref", name,
+                            "--local-remote-dir", str(tmp_path / "remotes"),
+                            cwd=outside,
+                            extra_env={"OPENREPOSHAPE_REPO":
+                                       str(tmp_path / "no-standard-here"),
+                                       "TMPDIR": str(temporary),
+                                       **fake_github(tmp_path, (),
+                                                     log=network)})
+    assert not network.exists(), network.read_text(encoding="utf-8")
+    took = "(0) self-bootstrap" in result.stdout
+    assert_a_copy_answers_as_git_does("setup.sh", name, takes, took)
+    assert list(temporary.iterdir()) == [], "a shape checkout was left behind"
+    if took:
+        return
+    assert result.returncode == 2, result.stderr + result.stdout
+    assert "git clone" not in result.stdout
+    assert_the_refusal_states_the_ref_rule(
+        result.stderr,
+        f"REFUSED: --shape-ref is '{name}', which is not a branch, tag or "
+        "commit this tool will pass to `git checkout`: ")
 
 
 @pytest.mark.parametrize("overlong", [

@@ -81,6 +81,9 @@ from repo_shape import git_out  # noqa: E402
 # What the Free-plan secrets hint goes by (#660): GitHub's three
 # visibilities, and the hint's own words, which stay in the pinned copy.
 from repo_shape import FREE_PLAN_HINT, VISIBILITY_CHOICES  # noqa: E402
+# The topic's fixed prefix, which GitHub's limit on a topic bounds an id by
+# (#838).
+from repo_shape import TOPIC_PREFIX  # noqa: E402
 
 SHAPE_REPOSITORY = "opensoft/openRepoShape"
 
@@ -5218,7 +5221,7 @@ def refuse_manifest_values(prefix: str, values: dict, policy: NamingPolicy,
 
 
 # ---------------------------------------------------------------------------
-# A repository's name is also a directory's (#261)
+# A repository's name is also a directory's (#261), and GitHub's (#838)
 # ---------------------------------------------------------------------------
 #
 # `checked_value` holds a name to 255 characters, `SAFE_ARG_RE`'s limit, and
@@ -5230,17 +5233,71 @@ def refuse_manifest_values(prefix: str, values: dict, policy: NamingPolicy,
 # directory is asked about; the scaffold died the same way from 247, and from
 # 251 characters in the work directory, where adopt's `check` had already
 # refused the name `legs.spec` with `unsafe-value`.
+#
+# GITHUB KEEPS A NAME SHORTER STILL, AND A TOPIC AND AN OWNER TOO (#838). A
+# repository's name is at most 100 characters and a topic at most 50, both
+# documented on docs.github.com. For 39, the docs give the limit on a user's
+# name (Enterprise Cloud's username considerations), and nothing for an
+# organisation's; 39 is asked of both. No run of this repository has measured
+# any of the three: none creates a real repository, and a probe against a real
+# organisation is another lane's. Nothing asked them. A `--project` of 96 to
+# 250 characters (250 makes the longest `-spec` a directory can be named), or
+# an `--org` of 40 to 255, passed the plan and met GitHub's refusal at the
+# first `gh repo create`, with nothing made yet. An id over 39 characters,
+# which a `--project` of 40 or more gives by default, passed the plan, and the
+# scaffold created and seeded all three repositories before `gh repo edit
+# --add-topic` failed, last; `adopt-project.py execute` failed there after both
+# legs and the split were pushed. Each is asked before anything is created now,
+# and only where a GitHub repository will be made: under `--local-remote-dir`
+# nothing goes to GitHub, the limit on a name is the disk's, and no topic is
+# set. `setup-project.py` cannot import this module (it runs before there is a
+# checkout to import it from), so it says the same numbers in its own `--help`,
+# and `tests/test_github_name_limits.py` holds the two to one number.
 
 #: The longest name a file or a directory may have, in bytes.
 NAME_MAX = 255
 
+#: The longest name GitHub gives a repository, in characters.
+GITHUB_NAME_MAX = 100
+#: The longest topic GitHub sets on a repository, in characters.
+GITHUB_TOPIC_MAX = 50
+#: The longest name GitHub gives a user or an organisation, in characters.
+GITHUB_OWNER_MAX = 39
+#: The longest `<Project>` GitHub can hold a project's repositories under:
+#: `<Project>-spec` and `<Project>-code` are five characters longer.
+GITHUB_PROJECT_MAX = GITHUB_NAME_MAX - len("-spec")
+#: The longest id whose topic, `xf-project-<id>`, GitHub sets.
+GITHUB_ID_MAX = GITHUB_TOPIC_MAX - len(TOPIC_PREFIX)
+
+#: What GitHub keeps a project's names to, as a remediation says it: the
+#: repositories' names, and the id, by the topic it gives. A name refused
+#: for GitHub's limit says the id's too: the default id is the project name
+#: lowercased, so whoever picks a shorter name learns both numbers at once.
+GITHUB_LIMITS = (
+    f"GitHub keeps a repository's name to at most {GITHUB_NAME_MAX} "
+    f"characters, so a project name is at most {GITHUB_PROJECT_MAX}, and a "
+    f"topic to at most {GITHUB_TOPIC_MAX}, so the id in the topic "
+    f"`{TOPIC_PREFIX}<id>`, which is the project name lowercased unless --id "
+    f"is given, is at most {GITHUB_ID_MAX}")
+
+
+def _both_ends(name: str) -> str:
+    """`name` as a refusal shows it: whole, or cut in the middle. BOTH ENDS:
+    a name this long differs from the others by its tail, `-spec` or
+    `-code`, which a cut at the front loses."""
+    return name if len(name) <= 27 else f"{name[:12]}...{name[-12:]}"
+
 
 def refuse_unstorable_names(refusal: str, directories: list[str],
-                            bare: list[str] = ()) -> None:
+                            bare: list[str] = (),
+                            github: list[str] = ()) -> None:
     """Raise `Refusal(refusal)` when a repository name cannot be a directory
     name: each of `directories` is made as it stands under the work
-    directory, each of `bare` as `<name>.git` under `--local-remote-dir`."""
-    problems = []
+    directory, each of `bare` as `<name>.git` under `--local-remote-dir`;
+    or when GitHub will not give it to a repository: each of `github` is
+    created there, by `gh repo create` (#838). The caller passes `github`
+    only where GitHub is asked, never under `--local-remote-dir`."""
+    problems, unstorable = [], set()
     for names, suffix, where in (
             (directories, "", "the directory this run makes for it under "
                               "its work directory"),
@@ -5249,18 +5306,130 @@ def refuse_unstorable_names(refusal: str, directories: list[str],
         for name in names:
             size = len(f"{name}{suffix}".encode("utf-8"))
             if size > NAME_MAX:
-                # BOTH ENDS: a name this long differs from the others by its
-                # tail, `-spec` or `-code`, which a cut at the front loses.
-                shown = (name if len(name) <= 27
-                         else f"{name[:12]}...{name[-12:]}")
+                unstorable.add(name)
                 problems.append(
-                    f"{shown}{suffix} is {size} bytes long, and {where} "
-                    f"may be at most {NAME_MAX}")
-    if problems:
+                    f"{_both_ends(name)}{suffix} is {size} bytes long, and "
+                    f"{where} may be at most {NAME_MAX}")
+    # A name the disk cannot hold is not named again for GitHub's limit,
+    # which it breaks too: the remediation below states both numbers.
+    on_github = [f"{_both_ends(name)} is {len(name)} characters, and GitHub "
+                 f"keeps a repository's name to at most {GITHUB_NAME_MAX}"
+                 for name in github
+                 if len(name) > GITHUB_NAME_MAX and name not in unstorable]
+    if problems or on_github:
+        # EACH LIMIT A NAME BROKE, AND ONLY THOSE: the disk's, GitHub's, or
+        # both, for a name too long for either.
+        limits = [f"a disk keeps a name of at most {NAME_MAX} bytes, which "
+                  "under --local-remote-dir includes the `.git` each bare "
+                  "repository adds"] if problems else []
+        if on_github:
+            limits.append(GITHUB_LIMITS)
         raise Refusal(
-            refusal, "; ".join(problems) + ".",
+            refusal, "; ".join(problems + on_github) + ".",
             "Remediation: nothing was created. Use a shorter --project: the "
             "three repositories are named `<Project>`, `<Project>-spec` and "
-            "`<Project>-code`, and a disk keeps a name of at most "
-            f"{NAME_MAX} bytes, which under --local-remote-dir includes the "
-            "`.git` each bare repository adds.")
+            "`<Project>-code`, and " + "; and ".join(limits) + ".")
+
+
+def refuse_a_topic_github_cannot_set(refusal: str, topic: str,
+                                     project_id: str, named: str,
+                                     remediation: str) -> None:
+    """Raise `Refusal(refusal)` when GitHub will not set `topic`, the
+    `xf-project-<id>` a run sets on each repository it makes: GitHub keeps a
+    topic to `GITHUB_TOPIC_MAX` characters (#838). The topic is set LAST,
+    after the repositories exist, so it is asked before any is made.
+
+    `project_id` is the id the topic carries, `named` how the caller names
+    it (the flag, or where its value came from), and `remediation` the
+    caller's own way out. Asked only where GitHub is: under
+    `--local-remote-dir` no topic is set. The id's own bound is read off
+    the topic, so it is the policy's template that decides it."""
+    if len(topic) <= GITHUB_TOPIC_MAX:
+        return
+    prefix = topic[:len(topic) - len(project_id)]
+    raise Refusal(
+        refusal,
+        f"{named} is {_both_ends(project_id)}, {len(project_id)} characters, "
+        f"so the topic this run sets on each repository, `{prefix}<id>`, is "
+        f"{len(topic)}, and GitHub keeps a topic to at most "
+        f"{GITHUB_TOPIC_MAX}: an id is at most "
+        f"{GITHUB_TOPIC_MAX - len(prefix)} characters",
+        remediation)
+
+
+def refuse_an_owner_github_cannot_have(refusal: str, owner: str, named: str,
+                                       remediation: str) -> None:
+    """Raise `Refusal(refusal)` when `owner`, the organisation the run
+    creates repositories in, is longer than any name GitHub gives a user or
+    an organisation, `GITHUB_OWNER_MAX` characters (#838): no repository can
+    be created under it. `named` is how the caller names it, and
+    `remediation` its own way out. Asked only where GitHub is: under
+    `--local-remote-dir` the organisation names no account."""
+    if len(owner) <= GITHUB_OWNER_MAX:
+        return
+    raise Refusal(
+        refusal,
+        f"{named} is {_both_ends(owner)}, {len(owner)} characters, and "
+        "GitHub keeps a user's or an organisation's name to at most "
+        f"{GITHUB_OWNER_MAX}, so no repository can be created under it",
+        remediation)
+
+
+# An organisation's characters, as GitHub gives them (#863). `checked_value`
+# admits `SAFE_ARG_RE`'s whole alphabet, and the manifest validator's
+# `QUALIFIED_RE` takes `_` and `.` anywhere after an owner's first character,
+# so `--org my_org.x`, `--org trail-` and `--org a--b` passed every plan and
+# went on to `gh repo create my_org.x/<name>`. GitHub's documented rule for a
+# user's or an organisation's name is ASCII letters, digits and single
+# hyphens, with no hyphen at either end; it is not measured here. A leading
+# hyphen is `checked_value`'s refusal already, so the rule left to ask is a
+# character outside it, a trailing hyphen and two hyphens in a row. `_` IS
+# LET BY: a GitHub Enterprise Managed User's login holds one
+# (`<handle>_<shortcode>`), so a rule that refuses it may refuse a personal
+# namespace that exists, and refusing it waits on a probe against a real
+# account. The rule is asked by the tools' plans, beside the 39, and is not
+# put in the pinned `scripts/repo_shape.py` or the two validators, so no
+# project is re-pinned and a manifest that already names such an owner still
+# reads as it did.
+
+#: The characters this asks of an owner's name: GitHub's, and `_` (above).
+GITHUB_OWNER_CHARACTERS = re.compile(r"[A-Za-z0-9_-]")
+
+
+def refuse_an_owner_github_cannot_spell(refusal: str, owner: str, named: str,
+                                        remediation: str) -> None:
+    """Raise `Refusal(refusal)` when `owner`, the organisation the run
+    creates repositories in, holds a character GitHub gives no user's or
+    organisation's name, ends in a hyphen or holds two hyphens in a row
+    (#863): no repository can be created under it. `named` is how the
+    caller names it, and `remediation` its own way out. Asked only where
+    GitHub is, beside `refuse_an_owner_github_cannot_have`: under
+    `--local-remote-dir` the organisation names no account."""
+    held = "".join(dict.fromkeys(
+        char for char in owner if not GITHUB_OWNER_CHARACTERS.fullmatch(char)))
+    problems = []
+    if held:
+        shown = [f"`{char}`" for char in held]
+        problems.append("holding " + (
+            f"{', '.join(shown[:-1])} or {shown[-1]}" if len(shown) > 1
+            else shown[0]))
+    if owner.endswith("-"):
+        problems.append("ending in a hyphen")
+    if "--" in owner:
+        problems.append("with two hyphens in a row")
+    if not problems:
+        return
+    # A VALUE PAST THE LENGTH BOUND IS SHOWN CUT, as
+    # `refuse_an_owner_github_cannot_have` shows it (#871's review, N3):
+    # `check` lists this refusal beside that one, which cuts it, and this
+    # one printed all of a 255-character `org:`. `_both_ends` keeps the
+    # tail, where a trailing hyphen is, and the problems above name every
+    # character, wherever the cut took it from.
+    shown = (repr(owner) if len(owner) <= GITHUB_OWNER_MAX
+             else f"{_both_ends(owner)}, {len(owner)} characters")
+    raise Refusal(
+        refusal,
+        f"{named} is {shown}, and GitHub gives no user or organisation a "
+        f"name {', or '.join(problems)}, so no repository can be created "
+        "under it",
+        remediation)

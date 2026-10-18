@@ -135,8 +135,12 @@ USAGE = """usage: setup-project.py [<Project>] [options] [-- <extra scaffold fla
                           the same thing as --project; give one or the other.
   --project <Project>     the assembly-root name: ONE CamelCase token, no
                           hyphen, underscore, dot or space. Prompted for when
-                          omitted and a terminal is attached.
+                          omitted and a terminal is attached. At most 95
+                          characters without --local-remote-dir: GitHub keeps
+                          a repository's name to 100, and -spec adds 5.
   --id <id>               lowercase project id      (default: project lowercased)
+                          At most 39 characters without --local-remote-dir:
+                          GitHub keeps the topic xf-project-<id> to 50.
   --name "<Display>"      display name              (default: the project name)
   --visibility private|public|internal              (default: private)
   --elected-by "<Name>"   who is electing the shape (default: your gh login)
@@ -156,7 +160,9 @@ USAGE = """usage: setup-project.py [<Project>] [options] [-- <extra scaffold fla
   --org <org>             override the detected organisation. REQUIRED when
                           run outside a checkout of openRepoShape
                           (self-bootstrap mode): there is no origin to read it
-                          from.
+                          from. At most 39 characters without
+                          --local-remote-dir, GitHub's limit on an
+                          organisation's name.
   --allow-upstream-org    permit `--org opensoft` itself: opensoft is the
                           upstream owner of openRepoShape, and almost never
                           what you meant to scaffold into.
@@ -180,7 +186,9 @@ Set $OPENREPOSHAPE_REPO to clone a fork or mirror in self-bootstrap mode
 instead of opensoft/openRepoShape.
 
 Anything after `--` is passed straight through to scaffold-project.py. A
-`--dry-run` there ends this run at the plan, creating nothing.
+`--dry-run` there ends this run at the plan, creating nothing, and makes
+none of the preflight's offers: a run without it, or --preflight, makes
+them.
 """
 
 
@@ -417,7 +425,8 @@ NAME_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9 ._'()&,+@-]{0,254}$")
 
 #: What a git REF may contain, conservatively: `--shape-ref` becomes
 #: `git checkout <ref>` in the temporary checkout. `git check-ref-format` is
-#: the authority; this is the subset of it that a person types.
+#: the authority; this is the subset of its characters that a person types,
+#: and `why_not_a_ref` asks the rest of its rule of a value that passes here.
 REF_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._/-]{0,254}$")
 
 #: What a PATH may contain: whatever the filesystem it names accepts - a drive
@@ -433,8 +442,66 @@ PATH_RE = re.compile(r"^[^\x00-\x1f\x7f]+$")
 CONTROL_RE = re.compile(r"[\x00-\x1f\x7f]")
 
 
-def refuse_value(what: str, text: str) -> None:
-    """ONE wording for every value this tool will not pass on.
+#: A GITHUB REPOSITORY NAME IS AT MOST 100 CHARACTERS, and a project is three
+#: repositories: `<Project>`, `<Project>-spec` and `<Project>-code`. The legs
+#: add five characters (`-spec` and `-code` are as long as each other), so a
+#: project name over 95 names repositories GitHub cannot create (#777). The
+#: 100 is GitHub's own documented limit. No run of this repository has
+#: measured it: none creates a real repository, and a probe against a real
+#: organisation is another lane's. Asked only where a GitHub repository will
+#: be made: under `--local-remote-dir` the limit is the disk's, which step (5)
+#: asks as `scaffold-name-too-long` (#261).
+GITHUB_NAME_MAX = 100
+PROJECT_NAME_MAX = GITHUB_NAME_MAX - len("-spec")
+
+
+#: WHY A VALUE IS REFUSED, one sentence each, said after the fixed first
+#: sentence of `refuse_value` (#777). The old refusal gave every value the same
+#: closing sentence, which explained only a leading `-`: `../x`, `a/b` and an
+#: accented name were told about a `-` none of them has.
+WHY_EMPTY = "It is empty, and a value here needs at least one character."
+WHY_DASH = ("It starts with `-`, and git reads its own arguments: a value "
+            "that starts with `-` is an option to git, not a name to us.")
+WHY_CONTROL = ("It holds a control character, which the quotation shows as "
+               "an escape: a newline ends a line in every terminal and log "
+               "this output reaches, so a value carrying one could print a "
+               "line that reads as this tool's own.")
+WHY_RANGE = ("It holds `..`, which git reads as a revision range and not as "
+             "a ref.")
+WHY_LOCK = ("It ends in `.lock`, the name git gives the lock file it writes "
+            "beside a ref.")
+#: The rest of git's rule for a ref, which is asked of each part between
+#: slashes and not of the whole alone (#857).
+WHY_LOCK_PART = ("A part of it before a `/` ends in `.lock`, the name git "
+                 "gives the lock file it writes beside a ref, and git takes "
+                 "no ref with such a part.")
+WHY_DOT_PART = ("A part of it after a `/` starts with `.`, and git takes no "
+                "ref with such a part.")
+WHY_EMPTY_PART = ("It holds `//` or ends in `/`, and git takes no ref with an "
+                  "empty part between slashes.")
+WHY_DOT_END = "It ends in `.`, and git takes no ref that does."
+
+#: What each pattern asks, in words and then as the pattern itself, as the
+#: sibling `repo_shape.checked_value` prints its own. `PATH_RE` has no row: it
+#: refuses only an empty value and a control character, and both are named
+#: before a pattern is asked; a pattern with no row is still named, as the
+#: sibling names it, by `why_refused`. The words say ASCII because the
+#: patterns are: "letters" and "spaces" alone describe `Caf\xe9` and a
+#: no-break space as values that pass (rv811).
+WHY_PATTERN = {
+    NAME_RE: ("It is not spellable as a name: an ASCII letter or digit "
+              "first, then ASCII letters, digits, the space and "
+              "`._'()&,+@-`, at most 255 characters in all (`%s`)."
+              % NAME_RE.pattern),
+    REF_RE: ("It is not spellable as a ref: an ASCII letter or digit first, "
+             "then ASCII letters, digits and `._/-`, at most 255 characters "
+             "in all (`%s`)." % REF_RE.pattern),
+}
+
+
+def refuse_value(what: str, text: str, why: str) -> None:
+    """ONE first sentence for every value this tool will not pass on, and the
+    reason it failed as the second (#777).
 
     `ascii()`, never `%r`: `repr` leaves a printable non-ASCII character as
     itself, and this file's output is ASCII to the byte (see the module
@@ -443,9 +510,26 @@ def refuse_value(what: str, text: str) -> None:
     PURE ASCII rule exists to prevent.
     """
     die("%s is %s, which is not a value this tool will put on a `git` or `gh` "
-        "command line. git reads its own arguments: a value that starts with "
-        "`-` is an option to git, not a name to us; the rest must be spellable "
-        "as a name, a ref or a path." % (what, ascii(text)))
+        "command line. %s" % (what, ascii(text), why))
+
+
+def why_refused(text: str, pattern) -> str:
+    """The reason `checked_value` refuses `text`, or "" when it does not.
+
+    Asked in the order a person would find them: nothing typed, a leading `-`,
+    a control character, and only then the pattern, so the sentence names the
+    first check the value failed and never one it passed.
+    """
+    if not text:
+        return WHY_EMPTY
+    if text.startswith("-"):
+        return WHY_DASH
+    if CONTROL_RE.search(text):
+        return WHY_CONTROL
+    if not pattern.fullmatch(text):
+        return WHY_PATTERN.get(pattern) or (
+            "It does not match `%s`." % pattern.pattern)
+    return ""
 
 
 def checked_value(flag: str, value: str, pattern=NAME_RE) -> str:
@@ -460,29 +544,82 @@ def checked_value(flag: str, value: str, pattern=NAME_RE) -> str:
     write).
 
     THE HOUSE PATTERN, COPIED RATHER THAN IMPORTED. `scripts/repo_shape.py`'s
-    `checked_value` is the same check in the same words for the same reason,
-    and `scaffold-project.py` calls it on the values this file forwards. This
+    `checked_value` is the same check for the same reason, and
+    `scaffold-project.py` calls it on the values this file forwards. This
     entry point cannot import it: it runs BEFORE there is a checkout to import
-    it from, which is the whole of self-bootstrap mode.
+    it from, which is the whole of self-bootstrap mode. The two refuse the
+    same values; each says why in its own words, and this file's name the
+    check the value failed (`why_refused`), where the sibling prints one
+    remediation for all of them.
     """
     text = str(value)
-    if (not text or text.startswith("-") or CONTROL_RE.search(text)
-            or not pattern.fullmatch(text)):
-        refuse_value(flag, text)
+    why = why_refused(text, pattern)
+    if why:
+        refuse_value(flag, text, why)
     return text
+
+
+def checked_project_length(what: str, name: str, local_mode: bool) -> str:
+    """A project name that GitHub will hold three repositories under, or a
+    refusal before step (4) explains three names it will not use (#777).
+
+    ASKED OF A NAME THAT HAS PASSED `checked_value`, so it is printable ASCII
+    and is quoted back as it is, both ends of it: the name is long, and a
+    name this long differs from its neighbours by its tail.
+    """
+    if local_mode or len(name) <= PROJECT_NAME_MAX:
+        return name
+    die("%s is %d characters long (%s...%s), and a project is three "
+        "repositories, `<Project>`, `<Project>-spec` and `<Project>-code`: "
+        "GitHub keeps a repository name to at most %d characters, so a "
+        "project name is at most %d. Nothing was created. Use a shorter name."
+        % (what, len(name), name[:12], name[-12:], GITHUB_NAME_MAX,
+           PROJECT_NAME_MAX))
+
+
+def why_not_a_ref(text: str) -> str:
+    """The reason `git check-ref-format` refuses `text`, a value `REF_RE` has
+    passed, or "" when it takes it.
+
+    GIT'S RULE IS PER PART (#857). Each part between slashes is there (no
+    `//`, no `/` at the end), does not start with `.` and does not end in
+    `.lock`, and the whole holds no `..` and does not end in `.`. Only `..`
+    and a `.lock` at the very end were asked before, so `a.lock/b`, `a/.b`,
+    `a//b`, `a/b/` and `a.` passed, and in self-bootstrap mode the person met
+    git's own `pathspec ... did not match` after the standard was cloned.
+    A `/` or a `.` as the first character is `REF_RE`'s to refuse. The checks
+    run in this order, so the sentence names the first one the value failed.
+    """
+    parts = text.split("/")
+    if ".." in text:
+        return WHY_RANGE
+    if "" in parts:
+        return WHY_EMPTY_PART
+    if any(part.startswith(".") for part in parts):
+        return WHY_DOT_PART
+    if text.endswith(".lock"):
+        return WHY_LOCK
+    if any(part.endswith(".lock") for part in parts):
+        return WHY_LOCK_PART
+    if text.endswith("."):
+        return WHY_DOT_END
+    return ""
 
 
 def checked_ref(flag: str, value: str) -> str:
     """`--shape-ref`: narrower than a name, because git reads more into one.
 
-    `..` is a revision RANGE rather than a ref, and a ref ending in `.lock` is
-    the name git gives the lock file it writes beside one - neither is a thing
-    to check out, and both are refused here rather than discovered as a
-    confusing failure inside the temporary checkout.
+    `..` is a revision RANGE rather than a ref, a part ending in `.lock` is
+    the name git gives the lock file it writes beside one, and git takes no
+    ref with an empty part, a part that starts with `.`, or a `.` at its end
+    (`why_not_a_ref`) - none is a thing to check out, and each is refused
+    here rather than discovered as a confusing failure inside the temporary
+    checkout.
     """
     text = checked_value(flag, value, REF_RE)
-    if ".." in text or text.endswith(".lock"):
-        refuse_value(flag, text)
+    why = why_not_a_ref(text)
+    if why:
+        refuse_value(flag, text, why)
     return text
 
 
@@ -501,7 +638,8 @@ def checked_passthrough(rest: list) -> list:
     """
     for item in rest:
         if CONTROL_RE.search(item):
-            refuse_value("a passthrough argument after `--`", item)
+            refuse_value("a passthrough argument after `--`", item,
+                         WHY_CONTROL)
     return rest
 
 
@@ -664,6 +802,12 @@ def parse_args(argv, invocation_dir: str) -> Options:
     if opts.visibility not in VISIBILITY_CHOICES:
         die("--visibility is %s; it must be 'private', 'public' or 'internal'"
             % opts.visibility)
+    # ASKED HERE, NOT WHERE `--project` IS TAKEN: `--local-remote-dir` can
+    # come after it on the line, and decides whether a GitHub repository
+    # will be made (#777). Still before step (1) prints.
+    if opts.project:
+        spelling = "<Project>" if state.positional else "--project"
+        checked_project_length(spelling, opts.project, opts.local_mode)
     return opts
 
 
@@ -926,7 +1070,12 @@ def run_command_text(text: str) -> int:
     return run_at_the_terminal(argv).returncode
 
 
-def offer(command_text: str) -> bool:
+#: What the terminal is told where a dry run makes no offer (#857).
+NOT_OFFERED = ("      not offered: --dry-run was passed through. A run without "
+               "it offers this here, and so does --preflight.")
+
+
+def offer(command_text: str, offering: bool = True) -> bool:
     """Show one install command and take exactly one typed `yes` for it.
 
     THE SIGNATURE IS THE GUARANTEE, not the care of whoever edits this next:
@@ -937,16 +1086,26 @@ def offer(command_text: str) -> bool:
     AGENTS.md says the same thing to an assistant driving this: the human
     types this one.
 
-    NO TERMINAL, NO OFFER. `can_ask()` is the only gate, exactly as in
+    NO TERMINAL, NO OFFER. `can_ask()` is the gate, exactly as in
     `plan_and_confirm`: the person's terminal, which is stdin or, when a pipe
     is, the controlling terminal (#492). A run with neither, scheduled or in
     an assistant's shell, prints what it printed before any of this existed
     and stops where it stopped.
 
+    A DRY RUN, NO OFFER EITHER (#857). `offering` is False in a run passed
+    `--dry-run` after `--` (`preflight`), which ends at the plan saying
+    nothing was created: a `yes` typed here would still have installed
+    software, signed gh in, or written the person's global git config
+    (`gh auth setup-git`). The terminal is told the offer was not made, and
+    asked nothing. A bool, never `Options`, for the reason above.
+
     The `yes` is EXACT and the prompt is the one this file already asks:
     `y`, `Yes`, an empty line and EOF are all refusals.
     """
     if not can_ask():
+        return False
+    if not offering:
+        say(NOT_OFFERED)
         return False
     say("")
     if "\n" in command_text:
@@ -962,8 +1121,9 @@ def offer(command_text: str) -> bool:
 
 
 def offer_install(tool: str, command_text: str, probe,
-                  platform: str = "") -> bool:
+                  platform: str = "", offering: bool = True) -> bool:
     """One offer, one run, ONE re-check. True when the check now passes.
+    `offering` is `offer`'s (#857).
 
     Never a loop: a person told twice that the thing is still missing is
     watching this program guess, and the second guess is no better than the
@@ -982,7 +1142,7 @@ def offer_install(tool: str, command_text: str, probe,
       the next one.
     """
     platform = platform or sys.platform
-    if not offer(command_text):
+    if not offer(command_text, offering):
         return False
     if run_command_text(command_text) != 0:
         return False
@@ -1004,19 +1164,20 @@ def offer_install(tool: str, command_text: str, probe,
     return False
 
 
-def offer_missing(tool: str, probe) -> bool:
+def offer_missing(tool: str, probe, offering: bool = True) -> bool:
     """The offer a failed check makes: look this platform's command up, and
-    make no offer at all when there is none."""
+    make no offer at all when there is none. `offering` is `offer`'s."""
     command = offer_for(tool, sys.platform)
     if command is None:
         return False
-    return offer_install(tool, command, probe, sys.platform)
+    return offer_install(tool, command, probe, sys.platform, offering)
 
 
-def _check_git() -> bool:
+def _check_git(offering: bool = True) -> bool:
     if not shutil.which("git"):
         bad(GIT_MISSING)
-        if not offer_missing("git", lambda: bool(shutil.which("git"))):
+        if not offer_missing("git", lambda: bool(shutil.which("git")),
+                             offering):
             return False
     ok("git %s" % program_version(["git", "--version"], 2))
     return True
@@ -1069,7 +1230,7 @@ def _gh_login_suffix() -> str:
     return ""
 
 
-def _check_gh(opts: Options) -> bool:
+def _check_gh(opts: Options, offering: bool = True) -> bool:
     if opts.local_mode:
         ok("gh not required (--local-remote-dir: bare repositories on disk, "
            "no network)")
@@ -1086,18 +1247,19 @@ def _check_gh(opts: Options) -> bool:
             # command that follows it, and that is where we stop.
             say("      Homebrew installs it with `brew install gh`, and is "
                 "its own install: https://brew.sh")
-        if not offer_missing("gh", lambda: bool(shutil.which("gh"))):
+        if not offer_missing("gh", lambda: bool(shutil.which("gh")),
+                             offering):
             return False
     ok("gh %s" % program_version(["gh", "--version"], 2))
     if run(["gh", "auth", "status"], capture=True).returncode != 0:
         bad("gh is not authenticated. Run: gh auth login")
-        if not _offer_login():
+        if not _offer_login(offering):
             return False
     ok("gh is authenticated%s" % _gh_login_suffix())
     return True
 
 
-def _offer_login() -> bool:
+def _offer_login(offering: bool = True) -> bool:
     """`gh auth login`, offered and then run as a PLAIN ARGV.
 
     Never through a shell: it is a terminal UI that ends in a browser and
@@ -1106,8 +1268,9 @@ def _offer_login() -> bool:
     what its prompts and its one-time code need, and what the gate on the
     offer has already guaranteed is there. The browser half is the human's;
     this starts the login and asks `gh auth status` once when gh comes back.
+    `offering` is `offer`'s (#857).
     """
-    if not offer("gh auth login"):
+    if not offer("gh auth login", offering):
         return False
     if run_at_the_terminal(["gh", "auth", "login"]).returncode != 0:
         return False
@@ -1133,7 +1296,7 @@ def _credential_helper_configured() -> bool:
     return False
 
 
-def _check_credential_helper(opts: Options) -> None:
+def _check_credential_helper(opts: Options, offering: bool = True) -> None:
     """WARN, DO NOT REFUSE - the class `_warn_autocrlf` belongs to.
 
     The scaffold clones and pushes over HTTPS (`clone_and_bootstrap`), so a
@@ -1153,6 +1316,10 @@ def _check_credential_helper(opts: Options) -> None:
     `--preflight`: a warning that refuses is a refusal, and this one would
     refuse a machine whose remotes are SSH and whose HTTPS push this tool
     never makes.
+
+    A DRY RUN STILL WARNS AND OFFERS NOTHING (#857): `offering` is `offer`'s.
+    A `yes` here makes gh write its helper into the person's global git
+    config, which is no part of a run that ends at the plan.
     """
     if opts.local_mode:
         return
@@ -1160,7 +1327,7 @@ def _check_credential_helper(opts: Options) -> None:
         return
     warn("git has no credential helper for github.com, so the first push "
          "over HTTPS will fail. Fix it once: gh auth setup-git")
-    if not offer("gh auth setup-git"):
+    if not offer("gh auth setup-git", offering):
         return
     if run_at_the_terminal(["gh", "auth", "setup-git"]).returncode != 0:
         return
@@ -1197,13 +1364,14 @@ def _warn_autocrlf() -> None:
          "git config --global core.autocrlf false")
 
 
-def preflight_checks(opts: Options) -> bool:
+def preflight_checks(opts: Options, offering: bool = True) -> bool:
     """Every check, in order, and whether they all passed.
 
     SPLIT OUT OF `preflight` FOR `--preflight` (#59, renamed 2026-09-10), which runs exactly this
     and then reports instead of refusing. The scaffold path is unchanged: the
     refusal is still one refusal, still at the end, still naming everything
-    that was missing.
+    that was missing. `offering` False (`preflight`, #857) runs every check
+    and makes none of the offers.
     """
     say("openRepoShape setup")
     say("")
@@ -1212,20 +1380,29 @@ def preflight_checks(opts: Options) -> bool:
     # is told about git AND gh in one go rather than one missing thing per
     # re-run, which is what the original `failed = True` accumulator bought.
     # The list is complete before `all` reads it, so nothing short-circuits.
-    checked = [_check_git(), _check_python(), _check_bootstrap()]
+    checked = [_check_git(offering), _check_python(), _check_bootstrap()]
     # THE CREDENTIAL HELPER IS ASKED ABOUT ONLY WHEN gh IS READY. With no gh,
     # or no login, there is nothing to set up as a helper yet and the person
     # has already been told the thing that has to happen first.
-    gh_ready = _check_gh(opts)
+    gh_ready = _check_gh(opts, offering)
     checked.append(gh_ready)
     if gh_ready:
-        _check_credential_helper(opts)
+        _check_credential_helper(opts, offering)
     _warn_autocrlf()
     return all(checked)
 
 
 def preflight(opts: Options) -> None:
-    if not preflight_checks(opts):
+    """The scaffold run's preflight, refusing once if anything is missing.
+
+    A `--dry-run` PASSED THROUGH AFTER `--` MAKES NONE OF ITS OFFERS (#857).
+    That run ends at the plan, and its help and its last line say nothing was
+    created, so it reports what is missing and asks nothing that would change
+    this machine. `--preflight` (`preflight_only`) makes every offer whatever
+    follows `--`: it is the run that exists for them (#59), and it returns
+    before anything that reads the passthrough.
+    """
+    if not preflight_checks(opts, not passes_a_dry_run(opts.passthrough)):
         die(PREREQ_MISSING)
 
 
@@ -1556,7 +1733,7 @@ def run_at_the_terminal(argv) -> subprocess.CompletedProcess:
             os.close(descriptor)
 
 
-def ask_for_the_project_name() -> str:
+def ask_for_the_project_name(local_mode: bool) -> str:
     """The `project name` prompt, and the name typed at it, checked (#729).
 
     AN EMPTY LINE IS A NAME NOBODY TYPED, NOT A MISSING TERMINAL: `can_ask()`
@@ -1569,11 +1746,29 @@ def ask_for_the_project_name() -> str:
     only the last part of what it is handed. `a b` and `Bad_Name` pass here on
     purpose (`NAME_RE` is permissive); step (4) is where the policy rules on
     those.
+
+    THE SPACES AT THE ENDS ARE TAKEN OFF FIRST (#777). A trailing space
+    passed `NAME_RE` (a space is allowed after the first character, so `a b`
+    can reach step (4)) where a leading one was refused, and step (4) then
+    judged `Atlas `, `Atlas -spec` and `Atlas -code` and showed no space
+    anywhere. A stray space is what a prompt answer gets from a paste or a
+    slip of the thumb, and the run ends at the first mistake with no second
+    ask, so the prompt takes it off; an argv value is deliberate and is held
+    as typed. A line of nothing but spaces is then an empty line.
+
+    ONLY THE SPACE COMES OFF, NOT EVERY KIND OF WHITESPACE. `str.strip()`
+    with no argument also took off a tab, a form feed, `\\x1c` to `\\x1f`, a
+    no-break space and the ideographic space, so the prompt accepted each of
+    them where `--project` refuses it, as a control character or by the
+    pattern (rv811). Now only the space comes off, and the rest reach
+    `checked_value` as they were typed.
     """
     typed = ask("  project name (ONE CamelCase token, e.g. Atlas): ")
+    typed = typed.strip(" ")
     if not typed:
         die("no project name was typed; nothing was created.")
-    return checked_value("project name", typed)
+    return checked_project_length(
+        "project name", checked_value("project name", typed), local_mode)
 
 
 def resolve_project_and_elector(opts: Options, shape_root: Path) -> None:
@@ -1581,7 +1776,7 @@ def resolve_project_and_elector(opts: Options, shape_root: Path) -> None:
     say("")
     say("(3) project")
     if not opts.project and can_ask():
-        opts.project = ask_for_the_project_name()
+        opts.project = ask_for_the_project_name(opts.local_mode)
     if not opts.project:
         usage(sys.stderr)
         die("no --project given, and no terminal to ask on.")
@@ -2192,7 +2387,8 @@ def passes_a_dry_run(passthrough: list) -> bool:
 
     The scaffold then creates nothing in step (6), and step (7) cloned three
     repositories that did not exist and refused saying they WERE created.
-    `plan_and_confirm` ends the run at the plan instead.
+    `plan_and_confirm` ends the run at the plan instead, and `preflight`
+    makes none of its offers in it (#857).
     """
     return any(names_flag(word, "--dry-run")
                for word in scaffold_words(passthrough))
@@ -2450,9 +2646,13 @@ def plan_and_confirm(opts: Options, shape_root: Path, org: str,
     say("clone into   %s" % clone)
 
     if passes_a_dry_run(opts.passthrough):
+        # AND THE PREFLIGHT CHANGED NOTHING EITHER (#857): `preflight` made
+        # none of its offers, and named each one where it would have asked.
         say("")
         say("--dry-run was passed through to the scaffold, so this run ends "
-            "at the plan above: nothing was created and nothing was cloned.")
+            "at the plan above: nothing was created and nothing was cloned. "
+            "The preflight made none of its offers; a run without --dry-run "
+            "makes each one marked `not offered` above.")
         return False
     if opts.assume_yes:
         return True

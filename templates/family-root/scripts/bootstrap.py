@@ -25,7 +25,10 @@ WHAT IT DOES, in order:
       A fetch that fails is REPORTED and does not stop the run: the members
       that did arrive are still worth bootstrapping, and a family that
       refused to do anything because one member is unreachable would be worse
-      than one that says which.
+      than one that says which. The advice to set a credential is given only
+      where git asked for one: not where its init died at a gitlink it has
+      no url for, nor where it read nothing from `.gitmodules`, both below,
+      since it fetched nothing then (#839).
 
       "every member and leg fetched" is said only where git exited 0 AND
       every row's member is checked out (#648). A member left NOT CHECKED
@@ -51,9 +54,11 @@ WHAT IT DOES, in order:
       out; where every member was checked out the run fails all the same,
       since git updated none of them. A work tree file git cannot parse at
       all, a conflict marker or an open quote left in it, is said and
-      failed on the same way, and its cure is the file mended by hand. Git
-      exits 0 over the second where a recursive clone ran first, and 128
-      (`No url found for submodule path`) in a plain clone; a missing
+      failed on the same way, and its cure is the file mended by hand; in
+      the index's or HEAD's file git reads the sections before such a line
+      and goes on, and so does this (#856). Git exits 0 over the second
+      where a recursive clone ran first, and 128 (`No url found for
+      submodule path`) in a plain clone; a missing
       credential exits non-zero too, so what the holder records is the
       test, never git's words. The line says what cures each (`cures`):
       `validate-family.py` names the commit for the first two; for the
@@ -63,7 +68,13 @@ WHAT IT DOES, in order:
       sections give, or a gitlink in members/ that no row names; `git rm
       --cached` takes out one outside members/, which the validator does
       not read; and where the gitlink is a row's own, with one section,
-      the line says to write its section back.
+      the line says to write its section back. Where git read the index's
+      or HEAD's file only up to a line it cannot parse, or up to a key it
+      takes no value for (a bare `url` line, which `git config --list`
+      takes), a section or url it did not read may be past that line, so
+      for those three the line says to put that file back, mend the line
+      or give the key a value or take it out, and commit it, and writes
+      no section back (#856).
 
   (b) RUNS EACH MEMBER'S OWN `make bootstrap`. Each member is a whole project
       and knows how to bootstrap itself — it puts its legs on their
@@ -72,7 +83,15 @@ WHAT IT DOES, in order:
       review-authority readout. This command does not reimplement any of
       that; it walks the members `family.yaml` names and calls theirs.
       `--members-make validate` runs `make validate` instead, which is what
-      the family Makefile's `validate` target uses.
+      the family Makefile's `validate` target uses. A member whose command
+      fails is named with that command's exit code, read from make's
+      `Error <code>` line, since make exits 2 for any command that fails,
+      so a member's finding (1) and its refusal (2) are told apart, and
+      from a failure of make's own, which prints no such line (#839). Where
+      the member's make runs another, the code is the innermost command's,
+      as far as make's lines tell it (`MakeErrors` says where they do not);
+      make's stderr reaches the terminal through this run, and `run_make`
+      says what that changes for a member (#884).
 
   (c) EXITS 0 unless a member's own command failed, or (a) left a member not
       checked out that no credential would check out, or found a line or a
@@ -125,12 +144,21 @@ NO_SECTION = f"no section of {GITMODULES} gives that path"
 NO_URL = "git has no url for that path"
 EXITED_0 = "git exited 0 and checked nothing out there"
 STOPPED = "git stopped at {}, a gitlink it has no url for"
+#: The whys a `.gitmodules` git read only up to a line it cannot parse, or
+#: up to a key with no value it stops at, may be the cause of, since what
+#: it did not read is past that line (`Gitmodules.cut`, #856).
+CUT_WHYS = frozenset({NO_SECTION, NO_URL, STOPPED})
+#: HEAD's `.gitmodules`, as `git config --blob` is given it.
+HEAD_GITMODULES = f"HEAD:{GITMODULES}"
 
 #: What git 2.43 dies on in a `.gitmodules` it reads (#768), as
 #: `parse_config` in its submodule-config.c reads a submodule's key: these
 #: keys with no value (a `branch` with none crashes it, `BRANCH_READ_SINCE`),
 #: and an `update` other than these four. A `shallow` must be a boolean and
-#: a `fetchrecursesubmodules` a boolean or `on-demand` (`git_bool`).
+#: a `fetchrecursesubmodules` a boolean or `on-demand` (`git_bool`). The
+#: gate's `_values_refused`, `_git_takes_bool` and `GIT_TAKES` say the same,
+#: and `tests/test_family_gitmodules_values.py` holds the two scripts to one
+#: answer: a change made here is made there too (#856).
 NO_VALUE_REFUSED = frozenset({"path", "url", "update", "ignore", "branch"})
 #: The first git that reads a `branch` with no value as it reads a `url`
 #: with none, `missing value` and `bad config line`, which dies in the work
@@ -182,8 +210,10 @@ def fetch_members(root: Path, rows: list[dict]) -> list[str]:
     Returns a failure line for each of `rows` whose member it leaves not
     checked out where no credential would check it out (`unfetchable`), for
     the run to end FAILED on (#648); every member and leg is said to be
-    fetched only where there is none and git exited 0. Raises the
-    `git-not-runnable` refusal where git cannot be started (#694)."""
+    fetched only where there is none and git exited 0. The advice to set a
+    credential is printed only where git asked for one
+    (`credential_advice`, #839). Raises the `git-not-runnable` refusal
+    where git cannot be started (#694)."""
     source, token = credential()
     args = ["git"]
     if token:
@@ -202,19 +232,10 @@ def fetch_members(root: Path, rows: list[dict]) -> list[str]:
         if refusal is None:
             raise
         raise refusal from exc
-    if proc.returncode != 0:
-        # The token can appear in git's own error text (it is in the URL it
-        # tried), so the output is scrubbed before it is printed.
-        message = (proc.stderr + proc.stdout).strip()
-        if token:
-            message = message.replace(token, "<redacted>")
-        print(f"  FETCH INCOMPLETE (git exit {proc.returncode}) using "
-              f"credential source '{source}':\n{message}", file=sys.stderr)
-        print("  If the members are PRIVATE, set SHAPE_LEGS_TOKEN (a "
-              "fine-grained PAT with contents:read on them) or export an "
-              "App-minted SHAPE_LEGS_APP_TOKEN, then re-run. What did arrive "
-              "is bootstrapped below.", file=sys.stderr)
     left, stopper, modules = unfetchable(root, rows, proc.returncode == 0)
+    if proc.returncode != 0:
+        fetch_incomplete(proc, source, token,
+                         credential_advice(bool(left), stopper, modules))
     if left:
         print("  NOT CHECKED OUT, and not for want of a credential: "
               + ", ".join(f"{spelled(path)} ({reason(why, stopper, modules)})"
@@ -230,6 +251,44 @@ def fetch_members(root: Path, rows: list[dict]) -> list[str]:
         print("  every member and leg fetched")
     return [f"{spelled(row.get('project') or '?')} (not checked out)"
             for row, _, _ in left]
+
+
+def fetch_incomplete(proc: subprocess.CompletedProcess, source: str,
+                     token: str, advice: str) -> None:
+    """(a)'s report of a `git submodule update` that exited non-zero: git's
+    own words, then `advice`, where there is any (`credential_advice`)."""
+    # The token can appear in git's own error text (it is in the URL it
+    # tried), so the output is scrubbed before it is printed.
+    message = (proc.stderr + proc.stdout).strip()
+    if token:
+        message = message.replace(token, "<redacted>")
+    print(f"  FETCH INCOMPLETE (git exit {proc.returncode}) using "
+          f"credential source '{source}':\n{message}", file=sys.stderr)
+    if advice:
+        print(advice, file=sys.stderr)
+
+
+def credential_advice(denied: bool, stopper: str | None,
+                      modules: Gitmodules) -> str:
+    """(a)'s advice to set a credential, or nothing where git asked for none
+    (#839): where its init died at a gitlink it has no url for (`stopper`),
+    or it read nothing from `.gitmodules`, a merge leaving it unmerged, a
+    value git dies on or a file it cannot parse, it fetched nothing. Every
+    row (a) then leaves not checked out is said to be no credential's, and
+    the advice beside that was its denial (w768's candidate 1 on #819).
+    Anywhere else a fetch git made failed, a member's, or a leg's in a
+    member checked out, and the advice stands; where a row is said to be no
+    credential's beside it (`denied`), it is for the members that line does
+    not name."""
+    if (stopper is not None or modules.unmerged or modules.refused
+            or modules.unreadable):
+        return ""
+    which = ("the members the next line does not name" if denied
+             else "the members")
+    return (f"  If {which} are PRIVATE, set SHAPE_LEGS_TOKEN (a fine-grained "
+            "PAT with contents:read on them) or export an App-minted "
+            "SHAPE_LEGS_APP_TOKEN, then re-run. What did arrive is "
+            "bootstrapped below.")
 
 
 def git_not_started(exc: OSError) -> Refusal | None:
@@ -290,9 +349,21 @@ def cures(left: list[tuple[dict, str, str]], stopper: str | None,
       url no clone can check it out.
     - A row git exited 0 over: the update that checks it out whatever the
       clone chose. `--init` with the path registers a member a subset
-      clone left out, and `--checkout` overrides an `update = none`."""
+      clone left out, and `--checkout` overrides an `update = none`.
+    - The index's or HEAD's `.gitmodules`, a blob, which git read only up
+      to a line it cannot parse, or up to a key with no value it stops at
+      (`Gitmodules.cut`, #856), for a row with no section or no url there,
+      or the gitlink git stopped at (`CUT_WHYS`): that file put back,
+      mended and committed, which `gitmodules_cures` says. A section or
+      url git did not read may be past the line, so no other cure is said
+      for those: a section written back where the work tree holds no file
+      would be the only one in it, and `validate-family.py` reads HEAD's
+      file alone, not the index's."""
     whys = {why for _, _, why in left}
     said = gitmodules_cures(whys, modules)
+    if modules.cut:
+        left = [entry for entry in left if entry[2] not in CUT_WHYS]
+        whys -= CUT_WHYS
     if whys & {NO_GITLINK, NO_SECTION}:
         said.append(f"`{PYTHON} scripts/validate-family.py` names the cause "
                     "and the commit that cures it.")
@@ -336,7 +407,21 @@ def gitmodules_cures(whys: set[str], modules: Gitmodules) -> list[str]:
     """`cures`' sentences for a `.gitmodules` git reads nothing from, each
     in the order `cures` says them (#648, #768): a merge left unmerged,
     for a row `whys` names so; each value git dies on; a work tree file
-    git cannot parse."""
+    git cannot parse. And for a blob git read only up to such a line, or
+    up to a key with no value it stops at, where a row `whys` names is
+    one of `CUT_WHYS` (#856): the command that puts that file back in the
+    work tree, `git checkout` from the index where git read the index's,
+    which keeps what was staged, and from HEAD where it read HEAD's, then
+    the file mended, or the key given a value git takes (`TAKES`) or its
+    line taken out, and committed. The index's is put back with
+    `--ignore-skip-worktree-bits`: in a sparse checkout that leaves
+    `.gitmodules` out, its entry is skip-worktree, and `git checkout --
+    .gitmodules` matches no file there (RV877's NIT-3, measured, git
+    2.43.0); with the flag it puts the file back there and in any other
+    work tree. HEAD's is put back only where the index holds no entry,
+    so no skip-worktree bit, and `git checkout HEAD` puts it back in a
+    sparse checkout too. `git config -f .gitmodules --list`
+    takes a key with no value, so it is pointed at for the line alone."""
     said = []
     if UNMERGED in whys:
         said.append(f"Resolve the merge in {GITMODULES} and `git add "
@@ -354,6 +439,21 @@ def gitmodules_cures(whys: set[str], modules: Gitmodules) -> list[str]:
         said.append(f"Mend {GITMODULES} by hand (`git config -f "
                     f"{GITMODULES} --list` says where it breaks), and "
                     "commit it.")
+    if modules.cut and whys & CUT_WHYS:
+        head = modules.cut == HEAD_GITMODULES
+        put_back = shlex.join([
+            "git", "checkout",
+            *(["HEAD"] if head else ["--ignore-skip-worktree-bits"]),
+            "--", GITMODULES])
+        whose = f"{'HEAD' if head else 'the index'}'s {GITMODULES}"
+        key = modules.cut_key
+        mend = (f"`{spelled(key)}`, a key with no value: give it a value "
+                f"git takes, {TAKES[key.rpartition('.')[2]]}, or take that "
+                "line out" if key else
+                "a line it cannot parse: mend it by hand (`git config -f "
+                f"{GITMODULES} --list` says where it breaks)")
+        said.append(f"`{put_back}` puts back {whose}, which git read only "
+                    f"up to {mend}, and commit it.")
     return said
 
 
@@ -384,7 +484,16 @@ class Gitmodules(NamedTuple):
     it reads the file, None for a key with no value (#768): git reads
     nothing from it then, and the three are empty. `unreadable` says the
     work tree's file is one `git config --list` cannot parse, which git
-    dies reading: the three are empty then too."""
+    dies reading: the three are empty then too. `cut` is the blob git read
+    only up to such a line, as `gitmodules_source` names it,
+    `HEAD:.gitmodules` or the index's object id, where it read an entry
+    before it, or the blob is the index's (`gitmodules_listed`, #856):
+    the three hold what it read,
+    and `cures` writes no section back. Empty where git read the whole
+    file, or nothing. `cut_key` is the `submodule.<name>.<key>` with no
+    value that cut it, where that is what git stopped at
+    (`ends_blob_reading`), a line `git config --list` takes, and empty
+    where a line it cannot parse did."""
 
     given: Counter
     read: dict[str, str]
@@ -392,15 +501,22 @@ class Gitmodules(NamedTuple):
     unmerged: bool = False
     refused: tuple[tuple[str, str | None], ...] = ()
     unreadable: bool = False
+    cut: str = ""
+    cut_key: str = ""
 
 
 def gitmodules_sections(root: Path) -> Gitmodules:
     """`.gitmodules` as `git submodule update` reads it: the work tree's
     file, which a fresh clone takes from HEAD, or, where the work tree has
     none, as a deletion not yet committed or a sparse checkout leaves it,
-    the index's, then HEAD's (`gitmodules_source`, #768). Nothing where
-    none holds one, or git cannot read it: git has no url for any
-    submodule then either. Nothing, and `unreadable`, where that is the
+    the index's, then HEAD's (`gitmodules_source`, #768), each of the
+    last two, a blob, up to a line git cannot parse, as git reads it,
+    and `cut` where it read an entry before that line, or the blob is
+    the index's (`gitmodules_listed`, #856), or up to a key with no value
+    git stops at, `cut` and `cut_key` (`gitmodules_entries`). Nothing
+    where none holds one, or git cannot read it: git has no url for any
+    submodule then either.
+    Nothing, and `unreadable`, where that is the
     work tree's file and `git config --list` cannot parse it: git dies
     reading it (`bad config line`), before it checks out any member.
     Nothing, and `unmerged`, where the index holds the file only at a
@@ -417,19 +533,19 @@ def gitmodules_sections(root: Path) -> Gitmodules:
     source = gitmodules_source(root)
     if source is None:
         return nothing._replace(unmerged=True)
-    try:
-        listed = git_out(["config", "-z", *source, "--list"], cwd=root,
-                         binary=True)
-    except Refusal:
+    listed = gitmodules_listed(root, source)
+    if listed is None:
         return nothing._replace(unreadable=os.path.isfile(root / GITMODULES))
-    entries = gitmodules_entries(root, listed, source[0] == "--blob")
+    printed, cut = listed
+    entries, ended = gitmodules_entries(root, printed, source[0] == "--blob")
     refused = tuple(dict.fromkeys(
         (f"submodule.{name}.{key}", value)
         for name, key, value, ignored in entries
         if not ignored and refused_value(root, key, value)))
     if refused:
         return nothing._replace(refused=refused)
-    return read_sections(entries)
+    return read_sections(entries)._replace(
+        cut=source[1] if cut or ended else "", cut_key=ended)
 
 
 def gitmodules_source(root: Path) -> list[str] | None:
@@ -442,7 +558,7 @@ def gitmodules_source(root: Path) -> list[str] | None:
                          cwd=root, binary=True)
     except Refusal:
         stages = b""
-    source = ["--blob", f"HEAD:{GITMODULES}"]
+    source = ["--blob", HEAD_GITMODULES]
     for record in stages.split(b"\0"):
         meta, _, name = record.partition(b"\t")
         fields = meta.split()
@@ -456,8 +572,56 @@ def gitmodules_source(root: Path) -> list[str] | None:
     return source
 
 
+def gitmodules_listed(root: Path, source: list[str]
+                      ) -> tuple[bytes, bool] | None:
+    """What `git config -z --no-includes --list` prints of the
+    `.gitmodules` that `source` names (`gitmodules_source`), and whether
+    git stopped short of the file's end at a line it cannot parse, or
+    None where git cannot read it (#856).
+
+    A BLOB IS READ UP TO A LINE GIT CANNOT PARSE. `git config --blob`
+    prints the entries before that line, then `bad config line`, and
+    exits 128. Git's submodule reader, which reads the index's or HEAD's
+    file where the work tree has none, takes those same entries, says
+    the same line as an error, not a die, and goes on (measured, git
+    2.43.0): so what was printed is what git read, and a bad line before
+    the first section leaves nothing, as git reads nothing. A work tree
+    file with such a line is None: git dies reading it. Git is run as
+    `git_out` runs it.
+
+    TOLD BY THE EXIT CODE, NEVER GIT'S WORDS, which a git built with its
+    translations prints in the person's language: a blob's listing that
+    exits 128 is read for what it printed, whatever it says on stderr.
+    The other 128 met is a blob git cannot find (`HEAD:.gitmodules`
+    where HEAD holds none, #611), which prints nothing, and empty
+    stdout reads as the same `Gitmodules` that None gives for a blob:
+    no entry, and nothing `unreadable`, since a blob is read only where
+    the work tree holds no file. So HEAD's, printing nothing, is no
+    `cut`: it may be no file at all. The index's is, printing nothing or
+    not: `git ls-files -s` gave its object id, so the blob is there, and
+    a 128 can only be a line git cannot parse, the first included
+    (RV877's SHOULD-2).
+
+    NO `[include]` IS FOLLOWED (`--no-includes`), as git's submodule
+    reader follows none. `git config --blob` follows one by default: a
+    relative one stopped its listing there (`relative config includes
+    must come from files`), where git reads on, and an absolute one's file
+    was listed with the blob's own entries, where git reads the blob's
+    alone. A work tree file's includes are not followed by default
+    either."""
+    proc = subprocess.run(["git", "config", "-z", "--no-includes", *source,
+                           "--list"],
+                          cwd=str(root), capture_output=True, check=False)
+    if proc.returncode == 0:
+        return proc.stdout, False
+    if source[0] == "--blob" and proc.returncode == 128:
+        return proc.stdout, bool(proc.stdout) or source[1] != HEAD_GITMODULES
+    return None
+
+
 def gitmodules_entries(root: Path, listed: bytes, blob: bool
-                       ) -> list[tuple[str, str, str | None, bool]]:
+                       ) -> tuple[list[tuple[str, str, str | None, bool]],
+                                  str]:
     """`(name, key, value, ignored)` for each `submodule.<name>.<key>` that
     `git config -z --list` printed in `listed`, in file order, as git's
     submodule reader meets them: None for a key with no value, and
@@ -465,7 +629,8 @@ def gitmodules_entries(root: Path, listed: bytes, blob: bool
     a `..` component, split on `/` and on a backslash (git warns `ignoring
     suspicious submodule name`), a value git would die on included. In the
     index's or HEAD's file, a `blob`, git reads nothing after a key it
-    refuses with no value (`ends_blob_reading`)."""
+    refuses with no value (`ends_blob_reading`), and that key, as
+    `submodule.<name>.<key>`, is returned beside them; else nothing."""
     entries: list[tuple[str, str, str | None, bool]] = []
     for record in listed.split(b"\0"):
         key, valued, value = record.decode("utf-8",
@@ -477,9 +642,9 @@ def gitmodules_entries(root: Path, listed: bytes, blob: bool
         ignored = not name or ".." in name.replace("\\", "/").split("/")
         if blob and not ignored and not valued and ends_blob_reading(
                 root, variable):
-            break
+            return entries, f"submodule.{name}.{variable}"
         entries.append((name, variable, value if valued else None, ignored))
-    return entries
+    return entries, ""
 
 
 def ends_blob_reading(root: Path, key: str) -> bool:
@@ -487,7 +652,12 @@ def ends_blob_reading(root: Path, key: str) -> bool:
     HEAD's `.gitmodules`, a blob, where `bad config line` is an error and
     no die (#768): each key git refuses with no value, but a `branch` only
     where git does not crash on it (`crashes_on_branch`); before 2.43.1
-    git crashes on it there too, and `refused_value` names it."""
+    git crashes on it there too, and `refused_value` names it. Measured on
+    git 2.43.0 (#856): a bare `url`, `path`, `update` or `ignore` in a
+    blob is `missing value` and `bad config line`, and git reads no
+    further; a bare `branch` crashes it (exit 139); a bare `shallow`,
+    `fetchRecurseSubmodules` or `active` is read as true, and git reads
+    on."""
     return key in NO_VALUE_REFUSED and (key != "branch"
                                         or not crashes_on_branch(root))
 
@@ -766,8 +936,24 @@ def members_of(root: Path) -> tuple[str, list[dict]]:
         raise Refusal("family-manifest-unreadable",
                       f"{manifest_path}: not a mapping")
     name = str(manifest.get("name") or root.name)
-    rows = [row for row in (manifest.get("members") or [])
-            if isinstance(row, dict)]
+    # A `members:` THAT IS NOT A LIST, OR HOLDS AN ENTRY THAT IS NOT A
+    # MAPPING, IS REFUSED BY NAME (#864), in `validate-family.py`'s words:
+    # read as `members or []`, `5` ended `make bootstrap` and `make siblings`
+    # in a `TypeError`, `openXdox` or `[5]` was "0 member(s)" and "family
+    # bootstrap ok", and the rows beside a `5` were fetched with the `5`
+    # unsaid. Absent or null is a family with no members.
+    rows = manifest.get("members")
+    if rows is None:
+        rows = []
+    if not isinstance(rows, list):
+        raise Refusal("family-members-unreadable",
+                      f"{manifest_path}: `members:` is {rows!r}, expected a "
+                      "list")
+    unread = [f"a member is not a mapping: {row!r}" for row in rows
+              if not isinstance(row, dict)]
+    if unread:
+        raise Refusal("family-members-unreadable",
+                      f"{manifest_path}: {'; '.join(unread)}")
     return name, rows
 
 
@@ -782,7 +968,9 @@ def member_path(root: Path, row: dict) -> Path:
 
 
 def run_member_target(root: Path, row: dict, target: str) -> str | None:
-    """(b) One member's own `make <target>`. Returns a failure line, or None."""
+    """(b) One member's own `make <target>`. Returns a failure line, or None:
+    one naming the exit code of the member's command where make names it,
+    else make's own (`run_make`, #839)."""
     # A member row is the family manifest's text (#391): what is PRINTED of it,
     # and of `--members-make`, is spelled. The path is built from the raw row.
     project = spelled(row.get("project") or "?")
@@ -803,11 +991,176 @@ def run_member_target(root: Path, row: dict, target: str) -> str | None:
         return None
     print(f"  --- {project}: make {named} ---")
     sys.stdout.flush()
-    proc = subprocess.run([make, target], cwd=str(path), check=False)
+    returncode, own = run_make(make, target, path)
     sys.stdout.flush()
-    if proc.returncode != 0:
-        return f"{project} (make {named} exited {proc.returncode})"
-    return None
+    if returncode == 0:
+        return None
+    if own is not None:
+        return f"{project} (make {named}: the member's command exited {own})"
+    return (f"{project} (make {named} exited {returncode} and printed no "
+            "`Error <code>` line for a command of the member's: make's own "
+            "message above says what failed)")
+
+
+#: What GNU make prints on stderr as a target fails, after its own name
+#: and, in a make run by make, its depth (`make[1]:`): `*** [Makefile:44:
+#: bootstrap] Error 1` where a command exits non-zero (`*** [bootstrap]
+#: Error 1` before make 4.0), with the command's own exit code, which
+#: make's does not carry, since make exits 2 for any command that fails
+#: (#839); `*** No rule to make target ...`, or `*** [Makefile:44:
+#: bootstrap] Killed`, where make fails on its own or a signal ends what it
+#: ran, with none; and `[Makefile:44: bootstrap] Error 2 (ignored)`, with no
+#: `***`, where a `-` before a command lets it fail with a make's code
+#: (#884).
+MAKE_FAILED_RE = re.compile(
+    rb"(?:\[(\d+)\])?: (?:\*\*\* (?:\[[^\n]*\] Error (\d+)\s*$)?"
+    rb"|\[[^\n]*\] Error 2 \((ignored)\)\s*$)")
+#: The bytes `MakeErrors` keeps of a line of make's stderr not yet ended:
+#: an `Error <code>` line ends there, so the end of a line is enough.
+LINE_KEPT = 4096
+
+
+class MakeErrors:
+    """What `run_make` reads of make's stderr, one line at a time as it
+    passes (#884): `code`, that of the last `Error <code>` line make printed
+    for a command of the member's (`MAKE_FAILED_RE`, its last match on a
+    line, since a member's own text can come before make's on one), or
+    None.
+
+    Read as it passes, an `Error` line is never lost to what follows it,
+    as one was to more than 4096 bytes after it (`make -k`) where only the
+    last 4096 were kept. An `Error 2` at a shallower depth than the last
+    `***` line before it, whatever lines come between, is taken for a
+    make's parent saying it failed, since make exits 2 for any failure,
+    and is passed over: where the member's make runs another (`$(MAKE)
+    inner`), the code is the innermost command's, and where the inner make
+    failed on its own there is none, as for make's own failure. Where a
+    `-` let that make fail (`Error 2 (ignored)`), the depth is the
+    parent's again, so an `Error 2` of the parent's own after it is named.
+
+    WHERE THE CODE IS NOT THE INNERMOST COMMAND'S, since make's lines do
+    not tell it:
+    - a recipe that runs a make, lets its failure pass in the shell (`||
+      true`, or `;`), or with a `-` in a make run with `-s`, which then
+      prints no `(ignored)` line, and exits 2 itself: its `Error 2` is
+      read as that make's report, and the inner command's code is named;
+    - an inner make run with `env -u MAKELEVEL`, which prints its parent's
+      depth: the parent's `Error 2` is named;
+    - under `-j`, a job of the parent's that fails while the inner make is
+      still running: its line comes between, and the parent's `Error 2` is
+      named;
+    - a member's own line shaped like a deeper make's (`x[3]: *** y`)
+      before it exits 2 itself: its `Error 2` is passed over."""
+
+    def __init__(self) -> None:
+        self.code: int | None = None
+        self.depth = -1
+        self.unended = b""
+
+    def read(self, chunk: bytes) -> None:
+        """`chunk` of make's stderr: each line it ends, read
+        (`said`)."""
+        *ended, unended = (self.unended + chunk).split(b"\n")
+        for line in ended:
+            self.said(line)
+        self.unended = unended[-LINE_KEPT:]
+
+    def said(self, line: bytes) -> None:
+        """One line of make's stderr, read for its last `MAKE_FAILED_RE`."""
+        found = MAKE_FAILED_RE.findall(line)
+        if not found:
+            return
+        depth_said, code, ignored = found[-1]
+        depth = int(depth_said or 0)
+        if ignored:
+            self.depth = min(self.depth, depth)
+            return
+        reports_a_make = code == b"2" and depth < self.depth
+        self.depth = depth
+        if code and not reports_a_make:
+            self.code = int(code)
+
+
+def run_make(make: str, target: str, cwd: Path) -> tuple[int, int | None]:
+    """(b) `make <target>` in a member, as `(make's exit code, the exit code
+    of the member's command it names)`, the second None where make names
+    none (`MakeErrors`, #839, #884).
+
+    MAKE'S OWN CODE TELLS NOTHING APART. GNU make exits 2 for any command
+    that fails, measured (GNU Make 4.3) for a command exiting 1, 2, 3 or
+    126, and 2 for a failure of its own (`No rule to make target`), so the
+    line said `make bootstrap exited 2` for the member's own `bootstrap
+    FAILED` (1, a finding), for a refusal (2) and for make's own failure
+    alike (w764b, for lane 4). The command's code is the one make names
+    in its `Error <code>` line, so make's stderr is passed on to this
+    run's own as it comes, and read a line at a time as it passes: the
+    last such line names it, or, where the member's make runs another,
+    the innermost command's line (`MakeErrors`). A make that prints none,
+    one of its own failures, or a make speaking another language, leaves
+    make's code alone. So does a command killed by a signal where what
+    make started is what was killed: a command make runs with no shell,
+    on a line with nothing a shell must read; the shell a `kill -KILL $$`
+    kills; or a command bash runs in its own place, a line's last, a line
+    of one command included. Make then prints the signal's name, `Killed`
+    or `Terminated`, and no code. Where the shell outlives the command, as
+    dash, `/bin/sh` on Debian and Ubuntu, does for every command, and bash
+    for one that is not a line's last, the shell prints the signal's name
+    itself and exits 128 and the signal's number, 137 for SIGKILL and 143
+    for SIGTERM, which make names as the member's command's code; where
+    the line goes on after it, the shell exits as the rest of the line
+    does (#884). The member's command is never run around make:
+    another target than `bootstrap` (`--members-make validate`) has no
+    script of its own to call, as `make siblings` calls a member's
+    `scripts/bootstrap.py`.
+
+    WHAT PASSING STDERR ON CHANGES (#884), measured against a make that
+    writes to this run's stderr, a terminal, itself:
+    - The member's commands write stderr to a pipe, not a terminal, so a
+      test of `isatty(2)` reads false: git shows no progress meter, and a
+      command that colours or prompts by that test does neither. Stdin
+      and stdout stay this run's own.
+    - The member's stdout and stderr lines can come out of order: its
+      stderr passes through this run, a little after the stdout written
+      beside it.
+    - A process a command leaves running with stderr open holds the run
+      until it closes it or exits, since the pipe ends only then, and what
+      it writes until then is passed on. Reading only until make exits
+      would end the run at once, but that process's next write to stderr
+      would meet a closed pipe and end it (SIGPIPE), unsaid. A recipe that
+      starts one gives it a stderr of its own (`2>log`).
+    - The bytes pass on as written, never decoded. On Windows a member's
+      Python writes a pipe in the ANSI code page, and this run's stderr, a
+      console, reads them as UTF-8, so non-ASCII text comes out garbled
+      (read, not run).
+    Giving make the terminal back would lose its `Error <code>` line,
+    which nothing else make writes carries (`--debug=j` says only
+    "Reaping losing child"), and the line would say `exited 2` for every
+    failure again."""
+    proc = subprocess.Popen([make, target], cwd=str(cwd),
+                            stderr=subprocess.PIPE)
+    errors = MakeErrors()
+    for chunk in iter(lambda: proc.stderr.read1(65536), b""):
+        passed_on(chunk)
+        errors.read(chunk)
+    proc.stderr.close()
+    return proc.wait(), errors.code
+
+
+def passed_on(chunk: bytes) -> None:
+    """`chunk` of what a member's make wrote to its stderr, written to this
+    run's as it came (#839): as its bytes, after what this run wrote there
+    before, or as text where stderr has no byte buffer."""
+    stream = sys.stderr
+    if stream is None:
+        return
+    stream.flush()
+    sink = getattr(stream, "buffer", None)
+    if sink is None:
+        stream.write(chunk.decode("utf-8", "replace"))
+        stream.flush()
+        return
+    sink.write(chunk)
+    sink.flush()
 
 
 def main(argv: list[str] | None = None) -> int:

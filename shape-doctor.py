@@ -27,7 +27,9 @@ why the verdict is offline: no clone, no authenticated call, and the same
 answer on a machine that has never spoken to github.com. A partial clone
 (`git clone --filter`) fetches what it lacks on a read, so it is asked first,
 without fetching, whether it holds what the comparison reads, and the verdict
-is CANNOT ANSWER where it does not (#683). It runs the project's
+is CANNOT ANSWER where it does not (#683). Every git it starts runs with
+`GIT_NO_LAZY_FETCH=1`, so a read nothing asked about first fails rather than
+fetches (`lazy_fetch_off`, #787). It runs the project's
 own validators OFFLINE: `run_validator` starts each child with no token, no
 `gh` configuration and a proxy that goes nowhere (#297), so they are offline
 whatever their own contract says. ONE ROW IS THE EXCEPTION AND IT IS NAMED:
@@ -304,13 +306,17 @@ EXIT CODES
        a leg is off its pin, a manifest is there and does not load, or a
        tracked path sits in a leg the path policy puts elsewhere -- or, for a
        submodule, a leg other than the one `project.yaml` records for it
-       (#189) -- COMPLIANT SHAPE BEHIND, DRIFTED, MISPLACED, INVALID. INVALID
-       names each red row, and the rows it names are: `merge`, the index
-       holds an unmerged path (#424); `naming`, `manifest`, `pins` and
-       `family`, the gates; `manifest-kinds`, a `kind:`-bearing manifest
-       nothing here validates, in a root that never runs its gate or at a
-       path no gate reads (#327, #439); `agent-files`, a pinned agent file
-       that is gone; and any other row that is a FINDING
+       (#189) -- COMPLIANT SHAPE BEHIND, DRIFTED, MISPLACED, INVALID.
+       INVALID names `merge` alone while the index holds an unmerged path
+       (#424); else its red gates, `naming`, `manifest`, `pins`, `family`,
+       `manifest-kinds` and `agent-files`; or, when none of them is red,
+       every row that is a FINDING. `manifest-kinds` is a FINDING for a
+       manifest that does not load, a `kind:` nothing here validates, a kind
+       whose gate this root never runs or never reads at that path, a
+       `family.yaml` beside `project.yaml`, or a file declaring one kind
+       where a gate here reads it as another and none checks the kind it
+       declares (#211, #291, #327, #439); `agent-files`, for a pinned agent
+       file that is gone
     2  NOT A SHAPE ROOT: neither `project.yaml` nor `family.yaml` is there
     3  usage or environment -- nothing here is a statement about the tree
        that was pointed at: no such root, this file is not sitting in a
@@ -346,6 +352,7 @@ shows it as itself where the output can and with `?` where it cannot
 from __future__ import annotations
 
 import argparse
+import contextlib
 import datetime as _dt
 import errno
 import importlib.util
@@ -1411,8 +1418,39 @@ class Context:
                 for leg in declared if not isinstance(leg, dict)]
 
     def members(self) -> list[dict]:
-        return [row for row in ((self.manifest or {}).get("members") or [])
-                if isinstance(row, dict)]
+        """The member rows `family.yaml` declares, in its own order.
+
+        A `members:` THAT IS NOT A LIST DECLARES NO MEMBER THIS CAN NAME
+        (#864), as the holder's `validate-family.py` reads it, and an entry
+        that is not a mapping is no member; `members_unread` says each.
+        Iterated as `members or []`, `members: 5` ended the whole report in a
+        `TypeError`, and a scalar `openXdox` or a mapping was walked one
+        character, or one key, at a time, so the `members` row called the
+        holder a family with none.
+        """
+        declared = (self.manifest or {}).get("members")
+        if not isinstance(declared, list):
+            return []
+        return [row for row in declared if isinstance(row, dict)]
+
+    def members_unread(self) -> list[str]:
+        """What in `members:` names no member `members` can read, each in the
+        words of the holder's own `validate-family.py` (#864): its
+        `family-members-unreadable` refusal of a `members:` that is not a
+        list, path and all, or its `member-row` finding for each entry of
+        one that is not a mapping. The value is spelled as the gate spells
+        it (`repr`), and the path as this row spells what it quotes (#673).
+        Absent or null is neither: it declares no member, and the gate calls
+        that family empty."""
+        declared = (self.manifest or {}).get("members")
+        if declared is None:
+            return []
+        if not isinstance(declared, list):
+            return [f"family-members-unreadable: "
+                    f"{spelled(self.manifest_path)}: `members:` is "
+                    f"{declared!r}, expected a list"]
+        return [f"member-row: a member is not a mapping: {row!r}"
+                for row in declared if not isinstance(row, dict)]
 
     def update_shape(self):
         """`update-shape.py` as a module, loaded once.
@@ -2052,14 +2090,17 @@ def validator_command(shape: Path, used: Path, own_copy: bool, args: list,
 
 
 def lost_repo_shape_cure(ctx: Context, own: str, lost: Path, rerun: str,
-                         again: bool = True) -> tuple[str | None, str]:
+                         again: bool = True,
+                         purpose: str = "") -> tuple[str | None, str]:
     """`(the NEXT, the why)` for a root's own validator `own` that crashed
     because `lost`, the `repo_shape.py` it imports from beside itself, is not
     there, where `rerun` is the line that runs `own` (#697).
 
     `again` says "run it AGAIN" where the doctor ran the gate and it crashed,
     as the validator rows' crash does; the `legs` and `members` rows' lockstep
-    line is one the reader never ran, and says "run it" (#750).
+    line is one the reader never ran, and says "run it" (#750). `purpose` is
+    what the gate is run for, where the row says (", to confirm the digest",
+    #776), and follows "once the file is back".
 
     THE NEXT IS THE CURE, NOT THE VALIDATOR. The row used to print `rerun`,
     and a reader whose own `PYTHONPATH`, or a `.pth` in whose site-packages,
@@ -2083,7 +2124,7 @@ def lost_repo_shape_cure(ctx: Context, own: str, lost: Path, rerun: str,
     """
     relative = lost.relative_to(ctx.root).as_posix()
     then = (f"run `{rerun}`{' again' if again else ''} once the file is "
-            "back; before that, a reader whose own PYTHONPATH or "
+            f"back{purpose}; before that, a reader whose own PYTHONPATH or "
             "site-packages reaches another repo_shape sees it run on that "
             "one, which says nothing about this root's own copy")
     if head_holds(ctx.root, relative):
@@ -2429,6 +2470,46 @@ def legs_unread_row(ctx: Context, check_id: str, label: str, needs: str,
                {**(detail or {}), "waits_on": "manifest"})
 
 
+def members_unread_row(ctx: Context, needs: str) -> Row | None:
+    """The `n/a` the `members` row gives where `members:` holds anything it
+    cannot read as a member (#864), or None: where every entry is a row, and
+    where there is none at all (absent, null or `[]`), which the row's own
+    "no members yet" is about.
+
+    A `members:` that is not a list is not a family with no members, which
+    is what the row said of `openXdox`, `{a: b}` and `[5]`, one row under
+    the `family` row's refusal of the same value: it is a manifest nobody
+    can read members out of. ONE FAULT, ONE FINDING, as `waiting_row`
+    reasons: the holder's own `validate-family.py` says the fault, the
+    `family` row runs it, so this row is `n/a`, says the same sentence
+    (`Context.members_unread`) and names that row in `waits_on`.
+
+    AND A LIST THAT HOLDS ROWS AS WELL AS SUCH AN ENTRY WAITS TOO, unlike a
+    project's `legs:` (#832), whose bootstrap places the legs beside such an
+    entry: the holder's own `scripts/bootstrap.py`, which this row names to
+    fetch a member to its pin, refuses that list (`members_of`), and
+    `family.py` refuses it before `add`, `bump` or `remove` does anything.
+    Checked row by row, the rows beside a `5` were "mounted at their pins",
+    an `ok` under the `family` row's `member-row` finding for it.
+
+    IT SAYS THAT THE `family` ROW'S COMMAND NAMES THE FAULT, as #862's
+    `legs_unread_row` says it of the `manifest` row, and no more: that
+    command is the gate, which prints the refusal or the `member-row`
+    finding and no remedy.
+    """
+    unread = ctx.members_unread()
+    if not unread:
+        return None
+    what = ("holds an entry that is not a mapping"
+            if isinstance(ctx.manifest.get("members"), list)
+            else "is not a list")
+    return Row("members", "members", NA,
+               f"{ctx.manifest_path.name}'s `members:` {what} "
+               f"({'; '.join(unread)}), so {needs}; the `family` row's "
+               "command names the fault", None,
+               {"members": [], "waits_on": "family"})
+
+
 # ---------------------------------------------------------------------------
 # The checks
 # ---------------------------------------------------------------------------
@@ -2496,24 +2577,53 @@ def check_naming(ctx: Context) -> Row:
                + (f": {quoted}" if quoted else ""), command, detail)
 
 
+def own_naming_policy(shape: Path) -> tuple:
+    """`(policy, None)`, or `(None, what it raised)`, for THIS CHECKOUT's own
+    `contracts/repository-naming.yaml` (#707): the ONE place the doctor asks
+    whether that file loads.
+
+    `NamingPolicy.load` is the reader `validate-repository-naming.py` itself
+    calls before it reads a name, and a refusal from it is that script's exit
+    2. What else it raises -- a pattern `re.compile` will not take -- is a
+    fault in the same file, and the caller says which kind it wants to know
+    of: `own_naming_policy_refusal`, the `naming` rows', leaves that kind to
+    the script's own crash row; `way_in_project`, which runs no script, has
+    nobody else to say it.
+    """
+    try:
+        return NamingPolicy.load(shape / NAMING_COPY), None
+    except Exception as exc:  # noqa: BLE001 - a fault in the file, see above
+        return None, exc
+
+
 def own_naming_policy_refusal(shape: Path) -> Refusal | None:
     """The refusal THIS CHECKOUT's `contracts/repository-naming.yaml` gives
     where it does not load, else None (#678).
 
-    `NamingPolicy.load` is the reader `validate-repository-naming.py` itself
-    calls before it reads a name, and a refusal from it is that script's exit
-    2. ONLY A REFUSAL IS ANSWERED HERE: a reader that raises anything else --
-    a pattern `re.compile` will not take -- is the script's crash, which
+    ONLY A REFUSAL IS ANSWERED HERE: a reader that raises anything else -- a
+    pattern `re.compile` will not take -- is the script's crash, which
     `crashed` says and `naming_crashed_row` words, so that exception is the
-    script's to raise and never this report's.
+    script's to raise and never this report's. The `the way in` rows ask
+    `own_naming_policy` instead, for they run no script (#707).
     """
-    try:
-        NamingPolicy.load(shape / NAMING_COPY)
-    except Refusal as exc:
-        return exc
-    except Exception:  # noqa: BLE001 - the script's crash, for `crashed`
-        return None
-    return None
+    _policy, fault = own_naming_policy(shape)
+    return fault if isinstance(fault, Refusal) else None
+
+
+def naming_policy_refusal_of(shape: Path, fault: Exception,
+                             code: str = "policy-raised") -> Refusal:
+    """`fault`, from `own_naming_policy`, as a `Refusal` a row can quote (#707):
+    the loader's own where it is one, else one with `code` naming what was
+    raised, so a policy that raises and one that refuses are quoted, and
+    carried in `detail.refusal`, in one shape. `code` is `policy-raised` for
+    the loader, and `policy-unusable` for a policy that loaded and raised when
+    it was asked (`way_in_project`)."""
+    if isinstance(fault, Refusal):
+        return fault
+    kind = type(fault)
+    name = (kind.__qualname__ if kind.__module__ == "builtins"
+            else f"{kind.__module__}.{kind.__qualname__}")
+    return Refusal(code, f"{shape / NAMING_COPY}: {name}: {fault}")
 
 
 def naming_script_refusal(shape: Path, whole: str) -> Refusal | None:
@@ -2578,6 +2688,23 @@ def naming_row_subject(names: list[str] | None) -> tuple:
     return f"{', '.join(names)}: ", "this directory", "what it is called"
 
 
+def naming_policy_words(refusal: Refusal, owner: str, about: str,
+                        verb: str = "does not load") -> tuple:
+    """`(reason, why)` for a row about a checkout whose own
+    `contracts/repository-naming.yaml` does not load (#678, #707): the file
+    named, the loader's own line quoted whole, and whose the file is -- the
+    checkout's, not `owner`'s -- so that nothing here is a statement about
+    `about`. A refusal's remedy, where it has one, leads the `why`. `verb` is
+    "cannot be used" for a policy that loaded and raised when it was asked."""
+    mend = ("the file belongs to the checkout of the standard this command is "
+            f"run from, not to {owner}: repair it there, or run the doctor "
+            "from a clone of the standard whose own copy loads")
+    return (f"the standard's {NAMING_COPY} {verb}: "
+            f"{refusal_line(refusal)}; that file is this checkout's, not "
+            f"{owner}'s, so nothing here is a statement about {about}",
+            " ".join(filter(None, (remedy_as_why(refusal), mend))))
+
+
 def naming_policy_row(refusal: Refusal, command: str, detail: dict,
                       names: list[str] | None = None) -> Row:
     """The `naming` row for a checkout whose own
@@ -2603,15 +2730,9 @@ def naming_policy_row(refusal: Refusal, command: str, detail: dict,
     detail["environment"] = True
     detail["refusal"] = {"code": refusal.code, "detail": refusal.detail}
     lead, owner, about = naming_row_subject(names)
-    mend = ("the file belongs to the checkout of the standard this command is "
-            f"run from, not to {owner}: repair it there, or run the doctor "
-            "from a clone of the standard whose own copy loads")
-    return Row("naming", "naming", FINDING,
-               f"{lead}the standard's {NAMING_COPY} does not load: "
-               f"{refusal_line(refusal)}; that file is this checkout's, not "
-               f"{owner}'s, so nothing here is a statement about {about}",
-               command, detail,
-               why=" ".join(filter(None, (remedy_as_why(refusal), mend))))
+    reason, why = naming_policy_words(refusal, owner, about)
+    return Row("naming", "naming", FINDING, f"{lead}{reason}", command,
+               detail, why=why)
 
 
 def naming_crashed_row(code: int, crash: str, command: str, detail: dict,
@@ -4395,6 +4516,17 @@ def pin_restore(ctx: Context, detail: dict | None = None,
                    whose parent holds the OLD pin -- is still the one to put
                    back, and the `why` says what comes after it:
                    `gitlink_left_behind` (#547).
+      partial      the reads above found no pin to put back, and the root
+                   is a partial clone (`git clone --filter`) that lacks a
+                   pin or a tree they read, HEAD's included
+                   (`history_left_out`, #787). This doctor fetches nothing,
+                   so those reads failed, and what puts the pin back, a
+                   commit or HEAD's own pin, cannot be read here. `fetch
+                   --refetch --no-filter` from the first promisor remote
+                   puts in every object on its branches, and the doctor run
+                   again reads the whole history; the `why` spells out that
+                   fetch from each other promisor remote
+                   (`partial_history_why`).
       none         nothing above: no history, a root commit, no git, a walk
                    that meets a parent holding no pin, or goes
                    `PIN_HISTORY_DEPTH` commits back, before a pin that reads.
@@ -4630,6 +4762,10 @@ def pin_restore(ctx: Context, detail: dict | None = None,
             f"broke it, and the newest {what} in its history that reads. "
             f"Commit that rather than editing the {what}"
             + gitlink_left_behind(ctx, before, pin))
+    remotes = history_left_out(root, pin)
+    if remotes:
+        return "partial", refetch_of(git_c, remotes[0]), partial_history_why(
+            git_c, what, remotes)
     return "none", None, None
 
 
@@ -5785,6 +5921,78 @@ def remotes_holding(shape: Path, remotes: list, commit: str) -> list:
                            f"refs/remotes/{name}/"], shape)]
 
 
+def refetch_of(git_c: str, remote: str) -> str:
+    """The fetch of every object on `remote`'s branches into the root
+    `git_c` names, whatever its `partialclonefilter` (#787)."""
+    return f"{git_c} fetch --refetch --no-filter {quote_arg(remote)}"
+
+
+def partial_history_why(git_c: str, what: str, remotes: list) -> str:
+    """`pin_restore`'s `why` for `partial` (#787): the root's partial clone
+    lacks the history of its `what`, the NEXT fetches the first of
+    `remotes`, and the same fetch from each other one is spelled out.
+
+    HISTORY, HEAD'S INCLUDED, AND NOT "THE COMMIT THAT BROKE IT" (RV-f on
+    #791). Where HEAD was moved without a checkout (`reset --soft`), the
+    pin HEAD holds is a blob the clone lacks too, and the doctor run after
+    the fetch answers `uncommitted`, which no commit broke.
+
+    EVERY PROMISOR REMOTE, EACH A LINE TO PASTE. The NEXT fetches the first
+    one's branches, the one git's own lazy fetch asks first. Where the
+    history lacked is on another remote's alone, or on a branch forced
+    away from the first, that fetch puts in nothing it needs and the row
+    comes back the same, so the `why` names the fetch from each other one.
+    """
+    first, *others = remotes
+    said = (f"this root is a partial clone, and the {what}'s history, "
+            "HEAD's included, is not all in this clone: git fetches what a "
+            "partial clone lacks on a read, which this doctor never does, "
+            f"so what puts the {what} back cannot be read here. This "
+            f"fetches every object on {first}'s branches (--refetch needs "
+            "git 2.36 or later)")
+    if others:
+        said += (f"; where {first}'s branches do not hold it, the same "
+                 "from " + ", or from ".join(
+                     f"{name}: `{refetch_of(git_c, name)}`"
+                     for name in others))
+    return (said + "; then run this doctor again, which names what puts "
+            f"the {what} back")
+
+
+def history_left_out(root: Path, pin: str) -> list:
+    """The promisor remotes of `root`, in the order git asks them, where
+    `root` is a partial clone that lacks an object `pin_restore`'s walk of
+    `pin`'s history reads, asked without fetching; empty where it lacks
+    none, or is no partial clone (#787).
+
+    THE WALK'S READS FAIL THERE, AND THE DOCTOR FETCHED THEM BEFORE.
+    Measured on #787 with git 2.43: a `--filter=blob:none` clone of a root
+    whose HEAD commit broke its pin made one lazy fetch, of the pin before
+    it, and a `--filter=tree:0` one two. With `GIT_NO_LAZY_FETCH` set
+    (`lazy_fetch_off`) each read fails instead, and the walk, which reads a
+    failure as "no pin there", said "none": no commit in this root holds a
+    pin to put back, which is not so.
+
+    `rev-list --objects --missing=print` over the commits that touched
+    `pin`, one more than the walk reads, lists the pin at each and the
+    trees down to it, and prints `?<id>` for each the clone does not hold,
+    without fetching (`objects_lacking` says why). Where the clone lacks a
+    tree, as a `tree:0` one does, it cannot tell which commits touched the
+    pin and fails, as the walk's own `rev-list` does: that is lacking too.
+    A root with no HEAD has no history to walk, and is not asked.
+    """
+    remotes = promisor_remotes(root)
+    if not remotes or head_of(root) is None:
+        return []
+    listed = git_answer(["rev-list", "--objects", "--missing=print", "-n",
+                         str(PIN_HISTORY_DEPTH + 1), "HEAD", "--", pin],
+                        root, binary=True)
+    if listed is not None and not any(
+            MISSING_OBJECT.fullmatch(line) for line in listed.split(b"\n")):
+        return []
+    return remotes
+
+
 def check_shape_currency(ctx: Context) -> Row:
     """`update-shape.py check`, summarised, against THIS checkout.
 
@@ -6078,6 +6286,25 @@ def own_bootstrap(root: Path, make_target: bool = False) -> bool:
     return re.search(r"(?m)^bootstrap\s*:", makefile) is not None
 
 
+def gate_line(ctx: Context, gate: tuple) -> tuple[Path, bool, str | None]:
+    """`(the copy of `gate` a row names, whether it is the root's own, the
+    line that runs it on the root)`: the line is None where neither copy is
+    readable, or where no `PYTHONPATH` can name the standard's template copy
+    (#278), because a line that cannot run is not printed (#276).
+
+    ONE DEFINITION for the rows that hand a reader the lockstep gate:
+    `lockstep_next`, for the `legs` and `members` rows, and the `agent-files`
+    row's confirm clause (#776). Both asked `validator_for` and
+    `pythonpath_unnamable` in the same words.
+    """
+    used, _, own_copy = validator_for(ctx, *gate)
+    if (not used.is_file()
+            or pythonpath_unnamable(ctx.shape, own_copy) is not None):
+        return used, own_copy, None
+    return used, own_copy, validator_command(
+        ctx.shape, used, own_copy, ["--root", str(ctx.root)])
+
+
 def lockstep_next(ctx: Context, gate: tuple, noun: str) -> tuple:
     """`(the line, why it is the line)` for what NO checkout cures: the
     lockstep gate, built the way the `pins` and `family` rows build their
@@ -6103,12 +6330,9 @@ def lockstep_next(ctx: Context, gate: tuple, noun: str) -> tuple:
     where HEAD no longer holds it. Its `why` says to run the gate once the
     file is back, and the sentence above follows it.
     """
-    used, _, own_copy = validator_for(ctx, *gate)
-    if (not used.is_file()
-            or pythonpath_unnamable(ctx.shape, own_copy) is not None):
+    used, own_copy, command = gate_line(ctx, gate)
+    if command is None:
         return None, None
-    command = validator_command(ctx.shape, used, own_copy,
-                                ["--root", str(ctx.root)])
     said = (f"no submodule update cures a {noun} whose gitlink "
             "or pin is missing or disagrees, or a mount git cannot "
             f"read a HEAD in. {used.name} prints what it finds and "
@@ -9038,6 +9262,46 @@ def pinned_paths(root: Path) -> set:
 LABEL_AGENT_FILES = "agent files"
 
 
+def confirm_digest(ctx: Context) -> str:
+    """The end of the `agent-files` WHY for a pinned copy that is gone: what
+    confirms its digest once it is back (#776).
+
+    THE GATE IS THE ROOT KIND'S, as the validator rows have it: an assembly
+    root's `validate-pins.py` (`PINS_GATE`), a family holder's
+    `validate-family.py` (`FAMILY_GATE`), the root's own copy else the
+    standard's template copy, named as the validator rows name it
+    (`gate_line`). The row runs in both kinds of root, and a holder has no
+    `validate-pins.py`: the assembly-root gate refuses there with a remedy
+    that names a file the holder lacks.
+
+    The sentence used to name the assembly root's own copy whether or not the
+    root had one, and where the root has lost the `scripts/repo_shape.py`
+    that copy imports from beside itself it died on `ModuleNotFoundError` and
+    exited 1, as the validator row says. So there the sentence is #737's: put
+    the file back first, with the cure `lost_repo_shape_cure` gives that row,
+    or, where HEAD does not hold it, why no command does, and the gate after.
+    Where the template copy is named because the root has none of its own, it
+    also reports that missing copy where the pin has a row for it, and exits
+    1, which the sentence says. Where no line can be named (`gate_line`)
+    nothing is said of a gate. Everywhere else it is, byte for byte, what it
+    was.
+    """
+    gate = FAMILY_GATE if ctx.kind == FAMILY else PINS_GATE
+    used, own_copy, command = gate_line(ctx, gate)
+    if command is None:
+        return ""
+    if own_copy and not imports_repo_shape(ctx.shape, used, own_copy):
+        cure, why = lost_repo_shape_cure(
+            ctx, gate[0], repo_shape_for(ctx.shape, used, own_copy), command,
+            again=False, purpose=", to confirm the digest")
+        return ". " + (f"First `{cure}`: {why}" if cure else why)
+    said = f", then `{command}` to confirm the digest"
+    if not own_copy and gate[0] in pinned_paths(ctx.root):
+        said += (f". Until {gate[0]} is back that exits 1, reporting the "
+                 "file as pinned but absent")
+    return said
+
+
 def check_agent_files(ctx: Context) -> Row:
     present = {name: (ctx.root / name).is_file() for name in AGENT_FILES}
     absent = [name for name, there in present.items() if not there]
@@ -9062,10 +9326,8 @@ def check_agent_files(ctx: Context) -> Row:
                f"{quote_arg(first)}")
         why = ("the pin has a "
                "`files:` row for it, so it was deleted rather than never "
-               "copied; restore it from this repository's own history, then "
-               f"`{PYTHON} "
-               f"{quote_arg(ctx.root / 'scripts' / 'validate-pins.py')} "
-               f"--root {quote_arg(ctx.root)}` to confirm the digest")
+               "copied; restore it from this repository's own history"
+               + confirm_digest(ctx))
     elif "AGENTS-shape.md" in absent:
         fix = (f"{PYTHON} {quote_arg(ctx.shape / 'update-shape.py')} "
                f"check --root {quote_arg(ctx.root)} --upstream "
@@ -9444,11 +9706,16 @@ def unclonable(sibling: Path) -> str | None:
     A LINK TO NOTHING IS NOT NOTHING (#784). `exists` follows a link, so a
     dangling one read as `absent`, and the row said `make siblings` places
     the member there, where git ends `CLONE FAILED`: it cannot clone into a
-    path that is a link to nothing.
+    path that is a link to nothing. A JUNCTION TO NOTHING is one too
+    (#793), the link Windows makes without privilege, which `is_symlink`
+    does not see: it is asked as `siblings.py` asks it, with Python 3.12's
+    `os.path.isjunction`, and before 3.12, which has none, the answer is no.
     """
     try:
         if not sibling.exists():
-            return "dangling" if sibling.is_symlink() else None
+            junction = getattr(os.path, "isjunction", lambda _: False)
+            return ("dangling" if sibling.is_symlink() or junction(sibling)
+                    else None)
         if not sibling.is_dir():
             return "file"
         return "files" if any(sibling.iterdir()) else None
@@ -9921,10 +10188,13 @@ def check_members(ctx: Context) -> Row:
     or a state worth saying.
     """
     # NOT "no members yet", which is an `ok` about an empty family: a holder
-    # whose `family.yaml` does not load has members nobody can name (#205).
-    waiting = waiting_row(ctx, "members", "members",
-                          "the members it pins are not known and none is "
-                          "checked against its pin", {"members": []})
+    # whose `family.yaml` does not load has members nobody can name (#205),
+    # and neither does one whose `members:` this cannot read (#864).
+    waiting = (waiting_row(ctx, "members", "members",
+                           "the members it pins are not known and none is "
+                           "checked against its pin", {"members": []})
+               or members_unread_row(ctx,
+                                     "no member is checked against its pin"))
     if waiting is not None:
         return waiting
     members = ctx.members()
@@ -10569,10 +10839,20 @@ def check_the_way_in(ctx: Context) -> Row:
     openRepoProject` to the SCAFFOLD line, which is about to create a
     project named after a repository this directory is not (Copilot, PR
     #110). The `naming` row shares the same guard, for the same reason.
+
+    A CHECKOUT WHOSE OWN NAMING POLICY DOES NOT LOAD OFFERS NO WAY IN (#707).
+    The `--project` is derived through that file, and this row, like
+    `naming`, was left to its fault: a tab line was `FINDING the way in
+    refused: ...` about the directory, and a pattern that does not compile
+    ended the doctor in a traceback. `way_in_project` asks the one question
+    (`own_naming_policy`), and the row is `way_in_policy_row`'s, an `n/a`
+    environment row naming the checkout's file, in a plain directory and in
+    a repository, which is also told of `the other way in` below. A leg
+    clone, which is offered no command, is the row it always was.
     """
     root = ctx.root
     is_repo = (root / ".git").exists()
-    project = way_in_project(ctx)
+    project, refusal = way_in_project(ctx)
     org = origin_org(root)
     if is_repo and leg_clone(ctx):
         # A LEG IS NOT ADOPTED. Splitting a spec or code leg into two more
@@ -10584,6 +10864,11 @@ def check_the_way_in(ctx: Context) -> Row:
         reason = ("this is a git repository with no shape manifest, NAMED OR "
                   "WRITTEN AS A LEG: a leg is not adopted or scaffolded on "
                   "its own -- see the Triad row for its assembly root")
+    elif refusal is not None:
+        return way_in_policy_row(
+            refusal, "way-in", "the way in",
+            {"git_repository": is_repo, "suggested_project": None,
+             "origin_org": org})
     elif is_repo:
         fix = (f"{PYTHON} {quote_arg(ctx.shape / 'adopt-project.py')} "
                f"plan --source {quote_arg(root)} --project "
@@ -10609,14 +10894,60 @@ def check_the_way_in(ctx: Context) -> Row:
                why=why)
 
 
-def way_in_project(ctx: Context) -> str:
-    """The `--project` both ways in are offered, from the one identity
-    `check_the_way_in` reads: `origin`'s repository name where `root`
-    carries its own `.git` and one, the directory's name otherwise."""
+def way_in_project(ctx: Context) -> tuple:
+    """`(project, None)`: the `--project` both ways in are offered, from the
+    one identity `check_the_way_in` reads -- `origin`'s repository name where
+    `root` carries its own `.git` and one, the directory's name otherwise --
+    or `(None, refusal)` where this checkout's own naming policy cannot give
+    one (#707).
+
+    THE POLICY HAS TO LOAD AND TO ANSWER, and neither is the directory's
+    fault. `own_naming_policy` is the one question the doctor asks of that
+    file (#678), so a policy the loader refuses and one that raises --
+    a pattern `re.compile` will not take -- are told in one shape, as a
+    `Refusal` `naming_policy_refusal_of` makes of either, and `classify`
+    raising on one that loaded is the same fault found a step later, told
+    as `policy-unusable`, which the row words "cannot be used" and not "does
+    not load". This
+    called `NamingPolicy.load` with no handler, and `run_checks` catches only
+    a `Refusal` and an `OSError`: a tab line became `FINDING the way in
+    refused: ...` about the DIRECTORY, and a pattern that does not compile
+    ended the doctor in a traceback with exit 1, the code of a finding.
+    """
     identity = repo_local_origin_name(ctx.root) or ctx.root.name
-    policy = NamingPolicy.load(ctx.shape / "contracts" /
-                               "repository-naming.yaml")
-    return project_token_for(identity, policy)
+    policy, fault = own_naming_policy(ctx.shape)
+    if fault is not None:
+        return None, naming_policy_refusal_of(ctx.shape, fault)
+    try:
+        return project_token_for(identity, policy), None
+    except Exception as exc:  # noqa: BLE001 - see the docstring
+        return None, naming_policy_refusal_of(ctx.shape, exc,
+                                              "policy-unusable")
+
+
+def way_in_policy_row(refusal: Refusal, row_id: str, label: str,
+                      detail: dict) -> Row:
+    """A `the way in` row for a checkout whose own naming policy does not
+    load (#707): `n/a`, and `detail.environment`, as the `naming` row of the
+    same directory is (`naming_policy_row`, #678), in the same words.
+
+    NO NEXT AND NO `--project`. The command this row offers is spelled with
+    the one name the policy derives, and a policy that does not load derives
+    none, so nothing here could be pasted and work: the `why` says where the
+    file is, and the next run offers the commands. `n/a` AND NOT A FINDING,
+    because the question cannot be asked here and nothing is wrong with the
+    directory; the verdict is NOT A SHAPE ROOT, exit 2, as it is for every
+    directory that has neither manifest, because `verdict_for` decides that
+    before it reads a row.
+    """
+    reason, why = naming_policy_words(
+        refusal, "this directory", "how this directory becomes a shape root",
+        "cannot be used" if refusal.code == "policy-unusable"
+        else "does not load")
+    return Row(row_id, label, NA, reason, None,
+               {**detail, "environment": True,
+                "refusal": {"code": refusal.code, "detail": refusal.detail}},
+               why=why)
 
 
 #: Named once, as `LABEL_TRIAD_ADVISORY` below is: the row, the registry entry
@@ -10645,7 +10976,14 @@ def check_the_other_way_in(ctx: Context) -> Row | None:
     """
     if not (ctx.root / ".git").exists() or leg_clone(ctx):
         return None
-    project = way_in_project(ctx)
+    project, refusal = way_in_project(ctx)
+    if refusal is not None:
+        # The same fault as `the way in` above it says, in the same words
+        # (#707): a row each, because each is told of its own command.
+        return way_in_policy_row(refusal, "way-in-scaffold",
+                                 LABEL_OTHER_WAY_IN,
+                                 {"git_repository": True,
+                                  "suggested_project": None})
     return Row("way-in-scaffold", LABEL_OTHER_WAY_IN, NA,
                "a NEW project is SCAFFOLDED instead of adopting this "
                "repository: it creates three repositories and asks first",
@@ -11356,6 +11694,59 @@ def build_parser() -> argparse.ArgumentParser:
     return parser
 
 
+#: The variable git reads to leave out the fetch a partial clone makes for
+#: an object it lacks (#787).
+NO_LAZY_FETCH = "GIT_NO_LAZY_FETCH"
+
+
+@contextlib.contextmanager
+def lazy_fetch_off():
+    """This process's environment with `GIT_NO_LAZY_FETCH=1` for as long as
+    it runs, and as it was afterwards (#787).
+
+    "IT NEVER FETCHES", BY CONSTRUCTION. A partial clone (`git clone
+    --filter`) fetches an object it lacks from a promisor remote on any read
+    that needs one, so the promise held read by read: #683 and #754 ask
+    `rev-list --missing=print`, which never fetches, before anything reads
+    a partial clone of the standard, and never ask `for-each-ref --contains`
+    of a commit the clone does not hold. A read added to a row later, or one
+    in a project's own partial clone, need not ask first. With the variable
+    set, git fails that read instead of fetching: `warning: lazy fetching
+    disabled; some objects may not be available`, then the read's own error
+    (measured with git 2.43: exit 128, and no `fetch` in a trace2 log). That
+    is a read that failed, as one does where the clone's remote is out of
+    reach, and every reader here already answers one: `git_answer`'s None,
+    `git_out`'s `git-failed`, `update-shape.py`'s
+    `update-upstream-unreadable`.
+
+    EVERY GIT THIS PROCESS STARTS, AND NOTHING IT PRINTS. The doctor's own
+    reads (`git_out`, `git_answer` and its few `subprocess.run` of git),
+    `update-shape.py`'s `Upstream` as `check_shape_currency` drives it in
+    this process, the validators `run_validator` starts with a copy of this
+    environment, and every git each of those starts, inherit it. A NEXT the
+    doctor prints is text for a person's own shell, which does not have it,
+    so a `fetch --refetch` printed there fetches. The environment is put
+    back on the way out, for a caller that runs `main` in its own process.
+
+    WHICH GIT HONOURS IT. git 2.45.0 and later, and the security releases of
+    2024-05-14 back to 2.39.4 (2.39.4, 2.40.2, 2.41.1, 2.42.2, 2.43.4,
+    2.44.1), whose fix for CVE-2024-32465 made `promisor-remote.c` read it;
+    distributions carry that fix too (Ubuntu's 2.43.0-1ubuntu7.1 and later).
+    An older git ignores the variable, harmlessly, and there the guards
+    above are what keep the doctor from fetching, as before.
+    """
+    before = os.environ.get(NO_LAZY_FETCH)
+    os.environ[NO_LAZY_FETCH] = "1"
+    try:
+        yield
+    finally:
+        if before is None:
+            os.environ.pop(NO_LAZY_FETCH, None)
+        else:
+            os.environ[NO_LAZY_FETCH] = before
+
+
+@lazy_fetch_off()
 def main(argv: list[str] | None = None) -> int:
     # FIRST, so that every `print` after it -- `--help` included -- escapes
     # a name stdout cannot encode rather than raising on it (#214).
