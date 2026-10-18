@@ -29,15 +29,16 @@ under test comes before the tool would be used.
 from __future__ import annotations
 
 import importlib.util
+import os
 import shutil
 from argparse import Namespace
 from pathlib import Path
 
 import pytest
 
-from conftest import ADOPT, FILE_PROTOCOL, GITMODULES, as_human, findings, \
-    git, make_source_repo, planned, put_gitmodules, refused_before_any_leg, \
-    run_script, spelled
+from conftest import ADOPT, FILE_PROTOCOL, GITMODULES, \
+    appended_to_command_scope, as_human, findings, git, make_source_repo, \
+    planned, put_gitmodules, refused_before_any_leg, run_script, spelled
 
 needs_filter_repo = pytest.mark.skipif(
     shutil.which("git-filter-repo") is None,
@@ -499,11 +500,12 @@ def github_at(root: Path, monkeypatch) -> None:
     `url.<base>.insteadOf`, in the environment every `git` this process
     starts inherits. The org is in it because git takes the LONGEST
     `insteadOf` that matches, and a workstation may already rewrite
-    `https://github.com/` (to `git@github.com:`, say) in its own config."""
-    monkeypatch.setenv("GIT_CONFIG_COUNT", "1")
-    monkeypatch.setenv("GIT_CONFIG_KEY_0",
-                       f"url.{(root / ORG).as_posix()}/.insteadOf")
-    monkeypatch.setenv("GIT_CONFIG_VALUE_0", f"https://github.com/{ORG}/")
+    `https://github.com/` (to `git@github.com:`, say) in its own config. The
+    entry is appended to the command scope the environment holds."""
+    for name, value in appended_to_command_scope(os.environ, [
+            (f"url.{(root / ORG).as_posix()}/.insteadOf",
+             f"https://github.com/{ORG}/")]).items():
+        monkeypatch.setenv(name, value)
 
 
 def a_github(tmp_path: Path, monkeypatch, branches=(SPLIT_BRANCH,)) -> Path:
@@ -511,6 +513,13 @@ def a_github(tmp_path: Path, monkeypatch, branches=(SPLIT_BRANCH,)) -> Path:
     bare = github_repository(tmp_path, branches)
     github_at(tmp_path / "github", monkeypatch)
     return bare
+
+
+#: The first `gh` command a run that went on to the legs gives: whether the
+#: spec leg's repository exists, asked before either is made (#798), whole,
+#: so that another `repo view` asked earlier cannot pass for it.
+TO_THE_LEGS = ["gh", "repo", "view", f"{ORG}/{PROJECT}-spec", "--json",
+               "nameWithOwner"]
 
 
 def no_gh(adopter, monkeypatch) -> list:
@@ -558,7 +567,7 @@ def test_execute_goes_on_to_the_legs_when_github_has_no_such_branch(
     asked = no_gh(adopter, monkeypatch)
     with pytest.raises(Proceeded):
         adopter.cmd_execute(execute_args(plan, tmp_path, local=False))
-    assert asked[0][:3] == ["gh", "repo", "create"]
+    assert asked[0] == TO_THE_LEGS
 
 
 def test_execute_refuses_a_repository_it_cannot_list(adopter, tmp_path,
@@ -666,7 +675,7 @@ def test_a_github_run_is_not_refused_for_the_split_branch_in_the_source(
     asked = no_gh(adopter, monkeypatch)
     with pytest.raises(Proceeded):
         adopter.cmd_execute(execute_args(plan, tmp_path, local=False))
-    assert asked[0][:3] == ["gh", "repo", "create"]
+    assert asked[0] == TO_THE_LEGS
 
 
 def test_a_plan_that_seeds_both_legs_is_not_asked_about_the_extraction(
@@ -691,7 +700,7 @@ def test_a_plan_that_seeds_both_legs_is_not_asked_about_the_extraction(
     args.allow_empty_leg = ["spec", "code"]
     with pytest.raises(Proceeded):
         adopter.cmd_execute(args)
-    assert asked[0][:3] == ["gh", "repo", "create"]
+    assert asked[0] == TO_THE_LEGS
 
 
 def with_origin(source: Path, bare: Path) -> None:
@@ -841,7 +850,7 @@ def test_a_github_run_is_not_refused_for_a_branch_the_source_hides(
     args = execute_args(plan, tmp_path, local=False)
     with pytest.raises(Proceeded):
         adopter.cmd_execute(args)
-    assert asked[0][:3] == ["gh", "repo", "create"]
+    assert asked[0] == TO_THE_LEGS
 
 
 def test_an_earlier_split_branch_the_source_hides_is_found_and_refused(

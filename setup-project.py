@@ -58,7 +58,9 @@ A value the script only ECHOES BACK (`--elected-by`, `git config
 user.name`) and a CHILD PROCESS'S OWN OUTPUT are not this guarantee's to
 keep: they are whatever bytes they already are, and `main()` writes them
 through a UTF-8 `errors="replace"` stream rather than mangling or refusing
-on a byte this file never chose.
+on a byte this file never chose. A Python child that writes to that stream
+itself is told the same encoding (`child_environment`, #836), so the stream
+is in one encoding throughout.
 
 `tests/test_repo_hygiene.py::test_setup_project_py_is_pure_ascii` holds the
 source.
@@ -66,6 +68,7 @@ source.
 
 from __future__ import annotations
 
+import codecs
 import os
 import re
 import shutil
@@ -272,6 +275,79 @@ def rmtree(path) -> None:
     shutil.rmtree(path, onerror=clear_readonly)
 
 
+#: What a Python child whose output `run` CAPTURES is told to write in, which
+#: is what `run` reads the pipe as: UTF-8, with `backslashreplace` for the one
+#: thing UTF-8 cannot hold, a lone surrogate (a byte of a file name that was
+#: not UTF-8). `scripts/shape_materialize.py`'s `CAPTURED_CHILD_IOENCODING`.
+CAPTURED_CHILD_IOENCODING = "utf-8:backslashreplace"
+
+#: The built-in handlers that never raise on a character an encoding cannot
+#: hold, so a child is told the one its stream has. `strict` and
+#: `surrogateescape` raise on such a character, and are not among them.
+#: `scripts/shape_materialize.py`'s `_HANDLERS_THAT_NEVER_RAISE`.
+HANDLERS_THAT_NEVER_RAISE = frozenset((
+    "backslashreplace", "ignore", "namereplace", "replace",
+    "xmlcharrefreplace"))
+
+
+def child_environment(capture: bool = False) -> dict:
+    """The environment `run` starts EVERY child in: this process's own, with
+    `PYTHONIOENCODING` naming the encoding the child's words are read in
+    (#836).
+
+    WHAT WAS WRONG. `main` reconfigures this process's stdout and stderr to
+    UTF-8, and a child does not inherit a `reconfigure`: a Python child takes
+    its streams' encoding from its OWN environment (`PYTHONIOENCODING`, then
+    the locale). So on a stdout whose code page is not UTF-8 - Windows' ANSI
+    code page on any stdout that is not the console, emulated as
+    `PYTHONIOENCODING=cp1252:strict` or `cp1252:surrogateescape` - the
+    naming validator's em dash, the scaffold's ellipsis and the validators
+    `scripts/bootstrap.py` runs reached the same stream in cp1252, between
+    this file's UTF-8 lines: one stream in two encodings. The plan run again
+    to read why it was refused, the one child `run` captures, wrote cp1252
+    into a pipe `run` decodes as UTF-8.
+
+    THE RULE IS #254's, which `scripts/shape_materialize.py` writes as
+    `inherited_child_environment` and `captured_child_environment` and
+    `bump-leg.py`, `update-shape.py` and `family.py` pass as `env=`:
+    - a child that INHERITS this process's stdout is told that stream's own
+      encoding (UTF-8, once `main` has reconfigured it), with the stream's
+      own handler where that one never raises (`HANDLERS_THAT_NEVER_RAISE`)
+      and `backslashreplace` where it does: built-in names only, since a
+      child cannot find a handler only its parent registered;
+    - a child whose output is CAPTURED is told `CAPTURED_CHILD_IOENCODING`,
+      what `run` decodes the pipe as, whatever the operator had set.
+    A stdout with no usable encoding (`pythonw` has no stdout) leaves the
+    environment as it is: there is nothing for the child to agree with.
+
+    A COPY, NOT AN IMPORT. This file runs before any checkout of the standard
+    exists - self-bootstrap mode starts here, as one downloaded file - and
+    `run` is what clones one. `tests/test_validator_child_encoding.py` holds
+    this copy to `shape_materialize`'s answer for every stream it asks about.
+
+    Every child is given it, git and gh included. `PYTHONIOENCODING` is read
+    by Python alone, so a child that is not Python is unchanged by it, and a
+    Python program such a child runs in turn (a git hook, a credential
+    helper) writes into the same stream and is told the same. It names the
+    child's stdin too: the one Python child that reads stdin, the checkout's
+    own copy of this file, asks for answers in ASCII only (a CamelCase
+    project name, `yes`), and on Windows a console ignores it.
+    """
+    env = dict(os.environ)
+    if capture:
+        env["PYTHONIOENCODING"] = CAPTURED_CHILD_IOENCODING
+        return env
+    try:
+        encoding = codecs.lookup(sys.stdout.encoding).name
+    except (AttributeError, LookupError, TypeError):
+        return env
+    errors = getattr(sys.stdout, "errors", None)
+    if errors not in HANDLERS_THAT_NEVER_RAISE:
+        errors = "backslashreplace"
+    env["PYTHONIOENCODING"] = "%s:%s" % (encoding, errors)
+    return env
+
+
 def run(argv, cwd=None, capture: bool = False,
         stdin=None) -> subprocess.CompletedProcess:
     """One spelling of "run a program", with the output decoding pinned.
@@ -282,6 +358,14 @@ def run(argv, cwd=None, capture: bool = False,
     `scaffold-project.py` and the validators print straight to the terminal
     the way they do under setup.sh. So is stdin, unless `stdin` names a file
     descriptor: `run_at_the_terminal` is the one caller that does.
+
+    EVERY CHILD IS TOLD WHAT ITS WORDS ARE READ IN (#836): `env=` is
+    `child_environment(capture)`, here and not at each call, so it reaches
+    all six Python children - the checkout's own copy of this file
+    (`self_bootstrap`), the naming validator (`check_names`), the plan
+    (`plan_and_confirm`) and the plan run again, captured
+    (`why_the_plan_did_not_go_through`), the scaffold (`scaffold`) and
+    `scripts/bootstrap.py` (`clone_and_bootstrap`) - and the next one too.
 
     EVERY ARGV THAT CARRIES A VALUE FROM THE COMMAND LINE WAS CHECKED AT PARSE
     TIME. `argv` is a list and `shell=False`, so there is no shell to inject
@@ -294,7 +378,7 @@ def run(argv, cwd=None, capture: bool = False,
         return subprocess.run(argv, cwd=str(cwd) if cwd is not None else None,
                               capture_output=capture, text=True,
                               encoding="utf-8", errors="replace", check=False,
-                              stdin=stdin)
+                              stdin=stdin, env=child_environment(capture))
     except OSError:
         # A PROGRAM THAT IS NOT THERE IS A FAILED RUN, not a traceback.
         # `is_shape_checkout()` asks git a question before the preflight has
@@ -355,8 +439,56 @@ PATH_RE = re.compile(r"^[^\x00-\x1f\x7f]+$")
 CONTROL_RE = re.compile(r"[\x00-\x1f\x7f]")
 
 
-def refuse_value(what: str, text: str) -> None:
-    """ONE wording for every value this tool will not pass on.
+#: A GITHUB REPOSITORY NAME IS AT MOST 100 CHARACTERS, and a project is three
+#: repositories: `<Project>`, `<Project>-spec` and `<Project>-code`. The legs
+#: add five characters (`-spec` and `-code` are as long as each other), so a
+#: project name over 95 names repositories GitHub cannot create (#777). The
+#: 100 is GitHub's own documented limit. No run of this repository has
+#: measured it: none creates a real repository, and a probe against a real
+#: organisation is another lane's. Asked only where a GitHub repository will
+#: be made: under `--local-remote-dir` the limit is the disk's, which step (5)
+#: asks as `scaffold-name-too-long` (#261).
+GITHUB_NAME_MAX = 100
+PROJECT_NAME_MAX = GITHUB_NAME_MAX - len("-spec")
+
+
+#: WHY A VALUE IS REFUSED, one sentence each, said after the fixed first
+#: sentence of `refuse_value` (#777). The old refusal gave every value the same
+#: closing sentence, which explained only a leading `-`: `../x`, `a/b` and an
+#: accented name were told about a `-` none of them has.
+WHY_EMPTY = "It is empty, and a value here needs at least one character."
+WHY_DASH = ("It starts with `-`, and git reads its own arguments: a value "
+            "that starts with `-` is an option to git, not a name to us.")
+WHY_CONTROL = ("It holds a control character, which the quotation shows as "
+               "an escape: a newline ends a line in every terminal and log "
+               "this output reaches, so a value carrying one could print a "
+               "line that reads as this tool's own.")
+WHY_RANGE = ("It holds `..`, which git reads as a revision range and not as "
+             "a ref.")
+WHY_LOCK = ("It ends in `.lock`, the name git gives the lock file it writes "
+            "beside a ref.")
+
+#: What each pattern asks, in words and then as the pattern itself, as the
+#: sibling `repo_shape.checked_value` prints its own. `PATH_RE` has no row: it
+#: refuses only an empty value and a control character, and both are named
+#: before a pattern is asked; a pattern with no row is still named, as the
+#: sibling names it, by `why_refused`. The words say ASCII because the
+#: patterns are: "letters" and "spaces" alone describe `Caf\xe9` and a
+#: no-break space as values that pass (rv811).
+WHY_PATTERN = {
+    NAME_RE: ("It is not spellable as a name: an ASCII letter or digit "
+              "first, then ASCII letters, digits, the space and "
+              "`._'()&,+@-`, at most 255 characters in all (`%s`)."
+              % NAME_RE.pattern),
+    REF_RE: ("It is not spellable as a ref: an ASCII letter or digit first, "
+             "then ASCII letters, digits and `._/-`, at most 255 characters "
+             "in all (`%s`)." % REF_RE.pattern),
+}
+
+
+def refuse_value(what: str, text: str, why: str) -> None:
+    """ONE first sentence for every value this tool will not pass on, and the
+    reason it failed as the second (#777).
 
     `ascii()`, never `%r`: `repr` leaves a printable non-ASCII character as
     itself, and this file's output is ASCII to the byte (see the module
@@ -365,9 +497,26 @@ def refuse_value(what: str, text: str) -> None:
     PURE ASCII rule exists to prevent.
     """
     die("%s is %s, which is not a value this tool will put on a `git` or `gh` "
-        "command line. git reads its own arguments: a value that starts with "
-        "`-` is an option to git, not a name to us; the rest must be spellable "
-        "as a name, a ref or a path." % (what, ascii(text)))
+        "command line. %s" % (what, ascii(text), why))
+
+
+def why_refused(text: str, pattern) -> str:
+    """The reason `checked_value` refuses `text`, or "" when it does not.
+
+    Asked in the order a person would find them: nothing typed, a leading `-`,
+    a control character, and only then the pattern, so the sentence names the
+    first check the value failed and never one it passed.
+    """
+    if not text:
+        return WHY_EMPTY
+    if text.startswith("-"):
+        return WHY_DASH
+    if CONTROL_RE.search(text):
+        return WHY_CONTROL
+    if not pattern.fullmatch(text):
+        return WHY_PATTERN.get(pattern) or (
+            "It does not match `%s`." % pattern.pattern)
+    return ""
 
 
 def checked_value(flag: str, value: str, pattern=NAME_RE) -> str:
@@ -382,16 +531,37 @@ def checked_value(flag: str, value: str, pattern=NAME_RE) -> str:
     write).
 
     THE HOUSE PATTERN, COPIED RATHER THAN IMPORTED. `scripts/repo_shape.py`'s
-    `checked_value` is the same check in the same words for the same reason,
-    and `scaffold-project.py` calls it on the values this file forwards. This
+    `checked_value` is the same check for the same reason, and
+    `scaffold-project.py` calls it on the values this file forwards. This
     entry point cannot import it: it runs BEFORE there is a checkout to import
-    it from, which is the whole of self-bootstrap mode.
+    it from, which is the whole of self-bootstrap mode. The two refuse the
+    same values; each says why in its own words, and this file's name the
+    check the value failed (`why_refused`), where the sibling prints one
+    remediation for all of them.
     """
     text = str(value)
-    if (not text or text.startswith("-") or CONTROL_RE.search(text)
-            or not pattern.fullmatch(text)):
-        refuse_value(flag, text)
+    why = why_refused(text, pattern)
+    if why:
+        refuse_value(flag, text, why)
     return text
+
+
+def checked_project_length(what: str, name: str, local_mode: bool) -> str:
+    """A project name that GitHub will hold three repositories under, or a
+    refusal before step (4) explains three names it will not use (#777).
+
+    ASKED OF A NAME THAT HAS PASSED `checked_value`, so it is printable ASCII
+    and is quoted back as it is, both ends of it: the name is long, and a
+    name this long differs from its neighbours by its tail.
+    """
+    if local_mode or len(name) <= PROJECT_NAME_MAX:
+        return name
+    die("%s is %d characters long (%s...%s), and a project is three "
+        "repositories, `<Project>`, `<Project>-spec` and `<Project>-code`: "
+        "GitHub keeps a repository name to at most %d characters, so a "
+        "project name is at most %d. Nothing was created. Use a shorter name."
+        % (what, len(name), name[:12], name[-12:], GITHUB_NAME_MAX,
+           PROJECT_NAME_MAX))
 
 
 def checked_ref(flag: str, value: str) -> str:
@@ -403,8 +573,10 @@ def checked_ref(flag: str, value: str) -> str:
     confusing failure inside the temporary checkout.
     """
     text = checked_value(flag, value, REF_RE)
-    if ".." in text or text.endswith(".lock"):
-        refuse_value(flag, text)
+    if ".." in text:
+        refuse_value(flag, text, WHY_RANGE)
+    if text.endswith(".lock"):
+        refuse_value(flag, text, WHY_LOCK)
     return text
 
 
@@ -423,7 +595,8 @@ def checked_passthrough(rest: list) -> list:
     """
     for item in rest:
         if CONTROL_RE.search(item):
-            refuse_value("a passthrough argument after `--`", item)
+            refuse_value("a passthrough argument after `--`", item,
+                         WHY_CONTROL)
     return rest
 
 
@@ -586,6 +759,12 @@ def parse_args(argv, invocation_dir: str) -> Options:
     if opts.visibility not in VISIBILITY_CHOICES:
         die("--visibility is %s; it must be 'private', 'public' or 'internal'"
             % opts.visibility)
+    # ASKED HERE, NOT WHERE `--project` IS TAKEN: `--local-remote-dir` can
+    # come after it on the line, and decides whether a GitHub repository
+    # will be made (#777). Still before step (1) prints.
+    if opts.project:
+        spelling = "<Project>" if state.positional else "--project"
+        checked_project_length(spelling, opts.project, opts.local_mode)
     return opts
 
 
@@ -1478,12 +1657,50 @@ def run_at_the_terminal(argv) -> subprocess.CompletedProcess:
             os.close(descriptor)
 
 
+def ask_for_the_project_name(local_mode: bool) -> str:
+    """The `project name` prompt, and the name typed at it, checked (#729).
+
+    AN EMPTY LINE IS A NAME NOBODY TYPED, NOT A MISSING TERMINAL: `can_ask()`
+    at the call is the gate that refuses for want of one, so this refusal says
+    what happened and does not print the usage text.
+
+    THE TYPED NAME IS HELD TO THE CHECK THE SAME NAME GETS AS `--project` or
+    as the positional, before anything builds a path from it: `..` leaves
+    `--into`, an absolute name replaces it, and step (4)'s validator reads
+    only the last part of what it is handed. `a b` and `Bad_Name` pass here on
+    purpose (`NAME_RE` is permissive); step (4) is where the policy rules on
+    those.
+
+    THE SPACES AT THE ENDS ARE TAKEN OFF FIRST (#777). A trailing space
+    passed `NAME_RE` (a space is allowed after the first character, so `a b`
+    can reach step (4)) where a leading one was refused, and step (4) then
+    judged `Atlas `, `Atlas -spec` and `Atlas -code` and showed no space
+    anywhere. A stray space is what a prompt answer gets from a paste or a
+    slip of the thumb, and the run ends at the first mistake with no second
+    ask, so the prompt takes it off; an argv value is deliberate and is held
+    as typed. A line of nothing but spaces is then an empty line.
+
+    ONLY THE SPACE COMES OFF, NOT EVERY KIND OF WHITESPACE. `str.strip()`
+    with no argument also took off a tab, a form feed, `\\x1c` to `\\x1f`, a
+    no-break space and the ideographic space, so the prompt accepted each of
+    them where `--project` refuses it, as a control character or by the
+    pattern (rv811). Now only the space comes off, and the rest reach
+    `checked_value` as they were typed.
+    """
+    typed = ask("  project name (ONE CamelCase token, e.g. Atlas): ")
+    typed = typed.strip(" ")
+    if not typed:
+        die("no project name was typed; nothing was created.")
+    return checked_project_length(
+        "project name", checked_value("project name", typed), local_mode)
+
+
 def resolve_project_and_elector(opts: Options, shape_root: Path) -> None:
     """setup.sh:355-386, transcribed."""
     say("")
     say("(3) project")
     if not opts.project and can_ask():
-        opts.project = ask("  project name (ONE CamelCase token, e.g. Atlas): ")
+        opts.project = ask_for_the_project_name(opts.local_mode)
     if not opts.project:
         usage(sys.stderr)
         die("no --project given, and no terminal to ask on.")
@@ -2589,32 +2806,55 @@ def clone_and_bootstrap(opts: Options, org: str, landing: Landing) -> dict:
 #: `SHELL_BARE_POSIX`. A backslash is not in it, so a Windows path is quoted.
 SHELL_BARE_POSIX = re.compile(r"[A-Za-z0-9_./:@%+=,-]+")
 
-#: A word this host's shell reads as itself, needing no quotes:
-#: `scripts/repo_shape.py`'s `SHELL_BARE_NT` on Windows, else its
-#: `SHELL_BARE_POSIX`. This file runs before any checkout of the standard
+#: A word PowerShell reads as itself: `scripts/repo_shape.py`'s
+#: `SHELL_BARE_NT`. This file runs before any checkout of the standard
 #: exists, so it carries its own copy of the rule, and
-#: `tests/test_family_printed_quoting.py` holds the two to one answer.
-SHELL_BARE = re.compile(r"[A-Za-z0-9_./:%+=\\-]+" if os.name == "nt"
-                        else SHELL_BARE_POSIX.pattern)
+#: `tests/test_git_bash_dialect.py` holds the two to one answer on every
+#: host, as `tests/test_family_printed_quoting.py` does on this one.
+SHELL_BARE_NT = re.compile(r"[A-Za-z0-9_./:%+=\\-]+")
+
+
+def host_shell_dialect(name=None, environ=None) -> str:
+    """`scripts/repo_shape.py`'s `host_shell_dialect`, as a copy, because
+    this file runs before any checkout of the standard exists (#711):
+    `"nt"`, PowerShell's dialect, on a Windows host whose environment has
+    no `MSYSTEM` or an empty one, and `"posix"`, `sh`'s, everywhere else,
+    Git Bash included. `name` and `environ` are `os.name` and `os.environ`
+    when None. Its docstring there says why `MSYSTEM`, and what it does not
+    cover: a PowerShell started from inside Git Bash inherits `MSYSTEM` and
+    is answered `sh`'s. `tests/test_git_bash_dialect.py` holds the two
+    copies to one answer."""
+    name = os.name if name is None else name
+    environ = os.environ if environ is None else environ
+    return "nt" if name == "nt" and not environ.get("MSYSTEM") else "posix"
 
 
 def shell_word(value, posix: bool = False) -> str:
-    """`value` as ONE word of a command pasted into this host's shell: bare
-    where every character is itself to it, else in single quotes, doubled
-    inside for PowerShell, closed-escaped-reopened for `sh` (#486). A
-    leading `=` is quoted too, which zsh would expand.
+    """`value` as ONE word of a command pasted into this host's shell, the
+    one `host_shell_dialect` answers (#711): bare where every character is
+    itself to it, else in single quotes, doubled inside for PowerShell,
+    closed-escaped-reopened for `sh` (#486). A leading `=` is quoted too,
+    which zsh would expand.
+
+    ASKED AT EACH CALL, NOT AT IMPORT. The alphabet a word may stay bare in
+    and the escape it is quoted with are one answer, taken from the
+    environment the line is printed in, where `MSYSTEM` says Git Bash. The
+    alphabet used to be fixed at import (`SHELL_BARE`, from `os.name`) and
+    the escape asked `os.name` at each call, two reads of one question.
 
     `posix` spells it for `sh` on EVERY host, Windows too: Git Bash reads
     the backslash of a bare `C:\\work` as an escape and an apostrophe doubled
     for PowerShell as two quotes, and #532 rules the printed commands
     POSIX-only. The lines #538 adds or changes pass it, as the scaffold's
     NEXT STEPS clone does (`shell_line(..., "posix")`); the family lines
-    (`family_next_command`) are #532's and still take this host's dialect."""
+    (`family_next_command`) are #532's and take the host's dialect, which
+    under Git Bash is `sh`'s (#711, L2-29)."""
     text = str(value)
-    bare = SHELL_BARE_POSIX if posix else SHELL_BARE
+    windows = not posix and host_shell_dialect() == "nt"
+    bare = SHELL_BARE_NT if windows else SHELL_BARE_POSIX
     if not text.startswith("=") and bare.fullmatch(text):
         return text
-    if os.name == "nt" and not posix:
+    if windows:
         return "'" + re.sub("(['\u2018\u2019\u201a\u201b])", r"\1\1",
                             text) + "'"
     return "'" + text.replace("'", "'\\''") + "'"
@@ -2785,9 +3025,12 @@ def _main(argv, invocation_dir: str) -> int:
 
 def main(argv=None) -> int:
     # PowerShell 5.1 hands a child process the machine's ANSI code page, and
-    # cp1252 cannot encode a character this file does not use - but a CHILD's
-    # output travels through this process's streams too, and the validators
-    # and the scaffold are not ASCII-only. Guarded: `reconfigure` is 3.7+ and
+    # cp1252 cannot encode a character this file does not use - but what it
+    # echoes of a child (a version string, a login) passes through these
+    # streams too. A Python child that writes to the terminal itself does NOT
+    # inherit this `reconfigure`, and the validators and the scaffold are not
+    # ASCII-only, so `run` tells each child the encoding these streams now
+    # have (`child_environment`, #836). Guarded: `reconfigure` is 3.7+ and
     # a stream that has been replaced (a test harness, a pipe wrapper) may not
     # have it at all, and failing to set an encoding is not a reason to refuse
     # to scaffold.

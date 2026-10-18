@@ -169,10 +169,10 @@ def test_a_failed_leg_is_printed_with_its_command_and_its_output(
 def test_a_failed_leg_names_both_leg_repositories_and_what_to_do(
         adopter, monkeypatch, capsys, tmp_path, seeded, command):
     """Both leg repositories exist by now, and one may even be pushed. The
-    human reads the failure, fixes it and re-runs; the re-run is refused by
-    `_create_leg_remotes`, so the notice says so BEFORE it happens, for both
-    kinds of remote, and names the two repositories to delete or to
-    replace. It says to fix what failed first: a cause that is still there
+    human reads the failure, fixes it and re-runs; the re-run is refused as
+    `leg-remote-exists` before it makes either leg, on the disk and on
+    GitHub alike (#798), so the notice says so BEFORE it happens, and names
+    the two repositories to delete or to replace. It says to fix what failed first: a cause that is still there
     fails the re-run the same way, after two more leg repositories (#188's
     review, F2)."""
     refuse_every_leg(adopter, monkeypatch, command, tmp_path)
@@ -191,8 +191,8 @@ def test_a_failed_leg_names_both_leg_repositories_and_what_to_do(
         assert spelled(arguments["urls"][role]) in notice
     assert "--local-remote-dir" in notice
     assert LIVE_LEG in notice
-    assert "gh repo create" in notice
-    assert "already taken" in notice
+    assert ("before it makes either leg, under --local-remote-dir and "
+            "against GitHub alike") in notice
     assert "Once what failed above is fixed, re-run the adoption" in notice
     # The work directory too, which holds what this run built: a re-run that
     # kept it looped (#184 P2-1), and `execute` now refuses it.

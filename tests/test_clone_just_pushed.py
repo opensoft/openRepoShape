@@ -28,11 +28,11 @@ from pathlib import Path
 
 import pytest
 
-from conftest import (FILE_PROTOCOL, PROJECT, assert_read_through_git,
-                      assert_store_read_through_git, clone_just_pushed,
-                      cloned_just_pushed, git, insteadof_args,
-                      insteadof_entries, insteadof_prefixes, read_through_git,
-                      submodule_update_through_git)
+from conftest import (FILE_PROTOCOL, PROJECT, appended_to_command_scope,
+                      assert_read_through_git, assert_store_read_through_git,
+                      clone_just_pushed, cloned_just_pushed, git,
+                      insteadof_args, insteadof_entries, insteadof_prefixes,
+                      read_through_git, submodule_update_through_git)
 
 
 @pytest.fixture
@@ -90,15 +90,13 @@ def test_config_and_env_reach_the_one_command_and_nothing_is_stored(
         config=["-c", "clone.defaultRemoteName=by-config"])
     assert_store_read_through_git(by_config, "the clone made with `config`")
     assert git("remote", cwd=by_config).stdout.split() == ["by-config"]
-    # APPENDED to what the environment holds, as `command_scope` does in
-    # `test_adopt_ignored_shape_files.py`: the Windows job sets two entries
-    # of its own there, and `GIT_CONFIG_COUNT=1` would drop them.
-    held = int(os.environ.get("GIT_CONFIG_COUNT") or 0)
+    # APPENDED to what the environment holds (`appended_to_command_scope`):
+    # the Windows job sets two entries of its own, and `GIT_CONFIG_COUNT=1`
+    # would drop them.
     by_env = cloned_just_pushed(
         remote, tmp_path / "by-env", recurse=False,
-        env={"GIT_CONFIG_COUNT": str(held + 1),
-             f"GIT_CONFIG_KEY_{held}": "clone.defaultRemoteName",
-             f"GIT_CONFIG_VALUE_{held}": "by-env"})
+        env=appended_to_command_scope(
+            os.environ, [("clone.defaultRemoteName", "by-env")]))
     assert_store_read_through_git(by_env, "the clone made with `env`")
     assert git("remote", cwd=by_env).stdout.split() == ["by-env"]
     stored = git("config", "--local", "--list", cwd=by_env).stdout
@@ -230,9 +228,11 @@ def test_the_environment_form_keeps_what_the_environment_holds(
     """APPENDED, as `appended_to_command_scope` appends the session's own
     settings: an entry the process already has is neither overwritten nor
     counted away, so the pasted line sees it as every other git does."""
-    monkeypatch.setenv("GIT_CONFIG_COUNT", "1")
-    monkeypatch.setenv("GIT_CONFIG_KEY_0", "url.held://base/.insteadOf")
-    monkeypatch.setenv("GIT_CONFIG_VALUE_0", "held://")
+    held = appended_to_command_scope(
+        {}, [("url.held://base/.insteadOf", "held://")])
+    assert held["GIT_CONFIG_COUNT"] == "1", held
+    for name, value in held.items():
+        monkeypatch.setenv(name, value)
     entries = read_through_git(remotes)
     assert "GIT_CONFIG_KEY_0" not in entries, entries
     assert entries["GIT_CONFIG_COUNT"] == str(

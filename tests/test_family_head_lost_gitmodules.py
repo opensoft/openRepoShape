@@ -57,7 +57,7 @@ from pathlib import Path
 
 import pytest
 
-from conftest import clone_just_pushed, run_script
+from conftest import appended_to_command_scope, clone_just_pushed, run_script
 from repo_shape import PYTHON
 #: The family fixture, its names, the offline environment and the readings
 #: of a holder, imported from the modules that own them rather than rebuilt.
@@ -93,11 +93,10 @@ DISKS = pytest.mark.parametrize("ignorecase", ["false", "true"],
 
 def on_disk(env: dict, ignorecase: str) -> dict:
     """`env` with `core.ignorecase` set to `ignorecase`, one more
-    `GIT_CONFIG_*` entry after the ones it already holds."""
-    index = int(env.get("GIT_CONFIG_COUNT", "0"))
-    return {**env, "GIT_CONFIG_COUNT": str(index + 1),
-            f"GIT_CONFIG_KEY_{index}": "core.ignorecase",
-            f"GIT_CONFIG_VALUE_{index}": ignorecase}
+    `GIT_CONFIG_*` entry after the ones it already holds
+    (`appended_to_command_scope`)."""
+    return {**env, **appended_to_command_scope(
+        env, [("core.ignorecase", ignorecase)])}
 
 
 def url(project: str) -> str:
@@ -658,16 +657,50 @@ def test_a_row_written_twice_is_one_finding_per_path(holder, offline,
 
 # --- 574/2: a gitlink recorded only at a case variant of the row's path -----
 
+#: What the move's first line says of its `-f` (#839), as `family.py`'s
+#: move back says it (#761).
+FORCED_SAID = ("-f takes out a staged gitlink whose checkout has moved on or "
+               "holds a file git does not track, which git rm otherwise "
+               "refuses, and with --cached touches no file")
+
+
+def guarded_move(variant: str, path: str) -> str:
+    """The guarded `mv` the move prints for a directory left at `variant`:
+    a symbolic link there always moved, nothing there kept, and the row's
+    own directory or a checkout kept (#681, #839)."""
+    return (f"`[ ! -L {variant} ] && {{ [ ! -e {variant} ] || [ {variant} "
+            f"-ef {path} ] || [ -e {variant}/.git ]; }} || mv -- {variant} "
+            f"../{variant.replace('/', '-')}`")
+
+
+def first_line_flags(sparse: tuple, forced: tuple) -> str:
+    """What the move says of its first line's `--sparse` (#762) and `-f`
+    (#839), or nothing."""
+    said = [text for given, text in (
+        (sparse, "--sparse, which needs git 2.34 or later: a sparse checkout "
+                 f"keeps {' and '.join(sparse)} off disk, and without it git "
+                 "rm passes over what that keeps off disk, exit 0, and "
+                 "removes nothing"),
+        (forced, f"-f, since the index stages {' and '.join(forced)} at a "
+                 f"commit HEAD does not record there, over a checkout: "
+                 f"{FORCED_SAID}")) if given]
+    return f" (the first with {', and with '.join(said)})" if said else ""
+
+
 def variant_refused(path: str, commit: str, variants: list[str],
-                    gitlinks: dict[str, str]) -> list[str]:
+                    gitlinks: dict[str, str], *, sparse: tuple = (),
+                    aside: str = "", section: tuple = (),
+                    section_said: str = "", forced: tuple = ()) -> list[str]:
     """`member-gitlink-absent`'s lines for a row whose gitlink is recorded
-    only at `variants`."""
+    only at `variants`. What the move meets beside them (#762): `sparse`,
+    the variants a sparse checkout keeps off disk; `aside`, the sentence
+    for an entry in the way; `section`, the lines that make `.gitmodules`
+    give `path`, with `section_said`, what they do; and `forced`, the
+    variants the first line takes out with `-f` (#839)."""
     project = path.split("/", 1)[1]
     found = ", ".join(f"{variant} (at {gitlinks[variant]})"
                       for variant in variants)
-    moved = " and ".join(f"`[ {variant} -ef {path} ] || [ -e {variant}/.git ] "
-                         f"|| mv -- {variant} ../{variant.replace('/', '-')}`"
-                         for variant in variants)
+    moved = " and ".join(guarded_move(variant, path) for variant in variants)
     status = " or ".join(f"`git -C {variant} status`" for variant in variants)
     unpushed = " or ".join(f"`git -C {variant} log --oneline HEAD --branches "
                            "--not --remotes`" for variant in variants)
@@ -677,19 +710,25 @@ def variant_refused(path: str, commit: str, variants: list[str],
         "records its gitlink only at a case variant of that path, which "
         f"macOS and Windows hold as one directory with it: {found}. A "
         f"recursive clone checks out nothing at {path}.",
-        "Remediation: the member is recorded in the wrong case. Move its "
-        "gitlink to the row's path, at the commit the row pins, in the index "
-        "alone, which touches no file, with the two lines below, and commit "
-        f"that. Where nothing is checked out at {path}, as in a fresh clone, "
-        "`git submodule update --init --recursive` then checks the member "
-        f"out there. A directory left at {' or '.join(variants)} is the "
+        "Remediation: the member is recorded in the wrong case. "
+        + aside + ("Then move" if aside else "Move") + " its gitlink to the "
+        "row's path, at the commit the row pins, in the index alone, which "
+        "touches no file, with the "
+        + ("first two lines below" if section else "two lines below")
+        + first_line_flags(sparse, forced)
+        + (f"; the lines after them {section_said}, and stage .gitmodules. "
+           "Commit that." if section else ", and commit that.")
+        + " A directory left at "
+        f"{' or '.join(variants)} is the "
         "row's own where the disk folds case, as macOS's and Windows' "
         "usually do and a Linux mount can (WSL's /mnt/c). Where the disk "
         "holds the two apart it stays there, untracked, and family.py add "
         "refuses it as family-members-dir-variant: move each one that is "
-        f"there out of the holder, in a POSIX shell, {moved}, which moves "
-        "nothing where the two names are one directory or where it holds a "
-        ".git entry, a checkout. A checkout git submodule add made holds a "
+        "there out of the holder, in a POSIX shell (Git Bash on Windows), "
+        f"{moved}, which moves nothing where nothing is there, where the two "
+        "names are one directory or where it holds a .git entry, a checkout, "
+        "and moves a symbolic link there wherever it points, the link and "
+        "never what it points at. A checkout git submodule add made holds a "
         ".git file naming its store by a path relative to it, which a move "
         "would leave pointing nowhere. Its commits are kept under this "
         "holder's .git/modules/, in the directory its .git file names, "
@@ -700,9 +739,17 @@ def variant_refused(path: str, commit: str, variants: list[str],
         "nothing only it holds is needed. A checkout whose .git is a "
         "directory, a clone of its own, holds its commits there and nowhere "
         f"else, and {unpushed} lists the ones not pushed: move it out of the "
-        "holder whole, by hand, rather than delete it. The two lines:",
-        "    git rm -r --cached --ignore-unmatch -- " + " ".join(variants),
-        f"    git update-index --add --cacheinfo 160000,{commit},{path}"]
+        "holder whole, by hand, rather than delete it. Then, where nothing is "
+        f"checked out at {path}, as in a fresh clone, `git submodule update "
+        "--init --recursive` checks the member out there. Run it last: a "
+        "checkout git mv moved to a variant names the member's own store, "
+        f"which that update points at {path}, so {status} reads {path} after "
+        "it. The " + ("lines" if section else "two lines") + ":",
+        "    git rm -r --cached" + (" --sparse" if sparse else "")
+        + (" -f" if forced else "") + " --ignore-unmatch -- "
+        + " ".join(variants),
+        f"    git update-index --add --cacheinfo 160000,{commit},{path}",
+        *(f"    {line}" for line in section)]
 
 
 def refused_at(root: Path, commit: str, variants: list[str]) -> list[str]:
@@ -800,7 +847,7 @@ def case_sensitive_disk(tmp_path):
 
 
 #: The guarded `mv` the variant refusal gives for each variant, backticked:
-#: two shell tests, then the move (#681).
+#: the shell tests, then the move (#681, #839).
 GUARDED_MOVE = re.compile(r"`(\[ [^`]* \|\| mv -- [^`]*)`")
 
 

@@ -61,8 +61,8 @@ from pathlib import Path
 
 import pytest
 
-from conftest import (cloned_just_pushed, git, rmtree, run_script,
-                      submodule_update_through_git)
+from conftest import (appended_to_command_scope, cloned_just_pushed, git,
+                      rmtree, run_script, submodule_update_through_git)
 #: The family fixture, its names, the offline environment and the holder's
 #: byte-for-byte state, imported from the modules that own them rather than
 #: rebuilt: a holder made, or compared, any other way would test a
@@ -78,6 +78,8 @@ from test_family_dry_run import (
     BUMP_ORDER, commit_in_mount, isolated, registered_keys, state,
 )
 from test_family_member_path import MEMBER, OTHER, older, raw
+#: The names no line may print raw, and how a line spells them (#766).
+from conftest import UNSAFE_NAMES, copied_under, refusal_detail, spelt
 
 PATH = f"members/{MEMBER}"
 
@@ -426,6 +428,30 @@ def test_a_remove_dry_run_under_a_held_index_lock_is_unchanged(
                                                   "changed")
 
 
+@pytest.mark.parametrize("name", UNSAFE_NAMES)
+def test_a_held_index_lock_is_named_safe_to_show(family, offline, tmp_path,
+                                                 name):
+    """#766: the detail named the lock as it was, under the holder, so a
+    holder under a name with an ESC sent it to the terminal, and one with a
+    line break printed a forged line in the detail. It names the lock as
+    `repr` spells it, on the one line it is. The remedy's `rm -f` is a
+    command to paste, quoted for a shell as it was, and is not this row's."""
+    holder = copied_under(family["root"], tmp_path, name)
+    env = isolated(offline, tmp_path)
+    lock = index_lock(holder)
+    lock.write_bytes(b"")
+    result = remove(holder, env)
+    assert result.returncode == 2, result.stdout + result.stderr
+    assert result.stdout == ""
+    assert lock.is_file(), "the lock is left where it was"
+    assert refusal_detail(result.stderr, "family-index-locked") == [
+        "REFUSED family-index-locked: the holder's index is locked: "
+        f"{spelt(lock.resolve().as_posix())} exists. `git submodule deinit` "
+        f"takes no such lock, so `remove` would empty {PATH} and drop its "
+        "registration and then fail at `git rm`, its first write to the "
+        "index; it was refused before either, and nothing was written."]
+
+
 # --- refusals a dry run asks first are asked first (#365) -----------------
 
 def comment_on_members(root: Path, env: dict) -> None:
@@ -680,10 +706,7 @@ def foreign_store(store: Path, url: str, tmp_path: Path) -> None:
 
 def configured(env: dict, key: str, value: str) -> dict:
     """`env` with one more entry in git's `GIT_CONFIG_COUNT` protocol."""
-    count = int(env.get("GIT_CONFIG_COUNT", "0"))
-    return {**env, "GIT_CONFIG_COUNT": str(count + 1),
-            f"GIT_CONFIG_KEY_{count}": key,
-            f"GIT_CONFIG_VALUE_{count}": value}
+    return {**env, **appended_to_command_scope(env, [(key, value)])}
 
 
 @pytest.mark.parametrize("store", ["absent", "without the commit"])
