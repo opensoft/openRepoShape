@@ -246,16 +246,25 @@ MOVE_REMEDIATION = (
     b"again")
 
 
-def refused_then_moved(base: Path, parent: Path, reason: bytes) -> None:
+def refused_then_moved(base: Path, parent: Path, reason: bytes,
+                       skip_where_git_fails: bool = True) -> None:
     """A source in the directory `parent`: `plan` and `check` pass it, as
     #247 made them, and `execute` refuses its path as the assembly root's
     clone URL, giving `reason`, before any leg exists. Then the remediation
     the refusal gives, followed as it is worded -- `parent` renamed, then
     `plan --source <its new path>`, `check` and `execute` run again -- ends
-    `adoption verified`."""
+    `adoption verified`.
+
+    A source repository that git cannot make under `parent` skips the test
+    where `skip_where_git_fails` is true, for a name that is not UTF-8, which
+    git may not work under. A name that is valid text asks for it false, and
+    the failure is raised: the cause is the disk or git, never the name
+    (#834)."""
     try:
         source = make_source_repo(parent / "Thing")
     except AssertionError as exc:
+        if not skip_where_git_fails:
+            raise
         pytest.skip(f"git will not work under {parent.name!r} here: {exc}")
     runs = plan_check_execute(base, source)
     assert_no_traceback_and_no_leg(base, runs)
@@ -306,13 +315,15 @@ def test_execute_refuses_a_local_source_directory_holding_a_bidi_control(
     """A source under a directory whose name begins with U+202E RIGHT-TO-LEFT
     OVERRIDE: on main `execute` adopted it, and the shape's README showed
     the rest of its `git clone` line reversed. Now it is refused as the
-    byte is, and moving the source adopts."""
+    byte is, and moving the source adopts. Nothing here is guarded: U+202E
+    is valid text, which a POSIX disk, NTFS and APFS hold and git works
+    under (reasoned, not run, on the last two), so an error of the disk when
+    the directory is made, and a failure of git when the source is, are the
+    test's own and are raised, not skipped (#834)."""
     parent = tmp_path / "\u202ecaf"
-    try:
-        parent.mkdir()
-    except OSError as exc:
-        pytest.skip(f"no directory here is named '\\u202ecaf': {exc!r}")
-    refused_then_moved(tmp_path, parent, b"a bidirectional control")
+    parent.mkdir()
+    refused_then_moved(tmp_path, parent, b"a bidirectional control",
+                       skip_where_git_fails=False)
 
 
 # --- `check` and `execute`: a plan value edited by hand ----------------------
