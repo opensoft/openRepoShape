@@ -659,11 +659,11 @@ def test_a_hand_mount_outside_members_is_taken_out_of_the_index(
         family, holder, offline, tmp_path):
     """rv648's H2. SPARE's gitlink recorded by hand at `vendor/<SPARE>`,
     outside members/, with no row and no section, and committed: in a plain
-    clone git's init dies there before it checks out any member. No mode
-    of the validator reads a gitlink outside members/, and `--no-members`
-    says `family ok`, so the line names the `git rm --cached` that takes
-    the gitlink out. Typed as printed and committed, the same run checks
-    both members out, and the gate passes in every mode."""
+    clone git's init dies there before it checks out any member. The line
+    names the `git rm --cached` that takes the gitlink out, and the
+    validator's `--no-members`, which said `family ok` there, names the same
+    line now, `gitlink-unnamed` (#878). Typed as printed and committed, the
+    same run checks both members out, and the gate passes in every mode."""
     env = fetching(isolated(offline, tmp_path))
     stopper = f"vendor/{SPARE}"
     stage_gitlink(holder, stopper, spare_commits(family)[1])
@@ -680,8 +680,11 @@ def test_a_hand_mount_outside_members_is_taken_out_of_the_index(
         failed_on(MEMBER, OTHER)], result.stderr
     assert f"No url found for submodule path '{stopper}'" in result.stderr
     fallback = validate(clone, "--no-members")
-    assert fallback.returncode == 0, "premise: it reads only members/"
+    assert fallback.returncode == 1, fallback.stdout + fallback.stderr
     (line,) = re.findall(r"`(git rm [^`]*)`", result.stderr)
+    (named,) = findings(fallback)
+    assert named.startswith(f"FINDING gitlink-unnamed: {stopper} "), named
+    assert commands(named) == [line], "the same line (#878)"
     type_line(clone, env, line)
     commit_all(clone, env, "The gitlink taken out as printed")
 
