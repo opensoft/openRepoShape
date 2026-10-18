@@ -1601,6 +1601,10 @@ GIVEN_WHERE = {(True, True): "here and in HEAD, which a clone reads",
 
 #: What git takes for a `submodule.<name>.<key>` whose value it dies on as
 #: it reads `.gitmodules` (#768), as `gitmodules-value-refused` says it.
+#: This, `_values_refused` and `_git_takes_bool` say what bootstrap's
+#: `TAKES`, `refused_value` and `git_bool` say, and
+#: `tests/test_family_gitmodules_values.py` holds the two scripts to one
+#: answer: a change made here is made there too (#856).
 GIT_TAKES = {"update": "one of `none`, `checkout`, `rebase` or `merge`",
              "shallow": "a boolean, `true` or `false`",
              "fetchrecursesubmodules": "a boolean or `on-demand`",
