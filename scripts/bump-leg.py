@@ -35,6 +35,11 @@ WHAT IT REFUSES, and why each is a refusal rather than a warning:
     says so and moves the commit, exactly as the real run does (#534). A
     tree, a blob or a tag of either is refused `bump-leg-target-not-a-commit`
     by name, in both runs.
+  * a manifest whose `legs:` is not a list, or holds an entry that is not a
+    mapping: `bump-leg-manifest-legs`, naming each in the words of the
+    project's own `validate-manifest.py`, before anything is fetched and
+    under `--dry-run` as well (#832). That validator refuses either, so a
+    bump over one could never land.
   * a commit the leg's REMOTE does not have. A pin nobody else can fetch is a
     root nobody else can bootstrap.
   * a dirty root. The commit is made with explicit pathspecs, so unrelated
@@ -205,8 +210,39 @@ class Project:
 
     @property
     def legs(self) -> list[dict]:
-        return [row for row in (self.data.get("legs") or [])
-                if isinstance(row, dict)]
+        """The manifest's legs, in its own order.
+
+        A `legs:` THAT IS NOT A LIST, OR AN ENTRY OF IT THAT IS NOT A MAPPING,
+        IS REFUSED `bump-leg-manifest-legs` (#832), naming each in
+        `validate-manifest.py`'s words for it (#714), before anything is
+        fetched or written and under `--dry-run` as well. Iterated as `legs
+        or []`, `legs: 5` ended the run in a `TypeError`, and a scalar
+        `openXdox`, a mapping or `[5]` was refused `bump-leg-unknown-leg`,
+        "it declares" with nothing after it, and the remedy of a `--leg`
+        that was not wrong. A list holding a leg beside such an entry was
+        previewed, exit 0, and the real run refused `bump-leg-validators-red`
+        on that validator's `manifest-leg` finding: a bump that cannot land
+        is refused before the dry run says it would. Absent or null declares
+        no leg, which `leg` refuses `bump-leg-unknown-leg` as it did.
+        """
+        declared = self.data.get("legs")
+        if declared is None:
+            return []
+        if not isinstance(declared, list):
+            said = [f"manifest-legs: legs is {declared!r}, expected a list of "
+                    "`role:`, `repository:` and `path:` mappings"]
+        else:
+            said = [f"manifest-leg: a leg is not a mapping: {row!r}"
+                    for row in declared if not isinstance(row, dict)]
+        if said:
+            raise Refusal(
+                "bump-leg-manifest-legs", f"{self.path}: " + "; ".join(said),
+                "Remediation: each entry of `legs:` is one leg, a mapping "
+                "with `role:`, `repository:` and `path:`. The project's own "
+                "`scripts/validate-manifest.py` names this same fault; a leg "
+                "is not pinned around a manifest defect, so that comes "
+                "first, then this command again.")
+        return declared
 
     def leg(self, role: str) -> dict:
         # `assembly` IS declared, at path `.`, and is refused BEFORE the
