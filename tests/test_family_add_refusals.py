@@ -66,8 +66,10 @@ LEG_REMEDIATION = (
     "their own assembly root{named}.")
 
 #: What a good `add` ends with (#487): the push of the branch it committed on,
-#: which is the fixture's own, and the pull request it is for.
-NEXT = ("NEXT  git -C {root} push -u origin {branch}",
+#: which is the fixture's own, by its full refname on both sides (#689), and
+#: the pull request it is for.
+NEXT = ("NEXT  git -C {root} push -u origin "
+        "refs/heads/{branch}:refs/heads/{branch}",
         "      then open a pull request against main; never push to it "
         "directly")
 
@@ -450,7 +452,9 @@ def test_a_manifest_this_tool_will_not_rewrite_is_refused_before_the_mount(
         "exactly one was expected, so this tool will not rewrite it",
         "Remediation: the manifest was hand-edited into a shape this tool "
         "does not recognise. `members:` is the LAST block in the file and "
-        "everything below it belongs to this tool; fix it by hand this once.")
+        "everything below it belongs to this tool; fix it by hand this once "
+        "and commit that (`git commit -- family.yaml`), then run the same "
+        "command again.")
     assert_unchanged(holder, before, SPARE)
     offline.assert_left_nothing()
 
@@ -1441,7 +1445,7 @@ def test_a_gitlink_git_stages_under_another_spelling_is_named_not_hidden(
               cwd=family["remotes"] / f"{SPARE}.git").stdout.strip()
     before, index = snapshot(holder), index_bytes(holder)
     monkeypatch.setattr(family_module, "_members_spellings",
-                        lambda root, project, on_disk: [])
+                        lambda root, project, on_disk, rows: [])
 
     code = add_in_process(family_module, monkeypatch, offline, holder, SPARE,
                           family["remotes"])
