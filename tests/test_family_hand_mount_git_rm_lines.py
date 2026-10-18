@@ -9,7 +9,8 @@ this change, every printed line typed as printed:
 1. A gitlink the index stages at a commit HEAD does not record there, with
    something on disk at it: `git mv members/IRRS members/IRRS2`, staged,
    clean or with a commit in the checkout it moved; a gitlink staged over
-   an empty directory or a directory holding a file; a `git submodule add`
+   an empty directory, a directory holding a file or a dangling link (x889c's
+   NIT A on #889); a `git submodule add`
    not committed; a checkout moved to `HEAD~1` and `git add`-ed. The
    printed `git rm -- <path>` exited 1 in each (`the following file has
    changes staged in the index`, or, where what is on disk differs from
@@ -185,8 +186,10 @@ def added_not_committed(root: Path, env: dict, family) -> str:
 #: `(the state, the line's flag, whether HEAD records the gitlink, what is
 #: left on disk)`. Typed, a plain `git rm` said `has changes staged in the
 #: index` in the first four, and `has staged content different from both
-#: the file and the HEAD` in the last two, whose disk differs from what is
-#: staged (lane 1's NIT 1 on #889, round 3).
+#: the file and the HEAD` in the last three, whose disk differs from what
+#: is staged (lane 1's NIT 1 on #889, round 3). A dangling link is
+#: something on disk, as `os.path.lexists` reads it and git refuses it,
+#: where `exists` reads nothing (x889c's NIT A on #889).
 STAGED = {
     "git-mv": (moved_by_git_mv, " -f", False, CHECKOUT_LEFT),
     "an-empty-directory": (staged_by_hand(Path.mkdir), "", False,
@@ -199,6 +202,9 @@ STAGED = {
                                   CHECKOUT_LEFT),
     "a-directory-holding-a-file": (staged_by_hand(holding_a_file), " -f",
                                    False, NO_CHECKOUT_LEFT),
+    "a-dangling-link": (staged_by_hand(
+        lambda where: where.symlink_to("nowhere")), " -f", False,
+        NO_CHECKOUT_LEFT),
 }
 
 
