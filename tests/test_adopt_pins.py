@@ -34,7 +34,6 @@ so there the record stays empty whatever happens). The end-to-end tests need
 
 from __future__ import annotations
 
-import errno
 import importlib.util
 import json
 import os
@@ -50,7 +49,8 @@ import pytest
 from conftest import (ADOPT, REPO, SCAFFOLD, SYNTHETIC_TREE, WINDOWS_SKIP,
                       as_human, cloned_just_pushed, findings, git,
                       make_source_repo, planned, refused_before_any_leg,
-                      resolve, rmtree, run_script)
+                      resolve, rmtree, run_script,
+                      skip_where_a_name_cannot_be_not_utf_8)
 
 sys.path.insert(0, str(REPO / "scripts"))
 import shape_materialize  # noqa: E402
@@ -146,6 +146,32 @@ def stub_gh(directory: Path) -> dict:
 def gh_calls(env: dict) -> str:
     log = Path(env["GH_STUB_LOG"])
     return log.read_text(encoding=UTF8) if log.exists() else ""
+
+
+def check_plan(plan: Path, **named) -> subprocess.CompletedProcess:
+    """`check --plan <plan>` given the `--local-remote-dir` `execute` is
+    given here, `remotes` beside the plan: the test path, on which `check`
+    asks the disk and not GitHub whether each leg repository exists (#798).
+    So the stub's log holds only what a pin made `gh` asked, which is what
+    these tests read: `check` reads no network for a pin. One test runs
+    `check` as people run it, with no flag (`check_on_github`)."""
+    return run_script(ADOPT, "check", "--plan", str(plan),
+                      "--local-remote-dir", str(plan.parent / "remotes"),
+                      **named)
+
+
+def check_on_github(plan: Path, **named) -> subprocess.CompletedProcess:
+    """`check --plan <plan>` with no `--local-remote-dir`, as people run it:
+    it asks GitHub whether each leg repository exists (#798), the two calls
+    `LEG_VIEWS` names, and no more for a pin."""
+    return run_script(ADOPT, "check", "--plan", str(plan), **named)
+
+
+#: The two `gh` calls, as the stub logs them, that a `check` with no
+#: `--local-remote-dir` makes for a plan of `PROJECT`: whether each leg's
+#: repository exists, the spec leg's first.
+LEG_VIEWS = [f"repo view {ORG}/{PROJECT}-{role} --json nameWithOwner"
+             for role in ("spec", "code")]
 
 
 def forge_objects(path: Path, objects: dict) -> Path:
@@ -269,7 +295,7 @@ def adopted(request, tmp_path_factory, glass):
     for path, leg in ANSWERS:
         resolve(plan, path, leg)
     rmtree(readable)
-    checked = run_script(ADOPT, "check", "--plan", str(plan), env=env)
+    checked = check_plan(plan, env=env)
     executed = run_script(ADOPT, "execute", "--plan", str(plan), "--yes",
                           "--local-remote-dir", str(base / "remotes"),
                           "--work-dir", str(base / "work"), env=env)
@@ -433,7 +459,7 @@ def adopted_as_text(request, tmp_path_factory):
     assert planned_run.returncode == 0, planned_run.stderr + planned_run.stdout
     for path, leg in ANSWERS:
         resolve(plan, path, leg)
-    checked = run_script(ADOPT, "check", "--plan", str(plan), env=env)
+    checked = check_plan(plan, env=env)
     executed = run_script(ADOPT, "execute", "--plan", str(plan), "--yes",
                           "--local-remote-dir", str(base / "remotes"),
                           "--work-dir", str(base / "work"), env=env)
@@ -890,22 +916,6 @@ def test_a_pin_source_check_would_refuse_is_refused_by_plan(
 UNREAD = "unreadclone"
 
 
-def skip_where_a_name_cannot_be_not_utf_8(directory: Path) -> None:
-    """Skip, as `POSIX_NAMES` skips on Windows, on a filesystem that refuses
-    a file name that is not UTF-8: macOS answers EILSEQ ("Illegal byte
-    sequence"), so no clone can sit at such a path there. Asked of a
-    directory made under `directory`; any other error is the test's own."""
-    probe = directory / "probe\udcff"
-    try:
-        probe.mkdir()
-    except OSError as exc:
-        if exc.errno != errno.EILSEQ:
-            raise
-        pytest.skip("needs a file name that is not UTF-8, which this "
-                    "filesystem refuses (EILSEQ)")
-    probe.rmdir()
-
-
 @pytest.mark.parametrize("name, reason", [
     pytest.param(f"{UNREAD}‍x",
                  "it holds an invisible formatting character", id="zwj"),
@@ -1070,7 +1080,7 @@ def test_check_passes_the_clone_a_plan_records_and_writes_no_path(
     with_pins(plan, "pins:\n" + pin_entry(
         commit=commit, digest=digest,
         source="local-clone (open\\u00a0Glass)"))
-    checked = run_script(ADOPT, "check", "--plan", str(plan), env=gh_env)
+    checked = check_plan(plan, env=gh_env)
     assert checked.returncode == 0, checked.stdout + checked.stderr
     assert [line for line in checked.stdout.splitlines()
             if line.startswith("  write ")] == [
@@ -1091,7 +1101,9 @@ def test_the_pin_and_write_lines_say_how_and_not_where(source_repo, tmp_path,
     digest was read, `local-clone`, and not where, because the path is this
     machine's own and `execute` writes into the pin file what `check`
     prints there (#540). The one line of either that names the clone is
-    #449's NOTE that the digest recomputes there."""
+    #449's NOTE that the digest recomputes there. `check` runs here as
+    people run it, with no `--local-remote-dir`, and asks `gh` the two leg
+    questions alone (#798)."""
     path, commit, _ = glass
     digest = tree_digest(path, commit)
     out = tmp_path / "plan.yaml"
@@ -1107,7 +1119,7 @@ def test_the_pin_and_write_lines_say_how_and_not_where(source_repo, tmp_path,
     assert str(path) not in result.stdout + result.stderr
     for answered, leg in ANSWERS:
         resolve(out, answered, leg)
-    checked = run_script(ADOPT, "check", "--plan", str(out), env=gh_env)
+    checked = check_on_github(out, env=gh_env)
     assert checked.returncode == 0, checked.stdout + checked.stderr
     assert [line for line in checked.stdout.splitlines()
             if line.startswith("  write ")] == [
@@ -1118,7 +1130,9 @@ def test_the_pin_and_write_lines_say_how_and_not_where(source_repo, tmp_path,
         f"NOTE {ENTRY}: digest recomputes at {commit[:12]} in the clone "
         f"`plan` read it from, {path}."], checked.stdout
     assert str(path) not in checked.stderr
-    assert gh_calls(gh_env) == ""
+    # The two leg questions, and nothing a pin asked: `check` reads no
+    # network for a pin when it runs as people run it, with no flag.
+    assert gh_calls(gh_env).splitlines() == LEG_VIEWS
 
 
 # --- what `check` finds, and `execute` refuses before any leg exists ---------
@@ -1329,7 +1343,7 @@ def test_a_plan_whose_pin_execute_cannot_write_is_found_and_refused(
     block, said = cases[code][name]
     plan = planned(source_repo, tmp_path, PLANNED)
     with_pins(plan, block)
-    checked = run_script(ADOPT, "check", "--plan", str(plan), env=gh_env)
+    checked = check_plan(plan, env=gh_env)
     assert checked.returncode == 1, checked.stdout + checked.stderr
     lines = [line for line in checked.stderr.splitlines()
              if line.startswith(f"FINDING {code}: ")]
@@ -1429,7 +1443,7 @@ def test_a_pin_edited_after_plan_is_found_and_refused(
     commit, digest, code, recomputed = edits(glass)[edit]
     plan = planned(source_repo, tmp_path, PLANNED)
     with_pins(plan, read_from(recorded_clone, commit, digest))
-    checked = run_script(ADOPT, "check", "--plan", str(plan), env=gh_env)
+    checked = check_plan(plan, env=gh_env)
     assert checked.returncode == 1, checked.stdout + checked.stderr
     lines = [line for line in checked.stderr.splitlines()
              if line.startswith("FINDING ")]
@@ -1473,7 +1487,7 @@ def test_a_pin_the_clone_recomputes_checks_ok(adopter, source_repo, tmp_path,
     typed = (commit.upper(), digest.upper()) if upper else (commit, digest)
     plan = planned(source_repo, tmp_path, PLANNED)
     with_pins(plan, read_from(recorded_clone, *typed))
-    checked = run_script(ADOPT, "check", "--plan", str(plan), env=gh_env)
+    checked = check_plan(plan, env=gh_env)
     assert checked.returncode == 0, checked.stdout + checked.stderr
     assert pin_notes(checked) == [
         f"NOTE {ENTRY}: digest recomputes at {commit[:12]} in the clone "
@@ -1498,7 +1512,7 @@ def test_a_pin_whose_clone_is_gone_is_said_not_rechecked(source_repo,
     with_pins(plan, read_from(recorded_clone, second,
                               tree_digest(path, first)))
     rmtree(recorded_clone)
-    checked = run_script(ADOPT, "check", "--plan", str(plan), env=gh_env)
+    checked = check_plan(plan, env=gh_env)
     assert checked.returncode == 0, checked.stdout + checked.stderr
     assert pin_notes(checked) == [
         f"{NOT_RECHECKED}the clone `plan` read it from is not at "
@@ -1525,7 +1539,7 @@ def test_a_pin_read_from_no_clone_is_said_not_rechecked(source_repo,
     with_pins(plan, "pins:\n" + pin_entry(commit=second,
                                           digest=tree_digest(path, first),
                                           source=source))
-    checked = run_script(ADOPT, "check", "--plan", str(plan), env=gh_env)
+    checked = check_plan(plan, env=gh_env)
     assert checked.returncode == 0, checked.stdout + checked.stderr
     assert pin_notes(checked) == [
         f"{NOT_RECHECKED}{why}. {GATE_RECOMPUTES}"], checked.stdout
@@ -1546,7 +1560,7 @@ def test_a_pin_read_from_a_partial_clone_is_said_not_rechecked(
     plan = planned(source_repo, tmp_path, PLANNED)
     with_pins(plan, read_from(recorded_clone, second,
                               tree_digest(path, first)))
-    checked = run_script(ADOPT, "check", "--plan", str(plan), env=gh_env)
+    checked = check_plan(plan, env=gh_env)
     assert checked.returncode == 0, checked.stdout + checked.stderr
     assert pin_notes(checked) == [
         f"{NOT_RECHECKED}the clone at {recorded_clone} is a partial clone "
@@ -1576,8 +1590,7 @@ def test_a_relative_clone_is_read_from_where_check_runs(source_repo,
     with_pins(plan, "pins:\n" + pin_entry(commit=second if edited else first,
                                           digest=tree_digest(path, first),
                                           source=f"local-clone ({name})"))
-    checked = run_script(ADOPT, "check", "--plan", str(plan), cwd=tmp_path,
-                         env=gh_env)
+    checked = check_plan(plan, cwd=tmp_path, env=gh_env)
     assert checked.returncode == int(edited), checked.stdout + checked.stderr
     said = [line for line in (checked.stderr if edited else checked.stdout)
             .splitlines() if line.startswith(("FINDING ", f"NOTE {ENTRY}"))]
@@ -1670,7 +1683,7 @@ def test_a_plan_with_a_whole_pin_checks_ok(source_repo, tmp_path, glass,
     and `execute` read no network for a pin, by design; #449)."""
     plan = planned(source_repo, tmp_path, PLANNED)
     with_pins(plan, "pins:\n" + a_good_pin(glass))
-    checked = run_script(ADOPT, "check", "--plan", str(plan), env=gh_env)
+    checked = check_plan(plan, env=gh_env)
     assert checked.returncode == 0, checked.stdout + checked.stderr
     assert f"  write {PIN_FILE}: opensoft/openGlass @ {glass[1][:12]}" \
         in checked.stdout
@@ -1686,7 +1699,7 @@ def test_a_plan_with_no_pin_says_nothing_of_pins(source_repo, tmp_path,
     """What `check` says of a pin's digest is said of pins, and only where
     there is one."""
     plan = planned(source_repo, tmp_path, PLANNED)
-    checked = run_script(ADOPT, "check", "--plan", str(plan), env=gh_env)
+    checked = check_plan(plan, env=gh_env)
     assert checked.returncode == 0, checked.stdout + checked.stderr
     assert "  write contracts/" not in checked.stdout
     assert "rechecked" not in checked.stdout
@@ -1706,7 +1719,7 @@ def test_an_upper_cased_hand_edit_is_written_lower_cased(adopter, source_repo,
     plan = planned(source_repo, tmp_path, PLANNED)
     with_pins(plan, "pins:\n" + pin_entry(commit=commit.upper(),
                                           digest=digest.upper()))
-    checked = run_script(ADOPT, "check", "--plan", str(plan), env=gh_env)
+    checked = check_plan(plan, env=gh_env)
     assert checked.returncode == 0, checked.stdout + checked.stderr
     assert (f"  write {PIN_FILE}: opensoft/openGlass @ {commit[:12]} tree "
             f"{digest[:12]}… (local-clone)") in checked.stdout

@@ -34,8 +34,10 @@ import os
 import re
 import shlex
 import shutil
+import signal
 import subprocess
 import sys
+import time
 
 from pathlib import Path, PurePosixPath, PureWindowsPath
 from types import SimpleNamespace
@@ -2589,9 +2591,9 @@ def installed(tmp_path) -> Path:
     return target
 
 
-def run_installed(standard: Path, tmp_path, *args,
-                  cwd: Path | None = None) -> subprocess.CompletedProcess:
-    """The installed command, cloning `standard` from a local PATH.
+def installed_env(standard: Path, tmp_path) -> dict:
+    """`shim_env` for the installed command cloning `standard` from a local
+    PATH, into `<tmp_path>/tmp`, which this makes.
 
     `$TMPDIR` is a directory of the test's own, both because the clone now
     OUTLIVES the run (#500) and must not outlive it in the machine's `/tmp`,
@@ -2599,12 +2601,17 @@ def run_installed(standard: Path, tmp_path, *args,
     """
     temporary = tmp_path / "tmp"
     temporary.mkdir(exist_ok=True)
+    return shim_env(tmp_path, OPENREPOSHAPE_REPO=str(standard),
+                    TMPDIR=str(temporary))
+
+
+def run_installed(standard: Path, tmp_path, *args,
+                  cwd: Path | None = None) -> subprocess.CompletedProcess:
+    """The installed command, cloning `standard` (`installed_env`)."""
     return subprocess.run(
         ["bash", str(installed(tmp_path)), *args],
         capture_output=True, text=True, check=False, input="",
-        cwd=str(cwd or tmp_path),
-        env=shim_env(tmp_path, OPENREPOSHAPE_REPO=str(standard),
-                     TMPDIR=str(temporary)))
+        cwd=str(cwd or tmp_path), env=installed_env(standard, tmp_path))
 
 
 @WINDOWS_SKIP
@@ -2655,6 +2662,36 @@ def test_the_shim_from_stdin_clones_the_standard_first(standard, project,
     fetched_nothing(tmp_path, doctor_ran=True)
 
 
+def next_lines(text: str) -> list:
+    """Every NEXT command a printed report holds, in order."""
+    return [line.split("NEXT", 1)[1].strip() for line in text.splitlines()
+            if line.lstrip().startswith("NEXT ")]
+
+
+def named_in_the_clone(line: str, shape: Path) -> list:
+    """Every path a NEXT names under the kept clone `shape`, as the reader's
+    shell splits the line, each of which is still there."""
+    named = [Path(arg) for arg in pasted(line) if arg.startswith(str(shape))]
+    for path in named:
+        assert path.exists(), f"{line}\nnames {path}, which is gone"
+    return named
+
+
+def run_once_it_has_exited(line: str,
+                           tmp_path) -> subprocess.CompletedProcess:
+    """A NEXT run as pasted, after the command that printed it has exited,
+    with nothing to answer on and no terminal: it must not die with
+    `can't open file`, which is what a NEXT naming a removed clone did."""
+    proc = subprocess.run(pasted(line), capture_output=True, text=True,
+                          check=False, stdin=subprocess.DEVNULL,
+                          start_new_session=True, cwd=str(tmp_path),
+                          env={**shim_env(tmp_path),
+                               "PYTHONDONTWRITEBYTECODE": "1"})
+    assert "can't open file" not in proc.stdout + proc.stderr, (
+        line + "\n" + proc.stdout + proc.stderr)
+    return proc
+
+
 @WINDOWS_SKIP
 @pytest.mark.skipif(shutil.which("bash") is None, reason="needs bash")
 def test_the_installed_doctors_next_lines_run_after_it_has_exited(
@@ -2679,30 +2716,234 @@ def test_the_installed_doctors_next_lines_run_after_it_has_exited(
     assert "DRIFTED (1 locally-modified)   (exit 1)" in result.stdout, \
         result.stdout
     fetched_nothing(tmp_path, doctor_ran=True)
-    kept = kept_by(result.stdout)
-    shape = kept / "shape"
-    nexts = [line.split("NEXT", 1)[1].strip()
-             for line in result.stdout.splitlines()
-             if line.lstrip().startswith("NEXT ")]
+    shape = kept_by(result.stdout) / "shape"
+    nexts = next_lines(result.stdout)
     from_the_clone = [line for line in nexts if str(shape) in line]
     assert any("update-shape.py" in line for line in from_the_clone), nexts
     for line in from_the_clone:
-        argv = pasted(line)
-        named = [Path(arg) for arg in argv if arg.startswith(str(shape))]
-        for path in named:
-            assert path.exists(), f"{line}\nnames {path}, which is gone"
-        proc = subprocess.run(argv, capture_output=True, text=True,
-                              check=False, stdin=subprocess.DEVNULL,
-                              start_new_session=True, cwd=str(tmp_path),
-                              env={**shim_env(tmp_path),
-                                   "PYTHONDONTWRITEBYTECODE": "1"})
-        assert "can't open file" not in proc.stdout + proc.stderr, (
-            line + "\n" + proc.stdout + proc.stderr)
-        if "update-shape.py" in argv[1]:
+        named_in_the_clone(line, shape)
+        proc = run_once_it_has_exited(line, tmp_path)
+        if "update-shape.py" in pasted(line)[1]:
             assert proc.returncode == 1, line + "\n" + proc.stdout \
                 + proc.stderr
             assert re.search(rf"locally-modified\s+{re.escape(DRIFT_TARGET)}",
                              proc.stdout), proc.stdout
+
+
+#: The files a plain repository's NEXT lines name in the kept clone that
+#: run as pasted (#545): the adoption, and the `machine` row's preflight,
+#: which every run here prints, its `gh` being `refusing_network`'s. The
+#: scaffold's `setup.sh` is named too, and asks for `<your-org>`.
+PLAIN_NEXTS_RUN = {"adopt-project.py", "setup-project.py"}
+PLAIN_NEXTS_NAMED = PLAIN_NEXTS_RUN | {"setup.sh"}
+
+
+@WINDOWS_SKIP
+@pytest.mark.skipif(shutil.which("bash") is None, reason="needs bash")
+def test_a_plain_repositorys_next_lines_outlive_the_installed_doctor(
+        standard, tmp_path):
+    """#680: the test above runs a DRIFTED project's NEXT lines, and since
+    #545 a git repository that is no shape root is told of both ways in, so
+    its report names three files in the kept clone that no test had run from
+    the installed form.
+
+    A repository with an `origin` that names its organisation, so the
+    adoption line needs no placeholder. Every path a NEXT names in the clone
+    is there once the command has exited, and each line that needs no
+    placeholder runs as pasted. The scaffold line asks for `<your-org>` and
+    creates three repositories, so its path is all that is checked.
+    """
+    here = an_origin_of(tmp_path / PROJECT,
+                        f"git@github.com:opensoft/{PROJECT}.git")
+    result = run_installed(standard, tmp_path, "--doctor", str(here))
+    assert result.returncode == 2, result.stdout + result.stderr
+    fetched_nothing(tmp_path, doctor_ran=True)
+    shape = kept_by(result.stdout) / "shape"
+    placeholder = doctor_module(standard).ORG_PLACEHOLDER
+    named, ran = set(), set()
+    for line in next_lines(result.stdout):
+        tools = {path.name for path in named_in_the_clone(line, shape)}
+        named |= tools
+        if placeholder not in line:
+            run_once_it_has_exited(line, tmp_path)
+            ran |= tools
+    assert PLAIN_NEXTS_NAMED <= named, named
+    assert PLAIN_NEXTS_RUN <= ran, ran
+
+
+# --- an interrupted run (#680) ----------------------------------------------
+#
+# The installed command keeps its clone once the doctor has run to its end,
+# and removes it when the doctor was ended by a signal. A signal sent to the
+# command's shell alone waits for the doctor: before #680 it ended the shell
+# at once, and the EXIT trap removed the clone under a doctor still running
+# from it. Each test runs a doctor that waits to be let go, in a session of
+# its own, and signals by the PIDs the run recorded, never by name.
+
+#: A `shape-doctor.py` that says it has started and then waits. It writes
+#: its pid and its parent's, the command's shell, to `started` in the
+#: `--root` it is handed, and waits for `release` there (a minute at most, so
+#: nothing outlives a test that failed). At its end it writes to `ended`
+#: whether its own file was still there, and prints a line, as a report
+#: would. A doctor a signal ended writes no `ended` at all.
+HELD_DOCTOR = """\
+import os, sys, time
+root = sys.argv[sys.argv.index("--root") + 1]
+with open(os.path.join(root, "started.part"), "w") as out:
+    out.write("%d %d" % (os.getpid(), os.getppid()))
+os.replace(os.path.join(root, "started.part"), os.path.join(root, "started"))
+deadline = time.monotonic() + 60
+while time.monotonic() < deadline:
+    if os.path.exists(os.path.join(root, "release")):
+        break
+    time.sleep(0.05)
+with open(os.path.join(root, "ended"), "w") as out:
+    out.write("present" if os.path.isfile(__file__) else "gone")
+print("the held doctor ran to its end")
+"""
+
+#: Run before `bash` replaces it: INT, TERM and HUP back to their defaults.
+#: A shell started with one IGNORED can neither trap nor reset it, and its
+#: doctor ignores it too, which is how `nohup` or a runner's background job
+#: would leave a run of these tests.
+DEFAULT_SIGNALS = (
+    "import os, signal, sys\n"
+    "for name in ('SIGINT', 'SIGTERM', 'SIGHUP'):\n"
+    "    signal.signal(getattr(signal, name), signal.SIG_DFL)\n"
+    "os.execvp(sys.argv[1], sys.argv[1:])\n")
+
+
+@pytest.fixture(scope="session")
+def held_standard(tmp_path_factory) -> Path:
+    """A standard whose one file is `HELD_DOCTOR`, as `shape-doctor.py`."""
+    dest = tmp_path_factory.mktemp("held") / "openRepoShape"
+    dest.mkdir()
+    (dest / DOCTOR).write_text(HELD_DOCTOR, encoding="utf-8")
+    git("init", "-q", "-b", "main", ".", cwd=dest)
+    commit_all(dest, "a doctor that waits to be let go")
+    return dest
+
+
+def let_go(root: Path) -> None:
+    """Lets the held doctor at `root` run to its end."""
+    (root / "release").write_text("", encoding="utf-8")
+
+
+def started_doctor(proc: subprocess.Popen, root: Path) -> int:
+    """The held doctor's pid, once it has said it started, as the child of
+    the command's own shell, which is `proc`."""
+    started = root / "started"
+    deadline = time.monotonic() + 120
+    while not started.exists():
+        assert proc.poll() is None, proc.communicate()
+        assert time.monotonic() < deadline, "the doctor never started"
+        time.sleep(0.05)
+    doctor, shell = (int(word) for word
+                     in started.read_text(encoding="utf-8").split())
+    assert shell == proc.pid, "the doctor is not the shell's own child"
+    return doctor
+
+
+@pytest.fixture
+def held_run(held_standard, tmp_path):
+    """Starts the installed command's `--doctor` over `<tmp_path>/root`,
+    cloning `held_standard`, in a session of its own, and hands back the
+    run and its doctor's pid once the doctor has started. At teardown a
+    doctor still held is let go, so no run a failed test started outlives
+    it."""
+    root = tmp_path / "root"
+    root.mkdir()
+    runs = []
+
+    def start() -> tuple:
+        proc = subprocess.Popen(
+            [sys.executable, "-c", DEFAULT_SIGNALS, "bash",
+             str(installed(tmp_path)), "--doctor", str(root)],
+            stdin=subprocess.DEVNULL, stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE, text=True, cwd=str(tmp_path),
+            env=installed_env(held_standard, tmp_path),
+            start_new_session=True)
+        runs.append(proc)
+        return proc, started_doctor(proc, root)
+
+    yield SimpleNamespace(root=root, start=start)
+    let_go(root)
+    for proc in runs:
+        if proc.returncode is None:
+            proc.wait(timeout=120)
+
+
+@WINDOWS_SKIP
+@pytest.mark.skipif(shutil.which("bash") is None, reason="needs bash")
+@pytest.mark.parametrize(("name", "to_the_shell"), [
+    pytest.param("SIGINT", True, id="INT-to-the-shell-and-the-doctor"),
+    pytest.param("SIGTERM", True, id="TERM-to-the-shell-and-the-doctor"),
+    pytest.param("SIGHUP", True, id="HUP-to-the-shell-and-the-doctor"),
+    pytest.param("SIGTERM", False, id="TERM-to-the-doctor-alone"),
+])
+def test_a_doctor_ended_by_a_signal_leaves_nothing(name, to_the_shell,
+                                                    held_run, tmp_path):
+    """A doctor ended by a signal printed no report, so the run leaves
+    nothing: no clone in `$TMPDIR` and no line naming one. A Ctrl-C, or a
+    terminal hanging up, signals the shell and the doctor together.
+
+    THE SHELL ENDS BY THE SIGNAL IT WAS SENT, which a shell reads as 128 +
+    its number in `$?`, so a shell loop running the command stops at a
+    Ctrl-C; `exit 130` would let the loop go on. Sent to the doctor alone,
+    the shell was sent nothing and exits with the doctor's status, which
+    bash gives as 128 + the signal, and still leaves nothing.
+    """
+    number = getattr(signal, name)
+    proc, doctor = held_run.start()
+    if to_the_shell:
+        os.kill(proc.pid, number)
+    os.kill(doctor, number)
+    out, err = proc.communicate(timeout=120)
+    assert proc.returncode == (-number if to_the_shell else 128 + number), \
+        out + err
+    assert KEPT not in out + err
+    assert list((tmp_path / "tmp").iterdir()) == [], "the clone was left"
+    assert not (held_run.root / "ended").exists(), (
+        "the doctor ran to its end, so the signal never reached it")
+
+
+@WINDOWS_SKIP
+@pytest.mark.skipif(shutil.which("bash") is None, reason="needs bash")
+@pytest.mark.parametrize(("name", "ends_by_it"), [
+    pytest.param("SIGTERM", True, id="TERM"),
+    pytest.param("SIGHUP", True, id="HUP"),
+    pytest.param("SIGINT", False, id="INT"),
+])
+def test_a_signal_to_the_installed_doctors_shell_alone_waits_for_it(
+        name, ends_by_it, held_run, tmp_path):
+    """#680: a TERM or HUP sent to the command's shell alone (`kill <pid>`)
+    ended it at once, and the EXIT trap removed the clone while the doctor,
+    which nobody had signalled, still ran from it.
+
+    THE SHELL WAITS FOR THE DOCTOR NOW. While the doctor runs, the shell
+    and the clone are both still there; the doctor then runs to its end with
+    its own file in place, its report is out, and the clone is kept and
+    named on the last line, as any finished run's is. The shell then ends by
+    the TERM or HUP it was sent. An INT the doctor did not end by is the
+    doctor's business, as bash's own rule for SIGINT has it, so the shell
+    exits with the doctor's status, which here is 0.
+    """
+    number = getattr(signal, name)
+    proc, _doctor = held_run.start()
+    [clone] = (tmp_path / "tmp").iterdir()
+    os.kill(proc.pid, number)
+    time.sleep(0.5)
+    assert proc.poll() is None, "the shell ended while its doctor ran"
+    assert (clone / "shape" / DOCTOR).is_file(), (
+        "the clone was removed while its doctor ran from it")
+    let_go(held_run.root)
+    out, err = proc.communicate(timeout=120)
+    assert proc.returncode == (-number if ends_by_it else 0), out + err
+    assert (held_run.root / "ended").read_text(encoding="utf-8") == \
+        "present", "the doctor's own file was gone at its end"
+    assert "the held doctor ran to its end" in out, out + err
+    assert kept_by(out).resolve() == clone.resolve(), out
+    assert (clone / "shape" / DOCTOR).is_file(), "the named clone is gone"
 
 
 @WINDOWS_SKIP
@@ -3761,8 +4002,9 @@ SLOT_SAYS = {
     "working-clone": "each with a working clone beside the holder",
 }
 
-#: What the row says instead of a `not-a-clone` slot `make siblings` ends in
-#: a traceback on today (#735): what is there, and nothing of what `make
+#: What the row says instead of a `not-a-clone` slot that a holder's pinned
+#: `siblings.py` from before #735 ends in a traceback on, or from before
+#: #784 ends `CLONE FAILED` on: what is there, and nothing of what `make
 #: siblings` does with it.
 UNREADABLE_SAYS = {
     "file": "is a file, not a folder, so it is not counted as its working "
@@ -3771,6 +4013,8 @@ UNREADABLE_SAYS = {
                   "as its working clone",
     "unenterable": "is a folder that cannot be listed, so it is not counted "
                    "as its working clone",
+    "dangling": "is a link to nothing, so it is not counted as its working "
+                "clone",
 }
 
 #: The state the holder's own `scripts/siblings.py --dry-run` prints in its
@@ -3817,9 +4061,22 @@ SLOTS = [
     pytest.param("clone", "working-clone", id="the-working-clone"),
 ]
 
-#: A file at `../IRRS`, which `make siblings` ends in a traceback on today
-#: (#735).
-A_FILE = ("file", "not-a-clone")
+#: A symbolic link needs a privilege on Windows.
+LINKS_HOLD = pytest.mark.skipif(
+    os.name == "nt", reason="a symbolic link needs a privilege on Windows")
+
+#: A file at `../IRRS`, the two `LOCKED` folders and a link to nothing, each
+#: `not-a-clone`: before #735 `make siblings` ended in a traceback on the
+#: first three, and before #784 in `CLONE FAILED` on the link.
+UNREADABLE_SLOTS = [
+    pytest.param("file", "not-a-clone", id="a-file"),
+    pytest.param("unlistable", "not-a-clone", id="a-folder-it-cannot-list",
+                 marks=LOCKED_HOLDS),
+    pytest.param("unenterable", "not-a-clone",
+                 id="a-folder-it-cannot-enter", marks=LOCKED_HOLDS),
+    pytest.param("dangling", "not-a-clone", id="a-link-to-nothing",
+                 marks=LINKS_HOLD),
+]
 
 
 def holder_with_slot(holder: dict, tmp_path: Path, slot: str) -> Path:
@@ -3843,6 +4100,8 @@ def holder_with_slot(holder: dict, tmp_path: Path, slot: str) -> Path:
         (beside / "notes.txt").write_text("somebody's\n", encoding="utf-8")
     elif slot == "file":
         beside.write_text("somebody's\n", encoding="utf-8")
+    elif slot == "dangling":
+        beside.symlink_to(folder / "nowhere", target_is_directory=True)
     elif slot == "another-repository":
         git("init", "-q", "-b", "main", ".", cwd=beside)
     elif slot not in ("holder", "nothing", "empty"):
@@ -3868,14 +4127,7 @@ def locked(request, path: Path, slot: str) -> None:
         request.addfinalizer(lambda: path.chmod(0o755))
 
 
-@pytest.mark.parametrize("slot, state", [
-    *SLOTS,
-    pytest.param(*A_FILE, id="a-file"),
-    pytest.param("unlistable", "not-a-clone", id="a-folder-it-cannot-list",
-                 marks=LOCKED_HOLDS),
-    pytest.param("unenterable", "not-a-clone",
-                 id="a-folder-it-cannot-enter", marks=LOCKED_HOLDS),
-])
+@pytest.mark.parametrize("slot, state", [*SLOTS, *UNREADABLE_SLOTS])
 def test_the_row_says_what_make_siblings_does_with_each_slot(
         standard, holder, tmp_path, request, slot, state):
     """#669: ONE ROW PER SLOT STATE. `--json` carries the state as
@@ -3886,10 +4138,10 @@ def test_the_row_says_what_make_siblings_does_with_each_slot(
     workstation's layout, and `without_working_clone` keeps its meaning.
 
     A FILE, OR A FOLDER THAT CANNOT BE LISTED, is `not-a-clone`, and the
-    row says nothing of `make siblings` there, which ends in a traceback on
-    it today (#735). The folder was the review's MUST on #705: `iterdir`'s
-    `PermissionError` made the row a FINDING and the holder DRIFTED, exit
-    1, where main says COMPLIANT, exit 0."""
+    row says nothing of `make siblings` there, which a holder's pinned copy
+    from before #735 ends in a traceback on. The folder was the review's
+    MUST on #705: `iterdir`'s `PermissionError` made the row a FINDING and
+    the holder DRIFTED, exit 1, where main says COMPLIANT, exit 0."""
     root = holder_with_slot(holder, tmp_path, slot)
     locked(request, root.parent / FAMILY_MEMBER, slot)
     result = doctor(standard, root, "--json")
@@ -3908,24 +4160,20 @@ def test_the_row_says_what_make_siblings_does_with_each_slot(
     assert json.loads(result.stdout)["verdict"] == "COMPLIANT", result.stdout
 
 
-@pytest.mark.parametrize("slot, state", [
-    *SLOTS,
-    pytest.param(*A_FILE, id="a-file", marks=pytest.mark.xfail(
-        strict=True, raises=AssertionError,
-        reason="#735: `siblings.py:558` raises NotADirectoryError on a "
-               "file, so `make siblings` ends in a traceback")),
-])
+@pytest.mark.parametrize("slot, state", [*SLOTS, *UNREADABLE_SLOTS])
 def test_make_siblings_dry_run_gives_the_rows_word_for_each_slot(
-        standard, holder, tmp_path, slot, state):
+        standard, holder, tmp_path, request, slot, state):
     """#669: THE AGREEMENT. The holder's own `scripts/siblings.py
     --dry-run`, run from its family folder, says of the member what the
     row's `sibling` state says it does: the same word where it refuses the
     directory, `would clone` where the row says it places it, and `present,
     would fetch` where it fetches it as the member. The row restates
     `place`'s order, and this is what keeps the two tools answering
-    together about one directory (#146). A FILE is held to it too, as a
-    strict xfail until #735 makes `make siblings` answer NOT A CLONE."""
+    together about one directory (#146). A FILE, and a folder that cannot
+    be listed or entered, are held to it too: `make siblings` ended in a
+    traceback on each, and since #735 calls each NOT A CLONE."""
     root = holder_with_slot(holder, tmp_path, slot)
+    locked(request, root.parent / FAMILY_MEMBER, slot)
     entry = rows_of(doctor(standard, root, "--json"))["members"]["detail"][
         "members"][0]
     assert entry["sibling"] == state, entry
@@ -9341,9 +9589,10 @@ def test_the_scaffold_lines_quoting_is_the_asked_for_platforms_too():
     assert module.scaffold_command(WINDOWS_SHAPE_SPACED, "Atlas", "posix") == (
         r"'C:\Program Files\openRepoShape\setup.sh' "
         "--org <your-org> --project Atlas")
-    # NO PLATFORM IS STILL THE HOST, unchanged: `quote_arg(value, None)`
-    # resolves `os.name` exactly as `quote_arg(value, os.name)` does, so the
-    # line every real run prints is the one it printed before.
+    # NO PLATFORM IS STILL THE HOST: `quote_arg(value, None)` asks
+    # `host_shell_dialect` (#711), which answers `os.name` wherever `MSYSTEM`
+    # is unset, so off Git Bash the line every real run prints is the one it
+    # printed before.
     assert module.scaffold_command(WINDOWS_SHAPE, "Atlas") == (
         windows if os.name == "nt" else posix)
 
@@ -9853,22 +10102,26 @@ def test_the_interpreter_named_is_the_asked_for_platforms(platform, expected):
 CURLY_APOSTROPHE = "O\u2019Neill"
 
 
-def test_a_curly_apostrophe_is_normalized_before_it_is_quoted():
-    """`quote_arg` must ascii-normalize FIRST, or `Row.__init__` breaks it.
+@pytest.mark.parametrize(("platform", "spelled"), [
+    ("posix", r"$'O\342\200\231Neill'"),
+    ("nt", "('O' + [char]0x2019 + 'Neill')"),
+])
+def test_a_curly_apostrophe_is_escaped_where_the_row_cannot_reach_it(
+        platform, spelled):
+    """`quote_arg` must leave `Row.__init__` nothing to change in a value.
 
     `Row.__init__` runs `ascii_text` again, after quoting, over the whole
     assembled command -- so a curly apostrophe that reached this function
     unconverted came back out of THAT pass as a bare, undoubled one, on the
     far side of the quoting it sat inside. `'O'Neill'` is an unterminated
     quotation to `sh`, and PowerShell's own verbatim string is exactly as
-    broken by an apostrophe that never got doubled. Normalizing here first
-    means the value quoted is already plain ASCII, so that later pass has
-    nothing left to do.
+    broken by an apostrophe that never got doubled (Copilot, PR #102). It was
+    flattened to `'` here first, which named another path; it is ESCAPED
+    now, in ASCII the later pass leaves alone, and stands for this one
+    (#785, `tests/test_doctor_non_ascii_paths.py` runs it).
     """
     module = doctor_module(REPO)
-    posix = module.quote_arg(CURLY_APOSTROPHE, "posix")
-    assert shlex.split(posix) == ["O'Neill"], posix
-    assert module.quote_arg(CURLY_APOSTROPHE, "nt") == "'O''Neill'"
+    assert module.quote_arg(CURLY_APOSTROPHE, platform) == spelled
 
 
 def test_a_trailing_newline_is_quoted_not_waved_through():
@@ -10346,7 +10599,7 @@ def doctor_with_no_pythonpath(standard: Path, root: Path):
 @pytest.mark.parametrize("case", sorted(TEMPLATE_FALLBACK))
 def test_an_own_validator_without_repo_shape_is_a_finding_the_paste_agrees(
         standard, project, holder, tmp_path, case):
-    """(a): the row quotes the ImportError, and the own-copy NEXT, pasted from
+    """(a): the row quotes the ImportError, and the own-copy line, pasted from
     `/` with no `PYTHONPATH`, dies on that same import with the row's exit.
 
     THE RUN AND THE LINE ARE ONE PROCESS FOR THIS COPY: neither has a
@@ -10355,6 +10608,12 @@ def test_an_own_validator_without_repo_shape_is_a_finding_the_paste_agrees(
     produced (`manifest-topic`, ...) is in NEITHER, because neither run got as
     far as reading it -- which is what separates this from a validator that
     ran and was red.
+
+    THE LINE IS THE ROW'S WHY'S SINCE #697: the NEXT of this crash is `git
+    checkout HEAD` on the lost file, so that a reader whose own environment
+    reaches another `repo_shape` is not sent to a line that passes for them
+    (`tests/test_doctor_validator_rows.py`), and the gate is what the why
+    tells them to run after it. This test runs that line as the NEXT once was.
     """
     spec = TEMPLATE_FALLBACK[case]
     root = root_without_its_repo_shape(case, project, holder, tmp_path,
@@ -10367,10 +10626,14 @@ def test_an_own_validator_without_repo_shape_is_a_finding_the_paste_agrees(
         row["reason"], row
     assert spec["finding"] not in row["reason"], row
     # The own copy's line is what it has always been: no environment.
-    assert "PYTHONPATH" not in row["next"], row["next"]
-    assert_next_runs_the_roots_own(row, root, Path(spec["own"]).name)
+    line = doctor_module(standard).validator_command(
+        standard.resolve(), root / spec["own"], True, ["--root", root])
+    assert "PYTHONPATH" not in line, line
+    assert line in row["why"], row["why"]
+    assert Path(row["detail"]["validator"]).resolve() == \
+        (root / spec["own"]).resolve(), row["detail"]
 
-    pasted = pasted_from_elsewhere(row["next"], tmp_path)
+    pasted = pasted_from_elsewhere(line, tmp_path)
     whole = pasted.stdout + pasted.stderr
     assert pasted.returncode == row["detail"]["exit"], whole
     assert "ModuleNotFoundError: No module named 'repo_shape'" in whole, whole
@@ -10457,23 +10720,26 @@ def test_an_exported_pythonpath_does_not_stand_in_for_a_lost_repo_shape(
 #: `sitecustomize.py` that ends any VALIDATOR with a distinctive exit, and a
 #: `repo_shape.py` that raises when it is imported.
 #:
-#: THE `sitecustomize.py` IS WHAT DOES THE WORK, and it catches every way the
-#: directory can reach a validator. `PYTHONPATH` entries come ahead of the
-#: standard library and of site-packages, so the first `sitecustomize` on a
-#: child's path is this one wherever the directory sits in the value -- in
-#: front of the standard's `scripts/`, behind it, or alone -- and it ends the
-#: child at start-up, before a single import. Python imports ONE
-#: `sitecustomize`, the first it finds, and the doctor is not that child: its
-#: own script is not `validate-*`, so it runs on.
+#: THE `sitecustomize.py` DOES NOTHING SINCE `-S` (#342). `run_validator`
+#: starts every child as `[sys.executable, "-S", script, ...]`, so no child
+#: runs `site` and none imports a `sitecustomize`, this one or any other.
+#: Before `-S` it was what did the work: `PYTHONPATH` entries come ahead of
+#: the standard library and of site-packages, so the first `sitecustomize` on
+#: a child's path was this one wherever the directory sat in the value, and
+#: it ended the child at start-up, before a single import. It would fire
+#: again only for a child started without `-S`.
 #:
-#: A `repo_shape.py` ALONE CANNOT TELL PREPENDING FROM REPLACING: the
-#: standard's `scripts/` comes first in a prepended value, so the standard's
-#: `repo_shape` wins the import and the decoy behind it is never read. The
-#: raising `repo_shape.py` decides an outcome only where `sitecustomize` does
-#: not load from the path (site customisation off, or an earlier
-#: `sitecustomize` ahead of this one), and there it is what a child that put
-#: the operator's directory FIRST would import. It is a fallback, and no test
-#: here depends on it.
+#: WHAT HOLDS REPLACE-NOT-PREPEND AND THE S1 CASE NOW IS
+#: `test_run_validator_gives_the_child_exactly_the_pythonpath_it_is_given`,
+#: which asks the child what `PYTHONPATH` it got. A `run_validator` that puts
+#: the standard's `scripts/` in front of the operator's value, or that keeps
+#: the variable for the callers that pass none (#306 review S1), passes THIS
+#: test, in all three cases, and is killed by that one. This test holds the
+#: template row's real verdict under an exported `PYTHONPATH`, end to end.
+#: The raising `repo_shape.py` is the part of it that still bites: a child
+#: that put the operator's directory AHEAD of the standard's `scripts/` would
+#: import it, because the template's own directory has no `repo_shape.py`
+#: beside it, and that child fails this test.
 DECOY_REPO_SHAPE = (
     "raise ImportError(\"the operator's repo_shape.py was imported by a "
     "validator\")\n")
@@ -10518,15 +10784,19 @@ def test_an_exported_pythonpath_does_not_reach_a_template_validator(
     for leaked in ("DECOY", "operator's repo_shape", "ImportError"):
         assert leaked not in row["reason"], row
 
-    # AND NO OTHER ROW OF THE RUN REACHED THE DECOY. The row above is the one
+    # AND NO OTHER ROW OF THE RUN QUOTES THE DECOY. The row above is the one
     # that passes a directory; the `naming` rows and the machine's preflight
-    # pass none. On main every row whose validator the decoy reached said so,
-    # and this catches any row that reaches it, which is how it catches a
-    # `run_validator` that kept the variable for the callers that pass none
-    # (#306 review S1): popped only for a script inside the root, or with the
-    # `else` dropped, the `naming` row reads `FINDING ... (exit 86): DECOY`
-    # while `manifest` reads the real finding. So no row may quote the decoy
-    # or say it exited 86, whichever caller handed it the variable.
+    # pass none. Before `-S` this is how the test caught a `run_validator`
+    # that kept the variable for the callers that pass none (#306 review S1):
+    # popped only for a script inside the root, or with the `else` dropped,
+    # the `naming` row read `FINDING ... (exit 86): DECOY` while `manifest`
+    # read the real finding. Since `-S` no child imports the decoy's
+    # `sitecustomize`, so that case no longer shows here; the probe in
+    # `test_run_validator_gives_the_child_exactly_the_pythonpath_it_is_given`
+    # holds it, beside the root as well as inside it. Under `-S` this loop
+    # cannot fire. It is kept as a tripwire for a future removal of `-S`;
+    # `test_run_validator_starts_every_child_with_no_site` (in
+    # `tests/test_doctor_validator_site.py`) is the test that holds `-S`.
     reached = [name for name, other in rows.items()
                if "DECOY" in other["reason"]
                or "(exit 86)" in other["reason"]
@@ -10563,8 +10833,8 @@ def test_run_validator_gives_the_child_exactly_the_pythonpath_it_is_given(
     caller sees it, and it holds the callers which pass no `pythonpath` by
     where its probe lies: beside the root, as the standard's own naming and
     preflight scripts do, as well as inside it. Those scripts need nothing
-    from the variable, so only a probe like this one, or (b)'s decoy, can see
-    that they have none.
+    from the variable, so only a probe like this one can see that they have
+    none (the decoy of (b) could before `-S`, #342).
     """
     module = doctor_module(standard)
     if exported is None:

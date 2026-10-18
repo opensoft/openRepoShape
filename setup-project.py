@@ -58,7 +58,9 @@ A value the script only ECHOES BACK (`--elected-by`, `git config
 user.name`) and a CHILD PROCESS'S OWN OUTPUT are not this guarantee's to
 keep: they are whatever bytes they already are, and `main()` writes them
 through a UTF-8 `errors="replace"` stream rather than mangling or refusing
-on a byte this file never chose.
+on a byte this file never chose. A Python child that writes to that stream
+itself is told the same encoding (`child_environment`, #836), so the stream
+is in one encoding throughout.
 
 `tests/test_repo_hygiene.py::test_setup_project_py_is_pure_ascii` holds the
 source.
@@ -66,6 +68,7 @@ source.
 
 from __future__ import annotations
 
+import codecs
 import os
 import re
 import shutil
@@ -268,6 +271,79 @@ def rmtree(path) -> None:
     shutil.rmtree(path, onerror=clear_readonly)
 
 
+#: What a Python child whose output `run` CAPTURES is told to write in, which
+#: is what `run` reads the pipe as: UTF-8, with `backslashreplace` for the one
+#: thing UTF-8 cannot hold, a lone surrogate (a byte of a file name that was
+#: not UTF-8). `scripts/shape_materialize.py`'s `CAPTURED_CHILD_IOENCODING`.
+CAPTURED_CHILD_IOENCODING = "utf-8:backslashreplace"
+
+#: The built-in handlers that never raise on a character an encoding cannot
+#: hold, so a child is told the one its stream has. `strict` and
+#: `surrogateescape` raise on such a character, and are not among them.
+#: `scripts/shape_materialize.py`'s `_HANDLERS_THAT_NEVER_RAISE`.
+HANDLERS_THAT_NEVER_RAISE = frozenset((
+    "backslashreplace", "ignore", "namereplace", "replace",
+    "xmlcharrefreplace"))
+
+
+def child_environment(capture: bool = False) -> dict:
+    """The environment `run` starts EVERY child in: this process's own, with
+    `PYTHONIOENCODING` naming the encoding the child's words are read in
+    (#836).
+
+    WHAT WAS WRONG. `main` reconfigures this process's stdout and stderr to
+    UTF-8, and a child does not inherit a `reconfigure`: a Python child takes
+    its streams' encoding from its OWN environment (`PYTHONIOENCODING`, then
+    the locale). So on a stdout whose code page is not UTF-8 - Windows' ANSI
+    code page on any stdout that is not the console, emulated as
+    `PYTHONIOENCODING=cp1252:strict` or `cp1252:surrogateescape` - the
+    naming validator's em dash, the scaffold's ellipsis and the validators
+    `scripts/bootstrap.py` runs reached the same stream in cp1252, between
+    this file's UTF-8 lines: one stream in two encodings. The plan run again
+    to read why it was refused, the one child `run` captures, wrote cp1252
+    into a pipe `run` decodes as UTF-8.
+
+    THE RULE IS #254's, which `scripts/shape_materialize.py` writes as
+    `inherited_child_environment` and `captured_child_environment` and
+    `bump-leg.py`, `update-shape.py` and `family.py` pass as `env=`:
+    - a child that INHERITS this process's stdout is told that stream's own
+      encoding (UTF-8, once `main` has reconfigured it), with the stream's
+      own handler where that one never raises (`HANDLERS_THAT_NEVER_RAISE`)
+      and `backslashreplace` where it does: built-in names only, since a
+      child cannot find a handler only its parent registered;
+    - a child whose output is CAPTURED is told `CAPTURED_CHILD_IOENCODING`,
+      what `run` decodes the pipe as, whatever the operator had set.
+    A stdout with no usable encoding (`pythonw` has no stdout) leaves the
+    environment as it is: there is nothing for the child to agree with.
+
+    A COPY, NOT AN IMPORT. This file runs before any checkout of the standard
+    exists - self-bootstrap mode starts here, as one downloaded file - and
+    `run` is what clones one. `tests/test_validator_child_encoding.py` holds
+    this copy to `shape_materialize`'s answer for every stream it asks about.
+
+    Every child is given it, git and gh included. `PYTHONIOENCODING` is read
+    by Python alone, so a child that is not Python is unchanged by it, and a
+    Python program such a child runs in turn (a git hook, a credential
+    helper) writes into the same stream and is told the same. It names the
+    child's stdin too: the one Python child that reads stdin, the checkout's
+    own copy of this file, asks for answers in ASCII only (a CamelCase
+    project name, `yes`), and on Windows a console ignores it.
+    """
+    env = dict(os.environ)
+    if capture:
+        env["PYTHONIOENCODING"] = CAPTURED_CHILD_IOENCODING
+        return env
+    try:
+        encoding = codecs.lookup(sys.stdout.encoding).name
+    except (AttributeError, LookupError, TypeError):
+        return env
+    errors = getattr(sys.stdout, "errors", None)
+    if errors not in HANDLERS_THAT_NEVER_RAISE:
+        errors = "backslashreplace"
+    env["PYTHONIOENCODING"] = "%s:%s" % (encoding, errors)
+    return env
+
+
 def run(argv, cwd=None, capture: bool = False,
         stdin=None) -> subprocess.CompletedProcess:
     """One spelling of "run a program", with the output decoding pinned.
@@ -278,6 +354,14 @@ def run(argv, cwd=None, capture: bool = False,
     `scaffold-project.py` and the validators print straight to the terminal
     the way they do under setup.sh. So is stdin, unless `stdin` names a file
     descriptor: `run_at_the_terminal` is the one caller that does.
+
+    EVERY CHILD IS TOLD WHAT ITS WORDS ARE READ IN (#836): `env=` is
+    `child_environment(capture)`, here and not at each call, so it reaches
+    all six Python children - the checkout's own copy of this file
+    (`self_bootstrap`), the naming validator (`check_names`), the plan
+    (`plan_and_confirm`) and the plan run again, captured
+    (`why_the_plan_did_not_go_through`), the scaffold (`scaffold`) and
+    `scripts/bootstrap.py` (`clone_and_bootstrap`) - and the next one too.
 
     EVERY ARGV THAT CARRIES A VALUE FROM THE COMMAND LINE WAS CHECKED AT PARSE
     TIME. `argv` is a list and `shell=False`, so there is no shell to inject
@@ -290,7 +374,7 @@ def run(argv, cwd=None, capture: bool = False,
         return subprocess.run(argv, cwd=str(cwd) if cwd is not None else None,
                               capture_output=capture, text=True,
                               encoding="utf-8", errors="replace", check=False,
-                              stdin=stdin)
+                              stdin=stdin, env=child_environment(capture))
     except OSError:
         # A PROGRAM THAT IS NOT THERE IS A FAILED RUN, not a traceback.
         # `is_shape_checkout()` asks git a question before the preflight has
@@ -1786,6 +1870,35 @@ def family_landing(parent, family: str):
     return parent / family
 
 
+def family_manifest_here(shape_root: Path, parent: Path) -> dict | None:
+    """`<parent>/<basename>/family.yaml` as a mapping of `kind:
+    family-manifest`, or None where there is no such manifest.
+
+    THE ONE READ BOTH QUESTIONS BELOW ASK OF THE SAME FILE (#696):
+    `family_folder_here`, which says which family the folder IS, and
+    `display_name_folder_here`, which says only whether the manifest's
+    `name:` is the folder's. Split out of the first so that a refusal and a
+    plan line cannot read the file two ways.
+
+    ANY read failure means None, as the advice above it needs: a manifest
+    that is half-written, unreadable, or a YAML shape nobody expected is not
+    a reason to refuse a scaffold that never needed it.
+    """
+    name = parent.name
+    if not name:
+        return None
+    manifest = parent / name / FAMILY_MANIFEST
+    if not manifest.is_file():
+        return None
+    try:
+        data = shape_scripts(shape_root).load_yaml(manifest)
+    except Exception:  # noqa: BLE001  (advice rather than a gate; see above)
+        return None
+    if not isinstance(data, dict) or data.get("kind") != FAMILY_KIND:
+        return None
+    return data
+
+
 def family_folder_here(shape_root: Path, parent: Path) -> str:
     """The family whose FOLDER `parent` is, or "" for a plain directory.
 
@@ -1800,23 +1913,56 @@ def family_folder_here(shape_root: Path, parent: Path) -> str:
     `kind: family-manifest` inside it that NAMES that same family. All three
     have to agree, or this says nothing at all and the run is what it was.
 
-    ANY read failure means "not a family folder". This is advice printed in a
-    plan, so a manifest that is half-written, unreadable, or a YAML shape
-    nobody expected must not refuse a scaffold that never needed it.
+    THE FOLDER IS NAMED AFTER THE HOLDER'S REPOSITORY, NOT AFTER `name:`
+    (#696, #629's class). `scripts/family.py init --family Quill --name
+    QuillWorks` makes `Quill/Quill/family.yaml` holding `name: QuillWorks`
+    and `repository: <org>/Quill`: `--family` is the repository's name and
+    lays the folder out, and `name:` is only a display name. This read
+    `name:`, so it said nothing of that very folder, and AGENTS.md's
+    "detected with no flag" was false for every family made with `--name`,
+    while `QuillWorks/QuillWorks` - the layout the holder's README used to
+    tell a person to make, and the one `siblings.py` now refuses
+    (`family_folder_name`) - was detected. So the answer is the basename of
+    `repository:`, which is `family_folder_name`'s answer for the same
+    manifest, and `name:` only where there is no `repository:` to ask. A
+    manifest whose repository is not this folder's name is another family's,
+    whatever its `name:` says. `--family` typed from inside such a folder is
+    still refused as a family nested in a family (`display_name_folder_here`).
+
+    ANY read failure means "not a family folder" (`family_manifest_here`).
+    This is advice printed in a plan, so a manifest that is half-written,
+    unreadable, or a YAML shape nobody expected must not refuse a scaffold
+    that never needed it.
     """
-    name = parent.name
-    if not name:
+    data = family_manifest_here(shape_root, parent)
+    if data is None:
         return ""
-    manifest = parent / name / FAMILY_MANIFEST
-    if not manifest.is_file():
+    repository = str(data.get("repository") or "")
+    named = (shape_scripts(shape_root).repo_basename(repository) if repository
+             else str(data.get("name") or ""))
+    return parent.name if named == parent.name else ""
+
+
+def display_name_folder_here(shape_root: Path, parent: Path) -> str:
+    """The folder's name where `<parent>/<basename>/family.yaml` is a family
+    manifest whose `name:` is that name, or "" - THE OLD DISPLAY-NAME LAYOUT
+    (#696), which `family_folder_here` no longer detects.
+
+    ASKED ONLY BY THE REFUSAL, NEVER BY THE PLAN. `QuillWorks/QuillWorks`
+    holding `repository: <org>/Quill` is not a family folder any more: the
+    folder is named after the holder's repository, and `siblings.py` refuses
+    this one. But a person standing in one who types `--family Quill` (the
+    holder's own name, which is what `--help` asks for) or `--family Other`
+    would land `QuillWorks/Quill/<Project>`, a family filed inside a family,
+    which is what `resolve_family` refuses and what it refused here before
+    #696 stopped detecting the layout. The refusal is kept and the detection
+    is not: no plan line and no `family.py add` are said for a folder `make
+    siblings` will not clone into, and the nested-family words are.
+    """
+    data = family_manifest_here(shape_root, parent)
+    if data is None:
         return ""
-    try:
-        data = shape_scripts(shape_root).load_yaml(manifest)
-    except Exception:  # noqa: BLE001  (advice rather than a gate; see above)
-        return ""
-    if not isinstance(data, dict) or data.get("kind") != FAMILY_KIND:
-        return ""
-    return name if str(data.get("name") or "") == name else ""
+    return parent.name if str(data.get("name") or "") == parent.name else ""
 
 
 class Landing:
@@ -1875,14 +2021,21 @@ def resolve_family(opts: Options, shape_root: Path) -> Landing:
     # `Northwind/InkRouter/IRTS`: a member of one family filed inside
     # another, which is a layout no `family.yaml` can describe. Both names,
     # and both ways out - this tool moves nothing and asks for no --force.
-    if opts.family and standing and standing != opts.family:
+    #
+    # THE OLD DISPLAY-NAME LAYOUT IS REFUSED AS WELL AS EVER, THOUGH IT IS NO
+    # LONGER DETECTED (#696): `standing` is "" for `QuillWorks/QuillWorks`
+    # holding `repository: <org>/Quill`, so no plan line is said for it, but
+    # a `--family` typed from inside it still names a second family inside
+    # the first, and this refused that before the detection moved.
+    nested = standing or display_name_folder_here(shape_root, parent)
+    if opts.family and nested and nested != opts.family:
         die("--family %s, but %s is the %s family folder (%s says so, with "
             "kind: %s). A family is never nested inside a family. Either "
             "`cd` out of %s first and re-run, or drop --family and let %s "
             "land beside %s's holder."
-            % (opts.family, parent, standing,
-               parent / standing / FAMILY_MANIFEST, FAMILY_KIND,
-               standing, opts.project, standing))
+            % (opts.family, parent, nested,
+               parent / nested / FAMILY_MANIFEST, FAMILY_KIND,
+               nested, opts.project, nested))
 
     landing = family_landing(parent, family)
     if not family:
@@ -2728,32 +2881,55 @@ def clone_and_bootstrap(opts: Options, org: str, landing: Landing) -> dict:
 #: `SHELL_BARE_POSIX`. A backslash is not in it, so a Windows path is quoted.
 SHELL_BARE_POSIX = re.compile(r"[A-Za-z0-9_./:@%+=,-]+")
 
-#: A word this host's shell reads as itself, needing no quotes:
-#: `scripts/repo_shape.py`'s `SHELL_BARE_NT` on Windows, else its
-#: `SHELL_BARE_POSIX`. This file runs before any checkout of the standard
+#: A word PowerShell reads as itself: `scripts/repo_shape.py`'s
+#: `SHELL_BARE_NT`. This file runs before any checkout of the standard
 #: exists, so it carries its own copy of the rule, and
-#: `tests/test_family_printed_quoting.py` holds the two to one answer.
-SHELL_BARE = re.compile(r"[A-Za-z0-9_./:%+=\\-]+" if os.name == "nt"
-                        else SHELL_BARE_POSIX.pattern)
+#: `tests/test_git_bash_dialect.py` holds the two to one answer on every
+#: host, as `tests/test_family_printed_quoting.py` does on this one.
+SHELL_BARE_NT = re.compile(r"[A-Za-z0-9_./:%+=\\-]+")
+
+
+def host_shell_dialect(name=None, environ=None) -> str:
+    """`scripts/repo_shape.py`'s `host_shell_dialect`, as a copy, because
+    this file runs before any checkout of the standard exists (#711):
+    `"nt"`, PowerShell's dialect, on a Windows host whose environment has
+    no `MSYSTEM` or an empty one, and `"posix"`, `sh`'s, everywhere else,
+    Git Bash included. `name` and `environ` are `os.name` and `os.environ`
+    when None. Its docstring there says why `MSYSTEM`, and what it does not
+    cover: a PowerShell started from inside Git Bash inherits `MSYSTEM` and
+    is answered `sh`'s. `tests/test_git_bash_dialect.py` holds the two
+    copies to one answer."""
+    name = os.name if name is None else name
+    environ = os.environ if environ is None else environ
+    return "nt" if name == "nt" and not environ.get("MSYSTEM") else "posix"
 
 
 def shell_word(value, posix: bool = False) -> str:
-    """`value` as ONE word of a command pasted into this host's shell: bare
-    where every character is itself to it, else in single quotes, doubled
-    inside for PowerShell, closed-escaped-reopened for `sh` (#486). A
-    leading `=` is quoted too, which zsh would expand.
+    """`value` as ONE word of a command pasted into this host's shell, the
+    one `host_shell_dialect` answers (#711): bare where every character is
+    itself to it, else in single quotes, doubled inside for PowerShell,
+    closed-escaped-reopened for `sh` (#486). A leading `=` is quoted too,
+    which zsh would expand.
+
+    ASKED AT EACH CALL, NOT AT IMPORT. The alphabet a word may stay bare in
+    and the escape it is quoted with are one answer, taken from the
+    environment the line is printed in, where `MSYSTEM` says Git Bash. The
+    alphabet used to be fixed at import (`SHELL_BARE`, from `os.name`) and
+    the escape asked `os.name` at each call, two reads of one question.
 
     `posix` spells it for `sh` on EVERY host, Windows too: Git Bash reads
     the backslash of a bare `C:\\work` as an escape and an apostrophe doubled
     for PowerShell as two quotes, and #532 rules the printed commands
     POSIX-only. The lines #538 adds or changes pass it, as the scaffold's
     NEXT STEPS clone does (`shell_line(..., "posix")`); the family lines
-    (`family_next_command`) are #532's and still take this host's dialect."""
+    (`family_next_command`) are #532's and take the host's dialect, which
+    under Git Bash is `sh`'s (#711, L2-29)."""
     text = str(value)
-    bare = SHELL_BARE_POSIX if posix else SHELL_BARE
+    windows = not posix and host_shell_dialect() == "nt"
+    bare = SHELL_BARE_NT if windows else SHELL_BARE_POSIX
     if not text.startswith("=") and bare.fullmatch(text):
         return text
-    if os.name == "nt" and not posix:
+    if windows:
         return "'" + re.sub("(['\u2018\u2019\u201a\u201b])", r"\1\1",
                             text) + "'"
     return "'" + text.replace("'", "'\\''") + "'"
@@ -2924,9 +3100,12 @@ def _main(argv, invocation_dir: str) -> int:
 
 def main(argv=None) -> int:
     # PowerShell 5.1 hands a child process the machine's ANSI code page, and
-    # cp1252 cannot encode a character this file does not use - but a CHILD's
-    # output travels through this process's streams too, and the validators
-    # and the scaffold are not ASCII-only. Guarded: `reconfigure` is 3.7+ and
+    # cp1252 cannot encode a character this file does not use - but what it
+    # echoes of a child (a version string, a login) passes through these
+    # streams too. A Python child that writes to the terminal itself does NOT
+    # inherit this `reconfigure`, and the validators and the scaffold are not
+    # ASCII-only, so `run` tells each child the encoding these streams now
+    # have (`child_environment`, #836). Guarded: `reconfigure` is 3.7+ and
     # a stream that has been replaced (a test harness, a pipe wrapper) may not
     # have it at all, and failing to set an encoding is not a reason to refuse
     # to scaffold.

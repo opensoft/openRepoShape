@@ -66,6 +66,13 @@ EXAMPLES_ANSWER = "the specification cites the golden runs"
 RULES_ANSWER = "editor rules the code leg's tooling reads"
 #: A golden run, as two files the policy cannot call (`ambiguous-examples`).
 GOLDEN = ("examples/golden/case.json", "examples/golden/case.expected.json")
+#: A top-level file named as the staying-single record is, and what `kind:`
+#: makes of it (#691): the record the policy asks its own question of, or a
+#: file that is not one, which is asked the general question.
+RECORD_FILE = "single-repository.yaml"
+RECORD_KINDS = [
+    ("kind: single-repository-record\n", "ambiguous-single-repository-record"),
+    ("kind: release-config\n", "ambiguous-top-level-yaml")]
 MOVED_CLAUSE = ("1 submodule(s) moved out of the leg project.yaml's "
                 "`submodules:` records for them, which no longer holds them "
                 "(#525): spec/vendor/rules (recorded in the code leg)")
@@ -211,6 +218,26 @@ def test_an_answer_no_leg_holds_is_silent(standard, project):
     assert result.returncode == 0, result.stdout + result.stderr
     assert (verdict, row["status"], row["reason"]) == (
         COMPLIANT, "ok", before["reason"]), row
+
+
+@pytest.mark.parametrize("body, rule", RECORD_KINDS,
+                         ids=["a-record", "not-a-record"])
+def test_an_answered_single_repository_yaml_names_the_rule_that_asked_it(
+        standard, project, body, rule):
+    """THE RULE IS THE QUESTION'S, AND `kind:` DECIDES WHICH QUESTION (#691).
+    A leg's file of this name answered in the code leg is listed under
+    `answered_paths` with the rule that asked it of that file: the record's
+    where it is the record, and the general one where it declares anything
+    else, as `adopt-project.py plan` asks it."""
+    stage(project / "code", RECORD_FILE, body)
+    record_answers(project, (RECORD_FILE, "code", "kept in the code leg"))
+    result, _, row = placement(standard, project)
+    assert result.returncode == 0, result.stdout + result.stderr
+    assert row["status"] == "ok", row
+    [answered] = row["detail"]["answered_paths"]
+    assert (answered["path"], answered["rule"]) == (
+        f"code/{RECORD_FILE}", rule), answered
+    assert f"code/{RECORD_FILE} (rule {rule})" in row["reason"], row["reason"]
 
 
 # --- L1-08: a submodule moved, and one removed ------------------------------

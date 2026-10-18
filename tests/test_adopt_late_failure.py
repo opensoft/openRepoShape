@@ -94,6 +94,9 @@ EXTRACT = "_extract_leg"
 COPY_TREE = "copy_tree"
 TREE_OF = "_tree_of"
 PLAN_FLAG = "--plan"
+LEG_REMOTE_EXISTS = "leg-remote-exists"
+BARE_FLAG = "--bare"
+EXECUTE = "execute"
 
 #: A source small enough that `plan` asks no question, so `execute` runs on
 #: the plan as written.
@@ -375,7 +378,7 @@ def test_a_split_that_fails_names_its_step_and_both_pushed_legs(
     for role in LEGS:
         assert spelled(arguments["urls"][role]) in notice
     assert BOTH_PUSHED in notice
-    assert "leg-remote-exists" in notice
+    assert LEG_REMOTE_EXISTS in notice
     assert FIX_FIRST in notice
     # Read off the disk: the split's clone is there, and no leg's, because
     # the legs here are stand-ins that were never built in it.
@@ -919,7 +922,7 @@ def test_a_leg_is_pushed_last_so_the_notice_cannot_miscount_it(
     arguments = legs_arguments(tmp_path, source=source_of(adopter, tmp_path))
     arguments["seeded"] = seeded
     for role in LEGS:
-        git("init", "-q", "--bare", "-b", "main", arguments["urls"][role],
+        git("init", "-q", BARE_FLAG, "-b", "main", arguments["urls"][role],
             cwd=tmp_path)
 
     assert adopter._build_the_legs(**arguments) is None
@@ -1002,7 +1005,7 @@ def test_main_flushes_stdout_before_a_failure_no_step_reported(
     events, stderr = recorded_streams(monkeypatch)
     said, unsaid = scenario(adopter, monkeypatch, tmp_path)
 
-    assert adopter.main(["execute", PLAN_FLAG, "adoption-plan.yaml"]) == 2
+    assert adopter.main([EXECUTE, PLAN_FLAG, "adoption-plan.yaml"]) == 2
 
     err = "".join(stderr.written)
     assert flushed_first(events)
@@ -1132,7 +1135,7 @@ def test_a_refused_leg_push_offers_an_adoption_its_one_exit(
     `main` as a ruleset does."""
     monkeypatch.setattr(adopter, COPY_TREE, seed_one_file)
     remote = tmp_path / REMOTES / f"{ASSEMBLY}-{SPEC}.git"
-    git("init", "-q", "--bare", "-b", "main", str(remote), cwd=tmp_path)
+    git("init", "-q", BARE_FLAG, "-b", "main", str(remote), cwd=tmp_path)
     write_refusing_hook(remote / "hooks", MAIN_REF)
 
     with pytest.raises(adopter.CommandFailed):
@@ -1261,13 +1264,13 @@ def test_a_live_leg_keeps_its_own_refusal_over_the_split_branch(
     with pytest.raises(adopter.Refusal) as caught:
         adopter.cmd_execute(execute_args(tmp_path, plan))
 
-    assert caught.value.code == "leg-remote-exists"
+    assert caught.value.code == LEG_REMOTE_EXISTS
 
 
 def test_against_github_the_split_branch_is_asked_of_the_assembly(
         adopter, tmp_path):
     """Against GitHub nothing is on disk to look at, and the leg names are
-    taken or not by `gh repo create`; the branch is asked of the URL the
+    asked with `gh repo view` (#798); the branch is asked of the URL the
     split is pushed to, which a local path stands in for here."""
     source = source_of(adopter, tmp_path)
     urls = {ROOT: str(source.path),
@@ -1299,6 +1302,73 @@ def test_a_branch_the_split_push_fast_forwards_is_not_refused(
     assert adopter._refuse_a_split_branch_left_behind(
         source, {ROOT: str(origin), **leg_urls(tmp_path, leg_names())},
         BRANCH, True) is None
+
+
+def after_the_question(adopter, monkeypatch, then) -> None:
+    """`_leg_remote_answers`, which asks about both leg repositories before
+    `execute` makes either (#798), answers as it does, and then `then()`
+    runs: what another run or a person does between that question and the
+    first make."""
+    asked = adopter._leg_remote_answers
+
+    def answered_then(*args):
+        answers = asked(*args)
+        then()
+        return answers
+
+    monkeypatch.setattr(adopter, "_leg_remote_answers", answered_then)
+
+
+def test_a_code_leg_made_after_the_question_still_gets_the_notice(
+        adopter, monkeypatch, capsys, tmp_path):
+    """#188 N4's notice STAYS for a failure that still comes after the
+    first make (#798). Both leg repositories are asked about first now, so
+    a `<P>-code.git` already there is refused before either is made; one
+    made after that question meets `_create_leg_remote`'s own
+    `leg-remote-exists` once the spec leg's exists, and the notice names
+    that one."""
+    no_filter_repo_probe(adopter, monkeypatch)
+    plan = planned(tmp_path, make_source_repo(tmp_path / SOURCE,
+                                              tree=SMALL_TREE, edits=()))
+    code_leg = tmp_path / REMOTES / f"{ASSEMBLY}-{CODE}.git"
+    after_the_question(adopter, monkeypatch, lambda: git(
+        "init", "-q", BARE_FLAG, str(code_leg), cwd=tmp_path))
+
+    run_args = execute_args(tmp_path, plan)
+    with pytest.raises(adopter.Refusal) as caught:
+        adopter.cmd_execute(run_args)
+
+    assert caught.value.code == LEG_REMOTE_EXISTS
+    err = capsys.readouterr().err
+    assert f"{REFUSED} creating the {CODE} leg repository. " in err
+    spec_leg = (tmp_path / REMOTES).resolve() / f"{ASSEMBLY}-{SPEC}.git"
+    assert the_notice(err).startswith(
+        f"{ROLLED_BACK}: {spelled(spec_leg)} exists, and nothing is pushed "
+        "to it."), err
+
+
+def test_a_local_remote_dir_that_cannot_be_made_after_the_question_is_refused(
+        adopter, monkeypatch, capsys, tmp_path):
+    """The `mkdir` of `--local-remote-dir` that follows the question raised
+    `FileExistsError` or `PermissionError` out of `main`, a traceback, for
+    what the question could not foresee (a file put there since). It is
+    refused by name, exit 2, before any leg exists, so with no notice."""
+    no_filter_repo_probe(adopter, monkeypatch)
+    plan = planned(tmp_path, make_source_repo(tmp_path / SOURCE,
+                                              tree=SMALL_TREE, edits=()))
+    remotes = tmp_path / REMOTES
+    after_the_question(adopter, monkeypatch, lambda: remotes.write_text(
+        "put here since\n", encoding=UTF8))
+
+    assert adopter.main([EXECUTE, PLAN_FLAG, str(plan), "--yes",
+                         "--local-remote-dir", str(remotes), "--work-dir",
+                         str(tmp_path / WORK)]) == 2
+
+    err = capsys.readouterr().err
+    assert (f"{REFUSED} adopt-folder-cannot-be-made: --local-remote-dir "
+            f"{spelled(remotes.resolve())} cannot be made: ") in err, err
+    assert ROLLED_BACK not in err
+    assert remotes.is_file()
 
 
 def test_a_refusal_from_the_substitution_table_leaves_no_leg_repository(
@@ -1541,7 +1611,7 @@ def adopt_with_hook(tmp_path: Path, ref_pattern: str):
 
 def execute(plan: Path, remotes: Path, work: Path, env: dict | None = None,
             merge_stderr: bool = False) -> subprocess.CompletedProcess:
-    return run_script(ADOPT, "execute", PLAN_FLAG, str(plan), "--yes",
+    return run_script(ADOPT, EXECUTE, PLAN_FLAG, str(plan), "--yes",
                       "--local-remote-dir", str(remotes), "--work-dir",
                       str(work), env=env, merge_stderr=merge_stderr)
 

@@ -217,10 +217,51 @@ MANIFEST = "family.yaml"
 MAKE_TARGET_RE = re.compile(r"[A-Za-z][A-Za-z0-9_.-]*")
 MAKE_ASSIGNMENT_RE = re.compile(r"[A-Za-z_][A-Za-z0-9_]*=[^\x00-\x1f\x7f]*")
 
+#: A `.gitmodules` section name git ignores, every key of it
+#: (`check_submodule_name`): `..` as a component, between `/` or `\`. An
+#: empty name is ignored too. The doctor's `members` row skips the same
+#: (#733).
+DOTDOT_COMPONENT = re.compile(r"(?:^|[/\\])\.\.(?:[/\\]|$)")
+
+#: The keys of a section that git refuses the WHOLE `.gitmodules` over when
+#: one is given with no value at all (measured, git 2.43: `bad config line
+#: N`, exit 128, and a bare `branch` crashes it) (#733).
+VALUED_KEYS = ("path", "url", "ignore", "update", "branch")
+
+#: A boolean as git reads one in `.gitmodules` (`git_config_bool`): one of
+#: these words in any case, as they stand, or an integer as `strtoimax`
+#: reads it after the white space it skips, base 0, times 1024 per `k`, `m`
+#: or `g`, from -2**31 to 2**31 - 1, the range git 2.55 checks (#733).
+GIT_BOOL_WORDS = ("", "true", "yes", "on", "false", "no", "off")
+GIT_INT = re.compile(r"([+-]?)(0[xX][0-9a-fA-F]+|0[0-7]*|[1-9][0-9]*)"
+                     r"([kKmMgG]?)")
+
 
 # ---------------------------------------------------------------------------
 # where a member comes from
 # ---------------------------------------------------------------------------
+
+
+def git_dies_on(field: str, value: str) -> bool:
+    """Whether git `die()`s on this value of a `.gitmodules` key, and so
+    reads no submodule at all (#733), as the doctor's `members` row asks
+    it: an `update` other than these four (`!command` included), a
+    `shallow` that is no boolean, a `fetchRecurseSubmodules` that is
+    neither a boolean nor `on-demand`. git lists a key in lower case."""
+    if field == "update":
+        return value not in ("none", "checkout", "rebase", "merge")
+    if (field not in ("shallow", "fetchrecursesubmodules")
+            or value.lower() in GIT_BOOL_WORDS
+            or (field == "fetchrecursesubmodules" and value == "on-demand")):
+        return False
+    number = GIT_INT.fullmatch(value.lstrip(" \t\n\v\f\r"))
+    if number is None:
+        return True
+    sign, digits, unit = number.groups()
+    base = 16 if digits[:2] in ("0x", "0X") else 8 if digits[0] == "0" else 10
+    # " kmg".index: no unit is 1024 ** 0, `k` 1024 ** 1, and so on.
+    scaled = int(digits, base) * 1024 ** " kmg".index(unit.lower() or " ")
+    return not -2 ** 31 <= (-scaled if sign == "-" else scaled) < 2 ** 31
 
 
 def submodule_urls(root: Path) -> dict[str, str]:
@@ -233,28 +274,70 @@ def submodule_urls(root: Path) -> dict[str, str]:
     from the manifest instead would clone a different remote from the one this
     holder is pinned against, silently, in exactly the estates that do not use
     the default spelling.
+
+    AND READ AS GIT READS IT (#690): `git config -z --list`, the reading
+    `validate-family.py`'s `_gitmodules_sections` makes and #668 gives the
+    doctor's `members` row, so the two tools name one url for one member
+    (#146). Each record ends in a NUL and is the key and, where it is given
+    a value, a newline and the value; a key holds no newline and a value
+    may, so a record is split at its FIRST one. The plain listing this read
+    was split by `str.splitlines` and at the first `=`: a url holding NEL,
+    U+2028, U+2029, VT, FF or U+001C to U+001E, which git keeps whole, was
+    cut there (`<remotes>/caf` of `caf<NEL>e/IRRS.git`), and a section named
+    `members/a=b` gave no url, so its member was cloned from the
+    `repository:` guess. A section's NAME is all of its key between
+    `submodule.` and the last dot, so a name holding a space, a dot, a quote
+    or an `=` is read whole; only its `path` and `url` count, and the later
+    value wins, as git reads the file. A byte that is not UTF-8 is still
+    replaced in a VALUE (#432). A NAME keeps git's bytes, as the doctor's
+    `submodule_keys` keeps them (#732): replaced, `caf\\xe9` and `caf\\xe8`
+    were one section, and the path of one was given the url of the other.
+
+    AND OF THAT LISTING, ONLY WHAT GIT READS (#733), by git's own tests, as
+    the doctor's `members` row cuts the same listing (`submodule_keys`): a
+    section whose name is empty or holds a `..` component is ignored whole
+    (`DOTDOT_COMPONENT`); a `path` or `url` beginning with `-` is ignored,
+    that key alone, so an earlier value of it still stands; a key of
+    `VALUED_KEYS` given with no value at all, or a value git dies on
+    (`git_dies_on`), refuses the whole file, `{}`. A key given no value at
+    all is a record with NO newline (`submodule.q.url`), where `url =` is
+    one with a newline and an empty value. And a section with no `path`
+    mounts nothing, so its name is not read as one. git names no url for
+    any of these: `git submodule init` says `No url found` or `bad config
+    line`, or that the value is invalid, and a clone made from the url
+    would be of a member git does not mount.
     """
     path = root / ".gitmodules"
     if not path.is_file():
         return {}
-    proc = subprocess.run(["git", "config", "-f", str(path), "--list"],
-                          capture_output=True, text=True,
-                          encoding="utf-8", errors="replace", check=False)
+    proc = subprocess.run(["git", "config", "-z", "-f", str(path), "--list"],
+                          capture_output=True, check=False)
     if proc.returncode != 0:
         return {}
     paths: dict[str, str] = {}
     urls: dict[str, str] = {}
-    for line in proc.stdout.splitlines():
-        key, _, value = line.partition("=")
-        parts = key.split(".")
-        if len(parts) < 3 or parts[0] != "submodule":
+    for record in proc.stdout.decode("utf-8", "surrogateescape").split("\0"):
+        # `valued` is the newline: a key given no value at all has none.
+        key, valued, value = record.partition("\n")
+        # A NAME keeps git's bytes, as `submodule_keys` keeps them, so two
+        # names are one only where git has one; a value is replaced (#432).
+        value = value.encode("utf-8", "surrogateescape").decode(
+            "utf-8", "replace")
+        section, _, field = key.rpartition(".")
+        if not section.startswith("submodule."):
             continue
-        name, field = ".".join(parts[1:-1]), parts[-1]
+        name = section[len("submodule."):]
+        if not name or DOTDOT_COMPONENT.search(name):
+            continue
+        if (not valued and field in VALUED_KEYS) or git_dies_on(field, value):
+            return {}
+        if value.startswith("-"):
+            continue
         if field == "path":
             paths[name] = value
         elif field == "url":
             urls[name] = value
-    return {paths.get(name, name): url for name, url in urls.items()}
+    return {paths[name]: url for name, url in urls.items() if name in paths}
 
 
 def resolve_relative(url: str, root: Path) -> str:
@@ -407,6 +490,39 @@ def scrub(text: str, token: str) -> str:
     return text.replace(token, "<redacted>") if token else text
 
 
+def said_of_url(text: str, url: str | None) -> str:
+    """git's own text, with the url it quotes written as `spelled` writes it
+    (#690).
+
+    A `.gitmodules` url is read whole now, line feed and all, as git reads
+    it, and git's `die` and `error` quote a url RAW: a line feed stays, so
+    the url's second line stood at column 0 of the finding that relays the
+    text, and `FINDING IRSS: forged` in a url was a FINDING line of its own.
+    Every other control is written as a `?` (a tab stays), so a url holding
+    an ESC as well is quoted in that form; both forms are replaced, and
+    nothing is, where the url prints as it is. `place` relays git's text
+    twice, and both go through here: the clone's, with the member's url,
+    and a failed fetch's, with the origin of a clone made from such a url.
+
+    A URL LONGER THAN GIT'S MESSAGE is quoted cut short, in neither form (a
+    message is formatted into 4096 bytes), so the forged line survived the
+    replacement: where the text holds neither, each of its lines is spelled
+    and every line after the first is indented, which no FINDING line is.
+    """
+    if not url or spelled(url) == url:
+        return text
+    quoted = "".join("?" if (char < " " or char == "\x7f")
+                     and char not in "\t\n" else char for char in url)
+    if url not in text and quoted not in text:
+        # git cuts a message at 4096 bytes, so a long url is quoted in
+        # neither form: each line is spelled, and none after the first
+        # starts a line of this output.
+        return "\n    ".join(spelled(line) for line in text.split("\n"))
+    for form in dict.fromkeys((url, quoted)):
+        text = text.replace(form, spelled(url))
+    return text
+
+
 def git_text(args: list[str], cwd: Path) -> str | None:
     proc = subprocess.run(["git", *args], cwd=str(cwd), capture_output=True,
                           text=True, encoding="utf-8", errors="replace",
@@ -455,6 +571,53 @@ def project_id(path: Path) -> str | None:
     except Refusal:
         return None
     return str(data.get("id")) if isinstance(data, dict) else None
+
+
+def holds_git(path: Path) -> bool:
+    """Does `path` hold a `.git`? False where that cannot be asked (#735):
+    in a folder that cannot be entered (mode `000`), Python 3.12's
+    `Path.exists` raises `PermissionError`, and `make siblings` and `make
+    park` ended in that traceback."""
+    try:
+        return (path / ".git").exists()
+    except OSError:
+        return False
+
+
+def not_a_clone(target: Path) -> tuple[str, str] | None:
+    """`(what stands at target, what kind of thing it is)` for a `target`
+    with no `.git` that this command will not write into, in the words its
+    `NOT A CLONE` finding says it in; None for nothing at all, or an empty
+    folder, which a clone goes into.
+
+    A FILE, OR A FOLDER THAT CANNOT BE LISTED, IS NOT A CLONE TOO (#735).
+    Only a folder with something in it was asked about, and `iterdir`
+    raised on the other two: `NotADirectoryError` for a file, and
+    `PermissionError` for a folder that can be entered and not listed (mode
+    `0311`; `711` is common for another user's directory) or cannot be
+    entered at all. Each ended `make siblings` in a traceback, exit 1, and
+    the members after it were never placed. Nothing can tell that such a
+    folder is empty, and `git clone` refuses one it cannot read. The words
+    are the ones the doctor's `members` row says of the same two slots.
+
+    A LINK TO NOTHING IS NOT A CLONE EITHER (#784). `exists` follows a
+    link, so a dangling one read as nothing at all: the dry run said `would
+    clone`, and the real run ended `CLONE FAILED`, because git cannot clone
+    into a path that is a link to nothing. Somebody made that link, so it
+    is reported and left as it is, in the doctor's words for it too.
+    """
+    try:
+        if not target.exists():
+            if target.is_symlink():
+                return "is a link to nothing", "link"
+            return None
+        if not target.is_dir():
+            return "is a file, not a folder", "file"
+        if any(target.iterdir()):
+            return "exists, is not empty and is not a git clone", "directory"
+        return None
+    except OSError:
+        return "is a folder that cannot be listed", "directory"
 
 
 def verify_sibling(row: dict, target: Path, url: str, repository: str,
@@ -526,9 +689,47 @@ def run_member_bootstrap(path: Path, sibling: Sibling) -> None:
                            "legs may not be placed")
 
 
+def argument_fault(value: str) -> str | None:
+    """The character that stops `value` being an argument to a command, or
+    None (#690): #455's rule, as `make bootstrap` asks it of a branch.
+
+    `place` hands a member's `project:` (as the clone's path) and its url
+    to `git clone` as argv, and `subprocess` cannot give a command a NUL
+    (`ValueError: embedded null byte`) or a lone surrogate the system cannot
+    encode (`UnicodeEncodeError`): `project: "IR\\ud83dRS"` ended `make
+    siblings` in a traceback at the clone, and the members after it were
+    never placed. A surrogate that is ONE BYTE of a name (POSIX spells a
+    name that is not UTF-8 with U+DC80 to U+DCFF) is handed on as that
+    byte, as before; whether one is, is `os.fsencode`'s own answer.
+    """
+    for char in value:
+        if char == "\x00":
+            return "U+0000, a NUL"
+        if "\ud800" <= char <= "\udfff" and _bytes_for(char) != 1:
+            return f"U+{ord(char):04X}, a lone surrogate"
+    return None
+
+
+def _bytes_for(char: str) -> int:
+    """How many bytes `os.fsencode` writes for `char`; 0 when it cannot."""
+    try:
+        return len(os.fsencode(char))
+    except UnicodeEncodeError:
+        return 0
+
+
 def place(root: Path, row: dict, urls: dict[str, str], prefix: list[str],
           token: str, dry_run: bool) -> Sibling:
-    """Clone or fetch ONE member beside the holder. Never moves a HEAD."""
+    """Clone or fetch ONE member beside the holder. Never moves a HEAD.
+
+    A ROW NO COMMAND CAN BE GIVEN IS A FINDING, BEFORE ANYTHING (#690): a
+    `project:` or url holding a NUL or a lone surrogate (`argument_fault`)
+    is never made a path or handed to git, the dry run says so alike, and
+    the members after it are still placed. And a `tracking_branch:` that
+    names only a TAG of the member's remote is cloned DETACHED at it, which
+    `git clone --branch` does with a tag, so the line after the clone says
+    the name is no branch of that remote.
+    """
     project = str(row.get("project") or "?")
     repository = str(row.get("repository") or "")
     target = root.parent / project
@@ -538,6 +739,17 @@ def place(root: Path, row: dict, urls: dict[str, str], prefix: list[str],
     # (#454), so the lines below print `who`, `at` and `src`, and the raw
     # `project`, `target` and `url` stay what the paths and git are given.
     who, at, src = spelled(project), spelled(target), spelled(url)
+
+    for named, value in ((f"its `project:` in {MANIFEST}", project),
+                         (f"its url {src} ({source})", url)):
+        fault = argument_fault(value)
+        if fault is not None:
+            sibling.state = "NOT AN ARGUMENT"
+            sibling.finding = (
+                f"{who}: {named} holds {fault}, which no command can be "
+                "given as an argument, so nothing was cloned or fetched for "
+                "this member: git was never run with it.")
+            return sibling
 
     if target == root:
         # A MEMBER NAMED AFTER ITS OWN FAMILY. `<Family>/<Family>` is the
@@ -554,14 +766,15 @@ def place(root: Path, row: dict, urls: dict[str, str], prefix: list[str],
             f"the two are not the same path, then re-run.")
         return sibling
 
-    present = (target / ".git").exists()
-    if not present and target.exists() and any(target.iterdir()):
+    present = holds_git(target)
+    occupied = None if present else not_a_clone(target)
+    if occupied:
+        found, thing = occupied
         sibling.state = "NOT A CLONE"
         sibling.finding = (
-            f"{who}: {at} exists, is not empty and is not a git "
-            "clone, so this command will not write into it. Move it aside or "
-            "name the directory something else; nothing here overwrites a "
-            "directory somebody made.")
+            f"{who}: {at} {found}, so this command will not write into it. "
+            f"Move it aside or name the {thing} something else; nothing here "
+            f"overwrites a {thing} somebody made.")
         return sibling
 
     if not present:
@@ -585,9 +798,14 @@ def place(root: Path, row: dict, urls: dict[str, str], prefix: list[str],
             sibling.state = "CLONE FAILED"
             sibling.finding = (
                 f"{who}: git clone exited {proc.returncode}:\n"
-                + scrub((proc.stderr + proc.stdout).strip(), token))
+                + said_of_url(scrub((proc.stderr + proc.stdout).strip(),
+                                    token), url))
             return sibling
         sibling.state = "cloned"
+        if branch and branch_of(target) == "detached":
+            print(f"  [{who}] {spelled(branch)} is not a branch of {src} but "
+                  "a tag, which git clone checks out DETACHED: this clone is "
+                  "on no branch")
         run_member_bootstrap(target, sibling)
         sibling.branch = branch_of(target)
         return sibling
@@ -611,7 +829,9 @@ def place(root: Path, row: dict, urls: dict[str, str], prefix: list[str],
     if fetched.returncode != 0:
         print(f"  [{who}] fetch exited {fetched.returncode}; the clone is "
               "untouched:\n"
-              + scrub((fetched.stderr + fetched.stdout).strip(), token),
+              + said_of_url(scrub((fetched.stderr + fetched.stdout).strip(),
+                                  token),
+                            git_text(["remote", "get-url", "origin"], target)),
               file=sys.stderr)
     sibling.branch = branch_of(target)
     return sibling
@@ -725,7 +945,7 @@ def dispatch(root: Path, row: dict, urls: dict[str, str], target: str,
             "holder keeps its name) so the two are not the same path.")
         return sibling
 
-    if not (path / ".git").exists():
+    if not holds_git(path):
         sibling.state = "SKIPPED no clone"
         sibling.finding = (
             f"{who}: skipped: no working clone at {at}; run `make "
@@ -935,6 +1155,23 @@ def family_link(root: Path, family: str) -> Path | None:
     return None
 
 
+def staging_path(parent: Path, name: str) -> Path:
+    """`<parent>/<name>`, or the first `<parent>/<name>.<n>` (n = 1, 2, ...)
+    at which nothing is: a name one step of the printed move passes through
+    (#690).
+
+    `os.path.lexists`, which follows no link: a link to nothing is
+    something there, and so is the name in another case on a disk that
+    ignores case. `mv` onto what is there does not make the name: it moves
+    the holder INTO a folder, or fails on a link or a file.
+    """
+    staged, number = parent / name, 0
+    while os.path.lexists(staged):
+        number += 1
+        staged = parent / f"{name}.{number}"
+    return staged
+
+
 def parent_folder_warning(root: Path, family: str) -> str | None:
     """The WARNING and the exact `mv`, or None when the layout is right.
 
@@ -964,6 +1201,18 @@ def parent_folder_warning(root: Path, family: str) -> str | None:
     check (`family_link`): it is the family folder, reached through a link.
     One that leads elsewhere does not, and its move runs as typed: the
     holder moves into the link's target, where the link then passes.
+
+    AND NOTHING ALREADY THERE SENDS IT ASTRAY (#690). A staging name was
+    printed whether or not something held it: with `<Family>.holder` a
+    directory already, `mv` put the holder INSIDE it, and the three lines
+    all exited 0 and left it at `<Family>/<Family>/<Family>`, one level too
+    deep. Each staging name is now the first of `<Family>.holder`,
+    `<Family>.holder.1`, `<Family>.holder.2` ... (`.folder` alike) at which
+    nothing is (`staging_path`). A LINK TO NOTHING named `<Family>` is not
+    a folder to move into: `mkdir -p` fails on it, after the holder's first
+    move has run. It is named, to be moved aside first, and the moves under
+    it are the ones that run once it is gone. The prose names the holder,
+    the folders and the family spelled (#454); the commands stay as typed.
     """
     folder = root.parent
     if folder.name == family or family_link(root, family) is not None:
@@ -971,12 +1220,12 @@ def parent_folder_warning(root: Path, family: str) -> str | None:
     lines = [
         f"WARNING the holder's parent folder is {folder.name or str(folder)!r}"
         f", not {family!r}.",
-        f"        {root} should sit in a plain folder named {family}, beside "
-        "the members'",
+        f"        {spelled(root)} should sit in a plain folder named "
+        f"{spelled(family)}, beside the members'",
         "        working clones — that is the layout `make siblings` places. "
         "So",
         "        NOTHING WAS CLONED: a member cloned now would land in "
-        f"{folder}, and",
+        f"{spelled(folder)}, and",
         "        the re-run after the move would clone it a second time, "
         "beside the",
         "        moved holder.",
@@ -997,7 +1246,9 @@ def parent_folder_warning(root: Path, family: str) -> str | None:
         # `<parent>/<Family>` IS the holder itself and the move needs a
         # staging name — `mv A A/A` cannot be spelled in one command. At a
         # filesystem or drive root it is the holder even though it exists.
-        staged = folder.parent / f"{family}.holder"
+        # A LINK TO NOTHING named <Family> is here too: `exists` follows it,
+        # and these are the moves once it is moved aside (said below).
+        staged = staging_path(folder.parent, f"{family}.holder")
         steps = [["mv", root, staged], ["mkdir", "-p", wanted],
                  ["mv", staged, wanted / family]]
     elif (folder.name.casefold() == family.casefold()
@@ -1009,10 +1260,16 @@ def parent_folder_warning(root: Path, family: str) -> str | None:
         # differ by disk at one edge: a LINK spelled in another case
         # (`inkrouter` to `real-x`) stops on Linux, with a staged move that
         # runs, and passes as the family's link on a disk that ignores case.
-        staged = folder.parent / f"{family}.folder"
+        staged = staging_path(folder.parent, f"{family}.folder")
         steps = [["mv", folder, staged], ["mv", staged, wanted]]
     else:
         steps = [["mkdir", "-p", wanted], ["mv", root, wanted / family]]
+    if os.path.lexists(wanted) and not os.path.exists(wanted):
+        lines += [f"        First move {spelled(wanted)} aside: it is a link "
+                  "to nothing,",
+                  "        named after the family, and in the way of the "
+                  "move. Then:",
+                  ""]
     # EVERY PATH QUOTED (#486): under `my work/` a bare `mv` moved nothing
     # and pasted as four arguments. Quoted for the POSIX shell `mv` and
     # `mkdir -p` are commands of, as the sentence above says, by the standard

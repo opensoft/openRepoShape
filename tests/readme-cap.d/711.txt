@@ -1,0 +1,15 @@
++2
+2026-10-18
+Two lines for #711, Git Bash's quoting. README's Windows sentence said
+`shape-doctor.py`'s lines, setup's family lines and `family.py`'s NEXT,
+switch -c, add and git rm -r --cached lines are quoted for PowerShell on
+Windows. Since #711 they, and `init`'s cd line, are quoted for the shell
+they are printed in: `sh`'s under Git Bash (`MSYSTEM` set) and PowerShell's
+in PowerShell. A reader in Git Bash who followed the old sentence would
+paste them into PowerShell. Reworded within the sentence, whose first
+half, "paste them into Git Bash", is kept word for word; one line is the
+clause that names both shells and `cd`. The other is #785's sentence after
+it, which said a path `shape-doctor.py` cannot print as itself is written
+`$'...'` "Off Windows": under #711 Git Bash is handed `sh`'s quoting, so
+that spelling too, and the sentence says "Off Windows and in Git Bash",
+three lines where it was two. README goes from 1476 lines to 1478.

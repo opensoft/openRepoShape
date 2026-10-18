@@ -36,7 +36,8 @@ import sys
 
 import pytest
 
-from conftest import PTY_SKIP, REPO, run_in_a_terminal
+from conftest import (PTY_SKIP, REPO, appended_to_command_scope,
+                      run_in_a_terminal)
 from test_setup_project_py import (SETUP_PROJECT, entry_point_module,
                                    piped, run_entry, terminal_env)
 from test_setup_project_typed_name import (BELL, LNEXT, NAMING_POLICY, PROMPT,
@@ -168,12 +169,12 @@ def gh_that_is_signed_in(tmp_path):
 
     Its git has a credential helper for github.com: the line `gh auth
     setup-git` writes, pointed at this stub, in git's command scope
-    (`GIT_CONFIG_COUNT`, appended to what the environment holds). Without
-    it, the machine's own git config decided whether a GitHub run's
-    preflight offered `gh auth setup-git`. A machine with a helper anywhere
-    was never offered it; CI's runner has none, and its runs waited at that
-    offer's `Type yes to continue:`, which nothing here answers, until they
-    were killed (#777's first CI run)."""
+    (`GIT_CONFIG_COUNT`, appended to what the environment holds, by
+    `appended_to_command_scope`). Without it, the machine's own git config
+    decided whether a GitHub run's preflight offered `gh auth setup-git`. A
+    machine with a helper anywhere was never offered it; CI's runner has
+    none, and its runs waited at that offer's `Type yes to continue:`, which
+    nothing here answers, until they were killed (#777's first CI run)."""
     stub = tmp_path / "ghbin"
     stub.mkdir(exist_ok=True)
     gh = stub / "gh"
@@ -185,12 +186,11 @@ def gh_that_is_signed_in(tmp_path):
                    b'  *) echo "stub gh: refused $*" >&2; exit 97 ;;\n'
                    b"esac\n")
     gh.chmod(0o755)
-    held = int(os.environ.get("GIT_CONFIG_COUNT") or 0)
+    helper = "!%s auth git-credential" % shlex.quote(str(gh))
     return {"PATH": str(stub) + os.pathsep + os.environ["PATH"],
-            "GIT_CONFIG_COUNT": str(held + 1),
-            f"GIT_CONFIG_KEY_{held}": "credential.https://github.com.helper",
-            f"GIT_CONFIG_VALUE_{held}":
-                "!%s auth git-credential" % shlex.quote(str(gh))}
+            **appended_to_command_scope(
+                os.environ,
+                [("credential.https://github.com.helper", helper)])}
 
 
 def flags_for(tmp_path, local):
