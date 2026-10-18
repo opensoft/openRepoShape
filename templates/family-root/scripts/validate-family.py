@@ -2244,7 +2244,7 @@ def _section_lines(path: str, repository,
 def _check_gitlinks_registered(root: Path, members: list,
                                gitlinks: dict[str, str],
                                report: Report,
-                               put_back: bool = False) -> set[str]:
+                               refused: bool = False) -> set[str]:
     """Every row's gitlink is at a path a section of HEAD's `.gitmodules`
     gives — the `member-gitmodules-absent` finding (#611, #407's decision
     3). Returns the paths it was made for, of which `_check_member` asks no
@@ -2281,12 +2281,13 @@ def _check_gitlinks_registered(root: Path, members: list,
 
     WHERE THE WORK TREE'S FILE IS GONE FROM DISK, the first of these
     findings puts it back first (`_gitmodules_put_back`), and no other
-    does, nor any where an earlier finding put HEAD's back (`put_back`,
-    `gitmodules-value-refused`'s, #768): `git config -f` makes a file of
-    the lines it is given, so `member-gitmodules-absent`'s lines, staged and
-    committed, dropped every other section (rv820's review, comment
-    6237354577 on #839), and a second `member-gitmodules-url-absent`'s put
-    the file back over the url the first had written (#839).
+    does, nor any where `.gitmodules` gives a value git dies on
+    (`refused`), whose `gitmodules-value-refused` puts HEAD's back first
+    (#768): `git config -f` makes a file of the lines it is given, so
+    `member-gitmodules-absent`'s lines, staged and committed, dropped every
+    other section (rv820's review, comment 6237354577 on #839), and a
+    second `member-gitmodules-url-absent`'s put the file back over the url
+    the first had written (#839).
     """
     head = _head_gitmodules(root)
     if head is None:
@@ -2294,7 +2295,7 @@ def _check_gitlinks_registered(root: Path, members: list,
     held, sections = head
     given = Counter(keys["path"] for keys in sections.values()
                     if "path" in keys)
-    back = ("", "") if put_back else _gitmodules_put_back(root)[1:]
+    back = ("", "") if refused else _gitmodules_put_back(root)[1:]
     unregistered: set[str] = set()
     for row in members:
         project = row.get("project") if isinstance(row, dict) else None
@@ -2653,9 +2654,8 @@ def _check_members(root: Path, members: list, no_members: bool,
     removed = _staged_removals(root, gitlinks)
     _check_gitlinks_named(root, gitlinks, named, removed, report)
     _check_gitmodules_named(sections, gitlinks, named, removed, report)
-    unregistered = _check_gitlinks_registered(
-        root, members, gitlinks, report,
-        refused and not os.path.lexists(root / GITMODULES))
+    unregistered = _check_gitlinks_registered(root, members, gitlinks,
+                                              report, refused)
     unregistered |= _check_removals_staged(root, members, gitlinks, removed,
                                            as_read, report)
     if no_members:
