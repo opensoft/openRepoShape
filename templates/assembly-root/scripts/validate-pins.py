@@ -1077,8 +1077,14 @@ def _check_workflow_refs_for_leg(refs, repository: str, path: str,
     """Fact 3: split from `_check_leg` for #132 — every workflow `@<sha>`
     reference naming this leg's repository must agree with the gitlink. A
     mismatch is one `bump-leg.py` clears, since it moves every one (#478).
+
+    THE NOTE COUNTS THE REFERENCES THAT AGREE (#739). It counted every
+    reference naming the repository, so one off its gitlink was its finding
+    and, beside it, `1 workflow @<sha> reference(s) agree with the gitlink`.
+    Only those at the gitlink are counted, `N of M` where some are not, and
+    no note is printed where none is.
     """
-    seen = 0
+    seen = agree = 0
     for wf_path, wf_repo, wf_sha in refs:
         if wf_repo != repository:
             continue
@@ -1092,8 +1098,11 @@ def _check_workflow_refs_for_leg(refs, repository: str, path: str,
             )
             report.curable.append(Curable(len(report.findings) - 1, role,
                                           path, gitlink, wf_sha))
-    if seen:
-        report.note(f"{repository}: {seen} workflow @<sha> reference(s) "
+        else:
+            agree += 1
+    if agree:
+        counted = str(agree) if agree == seen else f"{agree} of {seen}"
+        report.note(f"{repository}: {counted} workflow @<sha> reference(s) "
                     f"agree with the gitlink")
 
 
