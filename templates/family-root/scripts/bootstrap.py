@@ -281,13 +281,15 @@ def unreadable(code: str, named: str, exc: OSError, what: str) -> Refusal:
     `_cannot_read`, `<named>: cannot be read (<the system's reason>)`, with
     `named` relative to the holder and spelled; `what` says what was not
     done, and why the question matters. THE ADVICE FOLLOWS THE CAUSE, in
-    `validate-pins.py`'s words: a permission (`PermissionError`, which is
-    `EACCES` and `EPERM`) is put right by the mode or the owner, and any
-    other cause is `OTHER_REASON`, which is not told to `chmod`."""
+    `validate-pins.py`'s `_unreadable_file`'s words, word for word, since
+    every path this command asks about is inside the holder: a permission
+    (`PermissionError`, which is `EACCES` and `EPERM`) is put right by the
+    mode or the owner, and any other cause is `OTHER_REASON`, which is not
+    told to `chmod`."""
     advice = (
         "Make what this user may not open readable by this user: `chmod u+r` "
         "on a file, `chmod u+rx` on a directory (and on every directory above "
-        "it), or fix who owns it. "
+        "it inside the root), or fix who owns it. "
         if isinstance(exc, PermissionError) else OTHER_REASON)
     return Refusal(
         code,
@@ -343,7 +345,9 @@ def fetch_members(root: Path, rows: list[dict]) -> list[str]:
     fetched only where there is none and git exited 0. The advice to set a
     credential is printed only where git asked for one
     (`credential_advice`, #839). Raises the `git-not-runnable` refusal
-    where git cannot be started (#694)."""
+    where git cannot be started (#694), and `member-unreadable` where a
+    row's mount cannot be asked about, after git's own words (`unfetched`,
+    #430)."""
     source, token = credential()
     args = ["git"]
     if token:
@@ -362,7 +366,7 @@ def fetch_members(root: Path, rows: list[dict]) -> list[str]:
         if refusal is None:
             raise
         raise refusal from exc
-    left, stopper, modules = unfetchable(root, rows, proc.returncode == 0)
+    left, stopper, modules = unfetched(root, rows, proc, source, token)
     if proc.returncode != 0:
         fetch_incomplete(proc, source, token,
                          credential_advice(bool(left), stopper, modules))
@@ -384,6 +388,24 @@ def fetch_members(root: Path, rows: list[dict]) -> list[str]:
     if proc.returncode == 0:
         print("  every member and leg fetched")
     return []
+
+
+def unfetched(root: Path, rows: list[dict],
+              proc: subprocess.CompletedProcess, source: str, token: str
+              ) -> tuple[list[tuple[dict, str, str]], str | None,
+                         Gitmodules]:
+    """`unfetchable`, asked after git's update `proc` (#430). Where it
+    refuses a mount it cannot ask about (`member-unreadable`) and git did
+    not exit 0, git's own words for the update are printed first
+    (`fetch_incomplete`), with no advice: what git said of that mount is
+    the same fact, the refusal after it names the cure, and no credential
+    is it. It refused before they were printed, and they were lost."""
+    try:
+        return unfetchable(root, rows, proc.returncode == 0)
+    except Refusal:
+        if proc.returncode != 0:
+            fetch_incomplete(proc, source, token, "")
+        raise
 
 
 def fetch_incomplete(proc: subprocess.CompletedProcess, source: str,
@@ -1191,6 +1213,29 @@ def run_member_target(root: Path, row: dict, target: str) -> str | None:
 MAKE_ERROR_RE = re.compile(rb"\*\*\* \[[^\n]*\] Error (\d+)\s*$")
 
 
+def run_members(root: Path, rows: list[dict], target: str,
+                skip: bool) -> list[str]:
+    """(b) Each member's own `make <target>`, in row order: the failure lines
+    (`run_member_target`), or none where `skip` (`--skip-members`) or no row
+    is declared. Raises `member-unreadable` at the first member whose mount
+    or `Makefile` cannot be asked about (#430), and no member after it is
+    run: `main` refuses the run there, exit 2."""
+    print(f"\n(b) each member's own `make {spelled(target)}`")
+    if skip:
+        print("  skipped (--skip-members)")
+        return []
+    if not rows:
+        print("  no members declared. A family with none is empty, not wrong: "
+              "`family.py add` is what puts one here.")
+        return []
+    failed = []
+    for row in rows:
+        failure = run_member_target(root, row, target)
+        if failure:
+            failed.append(failure)
+    return failed
+
+
 def run_make(make: str, target: str, cwd: Path) -> tuple[int, int | None]:
     """(b) `make <target>` in a member, as `(make's exit code, the exit code
     of the member's command it names)`, the second None where make printed
@@ -1266,34 +1311,20 @@ def main(argv: list[str] | None = None) -> int:
 
     print("\n(a) members and their legs")
     failed: list[str] = []
-    if args.no_fetch:
-        print("  skipped (--no-fetch)")
-    else:
-        try:
+    try:
+        if args.no_fetch:
+            print("  skipped (--no-fetch)")
+        else:
             failed += fetch_members(root, rows)
-        except Refusal as exc:
-            print(str(exc), file=sys.stderr)
-            return 2
-
-    print(f"\n(b) each member's own `make {spelled(args.members_make)}`")
-    if args.skip_members:
-        print("  skipped (--skip-members)")
-    elif not rows:
-        print("  no members declared. A family with none is empty, not wrong: "
-              "`family.py add` is what puts one here.")
-    else:
-        for row in rows:
-            try:
-                failure = run_member_target(root, row, args.members_make)
-            except Refusal as exc:
-                # Only `member-unreadable` reaches here (#430). Stdout
-                # first, so a log of both streams reads in the order the run
-                # went.
-                sys.stdout.flush()
-                print(str(exc), file=sys.stderr)
-                return 2
-            if failure:
-                failed.append(failure)
+        failed += run_members(root, rows, args.members_make,
+                              args.skip_members)
+    except Refusal as exc:
+        # `git-not-runnable` from (a) (#694), or `member-unreadable` from
+        # (a) or (b) (#430). Stdout first, so a log of both streams reads
+        # in the order the run went.
+        sys.stdout.flush()
+        print(str(exc), file=sys.stderr)
+        return 2
 
     print()
     if failed:

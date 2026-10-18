@@ -44,8 +44,10 @@ reached by a link into a folder at mode 000, the only way to refuse their
 from __future__ import annotations
 
 import errno
+import os
 import shutil
 import stat
+import subprocess
 from pathlib import Path
 
 import pytest
@@ -73,9 +75,22 @@ THROUGH_A_FILE = {"project": "Nobody", "id": "nobody",
 ABSENT_ROWS = pytest.mark.parametrize(
     "row", [NOBODY, THROUGH_A_FILE],
     ids=["no-such-path", "a-file-on-the-path"])
-#: The words a permission's remedy and any other cause's begin with.
+#: The words a permission's remedy and any other cause's begin with:
+#: siblings.py's, whose clones sit outside the holder, and bootstrap.py's,
+#: `validate-pins.py`'s `_unreadable_file` word for word.
 CHMOD = "`chmod u+rx` on a directory (and on every directory above it)"
+CHMOD_IN_ROOT = ("`chmod u+rx` on a directory (and on every directory above "
+                 "it inside the root)")
 OTHER_CAUSE = "Where the operating system gave another reason"
+#: The summary `make siblings` ends on where it refused a path (#430).
+SUMMARY_TAIL = "; nothing was moved and no existing clone was touched"
+#: The `stat` errnos that mean nothing is there, Windows' errors that mean
+#: the same ("not ready", "invalid name", "cannot resolve"), and every
+#: other errno this platform names.
+ABSENT_ERRNOS = [errno.ENOENT, errno.ENOTDIR, errno.EBADF, errno.ELOOP]
+ABSENT_WINERRORS = [21, 123, 1921]
+OTHER_ERRNOS = sorted(set(errno.errorcode) - set(ABSENT_ERRNOS))
+BOTH_FILES = pytest.mark.parametrize("which", ["siblings", "bootstrap"])
 
 
 @pytest.fixture(scope="module")
@@ -359,6 +374,35 @@ def test_make_siblings_refuses_a_pinned_copy_beside_a_placed_clone(placed):
     assert "pinned members/IRSS CANNOT BE READ -" in flat_rows(result.stdout)
     assert "sibling IRSS present, fetched main" in flat_rows(result.stdout)
     assert "siblings ok" not in result.stdout
+    assert result.stderr.splitlines()[-1] == (
+        f"siblings: 1 path(s) this user cannot read{SUMMARY_TAIL}")
+
+
+@pytest.mark.parametrize("findings, refusals, code, counted", [
+    (1, 0, 1, "1 finding(s)"),
+    (0, 2, 2, "2 path(s) this user cannot read"),
+    (1, 2, 2, "1 finding(s) and 2 path(s) this user cannot read"),
+], ids=["a-finding", "two-refusals", "both"])
+def test_the_placement_summary_counts_what_it_could_not_read(
+        placement, tmp_path, capsys, findings, refusals, code, counted):
+    """`_report_placement`'s last line counts the findings, as it did, and
+    the paths it could not read, a sibling's or a pinned copy's, and the
+    run exits 2 where there is any."""
+    rows = []
+    for number in range(findings):
+        row = placement.Sibling(f"F{number}", tmp_path)
+        row.finding = f"F{number}: a finding"
+        rows.append(row)
+    pinned = []
+    for number in range(refusals):
+        row = placement.Sibling(f"members/R{number}", tmp_path)
+        row.refusal = placement.member_unreadable(
+            f"members/R{number}/.git",
+            PermissionError(errno.EACCES, DENIED), "What was not done.")
+        pinned.append(row)
+    assert placement._report_placement(tmp_path, rows, False, pinned) == code
+    assert capsys.readouterr().err.splitlines()[-1] == (
+        f"siblings: {counted}{SUMMARY_TAIL}")
 
 
 # --- bootstrap.py: `checked_out`, in `unfetchable` and `run_member_target` -
@@ -386,6 +430,35 @@ def test_a_mount_whose_stat_is_refused_is_refused(boot, family, monkeypatch,
     assert refusal.code == MEMBER_UNREADABLE
     assert refusal.detail == f"members/IRRS/.git: cannot be read ({DENIED})"
     assert "the run stopped there" in refusal.remediation
+    assert CHMOD_IN_ROOT in refusal.remediation
+
+
+@pytest.mark.parametrize("exit_code", [1, 0], ids=["git-failed", "git-ok"])
+def test_gits_own_words_come_before_a_mount_it_refuses(
+        boot, family, monkeypatch, capsys, exit_code):
+    """Where (a) refuses a mount and git's update did not exit 0, git's own
+    words are printed first, with no credential advice, then the refusal;
+    they were lost. Where git exited 0 there is nothing of git's to say.
+    In process, with git's update stood in for, on every platform."""
+    _, rows = boot.members_of(family["root"])
+    real = subprocess.run
+
+    def git_update(args, *more, **kwargs):
+        if "submodule" in args:
+            return subprocess.CompletedProcess(
+                args, exit_code, "", "fatal: the update stopped here\n")
+        return real(args, *more, **kwargs)
+
+    for name in boot.CREDENTIAL_ENV:
+        monkeypatch.delenv(name, raising=False)
+    monkeypatch.setattr(boot.subprocess, "run", git_update)
+    refused_stat(monkeypatch, ".git")
+    refusal = refusal_of(boot, boot.fetch_members, family["root"], rows)
+    said = capsys.readouterr().err
+    assert refusal.detail == f"members/IRRS/.git: cannot be read ({DENIED})"
+    assert said == ("  FETCH INCOMPLETE (git exit 1) using credential "
+                    "source 'none':\nfatal: the update stopped here\n"
+                    if exit_code else "")
 
 
 @needs_a_mode
@@ -402,9 +475,14 @@ def test_make_bootstrap_refuses_a_mount_it_cannot_search(holder, relative,
         result = bootstrap(holder, allow_file_protocol())
     no_traceback(result)
     assert result.returncode == 2, result.stdout + result.stderr
-    assert refusal_line(MEMBER_UNREADABLE, named) in result.stderr
+    refused = refusal_line(MEMBER_UNREADABLE, named)
+    assert refused in result.stderr
     assert "family bootstrap ok" not in result.stdout
     assert ": make bootstrap ---" not in result.stdout
+    assert CHMOD_IN_ROOT in result.stderr
+    assert "SHAPE_LEGS_TOKEN" not in result.stderr
+    fetch = result.stderr.find("  FETCH INCOMPLETE (git exit ")
+    assert -1 < fetch < result.stderr.index(refused), result.stderr
 
 
 @needs_a_mode
@@ -517,12 +595,69 @@ def test_a_stat_that_fails_for_another_reason_is_refused_sans_chmod(
     assert module.OTHER_REASON in refusal.remediation
 
 
-def test_every_absent_errno_is_absent_and_every_other_is_raised(boot,
-                                                                placement):
-    """Each file's own `_is_a` answers as `bump-leg.py`'s does: the four
-    errnos of nothing there are False, any other `OSError` is raised."""
-    for module in (boot, placement):
-        assert module._ABSENT_ERRNOS == (errno.ENOENT, errno.ENOTDIR,
-                                         errno.EBADF, errno.ELOOP)
-        assert module._ABSENT_WINERRORS == (21, 123, 1921)
-        assert module._is_a(Path("no-such-name-here"), stat.S_ISREG) is False
+@BOTH_FILES
+@pytest.mark.parametrize("code", ABSENT_ERRNOS,
+                         ids=[errno.errorcode[code] for code in ABSENT_ERRNOS])
+def test_each_errno_of_nothing_there_is_absent(placement, boot, monkeypatch,
+                                               which, code):
+    """Each file's own `_is_a` answers as `bump-leg.py`'s does: a `stat`
+    that says nothing is at the name is False, as `is_file()` said it."""
+    module = placement if which == "siblings" else boot
+    assert tuple(ABSENT_ERRNOS) == module._ABSENT_ERRNOS
+    refusing(monkeypatch, "stat", "probe", OSError(code, os.strerror(code)))
+    assert module._is_a(Path("probe"), stat.S_ISREG) is False
+
+
+@BOTH_FILES
+@pytest.mark.parametrize("winerror", ABSENT_WINERRORS)
+def test_each_windows_error_of_nothing_there_is_absent(
+        placement, boot, monkeypatch, which, winerror):
+    """So is a `stat` whose Windows error says nothing is there, whatever
+    its errno: here `EINVAL`, which is raised without one. In process, on
+    every platform."""
+    module = placement if which == "siblings" else boot
+    assert tuple(ABSENT_WINERRORS) == module._ABSENT_WINERRORS
+    real = Path.stat
+
+    def refused(self, *args, **kwargs):
+        if self.name != "probe":
+            return real(self, *args, **kwargs)
+        error = OSError(errno.EINVAL, os.strerror(errno.EINVAL), str(self))
+        error.winerror = winerror
+        raise error
+
+    monkeypatch.setattr(Path, "stat", refused)
+    assert module._is_a(Path("probe"), stat.S_ISREG) is False
+
+
+@BOTH_FILES
+def test_every_other_errno_is_raised(placement, boot, monkeypatch, which):
+    """And a `stat` refused with any other errno this platform names
+    (`EACCES`, `EPERM`, `EIO`, `ENAMETOOLONG` and `EINVAL` among them) is
+    raised, for the caller to refuse by name."""
+    module = placement if which == "siblings" else boot
+    raised = []
+    for code in OTHER_ERRNOS:
+        refusing(monkeypatch, "stat", "probe",
+                 OSError(code, os.strerror(code)))
+        try:
+            module._is_a(Path("probe"), stat.S_ISREG)
+        except OSError as exc:
+            raised.append(exc.errno)
+    assert raised == OTHER_ERRNOS
+
+
+@BOTH_FILES
+def test_a_name_the_system_cannot_take_is_no_file(placement, boot, family,
+                                                  which):
+    """A NUL in a name is a `ValueError` the system raises before any
+    `stat`, and `_is_a` answers False, as `exists()` did: a row whose
+    `path:` holds one reads as no member there, never a traceback."""
+    module = placement if which == "siblings" else boot
+    nul = chr(0)
+    assert module._is_a(Path(f"a{nul}b"), stat.S_ISREG) is False
+    row = {"project": "IRSS", "path": f"members/IR{nul}SS"}
+    if which == "siblings":
+        assert placement.tracking_branch(family["root"], row)[0] is None
+    else:
+        assert boot.checked_out(family["root"], row) is False
