@@ -47,7 +47,9 @@ held as typed, and that refusal guards the template rather than the flags. A
 value the validator refuses (a blank `--elected-by`, `--reference` or
 `--name`, an `--org` it cannot hold) is refused as
 `scaffold-manifest-invalid`, in the validator's own words; an `--elected-on`
-is read in the validator's form only, on every Python. A name that cannot be a
+is read in the validator's form only, on every Python. A flag passed empty is
+a value, refused by name by its own rule, never read as one not given (#911).
+A name that cannot be a
 directory's is refused as `scaffold-name-too-long`, and so is one GitHub will
 not give a repository; an `--org` longer than GitHub keeps one is
 `scaffold-org-too-long`, and an id whose topic GitHub will not set is
@@ -95,6 +97,9 @@ from repo_shape import (  # noqa: E402
     git_out, link_pins_from_trees, repo_basename, shell_line, shown_path,
     tree_digest,
 )
+# The forms the naming policy decides by a name's characters alone, which a
+# passed `--id` that is no id is refused after (#911).
+from repo_shape import UNAMBIGUOUS_FORMS  # noqa: E402
 from shape_materialize import (  # noqa: E402
     RULESET_HINT, SHAPE_REPOSITORY, CommandFailed,
     copy_tree, default_reference, descendant_note, election_date, env_commit,
@@ -736,7 +741,9 @@ def _refuse_unholdable_manifest(args, values: dict, policy) -> None:
     refused.
 
     A value a flag did not supply is named by where it came from, so the
-    sentence does not point at a flag nobody typed.
+    sentence does not point at a flag nobody typed. A flag passed empty
+    supplied its value, `''`, and is named as the flag (#911), as `_identity`
+    reads it.
     """
     flags = dict(MANIFEST_FLAGS)
     for key, flag, given, source in (
@@ -744,7 +751,7 @@ def _refuse_unholdable_manifest(args, values: dict, policy) -> None:
             ("PROJECT_NAME", "--name", args.name, "--project"),
             ("ELECTED_BY", "--elected-by", args.elected_by,
              "GIT_AUTHOR_NAME or `git config user.name`")):
-        if not given:
+        if given is None:
             flags[key] = f"{flag} (not given, so {source})"
     refuse_manifest_values(
         "scaffold", values, policy, flags,
@@ -758,9 +765,17 @@ def _elector(args) -> str:
     machine's git identity; the manifest records a name either way, because
     electing this shape is a human's act and `elected_by` is the record of
     whose. `_elector_named` says which of the three answered, in this order.
+
+    A `--elected-by ''` IS THE FLAG'S ANSWER (#911). It was read by its
+    truth, so an empty one fell back to this machine's identity without a
+    word, and with none `scaffold-no-elector` said "no --elected-by" of a
+    flag that was passed. It is a value now, and the project's own
+    validator refuses it by name (`_refuse_unholdable_manifest`), as it
+    refuses `--elected-by ' '`; the fallback answers only where the flag is
+    not given.
     """
     elected_by = args.elected_by
-    if not elected_by:
+    if elected_by is None:
         try:
             # Per-invocation identity first, then the config — never a global
             # config write (see the CI workflow note, 2026-09-03). The config
@@ -775,13 +790,14 @@ def _elector(args) -> str:
                                          "utf-8", "surrogateescape").strip())
         except Refusal:
             elected_by = ""
-    if not elected_by:
-        raise Refusal(
-            "scaffold-no-elector",
-            "no --elected-by, no GIT_AUTHOR_NAME and no `git config user.name`. Electing this "
-            "shape is a human's act and the manifest records whose.",
-            "Remediation: re-run with --elected-by 'Your Name'.",
-        )
+        if not elected_by:
+            raise Refusal(
+                "scaffold-no-elector",
+                "no --elected-by, no GIT_AUTHOR_NAME and no `git config "
+                "user.name`. Electing this shape is a human's act and the "
+                "manifest records whose.",
+                "Remediation: re-run with --elected-by 'Your Name'.",
+            )
     return elected_by
 
 
@@ -797,12 +813,27 @@ def _identity(args, project: str) -> tuple[str, str, str, str, str]:
     can use. The three free-text values are asked here too, beside the date
     and for the same reason, whether a file can hold them (#282): before a
     work directory or a remote exists, and under `--dry-run` alike.
+
+    A FLAG PASSED EMPTY IS A VALUE, NOT A FLAG NOT GIVEN (#911). Each was
+    read by its truth (`args.id or project.lower()`), so `--id ''`,
+    `--name ''`, `--elected-on ''`, `--reference ''` and `--elected-by ''`
+    planned their defaults and exited 0, and a script's `--id "$ID"` with
+    `ID` unset scaffolded the derived id without a word. Each is read by `is
+    not None` now, as `adopt-project.py plan` reads its own (#658), and an
+    empty one meets its flag's own rule and is refused there by name:
+    `--elected-on ''` by `election_date` just below, `--id ''` as
+    `scaffold-bad-id` (`_refuse_bad_id`), and the three free-text values by
+    the project's own validator (`_refuse_unholdable_manifest`). The id is
+    held to `checked_value`'s alphabet after `_refuse_bad_id`, where an
+    empty one is named for the id it is not, rather than as `unsafe-value`.
     """
-    project_id = checked_value("--id", args.id or project.lower())
-    display = args.name or project
-    elected_on = args.elected_on or _dt.date.today().isoformat()
+    project_id = args.id if args.id is not None else project.lower()
+    display = args.name if args.name is not None else project
+    elected_on = (args.elected_on if args.elected_on is not None
+                  else _dt.date.today().isoformat())
     election_date(elected_on)
-    reference = args.reference or default_reference(elected_on)
+    reference = (args.reference if args.reference is not None
+                 else default_reference(elected_on))
     elected_by = _elector(args)
     _refuse_unwritable_values((
         (_elector_named(args), elected_by, ROOT_MANIFEST_AND_README),
@@ -831,35 +862,63 @@ PROJECT_NAME_RULE = ("one CamelCase token with no hyphen, underscore, dot "
 #: digits and hyphens, so "pass an explicit lowercase --id" led straight to
 #: `naming-unclassified`, and so would "change --project" to `North-Wind`.
 #: The derived remedy names the rule.
-PASSED_ID_REMEDIATION = "Remediation: pass an explicit lowercase --id."
+#:
+#: A PASSED ONE IS TOLD WHAT AN ID MAY HOLD (#911): `PROJECT_ID_RE` in
+#: words. "Pass an explicit lowercase --id" was said to `--id foo_bar`,
+#: which is both, and whose fault is the underscore. `family-bad-id` says
+#: the same sentence of its own `--id`.
+PASSED_ID_REMEDIATION = ("Remediation: pass an --id of lowercase letters, "
+                         "digits and hyphens, starting with a letter or "
+                         "digit.")
 DERIVED_ID_REMEDIATION = (
     f"Remediation: change --project to {PROJECT_NAME_RULE}. The id is "
     f"{ID_DERIVED_FROM}, and an explicit --id would not change --project, "
     "which also names the assembly root and both legs.")
 
 
-def _refuse_bad_id(project_id: str, given: str | None) -> None:
+def _refuse_bad_id(project_id: str, given: str | None, policy,
+                   project: str) -> None:
     """`scaffold-bad-id`: an id the project's validators would not take
     (`PROJECT_ID_RE`), named by where it came from (#659), as
     `adopt-project.py plan` names `adopt-bad-id` (#658).
 
-    `given` is `--id` as parsed. One the person passed is named as the flag
-    they typed, value as typed, and keeps its remedy. With none, or an empty
-    one, `_identity` derived the id (`args.id or project.lower()`), and
-    `--id 'north_wind' must match` named a value nobody had typed: the flag
-    is named as `_refuse_unholdable_manifest` names one, by where its value
-    came from, and an empty `--id ''` as empty, because it was passed."""
+    `given` is `--id` as parsed. One the person passed, `''` among them
+    (#911), is named as the flag they typed, value as typed, and is told
+    what an id may hold (`PASSED_ID_REMEDIATION`). With none, `_identity`
+    derived the id from `--project`, and `--id 'north_wind' must match`
+    named a value nobody had typed: the flag is named as
+    `_refuse_unholdable_manifest` names one, by where its value came from.
+
+    A REFUSED NAME SPEAKS FIRST (#911). `--project North_Wind --id
+    north_wind` was refused for its id, and the remedy's retype then met
+    `naming-unclassified`, which no `--id` mends. So a passed id is refused
+    only once `--project` is a name the naming policy holds; one it does
+    not hold is refused here as `_check_declared_names` would refuse it,
+    which asks later, after `_declaration`. Whether a name is held by any
+    form is the policy's patterns alone (`classify` answers None only when
+    `matches` finds none), and so is the role of a form it decides by the
+    characters alone (`UNAMBIGUOUS_FORMS`: `Foo-Install` is never an
+    assembly root), so nothing the project declares changes either answer,
+    and both are asked with no process started. A role the declarations
+    can change (a descendant's) is left to `_check_declared_names`. A
+    derived id keeps its own refusal: its remedy is already the naming
+    rule."""
     if PROJECT_ID_RE.match(project_id):
         return
     pattern = PROJECT_ID_RE.pattern
-    if given:
+    if given is not None:
+        found = policy.classify(project, "assembly")
+        if found is None:
+            raise _unclassified(project)
+        if found.family in UNAMBIGUOUS_FORMS and not accepts_role(
+                found, "assembly"):
+            raise _role_mismatch(project, found, "assembly")
         raise Refusal("scaffold-bad-id",
                       f"--id {project_id!r} must match {pattern}",
                       PASSED_ID_REMEDIATION)
-    unset = "not given" if given is None else "empty"
     raise Refusal("scaffold-bad-id",
-                  f"--id ({unset}, so {ID_DERIVED_FROM}) is {project_id!r}, "
-                  f"which must match {pattern}",
+                  f"--id (not given, so {ID_DERIVED_FROM}) is "
+                  f"{project_id!r}, which must match {pattern}",
                   DERIVED_ID_REMEDIATION)
 
 
@@ -902,18 +961,18 @@ def _refuse_what_github_cannot_hold(args, project_id: str, policy) -> None:
     which a `--project` of 40 or more gives by default, failed there with
     all three repositories created and seeded. Under `--local-remote-dir`
     neither is asked: a bare repository on disk has no topic and no owner.
-    The id is named as `_refuse_bad_id` names it, by where it came from."""
+    The id is named as `_refuse_bad_id` names it, by where it came from; a
+    `--id ''` was refused there (#911), so a derived id is one not given."""
     if args.local_remote_dir is not None:
         return
     refuse_an_owner_github_cannot_have("scaffold-org-too-long", args.org,
                                        "--org", ORG_REMEDIATION)
     refuse_an_owner_github_cannot_spell("scaffold-bad-org", args.org,
                                         "--org", ORG_SPELLING_REMEDIATION)
-    if args.id:
+    if args.id is not None:
         named, remediation = "--id", PASSED_TOPIC_REMEDIATION
     else:
-        unset = "not given" if args.id is None else "empty"
-        named = f"--id ({unset}, so {ID_DERIVED_FROM})"
+        named = f"--id (not given, so {ID_DERIVED_FROM})"
         remediation = DERIVED_TOPIC_REMEDIATION
     refuse_a_topic_github_cannot_set(
         "scaffold-topic-too-long", policy.topic_for(project_id), project_id,
@@ -958,8 +1017,9 @@ UNWRITABLE_REMEDIATION = (
 def _elector_named(args) -> str:
     """Where `_elector`'s answer came from, as a refusal names it (#282):
     `--elected-by`, else `ELECTOR_FROM_ENV` when GIT_AUTHOR_NAME holds more
-    than whitespace, else `ELECTOR_FROM_CONFIG` -- `_elector`'s own order."""
-    if args.elected_by:
+    than whitespace, else `ELECTOR_FROM_CONFIG` -- `_elector`'s own order.
+    A `--elected-by ''` is the flag's answer (#911)."""
+    if args.elected_by is not None:
         return "--elected-by"
     if (os.environ.get("GIT_AUTHOR_NAME") or "").strip():
         return ELECTOR_FROM_ENV
@@ -1189,6 +1249,33 @@ def _check_referent_chain(policy, assembly_name: str, declared_pins: set,
         print(f"WARNING {warning}", file=sys.stderr)
 
 
+def _unclassified(name: str) -> Refusal:
+    """`naming-unclassified`: `name` matches no form in the naming policy.
+    One refusal, raised by `_check_one_name` and, for a passed `--id` the
+    project's validators would not take, first by `_refuse_bad_id` (#911)."""
+    return Refusal(
+        "naming-unclassified",
+        f"{name!r} matches no family in the naming policy. "
+        f"`<Project>` is {PROJECT_NAME_RULE}.",
+        "Remediation: re-run with a --project value of that form.",
+    )
+
+
+def _role_mismatch(name: str, found, role: str) -> Refusal:
+    """`naming-role-mismatch`: `name` classifies as `found`, a form its
+    `role` does not accept. Raised by `_check_one_name` and, for a passed
+    `--id` that is no id, first by `_refuse_bad_id` (#911)."""
+    return Refusal(
+        "naming-role-mismatch",
+        f"{name!r} classifies as {found[0]}"
+        + (f"/{found[1]}" if found[1] else "")
+        + f", not as the {role!r} form of a project leg"
+        + f" ({found.reason})",
+        "Remediation: re-run with a --project value that is one "
+        "CamelCase token.",
+    )
+
+
 def _check_one_name(policy, name: str, role: str, declared_pins: set,
                     chain: tuple, link_pins: dict) -> None:
     """(e) ONE of the three names classifies as a form its role accepts, or
@@ -1197,22 +1284,9 @@ def _check_one_name(policy, name: str, role: str, declared_pins: set,
     found = policy.classify(name, role, declared_pins,
                             chain if role == "assembly" else (), link_pins)
     if found is None:
-        raise Refusal(
-            "naming-unclassified",
-            f"{name!r} matches no family in the naming policy. "
-            f"`<Project>` is {PROJECT_NAME_RULE}.",
-            "Remediation: re-run with a --project value of that form.",
-        )
+        raise _unclassified(name)
     if not accepts_role(found, role):
-        raise Refusal(
-            "naming-role-mismatch",
-            f"{name!r} classifies as {found[0]}"
-            + (f"/{found[1]}" if found[1] else "")
-            + f", not as the {role!r} form of a project leg"
-            + f" ({found.reason})",
-            "Remediation: re-run with a --project value that is one "
-            "CamelCase token.",
-        )
+        raise _role_mismatch(name, found, role)
 
 
 def _check_declared_names(policy, names: dict, declared_pins: set,
@@ -1344,7 +1418,8 @@ def _print_plan(args, values: dict, names: dict, repositories: dict,
           f"(tree {values['SHAPE_TREE_SHA256'][:12]}…)")
     print(f"elected by   {values['ELECTED_BY']} on {values['ELECTED_ON']}")
     print(f"reference    {values['REFERENCE']}"
-          + ("" if args.reference else "   (chosen by the election date)"))
+          + ("" if args.reference is not None
+             else "   (chosen by the election date)"))
     for role in ("assembly", "spec", "code"):
         print(f"  {role:<9} {repositories[role]:<28} -> {urls[role]}")
     for role in ("assembly", "spec", "code"):
@@ -1909,7 +1984,11 @@ def _scaffold(args) -> int:
     local, repositories, urls = _repository_urls(args, names)
     _refuse_an_unwritable_clone_url(local, urls["assembly"])
     policy = NamingPolicy.load(SHAPE_ROOT / "contracts" / "repository-naming.yaml")
-    _refuse_bad_id(project_id, args.id)
+    _refuse_bad_id(project_id, args.id, policy, project)
+    # AND THE ALPHABET A COMMAND LINE'S VALUE IS HELD TO, after the id's own
+    # rule (#911), so `--id ''` is named for the id it is not; this still
+    # refuses what `PROJECT_ID_RE.match` lets through, a trailing line break.
+    project_id = checked_value("--id", project_id)
     _refuse_what_github_cannot_hold(args, project_id, policy)
     # WHAT THE PROJECT DECLARES ABOUT ITSELF, before any name is judged.
     # With no `--pin`, a descendant-form name is a claim with no referent and

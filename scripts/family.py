@@ -683,8 +683,15 @@ def _member_url(repository: str, local_remote_dir: Path | None) -> str:
 #: (`_classify_family_name`). `family-bad-id`'s derived remedy names it in
 #: the same words, so the person who follows it is not sent from one
 #: refusal to the other (#659).
+#:
+#: AND NOT ONE OF THE TWO FORMS NO HOLDER IS (#911), in
+#: `naming-not-a-family`'s words. `--family open_glass` was told to change
+#: `--family` to one CamelCase token, and `openGlass`, which is one, was
+#: then refused as `naming-not-a-family`: an `open<Product>` name classifies
+#: as a neutral product whatever is declared.
 FAMILY_NAME_RULE = ("one CamelCase token with no hyphen, underscore, dot "
-                    "or space")
+                    "or space, and not an `open<Product>` or `<X>-Install` "
+                    "name")
 
 
 def _classify_family_name(policy: NamingPolicy, name: str) -> None:
@@ -700,9 +707,9 @@ def _classify_family_name(policy: NamingPolicy, name: str) -> None:
         raise Refusal(
             "naming-unclassified",
             f"{name!r} matches no family in the naming policy",
-            f"Remediation: --family takes {FAMILY_NAME_RULE} — the same rule "
-            "an assembly root's name follows, because a holder is spelled "
-            "like one.")
+            f"Remediation: --family takes {FAMILY_NAME_RULE}. A holder is "
+            "spelled like an assembly root, but those two forms are "
+            "unambiguous by construction and cannot be declared into one.")
     if found.family != "family":
         raise Refusal(
             "naming-not-a-family",
@@ -2093,7 +2100,12 @@ FAMILY_ID_DERIVED_FROM = "--family lowercased"
 #: forms take only ASCII letters, digits and hyphens, so "pass an explicit
 #: lowercase --id" led straight to `naming-unclassified`, and so would
 #: "change --family" to `North-Wind`. The derived remedy names the rule.
-PASSED_FAMILY_ID_REMEDIATION = "Remediation: pass an explicit lowercase --id."
+#: A passed one is told what an id may hold (#911), in the scaffold's words
+#: for `scaffold-bad-id`: "an explicit lowercase --id" was said to `--id
+#: foo_bar`, which is both.
+PASSED_FAMILY_ID_REMEDIATION = ("Remediation: pass an --id of lowercase "
+                                "letters, digits and hyphens, starting with "
+                                "a letter or digit.")
 DERIVED_FAMILY_ID_REMEDIATION = (
     f"Remediation: change --family to {FAMILY_NAME_RULE}. The id is "
     f"{FAMILY_ID_DERIVED_FROM}, and an explicit --id would not change "
@@ -2101,27 +2113,36 @@ DERIVED_FAMILY_ID_REMEDIATION = (
     "its family folder.")
 
 
-def _refuse_bad_family_id(family_id: str, given: str | None) -> None:
+def _refuse_bad_family_id(family_id: str, given: str | None,
+                          policy: NamingPolicy, family: str) -> None:
     """`family-bad-id`: an id `validate-family.py` would not take
     (`PROJECT_ID_RE`), named by where it came from (#659), as the scaffold
     names `scaffold-bad-id`.
 
-    `given` is `--id` as parsed. One the person passed is named as the flag
-    they typed, value as typed, and keeps its remedy. With none, or an empty
-    one, the id is `--family` lowercased (`args.id or family.lower()`), and
-    `--id 'north_wind' must match` named a value nobody had typed: the flag
-    is named as `_manifest_flags` names one, by where its value came from,
-    and an empty `--id ''` as empty, because it was passed."""
+    `given` is `--id` as parsed. One the person passed, `''` among them
+    (#911), is named as the flag they typed, value as typed, and is told
+    what an id may hold (`PASSED_FAMILY_ID_REMEDIATION`). With none, the id
+    is `--family` lowercased, and `--id 'north_wind' must match` named a
+    value nobody had typed: the flag is named as `_manifest_flags` names
+    one, by where its value came from.
+
+    A REFUSED NAME SPEAKS FIRST (#911). `--family North_Wind --id
+    north_wind` was refused for its id, and the remedy's retype then met
+    `naming-unclassified`, which no `--id` mends. So a passed id is refused
+    only once `--family` is a name a holder can have
+    (`_classify_family_name`, which `_checked_family_identity` asks next
+    anyway, and which reads nothing but the policy). A derived id keeps its
+    own refusal: its remedy is already the naming rule."""
     if PROJECT_ID_RE.match(family_id):
         return
     pattern = PROJECT_ID_RE.pattern
-    if given:
+    if given is not None:
+        _classify_family_name(policy, family)
         raise Refusal("family-bad-id",
                       f"--id {family_id!r} must match {pattern}",
                       PASSED_FAMILY_ID_REMEDIATION)
-    unset = "not given" if given is None else "empty"
     raise Refusal("family-bad-id",
-                  f"--id ({unset}, so {FAMILY_ID_DERIVED_FROM}) is "
+                  f"--id (not given, so {FAMILY_ID_DERIVED_FROM}) is "
                   f"{family_id!r}, which must match {pattern}",
                   DERIVED_FAMILY_ID_REMEDIATION)
 
@@ -2179,7 +2200,8 @@ def _refuse_what_github_cannot_hold(args, family: str, family_id: str,
     failed at `gh repo create`. Under `--local-remote-dir` none is asked: a
     bare repository on disk has no topic and no owner, and its name is the
     disk's. The id is named as `_refuse_bad_family_id` names it, by where it
-    came from."""
+    came from; a `--id ''` was refused there (#911), so a derived id is one
+    not given."""
     if args.local_remote_dir is not None:
         return
     if len(family) > GITHUB_NAME_MAX:
@@ -2193,11 +2215,10 @@ def _refuse_what_github_cannot_hold(args, family: str, family_id: str,
                                        "--org", ORG_REMEDIATION)
     refuse_an_owner_github_cannot_spell("family-bad-org", args.org, "--org",
                                         ORG_SPELLING_REMEDIATION)
-    if args.id:
+    if args.id is not None:
         named, remediation = "--id", PASSED_TOPIC_REMEDIATION
     else:
-        unset = "not given" if args.id is None else "empty"
-        named = f"--id ({unset}, so {FAMILY_ID_DERIVED_FROM})"
+        named = f"--id (not given, so {FAMILY_ID_DERIVED_FROM})"
         remediation = DERIVED_TOPIC_REMEDIATION
     refuse_a_topic_github_cannot_set("family-topic-too-long", topic,
                                      family_id, named, remediation)
@@ -2223,9 +2244,16 @@ def _checked_family_identity(args) -> tuple[str, str, str]:
     # too, before anything is created.
     refuse_bad_branch("family-bad-tracking-branch", "--tracking-branch",
                       args.tracking_branch)
-    family_id = checked_value("--id", args.id or family.lower())
-    _refuse_bad_family_id(family_id, args.id)
+    # A `--id ''` IS A VALUE, NOT A FLAG NOT GIVEN (#911): read by its truth,
+    # it planned `--family` lowercased without a word. Read by `is not None`,
+    # it is refused as `family-bad-id`, by name, before `checked_value` holds
+    # the id to a command line's alphabet, which would call it `unsafe-value`
+    # and which still refuses what `PROJECT_ID_RE.match` lets through, a
+    # trailing line break.
+    family_id = args.id if args.id is not None else family.lower()
     policy = NamingPolicy.load(NAMING_POLICY)
+    _refuse_bad_family_id(family_id, args.id, policy, family)
+    family_id = checked_value("--id", family_id)
     _classify_family_name(policy, family)
     _refuse_an_unholdable_holder_name(family)
     topic = policy.topic_for(family_id)
@@ -2420,37 +2448,44 @@ def _creator_name(args) -> str:
     set but blank and nothing else names a creator, the refusal says that
     variable is there and is the cause, instead of "no GIT_AUTHOR_NAME", and
     tells the person to unset it AND pass `--created-by`.
+
+    A `--created-by ''` IS THE FLAG'S ANSWER (#911). It was read by its
+    truth, so an empty one fell back to GIT_AUTHOR_NAME or `git config
+    user.name` without a word, and with neither `family-no-creator` said "no
+    --created-by" of a flag that was passed. It is a value now, and the
+    holder's own validator refuses it by name (`refuse_unholdable_manifest`),
+    as it refuses `--created-by ' '`; the fallbacks, and both refusals that
+    no creator was found, answer only where the flag is not given.
     """
     created_by, source = args.created_by, "--created-by"
-    blank_variable = False
-    if not created_by:
+    if created_by is None:
         named = os.environ.get("GIT_AUTHOR_NAME") or ""
         created_by, source = named.strip(), "GIT_AUTHOR_NAME"
         blank_variable = bool(named) and not created_by
-    if not created_by:
-        source = "`git config user.name`"
-        try:
-            created_by = git_out(["config", "user.name"], cwd=SHAPE_ROOT,
-                                 binary=True).decode(
-                                     "utf-8", "surrogateescape").strip()
-        except Refusal:
-            created_by = ""
-    if not created_by and blank_variable:
-        raise Refusal(
-            "family-no-creator",
-            "no --created-by, a GIT_AUTHOR_NAME of whitespace alone, and no "
-            "`git config user.name`. Creating a family is a human's act and "
-            "the manifest records whose.",
-            "Remediation: unset GIT_AUTHOR_NAME, which git would make the "
-            "holder's first commit as and refuses, and re-run with "
-            "--created-by 'Your Name'.")
-    if not created_by:
-        raise Refusal(
-            "family-no-creator",
-            "no --created-by, no GIT_AUTHOR_NAME and no `git config "
-            "user.name`. Creating a family is a human's act and the manifest "
-            "records whose.",
-            "Remediation: re-run with --created-by 'Your Name'.")
+        if not created_by:
+            source = "`git config user.name`"
+            try:
+                created_by = git_out(["config", "user.name"], cwd=SHAPE_ROOT,
+                                     binary=True).decode(
+                                         "utf-8", "surrogateescape").strip()
+            except Refusal:
+                created_by = ""
+        if not created_by and blank_variable:
+            raise Refusal(
+                "family-no-creator",
+                "no --created-by, a GIT_AUTHOR_NAME of whitespace alone, and "
+                "no `git config user.name`. Creating a family is a human's "
+                "act and the manifest records whose.",
+                "Remediation: unset GIT_AUTHOR_NAME, which git would make the "
+                "holder's first commit as and refuses, and re-run with "
+                "--created-by 'Your Name'.")
+        if not created_by:
+            raise Refusal(
+                "family-no-creator",
+                "no --created-by, no GIT_AUTHOR_NAME and no `git config "
+                "user.name`. Creating a family is a human's act and the "
+                "manifest records whose.",
+                "Remediation: re-run with --created-by 'Your Name'.")
     reason = unwritable_reason(created_by)
     if reason:
         raise Refusal(
@@ -2655,17 +2690,23 @@ def _template_values(args, family: str, family_id: str, repository: str,
     Windows path, spelled with `\\`, is quoted). Only this value is quoted:
     the block's other placeholder, `{{FAMILY}}` in `cd {{FAMILY}}`, is a
     name the naming policy spells in letters and digits.
+
+    A `--name ''` OR `--created-on ''` IS A VALUE (#911), read by `is not
+    None` as `--id` and `--created-by` are, so the holder's own validator
+    refuses it by name (`refuse_unholdable_manifest`) where its truth made
+    it the default without a word.
     """
     return {
         "FAMILY": family,
-        "FAMILY_NAME": args.name or family,
+        "FAMILY_NAME": args.name if args.name is not None else family,
         "FAMILY_ID": family_id,
         "FAMILY_REPOSITORY": repository,
         "ORG": args.org,
         "VISIBILITY": args.visibility,
         "TRACKING_BRANCH": args.tracking_branch,
         "CREATED_BY": created_by,
-        "CREATED_ON": args.created_on or _dt.date.today().isoformat(),
+        "CREATED_ON": (args.created_on if args.created_on is not None
+                       else _dt.date.today().isoformat()),
         "CLONE_URL": shell_quoted(url, "posix"),
         "SHAPE_REPOSITORY": SHAPE_REPOSITORY,
         "SHAPE_COMMIT": shape_commit,
@@ -3336,7 +3377,9 @@ MANIFEST_INVALID_REMEDIATION = (
 
 def _manifest_flags(args) -> dict:
     """`MANIFEST_FLAGS`, with a value no flag supplied named by where it came
-    from, so that a refusal does not point at a flag nobody typed."""
+    from, so that a refusal does not point at a flag nobody typed. A flag
+    passed empty supplied its value, `''`, and is named as the flag (#911),
+    as `_template_values` and `_creator_name` read it."""
     flags = dict(MANIFEST_FLAGS)
     for key, flag, given, source in (
             ("FAMILY_ID", "--id", args.id, FAMILY_ID_DERIVED_FROM),
@@ -3344,7 +3387,7 @@ def _manifest_flags(args) -> dict:
             ("CREATED_BY", "--created-by", args.created_by,
              "GIT_AUTHOR_NAME or `git config user.name`"),
             ("CREATED_ON", "--created-on", args.created_on, "today")):
-        if not given:
+        if given is None:
             flags[key] = f"{flag} (not given, so {source})"
     return flags
 

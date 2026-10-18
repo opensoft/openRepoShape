@@ -288,12 +288,16 @@ def test_init_names_a_derived_id_as_derived_and_mends_it_with_an_id(
         "family folder, stays as it is.\n")
 
 
-def test_init_names_an_empty_id_as_empty(family, only_the_branch_question,
-                                         capsys, tmp_path):
+def test_init_refuses_an_empty_id_as_passed_before_its_topic(
+        family, only_the_branch_question, capsys, tmp_path):
+    """#911: `--id ''` fell back to `--family` lowercased and was named
+    `--id (empty, so --family lowercased)` here. It is a passed value now,
+    refused by name as `family-bad-id` before GitHub's limits are asked."""
     err = refused_init(family, capsys, tmp_path, "--family",
                        a_name(ID_MAX + 1), "--id", "")
-    assert err.startswith(f"{FAMILY_TOPIC_TOO_LONG}: --id (empty, so --family "
-                          "lowercased) is "), err
+    assert err.startswith("REFUSED family-bad-id: --id '' must match "), err
+    assert "empty, so" not in err
+    assert FAMILY_TOPIC_TOO_LONG not in err
 
 
 def test_init_names_a_passed_id_as_passed(family, only_the_branch_question,
