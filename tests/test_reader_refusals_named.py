@@ -196,7 +196,8 @@ def test_the_roots_validate_pins_gives_the_remedy_and_not_the_lockstep(
                          cwd=project)
     assert checked.returncode == 2, checked.stderr + checked.stdout
     assert checked.stderr.splitlines() == [
-        f"REFUSED yaml-unparsable: {pin.resolve()}: line {line}: {OPENS} "
+        f"REFUSED yaml-unparsable: contracts/spec-pin.yaml: line {line}: "
+        f"{OPENS} "
         "`@`, which is reserved in YAML: '@x'", remedy_for("@x")]
     assert REMEDIATION not in checked.stderr
 

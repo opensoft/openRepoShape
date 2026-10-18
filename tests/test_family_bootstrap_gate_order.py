@@ -56,7 +56,8 @@ from pathlib import Path
 
 import pytest
 
-from conftest import clone_just_pushed, git, run_script
+from conftest import (appended_to_command_scope, clone_just_pushed, git,
+                      run_script)
 from repo_shape import PYTHON
 from test_family import NAME, SPARE, family, validate  # noqa: F401
 from test_family_add_refusals import holder, offline  # noqa: F401
@@ -131,10 +132,9 @@ NOT_ALL_FETCHED = ["", "(a) members and their legs",
 
 def with_config(env: dict, key: str, value: str) -> dict:
     """`env` with `key` set to `value`, one more `GIT_CONFIG_*` entry after
-    the ones it already holds, for every git the run starts."""
-    index = int(env.get("GIT_CONFIG_COUNT", "0"))
-    return {**env, "GIT_CONFIG_COUNT": str(index + 1),
-            f"GIT_CONFIG_KEY_{index}": key, f"GIT_CONFIG_VALUE_{index}": value}
+    the ones it already holds (`appended_to_command_scope`), for every git
+    the run starts."""
+    return {**env, **appended_to_command_scope(env, [(key, value)])}
 
 
 def fetching(env: dict) -> dict:

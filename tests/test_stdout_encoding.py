@@ -311,7 +311,9 @@ def _adopt_check(tmp_path: Path, request) -> tuple:
 
 
 def _doctor(tmp_path: Path, request) -> tuple:
-    """The doctor's rows are ASCII already; its `root` line was not."""
+    """The doctor's `root` line names the root as it is. (Its rows spell a
+    name too since #785: as itself where stdout can show it, escaped in a
+    command and `?` in a sentence where it cannot.)"""
     root = tmp_path / NAME
     root.mkdir()
     (root / "README.md").write_text("# here\n", encoding="utf-8")
