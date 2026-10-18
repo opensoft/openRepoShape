@@ -361,6 +361,103 @@ def test_a_leg_config_git_cannot_read_is_gits_own_failure(
         assert word not in real.stderr
 
 
+# --- a fetch that failed: the words say so, and no more ---------------------
+
+#: What a refusal ends with, after its plain words, when the fetch failed: the
+#: answer came from remote-tracking refs that fetch did not renew.
+STALE = (" The fetch above FAILED, so this was answered from stale "
+         "remote-tracking refs; fix the network or the credential and "
+         "re-run before believing it.")
+
+#: A refspec of the leg's own that names a branch its remote does not have.
+#: Git cannot satisfy it, so the fetch fails with 128 ("couldn't find remote
+#: ref"), as the person's own `git fetch origin` does, while `git ls-remote`
+#: still answers.
+MISSING = "+refs/heads/trunk:refs/remotes/origin/trunk"
+
+
+def failed_fetch_note(remote: str) -> str:
+    """The note both runs print first when `git fetch <remote>` failed in a
+    leg that HAS a remote named `origin` to ask: the exit and the stale-refs
+    answer, and no word of a missing `origin`."""
+    return (f"  note: `git fetch {remote}` in spec exited 128; answering "
+            "from the remote-tracking refs this checkout already has")
+
+
+def test_a_tag_is_not_asked_of_a_remote_the_fetch_could_not_read(
+        project, scaffolded):
+    """THE TAG CHECK IS ASKED ONLY AFTER A FETCH THAT WORKED. A commit only a
+    tag of the leg's remote reaches, as in R613 p03, in a leg whose own
+    refspec names a branch the remote lacks (`MISSING`): the fetch fails with
+    128, where `git ls-remote` still answers and lists the tag. Both runs
+    refuse it `bump-leg-commit-local-only` in the plain words with the
+    stale-refs sentence after them, as for any commit after a failed fetch,
+    and never in the tag words, which are said of a remote the fetch read.
+    Nothing in the root moves."""
+    remotes = private_remote(project, scaffolded)
+    leg = project / "spec"
+    made = made_in_the_leg(project, "TAGFAIL")
+    tag = tagged(leg, "v-failed-w898", made)
+    pushed(project, "refs/tags/v-failed-w898", "refs/tags/v-failed-w898")
+    git("config", "--unset-all", "remote.origin.fetch", cwd=leg)
+    git("config", "--add", "remote.origin.fetch", MISSING, cwd=leg)
+    assert contains(bare_of(remotes), made, "refs/tags/"), (
+        "premise: a tag of the leg's remote reaches it")
+    assert not contains(bare_of(remotes), made, "refs/heads/"), (
+        "premise: no branch of the leg's remote does")
+    assert not contains(leg, made, "refs/remotes/"), (
+        "premise: no remote-tracking ref of the leg does")
+    failed = git(*FILE_PROTOCOL, "fetch", "-q", "origin", cwd=leg,
+                 check=False)
+    assert failed.returncode == 128, "premise: git's own fetch fails"
+    assert "couldn't find remote ref" in failed.stderr
+    listed = git(*FILE_PROTOCOL, "ls-remote", "--tags", "--refs", "origin",
+                 cwd=leg).stdout
+    assert tag in listed, "premise: the remote still lists the tag, by id"
+    branched(project)
+    run = runner(project, remotes, "origin")
+    before = snapshot(project)
+
+    stderr = assert_one_refusal(project, run, made,
+                                "bump-leg-commit-local-only", before)
+
+    note, *rest = stderr.splitlines()
+    assert note == failed_fetch_note("origin")
+    plain, remediation = local_only(made)
+    assert refusal("\n".join(rest)) == (plain, remediation + STALE)
+
+
+def test_a_stand_in_directory_the_leg_lacks_fails_the_fetch_not_the_origin(
+        project):
+    """`--local-remote-dir` NAMES NO REMOTE OF THE LEG'S, so whether the leg
+    has an `origin` is not what failed. A leg with no `origin` at all, and a
+    directory that holds no `<repo>.git`: the fetch of that path fails with
+    128, and both runs say only that, in the note, and refuse the commit the
+    leg holds in the plain words with the stale-refs sentence. The note does
+    not say the leg has no remote named `origin`, which is true and has
+    nothing to do with a path the fetch was given. Nothing in the root
+    moves."""
+    made = made_in_the_leg(project, "NOWHERE")
+    without_origin(project, "removed")
+    empty = project.parent / "empty-remotes"
+    empty.mkdir()
+    absent = empty.resolve() / f"{PROJECT}-spec.git"
+    assert not absent.exists(), (
+        "premise: the directory holds no copy of the leg's remote")
+    branched(project)
+    run = runner(project, empty, "local-remote-dir")
+    before = snapshot(project)
+
+    stderr = assert_one_refusal(project, run, made,
+                                "bump-leg-commit-local-only", before)
+
+    note, *rest = stderr.splitlines()
+    assert note == failed_fetch_note(str(absent))
+    assert "no remote named" not in stderr
+    plain, remediation = local_only(made)
+    assert refusal("\n".join(rest)) == (plain, remediation + STALE)
+
+
 # --- a branch deleted on the remote: the fetch prunes -----------------------
 
 #: A pull-request refspec, as GitHub's documents give it: the leg's own,
@@ -395,8 +492,10 @@ def test_a_branch_deleted_on_the_remote_since_the_last_fetch_no_longer_counts(
     moved, through `origin` and through `--local-remote-dir`.
 
     WHAT NOTHING ON THE REMOTE BACKS GOES, AND NOTHING ELSE: the leg's own
-    branch and tag on the commit stay, in a leg set to prune tags, and so
-    does `origin/HEAD`. The leg's own refspec keeps pull requests under
+    branch and tag on the commit stay, in a leg set to prune tags (which
+    git 2.43 applies to no fetch with refspecs on its command line, so
+    `--no-prune-tags` is belt and braces here, measured), and so does
+    `origin/HEAD`. The leg's own refspec keeps pull requests under
     `origin/`: `pr/7`, which the remote still has, stays, and `pr/8`, which
     it deleted, goes, pruned against that refspec alone; a ref put there by
     hand, which no refspec maps, goes too. A refspec of the leg that writes
@@ -449,6 +548,54 @@ def test_a_branch_deleted_on_the_remote_since_the_last_fetch_no_longer_counts(
                  "refs/remotes/origin/by-hand"):
         assert not [ref for ref in after if ref.startswith(gone + " ")], (
             f"{gone}, which nothing on the remote backs, is pruned")
+
+
+#: A pull-request refspec the leg wrote WITHOUT the `+`, as a person may.
+UNFORCED = "refs/pull/*/head:refs/remotes/origin/pr/*"
+
+
+def test_the_legs_own_refspecs_are_forced_as_the_first_is(project,
+                                                          scaffolded):
+    """A REMOTE-TRACKING REF ONLY MIRRORS THE REMOTE, so each refspec of the
+    leg's own that rides along is forced, whether the leg wrote its `+` or
+    not. The leg keeps pull requests under `origin/` with `UNFORCED`, and the
+    remote's `pull/7` was moved BACK, as a force-push does: the person's own
+    `git fetch origin` refuses that ref and exits 1. This fetch does not fail:
+    both runs print no note, `origin/pr/7` follows the remote, and the commit
+    a branch of the remote reaches is pinned. Without the `+` the fetch
+    exited 1, said so in a note and answered from stale refs. The leg's
+    refspecs are as they were."""
+    remotes = private_remote(project, scaffolded)
+    bare = bare_of(remotes)
+    leg = project / "spec"
+    pin = git("rev-parse", "HEAD", cwd=leg).stdout.strip()
+    made = made_in_the_leg(project, "REWOUND")
+    pushed(project, made, "refs/heads/rewound-w898")
+    git("update-ref", "refs/pull/7/head", made, cwd=bare)
+    git("config", "--add", "remote.origin.fetch", UNFORCED, cwd=leg)
+    git(*FILE_PROTOCOL, "fetch", "-q", "origin", cwd=leg)
+    assert f"refs/remotes/origin/pr/7 {made}" in refs(leg), (
+        "premise: the leg holds the pull request as it was")
+    git("update-ref", "refs/pull/7/head", pin, cwd=bare)
+    own = git(*FILE_PROTOCOL, "fetch", "origin", cwd=leg, check=False)
+    assert own.returncode == 1, "premise: the person's own fetch refuses it"
+    assert "non-fast-forward" in own.stderr
+    # A fetch that failed must not be answered from the branch it brought.
+    git("update-ref", "-d", "refs/remotes/origin/rewound-w898", cwd=leg)
+    configured = git("config", "--get-all", "remote.origin.fetch",
+                     cwd=leg).stdout
+    branched(project)
+    run = runner(project, remotes, "origin")
+
+    dry = run(made, "--dry-run")
+
+    assert dry.returncode == 0, dry.stdout + dry.stderr
+    assert dry.stderr == "", "the fetch worked: no note"
+    assert f"refs/remotes/origin/pr/7 {pin}" in refs(leg), (
+        "the pull request follows the remote, forced")
+    pins(project, run, made)
+    assert git("config", "--get-all", "remote.origin.fetch",
+               cwd=leg).stdout == configured, "the refspecs are as they were"
 
 
 # --- `--refmap=`: the fetch moves no branch of the leg's own ----------------
@@ -516,7 +663,8 @@ def test_the_fetch_moves_no_branch_of_the_legs_own(project, scaffolded,
 # --- a narrowing refspec of the leg's own never decides reachability --------
 
 @pytest.mark.parametrize("narrowing", [
-    "+refs/heads/main:refs/remotes/origin/main", None, "^refs/heads/side-w898"],
+    "+refs/heads/main:refs/remotes/origin/main", None,
+    "^refs/heads/side-w898"],
     ids=["main-only", "no-refspec", "negative"])
 def test_a_narrowing_refspec_of_the_legs_own_never_decides_reachability(
         project, scaffolded, narrowing):

@@ -992,6 +992,16 @@ def _leg_fetch_refspecs(submodule: Path) -> list[str]:
     one only to a fetch with no refspec of its own (measured, git 2.43), so
     the excluded branch is fetched and counts like any other.
 
+    WHERE GIT CANNOT SATISFY A REFSPEC OF THE LEG'S OWN, THE FETCH FAILS,
+    where the fetch of every branch alone worked: one naming a ref the
+    remote no longer has (`couldn't find remote ref`, as the person's own
+    `git fetch origin` fails), or a tags-into-`origin/` refspec where the
+    remote has a branch and a tag of one name (`Cannot fetch both ...`,
+    where `git fetch origin` exits 0). Both exit 128, so the note follows,
+    the stale-refs sentence after it where the refusal has one, and nothing
+    is pruned (measured, git 2.43). `family.py` shares both; #905 holds
+    them.
+
     READ BY A LISTING, `git config --list`, which exits 0 whether or not the
     leg has a refspec (an `origin` with a URL and nothing else has none, and
     gets the first refspec alone). Read before the fetch, not inside its
@@ -1187,8 +1197,13 @@ def fetch_leg(submodule: Path, repository: str, commit: str,
     `refs/remotes/origin/` that no refspec of the fetch maps a ref of the
     remote to; the leg's own refspecs that write there ride along
     (`_leg_fetch_refspecs`), so what its configuration keeps there stays.
-    `--no-prune-tags` keeps a `pruneTags` setting from reaching the leg's
-    tags, and `origin/HEAD` stays. Offline nothing is pruned.
+    `--no-prune-tags` is belt and braces: git 2.43 applies no `pruneTags`
+    setting to a fetch with refspecs on its command line (measured).
+    `origin/HEAD` stays. Offline nothing is pruned. Under
+    `--local-remote-dir` the prune deletes the `origin/*` tracking refs the
+    stand-in directory lacks, a branch the leg's real `origin` still has
+    included; that is deliberate, as the fetch has always written that
+    directory's branches into `origin/*`.
 
     `--refmap=` (EMPTY) TURNS OFF GIT'S OPPORTUNISTIC UPDATE (#898). For a
     fetch of a named remote with refspecs on the command line, git also
