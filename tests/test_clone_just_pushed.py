@@ -90,15 +90,13 @@ def test_config_and_env_reach_the_one_command_and_nothing_is_stored(
         config=["-c", "clone.defaultRemoteName=by-config"])
     assert_store_read_through_git(by_config, "the clone made with `config`")
     assert git("remote", cwd=by_config).stdout.split() == ["by-config"]
-    # APPENDED to what the environment holds, as `command_scope` does in
-    # `test_adopt_ignored_shape_files.py`: the Windows job sets two entries
-    # of its own there, and `GIT_CONFIG_COUNT=1` would drop them.
-    held = int(os.environ.get("GIT_CONFIG_COUNT") or 0)
+    # APPENDED to what the environment holds (`appended_to_command_scope`):
+    # the Windows job sets two entries of its own, and `GIT_CONFIG_COUNT=1`
+    # would drop them.
     by_env = cloned_just_pushed(
         remote, tmp_path / "by-env", recurse=False,
-        env={"GIT_CONFIG_COUNT": str(held + 1),
-             f"GIT_CONFIG_KEY_{held}": "clone.defaultRemoteName",
-             f"GIT_CONFIG_VALUE_{held}": "by-env"})
+        env=appended_to_command_scope(
+            os.environ, [("clone.defaultRemoteName", "by-env")]))
     assert_store_read_through_git(by_env, "the clone made with `env`")
     assert git("remote", cwd=by_env).stdout.split() == ["by-env"]
     stored = git("config", "--local", "--list", cwd=by_env).stdout

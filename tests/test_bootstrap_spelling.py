@@ -50,6 +50,7 @@ from __future__ import annotations
 
 import ast
 import io
+import os
 import shutil
 import subprocess
 import sys
@@ -163,6 +164,21 @@ def edit(root: Path, filename: str, old: str, new: str) -> None:
 
 def bootstrap_of(root: Path) -> Path:
     return root / "scripts" / "bootstrap.py"
+
+
+def needs_a_byte_name(where: Path) -> None:
+    """Skip where a branch cannot be named with the byte 0xff, which POSIX
+    spells U+DCFF: the one name that does not print and that step (a) still
+    hands to git, since #715 refuses every other (`_argument_fault`). git
+    stores a branch as a file, so the disk must take the byte too."""
+    if len(os.fsencode("\udcff")) != 1:
+        pytest.skip("this system's `os.fsencode` makes no byte of U+DCFF")
+    probe = where / "probe-\udcff"
+    try:
+        probe.write_bytes(b"")
+    except (OSError, ValueError):
+        pytest.skip("this disk takes no file name with the byte 0xff")
+    probe.unlink()
 
 
 def spelled_root(root: Path, encoding: str) -> str:
@@ -381,42 +397,47 @@ def test_a_legs_path_is_spelled_where_it_is_not_initialized(
 
 def test_a_tracking_branch_git_will_not_make_is_spelled(project, tmp_path):
     """Passes on origin/main too, and is here to keep it: that line prints the
-    branch with `!r`, and a repr has always escaped a control."""
+    branch with `!r`, and a repr has always escaped what does not print.
+    Since #715 a control never reaches git (`_argument_fault`), so the name
+    holds the byte 0xff, which does, and `..`, which git refuses."""
+    needs_a_byte_name(tmp_path)
     edit(project, "project.yaml", 'tracking_branch: "main"',
-         r'tracking_branch: "a\x1bb"')
+         r'tracking_branch: "a\udcff..b"')
     code, out, err = run(bootstrap_of(project), "--skip-validators",
                          encoding="utf-8:strict", tmp_path=tmp_path,
                          cwd=project)
     assert code == 0 and "Traceback" not in err, out + err
     for leg in ("spec", "code"):
-        assert (rf"  [{leg}] {leg}: could not create branch 'a\x1bb' at the "
-                f"pin {pin12(project, leg)}; leaving detached"
+        assert (rf"  [{leg}] {leg}: could not create branch 'a\udcff..b' at "
+                f"the pin {pin12(project, leg)}; leaving detached"
                 ) in out.split("\n"), out
-    assert "\x1b" not in out, out
 
 
 def test_a_branch_name_is_spelled_in_every_line_that_names_it(project,
                                                               tmp_path):
-    """A branch git accepts and a terminal should not be handed raw: U+2028.
-    The lines that name one: created (and where the remote's is), on, and the
+    """A branch git accepts and a terminal should not be handed raw: the byte
+    0xff, U+DCFF, the one such name step (a) hands to git since #715 (a
+    U+2028 is refused before git, as the test after this one holds). The
+    lines that name one: created (and where the remote's is), on, and the
     disagreement."""
+    needs_a_byte_name(tmp_path)
     edit(project, "project.yaml", 'tracking_branch: "main"',
-         r'tracking_branch: "tb\u2028x"')
-    named = r"tb\u2028x"
+         r'tracking_branch: "tb\udcffx"')
+    named = r"tb\udcffx"
     spec = project / "spec"
     pin = git("rev-parse", "HEAD:spec", cwd=project).stdout.strip()
     code_pin = pin12(project, "code")
     tree = git("rev-parse", f"{pin}^{{tree}}", cwd=spec).stdout.strip()
     other = git("commit-tree", tree, "-p", pin, "-m", "elsewhere",
                 cwd=spec).stdout.strip()
-    git("update-ref", "refs/remotes/origin/tb\u2028x", other, cwd=spec)
+    git("update-ref", "refs/remotes/origin/tb\udcffx", other, cwd=spec)
 
     def lines() -> list[str]:
         code, out, err = run(bootstrap_of(project), "--skip-validators",
                              encoding="utf-8:strict", tmp_path=tmp_path,
                              cwd=project)
         assert code == 0 and "Traceback" not in err, out + err
-        assert "\u2028" not in out, out
+        assert "\udcff" not in out, out
         return out.split("\n")
 
     first = lines()
@@ -429,10 +450,37 @@ def test_a_branch_name_is_spelled_in_every_line_that_names_it(project,
     assert (f"  [spec] spec: on {named} at {pin[:12]} (branch tip == pin)"
             ) in lines()
 
-    git("commit", "-q", "--allow-empty", "-m", "local work", cwd=spec)
-    tip = git("rev-parse", "HEAD", cwd=spec).stdout.strip()[:12]
-    assert (f"  [spec] spec: PIN {pin[:12]} != branch {named} tip {tip}"
+    # The disagreement is asked of `code`, whose branch has no upstream:
+    # reading `spec`'s, a name that is not UTF-8, is #710's traceback, which
+    # #824 fixes. This asks only how the line spells the name.
+    code_leg = project / "code"
+    git("commit", "-q", "--allow-empty", "-m", "local work", cwd=code_leg)
+    tip = git("rev-parse", "HEAD", cwd=code_leg).stdout.strip()[:12]
+    assert (f"  [code] code: PIN {code_pin} != branch {named} tip {tip}"
             ) in lines()
+
+
+def test_a_branch_no_person_can_see_is_refused_spelled(project, tmp_path):
+    """U+2028, the old subject of the test above, which git takes and a
+    terminal should not be handed raw: since #715 step (a) makes no ref of
+    it (`_argument_fault`), and the line that says so spells it."""
+    edit(project, "project.yaml", 'tracking_branch: "main"',
+         'tracking_branch: "tb\\' + 'u2028x"')
+    heads = {leg: git("for-each-ref", "refs/heads", cwd=project / leg).stdout
+             for leg in ("spec", "code")}
+    code, out, err = run(bootstrap_of(project), "--skip-validators",
+                         encoding="utf-8:strict", tmp_path=tmp_path,
+                         cwd=project)
+    assert code == 0, out + err
+    assert "Traceback" not in err, err
+    assert "\N{LINE SEPARATOR}" not in out, out
+    for leg in ("spec", "code"):
+        assert (f"  [{leg}] {leg}: could not create branch tb\\" "u2028x: "
+                "it holds U+2028, a character that does not print or is "
+                "white space, which no person can tell from the name "
+                "without it; the leg is left as it is") in out.split("\n"), out
+        assert git("for-each-ref", "refs/heads",
+                   cwd=project / leg).stdout == heads[leg]
 
 
 #: A register row is a file's text. Each value carries a control or a line

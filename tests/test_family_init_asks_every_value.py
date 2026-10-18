@@ -245,8 +245,8 @@ def test_the_blank_creator_remedy_goes_on_to_a_holder(tmp_path, dry_run):
 
 
 @pytest.mark.parametrize("env", [
-    pytest.param({"GIT_AUTHOR_NAME": "Ada Lovelace"}, id="correct-it"),
-    pytest.param(user_name("Ada Lovelace"), id="unset-it"),
+    pytest.param(lambda: {"GIT_AUTHOR_NAME": "Ada Lovelace"}, id="correct-it"),
+    pytest.param(lambda: user_name("Ada Lovelace"), id="unset-it"),
 ])
 @DRY_RUN
 def test_each_exit_of_the_variables_remedy_goes_on_to_a_holder(
@@ -254,8 +254,10 @@ def test_each_exit_of_the_variables_remedy_goes_on_to_a_holder(
     """THE VARIABLE'S REMEDY, MEASURED: a GIT_AUTHOR_NAME no file can hold is
     told to correct it, or unset it; a corrected name, and no name with a
     good `user.name` behind it, are runs that initialise. It no longer says
-    `--created-by`, which the next test shows leads nowhere."""
-    result = init(tmp_path, env, dry_run=dry_run)
+    `--created-by`, which the next test shows leads nowhere. `env` is built
+    here, at the test, where `user_name` appends to the entries the
+    session's fixture has put in the environment (#835)."""
+    result = init(tmp_path, env(), dry_run=dry_run)
     initialised(result, tmp_path, dry_run)
 
 
