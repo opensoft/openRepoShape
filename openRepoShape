@@ -411,9 +411,11 @@ record_ref() {
 # nothing is read but the quote itself, which is written `'\''`. Every other
 # directory keeps the line this command has always printed, byte for byte:
 # README says `export PATH=…`, and a space or an apostrophe is safe in
-# double quotes. A `:` splits a `$PATH` whatever the quoting, and a newline
-# breaks the printed line in two, so `install_commands` refuses both before
-# this is asked.
+# double quotes. A `:` splits a `$PATH` whatever the quoting, and a control
+# character (a newline breaks the printed line in two, an escape is the
+# terminal's to act on) is no name a line can print as it is, and nor is a
+# character a terminal draws as something other than itself (#837), so
+# `install_commands` refuses all three before this is asked.
 export_path_line() {
 	local dir="$1" backslash='\' quote="'" rest quoted=""
 	case "$dir" in
@@ -441,22 +443,139 @@ export_path_line() {
 	esac
 }
 
+# THE CHARACTERS A TERMINAL DRAWS AS SOMETHING OTHER THAN THEMSELVES (#837),
+# by code point, a range as its first and last. A value holding one is
+# refused wherever this command would print it, without printing it:
+# `install_commands` refuses such a directory, `shape_checkout` such a
+# repository and `ref_fault` such a ref. Every line that printed it would
+# show another value: laid out as a terminal lays out a line (fribidi),
+# `~/` U+202E `.local/bin` reads `~/nib/lacol.`, `/opt/tools-1` U+200F
+# `/2/bin` reads `/opt/tools-12//bin`, and `~/.local` U+200B `/bin` reads
+# `~/.local/bin`, which is another directory's name.
+#   00AD        the soft hyphen, drawn as a hyphen in a terminal cell and as
+#               nothing elsewhere, never as what it is;
+#   061C, 200E-200F, 202A-202E, 2066-2069
+#               the twelve bidirectional controls, which reorder the text
+#               around them, and which `spelled` in scripts/repo_shape.py
+#               escapes for that reason (#391): a mark reorders the
+#               characters beside it, an embedding, override or isolate the
+#               rest of the line;
+#   2028-2029   the line and paragraph separators, which end a line for any
+#               reader that keeps Unicode's line breaks (Python's
+#               `str.splitlines` among them);
+#   200B, 2060-206F, FEFF, FFF9-FFFB, 1D173-1D17A, E0001
+#               the format characters of no width that nothing needs: the
+#               zero-width space and no-break space, the word joiner, the
+#               invisible operators, the deprecated format controls, the
+#               interlinear annotation characters, the musical beam, tie,
+#               slur and phrase controls, and the deprecated language tag.
+#               Unicode makes every code point from U+2060 to U+206F
+#               default-ignorable, so that range has no gap.
+# Left out, each for its reason:
+#   * U+200C and U+200D (ZERO WIDTH NON-JOINER and JOINER): a name in
+#     Persian, in an Indic script or with an emoji sequence holds them; and
+#     U+180E (MONGOLIAN VOWEL SEPARATOR), which Mongolian needs as Persian
+#     needs U+200C;
+#   * the other format characters of no width, with which a script builds
+#     its signs: the Egyptian hieroglyph format controls (U+13430 to
+#     U+1343F), which join signs into a group, and the shorthand format
+#     controls (U+1BCA0 to U+1BCA3), which overlap and step Duployan signs;
+#   * the tags (U+E0020 to U+E007F), which make an emoji subdivision flag,
+#     the variation selectors (U+FE00 to U+FE0F, U+E0100 to U+E01EF), which
+#     choose how the character before them is drawn, and U+034F (COMBINING
+#     GRAPHEME JOINER), which keeps the characters around it one grapheme:
+#     each is drawn as part of the character before it;
+#   * U+1160 (HANGUL JUNGSEONG FILLER), which forms a syllable block with
+#     the consonant before it and is drawn as that block;
+#   * the format characters drawn over the digits after them (U+0600 to
+#     U+0605, U+06DD, U+070F, U+0890, U+0891, U+08E2, U+110BD, U+110CD),
+#     which take a cell and are drawn as themselves;
+#   * every space (U+00A0, U+202F, U+3000) and the blank Hangul fillers
+#     (U+115F, U+3164, U+FFA0): each is drawn as a blank cell, as a space
+#     is.
+# Every entry is U+0080 or above: `misdrawn_characters` builds the two-,
+# three- and four-byte forms of UTF-8 (U+0080 to U+10FFFF), and no other.
+MISDRAWN_CHARACTERS=(00AD 061C 200B 200E-200F 2028-202E 2060-206F FEFF FFF9-FFFB 1D173-1D17A E0001)
+
+# WHICH OF THEM "$1" HOLDS, as `U+XXXX`, comma-separated, in that order, or
+# nothing (#837). Run under `LC_ALL=C`, in a subshell, as the control check
+# is, so the match is byte by byte in every locale: each character's UTF-8
+# is built from its code point with printf's octal escapes (`%b` reads
+# `\0NNN`, as POSIX defines it), in two bytes below U+0800, three below
+# U+10000 and four above, and looked for in the value as bytes, and no byte
+# is read back as a number. So one list says both what is refused and what
+# the refusal names. install.sh carries the list and this function as they
+# are here.
+misdrawn_characters() {
+	local value="$1" entry code last bytes name found=""
+	for entry in "${MISDRAWN_CHARACTERS[@]}"; do
+		code=$((0x${entry%-*}))
+		last=$((0x${entry#*-}))
+		while [ "$code" -le "$last" ]; do
+			if [ "$code" -lt 2048 ]; then
+				printf -v bytes '\\0%o\\0%o' $((0xC0 | (code >> 6))) \
+					$((0x80 | (code & 63)))
+			elif [ "$code" -lt 65536 ]; then
+				printf -v bytes '\\0%o\\0%o\\0%o' $((0xE0 | (code >> 12))) \
+					$((0x80 | ((code >> 6) & 63))) $((0x80 | (code & 63)))
+			else
+				printf -v bytes '\\0%o\\0%o\\0%o\\0%o' \
+					$((0xF0 | (code >> 18))) $((0x80 | ((code >> 12) & 63))) \
+					$((0x80 | ((code >> 6) & 63))) $((0x80 | (code & 63)))
+			fi
+			printf -v bytes '%b' "$bytes"
+			case "$value" in
+			*"$bytes"*)
+				printf -v name 'U+%04X' "$code"
+				found="${found:+$found, }$name"
+				;;
+			*) ;;
+			esac
+			code=$((code + 1))
+		done
+	done
+	printf '%s' "$found"
+}
+
 install_commands() {
 	local dir="${OPENREPOSHAPE_BIN_DIR:-$HOME/.local/bin}"
 	local name target source verb placed=0 recording=0 record spelled=""
-	# NO LINE ABOUT `$PATH` CAN NAME A DIRECTORY HOLDING A NEWLINE OR A `:`
-	# (#667): the colon is what splits a `$PATH`, and a newline breaks the
-	# line the note prints in two. Refused before anything is placed, as the
-	# Windows spelling below is. The newline goes first, and its refusal says
-	# nothing of the value, so that no refusal after it echoes one that can
-	# forge a line of output. The colon is checked after the Windows
-	# spelling, which holds one by definition, is respelled without one, and
-	# refuses what it cannot respell.
-	case "$dir" in
-	*$'\n'*)
-		die "--install would place this command in a directory whose name holds a newline, which no line about \$PATH can name: it would break in two. Nothing was placed. Set \$OPENREPOSHAPE_BIN_DIR to a directory without one, then run this again."
-		;;
-	esac
+	local misdrawn
+	# NO LINE ABOUT `$PATH` CAN NAME A DIRECTORY HOLDING A CONTROL CHARACTER
+	# OR A `:` (#667, #760): the colon is what splits a `$PATH`; a newline
+	# breaks the line the note prints in two; a carriage return rewrites the
+	# line on the terminal (`/tmp/x^MFORGED is not on $PATH`) and an escape
+	# is the terminal's to act on, in the note and in every refusal that
+	# names the directory. Refused before anything is placed, as the Windows
+	# spelling below is. The control characters go first, and their refusal
+	# says nothing of the value, so that no refusal after it echoes one that
+	# can forge a line of output. It is `[[:cntrl:]]` and not
+	# `[![:print:]]`, which is what this file holds the repository and the
+	# ref to: a name with a letter the locale does not print, as `café`
+	# under LC_ALL=C, is no fault of the directory's. The check runs under
+	# `LC_ALL=C` and names U+0080 to U+009F's two bytes (`\302`, then `\200`
+	# to `\237`), so a C1 control is refused in every locale, whatever else
+	# the value holds; U+2028 and U+2029, which only a UTF-8 locale's
+	# `[[:cntrl:]]` matched, are the next check's (#837). Left to the
+	# locale, `[[:cntrl:]]` matches a C1 control only in a value that is
+	# valid UTF-8: one byte that is not (a lone 0xE9) makes bash match byte
+	# by byte, and then U+009B's two bytes are not controls, as under `C`
+	# (measured with bash 5.2.21). The locale is `C` in a subshell, so that
+	# the match is byte by byte whatever a libc says of a byte in a UTF-8
+	# locale, and the locale of every line below is as it was. The colon is
+	# checked after the Windows spelling, which holds one by definition, is
+	# respelled without one, and refuses what it cannot respell.
+	if (LC_ALL=C; case "$dir" in *[[:cntrl:]]* | *$'\302'[$'\200'-$'\237']*) exit 0 ;; *) exit 1 ;; esac); then
+		die "--install would place this command in a directory whose name holds a control character, such as a newline, a carriage return, a tab or an escape, and no line about \$PATH can print such a name as it is: a terminal acts on it. Nothing was placed. Set \$OPENREPOSHAPE_BIN_DIR to a directory without one, then run this again."
+	fi
+	# A CHARACTER A TERMINAL DRAWS AS SOMETHING OTHER THAN ITSELF IS REFUSED
+	# NEXT (#837), for the control characters' reason and before the same
+	# lines: the name would read as another directory's. The refusal names
+	# each one by its code point, because nobody can see it, and says
+	# nothing else of the value. `misdrawn_characters` says which they are.
+	misdrawn="$(LC_ALL=C; misdrawn_characters "$dir")"
+	[ -z "$misdrawn" ] ||
+		die "--install would place this command in a directory whose name holds a character a terminal draws as something other than itself ($misdrawn): one that is invisible, is drawn as another character, ends a line or reorders the text around it, so no line about \$PATH can print the name as it reads. Nothing was placed. Set \$OPENREPOSHAPE_BIN_DIR to a directory without one, then run this again."
 	# A WINDOWS SPELLING IS SPELLED AGAIN THE WAY BASH SPELLS IT (#649), with
 	# `cygpath -u`, which Git Bash has, before anything is checked or placed:
 	# `D:\tools\bin` becomes `/d/tools/bin`. Kept as typed, every line below
@@ -593,9 +712,19 @@ find_python() {
 # a `git clone` command line, where a leading `-` is an option rather than a
 # repository and a control character could forge a line of output before this
 # script has said a word. The refusal does not echo the value back.
+#
+# A CHARACTER A TERMINAL DRAWS AS SOMETHING OTHER THAN ITSELF IS REFUSED
+# FIRST (#837), before the clone's refusal names `$REPO`, and in words that
+# name it by its code point and nothing else of the value. First, because
+# `[![:print:]]` is the locale's: under `C` it matches every byte past ASCII,
+# and under a UTF-8 locale none of these characters, so after it the words
+# would change with the locale.
 shape_checkout() {
-	local url
+	local url misdrawn
 	url="$(shape_clone_url)"
+	misdrawn="$(LC_ALL=C; misdrawn_characters "$url")"
+	[ -z "$misdrawn" ] ||
+		die "OPENREPOSHAPE_REPO holds a character a terminal draws as something other than itself ($misdrawn): one that is invisible, is drawn as another character, ends a line or reorders the text around it. This tool will not put it on a \`git clone\` command line. Set it to a URL or a path."
 	case "$url" in
 	-* | *[![:print:]]*) die "OPENREPOSHAPE_REPO is not a value this tool will put on a \`git clone\` command line: it starts with '-' or carries a control character. Set it to a URL or a path." ;;
 	esac
@@ -632,13 +761,24 @@ shape_checkout() {
 # refusing spelling. An EMPTY ref is a fault too, which no caller could reach
 # before the record: an empty variable is no ref at all, while an empty file
 # is one.
+#
+# A CHARACTER A TERMINAL DRAWS AS SOMETHING OTHER THAN ITSELF (#837) is a
+# fault between the length and the control character, named by its code
+# point and never echoed, as `shape_checkout` refuses one: before the
+# control check, whose `[![:print:]]` is the locale's, so the words do not
+# change with the locale, and before the shape, which echoes the value.
 ref_fault() {
-	local ref="$1" what="$2"
+	local ref="$1" what="$2" misdrawn
 	if [ -z "$ref" ]; then
 		printf '%s' "$what is empty, which is not a branch, tag or commit this tool will pass to \`git checkout\`."
 	elif [ "${#ref}" -gt 255 ]; then
 		printf '%s' "$what is ${#ref} characters long; a branch, tag or commit this tool will pass to \`git checkout\` is at most 255 characters."
 	else
+		misdrawn="$(LC_ALL=C; misdrawn_characters "$ref")"
+		if [ -n "$misdrawn" ]; then
+			printf '%s' "$what holds a character a terminal draws as something other than itself ($misdrawn): one that is invisible, is drawn as another character, ends a line or reorders the text around it. No branch, tag or commit this tool will pass to \`git checkout\` holds one."
+			return 0
+		fi
 		case "$ref" in
 		*[![:print:]]*) printf '%s' "$what carries a control character, which is not a branch, tag or commit this tool will pass to \`git checkout\`." ;;
 		[!A-Za-z0-9]* | *..* | *.lock | *[!A-Za-z0-9._/-]*) printf '%s' "$what is '$ref', which is not a branch, tag or commit this tool will pass to \`git checkout\`: a ref starts with a letter or digit, uses only letters, digits, '.', '_', '/', '-', has no '..' and does not end in '.lock'." ;;
