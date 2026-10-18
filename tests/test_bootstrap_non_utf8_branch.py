@@ -91,8 +91,12 @@ WAYS_OUT = [
 #: The good name L4-124 measured, and what an `ascii` stdout prints of it.
 GOOD = "feature/日本"
 GOOD_PRINTED = r"feature/\u65e5\u672c"
+#: And of `"日本 x"`, whose space is `UNSEEN` (#715).
+SPACED_PRINTED = r"\u65e5\u672c x"
 #: What `_argument_fault` calls the character (`UNWRITABLE`).
 UNWRITABLE = "a character this system's encoding cannot write"
+#: And a character no person can see (`UNSEEN`, #715), asked before it.
+UNSEEN = "a character that does not print or is white space"
 #: The line under a name git refuses in UTF-8 too, before git's own words.
 GIT_REFUSES = "          and git refuses it as a branch name in UTF-8 too:"
 #: A test that hands git a name only UTF-8 can write, or reads a line a
@@ -192,32 +196,39 @@ def past_the_pin(leg: Path, upstream: str, branch: str) -> tuple[str, str]:
 
 # --- the upstream's name goes back to git as the bytes it was ---------------
 
-@pytest.mark.parametrize("raw, byte", [
-    pytest.param("a\udcffb", True, id="the-byte-0xff"),
-    pytest.param("a\u00a0", False, id="ending-in-U+00A0",
+@pytest.mark.parametrize("raw, upstream, byte", [
+    pytest.param("a\udcffb", "a\udcffb", True, id="the-byte-0xff"),
+    # Since #715 step (a) refuses a BRANCH ending in U+00A0 (`UNSEEN`) before
+    # git is asked, so the branch here is a printable `a\u00e9`, and the
+    # UPSTREAM keeps the U+00A0 whose stripping this row was written for.
+    pytest.param("a\u00e9", "a\u00a0", False,
+                 id="an-upstream-ending-in-U+00A0",
                  marks=NEEDS_A_UTF8_PROCESS),
 ])
 def test_a_branch_past_the_pin_is_moved_back_whatever_its_upstream_is_named(
-        root, tmp_path, bootstrap_module, raw, byte):
+        root, tmp_path, bootstrap_module, raw, upstream, byte):
     """LANE 5'S SITE: on main, a `UnicodeDecodeError` traceback over the
-    byte 0xff, and, over a name ending in U+00A0, `not moving an existing
-    branch`. Both are moved back now, the line naming the upstream and the
-    command as `move_back_to_pin` spells them, and HEAD is on the branch
-    whose name is the bytes git was given."""
+    byte 0xff, and, over an upstream ending in U+00A0, `not moving an
+    existing branch`. Both are moved back now, the line naming the upstream
+    and the command as `move_back_to_pin` spells them, and HEAD is on the
+    branch whose name is the bytes git was given."""
     if byte:
         needs_the_byte(tmp_path)
     leg = root / "spec"
-    pin, ahead = past_the_pin(leg, raw, raw)
+    pin, ahead = past_the_pin(leg, upstream, raw)
 
     result = run_script(root / "scripts" / "bootstrap.py", "--skip-validators",
                         "--branch", raw, cwd=root)
     assert result.returncode == 0, result.stderr + result.stdout
     assert "Traceback" not in result.stderr, result.stderr
     spelled = bootstrap_module.spelled
+    held = "origin/" + upstream
     command = ("git -C spec merge --ff-only "
-               f"{spelled(shlex.quote('origin/' + raw))}")
-    assert moved_back(ahead, pin, spelled(raw), command=command) in (
-        result.stdout), result.stdout
+               f"{spelled(shlex.quote(held))}")
+    assert (f"  [spec] spec: branch {spelled(raw)} moved back {ahead[:12]} "
+            f"-> {pin[:12]}, the pin; nothing is lost, {spelled(held)} still "
+            f"holds those commits, and `{command}` brings the branch "
+            "forward") in result.stdout.split("\n"), result.stdout
     assert rev(leg, f"refs/heads/{raw}") == pin
     assert rev(leg) == pin
     assert head_bytes(leg) == b"refs/heads/" + os.fsencode(raw) + b"\n"
@@ -352,17 +363,19 @@ def test_a_good_name_this_encoding_cannot_write_is_said_and_the_way_out_works(
 @pytest.mark.parametrize("name, printed", [
     pytest.param("feature/日本..x", r"feature/\u65e5\u672c..x", id="dot-dot"),
     pytest.param("日本.lock", r"\u65e5\u672c.lock", id="dot-lock"),
-    pytest.param("日本 x", r"\u65e5\u672c x", id="a-space"),
+    pytest.param("日本~x", r"\u65e5\u672c~x", id="a-tilde"),
 ])
 def test_a_name_git_refuses_in_utf8_too_is_never_called_good(
         root, tmp_path, name, printed):
     """RV824's S1: each of these names this system's encoding cannot
-    write, and git refuses in any encoding (`..`, `.lock`, a space), was
+    write, and git refuses in any encoding (`..`, `.lock`, a `~`), was
     called good, with a way out that ended in git's `is not a valid branch
     name`. Now `git check-ref-format --branch` is asked of the UTF-8 bytes
     first: git's words are said, and #455's way out, and each leg is left
     as it was. The validators pass the value, as they did, so the run
-    ends `bootstrap ok`, as a branch git refuses always has."""
+    ends `bootstrap ok`, as a branch git refuses always has. RV824 asked a
+    space here too; since #715 a space is `UNSEEN`, named before
+    `UNWRITABLE` (the next test)."""
     changes = under_ascii(tmp_path)
     tracking(root, f'"{name}"')
     before = legs_state(root)
@@ -380,6 +393,31 @@ def test_a_name_git_refuses_in_utf8_too_is_never_called_good(
         assert any(printed in line for line in said), said
     assert lines.count(SECOND_LINE) == 2, lines
     assert out.endswith("bootstrap ok\n"), out
+    assert legs_state(root) == before
+
+
+def test_a_name_with_a_space_is_named_for_the_space_under_ascii_too(
+        root, tmp_path):
+    """#715 under `LC_ALL=C PYTHONUTF8=0`: `"日本 x"` holds a character this
+    encoding cannot write and a space. The space is the fault, in #715's
+    words, so the line that calls a name good is never said of it, and the
+    root's own validator names the space, so the run ends as it ends it."""
+    changes = under_ascii(tmp_path)
+    tracking(root, '"日本 x"')
+    before = legs_state(root)
+
+    code, out, err = run_under(root, tmp_path, changes)
+    said = err.decode("utf-8")
+    assert code == 1, out + said
+    assert "Traceback" not in said, said
+    assert "the name is good" not in out, out
+    lines = step_a(out)
+    for leg in ("spec", "code"):
+        assert (f"  [{leg}] {leg}: could not create branch "
+                f"{SPACED_PRINTED}: it holds U+0020, {UNSEEN}, which no "
+                "person can tell from the name without it; the leg is left "
+                "as it is") in lines, lines
+    assert "bootstrap FAILED: manifest" in said, said
     assert legs_state(root) == before
 
 
@@ -425,7 +463,6 @@ def test_a_legs_own_branch_this_encoding_cannot_write_is_said_too(
         "pin)"], out
     assert out.endswith("bootstrap ok\n"), out
     assert legs_state(root) == before
-
 
 
 def test_a_leg_whose_git_dir_is_gone_still_has_a_good_name_called_good(
@@ -502,6 +539,11 @@ def ascii_fsencode(text):
     # the encoding cannot write: the validator names it (RV824's S1).
     ("日\udcff", "U+DCFF, a lone surrogate"),
     ("\udc80日", "U+DC80, a lone surrogate"),
+    # A character no person can see is named before one the encoding cannot
+    # write (#715): that name is not good either, and the validator names
+    # it, so the line calling it good would be false too.
+    ("日本 x", f"U+0020, {UNSEEN}"),
+    ("日本\xa0", f"U+00A0, {UNSEEN}"),
 ])
 def test_under_an_ascii_encoding_what_it_cannot_write_is_the_fault(
         bootstrap_module, monkeypatch, branch, fault):
