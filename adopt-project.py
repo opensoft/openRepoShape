@@ -174,6 +174,7 @@ from __future__ import annotations
 import argparse
 import contextlib
 import datetime as _dt
+import errno
 import itertools
 import os
 import re
@@ -4602,14 +4603,17 @@ def _print_triad_advisory(path: Path, commit: str | None = None) -> None:
 
 
 def _print_plan_report(args, source: Source, tree: list, entries: list,
-                       follow_ups: list, seeded: list, out: Path,
+                       follow_ups: list, seeded: list,
                        pins: dict | None = None) -> None:
     """What `plan` says to the terminal once the file is on disk.
 
     Split out of `cmd_plan` for #138. THE UNRESOLVED PATHS ARE LAST on
     purpose: they are the one part of this report somebody has to act on, and
     a question printed above a summary table is a question that gets scrolled
-    past.
+    past. `plan written to` is NOT in it: `cmd_plan` prints that line the
+    moment the file is written, before this report reads anything more of the
+    source, so a read that fails here (`symlink_targets`' `git cat-file
+    --batch`) still leaves the line that says the plan exists (#799).
     """
     print(f"source     {source.repository or _shown(str(source.path))} @ "
           f"{source.commit[:12]} ({source.branch}), "
@@ -4645,7 +4649,8 @@ def _print_plan_report(args, source: Source, tree: list, entries: list,
     # A default is still a question (#528): it is printed with the question,
     # before the paths `execute` refuses over, which stay last.
     proposed = [e for e in entries if e.leg is not None and e.review_required]
-    print(f"\nplan written to {out}")
+    if proposed or unresolved:
+        print()
     if proposed:
         print(f"{len(proposed)} path(s) carry their rule's default answer, "
               "which `execute` takes as written unless it is changed:")
@@ -4657,6 +4662,174 @@ def _print_plan_report(args, source: Source, tree: list, entries: list,
               "question before `execute` will run:")
         for entry in unresolved:
             print(f"  {_shown(entry.path)}\n      {entry.question}")
+
+
+#: The code `plan` refuses an `--out` it cannot write under (#799), whether
+#: it asks before any work or the write itself fails; and what both say to
+#: do, after `PLAN_NOT_WRITTEN`.
+OUT_UNWRITABLE = "adopt-out-unwritable"
+OUT_FIX = ("Pass an --out that names a file in a folder this user can write "
+           "in, making the folder first if it is not there.")
+#: A write that fails for want of room (no space, a quota, an I/O error, a
+#: file too large) may have cut the file it opened short: that is all it
+#: adds to the way out, with its own remedy.
+OUT_NO_ROOM = frozenset(
+    getattr(errno, name) for name in ("ENOSPC", "EDQUOT", "EIO", "EFBIG")
+    if hasattr(errno, name))
+OUT_NO_ROOM_FIX = ("Free space, or pass an --out on another file system. If "
+                   "the write began, what now lies at that path is cut short "
+                   "and is not a plan.")
+
+
+def _out_refusal(args, why: str, fix: str = OUT_FIX) -> Refusal:
+    """`adopt-out-unwritable` for `why` the plan cannot be written at the
+    `--out` as it was typed; `fix` is the way out."""
+    return Refusal(OUT_UNWRITABLE,
+                   f"--out {_spelled(str(args.out))} cannot be written: {why}",
+                   f"Remediation: {PLAN_NOT_WRITTEN} {fix}")
+
+
+def _out_folder(out: Path) -> str:
+    """The folder `out` goes in, as it was typed and made absolute: with
+    `absolute` and not `os.path.abspath`, which collapses `nope/..` as text,
+    so a folder that exists is never called missing for a path the kernel
+    would not have walked through."""
+    return _spelled(str(out.parent.absolute()))
+
+
+def _the_work_dir(args) -> Path | None:
+    """The `--work-dir` as `_work_root` reads it, with `os.path.realpath`,
+    or None where none was given."""
+    if not getattr(args, "work_dir", None):
+        return None
+    return Path(os.path.realpath(args.work_dir))
+
+
+def _out_is_the_work_dir(args, out: Path) -> bool:
+    """Whether `out` is the `--work-dir` itself, which the run makes a
+    folder where it is missing."""
+    work = _the_work_dir(args)
+    return work is not None and Path(os.path.realpath(out)) == work
+
+
+def _first_missing_part(folder: Path) -> Path:
+    """The first part of `folder`, walked as it was typed, that is not
+    there, or `folder` itself where all of it is: a `..` steps back by
+    name, as the kernel does through a folder that is there, and so `W/..`
+    is missing while `W` is."""
+    absolute = folder.absolute()
+    walked = Path(absolute.anchor)
+    for part in absolute.parts[1:]:
+        walked = walked.parent if part == ".." else walked / part
+        if not os.path.lexists(walked):
+            return walked
+    return walked
+
+
+def _out_is_made_by_this_run(args, out: Path) -> bool:
+    """Whether the folder `out` goes in, found missing, is one this run
+    makes and no other: the `--work-dir`, what is above it that `_work_root`
+    makes with it (parents included), or `source-readonly` and the one
+    folder `Source.clone` makes in it for an `org/repo` source. Read as
+    `_work_root` reads the directory, with `os.path.realpath`, and asked of
+    the folder and of the first part of it that is missing, so that a `..`
+    which leads back to a folder above the `--work-dir` through one that
+    nothing makes (`nope/..`) is not taken for one the run makes. A local
+    source's `source-readonly/<name>` is not told apart from a clone's:
+    nothing makes it, and the write refuses what it cannot make."""
+    work = _the_work_dir(args)
+    if work is None:
+        return False
+    clones = work / SOURCE_READONLY
+
+    def made(path: Path) -> bool:
+        path = Path(os.path.realpath(path))
+        return (path == work or path in work.parents or path == clones
+                or path.parent == clones)
+
+    return made(out.parent) and made(_first_missing_part(out.parent))
+
+
+def _why_out_cannot_be_written(args, out: Path) -> str | None:
+    """Why the plan cannot be written at `out`, or None. THE QUESTION HAS NO
+    SIDE EFFECT: nothing is made, opened or removed, because a probe that
+    made the file would leave one where a later step refuses, and one that
+    opened a file that is there would block on a pipe. It is asked of the
+    file system with `os.path` and `os.access` alone, which answer False
+    rather than raise.
+
+    A FOLDER IS REFUSED FIRST, the `--work-dir` itself included, and so is
+    anything there that is not a regular file (a pipe, a device, a socket):
+    the plan is a file `write_lf` makes and fills. `os.access` is the
+    system's answer for the real user, a read-only mount included, and not
+    what a full disk, a quota or a Windows ACL say, so `_write_the_plan`
+    refuses, under the same code, whatever it cannot see. A symlink to
+    nothing is left to the write, which follows it as it always did. A
+    folder that is not there is left to the write only where this run makes
+    it (`_out_is_made_by_this_run`): any other is refused here, before a
+    clone."""
+    if os.path.isdir(out) or _out_is_the_work_dir(args, out):
+        return "it is a folder, and the plan is one file"
+    if os.path.exists(out):
+        return _why_the_file_there_is_no_plan(out)
+    return _why_the_folder_holds_no_plan(args, out)
+
+
+def _why_the_file_there_is_no_plan(out: Path) -> str | None:
+    """Why what is at `out` cannot be rewritten as the plan, or None."""
+    if not os.path.isfile(out):
+        return ("what is already there is not a regular file, and the plan "
+                "is one")
+    if not os.access(out, os.W_OK):
+        return ("the file already there cannot be written: this user has "
+                "no write permission on it")
+    return None
+
+
+def _why_the_folder_holds_no_plan(args, out: Path) -> str | None:
+    """Why a new file cannot be made in the folder `out` goes in, or None:
+    it is missing (unless the `--work-dir` makes it), it is a file or lies
+    under one, it cannot be reached, or this user may not write in it."""
+    folder, where = out.parent, _out_folder(out)
+    try:
+        found = os.stat(folder)
+    except FileNotFoundError:
+        if _out_is_made_by_this_run(args, out):
+            return None
+        return f"the folder it goes in, {where}, does not exist"
+    except NotADirectoryError:
+        return f"the folder it goes in, {where}, is a file or lies under one"
+    except OSError as exc:
+        return (f"the folder it goes in, {where}, cannot be reached "
+                f"({exc.strerror or exc})")
+    if not stat.S_ISDIR(found.st_mode):
+        return f"the folder it goes in, {where}, is a file or lies under one"
+    if not os.access(folder, os.W_OK | os.X_OK):
+        return f"this user cannot write in the folder it goes in, {where}"
+    return None
+
+
+def _refuse_an_unwritable_out(args) -> None:
+    """Refuse an `--out` the plan cannot be written at, as
+    `adopt-out-unwritable`, before anything exists (#799's L1-89)."""
+    why = _why_out_cannot_be_written(args, Path(args.out))
+    if why:
+        raise _out_refusal(args, why)
+
+
+def _write_the_plan(args, out: Path, text: str) -> None:
+    """Write the plan at `out`, or refuse the write as
+    `adopt-out-unwritable` where it fails after all: the folder went since
+    `_refuse_an_unwritable_out` asked, a disk filled, or the name is too
+    long for the file system (#799's L1-89). Only a failure for want of
+    room says the file may be cut short."""
+    try:
+        write_lf(out, text)
+    except OSError as exc:
+        raise _out_refusal(
+            args, f"writing it failed ({exc.strerror or exc})",
+            OUT_NO_ROOM_FIX if exc.errno in OUT_NO_ROOM else OUT_FIX
+        ) from None
 
 
 def cmd_plan(args) -> int:
@@ -4676,6 +4849,11 @@ def cmd_plan(args) -> int:
                                 nothing_made=PLAN_NOT_WRITTEN)
     if args.pin and args.pin_source is not None:
         _refuse_an_unrecordable_pin_source(args.pin_source)
+    # `--out` is asked here too (#799's L1-89): it needs the flag and the
+    # file system alone, and a plan that could not be written ended in a
+    # traceback at the write, after the work directory was made, an
+    # `org/repo` source cloned and the whole plan built.
+    _refuse_an_unwritable_out(args)
     work_root = _work_root(args)
     # An `org/repo` source is cloned into the work directory, so one this
     # user cannot write in is refused before the clone, as `check` refuses
@@ -4733,15 +4911,18 @@ def cmd_plan(args) -> int:
     entries = with_defaults(ask_about_refused_paths(
         ask_about_submodules(policy, ruled, tree), tree))
     out = Path(args.out)
-    write_lf(out, render_plan(args, source, entries, names, pins, follow_ups,
-                              seeded))
+    _write_the_plan(args, out, render_plan(args, source, entries, names, pins,
+                                           follow_ups, seeded))
     # The plan that records the clone exists from here, whatever happens
     # next: `_leave_the_clones` keeps it, though the report below be cut
     # short by a closed pipe or Ctrl-C (#652's review, F2).
     args.plan_written = True
+    # And it is SAID from here, before the report reads more of the source:
+    # the report's last reads (`symlink_targets`) can still refuse, exit 2,
+    # and the plan is on disk (#799's L1-79).
+    print(f"\nplan written to {out}")
 
-    _print_plan_report(args, source, tree, entries, follow_ups, seeded, out,
-                       pins)
+    _print_plan_report(args, source, tree, entries, follow_ups, seeded, pins)
     return 0
 
 
@@ -13627,7 +13808,20 @@ def main(argv: list[str] | None = None) -> int:
                            "(2026-09-04): `--allow-empty-leg code`. "
                            "Repeatable.")
     plan.add_argument("--path-policy", type=Path, default=None)
-    plan.add_argument("--out", default="adoption-plan.yaml")
+    plan.add_argument("--out", default="adoption-plan.yaml",
+                      help="where the plan is written: a file, in a folder "
+                           "that is there and that this user can write in "
+                           "(default: `adoption-plan.yaml` in the current "
+                           "directory). Any other is refused as "
+                           "`adopt-out-unwritable`, and no plan is written: "
+                           "a folder, a pipe or a device, or a file in a "
+                           "folder that is missing or that nobody can write "
+                           "in. That is asked before the source is read or "
+                           "cloned and before a work directory is made, and "
+                           "a write that fails all the same is refused as "
+                           "the same code. The --work-dir, and for an "
+                           "org/repo source its `source-readonly/<repo>`, "
+                           "may be missing: the run makes them.")
     plan.add_argument(
         "--work-dir", type=Path, default=None,
         help=_work_dir_help(
