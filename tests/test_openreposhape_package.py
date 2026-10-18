@@ -51,7 +51,9 @@ from pathlib import Path
 import pytest
 
 import test_openreposhape_command as launcher_cases
-from conftest import REPO, git
+from conftest import (REF_PARTS, REF_RULE_WORDS, REPO,
+                      assert_a_copy_answers_as_git_does,
+                      assert_the_refusal_states_the_ref_rule, git)
 from repo_shape import tree_digest
 # THE LAUNCHER'S CASES, collected again in this module, where
 # `the_python_command` runs them against the package's command.
@@ -59,6 +61,7 @@ from test_openreposhape_command import (
     test_a_bare_run_prints_the_usage_and_exits_one,
     test_a_family_value_is_never_taken_as_the_project,
     test_any_scaffold_argument_keeps_the_old_behaviour,
+    test_help_answers_past_a_repository_and_ref_no_line_can_print,
     test_help_prints_every_usage_line,
     test_help_still_exits_zero,
     test_it_scaffolds_through_setup_sh,
@@ -72,6 +75,13 @@ from test_openreposhape_command import (
 )
 from test_openreposhape_command import USAGE_LINES as LAUNCHER_USAGE
 from test_openreposhape_command import command_env
+# THE LAUNCHER'S VALUES NO LINE CAN PRINT AS THEY READ (#837, #866), and
+# what its refusals say of them, for the package's own checks (#939).
+from test_openreposhape_command import (
+    ESCAPE, LOCALES, MISDRAWN, NO_NON_ASCII_INTO_GIT_BASH, NOT_CONTROLS, RLO,
+    SHARING_ITS_BYTES, UNPRINTABLE_VALUES, assert_refused_saying,
+    ref_drawn_as_another, repo_drawn_as_another,
+)
 
 #: The launcher's cases this module runs again, named once more: they are
 #: imported for pytest to collect, and nothing here calls them.
@@ -79,6 +89,7 @@ LAUNCHER_CASES = (
     test_a_bare_run_prints_the_usage_and_exits_one,
     test_a_family_value_is_never_taken_as_the_project,
     test_any_scaffold_argument_keeps_the_old_behaviour,
+    test_help_answers_past_a_repository_and_ref_no_line_can_print,
     test_help_prints_every_usage_line,
     test_help_still_exits_zero,
     test_it_scaffolds_through_setup_sh,
@@ -453,12 +464,12 @@ def test_the_install_line_keeps_the_launchers_description_column(cmd):
         " " * column + "diagnose a REPOSITORY against this standard"
 
 
-def test_a_bare_run_asks_nothing_of_git_gh_or_curl(cmd, tmp_path):
-    """The usage, exit 1, and NO CALL: a `git`, a `gh` and a `curl` that
-    log every call stand first on PATH (a POSIX script and a `.cmd` each),
-    and the log must not exist afterwards. DETACHED, where the standard is
-    a clone and so a git call away, with the repository nowhere: a bare run
-    that reached for its standard would log a `git ls-remote` here."""
+def call_loggers(tmp_path: Path) -> tuple:
+    """A `git`, a `gh` and a `curl` that log every call to
+    `<tmp_path>/calls.log` and fail (a POSIX script and a `.cmd` each), in
+    a directory of their own; returned as a PATH with that directory first,
+    and the log, which does not exist afterwards where nothing called
+    them."""
     log = tmp_path / "calls.log"
     fakes = tmp_path / "fakes"
     fakes.mkdir()
@@ -469,21 +480,36 @@ def test_a_bare_run_asks_nothing_of_git_gh_or_curl(cmd, tmp_path):
         posix.chmod(0o755)
         (fakes / f"{name}.cmd").write_bytes(
             f'@echo {name} %* >> "{log}"\r\n@exit /b 1\r\n'.encode("utf-8"))
-    result = cmd.detached(
-        env={"PATH": f"{fakes}{os.pathsep}{os.environ['PATH']}"})
+    return f"{fakes}{os.pathsep}{os.environ['PATH']}", log
+
+
+def test_a_bare_run_asks_nothing_of_git_gh_or_curl(cmd, tmp_path):
+    """The usage, exit 1, and NO CALL: a `git`, a `gh` and a `curl` that
+    log every call stand first on PATH (`call_loggers`), and the log must
+    not exist afterwards. DETACHED, where the standard is a clone and so a
+    git call away, with the repository nowhere: a bare run that reached for
+    its standard would log a `git ls-remote` here."""
+    path, log = call_loggers(tmp_path)
+    result = cmd.detached(env={"PATH": path})
     assert result.returncode == 1, result.stdout + result.stderr
     assert USAGE_FIRST in result.stdout.splitlines()
     assert not log.exists(), log.read_text(encoding="utf-8")
 
 
+#: Refs git refuses PART BY PART, which the package's `ref_fault` took
+#: until #941, so that each cost a full clone of the standard and failed at
+#: `git checkout` (#874's five).
+GIT_REFUSES_A_PART = ("a.lock/b", "a/.b", "a//b", "a/b/", "a.")
+
+
 @pytest.mark.parametrize("ref", ["-x", "--upload-pack=touch /tmp/pwned",
                                  "a" * 256, "refs/heads/..", "x.lock",
-                                 "v1\nforged"])
+                                 "v1\nforged", *GIT_REFUSES_A_PART])
 def test_a_ref_is_checked_before_anything_is_cloned(cmd, tmp_path, ref):
     """`$OPENREPOSHAPE_REF` reaches `git checkout`, so it is checked first,
-    in the launcher's three steps and its words. The repository named here
-    does not exist, so a ref that got past the check would fail on the
-    clone instead; the over-long and the two-line value are not echoed."""
+    in the launcher's steps and its words. The repository named here does
+    not exist, so a ref that got past the check would fail on the clone
+    instead; the over-long and the two-line value are not echoed."""
     result = cmd.detached("--doctor", ".", env={
         "OPENREPOSHAPE_REPO": str(tmp_path / "never-cloned.git"),
         "OPENREPOSHAPE_REF": ref})
@@ -520,6 +546,230 @@ def test_version_names_the_ref_set_for_the_run(cmd):
     assert result.returncode == 0, result.stderr
     assert result.stdout.splitlines()[0] == \
         "openRepoShape 0.0.0 (opensoft/openRepoShape @ v1.2.3)"
+
+
+# --- a repository and a ref no line can print, and a ref git refuses -----------------
+
+#: One value with two things to refuse, each before a `forged` tail: an
+#: escape and then U+202E, refused for U+202E, because a character a
+#: terminal draws as another is asked before a control character, where
+#: the launcher asks it; U+202E and then U+200B, both named, in code point
+#: order, as the launcher names them; and a ref of 259 characters that
+#: holds U+202E, refused for its length, which is asked first.
+ASKED_IN_THE_LAUNCHERS_ORDER = [
+    pytest.param("OPENREPOSHAPE_REPO",
+                 "acme/r" + ESCAPE + "[31m" + RLO + "forged",
+                 repo_drawn_as_another("U+202E"),
+                 id="repo-an-escape-then-u+202e"),
+    pytest.param("OPENREPOSHAPE_REF",
+                 "v1" + ESCAPE + "[31m" + RLO + "forged",
+                 ref_drawn_as_another("U+202E"),
+                 id="ref-an-escape-then-u+202e"),
+    pytest.param("OPENREPOSHAPE_REPO",
+                 "acme/r" + RLO + "b" + chr(0x200B) + "forged",
+                 repo_drawn_as_another("U+200B, U+202E"),
+                 id="repo-two-at-once"),
+    pytest.param("OPENREPOSHAPE_REF",
+                 "v1" + RLO + "b" + chr(0x200B) + "forged",
+                 ref_drawn_as_another("U+200B, U+202E"),
+                 id="ref-two-at-once"),
+    pytest.param("OPENREPOSHAPE_REF", "v1" + RLO + "forged" + "a" * 250,
+                 "$OPENREPOSHAPE_REF is 259 characters long; a branch, tag "
+                 "or commit this tool will pass to `git checkout` is at most "
+                 "255 characters.", id="ref-over-long-and-u+202e"),
+]
+
+
+@pytest.mark.parametrize("locale", LOCALES)
+@pytest.mark.parametrize("variable, value, said",
+                         [*UNPRINTABLE_VALUES, *ASKED_IN_THE_LAUNCHERS_ORDER])
+def test_version_refuses_a_repository_or_ref_no_line_can_print(
+        cmd, variable, value, said, locale):
+    """The launcher's rows (#866) for the package's `--version`, which
+    printed a repository holding U+202E or U+200B as typed, exit 0, and
+    quoted a ref holding either in its shape refusal (#939). Each is now
+    refused as the launcher refuses it, under `C` and `C.UTF-8`: exit 2,
+    that one refusal in the launcher's words, and no part of the value in
+    either stream. `ASKED_IN_THE_LAUNCHERS_ORDER` holds the order of the
+    checks and of the code points a refusal names."""
+    result = cmd.detached("--version", env={variable: value,
+                                            "LC_ALL": locale})
+    assert assert_refused_saying(result, said) == f"REFUSED: {said}"
+
+
+@NO_NON_ASCII_INTO_GIT_BASH
+@pytest.mark.parametrize("locale", LOCALES)
+@pytest.mark.parametrize("name", NOT_CONTROLS)
+def test_version_prints_a_repository_holding_none_of_the_list(cmd, name,
+                                                              locale):
+    """The launcher's `NOT_CONTROLS` (an e with an acute accent, a
+    no-break space, U+200C, U+200D and the rest) are no fault: a path
+    holding one prints as typed, exit 0, in either locale, because the
+    package reads characters and the list holds none of these (#939)."""
+    path = f"/srv/{name}/openRepoShape.git"
+    result = cmd.detached("--version", env={"OPENREPOSHAPE_REPO": path,
+                                            "LC_ALL": locale})
+    assert result.returncode == 0, result.stdout + result.stderr
+    assert result.stdout.splitlines()[0] == \
+        f"openRepoShape 0.0.0 ({path} @ main)"
+
+
+#: Every run that reaches the standard's clone, as its console script and
+#: its arguments: `--doctor`, a scaffold run, and one of the four tools,
+#: which share `run_tool`.
+CLONING_RUNS = [
+    pytest.param("openreposhape", ("--doctor", "."), id="doctor"),
+    pytest.param("openreposhape", ("Atlas", "--org", "acme"), id="scaffold"),
+    pytest.param("shape_doctor", ("--json",), id="shape-doctor"),
+]
+
+
+def ref_shape_refused(what: str, ref: str) -> str:
+    """`ref_fault`'s refusal of a ref git refuses, opened with `what`."""
+    return (f"{what} is '{ref}', which is not a branch, tag or commit this "
+            f"tool will pass to `git checkout`: {REF_RULE_WORDS}")
+
+
+#: What each of `CLONING_RUNS` refuses before it calls `git` at all: a
+#: repository and a ref holding U+202E, which a run handed to `git` and
+#: named in its lines (#939), and each of `GIT_REFUSES_A_PART`, which cost
+#: a `git ls-remote`, a full `git clone` and a `git checkout` (#941).
+REFUSED_BEFORE_GIT = [
+    pytest.param({"OPENREPOSHAPE_REPO": "acme/r" + RLO + "forged"},
+                 repo_drawn_as_another("U+202E"), id="repo-u+202e"),
+    pytest.param({"OPENREPOSHAPE_REF": "v1" + RLO + "forged"},
+                 ref_drawn_as_another("U+202E"), id="ref-u+202e"),
+    *(pytest.param({"OPENREPOSHAPE_REF": ref},
+                   ref_shape_refused("$OPENREPOSHAPE_REF", ref),
+                   id=f"ref-{ref}")
+      for ref in GIT_REFUSES_A_PART),
+]
+
+
+def run_logging_git(tmp_path: Path, entry: str, args, env: dict) -> tuple:
+    """`entry` of an unstamped copy, with `call_loggers`' `git`, `gh` and
+    `curl` first on PATH and `env` over a repository that does not exist:
+    the result, and every call made."""
+    path, log = call_loggers(tmp_path)
+    site = installed_copy(tmp_path / "package")
+    result = run_package(site, entry, args, package_env(
+        tmp_path, detached=True, env={
+            "OPENREPOSHAPE_REPO": str(tmp_path / "nowhere.git"), **env,
+            "PATH": path}), cwd=tmp_path)
+    calls = log.read_text(encoding="utf-8").splitlines() \
+        if log.exists() else []
+    return result, calls
+
+
+@pytest.mark.parametrize("env, said", REFUSED_BEFORE_GIT)
+@pytest.mark.parametrize("entry, args", CLONING_RUNS)
+def test_a_run_that_clones_refuses_the_value_before_any_git_call(
+        tmp_path, entry, args, env, said):
+    """A run that reaches the clone asks the repository and the ref their
+    characters and the ref its shape before anything reaches `git` (#939,
+    #941): exit 2, that one refusal, no part of a value no line can print
+    in either stream, and no `git` call. Before, the repository holding
+    U+202E reached `git ls-remote` (from a stamped copy, `git clone`), the
+    ref holding it was quoted in its refusal, and a ref git refuses cost a
+    `git ls-remote`, a full clone and a `git checkout`. Unstamped, so a
+    value that got past would log a `git ls-remote` first."""
+    result, calls = run_logging_git(tmp_path, entry, args, env)
+    assert calls == [], calls
+    assert assert_refused_saying(result, said) == f"REFUSED: {said}"
+
+
+@pytest.mark.parametrize("entry, args", CLONING_RUNS)
+def test_with_both_values_bad_a_run_names_the_repository_first(
+        tmp_path, entry, args):
+    """The launcher's order for `--version`
+    (`test_bad_values_are_refused_in_the_order_the_check_states`), for each
+    run that reaches the clone (#939's Direction, rv947's NIT-1): with a
+    repository holding U+202E and a ref holding an escape, the one refusal
+    is the repository's, as the launcher's is, with no `git` call and
+    neither value echoed. `prepare` asked the ref first, so these runs
+    named the ref's fault."""
+    said = repo_drawn_as_another("U+202E")
+    result, calls = run_logging_git(
+        tmp_path, entry, args,
+        {"OPENREPOSHAPE_REPO": "acme/r" + RLO + "forged",
+         "OPENREPOSHAPE_REF": "v1" + ESCAPE + "[31mforged"})
+    assert calls == [], calls
+    refusal = assert_refused_saying(result, said)
+    assert refusal == f"REFUSED: {said}"
+    assert refusal.startswith("REFUSED: OPENREPOSHAPE_REPO holds ")
+    assert "OPENREPOSHAPE_REF" not in refusal
+
+
+@pytest.mark.parametrize("ref, said", [
+    pytest.param("v1" + RLO + "forged",
+                 ref_drawn_as_another("U+202E").replace(
+                     "$OPENREPOSHAPE_REF", "--shape-ref", 1),
+                 id="u+202e"),
+    pytest.param("a.lock/b", ref_shape_refused("--shape-ref", "a.lock/b"),
+                 id="a.lock/b"),
+])
+def test_a_typed_shape_ref_is_refused_before_any_git_call(tmp_path, ref,
+                                                          said):
+    """`--shape-ref` on a scaffold run names the ref of its clone, and is
+    asked what `$OPENREPOSHAPE_REF` is asked, in the same words with its
+    own name (#939, #941)."""
+    result, calls = run_logging_git(
+        tmp_path, "openreposhape", ["Atlas", "--org", "acme", "--shape-ref",
+                                    ref], {})
+    assert calls == [], calls
+    assert assert_refused_saying(result, said) == f"REFUSED: {said}"
+
+
+def test_the_misdrawn_table_is_the_launchers_list(monkeypatch):
+    """The package ships alone and reads no file of the launcher's, so it
+    carries a copy of the launcher's `MISDRAWN_CHARACTERS` (#939), as
+    install.sh carries one
+    (`test_install_sh_carries_the_launchers_misdrawn_check_as_it_is`): the
+    same entries, in the same order. `misdrawn_characters` names all of
+    `MISDRAWN`, the code points the launcher's tests write out, each once
+    and in code point order."""
+    standard = package_module("standard", monkeypatch)
+    [listed] = re.findall(r"^MISDRAWN_CHARACTERS=\((.*?)\)\n",
+                          (REPO / "openRepoShape").read_text(
+                              encoding="utf-8"), re.M)
+    assert standard.MISDRAWN_CHARACTERS == tuple(listed.split())
+    every = "".join(chr(code) for code in reversed(MISDRAWN)) * 2
+    assert standard.misdrawn_characters(every) == ", ".join(
+        f"U+{code:04X}" for code in MISDRAWN)
+
+
+def test_misdrawn_characters_names_the_launchers_and_nothing_else(
+        monkeypatch):
+    """The launcher's case for its own function (#837), for the package's:
+    over one value for each code point whose UTF-8 starts with the bytes
+    one of `MISDRAWN` starts with (`SHARING_ITS_BYTES`), it names exactly
+    the code points of `MISDRAWN`, each as `U+XXXX`, and nothing for the
+    rest."""
+    standard = package_module("standard", monkeypatch)
+    assert {code: standard.misdrawn_characters(f"/a{chr(code)}b")
+            for code in SHARING_ITS_BYTES} == {
+        code: f"U+{code:04X}" if code in MISDRAWN else ""
+        for code in SHARING_ITS_BYTES}
+
+
+@pytest.mark.parametrize("name, takes", REF_PARTS)
+def test_ref_fault_takes_a_ref_as_git_does_and_refuses_the_rest(
+        monkeypatch, name, takes):
+    """GIT'S RULE FOR A REF IS PER PART (#874), and the package's
+    `ref_fault` is its fourth copy (#941). It asked `..` and `.lock` of the
+    whole name only, so `a.lock/b`, `a/.b`, `a//b`, `a/b/` and `a.` passed,
+    cost a full clone and failed at `git checkout`. Each name of the table
+    goes to `ref_fault` and, through `git check-ref-format --branch`, to
+    git, and the two must answer alike; a name it refuses is refused in the
+    launcher's sentence. In this process, and asking git of a name only."""
+    standard = package_module("standard", monkeypatch)
+    fault = standard.ref_fault(name, standard.REF_VARIABLE)
+    assert_a_copy_answers_as_git_does("standard.py", name, takes,
+                                      fault == "")
+    if not takes:
+        assert_the_refusal_states_the_ref_rule(
+            fault, f"$OPENREPOSHAPE_REF is '{name}', which is not a branch, "
+            "tag or commit this tool will pass to `git checkout`: ")
 
 
 # --- the clone: once per commit, and checked before every run ------------------------
