@@ -29,9 +29,12 @@ the scaffold's plan at its step (5), which refuses them there, and its
 `--help` says the same three numbers, which it cannot import.
 
 An adoption's assembly root on GitHub is the source's own repository, so a
-leg over 100 characters named after it is mended by renaming the source on
-GitHub first, as `adopt-bad-id` says of a name the policy refuses, and not by
-a shorter `--project`, which plans another repository (#859's review).
+leg over 100 characters named after a root of 96 to 100 is mended by
+renaming the source on GitHub first, as `adopt-bad-id` says of a name the
+policy refuses, and not by a shorter `--project`, which plans another
+repository (#859's review). A root of 101 or more is no name GitHub gives a
+repository, and a leg the plan was edited to name is the plan's own: both
+keep "Use a shorter --project" (#859's re-review).
 
 The in-process runs refuse every process start (`no_process`), so a refusal
 that passes came before git, before `gh` and before the work directory. The
@@ -253,13 +256,18 @@ def test_a_name_the_disk_cannot_hold_is_named_once_and_both_limits_said():
     assert "; and GitHub keeps" in caught.remediation
 
 
+#: The first words of every remediation that tells the person to pick a
+#: shorter `--project`, before the limit each name broke.
+SHORTER_PROJECT = (
+    "Remediation: nothing was created. Use a shorter --project: the three "
+    "repositories are named `<Project>`, `<Project>-spec` and "
+    "`<Project>-code`, and ")
+
 #: The remediation of a name the disk alone cannot hold, as it was before
 #: #838 and is still.
 DISK_REMEDY = (
-    "Remediation: nothing was created. Use a shorter --project: the three "
-    "repositories are named `<Project>`, `<Project>-spec` and "
-    "`<Project>-code`, and a disk keeps a name of at most 255 bytes, which "
-    "under --local-remote-dir includes the `.git` each bare repository adds.")
+    f"{SHORTER_PROJECT}a disk keeps a name of at most 255 bytes, which under "
+    "--local-remote-dir includes the `.git` each bare repository adds.")
 
 
 def test_the_disk_alone_keeps_its_remediation_word_for_word():
@@ -662,8 +670,8 @@ def renamed_first(repository: str) -> str:
     says them. "Use a shorter --project" planned another repository."""
     return ("Remediation: nothing was created. The legs are named "
             "`<Project>-spec` and `<Project>-code`, and --project is the "
-            "source's own name, which must be at most 95 characters: "
-            f"{GITHUB_LIMITS_SAID} {repository} {RENAME_FIRST}")
+            f"source's own name: {GITHUB_LIMITS_SAID} {repository} "
+            f"{RENAME_FIRST}")
 
 
 #: `(plan flags, the organisation, the project, the refusal, its
@@ -750,17 +758,53 @@ def names_of(project: str, **legs) -> dict:
 
 def test_a_leg_named_after_the_source_is_mended_by_renaming_it(adopter):
     caught = names_refused(adopter, names_of(a_name(NAME_MAX)))
+    assert caught.detail == (
+        "Abbbbbbbbbbb...bbbbbbb-spec is 105 characters, and GitHub keeps a "
+        "repository's name to at most 100; Abbbbbbbbbbb...bbbbbbb-code is "
+        "105 characters, and GitHub keeps a repository's name to at most "
+        "100.")
     assert caught.remediation == renamed_first(f"{ORG}/{a_name(NAME_MAX)}")
 
 
-def test_a_leg_the_plan_names_otherwise_keeps_its_remediation(adopter):
+@pytest.mark.parametrize("legs", [
+    pytest.param({"code": "Other-code"}, id="spec-after-the-root"),
+    pytest.param({"spec": "Other-spec"}, id="code-after-the-root"),
+])
+def test_one_leg_named_after_the_source_is_enough(adopter, legs):
+    """The other leg was edited to a short name of its own, and is not
+    over GitHub's limit: the leg that is, is named after the source, and
+    renaming the source mends it, whichever leg it is."""
+    caught = names_refused(adopter, names_of(a_name(NAME_MAX), **legs))
+    assert caught.remediation == renamed_first(f"{ORG}/{a_name(NAME_MAX)}")
+
+
+@pytest.mark.parametrize("names", [
+    pytest.param(names_of(NORTHWIND, spec=f"{a_name(PROJECT_MAX + 1)}-spec"),
+                 id="named-otherwise"),
+    pytest.param(names_of(NORTHWIND, spec=f"{NORTHWIND}-{'s' * NAME_MAX}"),
+                 id="starting-with-the-root"),
+])
+def test_a_leg_the_plan_names_otherwise_keeps_its_remediation(adopter,
+                                                              names):
     """A leg edited in the plan to a name of its own is not the source's
-    name: the remediation is the one it had."""
-    caught = names_refused(adopter, names_of(
-        NORTHWIND, spec=f"{a_name(PROJECT_MAX + 1)}-spec"))
-    assert caught.remediation.startswith(
-        "Remediation: nothing was created. Use a shorter --project: ")
+    name, though it may start with it: the remediation is the one it had."""
+    caught = names_refused(adopter, names)
+    assert caught.remediation.startswith(SHORTER_PROJECT)
     assert caught.remediation.endswith(GITHUB_LIMITS_SAID)
+
+
+@pytest.mark.parametrize("length, remedy", [
+    pytest.param(NAME_MAX + 1, SHORTER_PROJECT + GITHUB_LIMITS_SAID, id="101"),
+    pytest.param(251, DISK_REMEDY, id="251"),
+])
+def test_a_root_github_cannot_have_is_not_the_sources_to_rename(
+        adopter, length, remedy):
+    """No repository on GitHub is named with more than 100 characters, so a
+    root of 101 is a `--project` no source was compared with, and "Use a
+    shorter --project" is the advice. At 251 the legs are 256 bytes, which a
+    disk cannot hold: the disk's remediation, with no word of GitHub's."""
+    caught = names_refused(adopter, names_of(a_name(length)))
+    assert caught.remediation == remedy
 
 
 def test_the_disk_alone_keeps_its_remediation_under_a_local_remote_dir(
@@ -768,6 +812,18 @@ def test_the_disk_alone_keeps_its_remediation_under_a_local_remote_dir(
     """A bare `<247>-spec.git` is 256 bytes: the disk's limit, and its
     remediation word for word, as before #838."""
     caught = names_refused(adopter, names_of(a_name(247)),
+                           tmp_path / "remotes")
+    assert caught.remediation == DISK_REMEDY
+
+
+def test_a_leg_named_after_the_source_is_not_the_disks_trouble(adopter,
+                                                               tmp_path):
+    """Under `--local-remote-dir` GitHub is never asked, so a `spec` leg of
+    105 characters named after a source of 100 is fine, and the `code` leg
+    edited past the disk's limit is refused with the disk's remediation, as
+    any name is: renaming the source on GitHub would mend nothing."""
+    caught = names_refused(adopter, names_of(a_name(NAME_MAX),
+                                             code=a_name(300)),
                            tmp_path / "remotes")
     assert caught.remediation == DISK_REMEDY
 

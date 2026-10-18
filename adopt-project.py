@@ -10742,7 +10742,10 @@ def _repository_urls(args, plan: Plan, names: dict,
         # is the source's own repository on GitHub, which GitHub lets be
         # named with up to 100 characters, and a leg named after one of 96
         # to 100 is over that limit. "Use a shorter --project" planned
-        # another repository, which `git ls-remote` could not read.
+        # another repository, which `git ls-remote` could not read. A root
+        # of 101 or more is no name GitHub gives a repository, so it is no
+        # repository's to rename, and keeps "Use a shorter --project"
+        # (#859's re-review, NIT 3).
         raise Refusal(exc.code, exc.detail, _rename_first(
             repositories["assembly"], SOURCE_NAME_TOO_LONG)) from None
     if not local:
@@ -10769,21 +10772,27 @@ TOPIC_REMEDIATION = (
 #: What `adopt-name-too-long` says before `_rename_first`'s way out, where a
 #: leg GitHub will not create is named after the source (#859's review,
 #: SHOULD 1), as `adopt-bad-id` says why the source's own name will not do.
+#: `GITHUB_LIMITS` says the project name's bound, 95, so this does not.
 SOURCE_NAME_TOO_LONG = (
     "nothing was created. The legs are named `<Project>-spec` and "
-    "`<Project>-code`, and --project is the source's own name, which must be "
-    f"at most {GITHUB_PROJECT_MAX} characters: {GITHUB_LIMITS}. ")
+    "`<Project>-code`, and --project is the source's own name: "
+    f"{GITHUB_LIMITS}. ")
 
 
 def _a_leg_named_after_a_long_root(names: dict) -> bool:
-    """Whether a leg over GitHub's `GITHUB_NAME_MAX` is named after the
-    assembly root, `<legs.assembly>-spec` or `-code`, as `plan` names both:
-    its length is then the root's, the source's own name (#859's review,
-    SHOULD 1). A leg the plan was edited to name otherwise is the plan's own
-    to shorten, and keeps the remediation it had."""
-    return any(len(names[role]) > GITHUB_NAME_MAX
-               and names[role] == f"{names['assembly']}-{role}"
-               for role in ("spec", "code"))
+    """Whether a leg over GitHub's `GITHUB_NAME_MAX` is named after an
+    assembly root GitHub can have, one of at most `GITHUB_NAME_MAX`
+    characters. A leg is named `<legs.assembly>-spec` or `-code`, as `plan`
+    names both: its length is then the root's, the source's own name (#859's
+    review, SHOULD 1). A leg the plan was edited to name otherwise is the
+    plan's own to shorten, and keeps the remediation it had; so does any leg
+    where the root is over `GITHUB_NAME_MAX`, which no repository on GitHub
+    is named, so renaming the source there shortens nothing (#859's
+    re-review, NIT 3)."""
+    return len(names["assembly"]) <= GITHUB_NAME_MAX and any(
+        len(names[role]) > GITHUB_NAME_MAX
+        and names[role] == f"{names['assembly']}-{role}"
+        for role in ("spec", "code"))
 
 
 def _refuse_a_topic_github_cannot_set(plan: Plan, topic: str) -> None:
