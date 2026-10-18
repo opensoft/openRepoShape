@@ -832,7 +832,14 @@ def _checked_branch(family: "Family", verb: str, suggested: str) -> str:
     (#487). Asked by the real run, after the refusals about the arguments
     and the holder and before the member is read or anything is written;
     `--dry-run` asks `_branch_said` instead. The remedy's `switch -c` is
-    followed by `BRANCH_LEFT`, for a holder that has the branch (#607)."""
+    followed by `BRANCH_LEFT`, for a holder that has the branch (#607).
+
+    THE HOLDER IS NAMED AS `shown_path` NAMES A PATH (#766), as #692 names
+    the folders `init` makes: a holder whose path held an ESC sent it to the
+    terminal, and one with a line break began a line of its own choosing.
+    A printable path is named byte for byte. The remedy's `switch -c` is
+    a command to paste, and still holds the holder's path raw inside its
+    shell quotes (#459)."""
     branch = _holder_branch(family.root)
     if branch is not None and branch != family.tracking():
         return branch
@@ -845,16 +852,17 @@ def _checked_branch(family: "Family", verb: str, suggested: str) -> str:
     if branch is None:
         raise Refusal(
             "family-holder-detached",
-            f"{family.root} is not on a branch, so `{verb}` would write a "
-            "commit no branch holds, with nothing to push and open a pull "
-            "request from. No git command that writes was run and nothing "
-            "was written.", remedy)
+            f"{shown_path(family.root)} is not on a branch, so `{verb}` "
+            "would write a commit no branch holds, with nothing to push and "
+            "open a pull request from. No git command that writes was run "
+            "and nothing was written.", remedy)
     raise Refusal(
         "family-on-tracking-branch",
-        f"{family.root} is on {branch!r}, which {MANIFEST} declares as the "
-        f"holder's tracking branch, and `{verb}` will not write a commit "
-        "whose only next step is a push to the default branch. No git "
-        "command that writes was run and nothing was written.", remedy)
+        f"{shown_path(family.root)} is on {branch!r}, which {MANIFEST} "
+        "declares as the holder's tracking branch, and "
+        f"`{verb}` will not write a commit whose only next step is a push to "
+        "the default branch. No git command that writes was run and nothing "
+        "was written.", remedy)
 
 
 def _branch_said(family: "Family", verb: str, suggested: str) -> list[str]:
@@ -1894,6 +1902,12 @@ def _refuse_landing_in_standard(into: Path, holder: Path,
     checkout the relative path that reaches its parent from there, so the
     printed flag lands the family beside the checkout wherever the person
     stands. Asked before anything is created, under `--dry-run` alike.
+
+    THE THREE PATHS ARE NAMED AS `shown_path` NAMES A PATH (#766): the
+    holder, the checkout and where `--into ..` lands, each under the
+    directory the person stands in, whose name can hold an ESC or a line
+    break. `--into {parent}` is `..` and `..`s, or on Windows a path no
+    control character can be in, and is named as it is.
     """
     checkout = _standard_checkout(into)
     if checkout is None:
@@ -1906,15 +1920,16 @@ def _refuse_landing_in_standard(into: Path, holder: Path,
     raise Refusal(
         "family-landing-in-standard",
         f"with neither --into nor --work-dir the holder lands where you are "
-        f"standing, at {holder}, which is inside {checkout}, a checkout of "
-        "openRepoShape itself (it holds scripts/family.py and "
-        "templates/family-root/). The family would be part of the "
-        "standard's tree, and `make siblings` would clone every member into "
-        "it too. Nothing was created, and `--dry-run` refuses the same.",
+        f"standing, at {shown_path(holder)}, which is inside "
+        f"{shown_path(checkout)}, a checkout of openRepoShape itself (it "
+        "holds scripts/family.py and templates/family-root/). The family "
+        "would be part of the standard's tree, and `make siblings` would "
+        "clone every member into it too. Nothing was created, and "
+        "`--dry-run` refuses the same.",
         f"Remediation: pass `--into {parent}` to land it beside this "
-        f"checkout, at {beside / family / family}, or `--into <dir>` for any "
-        "other parent directory; `--work-dir <dir>` is the override "
-        "(`<dir>/<Family>`, no family folder). There is no --force.")
+        f"checkout, at {shown_path(beside / family / family)}, or `--into "
+        "<dir>` for any other parent directory; `--work-dir <dir>` is the "
+        "override (`<dir>/<Family>`, no family folder). There is no --force.")
 
 
 def _landing(args, family: str) -> tuple[Path | None, Path]:
@@ -1948,12 +1963,15 @@ def _landing(args, family: str) -> tuple[Path | None, Path]:
     # `os.path.isfile`, which answers False for a holder this user cannot
     # search: `Path.is_file()` raised `PermissionError` there, a traceback
     # before the question about the holder (`_refuse_a_taken_holder`) that
-    # names it (#609's rule: a refusal by name, never a traceback).
+    # names it (#609's rule: a refusal by name, never a traceback). The two
+    # paths are named as `shown_path` names a path (#766): `--into`, or the
+    # directory the person stands in, can hold an ESC or a line break.
     if into.name == family and os.path.isfile(into / family / MANIFEST):
         raise Refusal(
             "family-holder-already-here",
-            f"{into} is already the {family} family folder and its holder "
-            f"is at {into / family}, so there is nothing to init",
+            f"{shown_path(into)} is already the {family} family folder and "
+            f"its holder is at {shown_path(into / family)}, so there is "
+            "nothing to init",
             f"Remediation: `{_add_command(into / family, args.org)}` grows "
             "it, and `make siblings` in the holder puts each member's "
             "working clone beside it. There is no --force.")
@@ -2504,6 +2522,13 @@ def _print_init_plan(values: dict, repository: str, url: str,
     and what a real run shows before it does anything.
 
     Split from `cmd_init` for #136.
+
+    THE FOLDER AND THE HOLDER ARE NAMED AS `shown_path` NAMES A PATH (#766).
+    Both lie under `--into`, `--work-dir` or the directory the person
+    stands in, and the plan is on stdout before any refusal, so a name with
+    a line break and then `WARNING forged-line: pwned` printed that line as
+    a line of the plan, on a dry run and on a run refused after it, and an
+    ESC reached the terminal. A printable path is named byte for byte.
     """
     print(f"family       {values['FAMILY_NAME']} ({values['FAMILY_ID']})")
     print(f"shape        {SHAPE_REPOSITORY} @ {shape_commit[:12]} "
@@ -2511,10 +2536,13 @@ def _print_init_plan(values: dict, repository: str, url: str,
     print(f"created by   {values['CREATED_BY']} on {values['CREATED_ON']}")
     print(f"  holder     {repository:<28} -> {url}")
     if folder is None:
-        print(f"landing      {holder}   (--work-dir: no family folder)")
+        print(f"landing      {shown_path(holder)}   (--work-dir: no family "
+              "folder)")
     else:
-        print(f"folder       {folder}   a plain folder, NOT a repository")
-        print(f"landing      {holder}   the holder clone, inside it")
+        print(f"folder       {shown_path(folder)}   a plain folder, NOT a "
+              "repository")
+        print(f"landing      {shown_path(holder)}   the holder clone, inside "
+              "it")
     print(f"members      mounted under {MEMBERS_DIR}/; none yet — "
           "`family.py add` puts one there")
     print("remotes      " + ("a bare repository on disk (no network)" if local
@@ -2610,6 +2638,12 @@ def _checked_reuse(reuse_empty_repo: bool, local: bool, url: str,
 
     Refused when the remote already exists WITH commits, or exists empty
     without `--reuse-empty-repo`. Split from `cmd_init` for #136.
+
+    A LOCAL REMOTE IS NAMED AS `shown_path` NAMES A PATH (#766): it is a
+    path under `--local-remote-dir`. `_refuse_an_unwritable_clone_url`
+    refuses a control character there first, so only a character that is
+    not printable and not refused (a zero-width space) reaches this from
+    the command line. A GitHub `<org>/<Family>` is named as it is.
     """
     # THE ONE REPOSITORY THAT MAY ALREADY EXIST is the holder, and only with
     # --reuse-empty-repo, and only with ZERO commits. `InkRouter` in the
@@ -2622,7 +2656,8 @@ def _checked_reuse(reuse_empty_repo: bool, local: bool, url: str,
     if not (reuse_empty_repo and empty):
         raise Refusal(
             "family-remote-exists",
-            f"{target} already exists" + ("" if local else " on GitHub")
+            f"{shown_path(target) if local else target} already exists"
+            + ("" if local else " on GitHub")
             + ("" if empty else " and has commits"),
             ("Remediation: it has ZERO commits, so it is a reserved name "
              "rather than a live repository — re-run with "
@@ -7765,6 +7800,11 @@ def _checked_index_unlocked(root: Path, path: str) -> None:
     `.git/index.lock`. A lock taken after this check is the rollback's to
     meet. The dry run does not ask: it writes nothing, and a lock is a fact
     about the moment.
+
+    THE DETAIL NAMES THE LOCK AS `shown_path` NAMES A PATH (#766): it lies
+    under the holder, whose path can hold an ESC or a line break. The
+    remedy's `rm -f` is quoted for a shell, as it was, and still holds
+    the lock's path raw inside those quotes (#459).
     """
     shown = _git_bytes(["rev-parse", "--git-path", "index.lock"],
                        root).decode("utf-8", "surrogateescape").strip()
@@ -7773,11 +7813,11 @@ def _checked_index_unlocked(root: Path, path: str) -> None:
         return
     raise Refusal(
         "family-index-locked",
-        f"the holder's index is locked: {lock.as_posix()} exists. `git "
-        f"submodule deinit` takes no such lock, so `remove` would empty "
-        f"{path} and drop its registration and then fail at `git rm`, its "
-        "first write to the index; it was refused before either, and "
-        "nothing was written.",
+        f"the holder's index is locked: {shown_path(lock.as_posix())} "
+        "exists. `git submodule deinit` takes no such lock, so `remove` "
+        f"would empty {path} and drop its registration and then fail at "
+        "`git rm`, its first write to the index; it was refused before "
+        "either, and nothing was written.",
         "Remediation: another git command is running in the holder, or one "
         "that stopped left the lock behind. Let it finish and run the same "
         "command again; if no git command is running, delete the lock (`rm "

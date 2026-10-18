@@ -35,13 +35,17 @@ Each writes ONE commit moving the **gitlink** for `members/<Project>` and that
 row's **`members[].pin`** in `family.yaml` together. `make pins`
 (`scripts/validate-family.py`) refuses when the two disagree, and it is right
 to: a gitlink moved alone is a pin that names a commit the tree is not at. Do
-not hand-edit the `members:` block — the tool rewrites it wholesale. Land the
-commit as a pull request: each refuses this holder's tracking branch
-(`family-on-tracking-branch`) and names the `git switch -c` that makes a
-branch, as the block's first line does, and ends by printing that branch's
-`git push`. The member must already be scaffolded or adopted, because a family
-cannot make a project out of a repository. A holder keeps `members/` in ONE
-spelling on every disk: `add` refuses `family-members-dir-variant`
+not hand-edit the `members:` block — the tool rewrites it wholesale — but for a
+row repair that `validate-family.py` names in a holder already in a repair
+state: put back, as git last had it, a row deleted or whose `path:` was edited
+by hand (`git log -p -- family.yaml` shows the change), or take out the row of
+a member that is to go (`member-gitlink-absent`); the commit is then the
+person's. Land the commit as a pull request: each refuses this holder's
+tracking branch (`family-on-tracking-branch`) and names the `git switch -c`
+that makes a branch, as the block's first line does, and ends by printing that
+branch's `git push`. The member must already be scaffolded or adopted, because
+a family cannot make a project out of a repository. A holder keeps `members/`
+in ONE spelling on every disk: `add` refuses `family-members-dir-variant`
 (`member-path-taken` for a variant of the member's own path) until a human
 renames what sits under another spelling.
 
@@ -89,19 +93,20 @@ the estate is parked because the command finished. **Nothing under a member's
 `.git` file carries an absolute path, which is machine plumbing and not the
 family's business.
 
-`make siblings` places the WORKSTATION layout: a plain folder named after the
-family, this holder inside it, and each member's working clone beside the
-holder (`../<Project>`). Two copies of every member is correct and intended —
-`members/<Project>` here is pinned and DETACHED, for `bootstrap` and
+`make siblings` places the WORKSTATION layout: a plain folder named after this
+holder's repository, this holder inside it, and each member's working clone
+beside the holder (`../<Project>`). Two copies of every member is correct and
+intended — `members/<Project>` here is pinned and DETACHED, for `bootstrap` and
 `validate`; the sibling is where a human works, and `family.py bump` is how
 this family follows it. What it will NOT do, and you must not do either:
 
-* **It moves nothing.** When the parent folder is not named after the family,
-  and no link of that name beside it leads to it, it WARNS, prints the exact
-  `mv` for a human to run and stops, exit 1 (`make`: 2), before it clones
-  anything. Do not run that `mv` on your own initiative: relocating a checkout
-  breaks an open shell, an editor and any LINKED WORKTREE, whose `.git` file
-  carries an absolute path.
+* **It moves nothing.** This holder's parent folder must be named EXACTLY after
+  its repository, case included, on every disk. When it is not, and no link of
+  that name beside it leads to it, it WARNS, prints the exact `mv` for a human
+  to run and stops, exit 1 (`make`: 2), before it clones anything. Do not run
+  that `mv` on your own initiative: relocating a checkout breaks an open shell,
+  an editor and any LINKED WORKTREE, whose `.git` file carries an absolute
+  path.
 * **It never touches an existing clone beyond `git fetch`.** No checkout, no
   reset, no pull, no stash, no branch switch — somebody is working in there.
   A directory that is a clone of a different repository is reported and
