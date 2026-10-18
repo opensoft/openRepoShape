@@ -24,6 +24,10 @@ ON MAIN AT a5245427 (2026-10-16), probed:
 - L1-25 and L1-49. `--work-dir` had no help on any of the three commands,
   and `--org` none on `plan`, so `docs/cli.md` said nothing of either.
 
+And (#796) `plan` refuses a `--source` that is a file, a directory inside
+a repository, empty or under a `~user` this machine has not, before it makes
+the `--work-dir`: on main it made it first.
+
 `chmod` keeps neither root nor a Windows user from making a directory, so
 the tests of such a directory skip where it cannot (`unwritable_work`).
 Nothing here reaches `gh`: every refusal comes before any clone.
@@ -227,6 +231,39 @@ def test_check_asks_the_work_dir_before_it_says_it_clones_again(
     assert GONE not in checked.stdout
     assert checked.stderr == refused(CHECK, cannot_write(unwritable_work))
     assert executed.stderr == refused(EXECUTE, cannot_write(unwritable_work))
+
+
+# ---------------------------------------------------------------------------
+# #796: `plan` refuses a `--source` before it makes the `--work-dir`
+# ---------------------------------------------------------------------------
+
+#: `--source` values `plan` refuses before anything exists, each as the
+#: source repository `THING` in `base` would be given: a file in it, a
+#: directory inside it, nothing, and a `~user` this machine has not.
+REFUSED_SOURCES = {
+    "a-file": lambda source: str(source / "README.md"),
+    "a-directory-inside": lambda source: str(source / "src"),
+    "empty": lambda _: "",
+    "unknown-user": lambda _: "~no-such-user-796/Thing",
+}
+
+
+@pytest.mark.parametrize("given", list(REFUSED_SOURCES.values()),
+                         ids=list(REFUSED_SOURCES))
+def test_plan_refuses_a_source_before_it_makes_the_work_dir(tmp_path, given):
+    """On main `plan` made the `--work-dir` it was given, and then ended in
+    a traceback (a file, `~user`) or planned a directory inside the
+    repository, or, for `''`, the one it ran in, exit 0. Each is refused
+    now, run in the repository, and the `--work-dir` is never made."""
+    source = make_source_repo(tmp_path / THING, tree=BASIC)
+    work = tmp_path / "made-here"
+    result = run_script(ADOPT, PLAN_VERB, "--source", given(source),
+                        *PLANNED, "--out", str(tmp_path / AGAIN), WORK_FLAG,
+                        str(work), cwd=source)
+    assert result.returncode == 2, result.stderr + result.stdout
+    assert result.stderr.startswith("REFUSED source-"), result.stderr
+    assert not work.exists()
+    assert not (tmp_path / AGAIN).exists()
 
 
 # ---------------------------------------------------------------------------

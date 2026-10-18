@@ -36,8 +36,8 @@ import pytest
 from conftest import (ADOPT, ORG, SCAFFOLD, WINDOWS_SKIP, git, planned,
                       refused_before_any_leg, run_script)
 from test_adopt_pins import (  # noqa: F401
-    ENTRY, PIN_FILE, PLANNED, adopter, gh_calls, gh_env, read_from,
-    with_pins,
+    ENTRY, PIN_FILE, PLANNED, adopter, check_plan, gh_calls, gh_env,
+    read_from, with_pins,
 )
 from test_pin_source_unreadable import RUNS, adoptable, made, run  # noqa: F401
 from repo_shape import Refusal, load_yaml, parse_yaml, tree_digest
@@ -275,7 +275,7 @@ def test_check_finds_a_recorded_path_that_is_no_clone_s_top_level(
     plan = planned(source_repo, tmp_path, PLANNED)
     with_pins(plan, read_from(path, stand_ins.commit,
                               recorded_on_main(path, stand_ins)))
-    checked = run_script(ADOPT, "check", "--plan", str(plan), env=gh_env)
+    checked = check_plan(plan, env=gh_env)
     assert checked.returncode == 1, checked.stdout + checked.stderr
     lines = [line for line in checked.stderr.splitlines()
              if line.startswith("FINDING ")]
@@ -309,7 +309,7 @@ def test_check_asks_a_recorded_top_level_as_it_always_did(
     path = stand_ins.base / where
     plan = planned(source_repo, tmp_path, PLANNED)
     with_pins(plan, read_from(path, stand_ins.commit, stand_ins.digest))
-    checked = run_script(ADOPT, "check", "--plan", str(plan), env=gh_env)
+    checked = check_plan(plan, env=gh_env)
     assert checked.returncode == 0, checked.stdout + checked.stderr
     said = (f"digest NOT rechecked here: the clone at {path} is a partial "
             "clone" if where == PARTIAL else
