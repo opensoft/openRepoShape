@@ -1037,6 +1037,44 @@ def test_a_clone_of_its_own_at_a_second_path_is_moved_whole_next(
     gate_then_add(offline, holder, family["remotes"])
 
 
+@needs_check_rules
+def test_a_second_paths_checkout_is_asked_in_its_own_spelling(
+        family, holder, offline):
+    """rv865b's round-3 NIT 1 (mutant C5): a gitlink at `Members/IRRS`,
+    committed, its bit set, and `Members` a link to `members`, the folding
+    emulation `tests/test_validate_family_remedies_typed.py` uses: there
+    `Members/IRRS` resolves to the member's own checkout, as a disk that
+    folds case resolves it. Its checkout is asked only where the path is on
+    disk in its own spelling, so no line says to delete one: asked through
+    the resolution, the text said to delete `Members/IRRS` by hand, which on
+    a real folding disk is the member's own checkout. The link is moved out
+    first and the removal takes `--sparse`; typed as printed, the member is
+    where its row says, the gate passes and the same `add` goes through."""
+    no_symlink_on_windows()
+    if disk_folds(holder):
+        pytest.skip("a link `Members` beside `members/` needs a disk that "
+                    "does not fold case")
+    commit = git("rev-parse", f"HEAD:{ROW}", cwd=holder).stdout.strip()
+    git("update-index", "--add", "--cacheinfo", f"160000,{commit},{VARIANT}",
+        cwd=holder)
+    git("update-index", "--skip-worktree", "--", VARIANT, cwd=holder)
+    git("commit", "-qm", "A second gitlink at Members/IRRS, marked",
+        cwd=holder)
+    os.symlink("members", holder / "Members", target_is_directory=True)
+    said = refused_untouched(offline, holder, family["remotes"])
+    assert said == (DIR_VARIANT + f"in the index: `{VARIANT}` (a submodule); "
+                    "on disk and untracked: `Members` (a symlink)",
+                    remedy_of(link_out("Members"),
+                              second_out(VARIANT, commit="the removal",
+                                         sparse=True)))
+    assert typed_as_printed(holder, said[1]) == [
+        "mv -- Members ../moved-1",
+        f"git rm -r --cached --sparse -- {VARIANT}", "git commit"]
+    assert os.path.islink(holder.parent / "moved-1")
+    registered(holder, family["root"], commit)
+    gate_then_add(offline, holder, family["remotes"])
+
+
 def test_a_link_in_members_at_a_rows_variant_is_named(family, holder,
                                                       offline):
     """rv865b's NIT 1: a link `members/irrs -> IRRS`, to the member's own
