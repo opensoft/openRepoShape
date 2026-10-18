@@ -67,10 +67,26 @@ COMMIT_RE = re.compile(r"[0-9a-f]{40}")
 ANY_CASE_COMMIT_RE = re.compile(r"[0-9a-fA-F]{40}")
 DIGEST_RE = re.compile(r"[0-9a-f]{64}")
 
-#: The launcher's ref checks (`ref_fault`), in its order: a control
-#: character, then the shape.
+#: A REF IS ASKED FIVE THINGS, IN THE LAUNCHER'S ORDER (its `ref_fault` and
+#: `ref_character_fault`): whether it is empty, its length, a character a
+#: terminal draws as another (`MISDRAWN_CHARACTERS`), a control character
+#: (`CONTROL_RE`), and only then its shape (`REF_RE`, then git's rule part
+#: by part). A repository is asked the middle two, in the same order
+#: (`clone_url`, the launcher's `checked_repo`). See `ref_fault`.
 CONTROL_RE = re.compile(r"[\x00-\x1f\x7f-\x9f]")
 REF_RE = re.compile(r"[A-Za-z0-9][A-Za-z0-9._/-]*")
+
+#: THE CHARACTERS A TERMINAL DRAWS AS SOMETHING OTHER THAN THEMSELVES (#837,
+#: #939), by code point, a range as its first and last: the launcher's
+#: `MISDRAWN_CHARACTERS`, entry for entry, where the reason for each entry
+#: and for each character left out is written down. A COPY, because the
+#: package ships alone and reads no file of the launcher's at run time:
+#: `tests/test_openreposhape_package.py` holds it equal to the launcher's
+#: list. `clone_url` refuses a repository holding one, and `ref_fault` a
+#: ref, naming each by its code point and nothing else of the value.
+MISDRAWN_CHARACTERS = ("00AD", "061C", "200B", "200E-200F", "2028-202E",
+                       "2060-206F", "FEFF", "FFF9-FFFB", "1D173-1D17A",
+                       "E0001")
 
 #: A Windows path with a drive letter, which is a path to clone and never an
 #: owner/name on github.com.
@@ -171,16 +187,43 @@ def repository() -> str:
     return os.environ.get("OPENREPOSHAPE_REPO") or DEFAULT_REPO
 
 
+def misdrawn_characters(value: str) -> str:
+    """Which characters of `MISDRAWN_CHARACTERS` `value` holds, each once,
+    as `U+XXXX`, comma-separated, in code point order; or "" when it holds
+    none. The launcher's `misdrawn_characters`, which looks for each one's
+    UTF-8 bytes; this looks for the character, as `CONTROL_RE` does."""
+    named = []
+    for entry in MISDRAWN_CHARACTERS:
+        first, _, last = entry.partition("-")
+        for code in range(int(first, 16), int(last or first, 16) + 1):
+            if chr(code) in value:
+                named.append(f"U+{code:04X}")
+    return ", ".join(named)
+
+
 def clone_url(repo: str) -> str:
     """What `git clone` is handed for `repo`: an owner/name becomes its
     github.com URL, and a URL, an scp-style address or a path on disk goes
     through untouched (the launcher's `shape_clone_url`, and a Windows
     drive path besides).
 
-    REFUSED, NOT ECHOED, when it starts with `-` or carries a control
-    character: the launcher's guard, in its words. The `--` before it on
-    every git command line is defence in depth, not a substitute.
+    REFUSED, NOT ECHOED, in the launcher's order and words (`checked_repo`):
+    first when the value as typed holds a character a terminal draws as
+    another, which the refusal names by its code point (#837, #939); then
+    when the URL starts with `-` or carries a control character. Both come
+    before any line names the repository and before any `git` call:
+    `--version` (`cli.print_version`) and `prepare` ask this as soon as
+    they have read `$OPENREPOSHAPE_REPO`. The `--` before it on every git
+    command line is defence in depth, not a substitute.
     """
+    misdrawn = misdrawn_characters(repo)
+    if misdrawn:
+        raise Refusal(
+            "OPENREPOSHAPE_REPO holds a character a terminal draws as "
+            f"something other than itself ({misdrawn}): one that is "
+            "invisible, is drawn as another character, ends a line or "
+            "reorders the text around it. This tool will not put it on a "
+            "`git clone` command line. Set it to a URL or a path.")
     after_at = repo.split("@", 1)[1] if "@" in repo else ""
     if ("://" in repo or ":" in after_at or repo.startswith(("/", "."))
             or os.path.isabs(repo) or DRIVE_RE.match(repo)):
@@ -197,10 +240,24 @@ def clone_url(repo: str) -> str:
 
 def ref_fault(ref: str, what: str) -> str:
     """What is wrong with `ref`, or "" when nothing is: the launcher's
-    `ref_fault`, in its order and its words. LENGTH first, so an over-long
-    value is refused without being echoed; a CONTROL CHARACTER next, because
-    a newline in it could forge a line of output; and only then the SHAPE,
-    which is safe to echo back because it has passed both."""
+    `ref_fault` with its `ref_character_fault`, in their order and their
+    words, for the ref `what` names (`$OPENREPOSHAPE_REF` or `--shape-ref`).
+
+    EMPTY, then LENGTH, so an over-long value is refused without being
+    echoed. Then a CHARACTER A TERMINAL DRAWS AS ANOTHER (#837, #939), named
+    by its code point, and a CONTROL CHARACTER, because either would make a
+    line that printed the ref show another one, or forge a line of its own;
+    the first is asked first, where the launcher asks it, so a ref holding
+    both gets the launcher's words. Only then the SHAPE, which is safe to
+    echo back because the value has passed all four: git's rule part by
+    part (#874, #941), no `..`, no empty part between slashes, no part that
+    starts with `.` or ends in `.lock`, and no `.` at the end, which is what
+    `git check-ref-format --branch` asks of each part and not of the whole
+    name alone. So a ref git refuses is refused here, before any clone.
+
+    `tests/test_openreposhape_package.py` holds it to the launcher: each
+    name of `REF_PARTS` to git's answer and to the launcher's sentence, and
+    `MISDRAWN_CHARACTERS` to the launcher's list."""
     if not ref:
         return (f"{what} is empty, which is not a branch, tag or commit this "
                 "tool will pass to `git checkout`.")
@@ -208,15 +265,30 @@ def ref_fault(ref: str, what: str) -> str:
         return (f"{what} is {len(ref)} characters long; a branch, tag or "
                 "commit this tool will pass to `git checkout` is at most 255 "
                 "characters.")
+    misdrawn = misdrawn_characters(ref)
+    if misdrawn:
+        return (f"{what} holds a character a terminal draws as something "
+                f"other than itself ({misdrawn}): one that is invisible, is "
+                "drawn as another character, ends a line or reorders the "
+                "text around it. No branch, tag or commit this tool will "
+                "pass to `git checkout` holds one.")
     if CONTROL_RE.search(ref):
         return (f"{what} carries a control character, which is not a "
                 "branch, tag or commit this tool will pass to `git "
                 "checkout`.")
-    if not REF_RE.fullmatch(ref) or ".." in ref or ref.endswith(".lock"):
+    parts = ref.split("/")
+    if (not REF_RE.fullmatch(ref) or ".." in ref or "" in parts
+            or any(part.startswith(".") or part.endswith(".lock")
+                   for part in parts)
+            or ref.endswith(".")):
         return (f"{what} is '{ref}', which is not a branch, tag or commit "
-                "this tool will pass to `git checkout`: a ref starts with a "
-                "letter or digit, uses only letters, digits, '.', '_', '/', "
-                "'-', has no '..' and does not end in '.lock'.")
+                "this tool will pass to `git checkout`: a ref starts with an "
+                "ASCII letter or digit, uses only ASCII letters, digits, '.', "
+                "'_', '/', '-', has no '..' (git reads it as a revision "
+                "range), no empty part between slashes ('//', or a '/' at the "
+                "end), no part that starts with '.' or ends in '.lock' (the "
+                "name git gives the lock file it writes beside a ref), and "
+                "does not end in '.'.")
     return ""
 
 
