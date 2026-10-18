@@ -25,7 +25,10 @@ WHAT IT DOES, in order:
       A fetch that fails is REPORTED and does not stop the run: the members
       that did arrive are still worth bootstrapping, and a family that
       refused to do anything because one member is unreachable would be worse
-      than one that says which.
+      than one that says which. The advice to set a credential is given only
+      where git asked for one: not where its init died at a gitlink it has
+      no url for, nor where it read nothing from `.gitmodules`, both below,
+      since it fetched nothing then (#839).
 
       "every member and leg fetched" is said only where git exited 0 AND
       every row's member is checked out (#648). A member left NOT CHECKED
@@ -72,7 +75,11 @@ WHAT IT DOES, in order:
       review-authority readout. This command does not reimplement any of
       that; it walks the members `family.yaml` names and calls theirs.
       `--members-make validate` runs `make validate` instead, which is what
-      the family Makefile's `validate` target uses.
+      the family Makefile's `validate` target uses. A member whose command
+      fails is named with that command's exit code, read from make's
+      `Error <code>` line, since make exits 2 for any command that fails,
+      so a member's finding (1) and its refusal (2) are told apart, and
+      from a failure of make's own, which prints no such line (#839).
 
   (c) EXITS 0 unless a member's own command failed, or (a) left a member not
       checked out that no credential would check out, or found a line or a
@@ -182,8 +189,10 @@ def fetch_members(root: Path, rows: list[dict]) -> list[str]:
     Returns a failure line for each of `rows` whose member it leaves not
     checked out where no credential would check it out (`unfetchable`), for
     the run to end FAILED on (#648); every member and leg is said to be
-    fetched only where there is none and git exited 0. Raises the
-    `git-not-runnable` refusal where git cannot be started (#694)."""
+    fetched only where there is none and git exited 0. The advice to set a
+    credential is printed only where git asked for one
+    (`credential_advice`, #839). Raises the `git-not-runnable` refusal
+    where git cannot be started (#694)."""
     source, token = credential()
     args = ["git"]
     if token:
@@ -202,19 +211,10 @@ def fetch_members(root: Path, rows: list[dict]) -> list[str]:
         if refusal is None:
             raise
         raise refusal from exc
-    if proc.returncode != 0:
-        # The token can appear in git's own error text (it is in the URL it
-        # tried), so the output is scrubbed before it is printed.
-        message = (proc.stderr + proc.stdout).strip()
-        if token:
-            message = message.replace(token, "<redacted>")
-        print(f"  FETCH INCOMPLETE (git exit {proc.returncode}) using "
-              f"credential source '{source}':\n{message}", file=sys.stderr)
-        print("  If the members are PRIVATE, set SHAPE_LEGS_TOKEN (a "
-              "fine-grained PAT with contents:read on them) or export an "
-              "App-minted SHAPE_LEGS_APP_TOKEN, then re-run. What did arrive "
-              "is bootstrapped below.", file=sys.stderr)
     left, stopper, modules = unfetchable(root, rows, proc.returncode == 0)
+    if proc.returncode != 0:
+        fetch_incomplete(proc, source, token,
+                         credential_advice(bool(left), stopper, modules))
     if left:
         print("  NOT CHECKED OUT, and not for want of a credential: "
               + ", ".join(f"{spelled(path)} ({reason(why, stopper, modules)})"
@@ -230,6 +230,44 @@ def fetch_members(root: Path, rows: list[dict]) -> list[str]:
         print("  every member and leg fetched")
     return [f"{spelled(row.get('project') or '?')} (not checked out)"
             for row, _, _ in left]
+
+
+def fetch_incomplete(proc: subprocess.CompletedProcess, source: str,
+                     token: str, advice: str) -> None:
+    """(a)'s report of a `git submodule update` that exited non-zero: git's
+    own words, then `advice`, where there is any (`credential_advice`)."""
+    # The token can appear in git's own error text (it is in the URL it
+    # tried), so the output is scrubbed before it is printed.
+    message = (proc.stderr + proc.stdout).strip()
+    if token:
+        message = message.replace(token, "<redacted>")
+    print(f"  FETCH INCOMPLETE (git exit {proc.returncode}) using "
+          f"credential source '{source}':\n{message}", file=sys.stderr)
+    if advice:
+        print(advice, file=sys.stderr)
+
+
+def credential_advice(denied: bool, stopper: str | None,
+                      modules: Gitmodules) -> str:
+    """(a)'s advice to set a credential, or nothing where git asked for none
+    (#839): where its init died at a gitlink it has no url for (`stopper`),
+    or it read nothing from `.gitmodules`, a merge leaving it unmerged, a
+    value git dies on or a file it cannot parse, it fetched nothing. Every
+    row (a) then leaves not checked out is said to be no credential's, and
+    the advice beside that was its denial (w768's candidate 1 on #819).
+    Anywhere else a fetch git made failed, a member's, or a leg's in a
+    member checked out, and the advice stands; where a row is said to be no
+    credential's beside it (`denied`), it is for the members that line does
+    not name."""
+    if (stopper is not None or modules.unmerged or modules.refused
+            or modules.unreadable):
+        return ""
+    which = ("the members the next line does not name" if denied
+             else "the members")
+    return (f"  If {which} are PRIVATE, set SHAPE_LEGS_TOKEN (a fine-grained "
+            "PAT with contents:read on them) or export an App-minted "
+            "SHAPE_LEGS_APP_TOKEN, then re-run. What did arrive is "
+            "bootstrapped below.")
 
 
 def git_not_started(exc: OSError) -> Refusal | None:
@@ -782,7 +820,9 @@ def member_path(root: Path, row: dict) -> Path:
 
 
 def run_member_target(root: Path, row: dict, target: str) -> str | None:
-    """(b) One member's own `make <target>`. Returns a failure line, or None."""
+    """(b) One member's own `make <target>`. Returns a failure line, or None:
+    one naming the exit code of the member's command where make names it,
+    else make's own (`run_make`, #839)."""
     # A member row is the family manifest's text (#391): what is PRINTED of it,
     # and of `--members-make`, is spelled. The path is built from the raw row.
     project = spelled(row.get("project") or "?")
@@ -803,11 +843,72 @@ def run_member_target(root: Path, row: dict, target: str) -> str | None:
         return None
     print(f"  --- {project}: make {named} ---")
     sys.stdout.flush()
-    proc = subprocess.run([make, target], cwd=str(path), check=False)
+    returncode, own = run_make(make, target, path)
     sys.stdout.flush()
-    if proc.returncode != 0:
-        return f"{project} (make {named} exited {proc.returncode})"
-    return None
+    if returncode == 0:
+        return None
+    if own is not None:
+        return f"{project} (make {named}: the member's command exited {own})"
+    return (f"{project} (make {named} exited {returncode} and printed no "
+            "`Error <code>` line for a command of the member's: make's own "
+            "message above says what failed)")
+
+
+#: The line GNU make prints where a command of the target exits non-zero,
+#: `make: *** [Makefile:44: bootstrap] Error 1` (`make[1]:` in a make run by
+#: make, `*** [bootstrap] Error 1` before make 4.0): the command's own exit
+#: code, which make's does not carry, since make exits 2 for any command
+#: that fails (#839).
+MAKE_ERROR_RE = re.compile(rb"\*\*\* \[[^\n]*\] Error (\d+)\s*$")
+
+
+def run_make(make: str, target: str, cwd: Path) -> tuple[int, int | None]:
+    """(b) `make <target>` in a member, as `(make's exit code, the exit code
+    of the member's command it names)`, the second None where make printed
+    no `MAKE_ERROR_RE` line (#839).
+
+    MAKE'S OWN CODE TELLS NOTHING APART. GNU make exits 2 for any command
+    that fails, measured (GNU Make 4.3) for a command exiting 1, 2, 3 or
+    126, and 2 for a failure of its own (`No rule to make target`), so the
+    line said `make bootstrap exited 2` for the member's own `bootstrap
+    FAILED` (1, a finding), for a refusal (2) and for make's own failure
+    alike (w764b, for lane 4). The command's code is the one make names
+    in its `Error <code>` line, the last on stderr, so make's stderr is
+    passed on to this run's own as it comes and that line read from the
+    end of it; a make that prints none, one of its own failures, a command
+    killed by a signal, or a make speaking another language, leaves make's
+    code alone. The member's command is never run around make: another
+    target than `bootstrap` (`--members-make validate`) has no script of
+    its own to call, as `make siblings` calls a member's
+    `scripts/bootstrap.py`."""
+    proc = subprocess.Popen([make, target], cwd=str(cwd),
+                            stderr=subprocess.PIPE)
+    tail = b""
+    for chunk in iter(lambda: proc.stderr.read1(65536), b""):
+        passed_on(chunk)
+        tail = (tail + chunk)[-4096:]
+    proc.stderr.close()
+    returncode = proc.wait()
+    found = [MAKE_ERROR_RE.search(line) for line in tail.splitlines()]
+    named = [int(match.group(1)) for match in found if match]
+    return returncode, (named[-1] if named else None)
+
+
+def passed_on(chunk: bytes) -> None:
+    """`chunk` of what a member's make wrote to its stderr, written to this
+    run's as it came (#839): as its bytes, after what this run wrote there
+    before, or as text where stderr has no byte buffer."""
+    stream = sys.stderr
+    if stream is None:
+        return
+    stream.flush()
+    sink = getattr(stream, "buffer", None)
+    if sink is None:
+        stream.write(chunk.decode("utf-8", "replace"))
+        stream.flush()
+        return
+    sink.write(chunk)
+    sink.flush()
 
 
 def main(argv: list[str] | None = None) -> int:
