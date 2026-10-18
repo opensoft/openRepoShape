@@ -1831,12 +1831,18 @@ def _made_0755(path: Path, parents: bool = True) -> None:
             raise
 
 
-def _shared_above(root: Path) -> tuple[Path, str] | None:
+def _shared_above(root: Path) -> tuple[Path, str, bool] | None:
     """The first directory above `root`, from `/` down, that another user
-    can rename in (`_shared_with_another_user`), and why; None where there is
-    none, asked down to the deepest one that exists (#803). `root` is the
-    real path `_work_root` read, so each of these is a directory, never a
-    symlink, and from then on the run uses `root` alone.
+    can rename in (`_shared_with_another_user`), why, and whether it is this
+    user's own; None where there is none (#803). `root` is the real path
+    `_work_root` read, and from then on the run uses it alone. Each entry
+    above it is asked down to the deepest one that is a directory: where
+    one is missing, or is no directory -- a file, or a symlink `realpath`
+    could not follow, such as a loop -- the walk stops there, and
+    `_made_0755` refuses it as #650 does, `adopt-work-dir-unwritable`. A
+    symlink always reads as mode 0777, and a file another user owns would
+    otherwise be named as a directory they can rename in (#843's
+    re-verification, N1).
 
     THIS IS THE RULE OpenSSH's StrictModes HOLDS `authorized_keys` TO, but
     for two things: the sticky bit counts, which is what keeps `/tmp` open,
@@ -1853,25 +1859,36 @@ def _shared_above(root: Path) -> tuple[Path, str] | None:
             status = os.lstat(above)
         except OSError:
             return None
+        if not stat.S_ISDIR(status.st_mode):
+            return None
         shared = _shared_with_another_user(status)
         if shared:
-            return above, shared
+            return above, shared, status.st_uid == os.geteuid()
     return None
 
 
 def _refuse_a_shared_chain(root: Path, done: str) -> None:
     """`adopt-work-dir-shared` for a `--work-dir` that has a directory above
     it another user can rename in (`_shared_above`), naming that directory
-    and why."""
+    and why. Where that directory is this user's, its mode is the reason,
+    and the way out also names its sticky bit: set, it keeps each entry in
+    the directory its owner's, and takes nothing from this user (#843's
+    re-verification)."""
     found = _shared_above(root)
-    if found:
-        above, shared = found
-        raise _shared_work_dir(
-            f"--work-dir {_spelled(str(root))} is under "
-            f"{_spelled(str(above))}, which {shared}, so another user could "
-            f"rename {_spelled(str(root))}, or a directory between them, and "
-            "turn this run's removal onto another directory", done,
-            WORK_DIR_OWN)
+    if not found:
+        return
+    above, shared, mine = found
+    remedy = WORK_DIR_OWN
+    if mine:
+        remedy += (f" Or, since {_spelled(str(above))} is this user's, set "
+                   "its sticky bit "
+                   f"({_spelled('chmod +t ' + shlex.quote(str(above)))}): "
+                   "each entry in it then stays its owner's.")
+    raise _shared_work_dir(
+        f"--work-dir {_spelled(str(root))} is under {_spelled(str(above))}, "
+        f"which {shared}, so another user could rename "
+        f"{_spelled(str(root))}, or a directory between them, and turn this "
+        "run's removal onto another directory", done, remedy)
 
 
 def _shared_work_dir(detail: str, done: str, remedy: str) -> Refusal:

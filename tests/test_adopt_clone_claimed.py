@@ -28,6 +28,7 @@ from __future__ import annotations
 
 import errno
 import os
+import shlex
 import shutil
 import stat
 import subprocess
@@ -38,10 +39,12 @@ from pathlib import Path
 import pytest
 
 from conftest import ADOPT, WINDOWS_SKIP, make_source_repo, rmtree, spelled
+from test_adopt_work_dir_refusal import refused_alike
 from test_adopt_source_clone_record import (  # noqa: F401
     MINE, OCCUPIED, SOURCE_READONLY, WORK, WORK_FLAG, clone_dir, modes_hold,
     on_github, plan_args, run, symlinks_are_made,
 )
+from test_adopt_root_symlinks import planned as planned_locally
 from test_adopt_temp_work_roots import (  # noqa: F401
     CHECK, EXECUTE, LOCAL_REMOTE_DIR, ORG, OUT, PLAN, PLAN_FLAG, PLAN_VERB,
     PLANNED, PROJECT, REMOTES, REPOSITORY, SMALL_TREE, SOURCE_FLAG, adopter,
@@ -675,6 +678,14 @@ def renamed_above(work: Path, above: Path, why: str) -> str:
             f"rename {spelled(real(work))}, {RENAMES_ABOVE}")
 
 
+def sticky_way_out(above: Path) -> str:
+    """What the way out adds where the directory above is this user's."""
+    command = f"chmod +t {shlex.quote(str(real(above)))}"
+    return (f" Or, since {spelled(real(above))} is this user's, set its "
+            f"sticky bit ({spelled(command)}): each entry in it then stays "
+            "its owner's.")
+
+
 @posix_only
 @pytest.mark.parametrize("command", [PLAN_VERB, CHECK, EXECUTE])
 def test_a_directory_above_the_work_dir_every_user_can_write_in_is_refused(
@@ -691,9 +702,50 @@ def test_a_directory_above_the_work_dir_every_user_can_write_in_is_refused(
                        *argv_for(command, planned, work, tmp_path))
     assert code == 2, err
     assert err == (f"{renamed_above(work, shared, EVERY_USER)}\n"
-                   f"Remediation: {done}{OWN}\n")
+                   f"Remediation: {done}{OWN}{sticky_way_out(shared)}\n")
     assert os.listdir(work.parent) == []
     assert len(planned.calls) == 1
+
+
+@posix_only
+def test_the_sticky_bit_the_refusal_names_lets_the_same_run_through(
+        adopter, monkeypatch, capsys, tmp_path):
+    """The directory above is this user's, at 0777: the refusal names its
+    sticky bit, and once it is set, the same run is used, and its clone
+    removed (#843's re-verification)."""
+    planned = planned_from_github(adopter, monkeypatch, tmp_path)
+    shared, work = under(tmp_path, 0o777)
+    argv = checked_with_source(planned, work)
+    code, _, err = run(adopter, capsys, *argv)
+    assert code == 2, err
+    assert sticky_way_out(shared) in err
+    os.chmod(shared, 0o1777)
+    code, _, err = run(adopter, capsys, *argv)
+    assert code == 0, err
+    assert os.listdir(work) == []
+
+
+@pytest.mark.parametrize("command", [PLAN_VERB, CHECK, EXECUTE])
+@pytest.mark.parametrize("above", ["a-symlink-loop", "a-file-at-0666"])
+def test_a_loop_or_a_file_above_the_work_dir_keeps_its_650_refusal(
+        tmp_path, command, above):
+    """`--work-dir <T>/loop/W` (`loop -> loop`) and `<T>/notes.txt/W`, a
+    file every user can write: no directory can be made there, and each
+    command refuses it as #650 does, in main's words. On `bba7e445` each was
+    `adopt-work-dir-shared`, naming the link or the file as a directory
+    every user can write in: a symlink always reads as mode 0777."""
+    planned_locally(tmp_path, {}, {}, {})
+    if above == "a-symlink-loop":
+        in_the_way = tmp_path / "loop"
+        try:
+            in_the_way.symlink_to(in_the_way.name)
+        except OSError:
+            pytest.skip("this machine cannot make a symlink")
+    else:
+        in_the_way = tmp_path / "notes.txt"
+        in_the_way.write_text(MINE, encoding="utf-8")
+        os.chmod(in_the_way, 0o666)
+    refused_alike(command, tmp_path, in_the_way / WORK)
 
 
 @posix_only
@@ -709,6 +761,7 @@ def test_a_directory_above_another_user_owns_is_refused(
                           "by "), err
     assert err.endswith(f"{NOT_THEIRS}rename {spelled(real(work))}, "
                         f"{RENAMES_ABOVE}\nRemediation: {OWN}\n"), err
+    assert "chmod +t" not in err
     assert not os.path.lexists(work)
 
 
