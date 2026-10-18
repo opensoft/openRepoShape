@@ -424,9 +424,11 @@ try:
     #: `adopt-project.py plan` takes `--org` from, imported here for the same
     #: reason, in place of a copy of `plan`'s regex (`origin_org`, #521).
     #: `spelled` is how `siblings.py` prints the values that row quotes (#673).
+    #: `host_shell_dialect` is which shell a printed line is quoted for, the
+    #: one question `quote_arg` and `repo_shape.shell_quoted` both ask (#711).
     from repo_shape import (  # noqa: E402
         COMMIT_RE, NamingPolicy, POWERSHELL_SINGLE_QUOTES, PYTHON,
-        Refusal, accepts_role, git_out,
+        Refusal, accepts_role, git_out, host_shell_dialect,
         load_yaml, recorded_gitlink, redacted, remote_local_path,
         resolved_remote, same_repository, spelled, url_repository,
     )
@@ -905,9 +907,17 @@ def quote_arg(value, platform: str | None = None, *,
     `tests/test_family_printed_quoting.py` holds the two quoters to one
     answer. PowerShell's dialect is NOT changed: it expands no `=word`, so
     `UNQUOTED_NT` keeps its bare `=`, as in any other place in a word.
+
+    NO `platform` IS THE SHELL THE DOCTOR RUNS IN, which
+    `repo_shape.host_shell_dialect` answers, the question
+    `repo_shape.shell_quoted` asks too (#711): PowerShell's dialect on
+    Windows, and `sh`'s under Git Bash, where `MSYSTEM` is set, and
+    everywhere else. It used to be `os.name`, which is `nt` under Git Bash
+    as well, so Git Bash was handed lines quoted for PowerShell.
     """
     text = str(value)
-    windows = (os.name if platform is None else platform) == "nt"
+    windows = (host_shell_dialect() if platform is None
+               else platform) == "nt"
     if not text.isascii():
         # Never bare: neither alphabet holds a character that is not ASCII.
         return quoted_beyond_ascii(text, windows, printed_encoding(encoding))
@@ -1368,9 +1378,36 @@ class Context:
             return None
 
     def legs(self) -> list[dict]:
-        """The non-assembly legs `project.yaml` declares, in its own order."""
-        return [leg for leg in ((self.manifest or {}).get("legs") or [])
+        """The non-assembly legs `project.yaml` declares, in its own order.
+
+        A `legs:` THAT IS NOT A LIST DECLARES NO LEG THIS CAN NAME (#832), as
+        `validate-manifest.py` reads it (#714), and an entry that is not a
+        mapping is no leg; `legs_unread` says each. Iterated as `legs or []`,
+        `legs: 5` ended the whole report in a `TypeError`, in `declared_pins`
+        under the `manifest kinds` row, and a scalar `openXdox` or a mapping
+        was walked one character, or one key, at a time, so the `legs` row
+        called the project one with no legs.
+        """
+        declared = (self.manifest or {}).get("legs")
+        if not isinstance(declared, list):
+            return []
+        return [leg for leg in declared
                 if isinstance(leg, dict) and leg.get("role") != "assembly"]
+
+    def legs_unread(self) -> list[str]:
+        """What in `legs:` names no leg `legs` can read, each as
+        `validate-manifest.py`'s finding, in its words (#714, #832): a
+        `legs:` that is not a list, or each entry of one that is not a
+        mapping. Absent or null is neither: it declares no leg, and
+        `validate-manifest.py` says `legs is missing or empty` of it."""
+        declared = (self.manifest or {}).get("legs")
+        if declared is None:
+            return []
+        if not isinstance(declared, list):
+            return [f"manifest-legs: legs is {declared!r}, expected a list of "
+                    "`role:`, `repository:` and `path:` mappings"]
+        return [f"manifest-leg: a leg is not a mapping: {leg!r}"
+                for leg in declared if not isinstance(leg, dict)]
 
     def members(self) -> list[dict]:
         return [row for row in ((self.manifest or {}).get("members") or [])
@@ -1540,7 +1577,7 @@ def restore_from_head(root: Path, relative: str,
     passed on to `quote_arg` as `bump_leg_command`'s is, so both dialects
     are asserted from either host.
     """
-    target = os.name if platform is None else platform
+    target = host_shell_dialect() if platform is None else platform
     return (f"git -C {quote_arg(root, target)} checkout HEAD -- "
             f"{quote_arg(relative, target)}")
 
@@ -1995,9 +2032,13 @@ def validator_command(shape: Path, used: Path, own_copy: bool, args: list,
     `platform` IS PASSED ON, as `copy_command` says at length: one resolved
     `target` governs the dialect, the interpreter and every quoting, so a
     Windows line built on a POSIX runner is a Windows line, and both are
-    asserted from either host. `platform=None` is the host, unchanged.
+    asserted from either host. `platform=None` is the host, and asks two
+    questions that part only under Git Bash (#711): the shell
+    (`host_shell_dialect`, `sh`'s there) for `env` or `$env:` and every
+    quoting, and the machine (`python_command`, `python` on Windows) for
+    the interpreter, so Git Bash gets `env PYTHONPATH=... python ...`.
     """
-    target = os.name if platform is None else platform
+    target = host_shell_dialect() if platform is None else platform
     command = " ".join([python_command(platform), quote_arg(used, target),
                         *(quote_arg(arg, target) for arg in args)])
     scripts = validator_scripts(shape, own_copy)
@@ -2009,11 +2050,15 @@ def validator_command(shape: Path, used: Path, own_copy: bool, args: list,
     return f"env PYTHONPATH={quote_arg(scripts, target)} {command}"
 
 
-def lost_repo_shape_cure(ctx: Context, own: str, lost: Path,
-                         rerun: str) -> tuple[str | None, str]:
+def lost_repo_shape_cure(ctx: Context, own: str, lost: Path, rerun: str,
+                         again: bool = True) -> tuple[str | None, str]:
     """`(the NEXT, the why)` for a root's own validator `own` that crashed
     because `lost`, the `repo_shape.py` it imports from beside itself, is not
     there, where `rerun` is the line that runs `own` (#697).
+
+    `again` says "run it AGAIN" where the doctor ran the gate and it crashed,
+    as the validator rows' crash does; the `legs` and `members` rows' lockstep
+    line is one the reader never ran, and says "run it" (#750).
 
     THE NEXT IS THE CURE, NOT THE VALIDATOR. The row used to print `rerun`,
     and a reader whose own `PYTHONPATH`, or a `.pth` in whose site-packages,
@@ -2036,14 +2081,14 @@ def lost_repo_shape_cure(ctx: Context, own: str, lost: Path,
     only: the standard's template copy has none beside it by design.
     """
     relative = lost.relative_to(ctx.root).as_posix()
-    then = (f"run `{rerun}` again once the file is back; before that, a "
-            "reader whose own PYTHONPATH or site-packages reaches another "
-            "repo_shape sees it run on that one, which says nothing about "
-            "this root's own copy")
+    then = (f"run `{rerun}`{' again' if again else ''} once the file is "
+            "back; before that, a reader whose own PYTHONPATH or "
+            "site-packages reaches another repo_shape sees it run on that "
+            "one, which says nothing about this root's own copy")
     if head_holds(ctx.root, relative):
         return (restore_from_head(ctx.root, relative),
                 f"it puts back the {relative} HEAD holds, the copy this "
-                f"project committed and {own} imports, where update-shape.py "
+                f"root committed and {own} imports, where update-shape.py "
                 f"apply would copy a newer one. Then {then}")
     return None, (f"HEAD does not hold {relative}, so no git checkout HEAD "
                   f"puts it back and {own} would only crash again: a "
@@ -2302,7 +2347,7 @@ def unloaded_manifest_row(ctx: Context, check_id: str, label: str, own: str,
         return Row(check_id, label, FINDING, reason,
                    restore_from_head(ctx.root, lost), detail,
                    why=f"it puts back the {lost} HEAD holds, the copy this "
-                       f"project committed and {own} imports, where "
+                       f"root committed and {own} imports, where "
                        "update-shape.py apply would copy a newer one, then "
                        f"run {own} again: it refuses {name} by name until it "
                        "loads. A deletion already committed comes back from "
@@ -2351,6 +2396,36 @@ def waiting_row(ctx: Context, check_id: str, label: str, needs: str,
                f"{ctx.manifest_path.name} does not load, so {needs}; the "
                f"`{owner}` row quotes why and names the fix", None,
                {**(detail or {}), "waits_on": owner})
+
+
+def legs_unread_row(ctx: Context, check_id: str, label: str, needs: str,
+                    detail: dict | None = None) -> Row | None:
+    """The `n/a` a row that reads the LEGS gives where `legs:` names none it
+    can read (#832), or None: where it names a leg, and where it names none
+    at all (absent, null or `[]`), which the row's own sentence is about.
+
+    A `legs:` that is not a list, or a list in which no leg but the assembly
+    leg is a mapping and some entry is not one, is not a project with no
+    legs, which is what these rows said of `openXdox`, `{a: b}` and `[5]`
+    ("a one-repository project has none"): it is a manifest nobody can read
+    legs out of. ONE FAULT, ONE FINDING, as `waiting_row` reasons: the
+    project's own `validate-manifest.py` says the fault, and the `manifest`
+    row runs it, so this row is `n/a`, says the same sentence
+    (`Context.legs_unread`) and names that row in `waits_on`. A list that
+    holds a leg as well as an entry that is not one is checked leg by leg,
+    as `validate-pins.py` checks the rest past such an entry, and the entry
+    is left to the `manifest` row.
+    """
+    unread = ctx.legs_unread()
+    if not unread or ctx.legs():
+        return None
+    what = ("holds an entry that is not a mapping"
+            if isinstance(ctx.manifest.get("legs"), list) else "is not a list")
+    return Row(check_id, label, NA,
+               f"{ctx.manifest_path.name}'s `legs:` {what} "
+               f"({'; '.join(unread)}), so {needs}; the `manifest` row's "
+               "command names the fault", None,
+               {**(detail or {}), "waits_on": "manifest"})
 
 
 # ---------------------------------------------------------------------------
@@ -2616,7 +2691,7 @@ def bump_leg_command(shape: Path, root: Path, role: str, commit: str,
     one, as the `shape currency` row's `apply` does, because it writes a
     commit too (#111).
     """
-    target = os.name if platform is None else platform
+    target = host_shell_dialect() if platform is None else platform
     return " ".join([
         python_command(platform),
         quote_arg(shape / "scripts" / "bump-leg.py", target),
@@ -5523,6 +5598,15 @@ def lockstep_next(ctx: Context, gate: tuple, noun: str) -> tuple:
     The `legs` and `members` rows say the same thing about a leg and about a
     member, so the sentence is written here once -- and it is the row's
     `why`, apart from the line, never a `   # ` tail on it (#277).
+
+    A GATE THAT CANNOT IMPORT `repo_shape` IS NOT THE LINE (#750). The root's
+    own copy, beside a lost `scripts/repo_shape.py`, dies on that import and
+    exits 1, the code it uses for findings, so that line cannot do what the
+    sentence says of it, and the `pins` and `family` rows beside it already
+    print the cure (#697). So the line is theirs, from
+    `lost_repo_shape_cure`: the one command that puts the file back, or none
+    where HEAD no longer holds it. Its `why` says to run the gate once the
+    file is back, and the sentence above follows it.
     """
     used, _, own_copy = validator_for(ctx, *gate)
     if (not used.is_file()
@@ -5530,10 +5614,16 @@ def lockstep_next(ctx: Context, gate: tuple, noun: str) -> tuple:
         return None, None
     command = validator_command(ctx.shape, used, own_copy,
                                 ["--root", str(ctx.root)])
-    return command, (f"no submodule update cures a {noun} whose gitlink "
-                     "or pin is missing or disagrees, or a mount git cannot "
-                     f"read a HEAD in. {used.name} prints what it finds and "
-                     "names the repair where it has one")
+    said = (f"no submodule update cures a {noun} whose gitlink "
+            "or pin is missing or disagrees, or a mount git cannot "
+            f"read a HEAD in. {used.name} prints what it finds and "
+            "names the repair where it has one")
+    if own_copy and not imports_repo_shape(ctx.shape, used, own_copy):
+        cure, why = lost_repo_shape_cure(
+            ctx, gate[0], repo_shape_for(ctx.shape, used, own_copy), command,
+            again=False)
+        return cure, f"{why}. {said[:1].upper()}{said[1:]}"
+    return command, said
 
 
 def gitmodules_entry(root: Path, rel: str) -> tuple[str | None, str | None]:
@@ -5561,17 +5651,28 @@ def gitmodules_entry(root: Path, rel: str) -> tuple[str | None, str | None]:
 
     AND ONLY THAT ONE COPY: the first that EXISTS, as `rev-parse --verify`
     finds it, which is how git's `config_from_gitmodules` chooses (#668).
-    A copy with no section for `rel`, or one git cannot parse, is no url,
-    and git does not look further: measured, over an index copy of either
-    kind beside a HEAD copy that gives the url, `submodule init` exits 128,
-    `No url found`. Reading the next copy wherever one would not list named
-    a url there, and a line that exits 128.
+    A copy with no section for `rel`, or one git cannot parse before it, is
+    no url, and git does not look further: measured, over an index copy of
+    either kind beside a HEAD copy that gives the url, `submodule init` exits
+    128, `No url found`. Reading the next copy wherever one would not list
+    named a url there, and a line that exits 128.
 
     The copy is read by `gitmodules_listing`, the one reading
     `submodule_config` makes too, and `section_url` picks the section out of
-    it.
+    it. A copy from the index or HEAD is read up to its first bad line, as
+    git reads it, and a section before that line still gives its url
+    (`submodule_keys`, #733): git refuses only the working tree's file
+    whole.
+
+    NO COPY AT ALL WHILE `.gitmodules` IS UNMERGED (#733): git reads none
+    then (`is_gitmodules_unmerged`), so `submodule init` says `No url found`,
+    exit 128, measured with the conflict resolved in the working tree and
+    with that copy deleted, where this named the resolved url or HEAD's.
     """
-    if os.path.lexists(root / ".gitmodules"):
+    if git_answer(["ls-files", "-u", "--", ".gitmodules"], root):
+        return None, None
+    working_tree = os.path.lexists(root / ".gitmodules")
+    if working_tree:
         source = ["--file", ".gitmodules"]
     else:
         found = next((copy for copy in (":.gitmodules", "HEAD:.gitmodules")
@@ -5580,14 +5681,15 @@ def gitmodules_entry(root: Path, rel: str) -> tuple[str | None, str | None]:
         if found is None:
             return None, None
         source = ["--blob", found]
-    listing = gitmodules_listing(root, source)
+    listing = gitmodules_listing(root, source, partial=not working_tree)
     if listing is None:
-        # The copy git reads, and one it cannot parse: git stops there.
+        # The working tree's copy, and one git cannot parse: git dies there.
         return None, None
-    return section_url(listing, rel)
+    return section_url(listing, rel, working_tree)
 
 
-def section_url(listing: str, rel: str) -> tuple[str | None, str | None]:
+def section_url(listing: str, rel: str, working_tree: bool = True
+                ) -> tuple[str | None, str | None]:
     """`(name, url)` of the section whose `path` is `rel`, read out of one
     `gitmodules_listing`, which is what `gitmodules_entry` asks git for:
     `(None, None)` when no section gives that path, and `(name, None)` when
@@ -5600,11 +5702,16 @@ def section_url(listing: str, rel: str) -> tuple[str | None, str | None]:
 
     THE LAST VALUE GIVEN WINS, for a path two sections give and for a key a
     section gives twice, because git reads `.gitmodules` with each later
-    value overwriting the one before. An empty `url =` is no url.
+    value overwriting the one before. An empty `url =` is no url, and a file
+    git refuses whole gives no section (#733). `working_tree` says which
+    copy the listing is of, as `submodule_keys` reads it.
     """
+    keys = submodule_keys(listing, working_tree)
+    if keys is None:
+        return None, None
     named = None
     urls: dict[str, str] = {}
-    for name, field, value in submodule_keys(listing):
+    for name, field, value in keys:
         if field == "path" and value == rel:
             named = name
         elif field == "url":
@@ -5614,10 +5721,77 @@ def section_url(listing: str, rel: str) -> tuple[str | None, str | None]:
     return named, urls.get(named) or None
 
 
-def submodule_keys(listing: str) -> list[tuple[str, str, str]]:
+#: A `.gitmodules` section name git ignores, every key of it
+#: (`check_submodule_name`): `..` as a component, between `/` or `\`. An
+#: empty name is ignored too. `a..b` is a name like any other.
+DOTDOT_COMPONENT = re.compile(r"(?:^|[/\\])\.\.(?:[/\\]|$)")
+
+#: The keys of a section that git refuses the WHOLE file over when one is
+#: given with no value at all, `[submodule "q"]` then a bare `url`
+#: (`config_error_nonbool`). Measured on git 2.43: `bad config line N`,
+#: exit 128, and `branch` crashes it (exit 139). A bare `shallow`,
+#: `fetchRecurseSubmodules` or unknown key is read as true.
+VALUED_KEYS = ("path", "url", "ignore", "update", "branch")
+
+#: A boolean as git reads one where a section gives it (`git_config_bool`):
+#: one of these words in any case, or an integer `GIT_INT` reads.
+GIT_BOOL_WORDS = ("", "true", "yes", "on", "false", "no", "off")
+
+#: An integer as `strtoimax` reads one, base 0, after the white space it
+#: skips: a sign, then decimal, `0x` hex or `0` octal digits, then a unit,
+#: `k`, `m` or `g`, each a power of 1024 (`git_parse_int`). It must fit an
+#: `int`.
+GIT_INT = re.compile(r"([+-]?)(0[xX][0-9a-fA-F]+|0[0-7]*|[1-9][0-9]*)"
+                     r"([kKmMgG]?)")
+
+
+def git_bool(value: str) -> bool:
+    """Whether git reads `value` as a boolean (`GIT_BOOL_WORDS`, `GIT_INT`)
+    rather than dying on it (#733).
+
+    The words are compared as they stand, as `strcasecmp` compares them, so
+    `" true"` dies. An integer may follow white space, which `strtoimax`
+    skips, so `" 1"` is taken (measured). Its range is the one git 2.55,
+    which CI runs, checks: -2**31 to 2**31 - 1, the policy the bare
+    `branch` in `submodule_keys` follows too. git 2.43 stops one short
+    below, `-max / factor > val`, so `-2147483648` and `-2g` die there.
+    """
+    if value.lower() in GIT_BOOL_WORDS:
+        return True
+    number = GIT_INT.fullmatch(value.lstrip(" \t\n\v\f\r"))
+    if number is None:
+        return False
+    sign, digits, unit = number.groups()
+    base = 16 if digits[:2] in ("0x", "0X") else 8 if digits[0] == "0" else 10
+    # " kmg".index: no unit is 1024 ** 0, `k` 1024 ** 1, and so on.
+    scaled = int(digits, base) * 1024 ** " kmg".index(unit.lower() or " ")
+    return -2 ** 31 <= (-scaled if sign == "-" else scaled) < 2 ** 31
+
+
+def git_dies_on(field: str, value: str) -> bool:
+    """Whether git `die()`s on this value of a section's key, whichever copy
+    of `.gitmodules` it reads, so that no submodule has a url (#733).
+    Measured on git 2.43, `invalid value` or `bad boolean config value`,
+    exit 128: an `update` other than these four (`!command` included), a
+    `shallow` that is no boolean, and a `fetchRecurseSubmodules` that is
+    neither a boolean nor `on-demand`. git lists a key's name in lower
+    case."""
+    if field == "update":
+        return value not in ("none", "checkout", "rebase", "merge")
+    if field == "shallow":
+        return not git_bool(value)
+    if field == "fetchrecursesubmodules":
+        return value != "on-demand" and not git_bool(value)
+    return False
+
+
+def submodule_keys(listing: str, working_tree: bool = True
+                   ) -> list[tuple[str, str, str]] | None:
     """`(name, field, value)` for each `submodule.<name>.path` and `.url`
-    key of one `gitmodules_listing`, in git's order, and no other key
-    (#668).
+    key of one `gitmodules_listing` that git reads, in git's order, and no
+    other key (#668), or None where git refuses the file whole (#733).
+    `working_tree` says which copy it is: the working tree's file, or one
+    git reads from the index or HEAD.
 
     PURE, as `section_url` is. Each record ends in a NUL and is the key, a
     newline and the value: a key holds no newline and a value may, so the
@@ -5635,22 +5809,55 @@ def submodule_keys(listing: str) -> list[tuple[str, str, str]]:
     with no keep line. The value is compared and printed, so it takes the
     replacement, as `make siblings` reads the same file (#432) and
     `origin_url` reads a remote (#385).
+
+    AND ONLY WHAT GIT READS (#733), by git's own tests, each measured
+    against `git submodule init -- <path>`, which says `No url found` and
+    exits 128 where the doctor and `make siblings` named a url:
+
+    - a section whose name is empty or holds a `..` component is ignored,
+      every key of it (`DOTDOT_COMPONENT`);
+    - a `path` or `url` whose value begins with `-` is ignored, that key
+      alone, so an earlier url of the section still stands;
+    - a value git dies on (`git_dies_on`), in a section git reads, refuses
+      the whole file, whichever copy it is: None;
+    - a key of `VALUED_KEYS` given with no value at all, in a section git
+      reads, is where git STOPS reading. The working tree's file is then
+      refused whole (`CONFIG_ERROR_DIE`): None. A copy from the index or
+      HEAD keeps every key before it (`CONFIG_ERROR_ERROR`), so they are
+      handed back: measured, `p`'s section and then a bare `url` registers
+      `p` from an index copy, and with the bare `url` first registers none.
+      git 2.43 crashes on a bare `branch` (exit 139) where git 2.55 stops
+      there as at any other.
     """
     keys = []
     for record in listing.split("\0"):
-        key, _, value = record.partition("\n")
+        key, valued, value = record.partition("\n")
         section, _, field = key.rpartition(".")
-        if section.startswith("submodule.") and field in ("path", "url"):
-            keys.append((section[len("submodule."):], field,
+        name = section[len("submodule."):]
+        if (not section.startswith("submodule.") or not name
+                or DOTDOT_COMPONENT.search(name)):
+            continue
+        if not valued and field in VALUED_KEYS:
+            return None if working_tree else keys
+        if git_dies_on(field, value):
+            return None
+        if field in ("path", "url") and not value.startswith("-"):
+            keys.append((name, field,
                          value.encode("utf-8", "surrogateescape").decode(
                              "utf-8", "replace")))
     return keys
 
 
-def gitmodules_listing(root: Path, source: list[str]) -> str | None:
+def gitmodules_listing(root: Path, source: list[str],
+                       partial: bool = False) -> str | None:
     """`git config -z <source> --list` in `root`: every key of one copy of
     `.gitmodules`, or None where git reads no such copy (it is not there,
     git cannot parse it, there is no git to run).
+
+    `partial` is for a copy from the index or HEAD, which git reads up to
+    its first bad line, keeping every key before it (#733): `--list` prints
+    those keys before it exits 128 (measured), and they are handed back
+    rather than None. The working tree's file git refuses whole.
 
     ONE READING, FOR `gitmodules_entry` AND `submodule_config` (#668), and
     the one `validate-family.py`'s `_gitmodules_sections` and `family.py`
@@ -5671,11 +5878,13 @@ def gitmodules_listing(root: Path, source: list[str]) -> str | None:
     nothing.
     """
     try:
-        raw = git_out(["config", "-z", *source, "--list"], cwd=root,
-                      binary=True)
-    except (Refusal, OSError):
+        proc = subprocess.run(["git", "config", "-z", *source, "--list"],
+                              cwd=str(root), capture_output=True, check=False)
+    except OSError:
         return None
-    return raw.decode("utf-8", "surrogateescape")
+    if proc.returncode != 0 and not partial:
+        return None
+    return proc.stdout.decode("utf-8", "surrogateescape")
 
 
 def configured_url(root: Path, name: str) -> str | None:
@@ -6045,7 +6254,7 @@ def checkout_notes(noun: str, off_pin: list[Path], kept: list = (),
     about a loss that cannot happen learns to skip the sentence on the day
     it can.
     """
-    target = os.name if platform is None else platform
+    target = host_shell_dialect() if platform is None else platform
     notes = "".join(f". {rel} has files but no .git of its own, and git kept "
                     "its repository, so this line links the two again"
                     for rel in relinked)
@@ -6167,7 +6376,7 @@ def submodule_update_next(root: Path, paths: list[str], off_pin: list[Path],
     `platform` is `quote_arg`'s and `copy_command`'s, and for the same
     reason: the line is spelled for the reader's shell, not the host's.
     """
-    target = os.name if platform is None else platform
+    target = host_shell_dialect() if platform is None else platform
     line = " ".join(["git", "-C", quote_arg(root, target), "submodule",
                      "update", "--init", "--recursive", "--checkout", "--",
                      *(quote_arg(path, target) for path in paths)])
@@ -6191,7 +6400,10 @@ def check_legs(ctx: Context) -> Row:
 
     THE LEGS ARE THE MANIFEST'S, and a manifest that does not load declares
     none that this row can name -- which is not "declares no non-assembly
-    leg", the sentence below, about a project that has none (#205).
+    leg", the sentence below, about a project that has none (#205). Nor is
+    a `legs:` that is not a list, or one holding only entries that are not
+    mappings: `legs_unread_row` says which, in `validate-manifest.py`'s
+    words, and waits on the `manifest` row (#832).
 
     THE NEXT IS CHOSEN BY WHAT IS WRONG, AND IT CURES THE FIRST KIND (#276).
     `make bootstrap` was named for all of it and does not answer it: it
@@ -6259,9 +6471,10 @@ def check_legs(ctx: Context) -> Row:
     an unborn HEAD or a leg with no url gets the same sentence it gets with
     no line at all, which ends by saying to run the doctor again.
     """
-    waiting = waiting_row(ctx, "legs", "legs",
-                          "the legs it declares are not known and none is "
-                          "checked against its pin", {"legs": []})
+    needs = ("the legs it declares are not known and none is checked against "
+             "its pin")
+    waiting = (waiting_row(ctx, "legs", "legs", needs, {"legs": []})
+               or legs_unread_row(ctx, "legs", "legs", needs, {"legs": []}))
     if waiting is not None:
         return waiting
     legs = ctx.legs()
@@ -6467,14 +6680,19 @@ def copy_command(source, target, platform: str | None = None) -> str:
     being exercised only where nobody is looking.
 
     AND `platform` IS PASSED ON, not merely branched on. `quote_arg(value)`
-    with no platform reads the REAL host's `os.name`, so a Windows line
+    with no platform reads the REAL host's shell, so a Windows line
     built on a POSIX runner would be quoted by `sh` rules -- the function
     claiming a spelling it did not produce, which is the defect #103 names
     in the neighbouring `scaffold_command`. Here the argument is threaded
     through to every value, so what the test asserts is what a Windows
     reader gets.
+
+    WITH NO `platform`, THE BRANCH ASKS WHAT THE QUOTING ASKS:
+    `host_shell_dialect` (#711). `Copy-Item` is a cmdlet, which Git Bash
+    does not have, and Git Bash has a `cp`, so a Windows machine run from
+    Git Bash is handed `cp` and `sh`'s quoting, the line its shell runs.
     """
-    if (os.name if platform is None else platform) == "nt":
+    if (host_shell_dialect() if platform is None else platform) == "nt":
         return (f"Copy-Item -LiteralPath {quote_arg(source, platform)} "
                 f"-Destination {quote_arg(target, platform)}")
     return f"cp {quote_arg(source, platform)} {quote_arg(target, platform)}"
@@ -6615,8 +6833,11 @@ def check_leg_shape_files(ctx: Context) -> Row:
     compare every leg, say what was found, and offer a copy for the files a
     copy would fix.
     """
-    waiting = waiting_row(ctx, "leg-shape-files", LABEL_LEG_SHAPE_FILES,
-                          "there are no legs to compare", {"legs": []})
+    needs = "there are no legs to compare"
+    waiting = (waiting_row(ctx, "leg-shape-files", LABEL_LEG_SHAPE_FILES,
+                           needs, {"legs": []})
+               or legs_unread_row(ctx, "leg-shape-files",
+                                  LABEL_LEG_SHAPE_FILES, needs, {"legs": []}))
     if waiting is not None:
         return waiting
     legs = ctx.legs()
@@ -7791,11 +8012,13 @@ def check_placement(ctx: Context) -> Row:
             "a family holder has no legs of its own: each member is an "
             "assembly root and answers this in its own report")
     # Before the sentence below, which is about a project that declares no
-    # leg, not one whose manifest nobody could read (#205). And `n/a` is what
-    # makes `--placement-plan` refuse by name and write nothing: there is no
-    # leg to write a plan about until the manifest loads.
-    waiting = waiting_row(ctx, "placement", "placement",
-                          "there is no leg to classify a path in")
+    # leg, not one whose manifest nobody could read (#205), nor one whose
+    # `legs:` names no leg that can be read (#832). And `n/a` is what makes
+    # `--placement-plan` refuse by name and write nothing: there is no leg to
+    # write a plan about until the manifest loads and names one.
+    needs = "there is no leg to classify a path in"
+    waiting = (waiting_row(ctx, "placement", "placement", needs)
+               or legs_unread_row(ctx, "placement", "placement", needs))
     if waiting is not None:
         return placement_row(NA, waiting.reason, None, waiting.detail)
     legs = ctx.legs()
@@ -8477,7 +8700,8 @@ def submodule_config(root: Path) -> dict:
     """
     fields: dict = {}
     listing = gitmodules_listing(root, ["--file", ".gitmodules"])
-    for name, field, value in submodule_keys(listing or ""):
+    # A file git refuses whole gives no section (#733).
+    for name, field, value in submodule_keys(listing or "") or []:
         fields.setdefault(name, {})[field] = value
     return fields
 
@@ -8512,17 +8736,26 @@ def mounted_from(root: Path, rel: str, repository: str) -> str:
     and the row's answer rests on the `repository:` comparison alone --
     which is the state `verify_sibling` is in for the same holder.
 
-    THE LAST SECTION THAT GIVES `rel` A URL WINS, as git reads the file,
-    each later value overwriting the one before, and as
-    `siblings.py::submodule_urls` maps it (#668). The first named a remote
-    that `git submodule update` and `make siblings` both pass over.
+    THE LAST SECTION THAT GIVES `rel` A URL WINS, as
+    `siblings.py::submodule_urls` maps it (#668), and as git reads a file
+    whose sections are written one after another, each later value
+    overwriting the one before. The first named a remote that `git
+    submodule update` and `make siblings` both pass over. That holds for
+    sections written whole: a section REOPENED further down the file is
+    ordered here by the first key it gives, in `siblings.py` by its first
+    url, and by git by its last `path`, so with one the three can name
+    different sections (#733).
+
+    ONLY A SECTION WITH A `path` MOUNTS ANYTHING (#733). One that gives a
+    url and no path is mounted nowhere by git (`No url found` for its name
+    as a path, measured), so its NAME is not read as a path, here or in
+    `siblings.py`.
     """
     url = None
-    for name, mount in submodule_config(root).items():
-        # A submodule's NAME is its path unless somebody mounted it by hand
-        # under another one, which git allows and this reads rather than
-        # assumes.
-        if mount.get("path", name) == rel and mount.get("url"):
+    for mount in submodule_config(root).values():
+        # The section's NAME is not the path: a member mounted by hand
+        # under another name, which git allows, is found by its `path`.
+        if mount.get("path") == rel and mount.get("url"):
             url = mount["url"]
     if url is None:
         return f"https://github.com/{repository}.git"
@@ -9661,7 +9894,7 @@ def scaffold_command(shape: Path, project: str,
 
     AND THE QUOTING IS THAT PLATFORM'S TOO, which is the third of the three
     decisions this one line makes and was the last one still reading the
-    HOST. `quote_arg` defaults to `os.name` when it is passed no platform, so
+    HOST. `quote_arg` defaults to the host when it is passed no platform, so
     with an explicit `platform` half this line followed the argument and half
     followed the machine: `scaffold_command(PureWindowsPath(r"C:\srv\Shape"),
     "Atlas", "nt")` named `setup-project.py` and `python` on every host, as
@@ -9671,18 +9904,22 @@ def scaffold_command(shape: Path, project: str,
     OTHER one (#103). `\` is in `UNQUOTED_NT` and not in `UNQUOTED_POSIX`,
     so a Windows path is exactly where that shows.
 
-    ONE RESOLUTION, USED THREE TIMES. `target` is decided once and the
-    branch, the quoting and the interpreter all read it rather than each
-    re-deriving "which platform is this" from its own source -- which is the
-    defect above, stated as code. `python_command` is the one that keeps the
-    RAW `platform`: `None` there returns the module constant itself rather
-    than a second derivation of the same rule (see its docstring), and
-    `quote_arg(value, None)` resolves the host identically to
-    `quote_arg(value, os.name)`, so the host-default line is unchanged, byte
-    for byte.
+    ONE RESOLUTION PER QUESTION, NEVER ONE PER CALL. An explicit `platform`
+    is the whole answer: the branch, the quoting and the interpreter all
+    read it, rather than each re-deriving "which platform is this" from its
+    own source -- which is the defect above, stated as code. With none, the
+    host answers two questions, and Git Bash is where they part (#711): the
+    MACHINE picks the entry point and the interpreter, so a Windows machine
+    is handed `python setup-project.py` in PowerShell and in Git Bash alike
+    (`os.name`, and `python_command`, which keeps the RAW `platform` and so
+    the module constant itself); the SHELL picks the quoting, which is
+    `host_shell_dialect`, `sh`'s under Git Bash, as `quote_arg(value, None)`
+    asks it. Off Git Bash the two answers are one, so that line is unchanged,
+    byte for byte.
     """
-    target = os.name if platform is None else platform
-    if target == "nt":
+    machine = os.name if platform is None else platform
+    target = host_shell_dialect() if platform is None else platform
+    if machine == "nt":
         return (f"{python_command(platform)} "
                 f"{quote_arg(shape / 'setup-project.py', target)} "
                 f"--org {ORG_PLACEHOLDER} --project "
