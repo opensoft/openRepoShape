@@ -23,7 +23,23 @@ EVERY NEXT HERE IS PASTED AND RUN, from a directory that is not the root,
 through `sh -c` exactly as the row printed it, and the row is asked again.
 Those tests are `WINDOWS_SKIP`: `sh` is a POSIX shell, and on Windows the
 reader's shell is PowerShell. The text-level assertions about what the line
-IS run on every OS. A git paste gets the file protocol per subprocess through
+IS carry no skip, so they run on whatever host the suite is run on.
+
+THE POWERSHELL FORM OF A LINE IS CHECKED AS TEXT AND NEVER RUN (#415).
+`test_the_line_is_spelled_for_the_readers_shell` asks `quote_arg` for it
+(`platform="nt"`, from any host) and compares the string; no test here pastes
+a line into `powershell`. A Windows-only test would not change that, because
+no job runs this file on Windows: `tests.yml` runs the suite on ubuntu-latest
+alone (the macOS and Windows jobs were dropped, #597), and its one Windows
+job, `tests-git-bash`, runs three files of the launcher's and the installer's
+suites and no other. A `skipif(os.name != "nt")` test added here would be
+skipped by every runner there is. The one test that does paste a PowerShell
+line, for a template validator's (`test_shape_doctor.py`,
+`test_a_template_validators_next_runs_when_pasted_into_powershell`), is no
+better placed: no job runs it either. What this file holds of a Windows
+reader's line is its text.
+
+A git paste gets the file protocol per subprocess through
 git's `GIT_CONFIG_COUNT` entries -- the fixtures' remotes are bare
 repositories on disk, which git refuses as a submodule URL by default --
 appended at the call to the entries the environment holds (`paste_env`), and
@@ -44,6 +60,7 @@ from __future__ import annotations
 
 import os
 import re
+import shlex
 import shutil
 import subprocess
 
@@ -56,8 +73,8 @@ from conftest import (WINDOWS_SKIP, appended_to_command_scope,
                       submodule_update_through_git)
 from test_doctor_gitmodules_not_utf8 import listed_locale
 from test_shape_doctor import (  # noqa: F401
-    FAMILY_MEMBER, FAMILY_NAME, GIT_IDENTITY, PROJECT, commit_all, doctor,
-    doctor_module, holder, project, record_gitlink, rows_of,
+    AWKWARD, FAMILY_MEMBER, FAMILY_NAME, GIT_IDENTITY, PROJECT, commit_all,
+    doctor, doctor_module, holder, project, record_gitlink, rows_of,
     scaffolded_here, siblings, standard,
 )
 
@@ -120,6 +137,27 @@ def why_of(row: dict) -> str:
 
 def row_of(standard: Path, root: Path, row_id: str) -> dict:
     return rows_of(doctor(standard, root, "--json"))[row_id]
+
+
+#: What a shell reads as syntax where a `#` starts no comment.
+SHELL_SYNTAX = (";", "'", "`", "(", ")")
+
+
+def assert_fixed_words_are_plain(why: str, *spelled: str) -> None:
+    """The explanation's FIXED words hold none of `SHELL_SYNTAX`.
+
+    `spelled` is each path the sentence names, as `quote_arg` spelled it. It
+    is asked for, so a sentence that names nothing fails here, and it is put
+    as `PATH` before the words are read: a path is the root's and not the
+    sentence's, and a root that needs quoting puts a `'` into it (#415). A
+    check over the whole sentence holds only for a root that needs none,
+    which pytest's temporary roots are."""
+    words = why
+    for each in spelled:
+        assert each in why, (each, why)
+        words = words.replace(each, "PATH")
+    for character in SHELL_SYNTAX:
+        assert character not in words, (character, words)
 
 
 def remotes_of(fixture: dict) -> Path:
@@ -279,7 +317,7 @@ def pins_gate(module, standard: Path, root: Path, own_copy: bool) -> str:
                                     ["--root", str(root.resolve())])
 
 
-# --- the legs row: what the line IS (every OS) -----------------------------
+# --- the legs row: what the line IS (text only, no OS skip) ----------------
 
 @pytest.mark.parametrize("scenario", sorted(CHECKOUT_SCENARIOS))
 def test_a_leg_a_checkout_cures_is_handed_a_script_free_git_line(
@@ -318,7 +356,11 @@ def test_the_line_is_spelled_for_the_readers_shell(standard):
     (the rule `copy_command` and `scaffold_command` already follow): a root
     with a space in it is single-quoted for `sh`, and PowerShell gets its own
     verbatim string, backslashes and all, in the line AND in the keep line
-    the explanation names."""
+    the explanation names.
+
+    THE ONLY CHECK OF THE POWERSHELL FORM, AND IT IS OF THE TEXT: no test in
+    this file runs it in `powershell`, and no job could (module docstring,
+    #415)."""
     module = doctor_module(standard)
     posix_root = PurePosixPath("/srv/my atlas")
     line, why = module.submodule_update_next(
@@ -393,16 +435,46 @@ def test_a_leg_at_its_pin_on_a_branch_has_no_finding_and_so_no_note(
     assert row["next"] is None, row
 
 
+#: Two roots a shell cannot be handed bare: one with a space, and one with a
+#: space and an apostrophe, where a naive `'...'` wrapper closes early.
+#: pytest's own temporary roots are neither, so a test over them alone cannot
+#: see what `quote_arg` puts into a sentence (#415).
+QUOTED_ROOTS = [pytest.param("my atlas", id="a-space"),
+                pytest.param(AWKWARD, id="a-space-and-an-apostrophe")]
+
+
+@pytest.mark.parametrize("name", QUOTED_ROOTS)
 @pytest.mark.parametrize("scenario", sorted(CHECKOUT_SCENARIOS))
-def test_the_explanation_carries_no_character_a_pasted_tail_would_break_on(
-        standard, project, scenario):
-    """New tail text has none of `;`, `'`, a backtick or a parenthesis: a
-    shell that does not read `#` as a comment reads each as syntax (the
-    precedent of #267; #277 moves the text out of the NEXT)."""
-    CHECKOUT_SCENARIOS[scenario](project)
-    why = why_of(row_of(standard, project, "legs"))
-    for character in (";", "'", "`", "(", ")"):
-        assert character not in why, (character, why)
+def test_the_explanations_fixed_words_hold_no_shell_syntax_over_a_quoted_root(
+        standard, project, tmp_path, scenario, name):
+    """The sentence's own words hold none of `;`, `'`, a backtick or a
+    parenthesis, and each keep line in it is one command whose path is one
+    argument, for a root that needs quoting.
+
+    #277 moved the sentence off the NEXT, into the row's `why`, so it is not
+    pasted with the line, but a reader still copies a keep line out of it.
+    The words around the path are fixed and plain. The path is the root's,
+    spelled by `quote_arg`, which quotes it, so a `'` there is the quoting,
+    and `shlex.split`, which is how `sh` reads the line, gives the path back
+    as one argument. This test used to read the whole sentence over pytest's
+    own roots, which need no quoting: it held none of the five characters by
+    that accident, and never read the path as a word (#415).
+    """
+    root = tmp_path / name
+    shutil.copytree(project, root, symlinks=True)
+    made = CHECKOUT_SCENARIOS[scenario](root)
+    module = doctor_module(standard)
+    why = why_of(row_of(standard, root, "legs"))
+    mounts = [(root / rel).resolve() for rel in made["off_pin"]]
+    spelled = [module.quote_arg(mount) for mount in mounts]
+    keeps = re.findall(r"git -C .+? branch NAME", why)
+    assert len(keeps) == len(mounts), why
+    for keep, mount, quoted in zip(keeps, mounts, spelled):
+        assert quoted != str(mount), "this root needs no quoting"
+        if os.name != "nt":  # PowerShell quotes an apostrophe by doubling it
+            assert shlex.split(keep) == [
+                "git", "-C", str(mount), "branch", "NAME"], keep
+    assert_fixed_words_are_plain(why, *spelled)
 
 
 def test_the_bootstrap_sentence_is_said_only_where_the_script_can_run(
@@ -765,8 +837,7 @@ def test_a_holder_that_cannot_run_its_bootstrap_is_handed_the_git_line(
         f"members/{FAMILY_MEMBER}"), row["next"]
     assert "scripts/bootstrap.py" not in command_of(row), row["next"]
     assert "credential" in why_of(row), why_of(row)
-    for character in (";", "'", "`", "(", ")"):
-        assert character not in why_of(row), (character, why_of(row))
+    assert_fixed_words_are_plain(why_of(row))
     assert "reflog" not in why_of(row), why_of(row)
 
 
@@ -1121,8 +1192,8 @@ def test_413a_an_emptied_legs_kept_repository_names_its_detached_commit(
             f"{commit}") in why, why
     assert "reflog" in why, why
     assert f"git -C {module.quote_arg(resolved / 'spec')} branch" not in why
-    for character in (";", "'", "`", "(", ")"):
-        assert character not in why, (character, why)
+    assert_fixed_words_are_plain(
+        why, module.quote_arg(f"--git-dir={repository}"))
 
 
 def test_413a_a_kept_repository_on_a_branch_or_at_the_gitlink_is_not_named(
@@ -1304,7 +1375,7 @@ def test_413c_the_members_git_line_says_it_checks_out_each_members_legs(
     in general words, with the keep line to run in that leg first."""
     root = holder_copy(holder, tmp_path)
     holder_without(root, "bootstrap.py")
-    made_in_a_members_own_leg(root, holder)
+    leg, _ = made_in_a_members_own_leg(root, holder)
     module = doctor_module(standard)
     row = row_of(standard, root, "members")
     assert command_of(row) == (
@@ -1314,8 +1385,7 @@ def test_413c_the_members_git_line_says_it_checks_out_each_members_legs(
     assert "It is recursive" in why, why
     assert "the legs of each member" in why, why
     assert "git -C LEG branch NAME" in why, why
-    for character in (";", "'", "`", "(", ")"):
-        assert character not in why, (character, why)
+    assert_fixed_words_are_plain(why, module.quote_arg(leg.parent.resolve()))
 
 
 @WINDOWS_SKIP
