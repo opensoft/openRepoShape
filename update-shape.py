@@ -2337,11 +2337,33 @@ def current_branch(root: Path) -> str | None:
     the ref is read whole and `refs/heads/` taken off by `_branch_of`, as
     `Rollback.new_branch` takes it off; a HEAD attached anywhere else is on
     no branch, as a detached one is.
+
+    ONE READ, BYTE FOR BYTE (#765): `_symbolic_head`'s, which `Rollback`
+    reads HEAD with too, and which keeps a trailing U+00A0 and a byte that
+    is not UTF-8 as they are. A NAME THAT IS NOT UTF-8 IS REFUSED here,
+    `update-branch-not-utf8`, and `cmd_apply` asks this before the first
+    write of every `--branch` run: no line this tool prints can spell it,
+    and the lines that would name it, `update-branch-exists` and a
+    rollback's way back to it, would name a branch that is not there.
     """
-    proc = subprocess.run(["git", "symbolic-ref", "--quiet", "HEAD"],
-                          cwd=str(root), capture_output=True, text=True,
-                          encoding="utf-8", errors="replace", check=False)
-    return _branch_of(proc.stdout.strip())
+    branch = _branch_of(_symbolic_head(root))
+    if branch is None:
+        return None
+    try:
+        branch.encode("utf-8")
+    except UnicodeEncodeError:
+        # NAMED BY ITS BYTES, `b'caf<0xE9>'`, as `trailer-not-utf8` names a
+        # trailer.
+        raw = branch.encode("utf-8", "surrogateescape")
+        raise Refusal(
+            "update-branch-not-utf8",
+            f"{root} is on the branch {raw!r}, whose name is not UTF-8, so "
+            "no line this tool prints can name it: a line that named it "
+            "would name a branch that is not there. Nothing was written.",
+            "Remediation: give the branch a name that is UTF-8 text, then "
+            "run the same command again: "
+            + _by_hand(root, "branch", "-m") + " <a new name>") from None
+    return branch
 
 
 def _branch_of(ref: str | None) -> str | None:
@@ -3283,7 +3305,10 @@ class Rollback:
         back = [start] if start else ["--detach", commit]
         moved = _symbolic_head(self.root) == ref
         if moved:
-            _git_quietly(["git", "checkout", "-q", start, "--"] if start
+            # `start` AS GIT'S OWN BYTES (#765), whatever the locale; the
+            # by-hand lines below print it as it is.
+            _git_quietly(["git", "checkout", "-q", _as_git_argument(start),
+                          "--"] if start
                          else ["git", "checkout", "-q", "--detach", commit,
                                "--"], self.root)
         if self._head_is(start, commit):
@@ -3339,10 +3364,46 @@ class Rollback:
 def _symbolic_head(root: Path) -> str | None:
     """The FULL ref HEAD is attached to (`refs/heads/<name>`), or None when
     it is detached — the spelling `Rollback` keeps, for the reason
-    `Rollback.new_branch` gives. Asked through `_git_answer`, as
-    `readme_is_committed` asks its own, rather than a second copy of it."""
-    answer = _git_answer(root, ["symbolic-ref", "--quiet", "HEAD"])
-    return (answer or "").strip() or None
+    `Rollback.new_branch` gives, and the one read `current_branch` takes
+    the branch from.
+
+    READ AS THE BYTES GIT WROTE (#765), not as `_git_answer`'s text. Exactly
+    one newline comes off the bytes, and the rest is decoded with
+    `surrogateescape`; `refs/heads/` is ASCII, so `_branch_of` taking it off
+    the text takes off exactly its bytes. `strip()` also took a trailing
+    U+00A0, U+2028 or U+0085: HEAD on `feat<U+00A0>` read as `feat`, so
+    `commit_on_branch` took `--branch feat` for the branch checked out and
+    committed onto `feat<U+00A0>`, the push named `feat`, and a rollback
+    "returned" HEAD to `feat`, another branch. `errors="replace"` read
+    `caf<0xE9>` as `caf<U+FFFD>`, which no command can check out. As
+    through `_git_answer`, no git and a git that refuses answer None:
+    neither may raise inside a rollback."""
+    try:
+        proc = subprocess.run(["git", "symbolic-ref", "--quiet", "HEAD"],
+                              cwd=str(root), capture_output=True,
+                              check=False)
+    except OSError:
+        return None
+    ref = proc.stdout if proc.returncode == 0 else b""
+    ref = ref[:-1] if ref.endswith(b"\n") else ref
+    return ref.decode("utf-8", "surrogateescape") or None
+
+
+def _as_git_argument(name: str) -> str:
+    """`name`, as `_symbolic_head` decoded it, spelled as the argument that
+    hands git the same bytes back under any locale (#765), as #824 does for
+    `bootstrap.py`'s branches.
+
+    `subprocess` writes an argument with `os.fsencode`, the locale's codec:
+    under `LC_ALL=C PYTHONUTF8=0` that is ASCII, which cannot write U+00A0,
+    so the rollback's checkout from `feat<U+00A0>` raised
+    `UnicodeEncodeError` part way and left the copies written. Decoded back
+    with `os.fsdecode`, the name's own UTF-8 bytes go to git under every
+    codec. Windows hands git UTF-16, so the name goes as it is there. A line
+    printed for a person keeps the name as it is."""
+    if os.name == "nt":
+        return name
+    return os.fsdecode(name.encode("utf-8", "surrogateescape"))
 
 
 def _by_hand(root: Path, *args: str) -> str:
@@ -4606,6 +4667,10 @@ def cmd_apply(args) -> int:
         nothing = _nothing_to_do(rows, pinned, target, taking)
         rerun = nothing and _awaits_its_pull_request(root, args, kind)
         if args.branch:
+            # THE BRANCH HEAD IS ON, BEFORE THE FIRST WRITE (#765): one whose
+            # name is not UTF-8 is refused here, with nothing to roll back,
+            # not by `commit_on_branch` after the copies are written.
+            current_branch(root)
             # BEFORE THE FIRST WRITE, AND BEFORE "NOTHING TO DO" (#436): that
             # answer is read from the working tree too, and over a re-pin
             # left uncommitted it made no branch where one was asked for.
