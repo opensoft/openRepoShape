@@ -36,8 +36,9 @@ review lines on #459: E1, E2, E3, E5 and N4).
   way out that drops it is named. `member-path`'s remedy says to commit a
   row put back by hand, so it no longer leads into this refusal.
 
-#612's review E4 (reftable) is NOT here: this host's git is 2.43, and
-the issue asks for it to be measured on git 2.45 or later first.
+#612's review E4 (reftable) is NOT here: `CHERRY_PICK_HEAD` and
+`REVERT_HEAD` held in a reftable's ref store, and in no file, are
+`test_family_operation_reftable.py`'s.
 
 THE PROOF IS #612's, with the helpers of `test_family_refuse_up_front.py`:
 exit 2 and one REFUSED paragraph, nothing on stdout (no member was read),

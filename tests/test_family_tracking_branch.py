@@ -44,6 +44,9 @@ import pytest
 
 from conftest import (NOT_UTF_8_BRANCH_NAMED, REPO, git, held_by_git,
                       on_a_branch_that_is_not_utf_8, run_script)
+#: The names no line may print raw, and how a line spells them (#766).
+from conftest import (SHOWN_NAMES, UNSAFE_NAMES, copied_under, named_as,
+                      refusal_detail, spelt)
 #: The family fixture, its names and the work branch it grows the holder on,
 #: imported from the module that owns them.
 from test_family import (  # noqa: F401
@@ -239,10 +242,11 @@ def test_a_branch_named_with_a_byte_that_is_not_utf8_is_refused_by_name(
     """`caf<0xE9>` (#765): the act committed on it and printed a NEXT whose
     spelling of the byte was the stream's: the raw byte, which a UTF-8
     terminal shows and copies as U+FFFD, or the six characters of its
-    escape, which name another branch. Refused by name now, by its bytes, before anything is fetched or
-    written, with how to rename it: no NEXT, `add` prints not even the line
-    that says the member is being read, and the holder, its refs and each
-    member's git directory are as they were, FETCH_HEAD and objects too."""
+    escape, which name another branch. Refused by name now, by its bytes,
+    before anything is fetched or written, with how to rename it: no NEXT,
+    `add` prints not even the line that says the member is being read, and
+    the holder, its refs and each member's git directory are as they were,
+    FETCH_HEAD and objects too."""
     holder = on_main
     before = on_a_branch_that_is_not_utf_8(holder)
 
@@ -390,3 +394,59 @@ def test_each_doc_makes_the_branch_before_the_add(doc):
     add = text.index("python3 scripts/family.py add ")
     block = text[text.rindex("```", 0, add):add]
     assert " switch -c family/add-" in block, block
+
+
+# --- #766: the holder each refusal names, safe to show -----------------------
+
+@pytest.mark.parametrize("name", UNSAFE_NAMES)
+@pytest.mark.parametrize("detached", [False, True],
+                         ids=["tracking-branch", "detached"])
+def test_a_holder_refused_for_its_branch_is_named_safe_to_show(
+        family, tmp_path, detached, name):
+    """#766: `family-on-tracking-branch` and `family-holder-detached` named
+    the holder as it was, so a holder under a name with an ESC sent it to
+    the terminal, and one with a line break printed a forged line in the
+    detail. The detail names it as `repr` spells it, on the one line it is.
+    The remedy's `switch -c` is a command to paste, quoted for a shell as
+    it was (`_switch_command`), and is not this row's."""
+    holder = copied_under(family["root"], tmp_path, name)
+    git("switch", "-q", "-C", TRACKING, cwd=holder)
+    if detached:
+        git("checkout", "-q", "--detach", cwd=holder)
+    result = act(family, holder, "remove")
+    assert result.returncode == 2, result.stdout + result.stderr
+    assert result.stdout == ""
+    code, said = (
+        ("family-holder-detached",
+         "is not on a branch, so `remove` would write a commit no branch "
+         "holds, with nothing to push and open a pull request from")
+        if detached else
+        ("family-on-tracking-branch",
+         f"is on '{TRACKING}', which family.yaml declares as the holder's "
+         "tracking branch, and `remove` will not write a commit whose only "
+         "next step is a push to the default branch"))
+    assert refusal_detail(result.stderr, code) == [
+        f"REFUSED {code}: {spelt(holder)} {said}. No git command that writes "
+        "was run and nothing was written."]
+
+
+@pytest.mark.parametrize("name", SHOWN_NAMES)
+def test_a_holder_on_a_branch_that_is_not_utf8_is_named_safe_to_show(
+        family, tmp_path, name):
+    """#765's `family-branch-not-utf8` is raised in `_checked_branch`, the
+    check that gives the two refusals above, and names the holder as they
+    do (#766): as `repr` spells it, on the one line it is, and a printable
+    holder as it is, byte for byte. The remedy's `branch -m` is a command
+    to paste, quoted for a POSIX shell, and is not this row's."""
+    holder = copied_under(family["root"], tmp_path, name)
+    git("switch", "-q", "-C", TRACKING, cwd=holder)
+    on_a_branch_that_is_not_utf_8(holder)
+    result = act(family, holder, "remove")
+    assert result.returncode == 2, result.stdout + result.stderr
+    assert result.stdout == ""
+    assert refusal_detail(result.stderr, "family-branch-not-utf8") == [
+        f"REFUSED family-branch-not-utf8: {named_as(holder, name)} is on the "
+        f"branch {NOT_UTF_8_BRANCH_NAMED}, whose name is not UTF-8, so no "
+        "line this tool prints can name it: the NEXT line would push a "
+        "branch that is not there. Nothing was committed, and the holder's "
+        "work tree and index are as they were."]

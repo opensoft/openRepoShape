@@ -37,6 +37,9 @@ from pathlib import Path
 import pytest
 
 from conftest import ORG, REPO, SCAFFOLD, WINDOWS_SKIP, git, run_script
+#: The names no line may print raw, and how a line spells them (#766).
+from conftest import (UNSAFE_NAMES, assert_shown_safe, refusal_detail,
+                      spelt, unsafe_folder)
 from test_scaffold_reuse_seeded_legs import (REPOS, bare, commits,
                                              refused_at_the_root, tip)
 from test_ruleset_hint_tracking_branch import template  # noqa: F401
@@ -482,3 +485,51 @@ def test_a_real_run_with_no_gh_is_refused_in_the_dry_runs_words(
     assert refusal in captured.err, captured.err
     assert "put `gh` on PATH, logged in" in captured.err
     assert asked == [first]
+
+
+# --- #766: a local remote that exists, named safe to show -------------------
+
+def remote_exists_in_process(tool: str, remote: Path):
+    """The refusal the tool's own question raises for `remote`, a local
+    remote with commits, asked in process: `family.py`'s `_checked_reuse`
+    for its holder, or the scaffold's `_reusable_remotes` for its root."""
+    if tool == "family":
+        module = load("family_766", FAMILY)
+        with pytest.raises(module.Refusal) as refused:
+            module._checked_reuse(False, True, str(remote), f"{ORG}/{HOLDER}")
+    else:
+        module = load("scaffold_766", SCAFFOLD)
+        role = "assembly"
+        with pytest.raises(module.Refusal) as refused:
+            module._reusable_remotes(
+                {role: PROJECT}, {role: str(remote)},
+                {role: f"{ORG}/{PROJECT}"}, True, False, {}, "main")
+    return refused.value
+
+
+@pytest.mark.parametrize("name", UNSAFE_NAMES)
+@pytest.mark.parametrize("tool", ["family", "scaffold"])
+def test_a_local_remote_that_exists_is_named_safe_to_show(tmp_path, tool,
+                                                          name):
+    """#766: `family-remote-exists` and `scaffold-remote-exists` named a
+    local remote as it was, a path under `--local-remote-dir`. From the
+    command line a name with an ESC or a line break there never reaches
+    them: the clone URL is refused first, as `<tool>-unwritable-value`,
+    which names it as `repr` spells it, and nothing on either stream holds
+    the name raw. So each question is asked in process too, as #692 asks
+    `make_folder`, and names the remote as `repr` spells it."""
+    remotes = unsafe_folder(tmp_path, name).resolve()
+    remote = live_bare(
+        remotes / f"{HOLDER if tool == 'family' else PROJECT}.git")
+    run = family_init if tool == "family" else scaffold
+    result = run(tmp_path, "--local-remote-dir", str(remotes), local=False)
+    assert result.returncode == 2, result.stdout + result.stderr
+    refused = refusal_detail(result.stderr, f"{tool}-unwritable-value")
+    assert f"own path, {spelt(remote)}, which " in refused[0], refused
+    assert_shown_safe(result.stdout, result.stderr)
+
+    refusal = remote_exists_in_process(tool, remote)
+    assert refusal.code == f"{tool}-remote-exists"
+    assert refusal.detail == (
+        f"{spelt(remote)} already exists and has commits")
+    assert_shown_safe(refusal.detail, refusal.remediation)

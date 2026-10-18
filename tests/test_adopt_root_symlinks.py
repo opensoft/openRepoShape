@@ -62,9 +62,9 @@ from types import SimpleNamespace
 
 import pytest
 
-from conftest import (ADOPT, REPO, clear_ambient_pin_sources,
-                      cloned_just_pushed, git, make_source_repo, run_script,
-                      write_plan)
+from conftest import (ADOPT, REPO, appended_to_command_scope,
+                      clear_ambient_pin_sources, cloned_just_pushed, git,
+                      make_source_repo, run_script, write_plan)
 
 sys.path.insert(0, str(REPO / "scripts"))
 from shape_materialize import (  # noqa: E402
@@ -142,7 +142,6 @@ LEFT_BEHIND = "NOTHING has been rolled back: "
 BOTH_PUSHED = "and both legs are pushed."
 #: The materializer's refusal of a path that follows too many symlinks.
 SYMLINK_LOOP = "materialize-symlink-loop"
-CONFIG_VALUE = "GIT_CONFIG_VALUE_0"
 #: Case twins of paths the shape writes, as a macOS or Windows disk reads
 #: them (S1), and the rest of what several cases name.
 GITHUB_TWIN = ".GitHub"
@@ -186,12 +185,9 @@ BASIC = {README: "# Thing\n",
 
 #: `git` told to check a symlink out as a plain file, the way Git for
 #: Windows' default does, or `git init` on a filesystem without symlinks.
-#: `GIT_CONFIG_*` outranks every configuration file.
-CONFIG_COUNT = "GIT_CONFIG_COUNT"
+#: `GIT_CONFIG_*` outranks every configuration file. Set by `told_git`, after
+#: the entries the environment holds.
 CORE_SYMLINKS = "core.symlinks"
-SYMLINKS_OFF = {CONFIG_COUNT: "1", "GIT_CONFIG_KEY_0": CORE_SYMLINKS,
-                CONFIG_VALUE: "false"}
-SYMLINKS_ON = {**SYMLINKS_OFF, CONFIG_VALUE: "true"}
 
 #: What this runner lacks, if anything, for the end-to-end tests.
 NO_FILTER_REPO = shutil.which("git-filter-repo") is None
@@ -223,16 +219,15 @@ def told_git(monkeypatch, value: str) -> None:
     """`git` told `core.symlinks=<value>` through `GIT_CONFIG_*`, after
     whatever entries the runner's job sets there (the Windows job sets two),
     which stay as they were."""
-    held = int(os.environ.get(CONFIG_COUNT) or 0)
-    monkeypatch.setenv(CONFIG_COUNT, str(held + 1))
-    monkeypatch.setenv(f"GIT_CONFIG_KEY_{held}", CORE_SYMLINKS)
-    monkeypatch.setenv(f"GIT_CONFIG_VALUE_{held}", value)
+    for name, entry in appended_to_command_scope(
+            os.environ, [(CORE_SYMLINKS, value)]).items():
+        monkeypatch.setenv(name, entry)
 
 
 def links_as_files(monkeypatch) -> None:
     """`git` told to check a symlink out as a plain file, after the runner's
     own `GIT_CONFIG_*`, as Git for Windows' default does."""
-    told_git(monkeypatch, SYMLINKS_OFF[CONFIG_VALUE])
+    told_git(monkeypatch, "false")
 
 
 def no_probe(_work_root):
@@ -1296,8 +1291,7 @@ def test_execute_refuses_a_link_it_would_check_out_as_a_file(
     and the refusal is `execute`'s own, after that list (#531 changes what a
     finding says, not that order)."""
     _, plan = github_to_ci(tmp_path)
-    for key, value in SYMLINKS_OFF.items():
-        monkeypatch.setenv(key, value)
+    links_as_files(monkeypatch)
     checked = check(plan)
     assert checked.returncode == 0, checked.stderr + checked.stdout
     refusal = refused_by(adopter, execute_args(tmp_path, plan))
@@ -1324,8 +1318,7 @@ def test_a_case_twin_checked_out_as_a_file_is_named_as_one(
     disk it means, as `check`'s finding does (S1)."""
     _, plan = planned(tmp_path, {CI_FILE: ON_PUSH}, {GITHUB_TWIN: "ci"},
                       {CI_DIR: ROOT, GITHUB_TWIN: ROOT})
-    for key, value in SYMLINKS_OFF.items():
-        monkeypatch.setenv(key, value)
+    links_as_files(monkeypatch)
     refusal = refused_by(adopter, execute_args(tmp_path, plan))
     assert refusal.code == SYMLINKS_OFF_CODE
     assert refusal.detail.startswith(
@@ -1337,10 +1330,9 @@ def test_a_case_twin_checked_out_as_a_file_is_named_as_one(
 
 
 def test_the_probe_answers_what_git_would_do(adopter, tmp_path, monkeypatch):
-    for key, value in SYMLINKS_ON.items():
-        monkeypatch.setenv(key, value)
+    told_git(monkeypatch, "true")
     assert adopter._checks_out_symlinks(tmp_path) is True
-    monkeypatch.setenv(CONFIG_VALUE, "false")
+    told_git(monkeypatch, "false")
     assert adopter._checks_out_symlinks(tmp_path) is False
     assert list(tmp_path.iterdir()) == []
 
@@ -1348,8 +1340,7 @@ def test_the_probe_answers_what_git_would_do(adopter, tmp_path, monkeypatch):
 def test_with_symlinks_on_the_same_plan_passes_the_probe(adopter, tmp_path,
                                                          monkeypatch):
     _, plan = github_to_ci(tmp_path)
-    for key, value in SYMLINKS_ON.items():
-        monkeypatch.setenv(key, value)
+    told_git(monkeypatch, "true")
     loaded = adopter.Plan.load(plan)
     opened = loaded.open_source(None, tmp_path / READ)
     assert adopter._refuse_symlinks_checked_out_as_files(
@@ -1375,8 +1366,7 @@ def test_an_adoption_with_no_link_beneath_a_shape_path_makes_no_probe(
     """An ordinary adoption runs exactly as before: nothing is made in the
     work directory to ask `git` a question this plan does not raise."""
     monkeypatch.setattr(adopter, PROBE, no_probe)
-    for key, value in SYMLINKS_OFF.items():
-        monkeypatch.setenv(key, value)
+    links_as_files(monkeypatch)
     _, plan = planned(tmp_path, files, links, legs)
     loaded = adopter.Plan.load(plan)
     opened = loaded.open_source(None, tmp_path / READ)
@@ -1545,7 +1535,7 @@ def test_each_command_asks_its_own_work_directory(adopter, tmp_path,
                       f"\tpath = {included.as_posix()}\n", encoding=UTF8)
     monkeypatch.setenv("GIT_CONFIG_GLOBAL", str(config))
     told = (git_reads_symlinks_as(off), git_reads_symlinks_as(on))
-    if told != (SYMLINKS_OFF[CONFIG_VALUE], ""):
+    if told != ("false", ""):
         pytest.skip(f"git here does not tell the two directories apart: "
                     f"{told}, from this runner's own configuration")
     _, at = planned(base / "at", {}, {CLAUDE: NOWHERE_MD}, {CLAUDE: ROOT})
@@ -2068,8 +2058,7 @@ def test_with_symlinks_off_execute_adopts_beside_the_file(
     link as the source had it, as main does. Before, `check` refused it, and
     so did `execute`, before any leg."""
     source, plan = planned(tmp_path, files, links, legs)
-    for key, value in SYMLINKS_OFF.items():
-        monkeypatch.setenv(key, value)
+    links_as_files(monkeypatch)
     adopted_beside(execute(tmp_path, plan), source, links)
 
 
