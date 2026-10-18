@@ -38,16 +38,17 @@ WHAT IT DOES, in order:
       old commit, and one made as `main` could hide the commits the twin
       holds behind the new ref. No ref moves and none is made; the line
       says where the leg is, and gives `git -C <leg> switch <branch>` as
-      the way out, or, for a branch that is not there, to keep the commits
-      on a branch named otherwise and check out the pin, whose sha it
-      gives (#896). A twin is also one in Unicode form: `cafe` and U+0301
-      (NFD) is a twin of `caf` and U+00E9 (NFC), which APFS reads as one
-      file (#962). And a
-      branch that is not there is not made while any branch under
-      `refs/heads/`, packed or loose, is a twin of it and holds a commit
-      no other ref holds, whether or not HEAD is on it: the line names that
-      branch, and the way out is to keep its commits on a branch named
-      otherwise (#962). A leg
+      the way out, or, for a branch that is not there, `git -C <leg>
+      branch -m <twin> <name>`, which renames the twin and moves HEAD with
+      it, and the pin's sha (#896). A twin is also one in Unicode form:
+      `cafe` and U+0301 (NFD) is a twin of `caf` and U+00E9 (NFC), which
+      APFS reads as one file (#962). And a branch that is not there is not
+      made while any branch under `refs/heads/`, packed or loose, is a
+      twin of it, whether or not HEAD is on it and whatever else holds its
+      commits: a new file `refs/heads/main` shadows the twin's name on such
+      a disk, its entry stays in `packed-refs`, and a later `branch -D` of
+      the twin would unlink the file `main`. The line names the twin and
+      gives the same rename, to a name that is not there (#962). A leg
       with a merge, a cherry-pick, a revert, a rebase or an `am` in progress
       is not moved at all: a checkout ends the first three, carrying what
       they staged onto the branch, and leaves the last two to go on over
@@ -696,13 +697,11 @@ def _say_left(head: str | None, current: str, named: str) -> None:
           f"{named} now")
 
 
-def _say_keep(options: str = "the pin or the branch",
-              kept: str = "a branch") -> None:
+def _say_keep(options: str = "the pin or the branch") -> None:
     """What to do about a checkout step (a) will not move, in the words
-    both refusals of it share, and a third's (`_say_twin`, which names the
-    branch the commits are kept on, `kept`). Nothing moves."""
+    both refusals of it share. Nothing moves."""
     print("          not moving the checkout off it. Keep any commit made "
-          f"there on {kept}, check out {options} in the leg, and run "
+          f"there on a branch, check out {options} in the leg, and run "
           "bootstrap again.")
 
 
@@ -779,10 +778,11 @@ def _twin_words(twin: str, branch: str) -> tuple[str, str, str]:
             "Windows folds case)", "case or Unicode form")
 
 
-#: What step (a) says a HEAD on a twin of the tracking branch could do, by
-#: what it would otherwise have done (#896): `move` is `fast_forward_to_pin`'s
+#: What step (a) says a twin of the tracking branch could do, by what it
+#: would otherwise have done (#896): `move` is `fast_forward_to_pin`'s
 #: `branch -f`, `place` is `place_at_pin`'s checkout and its line that the
-#: leg left a branch, and `make` is `create_at_pin`'s `checkout -b`.
+#: leg left a branch, and `make` is `create_at_pin`'s `checkout -b`, said by
+#: `_say_spelling` (#962).
 TWIN_RISKS = {
     "move": "moving {branch} could move the ref HEAD stands on and leave "
             "the index at the old commit",
@@ -798,7 +798,9 @@ def _say_twin(label: str, path: str, branch: str, current: str, state: str,
     """A leg whose HEAD is on a twin of the tracking branch (`_folded_twin`,
     #896): nothing moves and no branch is made, and the lines say where the
     leg is, why it is left and the way out. `state` says what the branch is
-    to the pin, and `act` which of `TWIN_RISKS` is the harm.
+    to the pin, and `act` which of `TWIN_RISKS` is the harm: `move` or
+    `place`. The branch that is not there (`make`) is `_say_spelling`'s,
+    for HEAD's twin as for any other (#962).
 
     THE WORDS HOLD ON A DISK THAT KEEPS CASE TOO, where `Main` and `main`
     are two branches: they say only that a disk that folds case reads them
@@ -811,21 +813,10 @@ def _say_twin(label: str, path: str, branch: str, current: str, state: str,
     disk that folds case it re-spells HEAD and moves no file, and the next
     run takes the on-branch `merge --ff-only` of `fast_forward_to_pin` or
     the no-op checkout of `place_at_pin`; where the two are branches, it
-    puts the leg on the real one, and `Main` keeps its commits. Where the
-    branch is NOT there (`make`), that command is no way out on a disk that
-    keeps case, so the commits `Main` holds are kept on a branch of another
-    name, and the pin is checked out: on a disk that folds case,
-    `checkout -b main` would write the file `Main` reads, and hide behind
-    it what `Main` holds in `packed-refs`. A loose `Main` there makes
-    `refs/heads/main` resolve, so this path never runs for it.
+    puts the leg on the real one, and `Main` keeps its commits.
     """
     twin = current[len("refs/heads/"):]
     _say_fold(label, state, "the checkout is on", twin, branch, act)
-    if act == "make":
-        more = _twin_words(twin, branch)[2]
-        _say_keep("the pin", "a branch whose name differs from "
-                  f"{spelled(branch)} by more than {more}")
-        return
     command = f"git -C {_paste_word(path)} switch {_paste_word(branch)}"
     print(f"          run `{command}`, which moves no branch, and then run "
           "bootstrap again.")
@@ -848,61 +839,77 @@ def _say_fold(label: str, state: str, where: str, twin: str, branch: str,
           f"{risk}; the leg is left as it is")
 
 
-def _kept_elsewhere(sub: Path, tip: str, pin: str, branch: str) -> bool:
-    """Whether the commit `tip` of a spelling of `branch` is still in a ref
-    once `branch` is made at the pin: it is an ancestor of the pin, which the
-    new branch holds, or a ref that is not a spelling of `branch` holds it:
-    another branch the person kept it on, or a remote-tracking ref (#962)."""
-    if _is_ancestor(sub, tip, pin):
-        return True
-    held = _try_git(["for-each-ref", "--contains", tip,
-                     "--format=%(refname)"], sub)
-    return any(not _folded_twin(ref, branch)
-               for ref in (held or "").splitlines())
+def _heads(sub: Path) -> list[str]:
+    """Every ref under `refs/heads/`, packed or loose, as `git for-each-ref`
+    lists them, or none where git says nothing (#962)."""
+    listed = _try_git(["for-each-ref", "--format=%(refname)",
+                       "refs/heads/"], sub)
+    return (listed or "").splitlines()
 
 
-def _spelling_at_risk(sub: Path, branch: str, pin: str) -> str | None:
-    """The first branch under `refs/heads/`, packed or loose, that is a
-    twin of `branch` (`_folded_twin`) and holds a commit that making `branch`
-    at the pin would leave in no ref, or `None` (#962).
+def _folded_spelling(sub: Path, branch: str) -> str | None:
+    """The first branch under `refs/heads/`, packed or loose, that is a twin
+    of `branch` (`_folded_twin`), or `None` (#962).
 
     WHAT WAS WRONG. `create_at_pin` asked only about HEAD's own ref, so a
     leg detached at the pin over a packed `Main`, or on an unborn `Main`
     beside a packed `MAIN`, ran `checkout -b main <pin>`, which wrote the
-    loose file a disk that folds case reads for `Main` and `MAIN`: their
-    commits were then in no ref, and only HEAD's reflog kept them (rv896's
-    probes at #948). The branches come from `git for-each-ref`, which lists
-    the packed ones too. A spelling whose commit another branch, a tag or a
-    remote-tracking ref holds, or the pin holds, loses nothing, so the way
-    out is to keep the commits on a branch of another name, and bootstrap
-    then goes on: `_kept_elsewhere`."""
-    listed = _try_git(["for-each-ref", "--format=%(objectname) %(refname)",
-                       "refs/heads/"], sub)
-    for line in (listed or "").splitlines():
-        tip, _, ref = line.partition(" ")
-        if _folded_twin(ref, branch) and not _kept_elsewhere(
-                sub, tip, pin, branch):
+    loose file a disk that folds case reads for `Main` and `MAIN`. Reasoned
+    from git's files backend, and not measured on such a disk (rv984): the
+    packed entry `Main` is left where it was, `for-each-ref` goes on listing
+    it at its old sha while `rev-parse Main` reads the new file `main`, and
+    a later `git branch -D Main` unlinks that file. The commit is still in
+    a ref, but its name is shadowed, and the state is fragile.
+
+    EVERY TWIN IS A REASON TO LEAVE, whether or not another ref holds its
+    commits (a tag, a remote-tracking ref, another branch, or the pin, which
+    the new branch holds): the ref made is the one bootstrap never makes, a
+    file a disk that folds case reads as a branch that is already there.
+    `_say_spelling` names it and gives the rename that ends the refusal."""
+    for ref in _heads(sub):
+        if _folded_twin(ref, branch):
             return ref[len("refs/heads/"):]
     return None
 
 
-def _say_spelling(label: str, path: str, branch: str, spelling: str,
-                  state: str) -> None:
-    """A leg with a spelling of the missing tracking branch that making it
-    would hide (`_spelling_at_risk`, #962): nothing is made, and the lines
-    name the spelling, say why, and give the way out: keep what it holds on a
-    branch whose name differs from `branch` by more than case or Unicode
-    form, `git -C <leg> branch <another name> <spelling>`, and run bootstrap
-    again, which then makes the branch, since nothing is hidden. True on a
-    disk that keeps case too, where the spelling is a branch of its own."""
-    _say_fold(label, state, "the leg has the branch", spelling, branch,
-              "make")
+def _kept_name(sub: Path, spelling: str) -> str:
+    """A name for the branch `spelling` is renamed to, so the line that says
+    to rename it can be pasted as it is: `spelling` and `-kept`, then
+    `-kept-2` and on, the first that no branch of the leg folds to
+    (`_fold`, so a name only in another case or form is taken too). It is
+    longer than `spelling`, so it differs from the tracking branch by more
+    than case or Unicode form, and a suffix of letters and dashes leaves a
+    valid ref name valid (#962)."""
+    held = {_fold(ref[len("refs/heads/"):]) for ref in _heads(sub)}
+    name, turn = f"{spelling}-kept", 1
+    while _fold(name) in held:
+        turn += 1
+        name = f"{spelling}-kept-{turn}"
+    return name
+
+
+def _say_spelling(sub: Path, label: str, path: str, branch: str,
+                  spelling: str, state: str,
+                  where: str = "the leg has the branch") -> None:
+    """A leg with a twin of the missing tracking branch, `spelling`, in the
+    way of making it (`_folded_spelling`, or HEAD's own, `where` being `the
+    checkout is on`, #962): nothing is made, and the lines name the twin,
+    say why, and give the way out: rename it, `git -C <leg> branch -m
+    <spelling> <name>`, `_kept_name` being a name that is not there, and run
+    bootstrap again. The twin is then no twin, its commits stay on it, and
+    the next run makes the branch. Git moves HEAD with the rename of the
+    branch HEAD is on, an unborn one included, so a leg ON the twin takes
+    the way out as any other does, and the next run says `the leg was on
+    <name>, which keeps its commits`. The twin may be a branch of its own,
+    on a disk that keeps case, and the words are true there too."""
+    _say_fold(label, state, where, spelling, branch, "make")
     more = _twin_words(spelling, branch)[2]
-    command = (f"git -C {_paste_word(path)} branch <another name> "
-               f"{_paste_word(spelling)}")
-    print(f"          keep the commits {spelled(spelling)} holds on a branch "
-          f"whose name differs from {spelled(branch)} by more than {more}: "
-          f"`{command}`, and run bootstrap again.")
+    command = (f"git -C {_paste_word(path)} branch -m "
+               f"{_paste_word(spelling)} "
+               f"{_paste_word(_kept_name(sub, spelling))}")
+    print(f"          rename {spelled(spelling)} to a name that differs from "
+          f"{spelled(branch)} by more than {more}, its commits staying on "
+          f"it: `{command}`, and run bootstrap again.")
 
 
 def _in_progress(sub: Path) -> tuple[tuple[str, str, str], str] | None:
@@ -1305,20 +1312,17 @@ def create_at_pin(sub: Path, label: str, path: str, branch: str, pin: str,
     HEAD on a TWIN of the branch, one that differs from it only in case
     (`Main` for `main`, `_folded_twin`, #896), and no branch is made: a
     disk that folds case reads the new file `refs/heads/main` as the file
-    `refs/heads/Main`, so the commits `Main` holds, packed as they are
-    after `git pack-refs`, are left behind it, in no ref anyone reads.
-    `switch <branch>` is no way out of a leg with no such branch, so
-    `_say_twin` says to keep the commits on a branch of another name and to
-    check out the pin; `path` is the leg's.
+    `refs/heads/Main`, so the name `Main` is shadowed by it, and its
+    packed entry is left behind it. `switch <branch>` is no way out of a
+    leg with no such branch, so `_say_spelling` says to rename the twin,
+    which moves HEAD with it (#962); `path` is the leg's.
 
     The same harm comes with HEAD ELSEWHERE (#962): detached at the pin over
     a packed `Main`, or on an unborn `Main` beside a packed `MAIN`. Before
-    the checkout, `_spelling_at_risk` asks every branch under `refs/heads/`,
-    packed or loose, for a twin of `branch` holding a commit that nothing
-    else would hold, and `_say_spelling` leaves the leg, naming it. A twin
-    in NFD or NFC is one too (`_fold`). Nothing else changes: a twin whose
-    commit is the pin's ancestor, or another branch, a tag or a
-    remote-tracking ref holds, is no reason to leave.
+    the checkout, `_folded_spelling` asks every branch under `refs/heads/`,
+    packed or loose, for a twin of `branch`, and `_say_spelling` leaves the
+    leg, naming it. A twin in NFD or NFC is one too (`_fold`), and EVERY
+    twin is a reason to leave, whatever else holds its commits.
 
     The checkout is judged by WHERE HEAD IS AFTERWARDS, as `_check_out`
     judges one (#533; rv704's S3): a post-checkout hook that fails after
@@ -1330,9 +1334,10 @@ def create_at_pin(sub: Path, label: str, path: str, branch: str, pin: str,
     named = spelled(branch)
     head, current = _head_of(sub)
     if _folded_twin(current, branch):
-        _say_twin(label, path, branch, current,
-                  f"branch {named} does not exist (the pin is "
-                  f"{_short(pin)})", "make")
+        _say_spelling(sub, label, path, branch,
+                      current[len("refs/heads/"):],
+                      f"branch {named} does not exist (the pin is "
+                      f"{_short(pin)})", "the checkout is on")
         return
     if head is not None and current is None and head != pin:
         # `checkout -b <branch> <pin>` from a leg detached anywhere else
@@ -1352,9 +1357,9 @@ def create_at_pin(sub: Path, label: str, path: str, branch: str, pin: str,
               "branch")
         _say_keep("the pin")
         return
-    spelling = _spelling_at_risk(sub, branch, pin)
+    spelling = _folded_spelling(sub, branch)
     if spelling is not None:
-        _say_spelling(label, path, branch, spelling,
+        _say_spelling(sub, label, path, branch, spelling,
                       f"branch {named} does not exist (the pin is "
                       f"{_short(pin)})")
         return

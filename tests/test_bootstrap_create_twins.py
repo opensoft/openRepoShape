@@ -6,24 +6,31 @@ too (#962).
 WHAT #948 (#896) LEFT. `_folded_twin` asked only about HEAD's own ref, and
 `create_at_pin` checked no other spelling of the branch it made, so on a disk
 that folds case (macOS, Windows) `checkout -b main <pin>` wrote the loose file
-that `Main` and `MAIN` are read from, and a commit only a packed `Main` held
-was then in no ref, with only HEAD's reflog keeping it (rv896's probes):
+that `Main` and `MAIN` are read from. What such a disk then does to a packed
+`Main` is reasoned from git's files backend (rv984), and not measured on one:
+the packed entry stays, `for-each-ref` goes on listing it at its old sha while
+`rev-parse Main` reads the new file `main`, and a later `branch -D Main`
+unlinks that file. The commit is still in a ref; its name is shadowed, and the
+state is fragile. Three states did it:
 
 - a leg DETACHED AT THE PIN over a packed `Main`, and no `main`;
 - a leg on an UNBORN `Main` beside a packed `MAIN`: #948 refuses the unborn
-  `Main`, whose way out is to check out the pin, and the next run then hid
-  `MAIN`'s commit;
+  `Main`, whose way out is to check out the pin, and the next run then made
+  `main` over `MAIN`;
 - the same with NFC and NFD, which APFS reads as one file as it reads `Main`
   and `main`: a leg on the NFD spelling of `café`, `str.casefold()` alone
   calling it no twin, was moved under its own HEAD as #896's was.
 
 THE RULE NOW. `_fold` is NFC, then `casefold()`, and `_folded_twin` asks it
 of HEAD's ref. Before `checkout -b`, `create_at_pin` asks `git for-each-ref
-refs/heads/`, which lists the packed ones too, for a twin that holds a commit
-the new branch would leave in no ref, and leaves the leg, naming it. A twin
-whose commit is the pin's ancestor, or is held by another branch, a tag or a
-remote-tracking ref, loses nothing, so the way out is #948's: keep the commits
-on a branch of another name, and run bootstrap again, which then makes `main`.
+refs/heads/`, which lists the packed ones too, for ANY twin, and leaves the
+leg, naming it: whether or not a tag, a remote-tracking ref, another branch
+or the pin holds the twin's commits, since the ref made is one a folding disk
+reads as a branch that is already there. The way out RENAMES the twin, `git -C
+<leg> branch -m <twin> <twin>-kept`, for a twin elsewhere and for the twin
+HEAD is on alike: git moves HEAD with the rename, and the next run makes `main`
+(an earlier way out, to keep the commits on another branch and check out the
+pin, left the twin where it was, so the refusal came back).
 
 THE WORDS HOLD ON A DISK THAT KEEPS CASE TOO, where a real `Main` is a branch
 of its own: every state here that makes a real name, packed or loose, runs the
@@ -35,6 +42,7 @@ from __future__ import annotations
 
 import os
 import shlex
+import subprocess
 import unicodedata
 from pathlib import Path
 
@@ -47,9 +55,9 @@ from test_bootstrap_after_bump import (  # noqa: F401
 from test_bootstrap_branch_bytes import bootstrap_module  # noqa: F401
 from test_bootstrap_casefold_twin import (
     behind, commit_on, gitdir_of, needs_a_disk_that_keeps_case,
-    printed_way_out, status, step_a, twin_on_disk,
+    printed_rename, printed_way_out, status, step_a, twin_on_disk,
 )
-from test_bootstrap_leg_moves import main_of, typed
+from test_bootstrap_leg_moves import main_of
 from test_bootstrap_non_utf8_branch import NEEDS_A_UTF8_PROCESS, head_bytes
 from test_bootstrap_pasteable_lines import pasted
 
@@ -65,21 +73,25 @@ MAKE = ("making {b} could hide the commits a branch spelled like {b} holds "
         "behind the new ref")
 MOVE = ("moving {b} could move the ref HEAD stands on and leave the index "
         "at the old commit")
+ON = "the checkout is on"
+HAS = "the leg has the branch"
 
 
 def spelling_lines(state: str, spelling: str, branch: str = "main",
-                   kind=CASE) -> str:
-    """The three lines step (a) prints of a leg that has a spelling of the
-    missing branch it would hide (`_say_spelling`), byte for byte."""
+                   kind=CASE, where: str = HAS, kept: str = "") -> str:
+    """The three lines step (a) prints of a leg that has a twin of the
+    missing branch (`_say_spelling`), byte for byte, `where` saying how the
+    leg has it and `kept` being the name the rename gives it."""
     how, reads, more = kind
-    return (f"  [spec] spec: {state}, and the leg has the branch {spelling}, "
+    kept = kept or f"{spelling}-kept"
+    return (f"  [spec] spec: {state}, and {where} {spelling}, "
             f"which differs from {branch} {how}\n"
             f"          {reads} reads {spelling} and {branch} as one branch, "
             f"so {MAKE.format(b=branch)}; the leg is left as it is\n"
-            f"          keep the commits {spelling} holds on a branch whose "
-            f"name differs from {branch} by more than {more}: `git -C spec "
-            f"branch <another name> {shlex.quote(spelling)}`, and run "
-            "bootstrap again.\n")
+            f"          rename {spelling} to a name that differs from "
+            f"{branch} by more than {more}, its commits staying on it: "
+            f"`git -C spec branch -m {shlex.quote(spelling)} "
+            f"{shlex.quote(kept)}`, and run bootstrap again.\n")
 
 
 def missing(pin: str) -> str:
@@ -90,12 +102,10 @@ def created(pin: str) -> str:
     return f"  [spec] spec: branch main created at {pin[:12]} — at the pin\n"
 
 
-def kept_by(root: Path, stdout: str, name: str) -> None:
-    """The way out, run as printed with `<another name>` made `name`."""
-    line = next(row for row in stdout.splitlines()
-                if row.startswith("          keep the commits "))
-    command = line.split("`")[1].replace("<another name>", name)
-    typed(root, command)
+def sha_of(leg: Path, ref: str) -> str:
+    """What `ref` names in the leg, or the empty string where it is none."""
+    return git("rev-parse", "--verify", "--quiet", ref, cwd=leg,
+               check=False).stdout.strip()
 
 
 def detached_without_main(leg: Path) -> str:
@@ -118,11 +128,11 @@ def test_a_leg_detached_at_the_pin_over_a_real_spelling_is_left(
         root, tmp_path, packed):
     """(b) HEAD detached at the pin, `Main` holding a commit of its own, no
     `main`. `checkout -b main <pin>` exited 0 and wrote the file `Main` is
-    read from on a disk that folds case, hiding the commit. Nothing is made;
-    the lines name `Main`, and the way out, run as printed, keeps the commit
-    on another branch, so the next run makes `main`, and `Main` keeps it
-    too. Loose and packed give the same lines (a loose `Main` cannot stand
-    beside a missing `main` on a disk that folds case: it IS `main` there)."""
+    read from on a disk that folds case. Nothing is made; the lines name
+    `Main`, and the way out, run as printed through `/bin/sh`, renames it, so
+    the next run makes `main`, and the commit stays on `Main-kept`. Loose
+    and packed give the same lines (a loose `Main` cannot stand beside a
+    missing `main` on a disk that folds case: it IS `main` there)."""
     needs_a_disk_that_keeps_case(tmp_path)
     leg = root / "spec"
     pin = rev(leg)
@@ -143,22 +153,60 @@ def test_a_leg_detached_at_the_pin_over_a_real_spelling_is_left(
     assert rev(leg, "refs/heads/Main") == mine
     assert status(leg) == ""
 
-    kept_by(root, first.stdout, "kept-from-Main")
+    pasted(root, printed_rename(first.stdout))
+    assert rev(leg, "refs/heads/Main-kept") == mine
+    assert sha_of(leg, "refs/heads/Main") == "", "`Main` is renamed"
     again = skip_validators(root)
     assert again.returncode == 0, again.stderr + again.stdout
     assert step_a(again.stdout) == created(pin), again.stdout
     assert head_ref(leg) == "refs/heads/main"
-    assert rev(leg, "refs/heads/kept-from-Main") == mine
-    assert rev(leg, "refs/heads/Main") == mine, "`Main` keeps its commit"
+    assert rev(leg, "refs/heads/Main-kept") == mine
 
 
-def test_an_unborn_twin_beside_a_packed_third_spelling_is_left_twice(
+def test_a_leg_on_a_twin_takes_the_rename_and_head_goes_with_it(
+        root, tmp_path):
+    """#948's HEAD-twin line, for a branch that is not there, said to keep
+    the commits on another branch and check out the pin. The rename gives the
+    same ending to a leg ON the twin: git moves HEAD with the renamed
+    branch, the next run finds no twin, makes `main`, and says the leg was on
+    `Main-kept`, which keeps its commits."""
+    needs_a_disk_that_keeps_case(tmp_path)
+    leg = root / "spec"
+    pin = rev(leg)
+    git("checkout", "-q", "-b", "Main", cwd=leg)
+    mine = commit_on(leg, "MINE.md")
+    git("branch", "-q", "-D", "main", cwd=leg)
+    git("pack-refs", "--all", cwd=leg)
+
+    first = skip_validators(root)
+    assert first.returncode == 0, first.stderr + first.stdout
+    assert step_a(first.stdout) == spelling_lines(
+        missing(pin), "Main", where=ON), first.stdout
+    assert main_of(leg) is None, "no `main` is made"
+    assert head_ref(leg) == "refs/heads/Main"
+    assert rev(leg) == mine
+    assert status(leg) == ""
+
+    pasted(root, printed_rename(first.stdout))
+    assert head_ref(leg) == "refs/heads/Main-kept", "HEAD goes with it"
+    assert rev(leg) == mine
+    again = skip_validators(root)
+    assert again.returncode == 0, again.stderr + again.stdout
+    assert step_a(again.stdout) == created(pin) + (
+        "          the leg was on Main-kept, which keeps its commits; it is "
+        "on main now\n"), again.stdout
+    assert head_ref(leg) == "refs/heads/main"
+    assert rev(leg) == pin
+    assert rev(leg, "refs/heads/Main-kept") == mine
+
+
+def test_an_unborn_twin_beside_a_packed_third_spelling_is_renamed_in_turn(
         root, tmp_path):
     """(c) HEAD on an unborn `Main` while a packed `MAIN` holds a commit, and
     no `main`. #948 refuses the unborn `Main`; its way out, checking out the
-    pin, ran `checkout -b main` over `MAIN`, and hid `MAIN`'s commit. The
-    second refusal names `MAIN`, and its way out, run as printed, lets the
-    third run make `main`."""
+    pin, ran `checkout -b main` over `MAIN`. Now each twin is named in turn
+    and renamed as printed: the unborn `Main` first (HEAD goes with it), then
+    `MAIN`, and the third run makes `main`."""
     needs_a_disk_that_keeps_case(tmp_path)
     leg = root / "spec"
     pin = rev(leg)
@@ -171,84 +219,129 @@ def test_an_unborn_twin_beside_a_packed_third_spelling_is_left_twice(
 
     first = skip_validators(root)
     assert first.returncode == 0, first.stderr + first.stdout
-    assert (f"  [spec] spec: {missing(pin)}, and the checkout is on Main, "
-            "which differs from main only in case\n") in first.stdout
+    assert step_a(first.stdout) == spelling_lines(
+        missing(pin), "Main", where=ON), first.stdout
     assert main_of(leg) is None
+    pasted(root, printed_rename(first.stdout))
+    assert head_ref(leg) == "refs/heads/Main-kept", "HEAD goes with it"
 
-    git("checkout", "-q", "--detach", pin, cwd=leg)
     second = skip_validators(root)
     assert second.returncode == 0, second.stderr + second.stdout
     assert step_a(second.stdout) == spelling_lines(missing(pin), "MAIN"), (
         second.stdout)
     assert main_of(leg) is None, "no `main` is made"
     assert rev(leg, "refs/heads/MAIN") == mine
+    pasted(root, printed_rename(second.stdout))
 
-    kept_by(root, second.stdout, "kept-from-MAIN")
     third = skip_validators(root)
     assert third.returncode == 0, third.stderr + third.stdout
-    assert step_a(third.stdout) == created(pin), third.stdout
-    assert rev(leg, "refs/heads/kept-from-MAIN") == mine
-    assert rev(leg, "refs/heads/MAIN") == mine
+    assert step_a(third.stdout) == created(pin) + (
+        "          the leg was on Main-kept, a branch with no commit yet; "
+        "it is on main now\n"), third.stdout
+    assert rev(leg, "refs/heads/MAIN-kept") == mine
+    assert sha_of(leg, "refs/heads/MAIN") == ""
 
 
-def test_the_spelling_that_would_hide_something_is_the_one_named(
+def test_two_twins_are_named_in_turn_and_the_second_name_is_taken_in_case(
         root, tmp_path):
-    """Two twins, `MAIN` (first in the list) with its commit kept on another
-    branch, and `Main` with a commit nothing else holds: the refusal names
-    `Main`, and goes on past `MAIN`."""
+    """Two twins, `MAIN` (first in the list) and `Main`, each with a commit:
+    the refusal names `MAIN`, and once it is renamed, `Main`. The second
+    rename is `Main-kept-2`, not `Main-kept`, which differs from the first
+    rename, `MAIN-kept`, only in case: on a disk that folds case it would be
+    the same file."""
     needs_a_disk_that_keeps_case(tmp_path)
     leg = root / "spec"
     pin = rev(leg)
     git("checkout", "-q", "-b", "MAIN", cwd=leg)
-    commit_on(leg, "ONE.md")
-    git("branch", "-q", "kept", cwd=leg)
+    one = commit_on(leg, "ONE.md")
     git("checkout", "-q", "--detach", pin, cwd=leg)
     git("checkout", "-q", "-b", "Main", cwd=leg)
-    mine = commit_on(leg, "TWO.md")
+    two = commit_on(leg, "TWO.md")
     git("checkout", "-q", "--detach", pin, cwd=leg)
     git("branch", "-q", "-D", "main", cwd=leg)
     git("pack-refs", "--all", cwd=leg)
 
-    result = skip_validators(root)
-    assert result.returncode == 0, result.stderr + result.stdout
-    assert step_a(result.stdout) == spelling_lines(missing(pin), "Main"), (
-        result.stdout)
+    first = skip_validators(root)
+    assert first.returncode == 0, first.stderr + first.stdout
+    assert step_a(first.stdout) == spelling_lines(missing(pin), "MAIN"), (
+        first.stdout)
+    pasted(root, printed_rename(first.stdout))
+
+    second = skip_validators(root)
+    assert second.returncode == 0, second.stderr + second.stdout
+    assert step_a(second.stdout) == spelling_lines(
+        missing(pin), "Main", kept="Main-kept-2"), second.stdout
     assert main_of(leg) is None
-    assert rev(leg, "refs/heads/Main") == mine
+    pasted(root, printed_rename(second.stdout))
+
+    third = skip_validators(root)
+    assert third.returncode == 0, third.stderr + third.stdout
+    assert step_a(third.stdout) == created(pin), third.stdout
+    assert rev(leg, "refs/heads/MAIN-kept") == one
+    assert rev(leg, "refs/heads/Main-kept-2") == two
 
 
-@pytest.mark.parametrize("held", ["ancestor of the pin", "another branch",
-                                  "a remote-tracking ref", "no twin"])
-def test_a_spelling_with_nothing_to_hide_is_no_reason_to_leave(
+@pytest.mark.parametrize("held", ["the pin alone", "another branch",
+                                  "a tag", "a remote-tracking ref",
+                                  "the stash"])
+def test_a_twin_is_a_reason_to_leave_however_its_commit_is_held(
         root, tmp_path, held):
-    """Nothing is hidden where a twin's commit is the pin's ancestor (the new
-    `main` holds it), or another branch or a remote-tracking ref holds it,
-    and a branch that is no twin is no one's business: `main` is made, as it
-    was. These pass on the base by design."""
+    """The ref bootstrap would make is one a disk that folds case reads as a
+    branch that is already there, so a twin is a reason to leave whether or
+    not something else holds its commit: the pin (`Main` at the pin itself),
+    another branch, a tag, a remote-tracking ref or the stash (rv984 measured
+    the four that hold a commit the pin lacks, which an earlier rule
+    spared). The rename ends it, and the commit is where it was."""
     needs_a_disk_that_keeps_case(tmp_path)
     leg = root / "spec"
     pin = rev(leg)
-    name = "mains" if held == "no twin" else "Main"
-    git("checkout", "-q", "-b", name, cwd=leg)
-    mine = pin if held == "ancestor of the pin" else commit_on(leg, "MINE.md")
+    git("checkout", "-q", "-b", "Main", cwd=leg)
+    mine = pin if held == "the pin alone" else commit_on(leg, "MINE.md")
     git("checkout", "-q", "--detach", pin, cwd=leg)
     git("branch", "-q", "-D", "main", cwd=leg)
-    if held == "ancestor of the pin":
-        # the remote-tracking refs hold the pin too: only the pin does here
-        for ref in git("for-each-ref", "--format=%(refname)",
-                       "refs/remotes/", cwd=leg).stdout.split():
-            git("update-ref", "-d", ref, cwd=leg)
     if held == "another branch":
         git("branch", "-q", "kept", mine, cwd=leg)
+    if held == "a tag":
+        git("tag", "kept-tag", mine, cwd=leg)
     if held == "a remote-tracking ref":
         git("update-ref", "refs/remotes/origin/Main", mine, cwd=leg)
+    if held == "the stash":
+        git("update-ref", "refs/stash", mine, cwd=leg)
+    git("pack-refs", "--all", cwd=leg)
+
+    first = skip_validators(root)
+    assert first.returncode == 0, first.stderr + first.stdout
+    assert step_a(first.stdout) == spelling_lines(missing(pin), "Main"), (
+        first.stdout)
+    assert main_of(leg) is None, "no `main` is made"
+    assert head_ref(leg) is None
+    assert rev(leg, "refs/heads/Main") == mine
+
+    pasted(root, printed_rename(first.stdout))
+    again = skip_validators(root)
+    assert again.returncode == 0, again.stderr + again.stdout
+    assert step_a(again.stdout) == created(pin), again.stdout
+    assert rev(leg, "refs/heads/Main-kept") == mine
+
+
+def test_a_branch_that_is_no_twin_is_no_reason_to_leave(root, tmp_path):
+    """`mains` holds a commit and is no spelling of `main`: it is no one's
+    business, and `main` is made, as it was. This passes on the base by
+    design."""
+    needs_a_disk_that_keeps_case(tmp_path)
+    leg = root / "spec"
+    pin = rev(leg)
+    git("checkout", "-q", "-b", "mains", cwd=leg)
+    mine = commit_on(leg, "MINE.md")
+    git("checkout", "-q", "--detach", pin, cwd=leg)
+    git("branch", "-q", "-D", "main", cwd=leg)
     git("pack-refs", "--all", cwd=leg)
 
     result = skip_validators(root)
     assert result.returncode == 0, result.stderr + result.stdout
     assert step_a(result.stdout) == created(pin), result.stdout
     assert head_ref(leg) == "refs/heads/main"
-    assert rev(leg, f"refs/heads/{name}") == mine
+    assert rev(leg, "refs/heads/mains") == mine
 
 
 @NEEDS_A_UTF8_PROCESS
@@ -296,11 +389,13 @@ def test_a_leg_on_the_nfd_spelling_of_its_branch_is_left_and_the_way_out_works(
 
 
 @NEEDS_A_UTF8_PROCESS
-def test_a_missing_branch_beside_its_nfd_spelling_is_left(root, tmp_path):
+def test_a_missing_branch_beside_its_nfd_spelling_is_left_and_renamed(
+        root, tmp_path):
     """The missing `café` in NFC beside a packed branch `café` in NFD that
     holds a commit: on APFS, which reads the two as one file, `checkout -b`
-    would hide it. The lines name the NFD branch and say it differs in case
-    or Unicode form; skips on a disk that reads the two as one."""
+    would shadow it. The lines name the NFD branch and say it differs in case
+    or Unicode form; the rename, run as printed, gives the next run a branch
+    to make; skips on a disk that reads the two as one."""
     if not keeps_forms(tmp_path):
         pytest.skip("this disk reads NFC and NFD as one file")
     leg = root / "spec"
@@ -310,17 +405,85 @@ def test_a_missing_branch_beside_its_nfd_spelling_is_left(root, tmp_path):
     git("checkout", "-q", "--detach", pin, cwd=leg)
     git("branch", "-q", "-D", "main", cwd=leg)
     git("pack-refs", "--all", cwd=leg)
+    bootstrap = root / "scripts" / "bootstrap.py"
 
-    result = run_script(root / "scripts" / "bootstrap.py",
-                        "--skip-validators", "--branch", NFC, cwd=root)
+    result = run_script(bootstrap, "--skip-validators", "--branch", NFC,
+                        cwd=root)
     assert result.returncode == 0, result.stderr + result.stdout
     state = f"branch {NFC} does not exist (the pin is {pin[:12]})"
     assert step_a(result.stdout) == spelling_lines(
         state, NFD, NFC, FORM), result.stdout
     assert os.path.exists(gitdir_of(leg) / "packed-refs")
-    assert git("rev-parse", "--verify", "--quiet", f"refs/heads/{NFC}",
-               cwd=leg, check=False).stdout.strip() == "", "none is made"
+    assert sha_of(leg, f"refs/heads/{NFC}") == "", "none is made"
     assert rev(leg, f"refs/heads/{NFD}") == mine
+
+    pasted(root, printed_rename(result.stdout))
+    assert rev(leg, f"refs/heads/{NFD}-kept") == mine
+    again = run_script(bootstrap, "--skip-validators", "--branch", NFC,
+                       cwd=root)
+    assert again.returncode == 0, again.stderr + again.stdout
+    assert step_a(again.stdout) == (
+        f"  [spec] spec: branch {NFC} created at {pin[:12]} — at the pin\n"
+    ), again.stdout
+
+
+@pytest.mark.parametrize("names, spelling, expected", [
+    pytest.param([], "Main", "Main-kept", id="nothing taken"),
+    pytest.param(["main-kept"], "Main", "Main-kept-2",
+                 id="the name taken in another case"),
+    pytest.param(["Main-kept", "Main-kept-2"], "Main", "Main-kept-3",
+                 id="two taken"),
+    pytest.param(["mains"], "Main", "Main-kept", id="another name is no bar"),
+])
+def test_the_rename_is_to_a_name_no_branch_folds_to(
+        bootstrap_module, root, tmp_path, names, spelling, expected):
+    """`_kept_name`: the spelling and `-kept`, then `-kept-2` and on, the
+    first that no branch of the leg folds to, so the printed line can be
+    pasted as it is and names no branch that is there."""
+    needs_a_disk_that_keeps_case(tmp_path)
+    leg = root / "spec"
+    for name in names:
+        git("branch", "-q", name, cwd=leg)
+    assert bootstrap_module._kept_name(leg, spelling) == expected
+
+
+@NEEDS_A_UTF8_PROCESS
+def test_the_rename_is_taken_in_unicode_form_too(
+        bootstrap_module, root, tmp_path):
+    """The NFD spelling of `café-kept` is taken: the NFC spelling of the
+    rename is not free, though the two differ in bytes."""
+    if not keeps_forms(tmp_path):
+        pytest.skip("this disk reads NFC and NFD as one file")
+    leg = root / "spec"
+    git("branch", "-q", f"{NFD}-kept", cwd=leg)
+    assert bootstrap_module._kept_name(leg, NFC) == f"{NFC}-kept-2"
+
+
+@pytest.mark.skipif(os.name == "nt", reason="the words are `sh`'s")
+@pytest.mark.parametrize("path, spelling", [
+    pytest.param("spec", "Main", id="ordinary names"),
+    pytest.param("my spec", "Main", id="path with a space"),
+    pytest.param("spec", f"A{chr(0xDCFF)}b", id="spelling with the byte"),
+    pytest.param(f"-sp{chr(0xDCFF)}ec", f"A{chr(0xDCFF)}b",
+                 id="both, the path leading with a dash"),
+])
+def test_a_shell_reads_each_word_of_the_rename_as_the_bytes_of_its_name(
+        bootstrap_module, capsys, tmp_path, path, spelling):
+    """`_paste_word` for the path, the twin and the name it is renamed to:
+    the words `/bin/sh` reads from the printed command are the bytes of the
+    names, the name a byte that is not UTF-8 is spelled with included. `git`
+    is a function here that prints its arguments, NUL-separated."""
+    if not os.path.exists("/bin/sh"):
+        pytest.skip("this system has no /bin/sh")
+    branch = spelling.lower()
+    bootstrap_module._say_spelling(
+        tmp_path, "[spec] x", path, branch, spelling, "branch is not there")
+    command = printed_rename(capsys.readouterr().out)
+    read = subprocess.run(
+        ["/bin/sh", "-c", 'git() { printf "%s\\0" "$@"; }\n' + command],
+        capture_output=True, check=True).stdout.split(b"\0")[:-1]
+    assert read == [b"-C", os.fsencode(path), b"branch", b"-m",
+                    os.fsencode(spelling), os.fsencode(spelling) + b"-kept"]
 
 
 @pytest.mark.parametrize("current, branch, twin", [
@@ -332,12 +495,18 @@ def test_a_missing_branch_beside_its_nfd_spelling_is_left(root, tmp_path):
                  id="NFD in capitals for NFC"),
     pytest.param("refs/heads/" + NFD, "caf" + chr(0xE8), False,
                  id="another letter"),
+    pytest.param("refs/heads/main" + chr(0xB2), "main2", False,
+                 id="a superscript two is no two (NFKC would fold it)"),
+    pytest.param("refs/heads/" + chr(0x2460), "1", False,
+                 id="a circled one is no one (NFKC would fold it)"),
 ])
 def test_the_helper_folds_unicode_forms_too(
         bootstrap_module, current, branch, twin):
     """`_folded_twin` folds in NFC before `casefold()`: the NFC and the NFD
     spelling of a name are twins, in either order and in capitals, a name is
-    no twin of itself, and another letter is no twin."""
+    no twin of itself, and another letter is no twin. A compatibility form
+    (`main` and U+00B2, `1` and U+2460) is none: APFS does not fold those,
+    and NFKC would."""
     assert bootstrap_module._folded_twin(current, branch) is twin
 
 
