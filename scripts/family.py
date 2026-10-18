@@ -3374,6 +3374,12 @@ SET_ASIDE = (ASIDE, ASIDE_SPARSE, ASIDE_OUT, ASIDE_UNMERGED,
 #: before.
 SPARSE_MV_GIT = "which needs git 2.38 or later"
 SPARSE_RM_GIT = "which needs git 2.34 or later"
+#: What `-f` on a `git rm --cached` of a gitlink does, said wherever one is
+#: printed with it: the move back's (#761) and a second path's (rv865b's
+#: round-2 MUST 1), as the validator's `FORCED_SAID` says it (#839).
+FORCED_SAID = ("whose -f takes out a staged gitlink whose checkout has moved "
+               "on or holds a file git does not track, which git rm otherwise "
+               "refuses, and with --cached touches no file")
 
 #: The name a `members/` renamed with `git mv` is renamed back through, or
 #: the first of its numbered variants that nothing holds (#685).
@@ -3411,7 +3417,12 @@ class Spelled(NamedTuple):
     `forced` says the removal takes `-f`: the index stages the variant at a
     commit HEAD does not record there, and a checkout is on disk at it,
     which `git rm --cached` refuses wherever that checkout has moved on or
-    holds a file it does not track (#761).
+    holds a file it does not track (#761), and the same of a second path
+    taken out of the index (`UNSTAGE_SECOND`, rv865b's round-2 MUST 1).
+    `checkout`, for `UNSTAGE_SECOND` alone, says that a checkout `git
+    submodule add` or `git mv` made is on disk at it in its own spelling,
+    which the remedy names to delete by hand in the same round, before any
+    update (rv865b's round-2 SHOULD 1).
 
     WHAT IS SET ASIDE BEFORE THE MOVE BACK (`SET_ASIDE`, #761) is an entry
     the index holds at or under a row's path, or at `members` itself, which
@@ -3456,6 +3467,7 @@ class Spelled(NamedTuple):
     sections: tuple[str, ...] = ()
     forced: bool = False
     keys: tuple[str, ...] = ()
+    checkout: bool = False
 
 
 def _folded(name: str) -> str:
@@ -3999,12 +4011,14 @@ def _members_spellings(root: Path, project: str,
     leave it out. A SECOND PATH TO A MEMBER'S DIRECTORY, a gitlink at a case
     variant of a row's path beside the member's own gitlink at that path
     (`_second_gitlink`), is taken out of the index where it would be renamed
-    (`UNSTAGE_SECOND`), its checkout left on disk for the next run to name:
-    `git mv` carried the section of `.gitmodules` that gives its path along,
-    under the same name, and the take-out of that section after it left a
-    gitlink no section names, at which a plain clone's `git submodule update
-    --init --recursive` stopped, exit 128, while the gate passed (rv865b's
-    MUST 1). THEN HEAD, for what it holds
+    (`UNSTAGE_SECOND`): `git mv` carried the section of `.gitmodules` that
+    gives its path along, under the same name, and the take-out of that
+    section after it left a gitlink no section names, at which a plain
+    clone's `git submodule update --init --recursive` stopped, exit 128,
+    while the gate passed (rv865b's MUST 1). Its removal takes `-f` where
+    the move back's would (`_forced`), and a checkout left on disk in its
+    own spelling (`checkout`) is named to delete by hand in the same round
+    (rv865b's round-2 MUST 1 and SHOULD 1). THEN HEAD, for what it holds
     that the index no longer does, a `git rm -r Members` not committed yet
     (#363): the add's own commit names three paths and nothing else, so it
     would keep that file beside the member, and with `core.ignorecase` set
@@ -4062,9 +4076,10 @@ def _members_spellings(root: Path, project: str,
                 forced=in_head.get(name) != recorded
                 and os.path.lexists(root / name / ".git")))
             continue
-        out = False
-        if target != canon and _on_disk_as_named(
-                root, target, target != name or mode == 0o160000):
+        out = forced = checkout = False
+        present = target != canon and _on_disk_as_named(
+            root, target, target != name or mode == 0o160000)
+        if present:
             # On disk, and left out by the rules whatever its bit says:
             # plain `git mv` refuses it (#761).
             remedy = RENAME_SPARSE if name in left_out() else RENAME
@@ -4073,12 +4088,16 @@ def _members_spellings(root: Path, project: str,
             out = remedy == UNSTAGE and name in left_out()
         if remedy != UNSTAGE and _second_gitlink(name, mode, rows, indexed):
             # A second path to a member's directory, which `git mv` would
-            # carry its section along with (rv865b's MUST 1).
+            # carry its section along with (rv865b's MUST 1), with `-f` as
+            # the move back takes it, and its checkout named (round 2).
             remedy = UNSTAGE_SECOND
             out = name in marked() or name in left_out()
+            forced = _forced(root, name, listed[name][0][1], in_head)
+            checkout = present and _moved_or_kept(root / name) == CHECKOUT
         target = name if remedy == RENAME_SPARSE else target
         found.append(Spelled(_shown(name), kind, IN_INDEX, _shown(target),
-                             mount, remedy, name in in_head, sparse=out))
+                             mount, remedy, name in in_head, sparse=out,
+                             forced=forced, checkout=checkout))
     for name, kind, oid in head:
         spelled = _spelled_target(name, project, occupied, rows)
         if spelled is None or name in indexed:
@@ -4197,6 +4216,19 @@ def _second_gitlink(name: str, mode: int, rows: frozenset[str],
     return mode == 0o160000 and any(
         _folded(row) == _folded(name) and indexed.get(row) == 0o160000
         for row in rows)
+
+
+def _forced(root: Path, name: str, recorded: bytes,
+            in_head: dict[str, str]) -> bool:
+    """Does `git rm --cached` of the gitlink `name`, which the index records
+    at `recorded`, take `-f`? Where HEAD (`in_head`) does not record it at
+    that commit and a checkout is on disk at it, as the move back asks of a
+    variant (#761): git refuses it there wherever that checkout has moved
+    on or holds a file it does not track (`staged content different from
+    both the file and the HEAD`, exit 1, rv865b's round-2 MUST 1, measured
+    on git 2.43 and 2.47.1), and with `--cached` `-f` touches no file."""
+    return in_head.get(name) != recorded.decode("ascii") and os.path.lexists(
+        root / name / ".git")
 
 
 def _rows_held(rows: frozenset[str], indexed: dict[str, int],
@@ -4647,7 +4679,9 @@ def _spellings_refusal(path: str, found: list[Spelled],
     aside (#761), the move of a member's own gitlink back to its row's path
     with its section of `.gitmodules`, and a commit; then `mv` for what is
     on disk and untracked, a checkout there left to be deleted by hand
-    (#761), and `mv` back for a renamed `members/`. Every path is quoted
+    (#761), and `mv` back for a renamed `members/`; then each checkout a
+    second path taken out of the index leaves, deleted by hand before the
+    update (rv865b's round-2 SHOULD 1). Every path is quoted
     for a POSIX shell (#532). A `--sparse` says the git it needs
     (`SPARSE_MV_GIT`, `SPARSE_RM_GIT`, #685), and is printed where the
     sparse rules leave an entry out as well as where they mark it (#761).
@@ -4842,6 +4876,8 @@ def _spellings_refusal(path: str, found: list[Spelled],
             f"move `{target}` back to {MEMBERS_DIR}/, since it holds "
             f"checkouts of members git tracks under {MEMBERS_DIR}/ (`mv -- "
             f"{shell_quoted(target, 'posix')} {MEMBERS_DIR}`)")
+    # A checkout a second path leaves, before the update below (round 2).
+    parts.extend(_second_checkout_part(found))
     # Last, so that a `members/` moved back has taken the checkout with it.
     parts.extend(closing)
     said = "; ".join(parts)
@@ -4857,14 +4893,18 @@ def _second_path_part(found: list[Spelled],
                       by: dict[str, list[str]]) -> list[str]:
     """`_spellings_refusal`'s index part that takes each second path to a
     member's directory out of the index alone (`UNSTAGE_SECOND`, rv865b's
-    MUST 1), with `--sparse` where a sparse checkout needs it, or empty;
-    `by` is its targets by remedy."""
+    MUST 1), with `--sparse` where a sparse checkout needs it and `-f` where
+    the index stages it at a commit HEAD does not record there beside a
+    checkout (`_forced`, rv865b's round-2 MUST 1), said as the move back
+    says it (`FORCED_SAID`), or empty; `by` is its targets by remedy."""
     if not by[UNSTAGE_SECOND]:
         return []
     quoted = " ".join(shell_quoted(target, "posix")
                       for target in by[UNSTAGE_SECOND])
-    out = any(spelled.sparse for spelled in found
-              if spelled.remedy == UNSTAGE_SECOND)
+    second = [spelled for spelled in found
+              if spelled.remedy == UNSTAGE_SECOND]
+    out = any(spelled.sparse for spelled in second)
+    force = any(spelled.forced for spelled in second)
     return ["take each gitlink at another spelling of a row's path beside "
             "the member's own gitlink at that path, a second path to its "
             "directory, out of the index alone, which touches no file, as "
@@ -4872,10 +4912,42 @@ def _second_path_part(found: list[Spelled],
             f"of {GITMODULES} that gives its path along under the same name, "
             "and with that section taken out, a gitlink no section names "
             "would stop a plain clone's git submodule update --init "
-            "--recursive, and leave its checkout, where the disk holds one "
-            "apart from the member's own, for the next run to name "
-            f"(`{UNSTAGE}{' --sparse' if out else ''} -- {quoted}`"
-            + (f", {SPARSE_RM_GIT}" if out else "") + ")"]
+            f"--recursive (`{UNSTAGE}{' --sparse' if out else ''}"
+            f"{' -f' if force else ''} -- {quoted}`"
+            + (f", {SPARSE_RM_GIT}" if out else "")
+            + (f", {FORCED_SAID}" if force else "") + ")"]
+
+
+def _second_checkout_part(found: list[Spelled]) -> list[str]:
+    """`_spellings_refusal`'s part that names each checkout a second path
+    taken out of the index leaves on disk (`UNSTAGE_SECOND` with
+    `checkout`), to be deleted by hand in the same round, with the `git -C
+    <path> status` that shows what is in it alone, before the update that
+    closes the remedy, or empty (rv865b's round-2 SHOULD 1).
+
+    A checkout `git mv` of the member's own mount made there names the
+    member's store, `.git/modules/members/<P>`, and the update, checking
+    the member out at its row's path, points that store's `core.worktree`
+    there: `git -C <variant> status` then printed nothing while a file not
+    committed was in it, and the next run said to delete it, as #828's move
+    back found and orders its closing sentences against. Named before the
+    update, its status still names that file."""
+    left = sorted({spelled.target for spelled in found
+                   if spelled.remedy == UNSTAGE_SECOND and spelled.checkout})
+    if not left:
+        return []
+    named = " and ".join(f"`{target}`" for target in left)
+    status = " or ".join(f"`git -C {shell_quoted(target, 'posix')} status`"
+                         for target in left)
+    return ["delete by hand each checkout that git rm --cached of a second "
+            f"path leaves on disk, {named}, once nothing only it holds is "
+            "needed, rather than move it, and before any update below: its "
+            ".git file names its store by a path relative to it, which a move "
+            "would leave pointing nowhere, its commits are kept in that store, "
+            f"so only what is not committed is in it alone ({status} shows "
+            "it), and the update points a store it may share with the row at "
+            "the row's path, after which that status shows the row's "
+            "checkout instead"]
 
 
 def _removed(found: list[Spelled], by: dict[str, list[str]]) -> bool:
@@ -5179,9 +5251,7 @@ def _move_back_line(moved: dict[str, list[Spelled]], variants: list[str],
         + f" (`git rm -r --cached{flag}{' -f' if force else ''} "
         f"--ignore-unmatch -- {taken_out}`, "
         + (f"{SPARSE_RM_GIT}, " if flag else "")
-        + ("whose -f takes out a staged gitlink whose checkout has moved on "
-           "or holds a file git does not track, which git rm otherwise "
-           "refuses, and with --cached touches no file, " if force else "")
+        + (f"{FORCED_SAID}, " if force else "")
         + f"then {recorded}"
         + (f", then {sections} and `git add -- {GITMODULES}`" if pointed
            else "") + ")"

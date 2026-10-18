@@ -217,10 +217,15 @@ def variant(root: Path, row: str = ROW, spelled: str = VARIANT,
     return commit
 
 
-def typed_in_sh(root: Path, command: str, shell: str = "sh") -> None:
+#: The POSIX shell `typed_in_sh` types into: `sh`, unless a test sets
+#: `dash` or `bash` here (`monkeypatch.setattr`, #840's link test).
+SHELL = "sh"
+
+
+def typed_in_sh(root: Path, command: str) -> None:
     """`command` typed into a POSIX shell in `root`, as printed: exit 0.
-    `shell` names it, `sh` unless a test asks for `dash` or `bash`."""
-    typed = subprocess.run([shell, "-c", command], cwd=str(root),
+    The shell is `SHELL`."""
+    typed = subprocess.run([SHELL, "-c", command], cwd=str(root),
                            capture_output=True, check=False)
     assert typed.returncode == 0, (command, typed.stderr)
 
@@ -233,8 +238,7 @@ def remedy_parts(said: str) -> list[str]:
     return re.split(r"; (?=[^`]*(?:`[^`]*`[^`]*)*$)", text)
 
 
-def typed_as_printed(root: Path, said: str, by_hand=None,
-                     shell: str = "sh") -> list[str]:
+def typed_as_printed(root: Path, said: str, by_hand=None) -> list[str]:
     """EVERY COMMAND `said` PRINTS, TYPED AS PRINTED, in its order, and the
     commit each part asks for, as `type_remedy` types #574's: `<new name>`
     filled in `renamed-N` for a `git mv` and `../moved-N` for a `mv`. `git
@@ -243,11 +247,11 @@ def typed_as_printed(root: Path, said: str, by_hand=None,
     each guarded one (#761), is typed into a POSIX shell AS PRINTED, whether
     or not its source is there (Codex's P2 on #828: a guard that skipped an
     absent source here hid an `mv` that failed, exit 1, where the variant is
-    not on disk), and must exit 0, in `shell` (`typed_in_sh`). `by_hand`,
-    where given, is what a person does by hand where the text says to
-    (#761), run after the last such part. A local member is cloned with
-    `protocol.file.allow`, the suite's one concession to bare repositories
-    as origins. Returns what was typed."""
+    not on disk), and must exit 0. `by_hand`, where given, is what a
+    person does by hand where the text says to (#761), run after the last
+    such part. A local member is cloned with `protocol.file.allow`, the
+    suite's one concession to bare repositories as origins. Returns what was
+    typed."""
     typed: list[str] = []
     count = {"git": 0, "mv": 0}
     parts = remedy_parts(said)
@@ -277,7 +281,7 @@ def typed_as_printed(root: Path, said: str, by_hand=None,
                     os.rename(root / argv[2], root / argv[3])
                 command = shlex.join(argv)
             elif argv[0] in ("mv", "["):
-                typed_in_sh(root, command, shell)
+                typed_in_sh(root, command)
             elif argv[0] == "git" and (" -- " in command or argv[1] in (
                     "update-index", "config")):
                 git(*argv[1:], cwd=root)
