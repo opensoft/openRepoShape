@@ -19,14 +19,16 @@ each measured on git 2.43 at the v1.1.1 release commit `5017830`:
   of one name failed the fetch, 128, "Cannot fetch both", where `git fetch
   origin` exits 0, and `bump` told the person to fix the network. Where no
   name was shared, the tag it put there answered for a branch, and a commit
-  only a tag reaches was pinned. A refspec of the mount's that gives another
-  namespace the branches' names is now left out: the fetch works, and a tag
-  is not a branch.
+  only a tag reaches was pinned. A refspec of the mount's whose source is
+  under `refs/tags/`, wherever under `origin/` it writes, and one that gives
+  another namespace the branches' names (a mirror into `origin/`), are now
+  left out (RV946's S1 and S2): the fetch works, and a tag is not a branch.
 - A CONFIG VALUE THAT HOLDS A NEWLINE (U184). `git config --list` was read a
   line at a time, so an alias whose value held the line
   `remote.origin.fetch=+refs/heads/zz:refs/remotes/origin/zz` gave the mount
   a refspec it does not have, and the fetch of a branch `origin` lacks
-  failed. It is read with `-z` now.
+  failed. It is read with `-z` now, and as bytes, so a refspec whose bytes
+  are not UTF-8 reaches the fetch as they are (RV946's N1).
 - A MOUNT WITH NO `origin` (U185). Git reads a remote name it does not have
   as a path, so a repository at `origin` inside the mount was fetched, wrote
   its branches under `refs/remotes/origin/`, and `bump` answered from them.
@@ -48,6 +50,7 @@ private one `pushed_from_the_mount` points the mount at.
 
 from __future__ import annotations
 
+import os
 from pathlib import Path
 
 import pytest
@@ -79,6 +82,28 @@ BRANCHES = "+refs/heads/*:refs/remotes/origin/*"
 #: `BRANCHES` gives the branches.
 TAGS = "+refs/tags/*:refs/remotes/origin/*"
 
+#: Each refspec of a mount's that puts the tags of `origin` under `origin/`,
+#: where `bump` reads branches: onto the branches' names, in a folder of their
+#: own (RV946's S1), and in a mirror of every ref of `origin` (S2), which puts
+#: the tags in `origin/tags/` and the branches in `origin/heads/`.
+TAGS_UNDER_ORIGIN = pytest.mark.parametrize("refspec", [
+    TAGS, "+refs/tags/*:refs/remotes/origin/tags/*",
+    "+refs/*:refs/remotes/origin/*"],
+    ids=["tags-onto-branches", "tags-in-a-folder", "mirror-into-origin"])
+
+#: `caf<e9>`: Latin-1 e-acute is the one byte 0xE9, which is not UTF-8. It is
+#: the lone surrogate `os.fsdecode` keeps that byte as, so a byte command line
+#: hands git the byte itself; spelled with `chr`, as `os.fsdecode` raises on
+#: Windows, where this module must still import.
+LATIN1 = "caf" + chr(0xDCE9)
+
+#: A refspec of a byte that is not UTF-8 reaches git only on a byte command
+#: line.
+BYTE_COMMAND_LINE = pytest.mark.skipif(
+    os.name == "nt",
+    reason="a command line is UTF-16 text on Windows, so no byte that is not "
+           "UTF-8 reaches git through one")
+
 #: The line a value of `alias.zz` holds after its first line, which a
 #: listing read a line at a time takes for a refspec of the mount's.
 SMUGGLED = "remote.origin.fetch=+refs/heads/zz:refs/remotes/origin/zz"
@@ -91,6 +116,15 @@ def fetched_as_bump(mount: Path, env: dict, *extra: str) -> None:
     so a ref that moves in it is one the fetch should not have moved."""
     raw(mount, env, "fetch", "-q", "--prune", "--no-prune-tags", "--refmap=",
         "origin", BRANCHES, *extra)
+
+
+def where_the_tag_lands(refspec: str, tag: str) -> str:
+    """The name under `refs/remotes/origin/` that `refspec`, a glob, gives
+    the tag `tag` of `origin`: the branch of that name is the one the tag
+    clashes with in `bump`'s fetch, where `BRANCHES` gives it the same."""
+    source, _, destination = refspec.lstrip("+").partition(":")
+    matched = f"refs/tags/{tag}"[len(source) - 1:]
+    return destination.replace("*", matched)[len("refs/remotes/origin/"):]
 
 
 def refspecs_only(mount: Path, env: dict, *refspecs: str) -> None:
@@ -160,56 +194,63 @@ def test_a_mount_refspec_onto_its_own_branches_moves_none_of_them(
     offline.assert_left_nothing()
 
 
+@TAGS_UNDER_ORIGIN
 def test_tags_mapped_into_origin_fetch_a_branch_and_a_tag_of_one_name(
-        holder, offline, tmp_path):
-    """U183. The mount's only refspec maps tags into `origin/`, and the
-    member's remote has a branch and a tag of one name: the branch holds
-    `--to`, the tag the pin. The person's own `git fetch origin` exits 0,
-    and a fetch carrying that refspec beside `bump`'s own exits 128, "Cannot
-    fetch both", so both runs said they could not fetch the member from its
-    origin. Leaving the mount's refspec out, both runs fetch, print no note
-    and pin the commit, and no ref of the mount moves."""
+        holder, offline, tmp_path, refspec):
+    """U183. The mount's only refspec puts the tags of `origin` under
+    `origin/`, and the member's remote has a tag, at the pin, and a branch
+    named where that refspec puts the tag, holding `--to`: `v-shared` onto
+    the branches' names, `tags/v-shared` in a folder or a mirror. The
+    person's own `git fetch origin` exits 0, and a fetch carrying that
+    refspec beside `bump`'s own exits 128, "Cannot fetch both", so both runs
+    said they could not fetch the member from its origin. Leaving the
+    mount's refspec out, both runs fetch, print no note and pin the commit,
+    and no ref of the mount moves."""
     env = isolated(offline, tmp_path)
     mount = holder / PATH
     made = commit_in_mount(
         holder, env,
         lambda m: (m / "SHARED.md").write_bytes(b"a branch, and a tag\n"))
-    shared = f"pushed-{made[:12]}"
-    raw(private_remote(holder), env, "tag", shared,
+    branch = where_the_tag_lands(refspec, "v-shared")
+    raw(mount, env, "push", "-q", "origin", f"{made}:refs/heads/{branch}")
+    raw(private_remote(holder), env, "tag", "v-shared",
         raw(mount, env, "rev-parse", "HEAD").stdout.decode().strip())
-    refspecs_only(mount, env, TAGS)
+    refspecs_only(mount, env, refspec)
     fetched_as_bump(mount, env)
     assert raw(mount, env, "fetch", "--dry-run", "origin",
                check=False).returncode == 0, (
         "premise: the person's own fetch works")
-    clash = raw(mount, env, "fetch", "--dry-run", "origin", BRANCHES, TAGS,
+    clash = raw(mount, env, "fetch", "--dry-run", "origin", BRANCHES, refspec,
                 check=False)
     assert clash.returncode == 128, "premise: the two refspecs clash"
-    assert (f"Cannot fetch both refs/heads/{shared} and refs/tags/{shared}"
-            in clash.stderr.decode())
+    assert "Cannot fetch both " in clash.stderr.decode()
+    assert f" to refs/remotes/origin/{branch}" in clash.stderr.decode()
 
     both_pin(holder, env, made)
 
     offline.assert_left_nothing()
 
 
+@TAGS_UNDER_ORIGIN
 def test_a_tag_a_mount_maps_into_origin_does_not_answer_for_a_branch(
-        holder, offline, tmp_path):
+        holder, offline, tmp_path, refspec):
     """U183, the reachability half: why leaving the refspec out keeps the
     answer right. A commit no branch of the member's remote reaches, pushed
-    with its tag alone, in a mount that maps tags into `origin/` and shares
-    no name between a tag and a branch. Carried, the refspec put the tag
-    under `origin/`, where `bump` reads branches, and both runs pinned the
-    commit. Left out, both refuse it in #686's words for a commit only a tag
-    of the remote reaches, with nothing in the holder moved, and no ref of
-    the mount moves."""
+    with its tag alone, in a mount whose refspec puts that tag under
+    `origin/` and shares no name between a tag and a branch. Carried, the
+    refspec put the tag under `origin/`, where `bump` reads branches, and
+    both runs pinned the commit: onto the branches' names on main, and in a
+    folder or a mirror (`origin/tags/v-release`) on #946's first head too
+    (RV946's S1 and S2). Left out, both refuse it in #686's words for a
+    commit only a tag of the remote reaches, with nothing in the holder
+    moved, and no ref of the mount moves."""
     env = isolated(offline, tmp_path)
     mount = holder / PATH
     made = made_in_the_mount(holder, env, "TAGGED.md")
     annotated(mount, env, "v-release", made)
     remote = private_origin(holder, env)
     raw(mount, env, "push", "-q", "origin", "refs/tags/v-release")
-    refspecs_only(mount, env, TAGS)
+    refspecs_only(mount, env, refspec)
     fetched_as_bump(mount, env)
     assert not contains(remote, env, made, "refs/heads/"), (
         "premise: no branch of the member's remote reaches it")
@@ -257,6 +298,39 @@ def test_a_config_value_holding_a_refspec_line_is_not_read_as_one(
                check=False).returncode != 0, "premise: there is no `zz`"
     assert f"refs/remotes/origin/pr/7 {made}" in refs(mount, env), (
         "premise: the mount holds origin/pr/7")
+
+    both_pin(holder, env, made)
+
+    offline.assert_left_nothing()
+
+
+@BYTE_COMMAND_LINE
+def test_a_refspec_whose_bytes_are_not_utf8_reaches_the_fetch_as_they_are(
+        holder, offline, tmp_path):
+    """U184, its bytes (RV946's N1). The mount keeps, by a refspec of its
+    own, a ref of `origin` whose name holds the byte 0xE9 (`caf<e9>`, in
+    Latin-1) under `origin/review/`. The listing is read as bytes and
+    decoded with `surrogateescape`, so the refspec reaches the fetch byte for
+    byte: both runs fetch, print no note and pin, and no ref of the mount
+    moves, `origin/review/cafe` kept. Decoded with `replace`, as `run`
+    decoded the listing on main, the byte became U+FFFD, the fetch asked
+    `origin` for a ref it does not have and failed, and both runs said they
+    could not fetch the member from its origin."""
+    env = isolated(offline, tmp_path)
+    mount = holder / PATH
+    made = commit_in_mount(
+        holder, env,
+        lambda m: (m / "LATIN1.md").write_bytes(b"a ref named in Latin-1\n"))
+    refspec = f"+refs/review/{LATIN1}:refs/remotes/origin/review/cafe"
+    raw(private_remote(holder), env, "update-ref", f"refs/review/{LATIN1}",
+        made)
+    raw(mount, env, "config", "--add", "remote.origin.fetch", refspec)
+    fetched_as_bump(mount, env, refspec)
+    assert bytes([0xE9]) in raw(mount, env, "config", "--get-all",
+                                "remote.origin.fetch").stdout, (
+        "premise: the mount's refspec holds the byte")
+    assert f"refs/remotes/origin/review/cafe {made}" in refs(mount, env), (
+        "premise: the mount holds origin/review/cafe")
 
     both_pin(holder, env, made)
 
