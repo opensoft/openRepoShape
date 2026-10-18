@@ -23,13 +23,13 @@ repository is asked nothing, as before; an `origin` that is a path names none
 since #521 (`tests/test_adopt_origin_repository.py`).
 
 Off Windows, nothing here reaches GitHub, though `check` does run `gh`: given
-no `--local-remote-dir`, and once the plan's names and `org:` pass, it asks
-`gh repo view` once of the spec leg's repository and once of the code leg's
-(#798), and the session's guard answers each as a `gh` with no login does
-(`tests/gh_guard.py`). Where a source has an `origin`, it is a string `plan`
-and `check` read from the source's own config, and nothing fetches it.
-`execute` is run in-process with every command it runs through `run` replaced
-by one that fails the test.
+no `--local-remote-dir`, and once nothing before it refuses and the plan's
+names and `org:` pass, it asks `gh repo view` once of the spec leg's
+repository and once of the code leg's (#798), and the session's guard answers
+each as a `gh` with no login does (`tests/gh_guard.py`). Where a source has an
+`origin`, it is a string `plan` and `check` read from the source's own config,
+and nothing fetches it. `execute` is run in-process with every command it
+runs through `run` replaced by one that fails the test.
 """
 
 from __future__ import annotations

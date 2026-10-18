@@ -30,11 +30,11 @@ remediation says to pass `--org` (#427).
 Nothing here fetches: each `origin` is a string `plan` reads from the source's
 own config. The only `gh` run here is `check`'s, in
 `test_a_path_origin_is_not_compared_and_plan_says_so`: given no
-`--local-remote-dir`, and once the plan's names and `org:` pass, it asks
-`gh repo view` once of the spec leg's repository and once of the code leg's
-(#798), and off Windows the session's guard answers each as a `gh` with no
-login does (`tests/gh_guard.py`). A backslash path is plain text to git on
-every platform, so its rows run everywhere.
+`--local-remote-dir`, and once nothing before it refuses and the plan's names
+and `org:` pass, it asks `gh repo view` once of the spec leg's repository and
+once of the code leg's (#798), and off Windows the session's guard answers each
+as a `gh` with no login does (`tests/gh_guard.py`). A backslash path is plain
+text to git on every platform, so its rows run everywhere.
 """
 
 from __future__ import annotations
