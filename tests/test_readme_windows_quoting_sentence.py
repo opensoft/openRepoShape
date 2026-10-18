@@ -545,10 +545,13 @@ def os_name_readers(tree: ast.AST, scope: dict) -> set:
 
 
 def calls_to(tree: ast.AST, scope: dict, names: set) -> set:
-    """The functions of `tree` that call one of `names` the way `host_call`
-    counts a call: not one that forces `sh`'s dialect."""
-    return {scope[node] or "<module>" for node in ast.walk(tree)
-            if isinstance(node, ast.Call) and host_call(node, names)}
+    """The functions of `tree` that use one of `names` the way `host_calls`
+    counts a use: a call that does not force `sh`'s dialect, or the name
+    handed on as a value (`map(shell_quoted, w)`, `host_values`), which
+    names its function as `scopes` does (#808's review, NIT 6)."""
+    called = {scope[node] or "<module>" for node in ast.walk(tree)
+              if isinstance(node, ast.Call) and host_call(node, names)}
+    return called | {function for function, _ in host_values(tree, names)}
 
 
 def line_builders(tree: ast.AST, scope: dict) -> set:
@@ -635,6 +638,24 @@ def test_reading_os_name_beside_a_host_quoter_skips_the_question():
         "a", "shell_word", "Plan.line", "scaffold_command", "Q.quote_arg"}
     assert skips_the_question("shape-doctor.py", source) == {
         "a", "shell_word", "Plan.line", "Q.quote_arg"}
+
+
+def test_a_quoter_handed_on_as_a_value_beside_os_name_skips_the_question():
+    """A quoter handed on as a value is a use here as it is in `host_calls`
+    (#759): `map(shell_quoted, w)` beside a branch on `os.name` skips the
+    question as the same line written as a generator of calls does (#808's
+    review, NIT 6). One told `'posix'` is `sh`'s and is not a use."""
+    handed = ("import os\ndef a(w):\n"
+              "    return ' '.join(map(shell_quoted, w)) "
+              "if os.name == 'nt' else ''\n")
+    called = handed.replace("map(shell_quoted, w)",
+                            "shell_quoted(x) for x in w")
+    posix = handed.replace(
+        "map(shell_quoted, w)",
+        "map(functools.partial(shell_quoted, platform='posix'), w)")
+    assert skips_the_question("scripts/x.py", called) == {"a"}
+    assert skips_the_question("scripts/x.py", handed) == {"a"}
+    assert skips_the_question("scripts/x.py", posix) == set()
 
 
 def test_os_name_handed_to_a_line_builder_skips_the_question():
