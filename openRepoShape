@@ -885,7 +885,7 @@ shape_checkout() {
 # name alone. It is asked where a ref is USED, and each use is a gate: a
 # record it refuses is refused before any request (`read_recorded_ref`), a
 # ref an install would record is refused before anything is placed, and the
-# doctor's checkout is refused before `git checkout`. A ref that passes here
+# doctor's ref is refused before its clone. A ref that passes here
 # is one `setup.sh` is handed, by name, on its way to `git clone`.
 ref_fault() {
 	local ref="$1" what="$2" fault

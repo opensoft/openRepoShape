@@ -1716,13 +1716,15 @@ def test_two_modes_is_a_refusal_not_last_wins(args, tmp_path):
 
 
 def doctor_from_stdin(where: Path, repo: str, ref: str | None = None,
-                      clone_fails: bool = True):
+                      clone_fails: bool = True,
+                      temporary: Path | None = None):
     """`--doctor` run from STDIN, so the clone path is the one taken, with a
     `git` first on `$PATH` that logs what it is asked and clones nothing:
     the clone fails, or (`clone_fails=False`) makes the empty directory it
     is handed, which is a standard with no doctor in it. Returns the run,
     the lines the `git` logged (each without a leading `-C <dir>`, so the
-    subcommand opens it) and the `$TMPDIR` the run was given.
+    subcommand opens it) and the `$TMPDIR` the run was given: a folder made
+    here, or the path `temporary` names, made or not.
 
     Each of these runs made a real clone of this checkout until #942, and
     five of them took 188 s under load. `repo` is never reached: the `git`
@@ -1730,8 +1732,9 @@ def doctor_from_stdin(where: Path, repo: str, ref: str | None = None,
     fake = where / "fake-path"
     fake.mkdir()
     log = where / "git-asked"
-    temporary = where / "tmp"
-    temporary.mkdir()
+    if temporary is None:
+        temporary = where / "tmp"
+        temporary.mkdir()
     write_script(fake / "git", "#!/bin/sh\n"
                  'case "$1" in -C) shift 2 ;; esac\n'
                  f"printf '%s\\n' \"$*\" >> '{bash_path(log)}'\n"
@@ -1762,8 +1765,8 @@ def assert_the_ref_was_refused_before_any_clone(result, asked, temporary,
                                                 ref: str) -> None:
     """Exit 2 in `ref_fault`'s words for `ref`, no clone and no checkout
     asked of git, and nothing in `$TMPDIR`: the ref was refused first (#942).
-    The over-long and control-character refusals do not echo the value back;
-    the shape refusal does, having passed both."""
+    The over-long refusal does not echo the value back; the shape refusal
+    does, having passed the length and character checks."""
     assert result.returncode == 2, result.stdout + result.stderr
     if len(ref) > 255:
         assert f"REFUSED: $OPENREPOSHAPE_REF is {len(ref)} characters long; " \
@@ -1779,7 +1782,7 @@ def assert_the_ref_was_refused_before_any_clone(result, asked, temporary,
     assert asked_of_git(asked, "clone") == [], (
         "a refused ref was asked of a clone first")
     assert asked_of_git(asked, "checkout") == []
-    assert list(temporary.iterdir()) == []
+    assert list(temporary.glob("*")) == []
 
 
 @pytest.mark.parametrize("ref", [
@@ -1844,6 +1847,34 @@ def test_a_ref_is_refused_where_the_clone_would_have_failed(tmp_path):
         in result.stderr
     assert len(asked_of_git(asked, "clone")) == 1, asked
     assert asked_of_git(asked, "checkout") == []
+
+
+@pytest.mark.parametrize("ref, refused", [
+    pytest.param("a.lock/b", True, id="a.lock-b"),
+    pytest.param("a" * 256, True, id="a-x256"),
+    pytest.param("v1.2.0", False, id="a-good-ref")])
+def test_a_ref_is_refused_before_a_directory_is_made_for_the_clone(
+        ref, refused, tmp_path):
+    """A REFUSED REF MAKES NO DIRECTORY (#942). `workdir` makes the folder
+    the clone goes into, under `$TMPDIR`, and refuses where it cannot. With
+    the check below it, a bad ref and a `$TMPDIR` that is not there ended in
+    "could not make a temporary directory", and the ref was never named.
+    The ref is refused in its own words now, with git asked nothing, and
+    the `$TMPDIR` is still not there; a good ref still meets the
+    `$TMPDIR` refusal, with git asked nothing as well."""
+    missing = tmp_path / "not-there"
+    result, asked, temporary = doctor_from_stdin(
+        tmp_path, "acme/x", ref, temporary=missing)
+    assert asked == []
+    assert not missing.exists()
+    if refused:
+        assert_the_ref_was_refused_before_any_clone(
+            result, asked, temporary, ref)
+        assert "could not make a temporary directory" not in result.stderr
+        return
+    assert result.returncode == 2, result.stdout + result.stderr
+    assert f"REFUSED: could not make a temporary directory under {missing}." \
+        in result.stderr
 
 
 def test_a_checkout_without_the_doctor_refuses_by_name(tmp_path):
