@@ -393,7 +393,10 @@ def test_a_member_mount_refused_is_named_on_every_python(
     module, ctx = in_process(standard, root)
     refused_stat(monkeypatch, FAMILY_MEMBER)
     members = module.check_members(ctx)
-    assert members.reason == unread_mount(cannot(MEMBER))
+    # First, and alone among the row's findings: the stand-in refuses the
+    # `stat` of `../IRRS` beside the holder too, which the row then says
+    # stands there, as "not what fails this row".
+    assert members.reason.split("; ")[0] == unread_mount(cannot(MEMBER))
     assert members.next_command == doctor_again(standard, root)
     assert members.why == PERMISSION_WHY
     assert module.drifted_reasons({"members": members}, {}) == []
