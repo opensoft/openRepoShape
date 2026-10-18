@@ -430,6 +430,8 @@ def test_add_refuses_to_overwrite_a_file_the_root_already_has(root, standard):
     assert result.returncode == 2, result.stdout
     assert "update-add-would-overwrite" in result.stderr
     assert ADDED in result.stderr
+    assert (f"`git show {standard['c2']}:templates/assembly-root/{ADDED}` "
+            "in a shape clone") in result.stderr, result.stderr
     assert (root / ADDED).read_text(encoding="utf-8") == own
     assert pin(root)["commit"].lower() == standard["c1"]
     assert ADDED not in pin_rows(root)

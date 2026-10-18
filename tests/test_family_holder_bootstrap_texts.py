@@ -38,6 +38,25 @@ this change, but where one already held there:
   which a second `member-gitmodules-url-absent` did over the url the first
   had written.
 
+#884, from rv876's review of #876, the change that made the lines above
+true:
+
+- Five mutants of line 1's and line 2's code passed every test: the
+  advice where every member was checked out and git read nothing (R10,
+  R11), the first `Error` line read for the last (R1), the line read only
+  from a make run by no make (R8), and the prompt a member writes to
+  stderr held back until its answer was typed (R7). A test holds each
+  now, and line 3's test asserts the store its docstring names.
+- Line 2's line misled in three cases: a member whose make runs another
+  read `exited 2` for its inner command's 1; under `make -k`, an `Error`
+  line followed by more than 4096 bytes was said not to be there; and a
+  command a signal killed under dash read `exited 137`, which
+  `run_make`'s docstring said could not happen. It names the innermost
+  command's code, reads each line as it passes, and its docstring says
+  what a signal does.
+- Passing make's stderr on changes what a member's commands and a person
+  see: `run_make`'s docstring says what, and the tests hold what it says.
+
 THE SAME FAMILY, OFFLINE RULES AND HELPERS as
 `tests/test_family_bootstrap_gate_order.py` (#648) and
 `tests/test_validate_family_remedies_typed.py` (#681). A missing credential
@@ -50,9 +69,12 @@ from __future__ import annotations
 
 import os
 import re
+import select
+import shlex
 import shutil
 import subprocess
 import sys
+import time
 from pathlib import Path
 
 import pytest
@@ -283,6 +305,41 @@ def test_beside_a_denial_the_advice_is_for_the_members_it_does_not_name(
         failed_on(OTHER)]
 
 
+#: `(an edit to HEAD's .gitmodules, why git updated no member, what cures
+#: it)`: a value git refuses, and a line it cannot parse (#768).
+GIT_READ_NOTHING = {
+    "value-refused": (with_line("update = None"),
+                      refused_why("update", "None"), value_cure("update")),
+    "unparsed": (lambda data: data + DAMAGED["conflict-marker"], UNPARSED,
+                 MEND_CURE),
+}
+
+
+@pytest.mark.parametrize("edit, why, cure", GIT_READ_NOTHING.values(),
+                         ids=GIT_READ_NOTHING)
+def test_no_advice_beside_no_member_updated_with_every_member_checked_out(
+        holder, offline, tmp_path, edit, why, cure):
+    """LINE 1 with every member checked out, as in the holder itself, and
+    the edit committed: git dies reading `.gitmodules`, so it fetched
+    nothing, and the line says no member was updated, and not for want of
+    a credential. No row is left to deny, so nothing else keeps the advice
+    off the line before (rv876's R10 and R11, which dropped `unreadable`
+    or `refused` from `credential_advice` and printed it there, as
+    `tests/test_family_gitmodules_values.py`, asking only the last two
+    lines, let pass). Bootstrap's own lines are the fetch's, that one and
+    the failure, exactly."""
+    env = isolated(offline, tmp_path)
+    data = raw(holder, env, "show", "HEAD:.gitmodules").stdout
+    committed_gitmodules(holder, env, edit(data))
+
+    result = bootstrap(holder, env, "--skip-members")
+
+    assert result.returncode == 1, result.stdout + result.stderr
+    assert after_fetch_line(result) == [
+        f"  NO MEMBER UPDATED, and not for want of a credential: {why}. "
+        f"{cure}", "family bootstrap FAILED: .gitmodules (git cannot read it)"]
+
+
 # --- line 2: a member's finding, its refusal, and make's own failure --------
 
 #: `{project: its Makefile}`, every recipe for both targets (#839's line 2).
@@ -292,6 +349,19 @@ MAKEFILES = {
     "Refuse": b"bootstrap validate:\n\t@echo 'Refuse: refused' >&2; exit 2\n",
     "NoRule": b"other:\n\t@true\n",
 }
+
+
+def with_members(holder: Path, makefiles: dict[str, bytes]) -> None:
+    """`holder`'s `family.yaml` naming one member for each of `makefiles`,
+    `{project: its Makefile}`, at `members/<project>`, checked out there
+    as far as bootstrap asks: a `.git` and that Makefile."""
+    (holder / "family.yaml").write_bytes(
+        b"name: InkRouter\nmembers:\n" + b"".join(
+            f"  - project: {project}\n    path: members/{project}\n"
+            .encode("ascii") for project in makefiles))
+    for project, makefile in makefiles.items():
+        (holder / "members" / project / ".git").mkdir(parents=True)
+        (holder / "members" / project / "Makefile").write_bytes(makefile)
 
 
 @pytest.mark.parametrize("target", ["bootstrap", "validate"])
@@ -308,13 +378,7 @@ def test_a_finding_a_refusal_and_make_s_own_failure_are_told_apart(
     its own to call, the same."""
     if shutil.which("make") is None:
         pytest.skip("no make on PATH")
-    (holder / "family.yaml").write_bytes(
-        b"name: InkRouter\nmembers:\n" + b"".join(
-            f"  - project: {project}\n    path: members/{project}\n"
-            .encode("ascii") for project in MAKEFILES))
-    for project, makefile in MAKEFILES.items():
-        (holder / "members" / project / ".git").mkdir(parents=True)
-        (holder / "members" / project / "Makefile").write_bytes(makefile)
+    with_members(holder, MAKEFILES)
 
     result = run_script(holder / "scripts" / "bootstrap.py", "--no-fetch",
                         "--members-make", target, cwd=holder,
@@ -322,16 +386,274 @@ def test_a_finding_a_refusal_and_make_s_own_failure_are_told_apart(
 
     assert result.returncode == 1, result.stdout + result.stderr
     errors = result.stderr.splitlines()
-    assert errors[-1] == (
-        f"family bootstrap FAILED: Find (make {target}: the member's command "
-        f"exited 1), Refuse (make {target}: the member's command exited 2), "
-        f"NoRule (make {target} exited 2 and printed no `Error <code>` line "
-        "for a command of the member's: make's own message above says what "
-        "failed)"), result.stderr
+    assert errors[-1] == failed_in_make(
+        exited("Find", 1, target), exited("Refuse", 2, target),
+        named_none("NoRule", target)), result.stderr
     for said in ("Find: a finding", "Refuse: refused",
                  f"No rule to make target '{target}'"):
         assert any(said in line for line in errors[:-1]), (said, errors)
     assert f"  --- Fine: make {target} ---" in result.stdout.splitlines()
+
+
+def exited(project: str, code: int, target: str = "bootstrap") -> str:
+    """What the line says of a member whose command make names."""
+    return f"{project} (make {target}: the member's command exited {code})"
+
+
+def named_none(project: str, target: str = "bootstrap") -> str:
+    """What the line says of a member whose make named no command's code."""
+    return (f"{project} (make {target} exited 2 and printed no `Error "
+            "<code>` line for a command of the member's: make's own message "
+            "above says what failed)")
+
+
+def failed_in_make(*said: str) -> str:
+    """The run's last line, naming each member's failure as `said`."""
+    return "family bootstrap FAILED: " + ", ".join(said)
+
+
+def without_make() -> dict:
+    """This process's environment without the `MAKE`, `MAKEFLAGS`,
+    `MAKELEVEL` and `MFLAGS` a make running the tests would give it, so a
+    run starts as it does from a shell."""
+    return {key: value for key, value in os.environ.items()
+            if not key.startswith(("MAKE", "MFLAGS"))}
+
+
+def made(holder: Path, tmp_path: Path, *,
+         under_make: bool) -> subprocess.CompletedProcess:
+    """`bootstrap.py --no-fetch` in `holder`, every member's make with
+    `-k`, its output as bytes: run as it is, or run by a make of its own
+    (`under_make`), as the holder's own `make bootstrap` runs it, so that
+    the member's make is `make[1]` and prints that."""
+    env = without_make()
+    argv = [sys.executable, "scripts/bootstrap.py", "--no-fetch"]
+    if under_make:
+        parent = tmp_path / "parent.mk"
+        parent.write_bytes(f"run:\n\t@{shlex.join(argv)}\n".encode())
+        argv = ["make", "-k", "-f", str(parent)]
+    else:
+        env["MAKEFLAGS"] = "k"
+    return subprocess.run(argv, cwd=str(holder), env=env,
+                          stdin=subprocess.DEVNULL, capture_output=True,
+                          check=False)
+
+
+#: Members whose make runs another make, or whose `Error` line is followed
+#: by more than 4096 bytes on stderr, each with what the line says of it:
+#: the innermost command's code, read from each line as it passes (#884's
+#: line 2). An inner make that fails on its own names none, as make's own
+#: failure does, but its parent's `Error 2` is passed over only: a command
+#: that runs one and then fails itself is named, with 3 or with 1. Lines
+#: between the two, and a `***` line with no code after an `Error` line,
+#: change neither; a make a `-` let fail leaves its parent's own `Error 2`
+#: named, and one that ignores a failure of its own (without `-s`, which
+#: keeps make from saying so) reports nothing; and
+#: make's `Error` line after a member's own `: *** ` on one line is read
+#: (rv884's X11, X7 and X12, and NIT 1 and NIT 2, on #886).
+INNERMOST = {
+    "Recurse": (b"bootstrap:\n\t@$(MAKE) -s inner\n"
+                b"inner:\n\t@echo 'Find: a finding' >&2; exit 1\n", 1),
+    "RecurseRefuse": (b"bootstrap:\n\t@$(MAKE) -s inner\n"
+                      b"inner:\n\t@echo 'Refuse: refused' >&2; exit 2\n", 2),
+    "InnerOwn": (b"bootstrap:\n\t@$(MAKE) -s nothere\n", None),
+    "InnerThenOwn": (b"bootstrap:\n\t@$(MAKE) -s nothere; exit 3\n", 3),
+    "InnerThenFinding": (b"bootstrap:\n\t@$(MAKE) -s nothere || exit 1\n",
+                         1),
+    "Long": (b"bootstrap: one two\n"
+             b"one:\n\t@echo 'Find: a finding' >&2; exit 1\n"
+             b"two:\n\t@printf '%05000d' 0 >&2; echo >&2\n", 1),
+    "KeepsGoing": (b"bootstrap:\n\t@$(MAKE) -s -k inner\ninner: one two\n"
+                   b"one:\n\t@echo 'Find: a finding' >&2; exit 1\n"
+                   b"two:\n\t@echo 'two: done' >&2\n", 1),
+    "ThenKilled": (b"bootstrap: one two\n"
+                   b"one:\n\t@echo 'Find: a finding' >&2; exit 1\n"
+                   b"two:\n\t@kill -KILL $$$$\n", 1),
+    "LetFail": (b"bootstrap:\n\t-@$(MAKE) -s inner\n"
+                b"\t@echo 'Refuse: refused' >&2; exit 2\n"
+                b"inner:\n\t@echo 'Find: a finding' >&2; exit 1\n", 2),
+    "InnerLets": (b"bootstrap:\n\t@$(MAKE) inner; exit 2\n"
+                  b"inner:\n\t-@exit 2\n\t@echo 'inner: done'\n", 2),
+    "OwnStars": (b"bootstrap:\n\t@printf 'x: *** y' >&2; exit 1\n", 1),
+}
+#: A member whose two commands fail, under `-k`: the last `Error` line
+#: names the code (rv876's R1), and a member's finding, both under a
+#: parent make, where make prints `make[1]:` (R8).
+LAST = {"Find": (MAKEFILES["Find"], 1),
+        "Twice": (b"bootstrap: one two\n"
+                  b"one:\n\t@echo 'one: a finding' >&2; exit 1\n"
+                  b"two:\n\t@echo 'two: refused' >&2; exit 2\n", 2)}
+#: A command a signal kills: where the shell outlives it, as dash does,
+#: the shell exits 137, which make names; where it is the shell that is
+#: killed, make prints `Killed` in place of a code (`run_make`'s
+#: docstring).
+SIGNALLED = {"Outlived": (b"bootstrap:\n\t@sh -c 'kill -KILL $$$$'; "
+                          b"exit $$?\n", 137),
+             "Killed": (b"bootstrap:\n\t@kill -KILL $$$$\n", None)}
+#: `(run by a make of its own?, {project: (its Makefile, the code the line
+#: names, None for none)})`.
+MAKE_CASES = {"last-under-make": (True, LAST),
+              "innermost-under-make": (True, INNERMOST),
+              "innermost": (False, INNERMOST),
+              "signal": (False, SIGNALLED)}
+
+
+@pytest.mark.parametrize("under_make, members", MAKE_CASES.values(),
+                         ids=MAKE_CASES)
+def test_the_line_names_the_code_of_the_member_s_innermost_command(
+        holder, tmp_path, under_make, members):
+    """#884's LINE 2, and rv876's R1 and R8. At #876's head a member whose
+    make ran `$(MAKE) inner` read `exited 2` for the inner command's 1, a
+    refusal's code, since make's own `Error 2` for the inner make came
+    last; and under `make -k`, an `Error 1` followed by 5000 bytes read
+    "printed no `Error <code>` line", since only the last 4096 bytes were
+    read. Each is named now, run as it is and under a parent make, where
+    the member's make says `make[1]:` and the make it runs `make[2]:`, and
+    so are the cases `INNERMOST` names beside them. The last `Error` line
+    of a member's names its code, and a signal's code is its shell's,
+    where the shell outlives it, as `run_make` now says."""
+    if shutil.which("make") is None:
+        pytest.skip("no make on PATH")
+    with_members(holder, {project: makefile
+                          for project, (makefile, _) in members.items()})
+
+    result = made(holder, tmp_path, under_make=under_make)
+
+    errors = result.stderr.decode("utf-8", "replace").splitlines()
+    assert result.returncode == (2 if under_make else 1), errors
+    assert [line for line in errors if line.startswith("family ")] == [
+        failed_in_make(*(named_none(project) if code is None
+                         else exited(project, code)
+                         for project, (_, code) in members.items()))]
+    if under_make:
+        assert errors[-1].startswith("make: *** "), errors
+        assert not [line for line in errors[:-1]
+                    if line.startswith("make: ")], errors
+
+
+def loaded(script: str, name: str):
+    """The family holder's `scripts/<script>`, loaded by path as `name`;
+    `sys.path` as it was."""
+    kept = list(sys.path)
+    module = load_without_bytecode(
+        REPO / "templates" / "family-root" / "scripts" / script, name)
+    sys.path[:] = kept
+    return module
+
+
+def test_a_line_that_comes_in_pieces_is_read_whole():
+    """`MakeErrors` reads make's stderr in whatever pieces the pipe gives:
+    an `Error` line cut in two is read whole, and a line nothing ends, as
+    a progress meter's carriage returns leave one, is kept only as its
+    last `LINE_KEPT` bytes while it waits."""
+    boot = loaded("bootstrap.py", "bootstrap_holder_texts")
+    errors = boot.MakeErrors()
+    for _ in range(10):
+        errors.read(b"x" * 1000 + b"\r")
+    assert len(errors.unended) == boot.LINE_KEPT
+    errors.read(b"make[1]: *** [Makefile:2: boot")
+    errors.read(b"strap] Error 1\n")
+    assert errors.code == 1
+
+
+#: A member that says whether its stdout and stderr are a terminal, then
+#: asks on stderr and reads the answer, as a member's recipe may; what it
+#: asks, the answer typed, and how long the question may take to show
+#: before the answer is typed all the same.
+ASKS = (b"bootstrap:\n"
+        b"\t@if test -t 1; then echo 'stdout: a terminal'; fi\n"
+        b"\t@if test -t 2; then :; else echo 'stderr: no terminal'; fi\n"
+        b"\t@printf 'Continue? ' >&2; read answer; echo \"got $$answer\"\n")
+PROMPT, ANSWER, PROMPT_WAIT = b"Continue? ", b"yes\n", 10.0
+
+
+def read_until(leader: int, wanted: bytes | None, deadline: float) -> bytes:
+    """What a pseudo-terminal's `leader` gives until `wanted` shows in it,
+    every writer has closed it, or `deadline` passes."""
+    got = b""
+    while time.monotonic() < deadline and not (wanted and wanted in got):
+        if not select.select([leader], [], [], 0.1)[0]:
+            continue
+        try:
+            chunk = os.read(leader, 4096)
+        except OSError:  # EIO: every writer closed it
+            break
+        if not chunk:
+            break
+        got += chunk
+    return got
+
+
+def on_a_terminal(argv: list[str], cwd: Path) -> tuple[bytes, bytes, int]:
+    """`argv` run with a pseudo-terminal for its stdin, stdout and stderr,
+    as a person runs `make bootstrap`: what it wrote before `PROMPT`
+    showed, what it wrote after `ANSWER` was typed, and its exit code.
+    `ANSWER` is typed once `PROMPT` shows, or after `PROMPT_WAIT` seconds
+    where it does not."""
+    pty = pytest.importorskip("pty")
+    leader, follower = pty.openpty()
+    proc = subprocess.Popen(argv, cwd=str(cwd), env=without_make(),
+                            stdin=follower, stdout=follower, stderr=follower,
+                            start_new_session=True)
+    os.close(follower)
+    try:
+        before = read_until(leader, PROMPT, time.monotonic() + PROMPT_WAIT)
+        os.write(leader, ANSWER)
+        after = read_until(leader, None, time.monotonic() + 60)
+    finally:
+        os.close(leader)
+    return before, after, proc.wait(timeout=60)
+
+
+def test_a_member_s_question_shows_before_its_answer_is_typed(holder):
+    """rv876's R7, and what `run_make` says a member loses. On a terminal,
+    as a person runs it, a member asks `Continue? ` on stderr and waits
+    for the answer: the question passes through this run, which flushes it
+    as it comes, so it shows before the answer is typed. With
+    `passed_on`'s flush dropped it showed only once the run ended, after
+    the answer, and every test passed. The member's stdout is the
+    terminal; its stderr, a pipe, is not."""
+    if shutil.which("make") is None:
+        pytest.skip("no make on PATH")
+    with_members(holder, {"Ask": ASKS})
+
+    before, after, code = on_a_terminal(
+        [sys.executable, "scripts/bootstrap.py", "--no-fetch"], holder)
+
+    assert before.split(b"\r\n")[1:] == [
+        b"", b"(a) members and their legs", b"  skipped (--no-fetch)", b"",
+        b"(b) each member's own `make bootstrap`",
+        b"  --- Ask: make bootstrap ---", b"stdout: a terminal",
+        b"stderr: no terminal", PROMPT], before
+    assert after.split(b"\r\n") == [
+        b"yes", b"got yes", b"", b"family bootstrap ok", b""], after
+    assert code == 0
+
+
+#: A member whose command writes bytes to stderr that are not UTF-8, and
+#: leaves a process running that writes to stderr a second later.
+LEAVES = (b"bootstrap:\n"
+          b"\t@cat said >&2; ( sleep 1; echo 'late' >&2 ) &\n")
+
+
+def test_what_a_member_s_make_leaves_on_stderr_is_passed_on_as_written(
+        holder, tmp_path):
+    """What `run_make` says passing make's stderr on does: the bytes are
+    passed on as they were written, never decoded, and a process a command
+    leaves running holds the run until it closes stderr, its words passed
+    on before the run ends. Reading only until make exited would end the
+    run at once, and that process at its next write (SIGPIPE), unsaid."""
+    if shutil.which("make") is None:
+        pytest.skip("no make on PATH")
+    with_members(holder, {"Leaves": LEAVES})
+    said = b"caf" + bytes([0xE9]) + b"\n"
+    (holder / "members" / "Leaves" / "said").write_bytes(said)
+
+    result = made(holder, tmp_path, under_make=False)
+
+    assert result.returncode == 0, result.stdout + result.stderr
+    assert result.stderr == said + b"late\n"
+    assert result.stdout.endswith(b"\nfamily bootstrap ok\n"), result.stdout
 
 
 # --- line 3: `-f` where git rm --cached refuses ------------------------------
@@ -368,6 +690,8 @@ def test_a_git_mv_staged_with_work_in_the_checkout_is_undone_as_printed(
     (holder / "Members").mkdir()
     raw(holder, env, "mv", ROW, VARIANT_PATH)
     work(holder / VARIANT_PATH, env)
+    checkout = raw(holder / VARIANT_PATH, env, "rev-parse",
+                   "HEAD").stdout.decode("ascii").strip()
     stray = STAGED_STRAY.format(path=VARIANT_PATH, commit=commit,
                                 row_path=ROW, project=MEMBER)
 
@@ -391,6 +715,15 @@ def test_a_git_mv_staged_with_work_in_the_checkout_is_undone_as_printed(
     assert_passes_in_every_mode(holder, 2)
     assert raw(holder, env, "rev-parse", f"HEAD:{ROW}").stdout.decode(
         "ascii").strip() == commit
+    assert kept(holder, env, holder / ".git" / "modules" / ROW, checkout), (
+        "the checkout's commit is still in the member's store")
+
+
+def kept(holder: Path, env: dict, store: Path, commit: str) -> bool:
+    """Whether a member's store, the git directory `store`, holds
+    `commit`."""
+    return raw(holder, env, f"--git-dir={store}", f"--work-tree={holder}",
+               "cat-file", "-e", commit, check=False).returncode == 0
 
 
 def test_a_staged_second_path_with_nothing_on_disk_takes_no_f(
@@ -449,9 +782,7 @@ def test_a_checkout_moved_on_at_the_variant_is_moved_with_f(
     rmtree(checkout)
     assert_passes_in_every_mode(holder, 2)
     store = holder / ".git" / "modules" / "Members" / MEMBER
-    assert raw(holder, env, f"--git-dir={store}", f"--work-tree={holder}",
-               "cat-file", "-e", work, check=False).returncode == 0, (
-        "the commit is kept")
+    assert kept(holder, env, store, work), "the commit is kept"
 
 
 # --- line 4: what the guarded `mv` moves -------------------------------------
@@ -691,14 +1022,9 @@ GUARD_LAYOUTS = {
 
 @pytest.fixture(scope="module")
 def guarded_move():
-    """The gate's own `_guarded_move`, loaded by path; `sys.path` as it
-    was."""
-    kept = list(sys.path)
-    gate = load_without_bytecode(
-        REPO / "templates" / "family-root" / "scripts" / "validate-family.py",
-        "validate_family_holder_texts")
-    sys.path[:] = kept
-    return gate._guarded_move
+    """The gate's own `_guarded_move`."""
+    return loaded("validate-family.py",
+                  "validate_family_holder_texts")._guarded_move
 
 
 @pytest.mark.parametrize("shell", ["sh", "bash"])
