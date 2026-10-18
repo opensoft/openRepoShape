@@ -79,7 +79,10 @@ WHAT IT DOES, in order:
       fails is named with that command's exit code, read from make's
       `Error <code>` line, since make exits 2 for any command that fails,
       so a member's finding (1) and its refusal (2) are told apart, and
-      from a failure of make's own, which prints no such line (#839).
+      from a failure of make's own, which prints no such line (#839). Where
+      the member's make runs another, the code is the innermost command's;
+      make's stderr reaches the terminal through this run, and `run_make`
+      says what that changes for a member (#884).
 
   (c) EXITS 0 unless a member's own command failed, or (a) left a member not
       checked out that no credential would check out, or found a line or a
@@ -870,18 +873,64 @@ def run_member_target(root: Path, row: dict, target: str) -> str | None:
             "message above says what failed)")
 
 
-#: The line GNU make prints where a command of the target exits non-zero,
-#: `make: *** [Makefile:44: bootstrap] Error 1` (`make[1]:` in a make run by
-#: make, `*** [bootstrap] Error 1` before make 4.0): the command's own exit
-#: code, which make's does not carry, since make exits 2 for any command
-#: that fails (#839).
-MAKE_ERROR_RE = re.compile(rb"\*\*\* \[[^\n]*\] Error (\d+)\s*$")
+#: What GNU make prints on stderr as a target fails, after its own name
+#: and, in a make run by make, its depth (`make[1]:`): `*** [Makefile:44:
+#: bootstrap] Error 1` where a command exits non-zero (`*** [bootstrap]
+#: Error 1` before make 4.0), with the command's own exit code, which
+#: make's does not carry, since make exits 2 for any command that fails
+#: (#839); and `*** No rule to make target ...`, or `*** [Makefile:44:
+#: bootstrap] Killed`, where make fails on its own or a signal ends what it
+#: ran, with none (#884).
+MAKE_FAILED_RE = re.compile(
+    rb"(?:\[(\d+)\])?: \*\*\* (?:\[[^\n]*\] Error (\d+)\s*$)?")
+#: The bytes `MakeErrors` keeps of a line of make's stderr not yet ended:
+#: an `Error <code>` line ends there, so the end of a line is enough.
+LINE_KEPT = 4096
+
+
+class MakeErrors:
+    """What `run_make` reads of make's stderr, one line at a time as it
+    passes (#884): `code`, that of the last `Error <code>` line make printed
+    for a command of the member's (`MAKE_FAILED_RE`), or None.
+
+    Read as it passes, an `Error` line is never lost to what follows it,
+    as one was to more than 4096 bytes after it (`make -k`) where only the
+    last 4096 were kept. An `Error 2` straight after a `***` line of a
+    deeper make is that make's parent saying it failed, since make exits 2
+    for any failure, so it is passed over: where the member's make runs
+    another (`$(MAKE) inner`), the code is the innermost command's, and
+    where the inner make failed on its own there is none, as for make's
+    own failure."""
+
+    def __init__(self) -> None:
+        self.code: int | None = None
+        self.depth = -1
+        self.unended = b""
+
+    def read(self, chunk: bytes) -> None:
+        """`chunk` of make's stderr: each line it ends, read
+        (`said`)."""
+        *ended, unended = (self.unended + chunk).split(b"\n")
+        for line in ended:
+            self.said(line)
+        self.unended = unended[-LINE_KEPT:]
+
+    def said(self, line: bytes) -> None:
+        """One line of make's stderr, read for `MAKE_FAILED_RE`."""
+        found = MAKE_FAILED_RE.search(line)
+        if found is None:
+            return
+        depth, code = int(found.group(1) or 0), found.group(2)
+        reports_a_make = code == b"2" and depth < self.depth
+        self.depth = depth
+        if code is not None and not reports_a_make:
+            self.code = int(code)
 
 
 def run_make(make: str, target: str, cwd: Path) -> tuple[int, int | None]:
     """(b) `make <target>` in a member, as `(make's exit code, the exit code
-    of the member's command it names)`, the second None where make printed
-    no `MAKE_ERROR_RE` line (#839).
+    of the member's command it names)`, the second None where make names
+    none (`MakeErrors`, #839, #884).
 
     MAKE'S OWN CODE TELLS NOTHING APART. GNU make exits 2 for any command
     that fails, measured (GNU Make 4.3) for a command exiting 1, 2, 3 or
@@ -889,25 +938,55 @@ def run_make(make: str, target: str, cwd: Path) -> tuple[int, int | None]:
     line said `make bootstrap exited 2` for the member's own `bootstrap
     FAILED` (1, a finding), for a refusal (2) and for make's own failure
     alike (w764b, for lane 4). The command's code is the one make names
-    in its `Error <code>` line, the last on stderr, so make's stderr is
-    passed on to this run's own as it comes and that line read from the
-    end of it; a make that prints none, one of its own failures, a command
-    killed by a signal, or a make speaking another language, leaves make's
-    code alone. The member's command is never run around make: another
-    target than `bootstrap` (`--members-make validate`) has no script of
-    its own to call, as `make siblings` calls a member's
-    `scripts/bootstrap.py`."""
+    in its `Error <code>` line, so make's stderr is passed on to this
+    run's own as it comes, and read a line at a time as it passes: the
+    last such line names it, or, where the member's make runs another,
+    the innermost command's line (`MakeErrors`). A make that prints none,
+    one of its own failures, or a make speaking another language, leaves
+    make's code alone. So does a command killed by a signal where what
+    make started is what was killed: the command itself, the shell a
+    `kill -KILL $$` kills, or bash, which runs a recipe line of one
+    command in its own place; make then prints `Killed` or `Terminated`
+    for it, and no code. Where the shell outlives the command, as dash,
+    `/bin/sh` on Debian and Ubuntu, does for that same line, the shell
+    prints `Killed` itself and exits 128 and the signal's number, 137 for
+    SIGKILL and 143 for SIGTERM, and make names that, as the member's
+    command's code (#884). The member's command is never run around make:
+    another target than `bootstrap` (`--members-make validate`) has no
+    script of its own to call, as `make siblings` calls a member's
+    `scripts/bootstrap.py`.
+
+    WHAT PASSING STDERR ON CHANGES (#884), measured against a make that
+    writes to this run's stderr, a terminal, itself:
+    - The member's commands write stderr to a pipe, not a terminal, so a
+      test of `isatty(2)` reads false: git shows no progress meter, and a
+      command that colours or prompts by that test does neither. Stdin
+      and stdout stay this run's own.
+    - The member's stdout and stderr lines can come out of order: its
+      stderr passes through this run, a little after the stdout written
+      beside it.
+    - A process a command leaves running with stderr open holds the run
+      until it closes it or exits, since the pipe ends only then, and what
+      it writes until then is passed on. Reading only until make exits
+      would end the run at once, but that process's next write to stderr
+      would meet a closed pipe and end it (SIGPIPE), unsaid. A recipe that
+      starts one gives it a stderr of its own (`2>log`).
+    - The bytes pass on as written, never decoded. On Windows a member's
+      Python writes a pipe in the ANSI code page, and this run's stderr, a
+      console, reads them as UTF-8, so non-ASCII text comes out garbled
+      (read, not run).
+    Giving make the terminal back would lose its `Error <code>` line,
+    which nothing else make writes carries (`--debug=j` says only
+    "Reaping losing child"), and the line would say `exited 2` for every
+    failure again."""
     proc = subprocess.Popen([make, target], cwd=str(cwd),
                             stderr=subprocess.PIPE)
-    tail = b""
+    errors = MakeErrors()
     for chunk in iter(lambda: proc.stderr.read1(65536), b""):
         passed_on(chunk)
-        tail = (tail + chunk)[-4096:]
+        errors.read(chunk)
     proc.stderr.close()
-    returncode = proc.wait()
-    found = [MAKE_ERROR_RE.search(line) for line in tail.splitlines()]
-    named = [int(match.group(1)) for match in found if match]
-    return returncode, (named[-1] if named else None)
+    return proc.wait(), errors.code
 
 
 def passed_on(chunk: bytes) -> None:
