@@ -5184,9 +5184,17 @@ def refuse_an_owner_github_cannot_spell(refusal: str, owner: str, named: str,
         problems.append("with two hyphens in a row")
     if not problems:
         return
+    # A VALUE PAST THE LENGTH BOUND IS SHOWN CUT, as
+    # `refuse_an_owner_github_cannot_have` shows it (#871's review, N3):
+    # `check` lists this refusal beside that one, which cuts it, and this
+    # one printed all of a 255-character `org:`. `_both_ends` keeps the
+    # tail, where a trailing hyphen is, and the problems above name every
+    # character, wherever the cut took it from.
+    shown = (repr(owner) if len(owner) <= GITHUB_OWNER_MAX
+             else f"{_both_ends(owner)}, {len(owner)} characters")
     raise Refusal(
         refusal,
-        f"{named} is {owner!r}, and GitHub gives no user or organisation a "
+        f"{named} is {shown}, and GitHub gives no user or organisation a "
         f"name {', or '.join(problems)}, so no repository can be created "
         "under it",
         remediation)

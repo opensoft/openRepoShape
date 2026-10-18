@@ -101,7 +101,9 @@ THREE SUBCOMMANDS, BECAUSE THE MIDDLE ONE IS A HUMAN.
            names, the organisation and the topic (#863): a name the disk
            cannot hold, and without `--local-remote-dir` a name, an
            `org:` or a topic GitHub will not take, each a finding under
-           `execute`'s code. It prints what will happen and changes
+           `execute`'s code; after a name or an `org:` found there, whose
+           fix renames both legs, the legs are not asked about, and after
+           a topic they are. It prints what will happen and changes
            nothing.
   execute  asks about both legs before it makes either (#798), then
            creates the two legs, extracts them with `git filter-repo`, makes
@@ -9672,19 +9674,29 @@ def cmd_check(args) -> int:
         # the first of before either leg exists, each a finding here under
         # its code. Only `execute` asked them, so `check` said `plan ok` over
         # a plan `execute` then refused.
-        held, held_fixes = _held_findings(plan, names, local_remote_dir,
-                                          naming)
+        held, held_fixes, held_codes = _held_findings(
+            plan, names, local_remote_dir, naming)
         findings.extend(held)
         remediation.extend(held_fixes)
         # LAST, as `execute` asks it last, right before it makes either leg
         # (#798), and only of names `execute` would get that far with: what
         # stands in the way of the two leg repositories, of the disk under
         # `--local-remote-dir` and otherwise of GitHub, with `gh repo view
-        # --json nameWithOwner`. Not asked after a finding above, which
-        # `execute` refuses first.
+        # --json nameWithOwner`. NOT ASKED AFTER A FINDING ABOVE WHOSE FIX
+        # RENAMES THE LEGS (`RENAMES_THE_LEGS`): a name too long is mended
+        # with a shorter --project, and an `org:` too long or misspelled
+        # with another `org:`, so `<org>/<Project>-spec` and `-code` change,
+        # and the question asked now would be asked of two repositories the
+        # mended plan does not name. A topic finding is mended with another
+        # `id:`, which names no repository: the legs keep their names, the
+        # question is still the right one, and asked beside it, one round
+        # shows both (#871's review, S1), as it is asked beside the
+        # manifest's and the split branch's findings, which `execute`
+        # refuses first too.
         # A question gh cannot answer is a NOTE here, not a finding.
-        legs, fixes, unasked = (([], [], []) if held else _leg_remote_findings(
-            plan, names, local_remote_dir))
+        legs, fixes, unasked = (
+            ([], [], []) if RENAMES_THE_LEGS.intersection(held_codes)
+            else _leg_remote_findings(plan, names, local_remote_dir))
         findings.extend(legs)
         remediation.extend(fixes)
         notes = [*notes, *unasked]
@@ -10528,22 +10540,36 @@ def _leg_remote_findings(plan: Plan, names: dict,
     return findings, list(dict.fromkeys(fixes)), notes
 
 
+#: The codes of `_what_cannot_be_held` whose fix changes the names the two
+#: leg repositories are asked under, `<org>/<Project>-spec` and
+#: `<org>/<Project>-code` (#871's review, S1): `adopt-name-too-long` is
+#: mended with a shorter --project, `adopt-org-too-long` and `adopt-bad-org`
+#: with another `org:`. `check` asks #861's leg question only where none of
+#: them is found. `adopt-topic-too-long` is not one: it is mended with
+#: another `id:`, and an id names no repository.
+RENAMES_THE_LEGS = frozenset({"adopt-name-too-long", "adopt-org-too-long",
+                              "adopt-bad-org"})
+
+
 def _held_findings(plan: Plan, names: dict, local_remote_dir: Path | None,
-                   naming: NamingPolicy) -> tuple[list[str], list[str]]:
-    """`check`'s `(findings, remediation)` for what the disk or GitHub will
-    not hold of the three names, the organisation and the topic: every
-    refusal of `_what_cannot_be_held`, the list `execute` refuses the first
-    of (#863), each as a FINDING under its code. Asked only of an `org:`
-    `execute` would get that far with: another is `unsafe-value`, refused
-    first in `_repository_urls`."""
+                   naming: NamingPolicy
+                   ) -> tuple[list[str], list[str], list[str]]:
+    """`check`'s `(findings, remediation, codes)` for what the disk or
+    GitHub will not hold of the three names, the organisation and the topic:
+    every refusal of `_what_cannot_be_held`, the list `execute` refuses the
+    first of (#863), each as a FINDING under its code, and the codes, which
+    say whether the leg question is still asked (`RENAMES_THE_LEGS`). Asked
+    only of an `org:` `execute` would get that far with: another is
+    `unsafe-value`, refused first in `_repository_urls`."""
     try:
         org = checked_value("org", _plan_org(plan))
     except Refusal:
-        return [], []
+        return [], [], []
     refused = list(_what_cannot_be_held(plan, names, org,
                                         local_remote_dir is not None, naming))
     return ([f"FINDING {exc.code}: {exc.detail}" for exc in refused],
-            list(dict.fromkeys(exc.remediation for exc in refused)))
+            list(dict.fromkeys(exc.remediation for exc in refused)),
+            [exc.code for exc in refused])
 
 
 def _make_the_remote_dir(remote_dir: Path) -> None:

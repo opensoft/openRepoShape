@@ -83,6 +83,7 @@ FAMILY_TOPIC_TOO_LONG = "REFUSED family-topic-too-long"
 FAMILY_ORG_TOO_LONG = "REFUSED family-org-too-long"
 FAMILY_BAD_ORG = "REFUSED family-bad-org"
 SCAFFOLD_BAD_ORG = "REFUSED scaffold-bad-org"
+SCAFFOLD_ORG_TOO_LONG = "REFUSED scaffold-org-too-long"
 
 #: An `--org` GitHub gives no organisation, by its characters, each with what
 #: the refusal says of it. A leading hyphen is not here: `checked_value`
@@ -133,6 +134,28 @@ def test_every_character_and_every_hyphen_rule_broken_is_named_once():
         "organisation a name holding `.`, `@`, `+`, `~` or `/`, or ending in "
         "a hyphen, or with two hyphens in a row, so no repository can be "
         "created under it")
+
+
+def test_an_owner_past_the_length_bound_is_shown_cut_as_its_length_is():
+    """#871's review, N3: a misspelled value past GitHub's 39 is shown as
+    `refuse_an_owner_github_cannot_have` shows it, cut in the middle and
+    with its length, not all 255 characters of it. One at the bound is
+    still shown whole."""
+    longest = an_org(254) + "."
+    with pytest.raises(Refusal) as caught:
+        shape_materialize.refuse_an_owner_github_cannot_spell(
+            "r", longest, "`org:`", "Remedy.")
+    assert caught.value.detail == (
+        "`org:` is oooooooooooo...ooooooooooo., 255 characters, and GitHub "
+        "gives no user or organisation a name holding `.`, so no repository "
+        "can be created under it")
+    at_the_bound = an_org(OWNER_MAX - 1) + "-"
+    with pytest.raises(Refusal) as caught:
+        shape_materialize.refuse_an_owner_github_cannot_spell(
+            "r", at_the_bound, "`org:`", "Remedy.")
+    assert caught.value.detail.startswith(f"`org:` is {at_the_bound!r}, and "
+                                          "GitHub gives no user"), \
+        caught.value.detail
 
 
 # --- family.py init, in process: before `_creator_name` and any `gh` --------
@@ -186,10 +209,12 @@ def refused_init(family, capsys, tmp_path: Path, *flags: str,
 def init_goes_on(family, capsys, tmp_path: Path, *flags: str) -> None:
     """`init` with `flags` passes every question GitHub's limits ask and
     goes on to `_creator_name`, whose `git config user.name` is refused."""
+    argv = init_args(tmp_path, *flags)
     with pytest.raises(ProcessStarted, match="user.name"):
-        family.main(init_args(tmp_path, *flags))
+        family.main(argv)
     err = capsys.readouterr().err
-    assert "too-long" not in err and "bad-org" not in err, err
+    assert "too-long" not in err, err
+    assert "bad-org" not in err, err
 
 
 #: `(flags at the bound, flags one past it, the refusal)`.
@@ -554,16 +579,18 @@ def test_check_and_execute_read_one_list(adopter, monkeypatch):
         yield second
 
     monkeypatch.setattr(adopter, "_what_cannot_be_held", stand_in)
+    run_args, plan, names = (SimpleNamespace(local_remote_dir=None), _Plan(),
+                             names_of(NORTHWIND))
     with pytest.raises(Refusal) as caught:
-        adopter._repository_urls(SimpleNamespace(local_remote_dir=None),
-                                 _Plan(), names_of(NORTHWIND), None)
+        adopter._repository_urls(run_args, plan, names, None)
     assert caught.value is first
     naming = NamingPolicy.load(REPO / "contracts" / "repository-naming.yaml")
     assert adopter._held_findings(_Plan(), names_of(NORTHWIND), None,
                                   naming) == (
         ["FINDING first-code: the first detail",
          "FINDING second-code: the second detail"],
-        ["Remediation: one.", "Remediation: two."])
+        ["Remediation: one.", "Remediation: two."],
+        ["first-code", "second-code"])
     assert len(asked) == 2
 
 
@@ -659,9 +686,12 @@ CHECKED_OVER = {
 def test_check_finds_what_execute_refuses_under_its_code(tmp_path,
                                                           monkeypatch, case):
     """On main `check` said `plan ok` over each of these and `execute`
-    refused it. Now `check` finds it, exit 1, under `execute`'s code, and
-    asks GitHub nothing: the leg question comes after, and `execute` never
-    gets that far. `execute` refuses it before a `gh` call or a leg."""
+    refused it. Now `check` finds it, exit 1, under `execute`'s code.
+    After a name or an organisation it asks GitHub nothing: their fix
+    renames both legs, so the leg question would be asked of the wrong
+    names. After a topic it still asks the two leg views, whose names an id
+    does not change (#871's review, S1). `execute` refuses it before a `gh`
+    call or a leg."""
     flags, org, project, code = CHECKED_OVER[case]
     runs = _CheckThenExecute()
     monkeypatch.setattr(test_adopt_github_exits, "subprocess", runs)
@@ -671,7 +701,9 @@ def test_check_finds_what_execute_refuses_under_its_code(tmp_path,
     assert checked.returncode == 1, checked.stderr + checked.stdout
     assert findings(checked.stderr) == [f"FINDING {code}"], checked.stderr
     assert "\nplan ok" not in checked.stdout
-    assert runs.check_calls == []
+    assert runs.check_calls == ([f"repo view {org}/{project}-{leg}"
+                                 for leg in ("spec", "code")]
+                                if code == "adopt-topic-too-long" else [])
     assert result.returncode == 2, result.stderr + result.stdout
     assert refusals(result.stderr) == [f"REFUSED {code}"], result.stderr
     assert gh_calls(github) == []
@@ -711,6 +743,138 @@ def test_check_passes_what_github_takes_and_asks_the_legs(tmp_path,
     assert "\nplan ok" in result.stdout
     assert runs.check_calls == [f"repo view {org}/{project}-{leg}"
                                 for leg in ("spec", "code")]
+
+
+def a_code_leg_on_github(source: Path, github: Path) -> None:
+    """`github_run`'s `before_plan`: `testorg/Northwind-code` is already a
+    repository on the stand-in for github.com, so `gh repo view` finds it."""
+    (github / ORG / f"{NORTHWIND}-code.git").mkdir()
+
+
+@WINDOWS_SKIP
+def test_check_asks_the_legs_beside_a_topic_it_finds(tmp_path, monkeypatch):
+    """#871's review, S1: an id of 40 characters, where the code leg's name
+    is already taken on GitHub. The id names no repository, so mending it
+    leaves both legs' names as they are: `check` lists the topic AND the
+    leg in one round, where at #871's first head it listed the topic alone
+    and the leg only once the id was mended."""
+    runs = _CheckThenExecute(only_check=True)
+    monkeypatch.setattr(test_adopt_github_exits, "subprocess", runs)
+    result, _ = github_run(tmp_path, "",
+                           plan_flags=("--id", an_id(ID_MAX + 1)),
+                           before_plan=a_code_leg_on_github)
+    assert result.returncode == 1, result.stderr + result.stdout
+    assert findings(result.stderr) == ["FINDING adopt-topic-too-long",
+                                       "FINDING leg-remote-exists"], \
+        result.stderr
+    assert runs.check_calls == [f"repo view {ORG}/{NORTHWIND}-{leg}"
+                                for leg in ("spec", "code")]
+
+
+@WINDOWS_SKIP
+def test_check_asks_none_of_them_of_names_that_do_not_classify(tmp_path):
+    """#871's review, N5: `execute` refuses names the naming policy does
+    not classify (`_check_names`) before it asks `_what_cannot_be_held`, so
+    `check` asks that list only of names that classify. A spec leg edited
+    to `northwind_spec` in a plan whose `org:` and id are each one past
+    GitHub's bound gets the naming finding alone, and GitHub is asked
+    nothing."""
+    source = make_source_repo(tmp_path / "Thing")
+    plan = tmp_path / "plan.yaml"
+    written = write_plan(source, plan, org=an_org(OWNER_MAX + 1),
+                         extra=("--id", an_id(ID_MAX + 1)))
+    assert written.returncode == 0, written.stderr + written.stdout
+    for path, leg in ANSWERS:
+        resolve(plan, path, leg)
+    text = plan.read_text(encoding="utf-8")
+    leg_line = f"  spec: {NORTHWIND}-spec\n"
+    assert leg_line in text, text
+    plan.write_bytes(text.replace(leg_line, "  spec: northwind_spec\n",
+                                  1).encode("utf-8"))
+    env, log = fake_github(tmp_path)
+    result = run_script(ADOPT, "check", "--plan", str(plan), env=env)
+    assert result.returncode == 1, result.stderr + result.stdout
+    assert findings(result.stderr) == ["FINDING naming-unclassified"], \
+        result.stderr
+    assert not log.exists(), log.read_text(encoding="utf-8")
+
+
+# --- one organisation, two refusals: the length, then the characters ---------
+
+#: An `--org` one past GitHub's 39 that holds a character GitHub gives no
+#: organisation too (#871's review, N2). `check` lists both refusals, the
+#: length first; every tool that refuses refuses the length, and the
+#: characters on the run after it is mended.
+LONG_AND_MISSPELLED = an_org(OWNER_MAX) + "."
+
+
+def test_the_list_holds_an_organisations_length_before_its_characters(
+        adopter):
+    naming = NamingPolicy.load(REPO / "contracts" / "repository-naming.yaml")
+    assert [exc.code for exc in adopter._what_cannot_be_held(
+        _Plan(org=LONG_AND_MISSPELLED), names_of(NORTHWIND),
+        LONG_AND_MISSPELLED, False, naming)] == [
+            "adopt-org-too-long", "adopt-bad-org"]
+
+
+@WINDOWS_SKIP
+def test_check_lists_an_organisations_length_then_its_characters(
+        tmp_path, monkeypatch):
+    """Both, in that order, each value shown cut (#871's review, N3), and no
+    leg question: another `org:` renames both legs."""
+    runs = _CheckThenExecute(only_check=True)
+    monkeypatch.setattr(test_adopt_github_exits, "subprocess", runs)
+    result, _ = github_run(tmp_path, "",
+                           plan_flags=("--org", LONG_AND_MISSPELLED),
+                           before_plan=a_root_named(LONG_AND_MISSPELLED,
+                                                    NORTHWIND))
+    assert result.returncode == 1, result.stderr + result.stdout
+    assert findings(result.stderr) == ["FINDING adopt-org-too-long",
+                                       "FINDING adopt-bad-org"], result.stderr
+    shown = "`org:` is oooooooooooo...ooooooooooo., 40 characters, and GitHub "
+    for line in result.stderr.splitlines():
+        if line.startswith("FINDING "):
+            assert shown in line, line
+    assert runs.check_calls == []
+
+
+def test_execute_refuses_an_organisations_length_first(adopter):
+    naming = NamingPolicy.load(REPO / "contracts" / "repository-naming.yaml")
+    run_args, plan, names = (SimpleNamespace(local_remote_dir=None),
+                             _Plan(org=LONG_AND_MISSPELLED),
+                             names_of(NORTHWIND))
+    with pytest.raises(Refusal) as caught:
+        adopter._repository_urls(run_args, plan, names, None, naming)
+    assert caught.value.code == "adopt-org-too-long"
+
+
+@pytest.mark.parametrize("dry_run", [True, False], ids=["dry-run", "real"])
+def test_init_refuses_an_organisations_length_first(
+        family, only_the_branch_question, capsys, tmp_path, dry_run):
+    err = refused_init(family, capsys, tmp_path, "--org", LONG_AND_MISSPELLED,
+                       dry_run=dry_run)
+    assert refusals(err) == [FAMILY_ORG_TOO_LONG], err
+
+
+@pytest.mark.parametrize("dry_run", [True, False], ids=["dry-run", "real"])
+def test_the_scaffold_refuses_an_organisations_length_first(
+        scaffold, no_process, capsys, dry_run):
+    err = refused_plan(scaffold, capsys, "--project", "Atlas", "--org",
+                       LONG_AND_MISSPELLED, dry_run=dry_run)
+    assert refusals(err) == [SCAFFOLD_ORG_TOO_LONG], err
+
+
+@WINDOWS_SKIP
+def test_setup_refuses_an_organisations_length_first(tmp_path):
+    """Setup's step (5) is the scaffold's plan, and takes its answer."""
+    result = run_entry(*setup_flags(tmp_path, "--project", "Atlas", "--org",
+                                    LONG_AND_MISSPELLED),
+                       extra_env=setup_env(tmp_path))
+    assert result.returncode == 2, result.stderr + result.stdout
+    assert f"{SCAFFOLD_ORG_TOO_LONG}: --org is " in result.stderr, \
+        result.stderr
+    assert "bad-org" not in result.stderr, result.stderr
+    assert not (tmp_path / "parent").exists()
 
 
 # --- adopt-project.py check under --local-remote-dir: the disk's ------------
