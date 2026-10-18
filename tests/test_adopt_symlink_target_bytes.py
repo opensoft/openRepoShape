@@ -506,8 +506,13 @@ def test_a_link_git_makes_as_the_blob_holds_it_is_no_finding(
 
 @pytest.mark.parametrize("how", ["removed", "given-a-target"])
 def test_the_remediation_the_finding_names_makes_check_pass(tmp_path, how):
-    """Fixed in the source and planned again, the plan checks ok."""
+    """Refused as it is, fixed in the source and planned again, the plan
+    checks ok. The first half is what keeps this test from passing on a
+    script that never names the link."""
     source = source_of(tmp_path, {"docs/link": LATE_NUL})
+    refused = check(planned(source, tmp_path / "plan-before.yaml"))
+    assert refused.returncode == 1, refused.stdout + refused.stderr
+    assert f"FINDING {CODE}: `docs/link`" in refused.stderr
     if how == "removed":
         git("update-index", "--force-remove", "docs/link", cwd=source)
     else:
