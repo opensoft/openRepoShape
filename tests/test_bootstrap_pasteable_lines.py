@@ -11,17 +11,25 @@ shell reads `'origin/a\\udcffb'` as the characters it is. RV824 measured it
 on #824: for an upstream `origin/a<0xff>b` the line named no ref, and git
 answered `not something we can merge`.
 
-THE RULE NOW (`_paste_word`). A name that `spelled` has nothing to escape in,
-and this stdout can write, is the word it was, byte for byte: `shlex.quote`.
-Any other is `"$(printf -- '<octal escapes>')"`, which `sh` turns back into
-the bytes of the name. A name that has no such word (one that ends in a line
-feed, which `$(...)` strips, and one `os.fsencode` cannot write) keeps what
+THE RULE NOW (`_paste_word`). A name that `spelled` has nothing to escape in
+is the word it was, byte for byte (`shlex.quote`), where this stdout can
+write it as the bytes git is handed: an ASCII name on any stdout, and one
+that is not ASCII where the stdout's codec and the filesystem's give the
+same bytes for it. A word that begins with `=` is quoted, as zsh expands a
+bare one (#961). Any other is `"$(printf -- '<octal escapes>')"`, which `sh`
+turns back into the bytes `os.fsencode` gives the name. A name that has no
+such word (one that ends in a line feed, which `$(...)` strips, one with a
+NUL, which it drops, and one `os.fsencode` cannot write) keeps what
 `spelled` made of it.
 
-EACH TEST BELOW RUNS WHAT WAS PRINTED, AS PRINTED: the command in the line,
-through `/bin/sh -c` from the root, and asks where the branch is, or the
-operation, afterwards. Asked of the words themselves it would hold only what
-the helper says of itself, which the first fix would have changed with it.
+THE TESTS THAT TAKE A `root` RUN WHAT WAS PRINTED, AS PRINTED: the command
+in the line, through a shell's `-c` from the root, and ask where the branch
+is, or the operation, afterwards. Asked of the words themselves it would
+hold only what the helper says of itself, which the first fix would have
+changed with it. The tests that take `bootstrap_module` ask `_paste_word`
+for its words, in process, and where a shell's reading is the question run
+the word through that shell; the stdout and the filesystem encoding they
+vary are stubs, as `LegacyWindowsOs` is.
 
 The state is the one `tests/test_bootstrap_non_utf8_branch.py` builds (a
 `main` past the pin, with no commit of its own, tracking a remote-tracking
@@ -43,6 +51,7 @@ from pathlib import Path
 import pytest
 
 from conftest import IDENTITY_EMAIL, IDENTITY_NAME, REPO, git, run_script
+from repo_shape import shell_quoted
 from test_bootstrap_after_bump import (  # noqa: F401
     MAIN, bootstrapped, head_ref, rev, root, skip_validators,
 )
@@ -90,9 +99,43 @@ PATHS = [
                  r'''"$(printf -- '-sp\377ec')"''', id="leading-dash"),
     pytest.param("sp%s\udcffec", r"sp%s\udcffec",
                  r'''"$(printf -- 'sp\045s\377ec')"''', id="percent"),
+    # Two escapes that are the bytes of a character (`spéc`, U+DCC3 U+DCA9):
+    # git is handed those bytes, and a `printf` prints them (#961).
+    pytest.param("sp\udcc3\udca9c", r"sp\udcc3\udca9c",
+                 r'''"$(printf -- 'sp\303\251c')"''', id="UTF-8-as-bytes"),
+    # zsh expands a bare `=spec` to the path of a command (#961).
+    pytest.param("=spec", "=spec", "'=spec'", id="leading-equals"),
 ]
 SHELLS = [pytest.param(shell, id=shell.rsplit("/", 1)[1]) for shell in
           ("/bin/sh", "/bin/dash", "/bin/bash", "/bin/zsh")]
+
+
+class Stdout:
+    """The one thing `_prints_as_it_is` reads of `sys.stdout`: its codec."""
+
+    def __init__(self, encoding: str):
+        self.encoding = encoding
+
+
+class Latin1Os:
+    """`os` where the filesystem encoding is latin-1: git is handed `é` as
+    the byte 0xe9, and each byte reads back as the character of that number.
+    Only what `bootstrap.py` reads of it differs; everything else is this
+    system's `os`, as `LegacyWindowsOs`'s is."""
+
+    @staticmethod
+    def fsencode(name: str) -> bytes:
+        return name.encode("latin-1", "surrogateescape")
+
+    @staticmethod
+    def fsdecode(raw: bytes) -> str:
+        return raw.decode("latin-1", "surrogateescape")
+
+    def __getattr__(self, attr: str):
+        return getattr(os, attr)
+
+
+LATIN1_FS = Latin1Os()
 
 
 def pasted(root: Path, command: str, shell: str = "/bin/sh") -> None:
@@ -111,6 +154,18 @@ def pasted(root: Path, command: str, shell: str = "/bin/sh") -> None:
     assert proc.returncode == 0, (
         command + "\n" + (proc.stderr + proc.stdout).decode("utf-8",
                                                            "replace"))
+
+
+def printed_by(shell: str, word: str) -> bytes:
+    """What `shell` prints for `printf %s <word>`: the bytes it reads the
+    word as. Skips where this system has no such shell."""
+    if not os.path.exists(shell):
+        pytest.skip(f"this system has no {shell}")
+    proc = subprocess.run([shell, "-c", f"printf %s {word}"],
+                          capture_output=True, check=False)
+    assert proc.returncode == 0, word + "\n" + proc.stderr.decode(
+        "utf-8", "replace")
+    return proc.stdout
 
 
 def mounted_at(root: Path, path: str) -> Path:
@@ -206,7 +261,9 @@ def test_the_move_back_command_is_pasteable_whatever_the_legs_path_is_named(
     and `project.yaml` can hold it), the command names that directory when
     run as printed; so with a leading `-`, which `printf` would read as an
     option without its `--`, and a `%`, which it would read as a conversion
-    without its escape."""
+    without its escape. A path made of the escapes of a character's bytes
+    (`sp<U+DCC3><U+DCA9>c`, the directory `spéc`) is that directory too, and
+    one that begins with `=` is quoted, which zsh would expand (#961)."""
     pin, ahead, lines = moved_back_lines(root, tmp_path, path=path)
 
     command = f"git -C {word} merge --ff-only origin/main"
@@ -216,6 +273,19 @@ def test_the_move_back_command_is_pasteable_whatever_the_legs_path_is_named(
     assert rev(leg, MAIN) == pin
     pasted(root, command_of(lines[0]))
     assert rev(leg, MAIN) == ahead
+
+
+@pytest.mark.parametrize("shell", SHELLS)
+def test_a_leg_path_that_begins_with_an_equals_sign_is_pasteable_in_a_shell(
+        root, tmp_path, shell):
+    """THE ISSUE (#961): `git -C =spec merge ...` is read by zsh as the path
+    of a command called `spec`, and stops at `zsh: spec not found`. Quoted,
+    the printed command brings `main` forward in each shell, zsh included
+    (dash and bash read the bare word too, which is why only zsh failed)."""
+    pin, ahead, lines = moved_back_lines(root, tmp_path, path="=spec")
+
+    pasted(root, command_of(lines[0]), shell)
+    assert rev(root / "=spec", MAIN) == ahead
 
 
 # --- `_say_in_progress`'s two commands --------------------------------------
@@ -257,7 +327,7 @@ def test_the_commands_that_end_an_operation_are_pasteable_whatever_the_path(
     ("my spec", "'my spec'"),
     ("it's", "'it'\"'\"'s'"),
     ("", "''"),
-    ("=x", "=x"),
+    ("a=b", "a=b"),
     pytest.param("origin/café", "'origin/café'", id="printable-UTF-8"),
     pytest.param("日本", "'日本'", id="CJK"),
     pytest.param("a\u00a0b", "'a\u00a0b'", id="no-break-space"),
@@ -266,9 +336,40 @@ def test_a_name_with_nothing_to_escape_is_the_word_it_was(
         bootstrap_module, name, word):
     """Byte for byte `spelled(shlex.quote(name))`, which every such word
     was: no `printf`, no new quoting. A U+00A0 is no escape to `spelled`,
-    and prints as it is."""
+    and prints as it is, and an `=` that does not begin the word is itself
+    to every shell."""
     assert bootstrap_module._paste_word(name) == word
     assert word == bootstrap_module.spelled(shlex.quote(name))
+
+
+@pytest.mark.parametrize("name, word", [
+    ("=x", "'=x'"),
+    ("=ls", "'=ls'"),
+    ("=", "'='"),
+    ("==x", "'==x'"),
+    ("=%", "'=%'"),
+    ("=a b", "'=a b'"),
+    ("origin/=x", "origin/=x"),
+], ids=lambda value: None if value else "empty")
+def test_a_word_that_begins_with_an_equals_sign_is_quoted(
+        bootstrap_module, name, word):
+    """`shell_quoted` quotes a word that begins with `=` (#486), and so does
+    `_paste_word` (#961), once: a word `shlex.quote` quotes already is not
+    quoted again, and an `=` inside a name is left as it was. The word is
+    `shell_quoted`'s, as the doctor and `family.py` word theirs."""
+    assert bootstrap_module._paste_word(name) == word
+    assert word == shell_quoted(name, "posix")
+
+
+@pytest.mark.parametrize("shell", SHELLS)
+@pytest.mark.parametrize("name", ["=x", "=ls", "=", "==x", "=%", "=a b"])
+def test_a_word_that_begins_with_an_equals_sign_reads_back_in_every_shell(
+        bootstrap_module, shell, name):
+    """zsh expands a bare `=ls` to `/usr/bin/ls` and stops at `=x`, so what
+    is asked is the shell: the word prints the name, in dash, bash and zsh
+    alike (#961)."""
+    word = bootstrap_module._paste_word(name)
+    assert printed_by(shell, word) == name.encode("ascii")
 
 
 @pytest.mark.parametrize("upstream, word", [
@@ -292,24 +393,36 @@ def test_the_move_back_line_of_a_printable_upstream_is_the_one_it_was(
     assert rev(root / "spec", MAIN) == ahead
 
 
-# --- a stdout that cannot write the name ------------------------------------
+# --- a stdout that does not write the bytes git is handed -------------------
 
 @NEEDS_A_UTF8_PROCESS
-def test_a_stdout_that_cannot_write_the_name_gets_the_printf_word(
-        root, tmp_path):
+@pytest.mark.parametrize("encoding, held", [
+    pytest.param("ascii", r"origin/caf\xe9", id="cannot-write-it"),
+    pytest.param("latin-1", "origin/café", id="writes-other-bytes"),
+])
+def test_a_stdout_of_another_codec_than_the_names_gets_the_printf_word(
+        root, tmp_path, encoding, held):
     """`PYTHONIOENCODING=ascii` writes `é` as `\\xe9`, which no shell
-    reads back as the name, so the command holds its bytes as `printf`
-    does; the prose names the upstream as the stdout writes it."""
+    reads back as the name, and `latin-1` writes it as the byte 0xe9, where
+    git was handed 0xc3 0xa9 (#961): pasted, the quoted word named no ref.
+    So the command holds the bytes git is handed, as `printf` does; the
+    prose names the upstream as the stdout writes it, read back here in that
+    codec."""
     leg = root / "spec"
     pin, ahead = past_the_pin(leg, "café", "main")
 
-    result = run_script(root / "scripts" / "bootstrap.py", "--skip-validators",
-                        cwd=root, env={"PYTHONIOENCODING": "ascii"})
-    assert result.returncode == 0, result.stderr + result.stdout
+    result = subprocess.run(
+        [sys.executable, str(root / "scripts" / "bootstrap.py"),
+         "--skip-validators"], cwd=str(root), stdin=subprocess.DEVNULL,
+        env={**os.environ, "PYTHONIOENCODING": encoding},
+        capture_output=True, check=False)
+    printed = result.stdout.decode(encoding)
+    assert result.returncode == 0, printed + result.stderr.decode(
+        encoding, "replace")
     word = r'''"$(printf -- 'origin/caf\303\251')"'''
     command = f"git -C spec merge --ff-only {word}"
-    line = moved_back_line("spec", ahead, pin, r"origin/caf\xe9", command)
-    assert line in result.stdout.split("\n"), result.stdout
+    line = moved_back_line("spec", ahead, pin, held, command)
+    assert line in printed.split("\n"), printed
     pasted(root, command_of(line))
     assert rev(leg, MAIN) == ahead
 
@@ -328,6 +441,10 @@ def test_a_stdout_that_cannot_write_the_name_gets_the_printf_word(
     ("a\nb", r'''"$(printf -- 'a\012b')"'''),
     ("dé\udcff", r'''"$(printf -- 'd\303\251\377')"'''),
     ("=x\udcff", r'''"$(printf -- '=x\377')"'''),
+    # Escapes that are the bytes of a character, which `os.fsdecode` reads
+    # as that character: git is handed those bytes, so they have a word.
+    ("sp\udcc3\udca9c", r'''"$(printf -- 'sp\303\251c')"'''),
+    ("caf\udcc3\udca9\udcff", r'''"$(printf -- 'caf\303\251\377')"'''),
     # An escape is ALWAYS three digits: a digit that follows is the name's.
     ("a\x1b7\udcff", r'''"$(printf -- 'a\0337\377')"'''),
     ("\t1\udcff", r'''"$(printf -- '\0111\377')"'''),
@@ -337,20 +454,22 @@ def test_the_printf_word_prints_the_bytes_of_the_name(
     """The word for each byte class, exactly, and what `/bin/sh` makes of it
     is the bytes `os.fsencode` gives the name: a byte outside the safe set is
     a three-digit octal escape, `%` and the backslash and the apostrophe
-    included, and a newline in the middle of a name is kept."""
+    included, and a newline in the middle of a name is kept. So are the
+    escapes of a character's bytes (#961): `os.fsdecode` of them is that
+    character, which is no reason to keep the escape text."""
     assert bootstrap_module._paste_word(name) == word
-    out = subprocess.run(["/bin/sh", "-c", f"printf %s {word}"],
-                         capture_output=True, check=True).stdout
-    assert out == os.fsencode(name)
+    assert printed_by("/bin/sh", word) == os.fsencode(name)
 
 
-@pytest.mark.parametrize("name", ["a\udcffb\n", "sp\n", "\ud83d"],
-                         ids=["byte-then-LF", "ends-in-LF", "lone-surrogate"])
+@pytest.mark.parametrize("name", ["a\udcffb\n", "sp\n", "\ud83d", "a\x00b"],
+                         ids=["byte-then-LF", "ends-in-LF", "lone-surrogate",
+                              "NUL"])
 def test_a_name_with_no_printf_word_keeps_the_text_it_had(
         bootstrap_module, name):
-    """`$(...)` strips a trailing line feed, so a word for such a name would
-    be another path, and a lone surrogate has no byte at all: both keep what
-    `spelled(shlex.quote(name))` made of them, as before, and are never the
+    """`$(...)` strips a trailing line feed and drops a NUL, so a word for
+    such a name would be another path (the NUL's was `ab` in dash and bash,
+    #961), and a lone surrogate has no byte at all: each keeps what
+    `spelled(shlex.quote(name))` made of it, as before, and is never the
     stripped word."""
     assert bootstrap_module._paste_word(name) == bootstrap_module.spelled(
         shlex.quote(name))
@@ -367,6 +486,71 @@ def test_a_name_the_codec_would_not_read_back_keeps_the_text_it_had(
     name = "a\udcffb"
     assert bootstrap_module._paste_word(name) == bootstrap_module.spelled(
         shlex.quote(name))
+
+
+@pytest.mark.parametrize("encoding, filesystem, word", [
+    pytest.param("utf-8", None, "'origin/café'", id="both-UTF-8"),
+    pytest.param("latin-1", None, r'''"$(printf -- 'origin/caf\303\251')"''',
+                 id="stdout-latin-1"),
+    pytest.param("cp1252", None, r'''"$(printf -- 'origin/caf\303\251')"''',
+                 id="stdout-cp1252"),
+    pytest.param("utf-8", LATIN1_FS, r'''"$(printf -- 'origin/caf\351')"''',
+                 id="filesystem-latin-1"),
+    pytest.param("latin-1", LATIN1_FS, "'origin/café'", id="both-latin-1"),
+    pytest.param("cp1252", LATIN1_FS, "'origin/café'",
+                 id="two-codecs-one-byte-for-this-name"),
+])
+def test_a_name_that_is_not_ascii_is_quoted_where_both_codecs_give_its_bytes(
+        bootstrap_module, monkeypatch, encoding, filesystem, word):
+    """A quoted `é` is what the terminal shows, and a paste of it is the
+    bytes the stdout's codec made of it: only where those are the bytes
+    `os.fsencode` gives the name, the ones git is handed, does the paste name
+    the same. Under a latin-1 stdout and a UTF-8 filesystem (a stdout the
+    locale does not set, `PYTHONIOENCODING`, a terminal emulator that is
+    not UTF-8) the word was `'origin/café'`, pasted as 0xe9 where the ref is
+    0xc3 0xa9; under a latin-1 filesystem and a UTF-8 stdout it was the
+    reverse (#961). `cp1252` and `latin-1` are two codecs and one byte for
+    `é`, and that is all the name asks. The filesystem encoding is the
+    shim's `os.fsencode`, as `LegacyWindowsOs`'s is."""
+    monkeypatch.setattr(sys, "stdout", Stdout(encoding))
+    if filesystem is not None:
+        monkeypatch.setattr(bootstrap_module, "os", filesystem)
+    assert bootstrap_module._paste_word("origin/café") == word
+
+
+@pytest.mark.parametrize("encoding", ["latin-1", "ascii", "utf-16"])
+def test_an_ascii_name_is_the_word_it_was_on_any_stdout(
+        bootstrap_module, monkeypatch, encoding):
+    """An ASCII name shows as itself on every stdout that can write it, so
+    the filesystem's codec is not asked of it (#961): `origin/main` stays
+    bare, under a UTF-16 stdout too, whose bytes are not git's."""
+    monkeypatch.setattr(sys, "stdout", Stdout(encoding))
+    monkeypatch.setattr(bootstrap_module, "os", LATIN1_FS)
+    assert bootstrap_module._paste_word("origin/main") == "origin/main"
+
+
+def test_a_stdout_with_no_such_codec_gets_the_printf_word(
+        bootstrap_module, monkeypatch):
+    """A stream a caller replaced may name any encoding, and `str.encode`
+    answers an unknown one with a `LookupError`, which is no
+    `UnicodeEncodeError`: no codec holds the name, so it gets the `printf`
+    word, which is ASCII, and nothing raises (#961)."""
+    monkeypatch.setattr(sys, "stdout", Stdout("no-such-codec"))
+    assert bootstrap_module._paste_word("origin/main") == (
+        r'''"$(printf -- 'origin/main')"''')
+
+
+def test_the_printf_word_is_the_bytes_the_filesystem_encoding_gives(
+        bootstrap_module, monkeypatch):
+    """Git is handed `os.fsencode`'s bytes, so the word prints those: under
+    a latin-1 filesystem `é` is the byte 0xe9, and the UTF-8 bytes of the
+    character (`name.encode("utf-8", "surrogateescape")`) would name another
+    path, `cafÃ©`. Run through `/bin/sh`, the word prints what the shim's
+    `fsencode` gives (#961)."""
+    monkeypatch.setattr(bootstrap_module, "os", LATIN1_FS)
+    word = bootstrap_module._paste_word("café\t")
+    assert word == r'''"$(printf -- 'caf\351\011')"'''
+    assert printed_by("/bin/sh", word) == b"caf\xe9\t"
 
 
 def test_a_stdout_that_is_not_there_is_asked_as_utf8(

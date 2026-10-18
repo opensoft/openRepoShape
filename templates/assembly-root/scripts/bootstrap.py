@@ -50,11 +50,14 @@ WHAT IT DOES, in order:
       was (#710). The commands it prints for a person to paste (the
       `merge --ff-only` that brings a moved-back branch forward, and the
       `--continue` and `--abort` of an operation in progress) name the
-      leg's path and the upstream as ONE shell word each: quoted, and,
-      where the name holds a byte that is not UTF-8 or a character a
-      terminal must not be handed, a `printf` that prints its bytes
-      again, so a paste names what is on disk and not its escape (#932).
-      Advancing a pin
+      leg's path and the upstream as ONE shell word each: quoted (a word
+      that begins with `=` too, which zsh would expand), and, where the
+      name holds a byte that is not UTF-8, a character a terminal must
+      not be handed, or a character this stdout cannot write, or writes
+      as other bytes than git is handed, a `printf` that prints those
+      bytes again, so a paste names what is on disk and not its escape
+      (#932, #961). A name no `printf` can print, one that ends in a line
+      feed or holds a NUL, is printed spelled, as it was. Advancing a pin
       remains an explicit commit in this repository — see `README.md`, "The
       lockstep invariant". This is why `.gitmodules` carries no `branch=`:
       that would buy the same ergonomics by weakening the pin, and then "what
@@ -772,23 +775,35 @@ def _sequence_in_progress(gitdir: Path) -> tuple[str, str, str] | None:
 
 
 def _prints_as_it_is(text: str) -> bool:
-    """Whether `print` writes `text` as it is (#932): `spelled` has no
-    escape to make in it, and this stdout holds every character of it, so
-    what the terminal shows is the text and a paste of it names the same."""
+    """Whether `print` writes `text` as it is, and a paste of that gives git
+    the bytes it is handed (#932, #961): `spelled` has no escape to make in
+    it, this stdout holds every character of it and, where the text is not
+    ASCII, writes the same bytes as `os.fsencode`, so what the terminal
+    shows is the text and a paste of it names the same."""
+    if spelled(text) != text:
+        return False
+    encoding = getattr(sys.stdout, "encoding", None) or "utf-8"
     try:
-        text.encode(getattr(sys.stdout, "encoding", None) or "utf-8")
+        written = text.encode(encoding)
+        return text.isascii() or written == os.fsencode(text)
     except (LookupError, UnicodeEncodeError):
         return False
-    return spelled(text) == text
 
 
 def _paste_word(name: str) -> str:
     """`name`, a leg's path or a ref's name, as ONE word of a command line
-    printed for a person to paste into a POSIX shell (#932).
+    printed for a person to paste into a POSIX shell (#932, #961).
 
     WHERE THE TEXT PRINTS AS IT IS it is `spelled(shlex.quote(name))`, as
     every such word was: an ordinary name, and a printable one that is not
-    ASCII, are byte for byte what they were (`_prints_as_it_is`).
+    ASCII where this stdout writes the bytes git is handed, are byte for
+    byte what they were (`_prints_as_it_is`).
+
+    ONE CHANGE: a word that begins with `=` is quoted, as
+    `repo_shape.shell_quoted` quotes it (#486). zsh expands a bare `=ls` to
+    `/usr/bin/ls` and stops a line at `=x` with `zsh: x not found`, where
+    dash and bash read both as they are; `=` anywhere else is itself to all
+    three. `shlex.quote` leaves a word bare only where it holds no `'`.
 
     WHAT WAS WRONG. `spelled` writes what a terminal must not be handed as
     an escape (#391), and a shell reads that text as the characters it is.
@@ -808,15 +823,23 @@ def _paste_word(name: str) -> str:
     ASCII, so it is the same on any stdout. It is `sh`'s dialect, as
     `shlex.quote` already was.
 
-    A NAME WITH NO SUCH FORM keeps `spelled`'s text, as it was: one whose
-    bytes do not read back as it (`os.fsdecode` of them is another name: a
-    lone surrogate with no byte, or a Windows code page that replaces), and
-    one that ENDS IN A LINE FEED, which `$(...)` strips, so the word would
-    name another path. A ref's name is neither: git refuses a control
-    character in one, and `_try_git` reads its bytes back. So it is a leg's
-    path, and one with no bytes is no directory a leg is moved in; a path
-    that ends in a line feed, which only a hand-made manifest holds, is the
-    one name left with no pasteable word.
+    A NAME WITH NO SUCH FORM keeps `spelled`'s text, as it was:
+    - one `os.fsencode` cannot write, a lone surrogate with no byte or a
+      character the filesystem encoding lacks;
+    - one whose bytes `$(...)` does not give back, so the word would name
+      another path: it strips a trailing line feed and drops a NUL;
+    - on Windows, one whose bytes do not read back as it (`os.fsdecode` of
+      them is another name: a code page that replaces). A command is not
+      handed these bytes there, so the read-back is what is asked.
+
+    On POSIX the read-back is not asked (#961): git IS handed these bytes,
+    so a name `os.fsdecode` would read as another has its word, as
+    `sp\\udcc3\\udca9c` has `"$(printf -- 'sp\\303\\251c')"`, the bytes of the
+    directory `spéc`. A ref's name is none of the three: git refuses a
+    control character in one, and `_try_git` reads its bytes back. So it is
+    a leg's path, and one with no bytes is no directory a leg is moved in;
+    a path that ends in a line feed, which only a hand-made manifest holds,
+    is the one name left with no pasteable word.
 
     A COPY, as `inherited_child_environment` is: a root re-copies its pinned
     files one row at a time, so this file may meet a `repo_shape.py` older
@@ -824,13 +847,16 @@ def _paste_word(name: str) -> str:
     `tests/test_bootstrap_pasteable_lines.py` runs each form it writes.
     """
     quoted = shlex.quote(name)
+    if quoted.startswith("="):
+        quoted = f"'{quoted}'"
     if _prints_as_it_is(quoted):
         return quoted
     try:
         raw = os.fsencode(name)
     except UnicodeEncodeError:
         return spelled(quoted)
-    if os.fsdecode(raw) != name or raw.endswith(b"\n"):
+    if raw.endswith(b"\n") or b"\0" in raw or (
+            os.name == "nt" and os.fsdecode(raw) != name):
         return spelled(quoted)
     escaped = "".join(chr(byte) if byte in PRINTF_BARE else f"\\{byte:03o}"
                       for byte in raw)
