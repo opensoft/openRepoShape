@@ -32,6 +32,16 @@ FIVE LINES, EACH MEASURED ON MAIN BEFORE THE FIX:
     they already refuse it exits 0 and the real run ends
     `bump-leg-validators-red`. Its closing paragraph says so.
 
+AND THE BRANCH'S BYTES (#765): the name is read as git wrote it, so a
+trailing no-break space stays on it, and a name that is not UTF-8 is refused
+by name (`bump-leg-branch-not-utf8`) where `errors="replace"` read another.
+
+THE ROOT ABOVE THEM (#766). The three refusals and the dry run's `the real
+run needs a branch` line printed the root as it was, so a root under a name
+with an ESC, a line break or a bidi override sent it to the terminal raw.
+Each names it as `repo_shape.shown_path` does now, and so does #765's
+`bump-leg-branch-not-utf8`, raised in the same check.
+
 NO NETWORK, NO `gh`: the bare remotes are the session's own, and every root
 here pushes to a private copy of its remote (`make_root`), so a push reaches
 nothing another test reads. Every printed line is run as the argv a POSIX
@@ -47,7 +57,13 @@ from pathlib import Path
 
 import pytest
 
-from conftest import FILE_PROTOCOL, PROJECT, REPO, cloned_just_pushed, git
+from conftest import (FILE_PROTOCOL, NOT_UTF_8_BRANCH_NAMED, PROJECT, REPO,
+                      cloned_just_pushed, git, held_by_git,
+                      on_a_branch_that_is_not_utf_8)
+#: The names no line may print raw, and how a line spells them (#766).
+from conftest import (POSIX_NAMES, SHOWN_NAMES, UNSAFE_NAMES,
+                      assert_shown_safe, copied_under, named_as,
+                      refusal_detail, spelt)
 # A fixture is used by being named in this module's namespace, which is what
 # the imports of `bump_leg_module` and `make_root` are for.
 from test_bump_leg import (  # noqa: F401
@@ -232,16 +248,23 @@ def test_a_branch_beside_a_tag_of_its_name_is_pushed_by_its_full_ref(
     assert upstream_of(root, "v1") == "refs/remotes/origin/v1"
 
 
+@pytest.mark.parametrize("neighbour", ["feat", "main"],
+                         ids=["beside-a-branch", "beside-the-tracking-branch"])
 def test_a_branch_ending_in_a_no_break_space_is_pushed_as_itself(
-        make_root, scaffolded, advanced):
+        make_root, scaffolded, advanced, neighbour):
     """`feat<U+00A0>` beside a branch `feat`: `strip()` took the no-break
     space off the name it read, so the bump committed on `feat<U+00A0>` and
     the line pushed `feat`, the other branch, at the commit before the bump
-    (rv672's S2). Only git's newline is taken off now: the line names the
-    branch the bump committed on, and run, pushes that commit."""
+    (rv672's S2). And `main<U+00A0>` beside the tracking branch `main` read
+    as `main`, so the bump was refused `bump-leg-on-tracking-branch` on a
+    branch that is not it (#765). Only git's newline is taken off now: the
+    line names the branch the bump committed on, and run, pushes that
+    commit, leaving origin's neighbour where it was."""
     root, remote = make_root("plain")
-    name = "feat\u00a0"
-    git("branch", "feat", cwd=root)
+    name = neighbour + chr(0xA0)
+    if neighbour != "main":
+        git("branch", neighbour, cwd=root)
+    was = head_of(remote, f"refs/heads/{neighbour}")
     git("checkout", "-q", "-b", name, cwd=root)
 
     result = bump(root, scaffolded, advanced)
@@ -252,7 +275,33 @@ def test_a_branch_ending_in_a_no_break_space_is_pushed_as_itself(
     pushed = run_the_line(line, root.parent)
     assert pushed.returncode == 0, pushed.stderr + pushed.stdout
     assert head_of(remote, f"refs/heads/{name}") == head_of(root)
-    assert head_of(remote, "refs/heads/feat") == "", "`feat` was not pushed"
+    assert head_of(remote, f"refs/heads/{neighbour}") == was, (
+        f"`{neighbour}` was not pushed")
+
+
+@pytest.mark.parametrize("extra", [(), ("--dry-run",)],
+                         ids=["bump", "dry-run"])
+def test_a_branch_named_with_a_byte_that_is_not_utf8_is_refused_by_name(
+        project, scaffolded, advanced, extra):
+    """`caf<0xE9>` (#765): decoded with `errors="replace"`, it read as
+    `caf<U+FFFD>`, a branch nobody has, so the bump committed on `caf<0xE9>`
+    and the line named `caf<U+FFFD>` on both sides, which pasted fails `src
+    refspec ... does not match any`. Refused by name now, by its bytes, the
+    dry run alike, before the fetch: no line names the branch but the
+    refusal, which says how to rename it, and the root, its refs and each
+    leg's git directory are as they were, FETCH_HEAD and objects too."""
+    before = on_a_branch_that_is_not_utf_8(project)
+
+    result = bump(project, scaffolded, advanced, *extra)
+
+    assert result.returncode == 2, result.stderr + result.stdout
+    assert (f"REFUSED bump-leg-branch-not-utf8: {project.resolve()} is on "
+            f"the branch {NOT_UTF_8_BRANCH_NAMED}, whose name is not UTF-8"
+            in result.stderr), result.stderr
+    assert result.stderr.rstrip().endswith(" branch -m <a new name>"), (
+        result.stderr)
+    assert result.stdout == ""
+    assert held_by_git(project) == before
 
 
 # --- the dirty root, spelled -------------------------------------------------
@@ -518,3 +567,104 @@ def test_a_dry_run_says_the_validators_are_the_real_runs(project, scaffolded,
     assert "REFUSED bump-leg-validators-red" in real.stderr, real.stderr
     assert head_of(project) == head
     assert git("status", "--porcelain", cwd=project).stdout == ""
+
+
+# --- #766: the root, named safe to show -------------------------------------
+
+#: The names a root is put under: an ESC, a line break then a forged line,
+#: and rv672's measured name, a bidi override and a C1 control.
+ROOT_NAMES = [*UNSAFE_NAMES,
+              pytest.param("r\u202eo\u009bot", id="bidi-and-C1",
+                           marks=POSIX_NAMES)]
+
+
+@pytest.mark.parametrize("extra", [(), ("--dry-run",)],
+                         ids=["bump", "dry-run"])
+@pytest.mark.parametrize("name", ROOT_NAMES)
+def test_a_dirty_root_is_named_safe_to_show(scaffolded, advanced, tmp_path,
+                                            name, extra):
+    """#766's third line, measured by rv672 on #672's head: under a root
+    named `r<U+202E>o<U+009B>ot`, `bump-leg-root-dirty` put both characters
+    raw into its first line, above the file names #672 spells. The root is
+    named as `repr` spells it now, by the real run and the dry run alike,
+    and nothing on either stream holds the name raw."""
+    root = branched(copied_under(scaffolded["clone"], tmp_path, name))
+    readme = root / "README.md"
+    readme.write_bytes(readme.read_bytes() + b"dirty\n")
+    result = bump(root, scaffolded, advanced, *extra)
+    assert result.returncode == 2, result.stderr + result.stdout
+    assert refusal_detail(result.stderr, "bump-leg-root-dirty") == [
+        f"REFUSED bump-leg-root-dirty: {spelt(root)} has uncommitted "
+        "changes:", "     M README.md"]
+    lines = (result.stdout + result.stderr).splitlines()
+    assert [raw_controls(name, line) for line in lines
+            if raw_controls(name, line)] == [], ascii(result.stderr)
+    assert_shown_safe(result.stdout, result.stderr)
+
+
+@pytest.mark.parametrize("state", ["tracking-branch", "detached"])
+@pytest.mark.parametrize("name", SHOWN_NAMES)
+def test_a_root_refused_for_its_branch_is_named_safe_to_show(
+        scaffolded, advanced, tmp_path, name, state):
+    """#766: `bump-leg-on-tracking-branch` and `bump-leg-root-detached`
+    named the root as it was. The detail names it as `repr` spells it, on
+    the one line it is, and a printable root as it is, byte for byte, with
+    no quotes (rv766's P14). The remedy's `switch -c` is a command to
+    paste, quoted for a shell as it was (`_switch_command`), and is not
+    this row's."""
+    root = copied_under(scaffolded["clone"], tmp_path, name)
+    if state == "detached":
+        git("checkout", "-q", "--detach", cwd=root)
+    result = bump(root, scaffolded, advanced)
+    assert result.returncode == 2, result.stderr + result.stdout
+    assert result.stdout == ""
+    code, said = (
+        ("bump-leg-root-detached",
+         "is not on a branch, so there is no branch to push and open a pull "
+         "request from")
+        if state == "detached" else
+        ("bump-leg-on-tracking-branch",
+         "is on 'main', which project.yaml declares as this project's "
+         "tracking branch"))
+    assert refusal_detail(result.stderr, code) == [
+        f"REFUSED {code}: {named_as(root, name)} {said}"]
+
+
+@pytest.mark.parametrize("name", UNSAFE_NAMES)
+def test_the_dry_runs_branch_line_names_the_root_safe_to_show(
+        scaffolded, advanced, tmp_path, name):
+    """#766: on the tracking branch the dry run ends `the real run needs a
+    branch: <root> is on 'main'`, and named the root as it was. It names it
+    as `repr` spells it. The `switch -c` after it is a command to paste,
+    quoted for a shell as it was, and is not this row's."""
+    root = copied_under(scaffolded["clone"], tmp_path, name)
+    result = bump(root, scaffolded, advanced, "--dry-run")
+    assert result.returncode == 0, result.stderr + result.stdout
+    said = [line for line in result.stdout.splitlines()
+            if line.startswith("the real run needs a branch: ")]
+    assert len(said) == 1, result.stdout
+    assert said[0].startswith(
+        f"the real run needs a branch: {spelt(root)} is on 'main', the "
+        "tracking branch. Create one first with: git -C "), said
+
+
+@pytest.mark.parametrize("name", SHOWN_NAMES)
+def test_a_root_on_a_branch_that_is_not_utf8_is_named_safe_to_show(
+        scaffolded, advanced, tmp_path, name):
+    """#765's `bump-leg-branch-not-utf8` is raised in `_branch_to_bump_from`,
+    the check that gives `bump-leg-root-detached` and
+    `bump-leg-on-tracking-branch`, and names the root as they do (#766): as
+    `repr` spells it, on the one line it is, and a printable root as it is,
+    byte for byte. The remedy's `branch -m` is a command to paste, quoted
+    for a shell, and is not this row's."""
+    root = copied_under(scaffolded["clone"], tmp_path, name)
+    on_a_branch_that_is_not_utf_8(root)
+    result = bump(root, scaffolded, advanced)
+    assert result.returncode == 2, result.stderr + result.stdout
+    assert result.stdout == ""
+    assert refusal_detail(result.stderr, "bump-leg-branch-not-utf8") == [
+        f"REFUSED bump-leg-branch-not-utf8: {named_as(root, name)} is on the "
+        f"branch {NOT_UTF_8_BRANCH_NAMED}, whose name is not UTF-8, so no "
+        "line this tool prints can name it: its push line would name a "
+        "branch that is not there. Nothing was fetched, written or "
+        "committed."]

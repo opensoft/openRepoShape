@@ -472,9 +472,9 @@
 
       <!-- reads README.md § preamble: blob ddadd23a162129f7e64fefce899105661440c05c -->
 
-      <!-- reads README.md § Starting a project in a new organisation: blob 45a3f886c0203e91f17a7851cf2c1c71a2681b0c -->
+      <!-- reads README.md § Starting a project in a new organisation: blob e0d2b672082068b2df39ebf54801e068343a14c6 -->
 
-      <!-- reads README.md § The three legs: blob 1d9f5bf98bddd1f70522c86515de3f15900fe141 -->
+      <!-- reads README.md § The three legs: blob 4ec313e8424665e41fc92a4147808e0bd4901d78 -->
 
       <!-- reads README.md § The double pin, and the lockstep invariant: blob 57fffa08ffad5476f8eae73dd3e8494a02e050c9 -->
 
@@ -612,7 +612,7 @@ openRepoShape &lt;Project&gt; --org &lt;your-org&gt;</code></pre></div>
 
     <section id="start">
 
-      <!-- reads README.md § Starting a project in a new organisation: blob 45a3f886c0203e91f17a7851cf2c1c71a2681b0c -->
+      <!-- reads README.md § Starting a project in a new organisation: blob e0d2b672082068b2df39ebf54801e068343a14c6 -->
 
       <p class="eyebrow">Setup</p>
       <h2>Start here</h2>
@@ -737,8 +737,13 @@ sudo dnf install gh</code></pre></div>
           Printed commands are quoted for a POSIX shell, so paste them into Git Bash. Only
           <code>shape-doctor.py</code>&rsquo;s lines, <code>setup-project.py</code>&rsquo;s family
           lines and <code>family.py</code>&rsquo;s <code>NEXT</code>, <code>switch -c</code>,
-          <code>add</code> and <code>git rm -r --cached</code> lines are quoted for PowerShell, on
-          Windows.</p>
+          <code>add</code>, <code>cd</code> and <code>git rm -r --cached</code> lines are quoted for
+          the shell they are printed in, PowerShell or Git Bash, on Windows. A shell started from
+          inside Git Bash inherits its <code>MSYSTEM</code>, which is how a tool tells Git Bash
+          apart, so a PowerShell started there is handed Git Bash&rsquo;s quoting, and a cmd.exe
+          started anywhere else is handed PowerShell&rsquo;s. Off Windows and in Git Bash, a path
+          <code>shape-doctor.py</code> cannot print as itself is written <code>$'&hellip;'</code>:
+          bash, zsh and ksh read that; dash (<code>/bin/sh</code> on Debian and Ubuntu) does not.</p>
         </div>
 
       </div>
@@ -1087,7 +1092,7 @@ cd Atlas &amp;&amp; python3 scripts/bootstrap.py   # what `make bootstrap` runs<
 
     <section id="partway">
 
-      <!-- reads README.md § Starting a project in a new organisation: blob 45a3f886c0203e91f17a7851cf2c1c71a2681b0c -->
+      <!-- reads README.md § Starting a project in a new organisation: blob e0d2b672082068b2df39ebf54801e068343a14c6 -->
 
       <p class="eyebrow">Setup</p>
       <h2>If it fails part-way</h2>
@@ -1124,9 +1129,9 @@ cd Atlas &amp;&amp; python3 scripts/bootstrap.py   # what `make bootstrap` runs<
 
     <section id="ci">
 
-      <!-- reads README.md § Starting a project in a new organisation: blob 45a3f886c0203e91f17a7851cf2c1c71a2681b0c -->
+      <!-- reads README.md § Starting a project in a new organisation: blob e0d2b672082068b2df39ebf54801e068343a14c6 -->
 
-      <!-- reads README.md § The three legs: blob 1d9f5bf98bddd1f70522c86515de3f15900fe141 -->
+      <!-- reads README.md § The three legs: blob 4ec313e8424665e41fc92a4147808e0bd4901d78 -->
 
       <p class="eyebrow">Setup</p>
       <h2>Reading private legs in CI</h2>
@@ -1179,16 +1184,17 @@ gh secret set SHAPE_LEGS_APP_PRIVATE_KEY --org &lt;your-org&gt; &lt; app-private
         naming and manifest checks and skips <code>validate-pins.py</code> with a warning explaining
         why. It fails outright only if a credential <strong>is</strong> configured and the fetch
         still failed &mdash; meaning that credential cannot read one of the LEG repositories, never
-        the root.</li>
+        the root. A <code>.gitmodules</code> that git refuses fails the run too, whatever the
+        credential, naming the key or line.</li>
       </ul>
       <a class="src" href="https://github.com/opensoft/openRepoShape#reading-private-legs-in-ci-a-github-app-first-shape_legs_token-as-fallback">Full text &mdash; private legs in CI</a>
     </section>
 
     <section id="legs">
 
-      <!-- reads README.md § Starting a project in a new organisation: blob 45a3f886c0203e91f17a7851cf2c1c71a2681b0c -->
+      <!-- reads README.md § Starting a project in a new organisation: blob e0d2b672082068b2df39ebf54801e068343a14c6 -->
 
-      <!-- reads README.md § The three legs: blob 1d9f5bf98bddd1f70522c86515de3f15900fe141 -->
+      <!-- reads README.md § The three legs: blob 4ec313e8424665e41fc92a4147808e0bd4901d78 -->
 
       <p class="eyebrow">Reference</p>
       <h2>The three legs, and naming</h2>
@@ -1325,7 +1331,7 @@ gh secret set SHAPE_LEGS_APP_PRIVATE_KEY --org &lt;your-org&gt; &lt; app-private
 
     <section id="families">
 
-      <!-- reads README.md § Families: a holder for projects that ship separately: blob b3d19092bb6ee8f0e5809133efda8c7d1e870dc7 -->
+      <!-- reads README.md § Families: a holder for projects that ship separately: blob 82d7f8087b9ee4d097d33e15fbfe5ae754a04a79 -->
 
       <p class="eyebrow">Reference</p>
       <h2>Families: a holder for projects that ship separately</h2>
@@ -1362,7 +1368,8 @@ gh secret set SHAPE_LEGS_APP_PRIVATE_KEY --org &lt;your-org&gt; &lt; app-private
   IRRS-worktrees/…              whatever the member's own work needs
   session-handoff-*.md          the estate's own files live in the folder</code></pre></div>
       <p><code>scripts/family.py init</code> lands the holder there: <code>--into &lt;dir&gt;</code>
-      is the PARENT directory (the directory you are standing in, by default), the folder
+      is the PARENT directory (the directory you are standing in, by default; refused inside a
+      checkout of this standard, <code>family-landing-in-standard</code>), the folder
       <code>&lt;Family&gt;/</code> is created in it, and the holder is cloned INSIDE that at
       <code>&lt;into&gt;/&lt;Family&gt;/&lt;Family&gt;</code> &mdash; the same &ldquo;lands where you
       were standing&rdquo; rule projects have. Standing in the family folder already, it does not
@@ -1381,12 +1388,18 @@ gh secret set SHAPE_LEGS_APP_PRIVATE_KEY --org &lt;your-org&gt; &lt; app-private
       follows it. An existing clone is <strong>fetched and nothing else</strong> &mdash; no
       checkout, no reset, no pull &mdash; and one that is a different repository is reported and
       skipped. It is idempotent.</p>
-      <p><span class="refuses">Refuses</span> <strong>Nothing ever moves a checkout</strong>: when
-      the holder&rsquo;s parent folder is not named after the family, <code>make siblings</code>
-      WARNS and prints the exact <code>mv</code> for a human to run. A tool that relocated the
-      directory would do it out from under the shell, the editor and every agent lane standing in
-      it, and would break linked worktrees, whose <code>.git</code> files carry absolute paths
-      &mdash; an act by surprise, which is the one thing every refusal here exists to avoid.</p>
+      <p><span class="refuses">Refuses</span> <strong>Nothing ever moves a checkout</strong>: the
+      holder&rsquo;s parent folder must be named EXACTLY after its repository, case included, on
+      every disk. When it is not, and no link of that name beside it leads to it,
+      <code>make siblings</code> WARNS, prints the exact <code>mv</code> for a human to run and
+      clones nothing until it is run, so the next run clones each member once. For a holder
+      straight in a folder (<code>~/projects/InkRouter</code>) the move makes the family folder
+      <code>~/InkRouter</code>, beside <code>~/projects</code>, and the holder
+      <code>~/InkRouter/InkRouter</code>, not <code>~/projects/InkRouter/InkRouter</code>. A tool
+      that relocated the directory would do it out from under the shell, the editor and every
+      agent lane standing in it, and would break linked worktrees, whose <code>.git</code> files
+      carry absolute paths &mdash; an act by surprise, which is the one thing every refusal here
+      exists to avoid.</p>
       <p class="aside">Ruled by <strong>Brett Heap on 2026-09-09</strong> (issue #76): the plain
       folder, and the holder inside it at <code>&lt;Family&gt;/&lt;Family&gt;</code>.</p>
 
@@ -1414,6 +1427,10 @@ python3 scripts/family.py siblings --family-root ../InkRouter/InkRouter</code></
       <p><span class="refuses">Refuses</span> <strong>A family pins assembly roots, never legs</strong>:
       adding <code>&lt;Project&gt;-spec</code> is refused, because a leg has no
       <code>project.yaml</code> and belongs to its own root.</p>
+      <p><span class="refuses">Refuses</span> A holder keeps <code>members/</code> in ONE spelling on
+      every disk: <code>add</code> refuses <code>family-members-dir-variant</code>
+      (<code>member-path-taken</code> for a variant of the member&rsquo;s own path) until a human
+      renames what sits under another spelling.</p>
       <p><code>make bootstrap</code> in the holder fetches every member and its legs &mdash;
       resolving the same GitHub App or <code>SHAPE_LEGS_TOKEN</code> credential the workflow does
       &mdash; and then runs each member&rsquo;s own <code>make bootstrap</code>.
@@ -1431,7 +1448,7 @@ python3 scripts/family.py siblings --family-root ../InkRouter/InkRouter</code></
 
     <section id="doublepin">
 
-      <!-- reads README.md § Starting a project in a new organisation: blob 45a3f886c0203e91f17a7851cf2c1c71a2681b0c -->
+      <!-- reads README.md § Starting a project in a new organisation: blob e0d2b672082068b2df39ebf54801e068343a14c6 -->
 
       <!-- reads README.md § The double pin, and the lockstep invariant: blob 57fffa08ffad5476f8eae73dd3e8494a02e050c9 -->
 
@@ -1730,7 +1747,7 @@ openRepoShape --doctor                 # the repository you are standing in
 
     <section id="park">
 
-      <!-- reads README.md § Starting a project in a new organisation: blob 45a3f886c0203e91f17a7851cf2c1c71a2681b0c -->
+      <!-- reads README.md § Starting a project in a new organisation: blob e0d2b672082068b2df39ebf54801e068343a14c6 -->
 
       <!-- reads README.md § Carrying in-flight work to another workstation: blob b84512ad39c09085dfe6bf7ea694017f5e28c1dd -->
 
