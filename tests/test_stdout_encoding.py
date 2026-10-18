@@ -51,7 +51,8 @@ from pathlib import Path
 import pytest
 
 from conftest import (ADOPT, ORG, PROJECT, REPO, SCAFFOLD,
-                      blank_unnamed_pin_sources, git, make_source_repo)
+                      blank_unnamed_pin_sources, git, make_source_repo,
+                      skip_where_a_name_cannot_be_not_utf_8)
 
 sys.path.insert(0, str(REPO / "scripts"))
 import shape_materialize  # noqa: E402
@@ -206,11 +207,9 @@ def test_a_name_that_is_not_utf8_still_comes_out_as_its_own_bytes(tmp_path,
     `日本.md` -- escaped on cp1252 -- where plain `backslashreplace` would
     print `\\udcff` instead. POSIX only: neither Windows nor macOS holds a
     file name that is not UTF-8."""
+    skip_where_a_name_cannot_be_not_utf_8(tmp_path)
     parent = os.path.join(os.fsencode(tmp_path), b"b\xffd")
-    try:
-        os.mkdir(parent)
-    except (OSError, UnicodeError) as exc:
-        pytest.skip(f"this filesystem holds no name that is not UTF-8: {exc}")
+    os.mkdir(parent)
     if b"b\xffd" not in os.listdir(os.fsencode(tmp_path)):
         pytest.skip("this filesystem rewrote a name that is not UTF-8")
     source = make_source_repo(tmp_path / "Thing", tree={
@@ -312,7 +311,9 @@ def _adopt_check(tmp_path: Path, request) -> tuple:
 
 
 def _doctor(tmp_path: Path, request) -> tuple:
-    """The doctor's rows are ASCII already; its `root` line was not."""
+    """The doctor's `root` line names the root as it is. (Its rows spell a
+    name too since #785: as itself where stdout can show it, escaped in a
+    command and `?` in a sentence where it cannot.)"""
     root = tmp_path / NAME
     root.mkdir()
     (root / "README.md").write_text("# here\n", encoding="utf-8")
