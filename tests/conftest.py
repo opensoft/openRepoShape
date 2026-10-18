@@ -2354,8 +2354,8 @@ def refusal_detail(stderr: str, code: str) -> list[str]:
 #: name that ends in `.`. Each name is spelled with a letter or digit first
 #: and letters, digits, `.`, `_`, `/` and `-` after, the characters a copy
 #: takes, so what is asked is the shape and nothing else. The old line,
-#: `*..* | *.lock`, tested only the whole name: it took the first eleven names
-#: below, and `a/b.` and `a/.`, which git refuses.
+#: `*..* | *.lock`, tested only the whole name: it took the first thirteen
+#: names below, which git refuses.
 REF_PARTS = [pytest.param(name, takes, id=name) for name, takes in (
     # What the issue names: refused by git, and by no copy before #874.
     ("a.lock/b", False), ("x/y.lock/z", False), ("release.lock/v1", False),
@@ -2363,10 +2363,12 @@ REF_PARTS = [pytest.param(name, takes, id=name) for name, takes in (
     ("a.lock/", False), ("a.", False),
     # rv873's two: a part that starts with `.`, deeper in the name.
     ("a/b/.c/d", False), ("x/.y/z/w", False),
+    # The same kind, and taken by the old line too: a name that ends in `.`
+    # after a `/`, and a part that is a `.`.
+    ("a/b.", False), ("a/.", False),
     # Refused before #874 as well, and refused still.
     ("topic.lock", False), ("a..b", False), ("a/..", False),
-    ("a/b.lock", False), ("a/b.", False), ("a/.", False), (".lock", False),
-    ("/a", False),
+    ("a/b.lock", False), (".lock", False), ("/a", False),
     # What must still pass: the refs this repository's tests and docs hand
     # a copy, a commit's 40 hex digits, and workBenches' sentinel.
     ("main", True), ("v1.0.0", True), ("v1.1.0", True),
@@ -2378,18 +2380,23 @@ REF_PARTS = [pytest.param(name, takes, id=name) for name, takes in (
     ("a.lockb", True), ("a.lock-x/b", True), ("a/b.lockb/c", True),
     ("a./b", True), ("a/lock/b", True), ("refs/tags/v1.0", True),
     ("v1.0.0-rc.1", True),
+    # What must still pass, with a part that starts with an upper-case
+    # letter, `_` or `-`: git takes each, and a copy that refused one would
+    # be refusing what git takes (`Feature/ABC-123`, `fix/_tmp`, `fix/-wip`).
+    ("Feature/ABC-123", True), ("fix/_tmp", True), ("fix/-wip", True),
 )]
 
 #: THE ONE SENTENCE each copy's refusal ends with, word for word the same in
 #: all three (#874): the rule it applied, in `setup-project.py`'s words where
-#: they fit (`why_not_a_ref`, #857). It opens the same way as the rule it
-#: replaced, so a person who read the old sentence reads the first half again.
+#: they fit (`why_not_a_ref`, #857). The words say ASCII because the patterns
+#: are, as `setup-project.py`'s `REF_RE` words do: "letters" alone describe
+#: `Caf\xe9` as a value that passes (rv811, rv874).
 REF_RULE_WORDS = (
-    "a ref starts with a letter or digit, uses only letters, digits, '.', "
-    "'_', '/', '-', has no '..' (git reads it as a revision range), no empty "
-    "part between slashes ('//', or a '/' at the end), no part that starts "
-    "with '.' or ends in '.lock' (the name git gives the lock file it writes "
-    "beside a ref), and does not end in '.'.")
+    "a ref starts with an ASCII letter or digit, uses only ASCII letters, "
+    "digits, '.', '_', '/', '-', has no '..' (git reads it as a revision "
+    "range), no empty part between slashes ('//', or a '/' at the end), no "
+    "part that starts with '.' or ends in '.lock' (the name git gives the "
+    "lock file it writes beside a ref), and does not end in '.'.")
 
 
 def git_takes_ref(name: str) -> bool:

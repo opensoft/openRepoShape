@@ -892,7 +892,7 @@ ref_fault() {
 			return 0
 		fi
 		case "$ref" in
-		[!A-Za-z0-9]* | *..* | */.* | *.lock | *.lock/* | *//* | */ | *. | *[!A-Za-z0-9._/-]*) printf '%s' "$what is '$ref', which is not a branch, tag or commit this tool will pass to \`git checkout\`: a ref starts with a letter or digit, uses only letters, digits, '.', '_', '/', '-', has no '..' (git reads it as a revision range), no empty part between slashes ('//', or a '/' at the end), no part that starts with '.' or ends in '.lock' (the name git gives the lock file it writes beside a ref), and does not end in '.'." ;;
+		[!A-Za-z0-9]* | *..* | */.* | *.lock | *.lock/* | *//* | */ | *. | *[!A-Za-z0-9._/-]*) printf '%s' "$what is '$ref', which is not a branch, tag or commit this tool will pass to \`git checkout\`: a ref starts with an ASCII letter or digit, uses only ASCII letters, digits, '.', '_', '/', '-', has no '..' (git reads it as a revision range), no empty part between slashes ('//', or a '/' at the end), no part that starts with '.' or ends in '.lock' (the name git gives the lock file it writes beside a ref), and does not end in '.'." ;;
 		esac
 	fi
 }
