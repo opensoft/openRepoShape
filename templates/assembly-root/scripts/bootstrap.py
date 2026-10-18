@@ -1091,7 +1091,10 @@ def shape_upstream_notice(root: Path) -> None:
     if tip is None:
         cache = root / SHAPE_UPSTREAM_CACHE
         if cache.is_file():
-            tip = cache.read_text(encoding="utf-8").strip()
+            # `utf-8-sig` takes off the byte-order mark a Windows editor may
+            # start the file with (#855). `strip()` keeps U+FEFF, so a marked
+            # tip read as no commit and the notice said nothing.
+            tip = cache.read_text(encoding="utf-8-sig").strip()
     if not tip or not COMMIT_40.match(tip):
         return
     if tip.lower() == pinned:
@@ -1251,18 +1254,53 @@ def _load_root_and_manifest(args) -> tuple[Path, dict | None]:
     return root, manifest
 
 
+def _legs_of(manifest: dict | None) -> tuple[list[dict], list[str]]:
+    """`(the legs, what names no leg)`: each entry of `project.yaml`'s
+    `legs:` that is a mapping, and for what is not, `validate-manifest.py`'s
+    finding in its words (#714, #832).
+
+    Iterated as `legs or []`, `legs: 5` ended `make bootstrap` in a
+    `TypeError` before step (a) printed a line, and a scalar `openXdox` or a
+    mapping was walked one character, or one key, at a time, so step (a)
+    said "no submodule legs declared", as of a one-repository project. A
+    `legs:` that is not a list names no leg; a list's entry that is not a
+    mapping is no leg, and the mappings beside it are still placed, as
+    `validate-pins.py` checks the rest past such an entry. Absent or null
+    declares no leg and says nothing here: step (b)'s manifest validator
+    says `legs is missing or empty`.
+    """
+    declared = (manifest or {}).get("legs")
+    if declared is None:
+        return [], []
+    if not isinstance(declared, list):
+        return [], [f"manifest-legs: legs is {declared!r}, expected a list of "
+                    "`role:`, `repository:` and `path:` mappings; no leg is "
+                    "placed, and the validators below refuse until `legs:` "
+                    "is a list"]
+    return ([leg for leg in declared if isinstance(leg, dict)],
+            [f"manifest-leg: a leg is not a mapping: {leg!r}; it is not "
+             "placed, and the validators below refuse until it is a mapping"
+             for leg in declared if not isinstance(leg, dict)])
+
+
 def _checkout_all_tracking_branches(root: Path, sub_legs: list[dict],
                                     manifest: dict | None,
-                                    branch_arg: str | None) -> None:
+                                    branch_arg: str | None,
+                                    unread: list[str] = ()) -> None:
     """Step (a): place every submodule leg on its tracking branch.
 
     Split from `main` for #132. Git that cannot be started is
     `git-not-runnable`, naming the leg it met it at (#694): one fact about
-    the machine, so no leg after it is tried.
+    the machine, so no leg after it is tried. `unread` is what `_legs_of`
+    found naming no leg, each said first, and a step with nothing else to
+    place is not a one-repository project's no-op (#832).
     """
+    for line in unread:
+        print(f"  {line}")
     if not sub_legs:
-        print("  no submodule legs declared. A one-repository project runs "
-              "the same command and this step is a no-op.")
+        if not unread:
+            print("  no submodule legs declared. A one-repository project "
+                  "runs the same command and this step is a no-op.")
         return
     branch = branch_arg or (manifest or {}).get("tracking_branch") or "main"
     for leg in sub_legs:
@@ -1317,8 +1355,7 @@ def main(argv: list[str] | None = None) -> int:
         print(str(exc), file=sys.stderr)
         return 2
 
-    legs = [leg for leg in ((manifest or {}).get("legs") or [])
-            if isinstance(leg, dict)]
+    legs, unread = _legs_of(manifest)
     sub_legs = [leg for leg in legs if leg.get("role") != "assembly"]
 
     name = (manifest or {}).get("name") or root.name
@@ -1326,7 +1363,8 @@ def main(argv: list[str] | None = None) -> int:
 
     try:
         print("\n(a) legs on tracking branches, pins untouched")
-        _checkout_all_tracking_branches(root, sub_legs, manifest, args.branch)
+        _checkout_all_tracking_branches(root, sub_legs, manifest, args.branch,
+                                        unread)
 
         print("\n(b) neutral validators")
         failed = _run_neutral_validators(root, manifest, args.skip_validators)

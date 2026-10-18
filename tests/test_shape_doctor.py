@@ -4187,6 +4187,54 @@ def test_make_siblings_dry_run_gives_the_rows_word_for_each_slot(
         f"sibling {FAMILY_MEMBER} {DRY_RUN_SAYS[entry['sibling']]} "), said
 
 
+def junction_row(standard, holder, tmp_path, monkeypatch, slot: str):
+    """`../IRRS`, made as `holder_with_slot` makes `slot`, and the doctor's
+    `members` row with `os.path.isjunction` saying yes for it. Simulated in
+    this process, as `tests/test_family_siblings_placement.py` simulates a
+    junction."""
+    root = holder_with_slot(holder, tmp_path, slot).resolve()
+    beside = root.parent / FAMILY_MEMBER
+    module = doctor_module(standard)
+    monkeypatch.setattr(os.path, "isjunction",
+                        lambda path: Path(path) == beside, raising=False)
+    return beside, module.check_members(module.Context(root))
+
+
+def test_the_row_names_a_windows_junction_to_nothing_a_link_to_nothing(
+        standard, holder, tmp_path, monkeypatch):
+    """#793: a junction to nothing at `../IRRS`, the link Windows makes
+    without privilege, is `not-a-clone` in the doctor's row, in the words
+    `make siblings` says it in, as a link to nothing is (#784). `is_symlink`
+    says no to a junction, so the row called the slot `absent` and said
+    `make siblings` places the member there. The slot does not exist, and
+    only `os.path.isjunction` says yes."""
+    slot, row = junction_row(standard, holder, tmp_path, monkeypatch,
+                             "nothing")
+    assert row.detail["members"][0]["sibling"] == "not-a-clone", row.detail
+    assert f"{FAMILY_MEMBER}: {slot} {UNREADABLE_SAYS['dangling']}" in \
+        row.reason, row.reason
+    assert PLACES_NOTE not in row.reason, row.reason
+
+
+@pytest.mark.parametrize("slot, state", [
+    pytest.param("empty", "absent", id="an-empty-folder"),
+    pytest.param("files", "not-a-clone", id="a-folder-with-files"),
+])
+def test_the_row_reads_a_windows_junction_to_a_folder_as_that_folder(
+        standard, holder, tmp_path, monkeypatch, slot, state):
+    """#793: THE JUNCTION IS ASKED ONLY OF A SLOT THAT DOES NOT EXIST. A
+    junction to a folder is read as that folder is, in the words the row
+    has for the folder itself
+    (`test_the_row_says_what_make_siblings_does_with_each_slot`): an empty
+    one is `absent`, which `make siblings` places the member in, and one
+    holding files is `not-a-clone` in a folder's words. Asked before
+    `exists`, the check called both a link to nothing."""
+    _, row = junction_row(standard, holder, tmp_path, monkeypatch, slot)
+    assert row.detail["members"][0]["sibling"] == state, row.detail
+    assert SLOT_SAYS[state] in row.reason, row.reason
+    assert (PLACES_NOTE in row.reason) is (state == "absent"), row.reason
+
+
 def test_a_sibling_at_the_right_origin_with_another_id_is_not_the_member(
         standard, holder, tmp_path):
     """The `WRONG PROJECT` half, which was already asked and stays asked: a
@@ -9589,9 +9637,10 @@ def test_the_scaffold_lines_quoting_is_the_asked_for_platforms_too():
     assert module.scaffold_command(WINDOWS_SHAPE_SPACED, "Atlas", "posix") == (
         r"'C:\Program Files\openRepoShape\setup.sh' "
         "--org <your-org> --project Atlas")
-    # NO PLATFORM IS STILL THE HOST, unchanged: `quote_arg(value, None)`
-    # resolves `os.name` exactly as `quote_arg(value, os.name)` does, so the
-    # line every real run prints is the one it printed before.
+    # NO PLATFORM IS STILL THE HOST: `quote_arg(value, None)` asks
+    # `host_shell_dialect` (#711), which answers `os.name` wherever `MSYSTEM`
+    # is unset, so off Git Bash the line every real run prints is the one it
+    # printed before.
     assert module.scaffold_command(WINDOWS_SHAPE, "Atlas") == (
         windows if os.name == "nt" else posix)
 
