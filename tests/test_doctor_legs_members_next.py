@@ -52,6 +52,7 @@ import pytest
 from conftest import (WINDOWS_SKIP, appended_to_command_scope,
                       cloned_just_pushed, git, rmtree,
                       submodule_update_through_git)
+from test_doctor_gitmodules_not_utf8 import listed_locale
 from test_shape_doctor import (  # noqa: F401
     FAMILY_MEMBER, FAMILY_NAME, GIT_IDENTITY, PROJECT, commit_all, doctor,
     doctor_module, holder, project, record_gitlink, rows_of,
@@ -1819,6 +1820,82 @@ def test_414_3_pasted_the_holders_bootstrap_cures_that_member(
     assert result.returncode == 0, result.stdout + result.stderr
     after = row_of(standard, root, "members")
     assert after["status"] == "ok", (after, result.stdout, result.stderr)
+
+
+#: Section NAMES that are not ASCII (#732): one in Latin-1, which is not
+#: UTF-8 at all, and one in UTF-8.
+BYTE_NAMES = [pytest.param(b"members/caf\xe9", id="latin-1"),
+              pytest.param(b"members/caf\xc3\xa9", id="utf-8")]
+
+#: The locales the doctor runs under (#732): a UTF-8 one, `C`, and `C` with
+#: Python's UTF-8 mode off, where its filesystem encoding is ASCII.
+NAME_LOCALES = [pytest.param("UTF-8", {}, id="utf-8-locale"),
+                pytest.param("C", {}, id="C"),
+                pytest.param("C", {"PYTHONUTF8": "0"}, id="C-ascii-fs")]
+
+
+def member_named(holder, tmp_path, monkeypatch, name: bytes, codeset: str,
+                 env: dict) -> Path:
+    """A copy of the holder whose member is the submodule NAMED `name`, as
+    `git submodule add --name` names it: the `.gitmodules` header (then
+    committed), the holder's config section, the repository git keeps and
+    the mount's `.git` file all renamed, at the same path. The doctor is
+    run under `codeset` and `env`. Skipped on Windows, whose command line is
+    text and cannot carry a byte that is not UTF-8."""
+    if os.name == "nt":
+        pytest.skip("a Windows command line cannot carry the byte 0xE9")
+    monkeypatch.setenv("LC_ALL", listed_locale(codeset))
+    for key, value in env.items():
+        monkeypatch.setenv(key, value)
+    root = holder_copy(holder, tmp_path)
+    old = f"members/{FAMILY_MEMBER}".encode("ascii")
+    gitmodules = root / ".gitmodules"
+    gitmodules.write_bytes(gitmodules.read_bytes().replace(
+        b'[submodule "' + old + b'"]', b'[submodule "' + name + b'"]'))
+    subprocess.run(["git", "config", "--rename-section",
+                    b"submodule." + old, b"submodule." + name],
+                   cwd=str(root), capture_output=True, check=True)
+    modules = os.fsencode(root / ".git" / "modules") + b"/"
+    os.rename(modules + old, modules + name)
+    gitfile = root / os.fsdecode(old) / ".git"
+    gitfile.write_bytes(gitfile.read_bytes().replace(
+        b"/modules/" + old, b"/modules/" + name))
+    commit_all(root, "Name the member's section otherwise")
+    return root
+
+
+@pytest.mark.parametrize("name", BYTE_NAMES)
+@pytest.mark.parametrize(("codeset", "env"), NAME_LOCALES)
+def test_732_a_member_named_in_bytes_gets_its_keep_line(
+        standard, holder, tmp_path, monkeypatch, name, codeset, env):
+    """A commit on the detached HEAD of an emptied member whose section is
+    named `caf\\xe9` gets the keep line, under every locale, as the ASCII
+    one does (`test_413a_an_emptied_members_kept_repository_names_...`).
+    The name was looked up as `caf\\ufffd`, so `kept_gitdir` found no
+    repository and the commit was left in a reflog; and with Python's
+    filesystem encoding ASCII, either name raised `UnicodeEncodeError`
+    there, a traceback with no report."""
+    root = member_named(holder, tmp_path, monkeypatch, name, codeset, env)
+    detached_member(root)
+    commit = emptied_with_its_repository_kept(root, f"members/{FAMILY_MEMBER}")
+    assert f"branch NAME {commit}" in why_of(row_of(standard, root, "members"))
+
+
+@pytest.mark.parametrize("name", BYTE_NAMES)
+@pytest.mark.parametrize(("codeset", "env"), NAME_LOCALES)
+def test_732_a_member_named_in_bytes_whose_url_the_config_keeps_has_one(
+        standard, holder, tmp_path, monkeypatch, name, codeset, env):
+    """A member whose section kept its path and lost its url, named
+    `caf\\xe9`, has the url the holder's config keeps, under every locale,
+    as the ASCII one does (`test_414_3_a_member_url_the_holders_config_
+    keeps_still_gets_the_line`). `configured_url` asked git for
+    `caf\\ufffd`'s url, and the member was called url-less."""
+    root = member_named(holder, tmp_path, monkeypatch, name, codeset, env)
+    commit_in(detached_member(root))
+    subprocess.run(["git", "config", "-f", ".gitmodules", "--unset",
+                    b"submodule." + name + b".url"],
+                   cwd=str(root), capture_output=True, check=True)
+    assert "no url" not in why_of(row_of(standard, root, "members"))
 
 
 def test_a_leg_that_carries_submodules_says_the_line_moves_them_too(
