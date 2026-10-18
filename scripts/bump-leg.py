@@ -81,6 +81,20 @@ WHAT IT REFUSES, and why each is a refusal rather than a warning:
     `--dry-run` as well, whether or not the file names the leg, and a line
     for a file git does not track is marked as it is for a file that is not
     UTF-8.
+  * a path this user cannot SEARCH or read, which is not an absent one
+    (#430). Python 3.14's `Path.is_file()` and `exists()` answer False to
+    a `stat` the operating system refused, where 3.9 to 3.13 raised it, so
+    each is asked by `stat` itself: a root (or a directory above it) this
+    user cannot search is `bump-leg-manifest-unreadable`, never
+    `bump-leg-root-not-a-project`; a leg's checkout this user cannot search
+    is `bump-leg-submodule-unreadable`, naming its `.git`, never
+    `bump-leg-uninitialized`; and one of the project's own validators that
+    is there and cannot be read, or whose `scripts/` cannot be searched, is
+    `bump-leg-validator-unreadable`, naming each, under `--dry-run` as well
+    and before anything is written. That last one was the worst: on 3.14
+    the bump said `<script> is absent; SKIPPED` of both and COMMITTED, exit
+    0, with neither check run. A validator that is not there at all is
+    still SKIPPED, as it always was.
   * a pin file whose layout the rewrite cannot carry, though the validators
     read it (`digests: {tree_sha256: ...}`, a value on the line below its
     key): `bump-leg-pin-unrecognised`. The rewrite is computed once, before
@@ -148,6 +162,8 @@ MANIFEST = "project.yaml"
 #: takes no `--pin-source`), `validate-pins.py` asks `gh api` for the pinned
 #: tree with the operator's `gh` credentials. Without `gh`, a login or a
 #: network that is its `skip` line, exit 0, and the bump goes on.
+#: One that is not there is SKIPPED; one that is there and this user cannot
+#: read is refused before anything is written (`_validators_readable`, #430).
 VALIDATORS = ("scripts/validate-pins.py", "scripts/validate-manifest.py")
 
 #: A local-path remote is a `file://` fetch, which git has refused for
@@ -185,7 +201,13 @@ class Project:
     def open(cls, root_spec) -> "Project":
         root = Path(root_spec).expanduser().resolve()
         path = root / MANIFEST
-        if not path.is_file():
+        try:
+            present = _is_a(path, stat.S_ISREG)
+        except OSError as exc:
+            # the root, or a directory above it, this user cannot search:
+            # the `stat` is refused, which is not an absent manifest (#430)
+            raise _manifest_unopened_refusal(path, exc) from exc
+        if not present:
             raise Refusal(
                 "bump-leg-root-not-a-project",
                 f"{path} does not exist, so this is not an assembly root of a "
@@ -496,6 +518,31 @@ def _pin_unopened_refusal(root: Path, pin_path: Path,
         + _cannot_open_advice([exc])
         + "Then run the same command again. Nothing in the working "
         "tree, the index or the leg's checkout was changed.")
+
+
+def _manifest_unopened_refusal(path: Path, exc: OSError) -> Refusal:
+    """`bump-leg-manifest-unreadable` for a `project.yaml` whose `stat` the
+    operating system refused (#430): the root, or a directory above it, that
+    this user cannot search.
+
+    NOT `bump-leg-root-not-a-project`, which Python 3.14's `Path.is_file()`
+    gave it, answering False to the refused `stat`: its remedy points at a
+    different directory, and the file is there. Up to 3.13 the same `stat`
+    raised `PermissionError` out of the run, a traceback, exit 1. Named by its
+    whole path, as this id's other refusal names it: relative to a root that
+    cannot be searched, `project.yaml` would not say which root."""
+    above = ("A `stat` of a file is refused only where a directory on the "
+             "way to it cannot be searched: here that is the root itself or "
+             "a directory above it. "
+             if isinstance(exc, PermissionError) else "")
+    return Refusal(
+        "bump-leg-manifest-unreadable",
+        f"{shown_path(path)}: cannot be read: {_os_reason(exc)}",
+        "Remediation: --root names the assembly root, and this tool reads "
+        f"its {MANIFEST} before anything else. " + above
+        + _cannot_open_advice([exc])
+        + "Then run the same command again. Nothing was fetched, written "
+        "or committed.")
 
 
 def _leg_pin_text(root: Path, pin_path: Path) -> str:
@@ -1050,9 +1097,66 @@ def fetch_leg(submodule: Path, repository: str, commit: str,
 # ---------------------------------------------------------------------------
 
 
+def _validators_readable(root: Path) -> None:
+    """Refuse `bump-leg-validator-unreadable`, naming each, where one of the
+    root's own `VALIDATORS` is there and this user cannot read it, or cannot
+    `stat` it because `scripts/` cannot be searched (#430).
+
+    ASKED BEFORE ANYTHING IS WRITTEN, UNDER `--dry-run` AS WELL, because the
+    question used to be asked only by `run_validator`, after the leg had
+    moved and the pin had been written, and through `Path.is_file()`. On
+    Python 3.14 that answers False to a refused `stat`, so a `scripts/` this
+    user can list but not search, or not list at all, gave `<script> is
+    absent; SKIPPED` for both validators, and the bump COMMITTED, exit 0,
+    with neither check run. Up to 3.13 the same `is_file()` raised, and the
+    run ended `bump-leg-rewrite-failed`, rolled back, after the leg had
+    moved; and a validator at mode 000 in a searchable `scripts/` reached
+    the child, which could not open it, and was `bump-leg-validators-red`,
+    rolled back. A dry run said none of it. The file is opened as well as
+    `stat`ed, since the child has to read it, and closed unread.
+
+    A VALIDATOR THAT IS NOT THERE IS NOT ASKED ABOUT (`_is_a` answers False
+    only for the `_ABSENT_ERRNOS`, nothing at the name, such as `ENOENT` and
+    `ENOTDIR`): `run_validator` still SKIPS it, as it always has. Asked
+    after `nothing to do`, since a run with nothing to write runs no
+    validator, and named all at once, as `_workflow_texts` names every file
+    it cannot open."""
+    unopened: list[tuple[str, OSError]] = []
+    for script in VALIDATORS:
+        path = root / script
+        try:
+            if not _is_a(path, stat.S_ISREG):
+                continue
+            with path.open("rb"):
+                pass
+        except OSError as exc:
+            unopened.append((_cannot_open(root, path, exc), exc))
+    if unopened:
+        raise Refusal(
+            "bump-leg-validator-unreadable",
+            f"{len(unopened)} of the project's own validator(s) cannot be "
+            "opened:\n" + "\n".join(f"    {line}" for line, _ in unopened),
+            "Remediation: this tool runs the project's own "
+            + " and ".join(f"`{script}`" for script in VALIDATORS)
+            + " after the rewrite and before the commit, and one it cannot "
+            "read is a check it cannot run, never one to skip: a bump "
+            "committed without it is one the project's pull request may "
+            "still refuse. "
+            + _cannot_open_advice([error for _, error in unopened])
+            + "Then run the same command again. Nothing in the working "
+            "tree, the index or the leg's checkout was changed.")
+
+
 def run_validator(root: Path, script: str) -> tuple[int, str]:
-    """The ROOT's own copy of a validator, its output captured for a refusal."""
-    if not (root / script).is_file():
+    """The ROOT's own copy of a validator, its output captured for a refusal.
+
+    One that is not there is SKIPPED. Asked as `_is_a` asks it, not through
+    `Path.is_file()` (#430): `_validators_readable` has refused one this
+    user cannot read before anything was written, and a `stat` refused here
+    after all (a mode changed while this ran) raises its `OSError`, which
+    `_apply_rewrite` rolls back and reports, on every Python; Python 3.14's
+    `is_file()` would have answered False and SKIPPED it."""
+    if not _is_a(root / script, stat.S_ISREG):
         return 0, f"  {script} is absent; SKIPPED\n"
     # THE CHILD IS TOLD WHAT TO WRITE AND IS READ BACK AS THAT (#254). A child
     # takes its stdout configuration from its environment, and this process's
@@ -1333,9 +1437,31 @@ def _initialized_submodule(root: Path, path: str) -> Path:
     --init`ed.
 
     Split from `cmd_bump` for #136.
+
+    A CHECKOUT THIS USER CANNOT SEARCH IS REFUSED BY NAME (#430),
+    `bump-leg-submodule-unreadable`, naming its `.git` as `validate-pins.py`
+    names it (`pin-submodule-unreadable`): asked through `Path.exists()`, a
+    refused `stat` raised `PermissionError` out of the run up to Python 3.13,
+    a traceback, exit 1, and from 3.14 read as an uninitialized leg, whose
+    remedy initializes a checkout that is there. Named by the manifest's own
+    `path`, as `bump-leg-uninitialized` names it.
     """
     submodule = root / path
-    if not (submodule / ".git").exists():
+    try:
+        initialized = _is_a(submodule / ".git", lambda _mode: True)
+    except OSError as exc:
+        raise Refusal(
+            "bump-leg-submodule-unreadable",
+            f"{(Path(path) / '.git').as_posix()}: cannot be read: "
+            f"{_os_reason(exc)}",
+            "Remediation: this tool resolves and digests the new commit in "
+            "the leg's own checkout and checks it out there, so a checkout "
+            "this user cannot enter is one it cannot bump. It is not an "
+            "uninitialized one, and `git submodule update --init` would not "
+            "change it. " + _cannot_open_advice([exc])
+            + "Then run the same command again. Nothing was fetched, "
+            "written or committed.") from exc
+    if not initialized:
         raise Refusal(
             "bump-leg-uninitialized",
             f"{path} is not an initialized submodule checkout, so the new "
@@ -1804,8 +1930,9 @@ def cmd_bump(args) -> int:
        whether the remote has it — `fetch_leg`;
     3. the digest, recomputed from the leg's own objects;
     4. the pin as it stands, the workflow plan and the report;
-    5. the pin's new text (`rewrite_pin`, once), `nothing to do` (exit 1)
-       and the trailers;
+    5. the pin's new text (`rewrite_pin`, once), `nothing to do` (exit 1),
+       the project's own validators readable where they are there
+       (`_validators_readable`, #430) and the trailers;
     6. `--dry-run` returns here, exit 0;
     7. only the real run checks the leg out, writes, validates and commits,
        in `_apply_rewrite`, which writes the text computed in step 5.
@@ -1869,6 +1996,11 @@ def cmd_bump(args) -> int:
         print(f"\nnothing to do: {repository} is already pinned at "
               f"{commit[:12]} and every fact agrees.")
         return 1
+
+    # BEFORE THE DRY-RUN RETURN AND BEFORE ANYTHING IS WRITTEN (#430): the
+    # real run's `run_validator` asked only after the leg had moved, and on
+    # Python 3.14 skipped a validator it could not `stat` and committed.
+    _validators_readable(root)
 
     _print_trailers(args.trailer)
 
