@@ -71,9 +71,10 @@ name: release
 #     gate, and is then back-ported to `release/v<X.Y>`: by a fast-forward
 #     to main while main holds only the patch's work, and otherwise by a
 #     pull request to `release/v<X.Y>` of `git cherry-pick -x <squash>`,
-#     the squash commit main landed. The fast-forward stands unless a
-#     `release/*` ruleset requires a pull request (that ruleset waits on
-#     Brett Heap's word, #850); then every back-port is the cherry-pick;
+#     the squash commit main landed. The fast-forward stands: ruleset
+#     25325536, made on Brett Heap's word "go with option A for #850"
+#     (2026-10-18T01:05:28Z), refuses a force-push to a `release/*` branch
+#     and its deletion, and requires no pull request;
 #   - a push runs the tests.yml its own commit holds, so a release branch
 #     runs it only once it holds #850's change: `release/v1.1` from its
 #     first fast-forward past it, or a cherry-pick of it; `release/v1.0`

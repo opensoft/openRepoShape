@@ -227,13 +227,18 @@ def test_plan_names_org_again_with_the_readers_remedy(world, org):
 
 
 def test_check_names_a_hand_edited_org(world):
-    """The same value edited into a plan: `check` names its key."""
+    """The same value edited into a plan: `check` names its key. Run
+    without `--local-remote-dir`, it also finds GitHub's rule for an
+    organisation's characters, which `execute` asks there (#863)."""
     plan = edited(world, "org: testorg", 'org: "@x"')
     said = check(plan)
     assert said.returncode == 1, said.stderr + said.stdout
     lines = said.stderr.splitlines()
     assert [line for line in lines if line.startswith("FINDING ")] == [
-        f"FINDING plan-manifest-invalid: {reader_sentence('org', '@x')}"]
+        f"FINDING plan-manifest-invalid: {reader_sentence('org', '@x')}",
+        f"FINDING adopt-bad-org: {plan}: `org:` is '@x', and GitHub gives no "
+        "user or organisation a name holding `@`, so no repository can be "
+        "created under it"]
     assert (f"{shape_materialize.MANIFEST_UNREADABLE_REMEDIATION} `execute` "
             "writes the plan's values into the project's `project.yaml` as "
             "they stand, so correct each one named here in the plan, or "
