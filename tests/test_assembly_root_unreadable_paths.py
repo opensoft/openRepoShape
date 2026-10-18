@@ -25,19 +25,32 @@ and `exists()` do, False to ANY `OSError`:
     absent, and the leg was put on its tracking branch, where the pick's
     `--continue` goes on.
 
+And at #958's first head, 0ef875c0, lane 4's review (RV958) measured:
+
+  * `validate-manifest.py`, a naming policy in a `contracts/` it cannot
+    search: named whole, with nothing to put it right, on every Python.
+  * `bootstrap.py`, a validator at mode 000 in a `scripts/` it can search:
+    the child's own `can't open file` line, and `bootstrap REFUSED`.
+  * `bootstrap.py`, a register under a leg whose `path:` is absolute: a
+    `ValueError` traceback in step (c), readable or not.
+  * `bootstrap.py`, a register whose `stat` was refused: a `register:` line,
+    which says that one is there.
+
 THE RULE NOW, lane 1's for every slice. The path is `stat`ed: ENOENT, ENOTDIR,
 EBADF and ELOOP (and Windows' 21, 123 and 1921) mean absent, and any other
 `OSError` is named `<path relative to the root>: cannot be read (<reason>)`,
 in `validate-pins.py`'s words, with its cure: `chmod u+r` a file and `chmod
 u+rx` a directory and every one above it, or, for another cause, its
 `OTHER_REASON`.
-  * A `project.yaml`, a validator or a declared referent's pin file is a
-    refusal, exit 2, and a `project.yaml` this user cannot OPEN says the same
-    line as one it cannot reach.
+  * A `project.yaml`, the naming policy, a validator or a declared
+    referent's pin file is a refusal, exit 2, and one this user cannot OPEN
+    says the same line as one it cannot reach.
   * A leg's `.git`, or an operation's marker in its git dir, is a line in
     step (a), and the leg is left as it is; a register is a line in step
     (c), and nothing is claimed from it. Neither step fails the run, as
-    neither did before: the validators refuse such a leg.
+    neither did before: the validators refuse such a leg. A register whose
+    `stat` was refused is `register, if one is there:`, and a name outside
+    the root is named whole.
 
 THE HARNESS. Each refusal is asked twice and must say the same both times:
 as a project runs the tool, with the mode taken away (POSIX, and not as
@@ -91,8 +104,15 @@ VALIDATOR_READS = (
 #: The pin file `as_a_descendant_by_chain` makes the root hold: its chain's
 #: first link's.
 PIN = "contracts/openxdox-pin.yaml"
+POLICY = "contracts/repository-naming.yaml"
 REGISTER = "governance/review-authority/register.yaml"
-GRANTS = ("  Grants are read here for REPORTING only. This command confers "
+#: A register with one row naming the code leg's repository.
+ROWS = ("rows:\n  - holder: agent:x\n    act: review\n"
+        "    target_repo: testorg/Atlas-code\n    state: active\n")
+#: What step (c) calls a register whose `stat` was refused (RV958's N1).
+MAYBE = "register, if one is there"
+DASH = "\u2014"
+GRANTS =("  Grants are read here for REPORTING only. This command confers "
           "nothing and enforces nothing; a required check in the repository "
           "that owns the object is what confers.")
 DEGRADE = [
@@ -113,23 +133,73 @@ def refused(code: str, named: str, reads: str,
 
 
 def left_as_it_is(named: str, reason: str = "Permission denied",
-                  advice: str = PERMISSION) -> list[str]:
-    """Step (a)'s two lines for the spec leg, where `named` cannot be read."""
-    return [f"  [spec] spec: {named}: cannot be read ({reason}), so the leg "
-            "is left as it is", f"          {advice}{AGAIN}"]
+                  advice: str = PERMISSION,
+                  where: str = "[spec] spec") -> list[str]:
+    """Step (a)'s two lines for the leg `where` names (the spec leg), where
+    `named` cannot be read."""
+    return [f"  {where}: {named}: cannot be read ({reason}), so the leg is "
+            "left as it is", f"          {advice}{AGAIN}"]
 
 
-def nothing_claimed(named: str) -> list[str]:
-    """Step (c)'s lines for a register at `named` this user cannot read."""
-    return [f"  register: {named}",
+def nothing_claimed(named: str, label: str = MAYBE,
+                    reason: str = "Permission denied",
+                    advice: str = PERMISSION) -> list[str]:
+    """Step (c)'s lines for a register at `named` this user cannot read:
+    `label` is `register` where its `stat` worked and only its open was
+    refused."""
+    return [f"  {label}: {named}",
             f"    unreadable, so nothing is claimed from it: {named}: cannot "
-            "be read (Permission denied)", f"      {PERMISSION}{AGAIN}"]
+            f"be read ({reason})", f"      {advice}{AGAIN}"]
+
+
+def not_initialized(shown: str) -> str:
+    """Step (a)'s line for a spec leg at `shown` that is not there."""
+    return (f"  [spec] {shown}: NOT INITIALIZED. Run `git submodule update "
+            f"--init {shown}` {DASH} the validators below will refuse until "
+            "you do.")
+
+
+def refusing(monkeypatch, name: str, failure: OSError | None,
+             method: str = "stat") -> str:
+    """The `stat` of each path called `name` refused as Python 3.14 answers
+    it (`refused_stat`) where `failure` is None, else `Path.<method>`
+    raising `failure`; returns the reason the refusal says."""
+    if failure is None:
+        refused_stat(monkeypatch, name)
+        return "Permission denied"
+    failing(monkeypatch, method, {name: failure})
+    return failure.strerror
+
+
+def leg_path(root: Path, role: str, typed: str) -> str:
+    """The `role` leg's `path:` set to `typed`, a character that does not
+    print written as its YAML escape; returns `typed` as `bootstrap.py`
+    spells it, which, for the ASCII names these tests give, is that
+    escape."""
+    manifest = root / "project.yaml"
+    text = manifest.read_text(encoding="utf-8")
+    old = f'    path: "{role}"'
+    assert text.count(old) == 1, text
+    escaped = typed.encode("unicode_escape").decode("ascii")
+    manifest.write_text(text.replace(old, f'    path: "{escaped}"'),
+                        encoding="utf-8")
+    return escaped
 
 
 def placed(root: Path, role: str) -> str:
     """Step (a)'s line for a leg of a fresh clone, put on `main` at its pin."""
     pin = git("rev-parse", f"HEAD:{role}", cwd=root).stdout.strip()
     return f"  [{role}] {role}: on main at {pin[:12]} (branch tip == pin)"
+
+
+def up_to_step_b(root: Path) -> str:
+    """The whole of stdout of a run refused before step (b) runs any
+    validator, both legs placed by step (a)."""
+    return "\n".join([
+        f"bootstrap: Atlas ({root.resolve()})", "",
+        "(a) legs on tracking branches, pins untouched",
+        placed(root, "spec"), placed(root, "code"), "",
+        "(b) neutral validators", ""])
 
 
 def skipping_validators(root: Path, step_a: list[str],
@@ -233,6 +303,72 @@ def test_a_manifest_whose_stat_is_refused_is_the_same_refusal(
     assert seen.out == ""
 
 
+def test_a_manifest_that_is_a_directory_is_no_manifest_to_either_tool(
+        boot, project):
+    """THE OTHER HALF, which the base answered the same: a directory where
+    `project.yaml` goes is no manifest, never a file that cannot be read.
+    The gate refuses `manifest-missing`, and `bootstrap.py` reads a project
+    that has not elected the schema."""
+    manifest = project / "project.yaml"
+    manifest.unlink()
+    manifest.mkdir()
+    result = validate(project)
+    assert result.stderr == (
+        f"REFUSED manifest-missing: {project.resolve() / 'project.yaml'} "
+        "does not exist. A project that has elected this schema declares it "
+        "in `project.yaml`; a project that has not, does not run this "
+        "validator.\n"), result.stderr
+    assert result.returncode == 2
+    loaded = boot._load_root_and_manifest(SimpleNamespace(root=project))
+    assert loaded[1] is None
+
+
+# --- validate-manifest.py: the naming policy ---------------------------------
+
+@CANNOT_RUN_AS_ROOT
+def test_a_naming_policy_the_gate_cannot_reach_is_refused_by_name(project):
+    """`contracts/` at mode 000 and no `--policy`, the case a project meets:
+    the base named the policy whole, with nothing to put it right, on every
+    Python (RV958's S1)."""
+    with at_mode_000(project, "contracts"):
+        result = validate(project)
+    assert result.stderr == refused("yaml-unreadable", POLICY,
+                                    MANIFEST_READS), result.stderr
+    assert result.returncode == 2, result.stdout
+
+
+@pytest.mark.parametrize("given, failure, advice", [
+    pytest.param(False, os_error(errno.EIO), OTHER, id="io-error"),
+    pytest.param(True, PermissionError(errno.EACCES, "Permission denied"),
+                 PERMISSION, id="given-outside-the-root-with-an-esc"),
+])
+def test_a_naming_policy_the_gate_cannot_open_is_named_on_every_python(
+        manifest_gate, project, tmp_path, monkeypatch, capsys, given,
+        failure, advice):
+    """In-process, as root and on every platform. An I/O error is no
+    permission, and is not told to `chmod`. A `--policy` outside the root is
+    named whole, and spelled as `repr` spells a name that does not print, as
+    `validate-pins.py` spells one (RV958's N3)."""
+    policy = tmp_path / "loc\x1bked" / "repository-naming.yaml"
+    given_args = ["--policy", str(policy)] if given else []
+    failing(monkeypatch, "read_text", {"repository-naming.yaml": failure})
+    assert manifest_gate.main(["--root", str(project), *given_args]) == 2
+    assert capsys.readouterr().err == refused(
+        "yaml-unreadable", repr(str(policy)) if given else POLICY,
+        MANIFEST_READS, failure.strerror, advice)
+
+
+def test_a_name_that_does_not_print_is_spelled_under_the_root_too(
+        manifest_gate, tmp_path):
+    """The other branch of `_unreadable_file`'s naming, which no file this
+    gate reads under the root reaches today: spelled, as outside it."""
+    refusal = manifest_gate._unreadable_file(
+        tmp_path, tmp_path / "loc\x1bked" / "x.yaml",
+        PermissionError(errno.EACCES, "Permission denied"))
+    assert refusal.detail == (
+        "'loc\\x1bked/x.yaml': cannot be read (Permission denied)")
+
+
 # --- validate-manifest.py: a declared referent's pin file --------------------
 
 @CANNOT_RUN_AS_ROOT
@@ -273,12 +409,8 @@ def test_a_referent_pin_whose_stat_is_refused_is_refused_on_every_python(
     missing; an I/O error is no permission, and is not told to `chmod`."""
     held_by_chain(project)
     clear_ambient_pin_sources(monkeypatch)
-    if failure is None:
-        refused_stat(monkeypatch, "openxdox-pin.yaml")
-    else:
-        failing(monkeypatch, "stat", {"openxdox-pin.yaml": failure})
+    reason = refusing(monkeypatch, "openxdox-pin.yaml", failure)
     assert manifest_gate.main(["--root", str(project)]) == 2
-    reason = "Permission denied" if failure is None else failure.strerror
     assert capsys.readouterr().err == refused(
         "yaml-unreadable", PIN, MANIFEST_READS, reason, advice)
 
@@ -321,13 +453,21 @@ def test_a_manifest_bootstrap_cannot_reach_or_open_is_refused_first(project,
     assert still_detached(project, "spec")
 
 
-def test_a_manifest_bootstrap_cannot_stat_is_the_same_refusal(boot, project,
-                                                              monkeypatch):
-    refused_stat(monkeypatch, "project.yaml")
+@pytest.mark.parametrize("method, failure, advice", [
+    pytest.param("stat", None, PERMISSION, id="stat-refused"),
+    pytest.param("stat", os_error(errno.EIO), OTHER, id="stat-io-error"),
+    pytest.param("read_text", os_error(errno.EIO), OTHER, id="open-io-error"),
+])
+def test_a_manifest_bootstrap_cannot_stat_or_open_is_the_same_refusal(
+        boot, project, monkeypatch, method, failure, advice):
+    """On every Python: the `stat` refused as 3.14 answers it, and an I/O
+    error from the `stat` or the open, which is no permission and is not
+    told to `chmod`."""
+    reason = refusing(monkeypatch, "project.yaml", failure, method)
     with pytest.raises(boot.Refusal) as caught:
         boot._load_root_and_manifest(SimpleNamespace(root=project))
     assert f"{caught.value}\n" == refused("yaml-unreadable", "project.yaml",
-                                          BOOTSTRAP_READS)
+                                          BOOTSTRAP_READS, reason, advice)
 
 
 # --- bootstrap.py: the validators --------------------------------------------
@@ -346,38 +486,62 @@ def test_a_scripts_folder_bootstrap_cannot_search_is_refused_not_skipped(
         "validator-unreadable", "scripts/validate-repository-naming.py",
         VALIDATOR_READS), result.stderr
     assert result.returncode == 2
-    assert result.stdout == "\n".join([
-        f"bootstrap: Atlas ({project.resolve()})", "",
-        "(a) legs on tracking branches, pins untouched",
-        placed(project, "spec"), placed(project, "code"), "",
-        "(b) neutral validators", ""])
+    assert result.stdout == up_to_step_b(project)
 
 
+@CANNOT_RUN_AS_ROOT
+def test_a_validator_at_mode_000_is_refused_before_any_runs(project):
+    """Its `stat` works and the child cannot open it: the base ran the two
+    before it, and the child said Python's own `can't open file` line, with
+    nothing to put it right (RV958's S2). It is refused by name, as
+    `bump-leg.py` refuses it (#934), and none runs."""
+    with at_mode_000(project, "scripts/validate-pins.py"):
+        result = bootstrap(project)
+    assert result.stderr == refused(
+        "validator-unreadable", "scripts/validate-pins.py",
+        VALIDATOR_READS), result.stderr
+    assert result.returncode == 2
+    assert result.stdout == up_to_step_b(project)
+
+
+@pytest.mark.parametrize("method, failure, advice", [
+    pytest.param("stat", None, PERMISSION, id="stat-refused"),
+    pytest.param("stat", os_error(errno.EIO), OTHER, id="stat-io-error"),
+    pytest.param("open", os_error(errno.EIO), OTHER, id="open-io-error"),
+])
 def test_a_validator_whose_stat_is_refused_stops_step_b_before_any_runs(
-        boot, project, monkeypatch, capsys):
+        boot, project, monkeypatch, capsys, method, failure, advice):
     """On every Python, the second validator: the base SKIPPED it and ran
-    the other two. Nothing is run or said before the refusal."""
+    the other two, or, where only its open failed, ran it, and the child
+    said why. Nothing is run or said before the refusal."""
     manifest = boot.load_yaml(project / "project.yaml")
-    refused_stat(monkeypatch, "validate-manifest.py")
+    reason = refusing(monkeypatch, "validate-manifest.py", failure, method)
     with pytest.raises(boot.Refusal) as caught:
         boot._run_neutral_validators(project, manifest, False)
     assert f"{caught.value}\n" == refused(
         "validator-unreadable", "scripts/validate-manifest.py",
-        VALIDATOR_READS)
+        VALIDATOR_READS, reason, advice)
     assert capsys.readouterr().out == ""
 
 
+@pytest.mark.parametrize("in_its_place", [False, True],
+                         ids=["taken-away", "a-directory-in-its-place"])
 def test_a_validator_that_is_not_there_is_still_skipped(boot, project,
-                                                        monkeypatch, capsys):
+                                                        monkeypatch, capsys,
+                                                        in_its_place):
     """THE OTHER HALF, which the base answered the same. The validators are
     stood in for: what is asked is which of them step (b) runs, and a
-    pinned copy taken away is `validate-pins.py`'s own finding."""
+    pinned copy taken away is `validate-pins.py`'s own finding. A directory
+    is no validator, and is not opened."""
     monkeypatch.delenv("SHAPE_UPSTREAM_PATH", raising=False)
     ran = []
     monkeypatch.setattr(boot, "_run",
                         lambda root, argv: ran.append(argv[0]) or 0)
     manifest = boot.load_yaml(project / "project.yaml")
-    (project / "scripts" / "validate-repository-naming.py").unlink()
+    naming = project / "scripts" / "validate-repository-naming.py"
+    naming.unlink()
+    if in_its_place:
+        naming.mkdir()
     assert boot._run_neutral_validators(project, manifest, False) == []
     assert ran == ["scripts/validate-manifest.py", "scripts/validate-pins.py"]
     assert capsys.readouterr().out == (
@@ -413,15 +577,65 @@ def test_a_leg_bootstrap_cannot_search_is_left_as_it_is(project):
 ])
 def test_a_leg_whose_stat_is_refused_is_not_uninitialized(
         boot, project, monkeypatch, capsys, failure, advice):
-    if failure is None:
-        refused_stat(monkeypatch, ".git")
-    else:
-        failing(monkeypatch, "stat", {".git": failure})
+    reason = refusing(monkeypatch, ".git", failure)
     boot.checkout_tracking_branch(project.resolve(),
                                   {"role": "spec", "path": "spec"}, "main")
-    reason = "Permission denied" if failure is None else failure.strerror
     assert capsys.readouterr().out.splitlines() == left_as_it_is(
         "spec/.git", reason, advice)
+
+
+@CANNOT_RUN_AS_ROOT
+@pytest.mark.parametrize("outside", [False, True],
+                         ids=["inside-the-root", "outside-the-root"])
+def test_a_leg_in_a_folder_nobody_may_search_is_named_and_spelled(project,
+                                                                 outside):
+    """The code leg's `path:` holds an ESC and is in a folder at mode 000,
+    inside the root, or outside it as an absolute path, which the gate finds
+    (`manifest-leg-path`). Each line spells the name (#391); one outside the
+    root is named whole, where the base's step (c) ended in a `ValueError`
+    traceback from `relative_to` (RV958's M1 and S3); and step (c) does not
+    say that a register is there (RV958's N1)."""
+    folder = (project.parent if outside else project) / "loc\x1bked"
+    folder.mkdir()
+    shown = leg_path(project, "code", (folder / "code").as_posix() if outside
+                     else "loc\x1bked/code")
+    with mode_of(folder.parent, folder.name, 0):
+        result = bootstrap(project, "--skip-validators")
+    assert result.stdout == skipping_validators(
+        project, [placed(project, "spec"),
+                  *left_as_it_is(f"{shown}/.git", where=f"[code] {shown}")],
+        [*nothing_claimed(f"{shown}/{REGISTER}"), GRANTS]), result.stdout
+    assert result.returncode == 0, result.stderr
+
+
+def test_a_register_under_a_leg_path_outside_the_root_is_read(project):
+    """A register this user can read, under a leg whose `path:` is
+    absolute: the base's step (c) ended in the same `ValueError` traceback
+    (RV958's M1). It is named whole, and its row is read."""
+    spec = project.parent / "elsewhere" / "spec"
+    (spec / REGISTER).parent.mkdir(parents=True)
+    (spec / REGISTER).write_text(ROWS)
+    shown = leg_path(project, "spec", spec.as_posix())
+    result = bootstrap(project, "--skip-validators")
+    assert result.stdout == skipping_validators(
+        project, [not_initialized(shown), placed(project, "code")],
+        [f"  register: {spec / REGISTER}",
+         "    agent:x \u00b7 review \u00b7 testorg/Atlas-code \u00b7 active "
+         "\u00b7 expires -", GRANTS]), result.stdout
+    assert result.returncode == 0, result.stderr
+
+
+def test_a_leg_path_holding_a_nul_is_not_initialized(project):
+    """Passes on the base too, and is here to keep it: no file name holds a
+    NUL, so no leg is there, as `exists()` answered, and step (c) finds no
+    register under it. `_is_a` without its `ValueError` clause ended the run
+    in `ValueError: embedded null byte` (RV958's S3)."""
+    shown = leg_path(project, "spec", "sp\x00ec")
+    result = bootstrap(project, "--skip-validators")
+    assert result.stdout == skipping_validators(
+        project, [not_initialized(shown), placed(project, "code")],
+        DEGRADE), result.stdout
+    assert result.returncode == 0, result.stderr
 
 
 @CANNOT_RUN_AS_ROOT
@@ -466,35 +680,73 @@ def test_a_marker_whose_lstat_is_refused_keeps_the_leg_on_every_python(
 
 # --- bootstrap.py: a register ------------------------------------------------
 
+def a_register(root: Path) -> Path:
+    """A register in the root, holding `ROWS`."""
+    register = root / REGISTER
+    register.parent.mkdir(parents=True)
+    register.write_text(ROWS)
+    return register
+
+
 @CANNOT_RUN_AS_ROOT
-@pytest.mark.parametrize("locked", ["governance", REGISTER],
-                         ids=["a-folder-nobody-may-enter", "at-mode-000"])
+@pytest.mark.parametrize("locked, label", [
+    pytest.param("governance", MAYBE, id="a-folder-nobody-may-enter"),
+    pytest.param(REGISTER, "register", id="at-mode-000"),
+])
 def test_a_register_bootstrap_cannot_read_is_named_not_absent(project,
-                                                             locked):
+                                                             locked, label):
     """The base's 3.12 ended in a traceback in step (c), and its 3.14 said
     `authority is not wallet-carried in this org`; at mode 000 it named the
     absolute path. Step (c) names it, claims nothing from it, and the run
-    goes on as it does for a register that does not parse."""
-    register = project / REGISTER
-    register.parent.mkdir(parents=True)
-    register.write_text("rows:\n  - holder: agent:x\n    act: review\n"
-                        "    target_repo: testorg/Atlas-code\n")
+    goes on as it does for a register that does not parse. Only where its
+    `stat` worked does the line say that a register is there."""
+    a_register(project)
     with at_mode_000(project, locked):
         result = bootstrap(project, "--skip-validators")
     assert result.stdout == skipping_validators(
         project, [placed(project, "spec"), placed(project, "code")],
-        [*nothing_claimed(REGISTER), GRANTS]), result.stdout
+        [*nothing_claimed(REGISTER, label), GRANTS]), result.stdout
     assert result.returncode == 0
 
 
+@pytest.mark.parametrize("failure", [None, os_error(errno.EIO)],
+                         ids=["permission", "io-error"])
 def test_a_register_whose_stat_is_refused_is_not_dropped(boot, project,
-                                                         monkeypatch):
+                                                         monkeypatch,
+                                                         failure):
     """On every Python: 3.14's `is_file()` dropped it, and step (c) said the
-    org has no wallet-carried authority."""
-    refused_stat(monkeypatch, "register.yaml")
+    org has no wallet-carried authority. Nor is one dropped for an I/O
+    error."""
+    refusing(monkeypatch, "register.yaml", failure)
     legs = [{"role": "spec", "path": "spec"}]
     assert boot._register_paths(project, legs) == [
-        project / REGISTER, project / "spec" / REGISTER]
+        (project / REGISTER, MAYBE), (project / "spec" / REGISTER, MAYBE)]
+
+
+@pytest.mark.parametrize("directory", [False, True],
+                         ids=["a-file", "a-directory"])
+def test_only_a_file_is_a_register_where_the_stat_works(boot, project,
+                                                        directory):
+    """THE OTHER HALF, which the base answered the same: a file is a
+    register, and a directory at its name is none."""
+    if directory:
+        (project / REGISTER).mkdir(parents=True)
+    else:
+        a_register(project)
+    assert boot._register_paths(project, []) == (
+        [] if directory else [(project / REGISTER, "register")])
+
+
+def test_a_register_that_cannot_be_opened_claims_nothing_on_every_python(
+        boot, project, monkeypatch, capsys):
+    """In-process, as root and on every platform: an I/O error from the
+    open, which is no permission and is not told to `chmod`."""
+    a_register(project)
+    failing(monkeypatch, "read_text", {"register.yaml": os_error(errno.EIO)})
+    boot.read_authority(project, [])
+    assert capsys.readouterr().out.splitlines() == [
+        *nothing_claimed(REGISTER, "register", os.strerror(errno.EIO), OTHER),
+        GRANTS]
 
 
 # --- the one errno set (slice Z holds every copy to it) ----------------------
@@ -546,3 +798,27 @@ def test_every_other_refusal_is_raised(copy_of_is_a, monkeypatch, tmp_path,
     with pytest.raises(OSError) as caught:
         copy_of_is_a(path, stat.S_ISREG)
     assert caught.value is error
+
+
+@pytest.mark.parametrize("name", ["a\x00b", "a\ud83db"],
+                         ids=["a-nul", "a-lone-surrogate"])
+def test_a_name_no_file_can_have_is_absent(copy_of_is_a, tmp_path, name):
+    """A NUL, or a lone surrogate the file system's encoding cannot write
+    (where it has one): no file has such a name, so nothing is there, as
+    `is_file()` answered. Without the `ValueError` clause the run ended in
+    its traceback (RV958's S3)."""
+    assert copy_of_is_a(tmp_path / name, stat.S_ISREG) is False
+
+
+@pytest.mark.parametrize("make, link", [
+    pytest.param(Path.mkdir, False, id="a-directory"),
+    pytest.param(lambda path: path.symlink_to("nowhere"), True,
+                 id="a-link-to-nothing-asked-of-the-name", marks=POSIX_LINKS),
+])
+def test_anything_at_a_name_in_a_leg_is_found(boot, tmp_path, make, link):
+    """A leg's `.git` that is a directory (a leg cloned on its own) is
+    there, and so is an operation's marker that is a link to nothing, as
+    `os.path.lexists` answered."""
+    asked = tmp_path / "asked"
+    make(asked)
+    assert boot._found(asked, link=link) is True

@@ -158,21 +158,31 @@ def _is_a(path: Path, kind: Callable[[int], bool]) -> bool:
     return kind(mode)
 
 
+def _shown(typed: str) -> str:
+    """A path as a refusal names it: as it is, unless a character in it is
+    not printable (`str.isprintable`), and then as Python's `repr` spells
+    it, `'x\\x1b[31mRED'`. `validate-pins.py`'s `_shown`, written here
+    rather than imported, as `_is_a` is (#370, #610). Printed raw, an ESC
+    in the name reached the terminal as the control it is."""
+    return typed if typed.isprintable() else repr(typed)
+
+
 def _unreadable_file(root: Path, path: Path, exc: OSError) -> Refusal:
     """`yaml-unreadable` for a file this validator must read or find and the
     operating system will not let it (#430): its `stat` refused, or its
     open. `validate-pins.py`'s `_unreadable_file`, in its words.
 
     NAMED ONCE, RELATIVE TO THE ROOT, POSIX on every platform, or whole
-    where it is not under the root. THE ADVICE FOLLOWS THE CAUSE: a
-    permission (`PermissionError`, which is `EACCES` and `EPERM`) is put
-    right by the mode or the owner, and any other cause is `OTHER_REASON`,
-    which is not told to `chmod`.
+    where it is not under the root (a `--policy` given elsewhere), and
+    spelled (`_shown`). THE ADVICE FOLLOWS THE CAUSE: a permission
+    (`PermissionError`, which is `EACCES` and `EPERM`) is put right by the
+    mode or the owner, and any other cause is `OTHER_REASON`, which is not
+    told to `chmod`.
     """
     try:
-        named = path.relative_to(root).as_posix()
+        named = _shown(path.relative_to(root).as_posix())
     except ValueError:
-        named = str(path)
+        named = _shown(str(path))
     advice = (
         "Make what this user may not open readable by this user: `chmod u+r` "
         "on a file, `chmod u+rx` on a directory (and on every directory above "
@@ -196,18 +206,21 @@ def _is_file(root: Path, path: Path) -> bool:
         raise _unreadable_file(root, path, exc) from exc
 
 
-def _load(root: Path, path: Path):
-    """`load_yaml(path)`, with a file this user cannot OPEN named as one
-    whose `stat` was refused is (`_unreadable_file`, #430), so `project.yaml`
-    at mode 000 and one in a folder nobody may search say one line.
+def _load(root: Path, path: Path, read: Callable = load_yaml):
+    """`read(path)`, `load_yaml` or `NamingPolicy.load`, with a file this
+    user cannot OPEN named as one whose `stat` was refused is
+    (`_unreadable_file`, #430), so `project.yaml` at mode 000 and one in a
+    folder nobody may search say one line, and so does the naming policy
+    in a `contracts/` this user cannot search, which was named whole, with
+    nothing to put it right.
 
     Read off the refusal's cause, as `validate-pins.py`'s `_load` reads it:
     `load_yaml` has raised its refusal `from` the `OSError` since it was
     written, so a `repo_shape.py` older than this file is read the same way.
-    Any other refusal (a file that is not UTF-8, or does not parse) keeps
-    its words."""
+    Any other refusal (a file that is not UTF-8, or does not parse, or a
+    policy of the wrong kind) keeps its words."""
     try:
-        return load_yaml(path)
+        return read(path)
     except Refusal as exc:
         if isinstance(exc.__cause__, OSError):
             raise _unreadable_file(root, path,
@@ -1208,7 +1221,7 @@ def main(argv: list[str] | None = None) -> int:
         if not isinstance(manifest, dict):
             raise Refusal("manifest-unreadable", f"{manifest_path}: not a mapping")
         policy_path = args.policy or (root / "contracts" / "repository-naming.yaml")
-        policy = NamingPolicy.load(policy_path)
+        policy = _load(root, policy_path, NamingPolicy.load)
         # Inside the `try`: a declared referent's pin file this user cannot
         # reach is a check that cannot run, so it is refused, exit 2, and no
         # finding is said over it (#430).
