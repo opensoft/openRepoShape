@@ -347,6 +347,7 @@ from __future__ import annotations
 
 import argparse
 import datetime as _dt
+import errno
 import importlib.util
 import json
 import os
@@ -3131,20 +3132,210 @@ def check_family(ctx: Context) -> Row:
                          ["--root", str(ctx.root)])
 
 
-def manifest_candidates(root: Path) -> list[Path]:
-    """Every file in a root that might DECLARE a `kind:`.
+# ---------------------------------------------------------------------------
+# A file or folder this user cannot read (#847)
+# ---------------------------------------------------------------------------
+#
+# `validate-pins.py` refuses a pin, the manifest or a pinned copy that the
+# operating system will not let it reach or open BY NAME, since #712:
+# `REFUSED yaml-unreadable: contracts/spec-pin.yaml: cannot be read
+# (Permission denied)`, with a remedy for the cause. Three rows here read the
+# same files themselves, and said something else: the `legs` row that the pin
+# `carries no 40-hex commit`, which the verdict read as DRIFTED; `manifest
+# kinds` and `shape currency` a bare `[Errno 13]`, or, for a pin at mode 000,
+# a `git checkout HEAD --` that discards what the file holds. They now ask as
+# the gate asks, and say what it says.
+
+#: The `OSError`s that mean NOTHING IS THERE to read, where any other is a
+#: read the operating system refused: no such file, a part of the path that
+#: is not a directory, a bad descriptor, a symlink loop, and Windows' "not
+#: ready", "invalid name" and "cannot resolve". They are the ones
+#: `Path.is_file()` answered False to on Python 3.9 to 3.13, and
+#: `validate-pins.py` and `bump-leg.py` read them so (`_ABSENT_ERRNOS`,
+#: #434, #712): read the same way here, a pin the gate calls missing is one
+#: these rows call missing, and one it refuses by name they name.
+ABSENT_ERRNOS = (errno.ENOENT, errno.ENOTDIR, errno.EBADF, errno.ELOOP)
+ABSENT_WINERRORS = (21, 123, 1921)
+
+
+def refused_read(exc: BaseException | None) -> OSError | None:
+    """`exc` where it is an `OSError` with which the operating system
+    REFUSED a `stat`, a read or a listing, else None: no `OSError` at all, or
+    one that says nothing is there (`ABSENT_ERRNOS`) (#847).
+
+    Asked of a `Refusal`'s `__cause__` too: `load_yaml` raises
+    `yaml-unreadable` from the `OSError` of a file it could not open, which
+    is how `validate-pins.py` tells that file from one that does not parse
+    (`_load`, #712), whatever words the root's `repo_shape` gives it."""
+    if not isinstance(exc, OSError):
+        return None
+    if (exc.errno in ABSENT_ERRNOS
+            or getattr(exc, "winerror", None) in ABSENT_WINERRORS):
+        return None
+    return exc
+
+
+def is_a(path: Path, kind) -> bool:
+    """Whether `path` is there and of `kind` (`stat.S_ISREG`, `stat.S_ISDIR`),
+    raising the `OSError` of a `stat` the operating system refused: the
+    question `validate-pins.py`'s `_is_a` asks (#434, #847).
+
+    NOT `Path.is_file()` OR `Path.is_dir()`, whose answer depends on the
+    Python. Up to 3.13 they raised a refused `stat`, which ended a row in
+    `could not be run: [Errno 13] ...`; from 3.14 they answer False to any
+    `OSError`, which would call a pin in a `contracts/` this user cannot
+    search a pin that is not there. A name the operating system cannot take
+    at all is nothing there, as `is_file()` answered it."""
+    try:
+        mode = path.stat().st_mode
+    except OSError as exc:
+        if refused_read(exc) is None:
+            return False
+        raise
+    except ValueError:
+        return False
+    return kind(mode)
+
+
+def os_reason(exc: OSError) -> str:
+    """The operating system's own reason for `exc` (`Permission denied`), or
+    the exception's name where it gives none, as `validate-pins.py` names
+    one (#712)."""
+    return exc.strerror or type(exc).__name__
+
+
+def cannot_be_read(named: str, exc: OSError) -> str:
+    """`<named>: cannot be read (<the operating system's reason>)`: the line
+    `validate-pins.py` refuses a file it cannot reach or open with
+    (`_cannot_read`, #712), so a row and the gate say one sentence (#847)."""
+    return f"{named}: cannot be read ({os_reason(exc)})"
+
+
+def cannot_be_listed(named: str, exc: OSError) -> str:
+    """`<named>: cannot be listed (<the operating system's reason>)`: the
+    line `validate-pins.py` refuses a directory it cannot list with (#434),
+    for the `contracts/` the `manifest kinds` row lists (#847)."""
+    return f"{named}: cannot be listed ({os_reason(exc)})"
+
+
+#: What a refused PERMISSION is told, in `validate-pins.py`'s words for the
+#: same file (`_unreadable_file`, #712): the mode or the owner puts it right.
+PERMISSION_ADVICE = (
+    "Make what this user may not open readable by this user: `chmod u+r` on "
+    "a file, `chmod u+rx` on a directory (and on every directory above it "
+    "inside the root), or fix who owns it.")
+
+#: What any OTHER refusal is told, in the same gate's words (`OTHER_REASON`,
+#: #712, after `bump-leg.py`, #383): an I/O error or a name the filesystem
+#: will not take is not put right by `chmod`.
+OTHER_REASON = (
+    "Where the operating system gave another reason, put a regular file this "
+    "user can open back in its place, or take away one nobody wants, and make "
+    "sure nothing is changing the directory while this runs.")
+
+#: What a FOLDER this user cannot list is told for any other reason, in the
+#: gate's words for a directory it cannot list (`_workflows_unlistable`,
+#: #434): it is a directory that goes back in its place, not a file.
+OTHER_REASON_FOLDER = (
+    "Where the operating system gave another reason, put a directory this "
+    "user can list back in its place, and make sure nothing is changing it "
+    "while this runs.")
+
+
+def cannot_read_why(refused: list, unlisted: list = ()) -> str:
+    """The `why` of a row whose NEXT is this doctor again because a file or
+    folder it reads cannot be read: `refused` the `OSError` of each file,
+    `unlisted` that of each folder it cannot list (#847).
+
+    THE GATE'S ADVICE, BY THE CAUSE, and never a `git checkout`: the file is
+    there, and HEAD's copy put in its place would discard whatever it holds
+    that no commit does, as `pin_restore`'s `uncommitted` line says of
+    itself. A permission, of a file or a folder, is `PERMISSION_ADVICE`; any
+    other cause is `OTHER_REASON` for a file and `OTHER_REASON_FOLDER` for a
+    folder, as the gate tells the two apart. What a person does about a
+    mode or an owner is theirs; then the doctor reads the file again."""
+    said = []
+    if any(isinstance(exc, PermissionError) for exc in [*refused, *unlisted]):
+        said.append(PERMISSION_ADVICE)
+    if any(not isinstance(exc, PermissionError) for exc in refused):
+        said.append(OTHER_REASON)
+    if any(not isinstance(exc, PermissionError) for exc in unlisted):
+        said.append(OTHER_REASON_FOLDER)
+    return " ".join(said) + " Then run this doctor again"
+
+
+def doctor_line(ctx: Context) -> str:
+    """This doctor, run again over the root: the NEXT of a row that names a
+    file or folder only a person can mend (`cannot_read_why`), the same line
+    `unreadable_next` spells for a file that does not load."""
+    return (f"{PYTHON} {quote_arg(ctx.shape / 'shape-doctor.py')} --root "
+            f"{quote_arg(ctx.root)}")
+
+
+def pin_read(root: Path, relative: str) -> tuple:
+    """`(what the file at `relative` holds, None)`; `(None, the OSError)`
+    where the operating system refused its `stat` or its read; `(None,
+    None)` where no regular file is there, or it does not load for another
+    reason (#847).
+
+    ASKED AS `validate-pins.py` ASKS IT (#712): the `stat` first, as its
+    `_is_file` does, so a pin in a `contracts/` this user cannot search is
+    named on every Python, and then the read, through `load_yaml`, whose
+    refusal is raised `from` the `OSError` of a file this user cannot open
+    (`_load`). Nothing there, or no regular file, is what the gate calls
+    missing, and is None here as it always was."""
+    path = root / relative
+    try:
+        if not is_a(path, stat.S_ISREG):
+            return None, None
+    except OSError as exc:
+        return None, exc
+    try:
+        return load_yaml(path), None
+    except Refusal as exc:
+        return None, refused_read(exc.__cause__)
+
+
+def manifest_candidates(root: Path) -> tuple[list[Path], list[tuple]]:
+    """Every file in a root that might DECLARE a `kind:`, and `(line,
+    OSError, whether it is a folder this user cannot list)` for each place
+    the operating system would not let this user look (#847).
 
     The two manifests at the top, and everything under `contracts/`. Not the
     whole tree: a leg is its own repository with its own contracts, and a
     holder's `members/<Project>` is a whole project -- walking into either
     would make this command report on repositories it was not pointed at.
+
+    A `contracts/` THIS USER CANNOT LIST, OR A FILE IN IT WHOSE `stat` IS
+    REFUSED, IS NAMED, in `validate-pins.py`'s words (`cannot_be_listed`,
+    `cannot_be_read`). `iterdir()` and `is_file()` raised the refusal out of
+    the row, `could not be run: [Errno 13] Permission denied: '<root>/
+    contracts'`, and from Python 3.14 `is_file()` would answer False and the
+    row would count the manifests it never read as none (`is_a`). The third
+    value is what `cannot_read_why` tells a folder by: a folder this user
+    cannot list for another reason than permission is told to put a
+    directory back, as the gate tells one, not a file.
     """
+    refused: list[tuple] = []
+
+    def regular(path: Path) -> bool:
+        try:
+            return is_a(path, stat.S_ISREG)
+        except OSError as exc:
+            refused.append((cannot_be_read(
+                path.relative_to(root).as_posix(), exc), exc, False))
+            return False
+
     found = [root / PROJECT_MANIFEST, root / FAMILY_MANIFEST]
     contracts = root / "contracts"
-    if contracts.is_dir():
-        found += sorted(p for p in contracts.iterdir()
-                        if p.is_file() and p.suffix in (".yaml", ".yml"))
-    return [path for path in found if path.is_file()]
+    try:
+        listed = sorted(contracts.iterdir()) if is_a(contracts,
+                                                     stat.S_ISDIR) else []
+    except OSError as exc:
+        refused.append((cannot_be_listed("contracts", exc), exc, True))
+        listed = []
+    found += [path for path in listed if path.suffix in (".yaml", ".yml")]
+    return [path for path in found if regular(path)], refused
 
 
 #: Named once: the row this function returns and its own `CHECKS` entry below
@@ -3707,6 +3898,21 @@ def check_manifest_kinds(ctx: Context) -> Row:
     reason still names every fault, and the next run names the rest.
     `restore` and `refusals` join `detail` only when a file does not load,
     so every other root reports the row it always did.
+
+    A FILE OR A FOLDER THIS USER CANNOT READ IS NEITHER (#847). A pin at
+    mode 000 was `unreadable as YAML`, quoting `[Errno 13] Permission
+    denied: '<root>/...'`, and `unreadable_next` read its git state: `git
+    status` calls a file it cannot open changed (` M`), so the NEXT was `git
+    checkout HEAD --` on it, which discards what it holds that no commit
+    does. A `contracts/` this user cannot list or search ended the row in
+    `could not be run: [Errno 13]`. Each is named now as `validate-pins.py`
+    names it (`manifest_candidates`, `cannot_be_read`), and listed under
+    `detail`'s `cannot_be_read`, only when there is one. Its NEXT is this
+    doctor again and its `why` the gate's advice for the cause, a folder's
+    as the gate gives a folder (`cannot_read_why`), and it comes FIRST: the
+    row cannot say what kind such a file declares, or whether it loads,
+    until it can be read, and a `contracts/` it cannot list hides every
+    manifest in it. No git state is asked of it.
     """
     known: list[str] = []
     #: `(path, kind)` for each manifest of a kind the registry does not know.
@@ -3733,7 +3939,10 @@ def check_manifest_kinds(ctx: Context) -> Row:
     #: paths whose gate refuses another kind (review of PR #555).
     read_as = kinds_read_here(ctx)
     checked = kind_checked_by(ctx)
-    for path in manifest_candidates(ctx.root):
+    #: `(line, OSError, folder)` for each file or folder this user cannot
+    #: read (#847).
+    candidates, refused = manifest_candidates(ctx.root)
+    for path in candidates:
         if path == elsewhere:
             continue
         rel = path.relative_to(ctx.root).as_posix()
@@ -3743,6 +3952,10 @@ def check_manifest_kinds(ctx: Context) -> Row:
         try:
             data = load_yaml(path)
         except Refusal as exc:
+            cause = refused_read(exc.__cause__)
+            if cause is not None:
+                refused.append((cannot_be_read(rel, cause), cause, False))
+                continue
             unreadable.append(rel)
             refusals[rel] = {"code": exc.code,
                              "detail": exc.detail.removeprefix(f"{path}: ")}
@@ -3825,12 +4038,17 @@ def check_manifest_kinds(ctx: Context) -> Row:
         # ONLY WHEN THERE IS ONE, so every root without it reports the same
         # row, byte for byte, as it did before #211.
         detail["family_beside"] = beside[1]
-    if names or judged or unreadable:
+    if refused:
+        # Likewise (#847).
+        detail["cannot_be_read"] = [entry[0] for entry in refused]
+    if names or judged or unreadable or refused:
         parts = []
         #: The sentences of the `why` that name the other way out of each
         #: fault, in the row's order: never the NEXT's (#548), and never for
         #: a file a gate here reads (`taking_out`).
         ways = []
+        if refused:
+            parts.append(", ".join(detail["cannot_be_read"]))
         if unknown:
             parts.append("no validator registered for kind " + ", ".join(
                 detail["unregistered"]))
@@ -3858,6 +4076,11 @@ def check_manifest_kinds(ctx: Context) -> Row:
             detail.update({"restore": restore, "refusals": refusals})
         else:
             command, why = taking_out(ctx, names, states, judged, ways)
+        if refused:
+            # FIRST, and never a git command (#847): see the docstring.
+            command, why = doctor_line(ctx), cannot_read_why(
+                [exc for _line, exc, folder in refused if not folder],
+                [exc for _line, exc, folder in refused if folder])
         return Row("manifest-kinds", LABEL_MANIFEST_KINDS, FINDING,
                    "; ".join(parts) + aside, command, detail, why=why)
     return Row("manifest-kinds", LABEL_MANIFEST_KINDS, OK,
@@ -5043,6 +5266,59 @@ def unreadable_pin_row(ctx: Context, exc: Refusal) -> Row:
                command, detail, why=why)
 
 
+def unreadable_copy_row(ctx: Context, named: str, exc: OSError) -> Row:
+    """The `shape currency` row for a pin or a copy, `named` from the root,
+    that the operating system will not let this user read (#847).
+
+    A STATEMENT ABOUT THEIR REPOSITORY, as `unreadable_pin_row`'s is: the
+    file is in the root, and its mode, its owner or its directory's is what
+    somebody did to THEIR tree, so no `environment`. NEVER `pin_restore`:
+    the file is there, `git status` calls a file it cannot open changed
+    (` M`), and the `git checkout HEAD --` it named would put HEAD's copy
+    over whatever the file holds that no commit does. The line is
+    `validate-pins.py`'s (`cannot_be_read`), the NEXT this doctor again and
+    the `why` the gate's advice (`cannot_read_why`), as the `manifest kinds`
+    row gives them for the same file."""
+    line = cannot_be_read(named, exc)
+    return Row("shape-currency", LABEL_SHAPE_CURRENCY, FINDING,
+               f"the copies cannot be compared: {line}", doctor_line(ctx),
+               {"path": named, "cannot_be_read": line},
+               why=cannot_read_why([exc]))
+
+
+def pin_refusal_row(ctx: Context, exc: Exception) -> Row:
+    """The `shape currency` row for a shape pin `read_pin` would not read,
+    `exc` being what it raised: a `Refusal`, or the `OSError` of a refused
+    `stat` that `is_file()` raises up to Python 3.13 (#847).
+
+    THE PIN IS ASKED AGAIN ONLY HERE, by `pin_read`, as `validate-pins.py`
+    asks it: a `stat` or a read the operating system refused is
+    `unreadable_copy_row`'s, the gate's line, whatever `read_pin` made of
+    it (`update-pin-missing` from 3.14, `yaml-unreadable` quoting `[Errno
+    13]`). Any other refusal is `unreadable_pin_row`'s, as it always was,
+    and any other `OSError` is raised as it was. A pin that reads is read
+    once, by `read_pin` (review of PR #860)."""
+    refused = pin_read(ctx.root, SHAPE_PIN)[1]
+    if refused is not None:
+        return unreadable_copy_row(ctx, SHAPE_PIN, refused)
+    if isinstance(exc, Refusal):
+        return unreadable_pin_row(ctx, exc)
+    raise exc
+
+
+def refused_in_root(root: Path, exc: OSError) -> str | None:
+    """Where `exc` is a read the operating system refused of a file inside
+    `root`, that file's path from the root, POSIX; else None (#847): an
+    `OSError` that says nothing is there, one that names no file, or one
+    about a file elsewhere, the checkout of the standard's own among them."""
+    if refused_read(exc) is None or not exc.filename:
+        return None
+    try:
+        return Path(os.fsdecode(exc.filename)).relative_to(root).as_posix()
+    except ValueError:
+        return None
+
+
 #: A line `rev-list --missing=print` writes for an object the clone lacks:
 #: `?` and the object's id, SHA-1 or SHA-256.
 MISSING_OBJECT = re.compile(rb"\?(?:[0-9a-f]{40}|[0-9a-f]{64})")
@@ -5343,6 +5619,21 @@ def check_shape_currency(ctx: Context) -> Row:
     a clone that lacks objects and has no promisor remote, a damaged one --
     is `update-upstream-unreadable` from `prepare`, CANNOT ANSWER too, and
     never a copy called `both`.
+
+    A PIN, OR A COPY, THIS USER CANNOT READ IS NAMED (#847), as
+    `validate-pins.py` names it: `the copies cannot be compared:
+    contracts/shape-pin.yaml: cannot be read (Permission denied)`, a
+    FINDING about the repository, with this doctor again as its NEXT and the
+    gate's advice for the cause as its `why` (`unreadable_copy_row`), the
+    NEXT and `why` the `manifest kinds` row gives the same file. A pin at
+    mode 000 was `unreadable_pin_row`'s, whose `pin_restore` read it as
+    changed and named `git checkout HEAD --` on it; a `contracts/` this user
+    cannot search, or a copy at mode 000, ended the row in `could not be
+    run: [Errno 13]`. Where `read_pin` will not read the pin, `pin_read`
+    asks why (`pin_refusal_row`): `read_pin`'s `is_file()` raised the
+    refused `stat` up to Python 3.13 and, from 3.14, calls the pin missing.
+    A copy is asked by `prepare`, and only a refused read of a file inside
+    the root is the repository's: any other `OSError` is raised as it was.
     """
     us = ctx.update_shape()
     # A PIN OR MANIFEST KEPT AS A LINK IS ASKED ABOUT FIRST, before anything
@@ -5356,8 +5647,8 @@ def check_shape_currency(ctx: Context) -> Row:
                               at=None)
     try:
         pin, _rows = us.read_pin(ctx.root)
-    except Refusal as exc:
-        return unreadable_pin_row(ctx, exc)
+    except (Refusal, OSError) as exc:
+        return pin_refusal_row(ctx, exc)
     partial = partial_clone_row(ctx, str(pin["commit"]).lower())
     if partial is not None:
         return partial
@@ -5389,6 +5680,11 @@ def check_shape_currency(ctx: Context) -> Row:
                    why="this checkout of the standard does not carry the "
                        "commit the pin names; fetch it, or run the doctor "
                        "from a clone that has it")
+    except OSError as exc:
+        named = refused_in_root(ctx.root, exc)
+        if named is None:
+            raise
+        return unreadable_copy_row(ctx, named, exc)
     try:
         added = [add for add in additions if not add.present]
         reported = list(rows) + added
@@ -5554,7 +5850,12 @@ def head_of(path: Path) -> str | None:
 
 
 def pin_commit(root: Path, relative: str) -> str | None:
-    pin = Context._read(root / relative)
+    """The 40-hex `commit:` of the pin at `relative`, lowercased, or None.
+
+    Read by `pin_read`, as `validate-pins.py` reads a pin (#847): a pin whose
+    `stat` or read the operating system refused is None here as one that is
+    not there is, and `check_legs` asks `pin_read` why."""
+    pin, _refused = pin_read(root, relative)
     if not isinstance(pin, dict):
         return None
     commit = str(pin.get("commit") or "").lower()
@@ -6470,6 +6771,24 @@ def check_legs(ctx: Context) -> Row:
     WHERE THE GATE IS THE LINE, the legs no line cures are said beside it:
     an unborn HEAD or a leg with no url gets the same sentence it gets with
     no line at all, which ends by saying to run the doctor again.
+
+    A PIN THIS USER CANNOT READ IS NAMED, AND IS NO DRIFT (#847). It read as
+    `carries no 40-hex commit`, a lockstep fact, and the verdict counted the
+    leg as off its pin: DRIFTED, for a leg nobody moved, where
+    `validate-pins.py` refuses the pin by name. `pin_read` asks why the pin
+    gave no commit, and a `stat` or a read the operating system refused is
+    `<leg>: contracts/<role>-pin.yaml: cannot be read (<reason>)`, the gate's
+    line, kept in the leg's `cannot_be_read`, which `drifted_reasons` reads. It
+    is asked BEFORE the mount (review of PR #860): where the mount has no
+    gitlink, is empty, has no `.git` of its own, or has a HEAD git cannot read
+    or one on a branch with no commit, that fact is said first and the pin's
+    line follows it (`, and <the gate's line>`), so the leg is never drift for
+    a pin the gate refuses by name. A person mends it, on a mode or an owner,
+    so where no checkout and no lockstep fact comes first the NEXT is this
+    doctor again and the `why` the gate's advice (`cannot_read_why`), as the
+    `manifest kinds` and `shape currency` rows give them; beside the checkout
+    line or the gate's line, the advice is said in its `why`, after what the
+    line does.
     """
     needs = ("the legs it declares are not known and none is checked against "
              "its pin")
@@ -6492,13 +6811,20 @@ def check_legs(ctx: Context) -> Row:
     lockstep: list[str] = []
     gone: list[str] = []
     stuck: list[str] = []
+    #: The `OSError` of each pin the operating system refused to read (#847).
+    refused: list[OSError] = []
     rerun = False
     nested: set = set()
     for leg in legs:
         role = str(leg.get("role") or "?")
         rel = str(leg.get("path") or role)
         mount = ctx.root / rel
-        pinned = pin_commit(ctx.root, f"contracts/{role}-pin.yaml")
+        pin = f"contracts/{role}-pin.yaml"
+        pinned = pin_commit(ctx.root, pin)
+        # ASKED BEFORE THE MOUNT (#847, review of PR #860): asked only where
+        # every mount branch passed, a pin this user cannot read went unnamed
+        # beside an empty mount, and the verdict read the leg as drift.
+        refusal = pin_read(ctx.root, pin)[1] if pinned is None else None
         gitlink = recorded_gitlink(ctx.root, rel)
         populated = mount.is_dir() and any(mount.iterdir())
         own_git = (mount / ".git").exists()
@@ -6509,8 +6835,14 @@ def check_legs(ctx: Context) -> Row:
                  "gitlink": gitlink, "populated": populated, "head": head,
                  "own_git": own_git, "unborn": unborn}
         rows.append(entry)
+        if refusal is not None:
+            entry["cannot_be_read"] = cannot_be_read(pin, refusal)
+            refused.append(refusal)
         problem = None
         cures = False
+        #: Whether the problem is the pin's line, which no mount fact came
+        #: before.
+        named = False
         if gitlink is None:
             problem = (f"{rel}: no gitlink recorded, so this leg is not "
                        "mounted as a submodule at all")
@@ -6530,10 +6862,14 @@ def check_legs(ctx: Context) -> Row:
         elif head is None:
             problem = f"{rel}: populated, but git cannot read a HEAD in it"
             lockstep.append(rel)
-        elif pinned is None:
-            problem = (f"{rel}: contracts/{role}-pin.yaml carries no 40-hex "
-                       "commit to compare HEAD against")
+        elif pinned is None and refusal is None:
+            problem = (f"{rel}: {pin} carries no 40-hex commit to compare "
+                       "HEAD against")
             lockstep.append(rel)
+        elif pinned is None:
+            problem = (f"{rel}: {entry['cannot_be_read']}, so there is no "
+                       "pinned commit to compare HEAD against")
+            named = True
         elif head != pinned:
             problem = (f"{rel}: checked out at {head[:12]}, pinned at "
                        f"{pinned[:12]}")
@@ -6565,11 +6901,15 @@ def check_legs(ctx: Context) -> Row:
                 # what the next run names.
                 if pinned is None or gitlink != pinned:
                     rerun = True
+        if refusal is not None and not named:
+            # A MOUNT FACT CAME FIRST: the pin is named beside it.
+            problem += f", and {entry['cannot_be_read']}"
         if problem:
             problems.append(problem)
     detail = {"legs": rows}
     if problems:
-        rerun = rerun or bool(lockstep) or bool(stuck)
+        rerun = rerun or bool(lockstep) or bool(stuck) or bool(refused)
+        said = [cannot_read_why(refused)] if refused else []
         if checkout:
             # `make bootstrap` IS NAMED ONLY WHERE IT CAN RUN, and said for
             # what it does: it puts a leg on its tracking branch, and
@@ -6587,6 +6927,9 @@ def check_legs(ctx: Context) -> Row:
             next_command, why = submodule_update_next(
                 ctx.root, checkout, off_pin, "leg", after, rerun, kept=kept,
                 relinked=relinked, nested=nested)
+            # A pin this user cannot read is a person's to mend, so its
+            # advice is said beside the line as beside the gate's (#847).
+            why += "".join(f". {sentence}" for sentence in said)
         elif lockstep:
             # NO CHECKOUT CURES IT: the lockstep gate, one definition of it
             # for this row and the `pins` row (`lockstep_next`), which mount
@@ -6595,9 +6938,12 @@ def check_legs(ctx: Context) -> Row:
             next_command, why = lockstep_next(ctx, PINS_GATE, "leg")
             if why:
                 why += "".join(gone_sentence(rel) for rel in gone)
-                why += "".join(f". {sentence}" for sentence in stuck)
-            elif stuck:
-                why = ". ".join(stuck)
+                why += "".join(f". {sentence}" for sentence in [*said, *stuck])
+            elif said or stuck:
+                why = ". ".join([*said, *stuck])
+        elif refused:
+            # A PERSON'S, on a mode or an owner, and never a git line (#847).
+            next_command, why = doctor_line(ctx), ". ".join([*said, *stuck])
         else:
             # NO LINE CURES IT without choosing for the person (#414).
             next_command, why = None, ". ".join(stuck)
@@ -10513,6 +10859,17 @@ def drifted_reasons(by_id: dict, detail: dict) -> list:
     Returns the empty list when none of them is, which is the caller's signal
     to go on down the ladder rather than a claim that anything is well.
 
+    A LEG WHOSE PIN CANNOT BE READ IS NOT OFF ITS PIN (#847): nothing says
+    where its pin is, and `validate-pins.py` refuses the pin by name, which
+    is the `pins` row and INVALID. Such a leg carries `cannot_be_read` in
+    the `legs` row, and is not counted. Every other leg whose HEAD is not
+    its pin is counted as before. Where none is, the red row is drift by
+    main's count of one (an empty mount whose pin is gone has no HEAD and no
+    pin to differ) only where no leg carries `cannot_be_read`, whichever leg
+    made the row red: the gate refuses that pin before it reports anything
+    else, and INVALID names it; the run after the pin is mended says the
+    drift.
+
     Split out of `verdict_for` for #134.
     """
     reasons: list[str] = []
@@ -10520,9 +10877,12 @@ def drifted_reasons(by_id: dict, detail: dict) -> list:
         reasons += drifted_file_reasons(detail.get("counts") or {})
     legs = by_id.get("legs")
     if legs is not None and legs.status == FINDING:
-        off = [leg for leg in (legs.detail.get("legs") or [])
-               if leg.get("head") != leg.get("pin")]
-        reasons.append(f"{len(off) or 1} leg(s) not at the pin")
+        entries = legs.detail.get("legs") or []
+        unread = [leg for leg in entries if "cannot_be_read" in leg]
+        off = [leg for leg in entries if "cannot_be_read" not in leg
+               and leg.get("head") != leg.get("pin")]
+        if off or not unread:
+            reasons.append(f"{len(off) or 1} leg(s) not at the pin")
     members = by_id.get("members")
     if members is not None and members.status == FINDING:
         reasons.append("a member is not at its pin")
