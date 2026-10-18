@@ -59,6 +59,9 @@ from pathlib import Path
 import pytest
 
 from conftest import ORG, REPO, SCAFFOLD, WINDOWS_SKIP, run_script
+#: The names #692's rows hold, and how a line spells them, kept beside the
+#: helpers #766's rows in other modules share (#766).
+from conftest import ESC_NAME, FORGED_NAME, POSIX_NAMES, spelt
 from test_dry_run_asks_remotes import (DRY_RUN_DONE, live_bare, load,
                                        no_gh_run, scratch_env, without_gh)
 
@@ -71,17 +74,6 @@ PROJECT = "Atlas"
 HOLDER = "Orbit"
 SCAFFOLD_FOLDER = "REFUSED scaffold-folder-cannot-be-made"
 FAMILY_FOLDER = "REFUSED family-folder-cannot-be-made"
-
-#: A command line and a file name on Windows hold none of these.
-POSIX_NAMES = pytest.mark.skipif(
-    os.name == "nt",
-    reason="needs a folder name holding a control character, which a "
-           "Windows file name cannot hold")
-
-#: Folder names that are not safe to show raw (#692): an ESC, which a
-#: terminal acts on, and a line break then a line that is not the tool's.
-ESC_NAME = "wd-\x1b[31mRED"
-FORGED_NAME = "wd-\nWARNING forged-line: pwned"
 
 
 def touch(path: Path) -> None:
@@ -203,14 +195,6 @@ def init_in(tmp_path: Path, *landing: str, remotes: str = "r"):
 def at(tmp_path: Path, relative: str) -> Path:
     """A path under `tmp_path` as the tools name it: resolved."""
     return (tmp_path / relative).resolve()
-
-
-def spelt(path: Path) -> str:
-    """A path that holds a control character as a refusal names it (#692):
-    as Python's `repr` spells it, quotes and `\\x1b` and `\\n` and all. It
-    is `repr`, and not `shown_source`, so a change to that function moves no
-    expectation with it."""
-    return repr(str(path))
 
 
 def case_params(cases: dict) -> list:
