@@ -52,7 +52,8 @@ from pathlib import Path
 
 import pytest
 
-from conftest import WINDOWS_SKIP, clone_just_pushed, git, run_script
+from conftest import (WINDOWS_SKIP, clone_just_pushed, git, run_script,
+                      skip_where_a_name_cannot_be_not_utf_8)
 #: The layer stand-in a chain descendant pins, from the module that scaffolds
 #: one: a second way of building it would test a different one.
 from test_scaffold_pin_and_reuse import layer_repo
@@ -670,16 +671,15 @@ def test_a_name_that_is_not_utf8_is_never_an_exception_quoted_as_a_finding(
     today the row is the crash row; a script that prints such a name will
     make it the `naming-unclassified` FINDING, and either is a true row --
     what this test holds is that the exception is never the finding.
-    `WINDOWS_SKIP`: Windows has no name that is not UTF-8, and a disk that
-    refuses one (APFS) skips.
+    `WINDOWS_SKIP`: Windows has no name that is not UTF-8. A system or a
+    disk that cannot carry one (APFS's EILSEQ) skips, asked of
+    `skip_where_a_name_cannot_be_not_utf_8`; any other error of the disk,
+    a full one or a read-only `tmp_path`, fails the test (#834).
     """
+    skip_where_a_name_cannot_be_not_utf_8(tmp_path)
     name = os.fsdecode(b"Atl\xffas")
     here = tmp_path / "elsewhere" / name
-    try:
-        here.mkdir(parents=True)
-    except OSError as exc:
-        pytest.skip(f"this filesystem refuses a name that is not UTF-8: "
-                    f"{exc}")
+    here.mkdir(parents=True)
     result = doctor(standard, here, "--json")
     payload = payload_of(result)
     row = rows_of(result)["naming"]

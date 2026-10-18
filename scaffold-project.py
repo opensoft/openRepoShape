@@ -48,7 +48,13 @@ value the validator refuses (a blank `--elected-by`, `--reference` or
 `--name`, an `--org` it cannot hold) is refused as
 `scaffold-manifest-invalid`, in the validator's own words; an `--elected-on`
 is read in the validator's form only, on every Python. A name that cannot be a
-directory's is refused as `scaffold-name-too-long`.
+directory's is refused as `scaffold-name-too-long`, and so is one GitHub will
+not give a repository; an `--org` longer than GitHub keeps one is
+`scaffold-org-too-long`, and an id whose topic GitHub will not set is
+`scaffold-topic-too-long` (#838). An `--org` holding a character GitHub gives
+no organisation (`.`), ending in a hyphen or holding two in a row is
+`scaffold-bad-org` (#863). GitHub's limits are asked only without
+`--local-remote-dir`, by the runs that make repositories on GitHub.
 
 IDEMPOTENCY. It refuses to write into a remote or a working directory that
 already exists. There is no --force: re-running over a live project is not a
@@ -86,7 +92,8 @@ sys.path.insert(0, str(SHAPE_ROOT / "scripts"))
 from repo_shape import (  # noqa: E402
     COMMIT_RE, NEUTRAL_PRODUCT_OWNER, PROJECT_ID_RE, TREE_DIGEST_DEFINITION,
     VISIBILITY_CHOICES, NamingPolicy, Refusal, accepts_role, checked_value,
-    git_out, link_pins_from_trees, repo_basename, shell_line, tree_digest,
+    git_out, link_pins_from_trees, repo_basename, shell_line, shown_path,
+    tree_digest,
 )
 from shape_materialize import (  # noqa: E402
     RULESET_HINT, SHAPE_REPOSITORY, CommandFailed,
@@ -108,6 +115,15 @@ from shape_materialize import (  # noqa: E402
 from shape_materialize import (  # noqa: E402
     refuse_manifest_values, refuse_unstorable_names,
 )
+# And what GitHub keeps a repository's name, a topic and an organisation's
+# name to, asked before anything is created where GitHub is (#838).
+from shape_materialize import (  # noqa: E402
+    GITHUB_ID_MAX, GITHUB_NAME_MAX, GITHUB_OWNER_MAX, GITHUB_PROJECT_MAX,
+    GITHUB_TOPIC_MAX, refuse_a_topic_github_cannot_set,
+    refuse_an_owner_github_cannot_have,
+)
+# And the characters GitHub gives an organisation's name (#863).
+from shape_materialize import refuse_an_owner_github_cannot_spell  # noqa: E402
 from shape_advisory import scaffold_lines  # noqa: E402
 # Whether `--elected-by`, `--reference` and `--name` are text a file can
 # hold: the question `adopt-project.py` asks of the same values (#282).
@@ -131,8 +147,11 @@ from repo_shape import YamlError, double_quoted, parse_yaml  # noqa: E402
 # not-found answer as the one failure of `gh repo view` that means absent.
 from shape_materialize import (  # noqa: E402
     make_folder, refuse_unless_not_found, refuse_unmakeable_folder,
-    target_in_the_way, target_remediation,
+    shown_source, target_in_the_way, target_remediation,
 )
+# How the READMEs' `git clone` line spells the clone URL, one word (#693),
+# in the quoting `shell_line` gives the NEXT STEPS clone (#486).
+from repo_shape import shell_quoted  # noqa: E402
 
 #: How a refusal names each value the manifest records (#258, #261). The leg
 #: paths are not here: `refuse_bad_leg_paths` asks for them (#179, #225).
@@ -265,12 +284,25 @@ def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(
         description=__doc__.splitlines()[0],
         formatter_class=argparse.RawDescriptionHelpFormatter)
-    parser.add_argument("--org", required=True)
+    # GITHUB'S LIMITS, said where each value is typed (#838), and asked
+    # only without `--local-remote-dir`, as the plan asks them.
+    parser.add_argument("--org", required=True,
+                        help="the organisation the three repositories are "
+                             f"created in; at most {GITHUB_OWNER_MAX} "
+                             "characters without --local-remote-dir, "
+                             "GitHub's limit on an organisation's name")
     parser.add_argument("--project", required=True,
-                        help="the assembly-root name, e.g. Atlas")
+                        help="the assembly-root name, e.g. Atlas; at most "
+                             f"{GITHUB_PROJECT_MAX} characters without "
+                             "--local-remote-dir, as GitHub keeps a "
+                             f"repository's name to {GITHUB_NAME_MAX} and "
+                             "`-spec` adds 5")
     parser.add_argument("--id", default=None,
                         help="lowercase project id (default: --project "
-                             "lowercased)")
+                             f"lowercased); at most {GITHUB_ID_MAX} "
+                             "characters without --local-remote-dir, as "
+                             "GitHub keeps the topic `xf-project-<id>` to "
+                             f"{GITHUB_TOPIC_MAX}")
     parser.add_argument("--name", default=None, help="display name")
     parser.add_argument("--visibility", choices=VISIBILITY_CHOICES,
                         default=None,
@@ -378,7 +410,10 @@ def main(argv: list[str] | None = None) -> int:
                              "--pin and no --referent-chain to read it, it "
                              "is refused as `pin-source-unused`; an empty "
                              "value is refused as `pin-source-no-path`, and "
-                             "`.` means this directory.")
+                             "`.` means this directory. A --pin's digest is "
+                             "read only at a clone's top level, or a bare "
+                             "clone's: any other path is refused as "
+                             "`pin-source-not-a-clone`.")
     parser.add_argument("--work-dir", type=Path, default=None,
                         help="where the working trees are built "
                              "(default: a temporary directory)")
@@ -546,6 +581,11 @@ def _reusable_remotes(names: dict, urls: dict, repositories: dict,
     always was, of `remote_is_empty` or `local_remote_is_empty`; the seed is
     asked only of a leg that is not empty, and a leg git cannot read is
     refused as one with commits, saying so (#542).
+
+    A LOCAL REMOTE IS NAMED AS `shown_path` NAMES A PATH (#766), as
+    `family.py init` names its holder's: it is a path under
+    `--local-remote-dir`, where `scaffold-unwritable-value` refuses a
+    control character first. A GitHub `<org>/<name>` is named as it is.
     """
     reused: dict[str, str | None] = {}
     with tempfile.TemporaryDirectory(prefix="openreposhape-seed-") as scratch:
@@ -567,7 +607,8 @@ def _reusable_remotes(names: dict, urls: dict, repositories: dict,
                 continue
             raise Refusal(
                 "scaffold-remote-exists",
-                f"{target} already exists" + ("" if local else " on GitHub")
+                f"{shown_path(target) if local else target} already exists"
+                + ("" if local else " on GitHub")
                 + ("" if empty else " and has commits"),
                 _exists_remedy(role, empty, reuse_flag, seed is not None,
                                unread))
@@ -822,6 +863,63 @@ def _refuse_bad_id(project_id: str, given: str | None) -> None:
                   DERIVED_ID_REMEDIATION)
 
 
+#: How `scaffold-topic-too-long` and `scaffold-org-too-long` are told to go
+#: on (#838). A `--id` the person passed is theirs to shorten. One
+#: `_identity` derived is `--project` lowercased, and an explicit `--id` is
+#: the way round it that keeps the three repositories' names as they are.
+NOTHING_MADE = ("Remediation: nothing was created, and `--dry-run` refuses "
+                "the same.")
+PASSED_TOPIC_REMEDIATION = (
+    f"{NOTHING_MADE} Pass a shorter --id, of at most {GITHUB_ID_MAX} "
+    "characters.")
+DERIVED_TOPIC_REMEDIATION = (
+    f"{NOTHING_MADE} Pass an explicit --id of at most {GITHUB_ID_MAX} "
+    f"characters: the id need not be {ID_DERIVED_FROM}, and --project, "
+    "which names the three repositories, stays as it is.")
+ORG_REMEDIATION = (
+    f"{NOTHING_MADE} Pass --org as GitHub spells the organisation, the "
+    "`<org>` of `https://github.com/<org>`: GitHub gives no user or "
+    f"organisation a name of more than {GITHUB_OWNER_MAX} characters.")
+#: How `scaffold-bad-org` is told to go on (#863): `ORG_REMEDIATION`'s way
+#: out, without the number, which is not what it broke.
+ORG_SPELLING_REMEDIATION = (
+    f"{NOTHING_MADE} Pass --org as GitHub spells the organisation, the "
+    "`<org>` of `https://github.com/<org>`.")
+
+
+def _refuse_what_github_cannot_hold(args, project_id: str, policy) -> None:
+    """`scaffold-org-too-long` and `scaffold-topic-too-long`: an `--org`
+    GitHub gives no organisation, and an id whose `xf-project-<id>` topic
+    GitHub will not set (#838); and `scaffold-bad-org`, an `--org` whose
+    characters GitHub gives no organisation (#863). Each is refused where
+    GitHub is asked, before any repository or work directory exists and
+    under `--dry-run` alike. No process has started yet where `--elected-by`
+    or GIT_AUTHOR_NAME names the elector; otherwise `_identity` has asked
+    `git config user.name` first, as it has before `scaffold-bad-id`.
+
+    THE TOPIC IS SET LAST (`_set_topics`), after `_create_remotes`,
+    `_seed_legs` and `_build_assembly_root`, so an id over 39 characters,
+    which a `--project` of 40 or more gives by default, failed there with
+    all three repositories created and seeded. Under `--local-remote-dir`
+    neither is asked: a bare repository on disk has no topic and no owner.
+    The id is named as `_refuse_bad_id` names it, by where it came from."""
+    if args.local_remote_dir is not None:
+        return
+    refuse_an_owner_github_cannot_have("scaffold-org-too-long", args.org,
+                                       "--org", ORG_REMEDIATION)
+    refuse_an_owner_github_cannot_spell("scaffold-bad-org", args.org,
+                                        "--org", ORG_SPELLING_REMEDIATION)
+    if args.id:
+        named, remediation = "--id", PASSED_TOPIC_REMEDIATION
+    else:
+        unset = "not given" if args.id is None else "empty"
+        named = f"--id ({unset}, so {ID_DERIVED_FROM})"
+        remediation = DERIVED_TOPIC_REMEDIATION
+    refuse_a_topic_github_cannot_set(
+        "scaffold-topic-too-long", policy.topic_for(project_id), project_id,
+        named, remediation)
+
+
 #: How a refusal names an elector `_elector` did not get from `--elected-by`
 #: (#282), so the sentence says where the value came from and not a flag
 #: nobody typed: the words #255's `plan` uses for its own fallback.
@@ -902,18 +1000,34 @@ def _refuse_unwritable_values(fields) -> None:
 #: What a `scaffold-unwritable-value` for the clone URL is told to do (#433).
 #: It is not `UNWRITABLE_REMEDIATION`, which says to retype a value: the path
 #: is a directory, so the way out is another directory, or GitHub.
+#:
+#: THE URL IS THE PATH `--local-remote-dir` RESOLVES TO (#693), so one typed
+#: as text can lead through a symbolic link to a directory whose name is not,
+#: or be relative to one; told only to pass a path that is "one line of UTF-8
+#: text", which it was, a person renames the link and is refused again, so
+#: the remedy says where the fault is. And as `UNWRITABLE_REMEDIATION` says
+#: (#282), a lone surrogate, which a Windows name can hold, cannot be
+#: written either: the READMEs quote the URL for a shell (#693) and write
+#: every character of it as itself but an apostrophe.
 CLONE_URL_REMEDIATION = (
     "Remediation: nothing was created, and `--dry-run` refuses the same. "
     "Pass a --local-remote-dir whose path is one line of UTF-8 text with no "
     "control character in it, a directory renamed or made anew, and run "
     "again; or scaffold against GitHub, without --local-remote-dir, where "
-    "the clone URL is `https://github.com/<org>/<name>.git`. The READMEs "
-    "print the clone URL as it stands: a byte that is not UTF-8 in the path "
-    "(a directory named in a legacy code page) cannot be written at all, a "
-    "line break or a control character would break or garble the line it is "
-    "written into, and a bidirectional embedding, override or isolate "
-    "control would show the rest of that line in another order than it is "
-    "written.")
+    "the clone URL is `https://github.com/<org>/<name>.git`. The clone URL "
+    "is the path --local-remote-dir resolves to, so where the path given is "
+    "text and the URL named above is not, the fault is in what it leads "
+    "through: a symbolic link on it whose target is not text, or, for a "
+    "relative path, the directory it was given from. Rename or replace the "
+    "directory whose name is not text, or pass a path that does not lead "
+    "through it; renaming a link changes nothing. The READMEs print the "
+    "clone URL in a `git clone` line, in quotes where a shell needs them, "
+    "every character but an apostrophe written as itself: a byte that is "
+    "not UTF-8 in the path (a directory named in a legacy code page), or a "
+    "lone surrogate, cannot be written at all, a line break or a control "
+    "character would break or garble the line it is written into, and a "
+    "bidirectional embedding, override or isolate control would show the "
+    "rest of that line in another order than it is written.")
 
 
 def _refuse_an_unwritable_clone_url(local: bool, url: str) -> None:
@@ -1303,7 +1417,7 @@ def _refuse_existing_trees(work_root: Path, names: dict) -> None:
         if why:
             raise Refusal(
                 "scaffold-target-exists",
-                f"{target} already exists and {why}",
+                f"{shown_source(target)} already exists and {why}",
                 target_remediation(
                     why,
                     "Remediation: choose an empty --work-dir. There is no "
@@ -1696,10 +1810,11 @@ def _neutral_pin_entry(product: str) -> str:
 
     THE READER IS ASKED, as `family.py` asks it of a member's id (#259),
     rather than a list of the words it takes for something else, and it is
-    asked of the LIST ENTRY: `  - -` is a list of its own, where `id: -` is
-    the text. A name it reads back bare, `openGlass` and every other plain
-    name, is the line it always was; `007`, `2026`, `1.5`, `true` and `null`
-    are double-quoted, and a double-quoted name always reads back.
+    asked of the LIST ENTRY: `  - - a` is a list of its own, where `id: - a`
+    is the text (#715; `id: -` is refused since #393). A name it reads back
+    bare, `openGlass` and every other plain name, is the line it always was;
+    `007`, `2026`, `1.5`, `true` and `null` are double-quoted, and a
+    double-quoted name always reads back.
     """
     try:
         if parse_yaml(f"neutral_product_pins:\n  - {product}\n") \
@@ -1775,9 +1890,14 @@ def _scaffold(args) -> int:
     # `--local-remote-dir`, as a bare `<name>.git` (#261): a `--project` of
     # 247 to 250 characters died in `Path.exists` with a traceback, and one
     # of 251 or more in the work directory, where adopt's `check` refused it.
+    # And without it, each is a GitHub repository's, which GitHub keeps to
+    # 100 characters: a `--project` of 96 to 250 planned and met GitHub's
+    # refusal at the first `gh repo create` (#838).
+    on_disk = args.local_remote_dir is not None
     refuse_unstorable_names(
         "scaffold-name-too-long", list(names.values()),
-        list(names.values()) if args.local_remote_dir is not None else [])
+        list(names.values()) if on_disk else [],
+        [] if on_disk else list(names.values()))
     # THE CLONE URL IS A PATH A FILE WILL HOLD (#433): under
     # `--local-remote-dir` it is the bare repository's own path, which the
     # READMEs print, so it is asked here, as the free-text values are asked
@@ -1787,6 +1907,7 @@ def _scaffold(args) -> int:
     _refuse_an_unwritable_clone_url(local, urls["assembly"])
     policy = NamingPolicy.load(SHAPE_ROOT / "contracts" / "repository-naming.yaml")
     _refuse_bad_id(project_id, args.id)
+    _refuse_what_github_cannot_hold(args, project_id, policy)
     # WHAT THE PROJECT DECLARES ABOUT ITSELF, before any name is judged.
     # With no `--pin`, a descendant-form name is a claim with no referent and
     # the DECLARED ROLE wins. With `--pin openGlass@<sha>`, `MedxGlass` IS a
@@ -1854,8 +1975,14 @@ def _scaffold(args) -> int:
         "SHAPE_COMMIT": shape_commit,
         "SHAPE_TREE_SHA256": shape_tree,
         "DIGEST_DEFINITION": TREE_DIGEST_DEFINITION,
-        "CLONE_URL": urls["assembly"],
-        "ASSEMBLY_CLONE_URL": urls["assembly"],
+        # ONE WORD OF A COMMAND A PERSON PASTES (#693): every README prints
+        # it in `git clone --recurse-submodules <url>`, and under
+        # `--local-remote-dir` it is a path, which was rendered raw, so one
+        # under `a b/` split the line when pasted. POSIX quoting whatever the
+        # host, as `_next_steps_clone` prints it (#532): a README is a
+        # committed file read on every OS. A GitHub URL is left bare.
+        "CLONE_URL": shell_quoted(urls["assembly"], "posix"),
+        "ASSEMBLY_CLONE_URL": shell_quoted(urls["assembly"], "posix"),
         "NEUTRAL_PRODUCT_PINS": _neutral_product_pins(pins),
         "ASSEMBLY_NAMING": naming_block(policy, names["assembly"], "assembly",
                                         declared_pins, chain=chain),
