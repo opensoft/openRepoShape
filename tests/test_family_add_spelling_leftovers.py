@@ -59,7 +59,7 @@ import pytest
 from conftest import (
     cloned_just_pushed, git, rmtree, submodule_update_through_git,
 )
-from test_family import NAME, ORG, SPARE, family  # noqa: F401
+from test_family import NAME, ORG, SPARE, family, validate  # noqa: F401
 from test_family_add_member_variant import (
     MOVE_OUT, OTHER_ROW, OTHER_VARIANT, REMOVE, ROW, SUBMODULE, VARIANT,
     VARIANT_SHOWN, dry_run_in_process, guarded, in_the_index, moved_back,
@@ -495,6 +495,34 @@ def test_the_section_named_after_the_row_beside_its_path_is_taken_out(
     cloned_with_the_member(holder, family["remotes"], tmp_path,
                            "w865f/named-after-the-row", commit)
     gate_then_add(offline, holder, family["remotes"])
+
+
+def test_a_variant_section_no_rule_names_is_left_to_the_gate(
+        family, holder, family_module):
+    """No section gives `members/IRRS` and none is named after it: the
+    member's own section is gone, and a section `stale` gives `Members/IRRS`
+    with the member's url. It may be the member's only registration, so
+    `add` neither points it back nor takes it out, and leaves it to the
+    gate, which names it and prints no command for it (`WRONG_CASE`), as
+    taking it out could un-register the member. At `4268f804` it was
+    pointed back, whatever submodule it belonged to."""
+    url = git("config", "-f", ".gitmodules", f"submodule.{ROW}.url",
+              cwd=holder).stdout.strip()
+    git("config", "-f", ".gitmodules", "--remove-section",
+        f"submodule.{ROW}", cwd=holder)
+    for key, value in (("path", VARIANT), ("url", url)):
+        git("config", "-f", ".gitmodules", f"submodule.stale.{key}", value,
+            cwd=holder)
+    git("add", "--", ".gitmodules", cwd=holder)
+    git("commit", "-qm", "The member's section renamed stale, astray",
+        cwd=holder)
+    rows = family_module._rows_paths(family_module.Family.open(holder).members)
+    assert family_module._members_spellings(
+        holder, SPARE, family_module._members_on_disk(holder), rows) == []
+    gate = validate(holder, "--no-members")
+    assert gate.returncode == 1, gate.stdout + gate.stderr
+    assert "taking this section out could un-register it" in (
+        gate.stdout + gate.stderr)
 
 
 # --- 2. a checkout inside a directory moved ----------------------------------
