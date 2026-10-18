@@ -4003,8 +4003,9 @@ SLOT_SAYS = {
 }
 
 #: What the row says instead of a `not-a-clone` slot that a holder's pinned
-#: `siblings.py` from before #735 ends in a traceback on: what is there, and
-#: nothing of what `make siblings` does with it.
+#: `siblings.py` from before #735 ends in a traceback on, or from before
+#: #784 ends `CLONE FAILED` on: what is there, and nothing of what `make
+#: siblings` does with it.
 UNREADABLE_SAYS = {
     "file": "is a file, not a folder, so it is not counted as its working "
             "clone",
@@ -4012,6 +4013,8 @@ UNREADABLE_SAYS = {
                   "as its working clone",
     "unenterable": "is a folder that cannot be listed, so it is not counted "
                    "as its working clone",
+    "dangling": "is a link to nothing, so it is not counted as its working "
+                "clone",
 }
 
 #: The state the holder's own `scripts/siblings.py --dry-run` prints in its
@@ -4058,14 +4061,21 @@ SLOTS = [
     pytest.param("clone", "working-clone", id="the-working-clone"),
 ]
 
-#: A file at `../IRRS`, and the two `LOCKED` folders: `not-a-clone`, and the
-#: slots `make siblings` ended in a traceback on before #735.
+#: A symbolic link needs a privilege on Windows.
+LINKS_HOLD = pytest.mark.skipif(
+    os.name == "nt", reason="a symbolic link needs a privilege on Windows")
+
+#: A file at `../IRRS`, the two `LOCKED` folders and a link to nothing, each
+#: `not-a-clone`: before #735 `make siblings` ended in a traceback on the
+#: first three, and before #784 in `CLONE FAILED` on the link.
 UNREADABLE_SLOTS = [
     pytest.param("file", "not-a-clone", id="a-file"),
     pytest.param("unlistable", "not-a-clone", id="a-folder-it-cannot-list",
                  marks=LOCKED_HOLDS),
     pytest.param("unenterable", "not-a-clone",
                  id="a-folder-it-cannot-enter", marks=LOCKED_HOLDS),
+    pytest.param("dangling", "not-a-clone", id="a-link-to-nothing",
+                 marks=LINKS_HOLD),
 ]
 
 
@@ -4090,6 +4100,8 @@ def holder_with_slot(holder: dict, tmp_path: Path, slot: str) -> Path:
         (beside / "notes.txt").write_text("somebody's\n", encoding="utf-8")
     elif slot == "file":
         beside.write_text("somebody's\n", encoding="utf-8")
+    elif slot == "dangling":
+        beside.symlink_to(folder / "nowhere", target_is_directory=True)
     elif slot == "another-repository":
         git("init", "-q", "-b", "main", ".", cwd=beside)
     elif slot not in ("holder", "nothing", "empty"):
@@ -9577,9 +9589,10 @@ def test_the_scaffold_lines_quoting_is_the_asked_for_platforms_too():
     assert module.scaffold_command(WINDOWS_SHAPE_SPACED, "Atlas", "posix") == (
         r"'C:\Program Files\openRepoShape\setup.sh' "
         "--org <your-org> --project Atlas")
-    # NO PLATFORM IS STILL THE HOST, unchanged: `quote_arg(value, None)`
-    # resolves `os.name` exactly as `quote_arg(value, os.name)` does, so the
-    # line every real run prints is the one it printed before.
+    # NO PLATFORM IS STILL THE HOST: `quote_arg(value, None)` asks
+    # `host_shell_dialect` (#711), which answers `os.name` wherever `MSYSTEM`
+    # is unset, so off Git Bash the line every real run prints is the one it
+    # printed before.
     assert module.scaffold_command(WINDOWS_SHAPE, "Atlas") == (
         windows if os.name == "nt" else posix)
 
@@ -10089,22 +10102,26 @@ def test_the_interpreter_named_is_the_asked_for_platforms(platform, expected):
 CURLY_APOSTROPHE = "O\u2019Neill"
 
 
-def test_a_curly_apostrophe_is_normalized_before_it_is_quoted():
-    """`quote_arg` must ascii-normalize FIRST, or `Row.__init__` breaks it.
+@pytest.mark.parametrize(("platform", "spelled"), [
+    ("posix", r"$'O\342\200\231Neill'"),
+    ("nt", "('O' + [char]0x2019 + 'Neill')"),
+])
+def test_a_curly_apostrophe_is_escaped_where_the_row_cannot_reach_it(
+        platform, spelled):
+    """`quote_arg` must leave `Row.__init__` nothing to change in a value.
 
     `Row.__init__` runs `ascii_text` again, after quoting, over the whole
     assembled command -- so a curly apostrophe that reached this function
     unconverted came back out of THAT pass as a bare, undoubled one, on the
     far side of the quoting it sat inside. `'O'Neill'` is an unterminated
     quotation to `sh`, and PowerShell's own verbatim string is exactly as
-    broken by an apostrophe that never got doubled. Normalizing here first
-    means the value quoted is already plain ASCII, so that later pass has
-    nothing left to do.
+    broken by an apostrophe that never got doubled (Copilot, PR #102). It was
+    flattened to `'` here first, which named another path; it is ESCAPED
+    now, in ASCII the later pass leaves alone, and stands for this one
+    (#785, `tests/test_doctor_non_ascii_paths.py` runs it).
     """
     module = doctor_module(REPO)
-    posix = module.quote_arg(CURLY_APOSTROPHE, "posix")
-    assert shlex.split(posix) == ["O'Neill"], posix
-    assert module.quote_arg(CURLY_APOSTROPHE, "nt") == "'O''Neill'"
+    assert module.quote_arg(CURLY_APOSTROPHE, platform) == spelled
 
 
 def test_a_trailing_newline_is_quoted_not_waved_through():
