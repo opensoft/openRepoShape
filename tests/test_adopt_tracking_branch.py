@@ -21,12 +21,12 @@ against that branch, a base the source lacks refused before any `gh` runs, and
 one the clone remembers after GitHub renamed it, which `execute` asks the
 remote about, are in `tests/test_adopt_github_exits.py`, beside the other exits
 a GitHub run has. The only `gh` run here is `check`'s: given no
-`--local-remote-dir`, and once nothing before it refuses and the plan's names
-and `org:` pass, it asks `gh repo view` once of the spec leg's repository and
-once of the code leg's (#798), and off Windows the session's guard answers each
-as a `gh` with no login does (`tests/gh_guard.py`). Every run below is `plan`
-and `check`, which read a local source, or `execute --local-remote-dir`, which
-refuses before any leg or adopts.
+`--local-remote-dir`, and once nothing before it ends `check` and the plan's
+names and `org:` pass, it asks `gh repo view` once of the spec leg's repository
+and once of the code leg's (#798), and off Windows the session's guard answers
+each as a `gh` with no login does (`tests/gh_guard.py`). Every run below is
+`plan` and `check`, which read a local source, or `execute --local-remote-dir`,
+which refuses before any leg or adopts.
 
 The branch the source is read at is one of its own (#797). A clone made with
 `git clone -b dev` has `origin/HEAD` naming `main` and no `main` of its own,

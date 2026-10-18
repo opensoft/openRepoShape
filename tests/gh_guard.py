@@ -1,5 +1,5 @@
 # SPDX-License-Identifier: Apache-2.0
-"""The suite's `gh` (#296): two answers, one refusal, and a log of every call.
+"""The suite's `gh` (#296, #798): three answers, a refusal, every call logged.
 
 WHY IT EXISTS. `tests/conftest.py` says NO NETWORK AND NO GITHUB, and 149
 tests broke that without a word. Every doctor run ends in the `machine` row,
@@ -14,20 +14,20 @@ them, because the preflight captures `gh`'s output.
 WHAT IT DOES. `tests/conftest.py` copies this file into a directory under
 pytest's temporary root, writes two launchers beside it -- `gh`, a POSIX
 `#!/bin/sh`, and `gh.cmd` -- and puts that directory FIRST on PATH for the
-whole session, so every child inherits it however it was started. Asked one
-of the two `PROBES`, it answers; asked anything else, it refuses with
-`GUARD_EXIT` and one line naming `tests/conftest.py`. Every call, the probes
-included, is one JSON line in `LOG_NAME` beside this file, carrying its argv
-and `$PYTEST_CURRENT_TEST`; `failure` is the decision the per-test check in
-`tests/conftest.py` makes over the lines a test added.
+whole session, so every child inherits it however it was started. Asked one of
+the two `PROBES`, or the `repo view` of #798 below, it answers; asked anything
+else, it refuses with `GUARD_EXIT` and one line naming `tests/conftest.py`.
+Every call, the probes included, is one JSON line in `LOG_NAME` beside this
+file, carrying its argv and `$PYTEST_CURRENT_TEST`; `failure` is the decision
+the per-test check in `tests/conftest.py` makes over the lines a test added.
 
 WHY THE PROBES ARE ANSWERED RATHER THAN REFUSED. They are how the machine row
 and the installed command learn whether `gh` is there and logged in, and
 nothing else. Answered as "present, not logged in" -- the state of a CI
 runner, which exports no token -- the row is exercised by every doctor test,
 says the same thing on every machine off Windows, and needs no flag in the
-doctor to leave it out; there a logged-in operator gets the output CI gets. On
-Windows the preflight's bare `gh` skips the guard's `gh.cmd`
+doctor to leave it out; off Windows a logged-in operator gets the output CI
+gets. On Windows the preflight's bare `gh` skips the guard's `gh.cmd`
 (`tests/conftest.py`), so a doctor run there asks a real `gh.exe` where one is
 installed, and the row reports what that `gh` says. "Not logged in" also stops
 the preflight short of `gh api user`, its one call that would fetch something.
@@ -42,10 +42,10 @@ refused.
 ONE MORE CALL IS ANSWERED (#798): `gh repo view <owner>/<name> --json
 nameWithOwner`, which `adopt-project.py check` asks of each leg repository it
 would create, as `execute` does before it makes either. Every `check` in this
-suite that is given no `--local-remote-dir`, once nothing before it refuses and
-the plan's names and `org:` pass, asks it twice, once of each leg, and refused,
-each such test would fail. It is answered as a `gh` with no login answers it,
-the state the other two answers describe: exit 4 and gh's own words
+suite that is given no `--local-remote-dir`, once nothing before it ends
+`check` and the plan's names and `org:` pass, asks it twice, once of each leg,
+and refused, each such test would fail. It is answered as a `gh` with no login
+answers it, the state the other two answers describe: exit 4 and gh's own words
 (`NEEDS_A_LOGIN`), so `check` prints, off Windows, the NOTE that it could not
 ask, and still passes. On Windows a bare `gh` skips the guard's `gh.cmd`
 (`tests/conftest.py`), and where a logged-in `gh.exe` is installed it answers
