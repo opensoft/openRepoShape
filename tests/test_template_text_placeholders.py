@@ -31,7 +31,12 @@ read back as 7.
 
 NO NETWORK AND NO GITHUB: templates rendered in memory, and scaffolds,
 adoptions and families into local bare remotes (`--local-remote-dir`), which
-never call `gh`.
+never call `gh`. The only `gh` run here is `check`'s, in the two adoption
+tests that run it before `execute` and give it no `--local-remote-dir`: once
+the plan's names and `org:` pass, it asks `gh repo view` once of the spec
+leg's repository and once of the code leg's (#798), and off Windows the
+session's guard answers each as a `gh` with no login does
+(`tests/gh_guard.py`).
 """
 
 from __future__ import annotations

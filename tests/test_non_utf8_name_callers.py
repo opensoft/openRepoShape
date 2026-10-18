@@ -53,7 +53,9 @@ import test_clone_url_bytes as clone_url_bytes
 import test_non_utf8_git_reads as non_utf8_git_reads
 import test_stdout_encoding as stdout_encoding
 from conftest import (NOT_UTF_8_PROBE, skip_message,
-                      skip_where_a_name_cannot_be_not_utf_8, windows_fsencode)
+                      skip_where_a_name_cannot_be_not_utf_8,
+                      skip_where_the_environment_cannot_carry,
+                      windows_fsencode)
 # The fixture of `test_adopt_plan_escapes.py`, `adopt-project.py` loaded as a
 # module, which two of its tests ask for.
 from test_adopt_plan_escapes import adopter  # noqa: F401 - fixture
@@ -285,8 +287,7 @@ def test_a_write_the_disk_refuses_still_fails_the_make_file_test(
     skip on `make_file`'s own "filesystem" reason would end it SKIPPED, and
     no run fails on that; before #834 it did skip, and the test failed on
     its assert that the call is not a skip."""
-    non_utf8_git_reads.skip_where_the_environment_cannot_carry(
-        non_utf8_git_reads.UTF8)
+    skip_where_the_environment_cannot_carry(non_utf8_git_reads.UTF8)
 
     def write_bytes(self, data):
         raise OSError(code, os.strerror(code), str(self))
@@ -301,8 +302,7 @@ def test_a_write_the_disk_refuses_still_fails_the_make_file_test(
 def test_a_user_name_the_encoding_cannot_carry_skips_where_it_is_ascii(
         monkeypatch, value):
     monkeypatch.setattr(os, "fsencode", ascii_fsencode)
-    reason = skip_message(
-        non_utf8_git_reads.skip_where_the_environment_cannot_carry, value)
+    reason = skip_message(skip_where_the_environment_cannot_carry, value)
     assert reason is not None, f"{value!r} was carried by an ASCII encoding"
     assert "file name encoding" in reason, reason
 
@@ -315,9 +315,8 @@ def test_a_user_name_the_encoding_carries_is_not_skipped_even_where_it_is_ascii(
     """ASCII text, a lone surrogate that is a byte, and the control characters
     are the environment's own: the tests of them still run."""
     monkeypatch.setattr(os, "fsencode", ascii_fsencode)
-    assert skip_message(
-        non_utf8_git_reads.skip_where_the_environment_cannot_carry,
-        value) is None
+    assert skip_message(skip_where_the_environment_cannot_carry,
+                        value) is None
 
 
 @pytest.mark.parametrize("test, args", [
