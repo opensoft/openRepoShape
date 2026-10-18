@@ -1009,12 +1009,12 @@ def run_member_target(root: Path, row: dict, target: str) -> str | None:
 #: make's does not carry, since make exits 2 for any command that fails
 #: (#839); `*** No rule to make target ...`, or `*** [Makefile:44:
 #: bootstrap] Killed`, where make fails on its own or a signal ends what it
-#: ran, with none; and `[Makefile:44: bootstrap] Error 2 (ignored)`, with no
-#: `***`, where a `-` before a command lets it fail with a make's code
-#: (#884).
+#: ran, with none; and `[Makefile:44: bootstrap] Error 1 (ignored)`, or
+#: `Killed (ignored)` where a signal ended it, with no `***`, where a `-`
+#: before a command lets it fail, whatever ended it (#884, #890).
 MAKE_FAILED_RE = re.compile(
     rb"(?:\[(\d+)\])?: (?:\*\*\* (?:\[[^\n]*\] Error (\d+)\s*$)?"
-    rb"|\[[^\n]*\] Error 2 \((ignored)\)\s*$)")
+    rb"|\[[^\n]*\] [^\n]* \((ignored)\)\s*$)")
 #: The bytes `MakeErrors` keeps of a line of make's stderr not yet ended:
 #: an `Error <code>` line ends there, so the end of a line is enough.
 LINE_KEPT = 4096
@@ -1035,15 +1035,23 @@ class MakeErrors:
     and is passed over: where the member's make runs another (`$(MAKE)
     inner`), the code is the innermost command's, and where the inner make
     failed on its own there is none, as for make's own failure. Where a
-    `-` let that make fail (`Error 2 (ignored)`), the depth is the
-    parent's again, so an `Error 2` of the parent's own after it is named.
+    `-` let a command fail (`Error 1 (ignored)`, or `Killed (ignored)`,
+    whatever ended it), the make that says so goes on, and would print a
+    `***` line of its own if it failed after, so no `Error 2` is passed
+    over again until a `***` line comes: a parent's own `Error 2` after a
+    make a `-` let fail is named, however far below it the `-` was.
 
     WHERE THE CODE IS NOT THE INNERMOST COMMAND'S, since make's lines do
     not tell it:
-    - a recipe that runs a make, lets its failure pass in the shell (`||
-      true`, or `;`), or with a `-` in a make run with `-s`, which then
-      prints no `(ignored)` line, and exits 2 itself: its `Error 2` is
-      read as that make's report, and the inner command's code is named;
+    - a recipe that runs a make and lets its failure pass in the shell
+      (`|| true`, or `;`), or with a `-` in a make run with `-s`, which
+      prints no `(ignored)` line, then exits 2 itself with no `(ignored)`
+      line between: its `Error 2` is read as that make's report, and the
+      inner command's code is named;
+    - under `-k`, a make a `-` lets fail after a command that failed (`a:
+      $(MAKE) innerA`, whose command exits 1, then `b: -$(MAKE) innerB`,
+      whose command exits 3): the last `Error` line is the command's in
+      the make the `-` let fail, and its code, 3, is named;
     - an inner make run with `env -u MAKELEVEL`, which prints its parent's
       depth: the parent's `Error 2` is named;
     - under `-j`, a job of the parent's that fails while the inner make is
@@ -1073,7 +1081,7 @@ class MakeErrors:
         depth_said, code, ignored = found[-1]
         depth = int(depth_said or 0)
         if ignored:
-            self.depth = min(self.depth, depth)
+            self.depth = -1
             return
         reports_a_make = code == b"2" and depth < self.depth
         self.depth = depth
