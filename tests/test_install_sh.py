@@ -48,6 +48,9 @@ import pytest
 from conftest import (BASH, BASH_SKIP, REF_PARTS, REPO,
                       assert_a_copy_answers_as_git_does,
                       assert_the_refusal_states_the_ref_rule, bash_path)
+from conftest import (CONTROL, CONTROL_RULE, REF_RULE_WORDS, TAKEN,
+                      assert_a_copy_answers_as_the_rule_does,
+                      the_rules_answer)
 from test_openreposhape_command import (BIN_DIR_SPELLINGS, COMMAND,
                                         COMMAND_REFUSAL_ENDS,
                                         CYGPATH_STATES, HOLDS_A_COLON,
@@ -142,7 +145,7 @@ def curl():
         sys.stdout.buffer.write((
             "HTTP/2 302 \r\n%s: %s\r\ncontent-length: 0\r\n\r\n"
             % (NET.get("location_header", "location"), location)
-        ).encode("utf-8"))
+        ).encode("utf-8", "surrogateescape"))
         return 0
     served = NET["files"].get(url)
     if served is None:
@@ -248,14 +251,18 @@ class Net:
             self.fake("setup.sh", served))
 
     def run(self, *args: str, piped: bool = False, env: dict | None = None,
-            script: str | None = None) -> subprocess.CompletedProcess:
+            script: str | None = None,
+            errors: str | None = None) -> subprocess.CompletedProcess:
         """`bash install.sh <args>`, or `… | bash -s -- <args>` when piped;
-        `script` pipes that text in place of the installer's own."""
+        `script` pipes that text in place of the installer's own. `errors`,
+        how the output is read where it may hold a byte that is not UTF-8
+        (#940)."""
         (self.root / "net.json").write_text(json.dumps(self.config),
                                             encoding="utf-8")
         gh_config = self.tmp_path / "gh-config"
         gh_config.mkdir(exist_ok=True)
         how = {"cwd": str(self.tmp_path), "start_new_session": True,
+               "errors": errors,
                "env": command_env(home=self.tmp_path, setup_sh=None, env={
                    "PATH": str(self.path), "GH_TOKEN": "bogus",
                    "GH_CONFIG_DIR": str(gh_config),
@@ -1123,6 +1130,121 @@ def test_the_installer_refuses_a_value_drawn_as_another_unechoed(
     calls = net.calls()
     assert not any("-fsSL" in call for call in calls), calls
     assert bool(calls) is asks, calls
+
+
+# The three values a person hands install.sh, each ending in a row of
+# `CONTROL_RULE` (#940). Each takes how the value ends and what the table
+# says of it, and returns the arguments, the environment, the whole
+# refusal, and the words of the refusal the next check gives, which say the
+# control check took the value.
+
+def the_repository(end: str, said: str):
+    """`$OPENREPOSHAPE_REPO`, by `checked_repo`: a value it takes is no
+    owner/name, in those words, in either locale."""
+    value = "acme/r" + end
+    ending = "It must be an owner/name on github.com, such as " \
+        "opensoft/openRepoShape."
+    refusal = {
+        TAKEN: f"$OPENREPOSHAPE_REPO is '{value}', which is not an "
+               "owner/name on github.com, such as opensoft/openRepoShape: "
+               "this installer builds github.com URLs from it.",
+        CONTROL: "$OPENREPOSHAPE_REPO carries a control character; it must "
+                 "be an owner/name on github.com, such as "
+                 "opensoft/openRepoShape.",
+    }.get(said, f"$OPENREPOSHAPE_REPO {drawn_as_another(said)}. {ending}")
+    return (), {"OPENREPOSHAPE_REPO": value}, refusal, "not an owner/name"
+
+
+def the_version(end: str, said: str):
+    """The version, by `checked_version`: a value it takes is no ref, in
+    the shape's words."""
+    value = "v1" + end
+    refusal = {
+        TAKEN: f"the version is '{value}', which is not a release tag, "
+               f"branch or commit: {REF_RULE_WORDS}",
+        CONTROL: "the version carries a control character, which is not a "
+                 "release tag, branch or commit.",
+    }.get(said, f"the version {drawn_as_another(said)}. No release tag, "
+                "branch or commit holds one.")
+    return (value,), {}, refusal, REF_RULE_WORDS
+
+
+def the_option(end: str, said: str):
+    """An option, by the check in `main`: a value it takes is an unknown
+    option, named."""
+    value = "-x" + end
+    ending = "The one argument is a version, such as v1.0.1; with none, " \
+        "the newest release."
+    refusal = {
+        TAKEN: f"unknown option '{value}'. {ending}",
+        CONTROL: f"an option carries a control character. {ending}",
+    }.get(said, f"an option {drawn_as_another(said)}. {ending}")
+    return (value,), {}, refusal, "unknown option '"
+
+
+@NO_NON_ASCII_INTO_GIT_BASH
+@pytest.mark.parametrize("locale", LOCALES)
+@pytest.mark.parametrize("arrange", [the_repository, the_version, the_option],
+                         ids=lambda arrange: arrange.__name__)
+@pytest.mark.parametrize("end, said", CONTROL_RULE)
+def test_the_installer_answers_each_value_as_the_launchers_rule_does(
+        net, end, said, arrange, locale):
+    """`checked_repo`, `checked_version` and the option check held their
+    values to `[![:print:]]`, which under `C` matches every byte past
+    ASCII: a value with a letter past ASCII was refused there as carrying a
+    control character, and under `C.UTF-8` by the check after it, which
+    names it (#940). Each now asks the launcher's rule, #760's bytes under
+    `LC_ALL=C`, and gives each row of `CONTROL_RULE` its answer in both
+    locales: a value it takes goes on to the next check, which refuses it
+    in the words `C.UTF-8` gave, a lone `0x9B` byte too (#867's trade); a
+    control character is refused, never echoed, and U+202E, U+200B, U+2028
+    and U+2029 by their code points (#837). Exit 2 every time, nothing
+    placed, no request."""
+    args, env, refusal, next_check = arrange(end, said)
+    result = net.run(*args, env={**env, "LC_ALL": locale},
+                     errors="surrogateescape")
+    assert_a_copy_answers_as_the_rule_does(
+        f"install.sh's check of {arrange.__name__}",
+        end, said, the_rules_answer(result.stderr,
+                                    next_check in result.stderr))
+    net.refused(result)
+    assert net.calls() == [], net.calls()
+    if said == TAKEN:
+        assert result.stderr == f"\nREFUSED: {refusal}\n"
+        return
+    assert assert_refused_saying(result, refusal) == f"REFUSED: {refusal}"
+
+
+@NO_NON_ASCII_INTO_GIT_BASH
+@pytest.mark.parametrize("locale", LOCALES)
+@pytest.mark.parametrize("end", [
+    *(pytest.param(row.values[0], id=row.id)
+      for row in CONTROL_RULE
+      if row.values[1] == CONTROL and not row.values[0].endswith("\n")),
+    pytest.param("a" + chr(0xDC9B) + "b", id="a-lone-0x9b-byte")])
+def test_the_redirect_names_no_location_holding_a_control_character(
+        tmp_path, end, locale):
+    """The location `releases/latest` redirects to is the network's, so its
+    fault names it only where it holds no character `[![:print:]]` matches,
+    and that class it keeps (#940): it matches a lone `0x9B` byte in both
+    locales, where the byte rule a person's own values are held to passes
+    one (#867's trade), so no such byte from the network is printed. Each
+    row `CONTROL_RULE` refuses as a control character, and that byte, at
+    the end of a location that names no release, under `C` and `C.UTF-8`:
+    the fault says only that it names no release, and nothing of it
+    reaches either stream. A newline ends a header line, so the row that
+    ends in one is no row here."""
+    net = Net(tmp_path, ("curl",))
+    net.config["redirects"][latest()] = (
+        f"https://github.com/{SLUG}/releases/" + end)
+    result = net.run(env={"LC_ALL": locale}, errors="surrogateescape")
+    net.refused(result)
+    words = " ".join(result.stderr.split())
+    assert f"curl -fsSI {latest()} (it redirects to a location that names " \
+        "no release)" in words, ascii(words)
+    for stream in (result.stdout, result.stderr):
+        assert "forged" not in stream, ascii(stream)
+        assert end not in stream, ascii(stream)
 
 
 #: A curl that RUNS, in either script: tab-indented, alone or as the value

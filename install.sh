@@ -125,17 +125,30 @@ USAGE
 # setup.sh makes; there is no release at either, so this refuses them by
 # name. A control character is refused before anything is echoed, and
 # before it a character a terminal draws as something other than itself
-# (#837), named by its code point: first, because `[![:print:]]` is the
-# locale's, matching every byte past ASCII under `C` and none of those
-# characters under a UTF-8 locale, where the refusal below would echo them.
+# (#837), named by its code point: first, because the control check
+# matches none of those characters, in any locale, and the owner/name
+# refusal after it echoes the value.
+#
+# A CONTROL CHARACTER IS THE LAUNCHER'S RULE, #760's, which `main` holds
+# the directory to (#940): under `LC_ALL=C`, in a subshell, `[[:cntrl:]]`
+# or U+0080 to U+009F's two bytes (`\302`, then `\200` to `\237`), so the
+# answer is the same in every locale. It was `[![:print:]]`, which under
+# `C` matches every byte past ASCII: a letter past ASCII was refused as a
+# control character there, and as no owner/name under a UTF-8 locale. It is
+# no owner/name in either now, in those words. The trade is the launcher's
+# (#867): a lone C1 byte that is not UTF-8 (`0x9B`) passes, in every
+# locale, and the refusal that names the value prints it: a terminal that
+# reads UTF-8 draws it as a character it cannot read, and only one set to
+# an 8-bit charset acts on it. `checked_version` and the option check in
+# `main` hold their values to the same rule.
 checked_repo() {
 	local misdrawn
 	misdrawn="$(LC_ALL=C; misdrawn_characters "$REPO")"
 	[ -z "$misdrawn" ] ||
 		die "\$OPENREPOSHAPE_REPO holds a character a terminal draws as something other than itself ($misdrawn): one that is invisible, is drawn as another character, ends a line or reorders the text around it. It must be an owner/name on github.com, such as opensoft/openRepoShape."
-	case "$REPO" in
-	*[![:print:]]*) die "\$OPENREPOSHAPE_REPO carries a control character; it must be an owner/name on github.com, such as opensoft/openRepoShape." ;;
-	esac
+	if (LC_ALL=C; case "$REPO" in *[[:cntrl:]]* | *$'\302'[$'\200'-$'\237']*) exit 0 ;; *) exit 1 ;; esac); then
+		die "\$OPENREPOSHAPE_REPO carries a control character; it must be an owner/name on github.com, such as opensoft/openRepoShape."
+	fi
 	case "$REPO" in
 	[A-Za-z0-9]*/[A-Za-z0-9._-]*) ;;
 	*) die "\$OPENREPOSHAPE_REPO is '$REPO', which is not an owner/name on github.com, such as opensoft/openRepoShape: this installer builds github.com URLs from it." ;;
@@ -151,7 +164,10 @@ checked_repo() {
 # shape, which is the only one that echoes it), plus the empty value, and,
 # between the length and the control character, a character a terminal
 # draws as something other than itself, as the launcher's `ref_fault` has
-# it (#837). Not shared, because this file arrives alone down a pipe.
+# it (#837). The control character is `checked_repo`'s rule, above, with
+# its trade (#940): a version with a letter past ASCII is the shape's to
+# refuse, in its words, in every locale. Not shared, because this file
+# arrives alone down a pipe.
 #
 # THE SHAPE IS GIT'S RULE PART BY PART (#874), as `ref_fault`'s and
 # `setup.sh`'s are: no `..`, no empty part between slashes, no part that
@@ -169,9 +185,9 @@ checked_version() {
 	misdrawn="$(LC_ALL=C; misdrawn_characters "$ref")"
 	[ -z "$misdrawn" ] ||
 		die "$what holds a character a terminal draws as something other than itself ($misdrawn): one that is invisible, is drawn as another character, ends a line or reorders the text around it. No release tag, branch or commit holds one."
-	case "$ref" in
-	*[![:print:]]*) die "$what carries a control character, which is not a release tag, branch or commit." ;;
-	esac
+	if (LC_ALL=C; case "$ref" in *[[:cntrl:]]* | *$'\302'[$'\200'-$'\237']*) exit 0 ;; *) exit 1 ;; esac); then
+		die "$what carries a control character, which is not a release tag, branch or commit."
+	fi
 	case "$ref" in
 	[!A-Za-z0-9]* | *..* | */.* | *.lock | *.lock/* | *//* | */ | *. | *[!A-Za-z0-9._/-]*) die "$what is '$ref', which is not a release tag, branch or commit: a ref starts with an ASCII letter or digit, uses only ASCII letters, digits, '.', '_', '/', '-', has no '..' (git reads it as a revision range), no empty part between slashes ('//', or a '/' at the end), no part that starts with '.' or ends in '.lock' (the name git gives the lock file it writes beside a ref), and does not end in '.'." ;;
 	esac
@@ -219,7 +235,13 @@ latest_from_redirect() {
 			esac
 			# The location is named only when it is text a terminal draws as
 			# it is: no control character, and no character it draws as
-			# something other than itself (#837).
+			# something other than itself (#837). It keeps the locale's
+			# `[![:print:]]`, not the byte rule a person's own values are
+			# held to (#940): it is the network's, naming it only lets the
+			# fault say more, and that class takes a lone C1 byte that is
+			# not UTF-8 (`0x9B`) in no locale, where the byte rule's trade
+			# would print one from the network. The cost: under `C` a
+			# location with a letter past ASCII goes unnamed.
 			FAULT="it redirects to a location that names no release"
 			if [ -z "$(LC_ALL=C; misdrawn_characters "$value")" ]; then
 				case "$value" in
@@ -450,9 +472,10 @@ main() {
 			misdrawn="$(LC_ALL=C; misdrawn_characters "$1")"
 			[ -z "$misdrawn" ] ||
 				die "an option holds a character a terminal draws as something other than itself ($misdrawn): one that is invisible, is drawn as another character, ends a line or reorders the text around it. The one argument is a version, such as v1.0.1; with none, the newest release."
-			case "$1" in
-			*[![:print:]]*) die "an option carries a control character. The one argument is a version, such as v1.0.1; with none, the newest release." ;;
-			esac
+			# `checked_repo`'s rule for a control character (#940).
+			if (LC_ALL=C; case "$1" in *[[:cntrl:]]* | *$'\302'[$'\200'-$'\237']*) exit 0 ;; *) exit 1 ;; esac); then
+				die "an option carries a control character. The one argument is a version, such as v1.0.1; with none, the newest release."
+			fi
 			die "unknown option '$1'. The one argument is a version, such as v1.0.1; with none, the newest release."
 			;;
 		*)
@@ -474,11 +497,13 @@ main() {
 	# from the release that added the check, and only after this file had
 	# fetched it. The `case` is `install_commands`'s in `openRepoShape`,
 	# copied for the reason the drive-letter one below is, and the refusal
-	# says nothing of the value. `[[:cntrl:]]` and not `[![:print:]]`, which
-	# `checked_repo` uses: a directory with a letter the locale does not
-	# print (`café` under LC_ALL=C) is no fault of the directory's. The check
-	# runs under `LC_ALL=C` and names U+0080 to U+009F's two bytes (`\302`,
-	# then `\200` to `\237`), so a C1 control is refused in every locale,
+	# says nothing of the value. `[[:cntrl:]]` and not `[![:print:]]`: a
+	# directory with a letter the locale does not print (`café` under
+	# LC_ALL=C) is no fault of the directory's, and `checked_repo`,
+	# `checked_version` and the option check hold their values to these
+	# same bytes (#940). The check runs under `LC_ALL=C` and names U+0080
+	# to U+009F's two bytes (`\302`, then `\200` to `\237`), so a C1
+	# control is refused in every locale,
 	# whatever else the value holds, unless the locale reads those bytes as
 	# text (#858, below); U+2028 and U+2029, which only a UTF-8 locale's
 	# `[[:cntrl:]]` matched, are the next check's (#837).
