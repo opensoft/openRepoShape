@@ -702,10 +702,18 @@ find_python() {
 # and it is `setup.sh`'s, for its reason: the value reaches a `git clone`
 # command line, where a leading `-` is an option rather than a repository and
 # a control character could forge a line of output before this script has
-# said a word. The refusal does not echo the value back. It holds the URL
-# `shape_clone_url` makes, which is what a clone is handed: an owner/name, a
-# URL, an scp address and a path each pass in the form a clone takes, and
-# only a URL or an scp address typed with a leading `-` keeps it there.
+# said a word. The refusal does not echo the value back. The leading `-` is
+# looked for in the URL `shape_clone_url` makes, which is what a clone is
+# handed: an owner/name, a URL, an scp address and a path each pass in the
+# form a clone takes, and only a URL or an scp address typed with a leading
+# `-` keeps it there.
+#
+# THE CHARACTERS ARE LOOKED FOR IN $REPO AS TYPED TOO (#866, rv866's
+# SHOULD-1). `$(…)` drops the newlines at the end of what it captures, so a
+# URL, an scp address or a path ending in a newline came out of
+# `shape_clone_url` without it, passed, and was printed by `--version` and
+# sent by the fetch with it. An owner/name keeps it inside the URL, before
+# `.git`, so only those three forms lost it.
 #
 # A CHARACTER A TERMINAL DRAWS AS SOMETHING OTHER THAN ITSELF IS REFUSED
 # FIRST (#837), in words that name it by its code point and nothing else of
@@ -718,10 +726,10 @@ find_python() {
 checked_repo() {
 	local url misdrawn
 	url="$(shape_clone_url)"
-	misdrawn="$(LC_ALL=C; misdrawn_characters "$url")"
+	misdrawn="$(LC_ALL=C; misdrawn_characters "$REPO")"
 	[ -z "$misdrawn" ] ||
 		die "OPENREPOSHAPE_REPO holds a character a terminal draws as something other than itself ($misdrawn): one that is invisible, is drawn as another character, ends a line or reorders the text around it. This tool will not put it on a \`git clone\` command line. Set it to a URL or a path."
-	case "$url" in
+	case "$url$REPO" in
 	-* | *[![:print:]]*) die "OPENREPOSHAPE_REPO is not a value this tool will put on a \`git clone\` command line: it starts with '-' or carries a control character. Set it to a URL or a path." ;;
 	esac
 }

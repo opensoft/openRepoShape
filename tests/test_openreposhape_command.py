@@ -1955,8 +1955,10 @@ def ref_drawn_as_another(named: str) -> str:
 
 #: Each variable holding a C0 control (an escape), a C1 control (U+009B),
 #: U+202E and U+200B, each before a `forged` tail, with the whole refusal
-#: (#866); and a repository whose clone URL starts with `-`, the third
-#: thing `checked_repo` refuses.
+#: (#866); a repository whose clone URL starts with `-`, the third thing
+#: `checked_repo` refuses; and a path, a URL and an scp address that end in
+#: a newline, which `$(shape_clone_url)` drops, so the check looks at the
+#: value as typed too (rv866's SHOULD-1).
 UNPRINTABLE_VALUES = [
     *(pytest.param("OPENREPOSHAPE_REPO", "acme/r" + character + "forged",
                    said, id=f"repo-{name}")
@@ -1974,6 +1976,11 @@ UNPRINTABLE_VALUES = [
           (chr(0x200B), ref_drawn_as_another("U+200B"), "u+200b"))),
     pytest.param("OPENREPOSHAPE_REPO", "-forged://acme/r",
                  REPO_NOT_FOR_A_CLONE, id="repo-a-leading-dash"),
+    *(pytest.param("OPENREPOSHAPE_REPO", value, REPO_NOT_FOR_A_CLONE,
+                   id=f"repo-a-trailing-newline-{form}")
+      for value, form in (("/srv/forged\n", "path"),
+                          ("https://example.invalid/forged\n\n", "url"),
+                          ("git@example.invalid:forged\n", "scp"))),
 ]
 
 
@@ -2033,18 +2040,59 @@ def test_help_answers_past_a_repository_and_ref_no_line_can_print():
     assert "forged" not in result.stdout + result.stderr
 
 
+# Two bad values at once, each arranged in `tmp_path`: the command to run,
+# its environment, and the refusal `refuse_bad_values` gives first.
+
+def a_broken_record_and_a_bad_repository(tmp_path):
+    """A record beside an installed command that names no ref, and a
+    repository holding U+202E: the record is refused first (#564)."""
+    _result, installed = install_at(tmp_path, PINNED)
+    record = record_of(installed)
+    record.write_bytes(b"bad..ref\n")
+    return (installed, {"OPENREPOSHAPE_REPO": "acme/r" + RLO + "forged"},
+            f"the ref recorded in {bash_path(record)} is 'bad..ref'")
+
+
+def a_bad_repository_and_a_bad_ref(tmp_path):
+    """A repository holding U+202E and a ref holding an escape: the
+    repository is refused first. A record and `$OPENREPOSHAPE_REF` never
+    both apply, since the record is read only where the variable is not
+    set, so the ref and the record need no row of their own."""
+    return (COMMAND, {"OPENREPOSHAPE_REPO": "acme/r" + RLO + "forged",
+                      "OPENREPOSHAPE_REF": "v1" + ESCAPE + "[31mforged"},
+            repo_drawn_as_another("U+202E"))
+
+
+@NO_NON_ASCII_INTO_GIT_BASH
+@pytest.mark.parametrize("arrange", [a_broken_record_and_a_bad_repository,
+                                     a_bad_repository_and_a_bad_ref],
+                         ids=lambda arrange: arrange.__name__)
+def test_bad_values_are_refused_in_the_order_the_check_states(tmp_path,
+                                                              arrange):
+    """`refuse_bad_values` refuses the record, then the repository, then
+    the ref (#866, rv866's NIT-1): with two of them bad, the one first in
+    that order is the one refusal, and neither value is echoed."""
+    command, env, said = arrange(tmp_path)
+    result = run_cmd("--version", home=tmp_path, command=command, env=env)
+    assert assert_refused_saying(result, said).startswith(f"REFUSED: {said}")
+
+
 #: What `--version` prints for values the check passes, each as typed
 #: (#866): neither variable set, the pair it has always printed; every form
-#: of repository a clone is handed (`CLONE_URLS`); and refs whose shape or
-#: length `ref_fault` refuses. Those print as they read, so `--version`
-#: still names the ref in force, and an install that records no ref still
-#: takes one that names nothing (see
+#: of repository a clone is handed (`CLONE_URLS`), and an owner/name that
+#: starts with `-`, which a clone is handed as `https://github.com/-…`, so
+#: the leading `-` is looked for in the URL and not in the value as typed;
+#: and refs whose shape or length `ref_fault` refuses. Those print as they
+#: read, so `--version` still names the ref in force, and an install that
+#: records no ref still takes one that names nothing (see
 #: `test_a_ref_set_without_the_opt_in_is_never_recorded`).
 PRINTED_AS_TYPED = [
     pytest.param({}, "opensoft/openRepoShape @ main", id="neither-set"),
     *(pytest.param({"OPENREPOSHAPE_REPO": form.values[0]},
                    f"{form.values[0]} @ main", id=f"repo-{form.id}")
       for form in CLONE_URLS),
+    pytest.param({"OPENREPOSHAPE_REPO": "-acme/r"}, "-acme/r @ main",
+                 id="repo-an-owner-name-with-a-leading-dash"),
     *(pytest.param({"OPENREPOSHAPE_REF": ref},
                    f"opensoft/openRepoShape @ {ref}", id=f"ref-{name}")
       for ref, name in (("bad..ref", "a-range"), ("x.lock", "a-lock"),
