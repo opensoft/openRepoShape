@@ -44,7 +44,9 @@ LNEXT = chr(0x16)
 BELL = chr(7)
 
 #: Names the check refuses, by case. `absolute` is a path under `tmp_path`,
-#: so it is built by `typed_value`.
+#: so it is built by `typed_value`. A line of spaces is not here: the prompt
+#: takes the spaces off the ends of what was typed (#777), so it is an empty
+#: line, and `--project '   '` is refused by the pattern.
 REFUSED = {
     "up-and-out": "../x",
     "slash": "a/b",
@@ -54,7 +56,6 @@ REFUSED = {
     "help": "--help",
     "control": "a" + BELL + "b",
     "long": "x" * 256,
-    "blank": "   ",
     "absolute": None,
 }
 
@@ -140,7 +141,7 @@ def test_a_typed_project_name_is_refused_on_every_way_in(tmp_path, entry):
 
 @PTY_SKIP
 @pytest.mark.parametrize("entry", ["py", "piped", "sh"])
-@pytest.mark.parametrize("typed", ["", "EOF"])
+@pytest.mark.parametrize("typed", ["", "EOF", "   "])
 def test_an_empty_answer_is_refused_as_no_name_not_as_no_terminal(
         tmp_path, typed, entry):
     status, screen = at_the_prompt(tmp_path, typed, entry, seeded=True)

@@ -785,10 +785,12 @@ def test_a_flag_with_no_value_refuses():
 # ARGUMENT injection, not shell injection: every command this entry point runs
 # is a list with `shell=False`, so there is no shell - but git reads its own
 # arguments, and a value that starts with `-` is an option to git rather than
-# a name. `scaffold-project.py` refuses the same shape in the same words
-# (`tests/test_scaffold_pin_and_reuse.py`), through `repo_shape.checked_value`;
-# this file's subject carries its own copy because it runs BEFORE there is a
-# checkout to import that from, which is the whole of self-bootstrap mode.
+# a name. `scaffold-project.py` refuses the same values
+# (`tests/test_scaffold_pin_and_reuse.py`), through `repo_shape.checked_value`,
+# each in a sentence of its own: this file's subject names the check a value
+# failed (`tests/test_setup_project_name_edges.py`). It carries its own copy
+# because it runs BEFORE there is a checkout to import that from, which is the
+# whole of self-bootstrap mode.
 #
 # Every run here passes `--local-remote-dir` even though none of them reaches
 # it: the refusal is a parse-time one, and the flag is what keeps
