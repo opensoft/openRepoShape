@@ -414,6 +414,8 @@ locale_reading() {
 	esac
 	reading="$(printf '%s' "$1" | iconv -f "$charmap" -t UTF-8 2>/dev/null)" ||
 		return 1
+	[ "$(printf '%s' "$reading" | iconv -f UTF-8 -t "$charmap" 2>/dev/null)" = "$1" ] ||
+		return 1
 	(
 		LC_ALL=C
 		letters=${reading//[$'\200'-$'\277']/}
@@ -484,7 +486,10 @@ main() {
 	# `misdrawn_characters` are looked for in `locale_reading`'s UTF-8
 	# instead. Only a value the bytes refuse is read again, so no name
 	# placed before is refused, and where nothing reads it again the bytes
-	# decide, as before. `[[:cntrl:]]` is asked of the bytes as typed.
+	# decide, as before. `[[:cntrl:]]` is asked of the bytes as typed. The
+	# trade: such a locale, left in a terminal that reads UTF-8, has C1
+	# bytes it reads as letters installed into and printed in the lines
+	# below, and that terminal acts on them.
 	seen="$bin_dir"
 	if (LC_ALL=C; case "$bin_dir" in *$'\302'[$'\200'-$'\237']*) exit 0 ;; *) exit 1 ;; esac) ||
 		[ -n "$(LC_ALL=C; misdrawn_characters "$bin_dir")" ]; then

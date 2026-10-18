@@ -415,7 +415,10 @@ record_ref() {
 # character (a newline breaks the printed line in two, an escape is the
 # terminal's to act on) is no name a line can print as it is, and nor is a
 # character a terminal draws as something other than itself (#837), so
-# `install_commands` refuses all three before this is asked.
+# `install_commands` refuses all three before this is asked. The C1
+# controls and those characters are refused as the person's locale reads
+# the name (#858): a multibyte locale that is not UTF-8 can hand this line
+# C1 bytes it reads as letters, which a terminal that reads UTF-8 acts on.
 export_path_line() {
 	local dir="$1" backslash='\' quote="'" rest quoted=""
 	case "$dir" in
@@ -551,7 +554,10 @@ misdrawn_characters() {
 #   * `locale charmap`, asked under the person's own `LC_ALL`, `LC_CTYPE`
 #     and `LANG`, answers with a charset that is neither UTF-8, whose
 #     reading is the bytes, nor ASCII, which reads no byte past 0x7F;
-#   * `iconv` reads the whole value in that charset; and
+#   * `iconv` reads the whole value in that charset;
+#   * the reading, written back into that charset by `iconv`, is the value
+#     again, byte for byte, so an `iconv` that drops or changes a byte, or
+#     prints nothing at all and exits 0, gives no reading; and
 #   * the reading has fewer characters than the value has bytes, counted
 #     under `LC_ALL=C` as the bytes of UTF-8 that start a character (0x80
 #     to 0xBF continue one). A single-byte charset reads each byte alone,
@@ -560,8 +566,11 @@ misdrawn_characters() {
 #     letters.
 # Otherwise it prints nothing and fails, and the bytes decide: no `locale`
 # or no `iconv` (a minimal container), a charset either does not know, or
-# a value the charset cannot read. install.sh carries this function as it
-# is here.
+# a value the charset cannot read. The locale is taken at its word, and
+# that is the trade: a multibyte locale that is not UTF-8, left in a
+# terminal that reads UTF-8, is handed the C1 bytes and the bytes of
+# `MISDRAWN_CHARACTERS` it reads as letters, and that terminal acts on
+# them. install.sh carries this function as it is here.
 locale_reading() {
 	local charmap reading
 	charmap="$(locale charmap 2>/dev/null)" || return 1
@@ -570,6 +579,8 @@ locale_reading() {
 	*) ;;
 	esac
 	reading="$(printf '%s' "$1" | iconv -f "$charmap" -t UTF-8 2>/dev/null)" ||
+		return 1
+	[ "$(printf '%s' "$reading" | iconv -f UTF-8 -t "$charmap" 2>/dev/null)" = "$1" ] ||
 		return 1
 	(
 		LC_ALL=C
@@ -615,10 +626,16 @@ install_commands() {
 	# read again, so no name placed before is refused, and where nothing
 	# reads it again the bytes decide, as before. `[[:cntrl:]]` is asked of
 	# the bytes as typed: those characters are ASCII's in every such
-	# charset, and `$(…)` drops a newline at the end of the reading. A lone
-	# C1 byte that is not UTF-8 (`0x9B`) is placed, as before: a terminal
-	# that reads UTF-8 draws it as a character it cannot read, and only one
-	# set to an 8-bit charset acts on it.
+	# charset, and `$(…)` drops a newline at the end of the reading. The
+	# trade: such a locale, left in a terminal that reads UTF-8, has C1 bytes
+	# it reads as letters placed and printed in the lines below, and that
+	# terminal acts on them. A lone C1 byte that is not UTF-8 (`0x9B`) is
+	# placed, as before: a terminal that reads UTF-8 draws it as a character
+	# it cannot read, and only one set to an 8-bit charset acts on it. Under
+	# an ISO 8859 charmap, the one such a terminal goes with, the charset is
+	# known and reads that byte as U+009B, but nothing here reads the name
+	# again, so `a`, `0x9B`, `b` is placed there too: a candidate, left
+	# (#858).
 	seen="$dir"
 	if (LC_ALL=C; case "$dir" in *$'\302'[$'\200'-$'\237']*) exit 0 ;; *) exit 1 ;; esac) ||
 		[ -n "$(LC_ALL=C; misdrawn_characters "$dir")" ]; then
