@@ -267,8 +267,8 @@ its last line names that directory, the human's to delete once those have run.
    never changes the verdict: it says whether THIS workstation can run the fixes
    the other rows named. Relay a missing prerequisite; `openRepoShape
    --preflight` offers only the `gh` set-up, and the human types that yes.
-7. `--json` is the same report as one object, alone on stdout, each row
-   carrying its `id`, for when you have to act on a row rather than quote it.
+7. `--json` is the same report as one object, alone on stdout, each row with
+   its `id`, to act on a row. A `next` with `$'…'` needs bash or zsh, not `sh`.
 
 ## Updating a project's shape
 
@@ -394,12 +394,12 @@ python3 scripts/family.py siblings --family-root <path>
    A holder keeps `members/` in ONE spelling on every disk: `add` refuses
    `family-members-dir-variant` (`member-path-taken` for a variant of the
    member's own path) until a human renames what sits under another spelling.
-3. **Each of `add`, `bump` and `remove` writes ONE commit** moving the
-   gitlink and the pin together, on a branch you make first (see above): the
-   tracking branch is refused (`family-on-tracking-branch`). Push the branch
-   as its `NEXT` line says and land it as a pull request; never suggest a
-   push to the default branch. Never hand-edit `family.yaml`'s `members:`
-   block — the tool rewrites it wholesale.
+3. **Each of `add`, `bump` and `remove` writes ONE commit** moving the gitlink
+   and the pin together, on a branch made first (`family-on-tracking-branch`
+   refuses the tracking branch). Push it as its `NEXT` line says and land it as
+   a pull request; never suggest a push to the default branch. Never hand-edit
+   `family.yaml`'s `members:` block, which the tool rewrites wholesale, but for
+   a row repair `validate-family.py` names; the commit is then the person's.
 4. **The member must be scaffolded or adopted FIRST.** A family cannot make a
    project out of a repository; it can only pin one that already is.
 5. **`make siblings` in the holder — or `family.py siblings --family-root

@@ -267,7 +267,8 @@ def submodule_update_through_git(root: Path, remotes: Path,
 # suite copies is made, or pushed to, that way today.
 # `tests/test_no_auto_maintenance.py` holds both scopes to account, and fails a
 # test file that sets `GIT_CONFIG_COUNT` to a number of its own instead of
-# appending (#758).
+# appending (#758), or works one out by hand (#835). The one place that does
+# is `appended_to_command_scope`, below.
 
 #: The two settings, in the order they are appended and written.
 NO_AUTO_MAINTENANCE = (("gc.auto", "0"), ("maintenance.auto", "false"))
@@ -293,6 +294,47 @@ def appended_to_command_scope(environ: Mapping[str, str],
         added[f"GIT_CONFIG_KEY_{index}"] = key
         added[f"GIT_CONFIG_VALUE_{index}"] = value
     return added
+
+
+#: The two entries a Windows job holds, under keys no config of a machine this
+#: runs on sets.
+JOB_ENTRIES = [("test.heldone", "one"), ("test.heldtwo", "two")]
+
+
+def put_job_and_session_entries(monkeypatch) -> None:
+    """The environment holds, for the rest of the test, what the Windows job
+    sets (`JOB_ENTRIES`) and what the session fixture appends after them (the
+    two settings of `NO_AUTO_MAINTENANCE`), as a test that reads the
+    environment at its call finds it. `GIT_CONFIG_PARAMETERS` is taken away
+    first: git lists its entries after the count's, and a run started under
+    `git -c` holds some."""
+    monkeypatch.delenv("GIT_CONFIG_PARAMETERS", raising=False)
+    held = appended_to_command_scope({}, JOB_ENTRIES)
+    for name, value in {**held, **appended_to_command_scope(
+            held, NO_AUTO_MAINTENANCE)}.items():
+        monkeypatch.setenv(name, value)
+
+
+def command_line_entries(listing: str) -> list:
+    """`key=value` of each entry in the command scope of a `git config
+    --show-origin --list` listing, in git's order."""
+    return [line.split("\t", 1)[1] for line in listing.splitlines()
+            if line.startswith("command line:")]
+
+
+def command_scope_at(environ: Mapping[str, str], cwd: Path) -> list:
+    """The entries git reads from its command scope under `environ` laid over
+    this process's own (`command_line_entries` of `git config --show-origin
+    --list`, run in `cwd` and read, never written). `GIT_CONFIG_PARAMETERS`
+    is taken away, as `put_job_and_session_entries` does."""
+    laid = {name: value for name, value in os.environ.items()
+            if name != "GIT_CONFIG_PARAMETERS"}
+    shown = subprocess.run(
+        ["git", "config", "--show-origin", "--list"], cwd=str(cwd),
+        env={**laid, **environ}, capture_output=True, text=True,
+        encoding="utf-8", errors="replace", check=False)
+    assert shown.returncode == 0, shown.stderr + shown.stdout
+    return command_line_entries(shown.stdout)
 
 
 def home_is_known() -> bool:
@@ -1133,6 +1175,64 @@ def skip_where_a_name_cannot_be_not_utf_8(directory: Path) -> None:
         pytest.skip("needs a file name that is not UTF-8, which this "
                     "filesystem refuses (EILSEQ)")
     probe.rmdir()
+
+
+#: A branch git makes and no text can spell (#765): `caf` and the byte 0xE9,
+#: Latin-1's e-acute, a UTF-8 lead byte with nothing after it. Built with
+#: `chr`, not `os.fsdecode`, which raises on Windows, where this module
+#: must still import.
+NOT_UTF_8_BRANCH = "caf" + chr(0xDCE9)
+#: How a refusal names `NOT_UTF_8_BRANCH`: by its bytes, `b'caf<0xE9>'`, as
+#: `trailer-not-utf8` names a trailer.
+NOT_UTF_8_BRANCH_NAMED = repr(NOT_UTF_8_BRANCH.encode("utf-8",
+                                                      "surrogateescape"))
+
+
+def git_answer_bytes(repo: Path, *args: str) -> bytes:
+    """`git <args>` in `repo`, its stdout as the bytes git wrote, whatever
+    the exit: `git` above decodes as text, which a name that is not UTF-8
+    fails."""
+    return subprocess.run(["git", *args], cwd=str(repo), capture_output=True,
+                          check=False).stdout
+
+
+def held_by_git(repo: Path) -> dict:
+    """What a refusal must leave in `repo` as it was, as bytes (#765): the
+    commit HEAD names, the ref it is attached to, every ref and its commit,
+    the index and the status; and for each git directory under
+    `.git/modules`, a leg's or a member's, its refs, its object count and
+    its FETCH_HEAD with the time it was written, which every fetch into it
+    rewrites."""
+    held = {"head": git_answer_bytes(repo, "rev-parse", "HEAD"),
+            "attached": git_answer_bytes(repo, "symbolic-ref", "-q", "HEAD"),
+            "refs": git_answer_bytes(repo, "for-each-ref",
+                                     "--format=%(objectname) %(refname)"),
+            "index": git_answer_bytes(repo, "ls-files", "--stage", "-z"),
+            "status": git_answer_bytes(repo, "status", "--porcelain", "-z")}
+    modules = repo / ".git" / "modules"
+    gitdirs = sorted(found.parent for found in modules.rglob("HEAD")
+                     if (found.parent / "objects").is_dir()
+                     ) if modules.is_dir() else []
+    for gitdir in gitdirs:
+        fetched = gitdir / "FETCH_HEAD"
+        held[gitdir.relative_to(modules).as_posix()] = (
+            git_answer_bytes(gitdir, "for-each-ref",
+                             "--format=%(objectname) %(refname)"),
+            git_answer_bytes(gitdir, "count-objects", "-v"),
+            (fetched.read_bytes(), fetched.stat().st_mtime_ns)
+            if fetched.is_file() else None)
+    return held
+
+
+def on_a_branch_that_is_not_utf_8(repo: Path) -> dict:
+    """`repo` switched to a new branch `NOT_UTF_8_BRANCH` where HEAD is, or
+    the test skipped where this system cannot make the name
+    (`skip_where_a_name_cannot_be_not_utf_8`); returns `held_by_git(repo)`
+    on it."""
+    skip_where_a_name_cannot_be_not_utf_8(repo)
+    subprocess.run(["git", "switch", "-q", "-c", NOT_UTF_8_BRANCH],
+                   cwd=str(repo), capture_output=True, check=True)
+    return held_by_git(repo)
 
 
 def windows_fsencode(text: str | bytes) -> bytes:

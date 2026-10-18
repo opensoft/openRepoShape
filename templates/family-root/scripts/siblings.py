@@ -599,9 +599,17 @@ def not_a_clone(target: Path) -> tuple[str, str] | None:
     the members after it were never placed. Nothing can tell that such a
     folder is empty, and `git clone` refuses one it cannot read. The words
     are the ones the doctor's `members` row says of the same two slots.
+
+    A LINK TO NOTHING IS NOT A CLONE EITHER (#784). `exists` follows a
+    link, so a dangling one read as nothing at all: the dry run said `would
+    clone`, and the real run ended `CLONE FAILED`, because git cannot clone
+    into a path that is a link to nothing. Somebody made that link, so it
+    is reported and left as it is, in the doctor's words for it too.
     """
     try:
         if not target.exists():
+            if target.is_symlink():
+                return "is a link to nothing", "link"
             return None
         if not target.is_dir():
             return "is a file, not a folder", "file"
