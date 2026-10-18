@@ -198,7 +198,11 @@ def test_plan_refuses_a_flag_no_file_can_hold(tmp_path, flag, value):
     `plan ok`, and `execute` raised in `write_lf` after both legs were
     pushed (a surrogate), or adopted with the line break, the tab or the
     bidi control in the manifest and the README. Now `plan` refuses, and
-    writes no plan."""
+    writes no plan. Skipped where this system's file name encoding cannot
+    spell `value` (U+2028, U+202E or U+2066 in ASCII under `LC_ALL=C`),
+    asked first: `subprocess` cannot put it on `plan`'s command line there,
+    and raised `UnicodeEncodeError` in the test, not in the tool."""
+    skip_where_the_environment_cannot_carry(value)
     source = make_source_repo(tmp_path / "Thing")
     runs = plan_check_execute(tmp_path, source, flag, value)
     assert_no_traceback_and_no_leg(tmp_path, runs)
@@ -645,7 +649,13 @@ def test_a_valid_non_ascii_elector_still_adopts(tmp_path, elected_by):
 
     The manifest is asked through the reader, not for a line: since #250 a
     YAML template's value is written as `double_quoted` spells it, so the
-    line holds U+200C as an escape there, and as it stands before."""
+    line holds U+200C as an escape there, and as it stands before.
+
+    Skipped where this system's file name encoding cannot spell the name
+    (ASCII under `LC_ALL=C`), asked first: `subprocess` cannot put it on
+    `plan`'s command line there, and raised `UnicodeEncodeError` in the
+    test, not in the tool."""
+    skip_where_the_environment_cannot_carry(elected_by)
     source = make_source_repo(tmp_path / "Thing")
     runs = plan_check_execute(tmp_path, source, "--elected-by", elected_by)
     assert_no_traceback(runs)
@@ -664,8 +674,13 @@ def test_a_valid_non_ascii_elector_still_adopts(tmp_path, elected_by):
 def test_a_utf8_source_directory_still_adopts_with_local_remotes(tmp_path):
     """A source under a directory `café`: its path is the clone URL, which a
     file holds, so it adopts, and the shape's README (beside the source's
-    own) names it."""
-    source = make_source_repo(tmp_path / "café" / "Thing")
+    own) names it. Skipped where this system's file name encoding cannot
+    spell the directory's name (ASCII under `LC_ALL=C`), asked before the
+    directory is made, where `mkdir` raised `UnicodeEncodeError` in the
+    test."""
+    parent = tmp_path / "caf\u00e9"
+    skip_where_the_environment_cannot_carry(parent.name)
+    source = make_source_repo(parent / "Thing")
     runs = plan_check_execute(tmp_path, source)
     assert_no_traceback(runs)
     assert runs["check"].returncode == 0, said(runs["check"])
