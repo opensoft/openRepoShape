@@ -262,20 +262,6 @@ def test_a_pin_this_user_cannot_open_is_named_from_the_root(project):
     assert "yaml-unreadable" not in said
 
 
-def test_a_pin_whose_read_is_refused_is_named_on_every_python(
-        update_shape, project, capsys, monkeypatch):
-    real = Path.read_text
-
-    def read_text(self, *args, **kwargs):
-        if self.name == "shape-pin.yaml":
-            raise PermissionError(errno.EACCES, DENIED, str(self))
-        return real(self, *args, **kwargs)
-
-    monkeypatch.setattr(Path, "read_text", read_text)
-    code, said = run_here(update_shape, capsys, "check", project)
-    assert_named(code, said, PIN)
-
-
 @needs_a_mode
 def test_a_copy_this_user_cannot_open_is_named(project):
     """A copy at mode 000 in a readable directory: `is_file()` says yes on
@@ -286,18 +272,25 @@ def test_a_copy_this_user_cannot_open_is_named(project):
     assert_named(code, said, "scripts/bootstrap.py")
 
 
-def test_a_copy_whose_read_is_refused_is_named_on_every_python(
-        update_shape, project, capsys, monkeypatch):
-    real = Path.read_bytes
+@pytest.mark.parametrize("method, name, named", [
+    pytest.param("read_text", "shape-pin.yaml", PIN, id="the-pin"),
+    pytest.param("read_bytes", "bootstrap.py", "scripts/bootstrap.py",
+                 id="a-copy"),
+])
+def test_a_read_refused_is_named_on_every_python(
+        update_shape, project, capsys, monkeypatch, method, name, named):
+    """The two cases above in this process, the read refused by hand: the
+    pin's (`load_yaml`'s `read_text`) and a copy's (`read_bytes`)."""
+    real = getattr(Path, method)
 
-    def read_bytes(self):
-        if self.name == "bootstrap.py":
+    def refusing(self, *args, **kwargs):
+        if self.name == name:
             raise PermissionError(errno.EACCES, DENIED, str(self))
-        return real(self)
+        return real(self, *args, **kwargs)
 
-    monkeypatch.setattr(Path, "read_bytes", read_bytes)
+    monkeypatch.setattr(Path, method, refusing)
     code, said = run_here(update_shape, capsys, "check", project)
-    assert_named(code, said, "scripts/bootstrap.py")
+    assert_named(code, said, named)
 
 
 # --- the root itself ---------------------------------------------------------
