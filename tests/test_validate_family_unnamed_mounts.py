@@ -421,16 +421,19 @@ def test_a_gitlink_is_read_from_the_index_first_and_from_head_second(
 
 def test_only_members_is_asked_about(family, holder):
     """`members/` in any case, and nothing beside it: a gitlink elsewhere
-    in the holder is not a member's mount, and no row could name it."""
+    in the holder is not a member's mount, and no row could name it. One
+    no section gives is `gitlink-unnamed` instead, after this finding
+    (#878, `tests/test_family_unnamed_gitlink.py` types it)."""
     _, tip = spare_commits(family)
     stage_gitlink(holder, f"tools/{SPARE}", tip)
     stage_gitlink(holder, f"membersX/{SPARE}", tip)
     stage_gitlink(holder, f"MEMBERS/{SPARE}", tip)
     result = validate(holder, "--no-members")
     assert result.returncode == 1, result.stderr + result.stdout
-    (gitlink,) = findings(result)
-    assert gitlink.startswith(GITLINK_SAID.format(path=f"MEMBERS/{SPARE}",
-                                                  commit=tip))
+    assert codes(result) == ["member-gitlink-unnamed", "gitlink-unnamed",
+                             "gitlink-unnamed"], result.stderr
+    assert findings(result)[0].startswith(GITLINK_SAID.format(
+        path=f"MEMBERS/{SPARE}", commit=tip))
 
 
 def test_a_removed_row_is_named_by_its_gitlink_and_its_section(holder):
