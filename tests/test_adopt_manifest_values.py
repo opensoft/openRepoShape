@@ -207,6 +207,10 @@ def test_plan_says_it_in_the_validators_own_words(tmp_path):
 
 
 def test_plan_still_writes_a_plan_for_values_the_validator_accepts(tmp_path):
+    """`_` and `.` are in the validator's `QUALIFIED_RE`, and it still
+    reads `my_org.x` as it did: no `plan-manifest-invalid`. GitHub gives no
+    organisation a `.`, so without `--local-remote-dir`, where GitHub is
+    asked, `check` finds `adopt-bad-org`, as `execute` refuses it (#863)."""
     source = make_source_repo(tmp_path / "Thing")
     out = tmp_path / "plan.yaml"
     result = write_plan(source, out, org="my_org.x",
@@ -214,8 +218,9 @@ def test_plan_still_writes_a_plan_for_values_the_validator_accepts(tmp_path):
                                "--reference=docs/project-repo-schema.md"))
     assert result.returncode == 0, result.stderr + result.stdout
     checked = run_script(ADOPT, "check", "--plan", str(out))
-    assert checked.returncode in (0, 1), checked.stderr
+    assert checked.returncode == 1, checked.stderr
     assert FINDING not in checked.stderr
+    assert "FINDING adopt-bad-org: " in checked.stderr
 
 
 @pytest.mark.parametrize("length", [251, 255])
@@ -369,19 +374,23 @@ def test_check_and_execute_read_one_list(adopter, world):
 def test_execute_refuses_a_name_whose_bare_repository_cannot_be_made(
         tmp_path, length):
     """`plan` cannot know `--local-remote-dir`, so a 247 to 250 character
-    project plans and checks; `execute` died in `Path.exists` with `OSError:
-    File name too long` and a traceback. It is now refused before a leg."""
+    project plans; `execute` died in `Path.exists` with `OSError: File name
+    too long` and a traceback. It is now refused before a leg. `check`,
+    given the flags `execute` is given, finds it under the same code (#863),
+    where it said `plan ok`."""
     source = make_source_repo(tmp_path / "Thing")
     plan = tmp_path / "plan.yaml"
     written = write_plan(source, plan, project="N" * length)
     assert written.returncode == 0, written.stderr + written.stdout
     for path, leg in ANSWERS:
         resolve(plan, path, leg)
-    checked = run_script(ADOPT, "check", "--plan", str(plan))
-    assert checked.returncode == 0, checked.stderr + checked.stdout
+    flags = ("--local-remote-dir", str(tmp_path / REMOTES), "--work-dir",
+             str(tmp_path / WORK))
+    checked = run_script(ADOPT, "check", "--plan", str(plan), *flags)
+    assert checked.returncode == 1, checked.stderr + checked.stdout
+    assert "FINDING adopt-name-too-long: " in checked.stderr
     result = run_script(ADOPT, "execute", "--plan", str(plan), "--yes",
-                        "--local-remote-dir", str(tmp_path / REMOTES),
-                        "--work-dir", str(tmp_path / WORK))
+                        *flags)
     assert result.returncode == 2, result.stderr + result.stdout
     assert "REFUSED adopt-name-too-long" in result.stderr
     assert "Traceback" not in result.stderr
