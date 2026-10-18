@@ -366,7 +366,9 @@ options:
                         --pin and no --referent-chain to read it, it is
                         refused as `pin-source-unused`; an empty value is
                         refused as `pin-source-no-path`, and `.` means this
-                        directory.
+                        directory. A --pin's digest is read only at a clone's
+                        top level, or a bare clone's: any other path is
+                        refused as `pin-source-not-a-clone`.
   --work-dir WORK_DIR   where the working trees are built (default: a
                         temporary directory)
   --no-next-steps       leave out the closing NEXT STEPS (the clone, the cd
@@ -419,7 +421,12 @@ options:
                         `source-ambiguous` refuses a name that is also a path
                         here, as `acme/Atlas` is beside a directory
                         `acme/Atlas`: pass `./acme/Atlas` for the directory,
-                        or the url for the repository.
+                        or the url for the repository. The path is a
+                        repository's top-level directory (`git rev-parse
+                        --show-toplevel` prints it): `source-not-top-level`
+                        refuses a file, or a directory inside a repository.
+                        `source-unresolvable` refuses an empty value, and one
+                        that is neither a path that exists nor an `org/repo`.
   --project PROJECT     the assembly-root name; for an in-place adoption it is
                         the source repository's own name
   --org ORG             the organisation the source repository is in, which
@@ -516,6 +523,9 @@ options:
                         Given with no --pin to read it, the flag is refused as
                         `pin-source-unused`; an empty value is refused as
                         `pin-source-no-path`, and `.` means this directory.
+                        `pin-source-not-a-clone` refuses any other path than a
+                        clone's top level, or a bare clone's, where a --pin's
+                        digest is read.
   --allow-empty-leg {spec,code}
                         record in the plan that this leg having NO path is
                         intended, so it may be SEEDED from the shape's
@@ -523,7 +533,18 @@ options:
                         are specifications with no code yet (2026-09-04):
                         `--allow-empty-leg code`. Repeatable.
   --path-policy PATH_POLICY
-  --out OUT
+  --out OUT             where the plan is written: a file, in a folder that is
+                        there and that this user can write in (default:
+                        `adoption-plan.yaml` in the current directory). Any
+                        other is refused as `adopt-out-unwritable`, and no
+                        plan is written: a folder, a pipe or a device, or a
+                        file in a folder that is missing or that nobody can
+                        write in. That is asked before the source is read or
+                        cloned and before a work directory is made, and a
+                        write that fails all the same is refused as the same
+                        code. The --work-dir, and for an org/repo source its
+                        `source-readonly/<repo>`, may be missing: the run
+                        makes them.
   --work-dir WORK_DIR   the directory an `org/repo` --source is cloned into,
                         as `source-readonly/<repo>`, which the plan records as
                         `source.local_path` for `check` and `execute` to read;
@@ -557,7 +578,8 @@ options:
                         `plan` made (`source.cloned: true`) and is gone or no
                         longer whole, its `source.repository` is cloned again,
                         and any other `local_path` that is gone is refused as
-                        `plan-source-gone`.
+                        `plan-source-gone`; one that is a file, or a directory
+                        inside a repository, as `source-not-top-level`.
   --local-remote-dir LOCAL_REMOTE_DIR
                         the directory `execute --local-remote-dir` will be
                         given (the TEST path): each relative submodule url the
@@ -607,7 +629,8 @@ options:
                         `plan` made (`source.cloned: true`) and is gone or no
                         longer whole, its `source.repository` is cloned again,
                         and any other `local_path` that is gone is refused as
-                        `plan-source-gone`.
+                        `plan-source-gone`; one that is a file, or a directory
+                        inside a repository, as `source-not-top-level`.
   --local-remote-dir LOCAL_REMOTE_DIR
                         create the legs as bare repositories here instead of
                         calling `gh` (the TEST path). Both are asked about

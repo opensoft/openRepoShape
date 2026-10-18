@@ -190,6 +190,9 @@ from shape_materialize import (  # noqa: E402
 # Where a root keeps its shape pin. The materializer that writes it names it
 # once; this module spells the path by that name and never by a literal (#290).
 from shape_materialize import SHAPE_PIN  # noqa: E402
+# The tracking branch's rule (#715), on a line of its own so the lists above,
+# which other changes extend, are not lines two of them both rewrite.
+from shape_materialize import readable_branch  # noqa: E402
 
 #: `owner/repo`, the only remote spelling `--upstream` accepts.
 REPOSITORY_RE = re.compile(r"^[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+$")
@@ -2466,8 +2469,20 @@ def tracking_branch_of(manifest: dict | None) -> str:
     `bump-leg.py` and `family.py` read the field with. The remote's own HEAD
     is never asked: a base taken from the network could disagree with the
     one the `--branch` refusal and `--pr` read from the manifest.
+
+    READ THROUGH `readable_branch`, as `bump-leg.py` reads it (#715).
+    Compared raw, `tracking_branch: main` followed by U+00A0, which the
+    reader reads as YAML does since #715, was not `main`, so
+    `apply --branch main` committed onto `main` where the root's own
+    validators passed. A name holding a character that does not print or is
+    white space is now `unseen-branch`, and one that begins with `-`, which
+    `gh pr create --base` could read as an option, is `unsafe-value`; inside
+    `apply` the ledger rolls the rewrite back. Any other name is taken as it
+    is: `a&b` is quoted into the line `next_line` prints (#209), and a name
+    in any script is one git creates and the root's gate passes.
     """
-    return str((manifest or {}).get("tracking_branch") or "main")
+    return readable_branch("tracking_branch",
+                           (manifest or {}).get("tracking_branch") or "main")
 
 
 def pull_request_repository(manifest: dict | None,
