@@ -49,7 +49,8 @@ from pathlib import Path
 
 import pytest
 
-from conftest import cloned_just_pushed, git, run_script
+from conftest import (appended_to_command_scope, cloned_just_pushed, git,
+                      run_script)
 #: The trailer lines a lane's run lands, from the file that owns them.
 from test_commit_trailers import TRAILERS, trailers_of
 #: The family fixture, its names and the offline environment, imported from
@@ -71,25 +72,37 @@ from test_family_member_path import (
 )
 from test_family_member_path import isolated as member_path_env
 
-#: GIT'S AUTOMATIC MAINTENANCE, OFF for every git this module starts, through
-#: git's `GIT_CONFIG_COUNT` protocol and never a global file. A `git commit`
-#: may start `git maintenance run --auto` in the background (a newer git on
-#: the macOS runner does), and it took `.git/objects/maintenance.lock` while
-#: a test snapshotted the holder and released it before the comparison: five
-#: `objects changed` failures on PR #345's first macOS run, none of them the
-#: tool's. With it off, no background job packs or locks objects mid-test.
-NO_MAINTENANCE = {"GIT_CONFIG_COUNT": "3",
-                  "GIT_CONFIG_KEY_0": "maintenance.auto",
-                  "GIT_CONFIG_VALUE_0": "false",
-                  "GIT_CONFIG_KEY_1": "gc.auto", "GIT_CONFIG_VALUE_1": "0",
-                  "GIT_CONFIG_KEY_2": "gc.autoDetach",
-                  "GIT_CONFIG_VALUE_2": "false"}
+#: GIT'S AUTOMATIC MAINTENANCE, OFF for the gits `isolated()` below hands an
+#: environment to: `family.py`'s children and the snapshot's gits. A `git
+#: commit` may start `git maintenance run --auto` in the background (a newer
+#: git on the macOS runner does), and it took `.git/objects/maintenance.lock`
+#: while a test snapshotted the holder and released it before the
+#: comparison: five `objects changed` failures on PR #345's first macOS run,
+#: none of them the tool's. With it off, no background job packs or locks
+#: objects mid-test.
+#:
+#: These are the `(key, value)` entries `isolated()` appends to git's command
+#: scope (`GIT_CONFIG_COUNT`) at the call, after the ones the environment
+#: holds. `isolated()` also names a global config of its own
+#: (`member_path_env`'s `excluding()`), which takes the session's file away
+#: from these gits. The session's two settings still reach them, in the
+#: command scope `isolated()` appends to, so `maintenance.auto` and `gc.auto`
+#: here repeat them and only `gc.autoDetach` adds a setting; the two stay so
+#: that this constant alone keeps maintenance off for these gits. The
+#: module's own setup commits go through `conftest.git`, which passes no
+#: `env=` and inherits `os.environ`: the session fixture
+#: (`no_auto_maintenance`, #645) keeps maintenance off for those, in both
+#: scopes, and this constant does not reach them.
+NO_MAINTENANCE = (("maintenance.auto", "false"), ("gc.auto", "0"),
+                  ("gc.autoDetach", "false"))
 
 
 def isolated(offline, tmp_path: Path) -> dict:
     """`test_family_member_path.isolated`'s offline, identity-carrying
-    environment, with git's automatic maintenance off (`NO_MAINTENANCE`)."""
-    return {**member_path_env(offline, tmp_path), **NO_MAINTENANCE}
+    environment, with git's automatic maintenance off (`NO_MAINTENANCE`),
+    appended to the command scope `os.environ` holds when this is called."""
+    return {**member_path_env(offline, tmp_path),
+            **appended_to_command_scope(os.environ, NO_MAINTENANCE)}
 
 
 #: The header `bump --dry-run` prints above the row it would write.
@@ -777,15 +790,12 @@ def test_a_dry_run_asks_the_manifest_refusal_the_real_run_asks_first_too(
     ask it after, with the holder changed). The dry run asks it too, exit 2,
     before anything is written. The hand edit is the one
     `test_family_add_refusals.py` makes: a comment on the `members:` line,
-    which YAML reads past and the line rewrite does not, left uncommitted.
-    The real runs are held to the same holder in
+    which YAML reads past and the line rewrite does not, committed, since
+    the verbs refuse a `family.yaml` holding a change HEAD does not first
+    (#684). The real runs are held to the same holder in
     `test_family_bump_remove_rollback.py`."""
     env = isolated(offline, tmp_path)
-    manifest_path = holder / "family.yaml"
-    text = manifest_path.read_bytes().decode("utf-8")
-    assert text.count("\nmembers:\n") == 1, "fixture drift"
-    manifest_path.write_bytes(text.replace(
-        "\nmembers:\n", "\nmembers:  # edited by hand\n").encode("utf-8"))
+    a_members_line_edited_by_hand(holder)
     before = state(holder, env)
     extra = ["--to", older(family)] if verb == "bump" else []
 
@@ -1042,12 +1052,15 @@ def a_cached_store(root: Path) -> None:
 
 def a_members_line_edited_by_hand(root: Path) -> None:
     """A comment on the `members:` line, which YAML reads past and the line
-    rewrite does not, left uncommitted."""
+    rewrite does not, committed: the verbs refuse a `family.yaml` holding a
+    change HEAD does not before this (#684)."""
     manifest_path = root / "family.yaml"
     text = manifest_path.read_bytes().decode("utf-8")
     assert text.count("\nmembers:\n") == 1, "fixture drift"
     manifest_path.write_bytes(text.replace(
         "\nmembers:\n", "\nmembers:  # edited by hand\n").encode("utf-8"))
+    git("-c", "user.name=t", "-c", "user.email=t@t", "commit", "-qm",
+        "A hand edit", "--", "family.yaml", cwd=root)
 
 
 def a_renamed_copy_of_a_member(root: Path) -> Path:

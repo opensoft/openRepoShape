@@ -1,0 +1,11 @@
++2
+2026-10-17
+Two lines for one sentence under "Windows, natively" (#785, review S1 on #792).
+Since #785 `shape-doctor.py` writes a path it cannot print as itself, in a
+POSIX line, as `$'…'` with an octal escape for each byte, so the line names
+that path rather than one with `?` in it. bash, zsh and ksh read that form;
+dash, which is `/bin/sh` on Debian and Ubuntu, reads the `$` as itself and
+hands the command another path. The section says printed commands are quoted
+for a POSIX shell, and `sh -c` is dash on those systems, so it has to say
+which shells read the form. The two lines name the form, the three shells
+that read it and the one that does not, and nothing else.

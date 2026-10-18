@@ -202,9 +202,9 @@ def test_the_doctors_pins_row_names_the_file(project):
 # --- controls: what must not change -----------------------------------------
 
 def test_a_pin_that_is_not_utf8_is_still_yaml_unreadable(project):
-    """Row (d): the refusal the workflow's one is modelled on, unchanged. Its
-    path is the absolute one `load_yaml` has always printed; the workflow
-    refusal is relative to the root, as the issue asks."""
+    """Row (d): the refusal the workflow's one is modelled on, its id and
+    its words unchanged. Its path is relative to the root since #712, as
+    the workflow refusal's is."""
     pin = project / "contracts" / "spec-pin.yaml"
     commit_bytes(project, "contracts/spec-pin.yaml",
                  pin.read_bytes() + b"# caf\xe9\n", "latin-1 in the pin")

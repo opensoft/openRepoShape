@@ -217,8 +217,8 @@ def test_a_row_whose_path_is_not_the_members_is_refused_and_nothing_moves(
     assert remedy == (
         "Remediation: this tool writes that field itself, so a different "
         f"value is a hand edit. Put `path: members/{MEMBER}` back in "
-        "family.yaml, or `git checkout -- family.yaml` if the edit is not "
-        "committed, then run the same command again.")
+        "family.yaml and commit that, or `git checkout -- family.yaml` if "
+        "the edit is not committed, then run the same command again.")
     assert state(holder, env) == before
     neighbour_intact(holder, env)
     assert not offline.gh_log.exists(), offline.gh_log.read_text()
@@ -313,8 +313,8 @@ def test_a_row_whose_project_is_not_a_directory_name_is_refused(
         "edit. Restore family.yaml from git (`git checkout -- family.yaml` "
         "if the edit is not committed), or put the row's `project:` and "
         "`path:` back as the tool wrote them (`project: <Project>`, `path: "
-        "members/<Project>`), then run the command again naming that "
-        "member.")
+        "members/<Project>`) and commit that, then run the command again "
+        "naming that member.")
     assert state(holder, env) == before
     for mounted in MEMBERS:
         entry = raw(holder, env, "ls-tree", "HEAD", "--", f"members/{mounted}"
@@ -408,10 +408,13 @@ def test_a_row_with_the_members_own_path_or_none_still_exits_zero_in_one_commit(
     """THE CONTROLS: the row the tool writes, and a row with no `path:` at
     all, which keeps defaulting to `members/<project>`. Each is still ONE
     commit of exactly the paths the verb is for, and the holder still
-    validates."""
+    validates. The hand edit is committed first: the verbs refuse a
+    `family.yaml` holding a change HEAD does not (#684)."""
     env = isolated(offline, tmp_path)
     if edit == "no-path-line":
         hand_edit(holder, MEMBER, None)
+        raw(holder, env, "commit", "-q", "-m", "a row with no path line",
+            "--", "family.yaml")
     was = commits(holder, env)
 
     result = run_script(FAMILY, *verb_args(verb, holder, family), env=env)

@@ -39,6 +39,8 @@ import subprocess
 import pytest
 
 from conftest import REPO, git, run_script
+#: The names no line may print raw, and how a line spells them (#766).
+from conftest import UNSAFE_NAMES, copied_under, refusal_detail, spelt
 #: The family fixture, its names and the work branch it grows the holder on,
 #: imported from the module that owns them.
 from test_family import (  # noqa: F401
@@ -121,6 +123,13 @@ def next_push(stdout: str) -> tuple[list[str], str]:
     return host_words(lines[at][len("NEXT  "):]), lines[at + 1]
 
 
+def refspec(branch: str) -> str:
+    """The word the NEXT push ends with (#689): the branch by its full
+    refname on both sides, which no `+`, tag or checked-out branch can
+    change the reading of."""
+    return f"refs/heads/{branch}:refs/heads/{branch}"
+
+
 @pytest.mark.parametrize("verb", ["add", "bump", "remove"])
 def test_each_act_refuses_the_tracking_branch_then_lands_on_a_branch(
         family, on_main, verb):
@@ -156,7 +165,7 @@ def test_each_act_refuses_the_tracking_branch_then_lands_on_a_branch(
         "the tracking branch did not move")
     push, then = next_push(done.stdout)
     assert push == ["git", "-C", str(holder), "push", "-u", "origin",
-                    branch]
+                    refspec(branch)]
     assert then == (f"      then open a pull request against {TRACKING}; "
                     "never push to it directly")
     assert done.stdout.rstrip().endswith(then), (
@@ -305,7 +314,8 @@ def test_the_tracking_branch_is_the_one_family_yaml_declares(family,
     done = run_script(FAMILY, *add)
     assert done.returncode == 0, done.stdout + done.stderr
     push, then = next_push(done.stdout)
-    assert push == ["git", "-C", str(holder), "push", "-u", "origin", "main"]
+    assert push == ["git", "-C", str(holder), "push", "-u", "origin",
+                    refspec("main")]
     assert then == ("      then open a pull request against trunk; never "
                     "push to it directly")
 
@@ -322,3 +332,37 @@ def test_each_doc_makes_the_branch_before_the_add(doc):
     add = text.index("python3 scripts/family.py add ")
     block = text[text.rindex("```", 0, add):add]
     assert " switch -c family/add-" in block, block
+
+
+# --- #766: the holder each refusal names, safe to show -----------------------
+
+@pytest.mark.parametrize("name", UNSAFE_NAMES)
+@pytest.mark.parametrize("detached", [False, True],
+                         ids=["tracking-branch", "detached"])
+def test_a_holder_refused_for_its_branch_is_named_safe_to_show(
+        family, tmp_path, detached, name):
+    """#766: `family-on-tracking-branch` and `family-holder-detached` named
+    the holder as it was, so a holder under a name with an ESC sent it to
+    the terminal, and one with a line break printed a forged line in the
+    detail. The detail names it as `repr` spells it, on the one line it is.
+    The remedy's `switch -c` is a command to paste, quoted for a shell as
+    it was (`_switch_command`), and is not this row's."""
+    holder = copied_under(family["root"], tmp_path, name)
+    git("switch", "-q", "-C", TRACKING, cwd=holder)
+    if detached:
+        git("checkout", "-q", "--detach", cwd=holder)
+    result = act(family, holder, "remove")
+    assert result.returncode == 2, result.stdout + result.stderr
+    assert result.stdout == ""
+    code, said = (
+        ("family-holder-detached",
+         "is not on a branch, so `remove` would write a commit no branch "
+         "holds, with nothing to push and open a pull request from")
+        if detached else
+        ("family-on-tracking-branch",
+         f"is on '{TRACKING}', which family.yaml declares as the holder's "
+         "tracking branch, and `remove` will not write a commit whose only "
+         "next step is a push to the default branch"))
+    assert refusal_detail(result.stderr, code) == [
+        f"REFUSED {code}: {spelt(holder)} {said}. No git command that writes "
+        "was run and nothing was written."]
