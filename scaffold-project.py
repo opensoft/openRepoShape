@@ -1068,11 +1068,28 @@ def _refuse_an_unwritable_clone_url(local: bool, url: str) -> None:
             CLONE_URL_REMEDIATION)
 
 
-def referent_chain_links(raw: str) -> tuple:
+def referent_chain_links(raw: str, pins=()) -> tuple:
     """`--referent-chain`'s links: split on commas, each stripped, an empty
     one dropped. ONE reading, for `_declaration` and for the check below, so
-    the links that are judged are the links that are recorded."""
-    return tuple(link.strip() for link in raw.split(",") if link.strip())
+    the links that are judged are the links that are recorded.
+
+    A FIRST LINK THAT IS A `--pin` IS SPELLED AS THAT PIN (#909). The first
+    link is matched to the `--pin` products, `pins`, by `pin_product_key`,
+    the pin file's own fold (#444), so `open<U+212A KELVIN SIGN>dox` is the
+    pin `openKdox`: `lower()` folds the Kelvin sign to `k`. It was recorded
+    as typed, and the plan printed that spelling, beside one pin file,
+    `contracts/openkdox-pin.yaml`. It is recorded in the `--pin`'s spelling
+    now, and so is a first link differing from it by case alone. An owner
+    typed before the name is kept: the manifest records the name alone."""
+    # The fold `resolve_referent` matches the first link to a pin by.
+    from repo_shape import pin_product_key
+    links = tuple(link.strip() for link in raw.split(",") if link.strip())
+    if not links:
+        return links
+    head, slash, first = links[0].rpartition("/")
+    pinned = next((pin for pin in pins
+                   if pin_product_key(pin) == pin_product_key(first)), None)
+    return links if pinned is None else (head + slash + pinned, *links[1:])
 
 
 def _refuse_malformed_chain_links(policy, chain: tuple) -> None:
@@ -1161,7 +1178,7 @@ def _declaration(args) -> tuple[dict, set, tuple, dict]:
     """
     pins = declared_pin_values(args)
     declared_pins: set[str] = set(pins)
-    chain = referent_chain_links(args.referent_chain)
+    chain = referent_chain_links(args.referent_chain, declared_pins)
     link_pins = link_pins_from_trees(
         chain, None, {}, args.pin_source, with_reasons=True,
         remedies=_link_remedies(chain)) if chain else {}
