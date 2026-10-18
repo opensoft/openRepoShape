@@ -2687,32 +2687,55 @@ def clone_and_bootstrap(opts: Options, org: str, landing: Landing) -> dict:
 #: `SHELL_BARE_POSIX`. A backslash is not in it, so a Windows path is quoted.
 SHELL_BARE_POSIX = re.compile(r"[A-Za-z0-9_./:@%+=,-]+")
 
-#: A word this host's shell reads as itself, needing no quotes:
-#: `scripts/repo_shape.py`'s `SHELL_BARE_NT` on Windows, else its
-#: `SHELL_BARE_POSIX`. This file runs before any checkout of the standard
+#: A word PowerShell reads as itself: `scripts/repo_shape.py`'s
+#: `SHELL_BARE_NT`. This file runs before any checkout of the standard
 #: exists, so it carries its own copy of the rule, and
-#: `tests/test_family_printed_quoting.py` holds the two to one answer.
-SHELL_BARE = re.compile(r"[A-Za-z0-9_./:%+=\\-]+" if os.name == "nt"
-                        else SHELL_BARE_POSIX.pattern)
+#: `tests/test_git_bash_dialect.py` holds the two to one answer on every
+#: host, as `tests/test_family_printed_quoting.py` does on this one.
+SHELL_BARE_NT = re.compile(r"[A-Za-z0-9_./:%+=\\-]+")
+
+
+def host_shell_dialect(name=None, environ=None) -> str:
+    """`scripts/repo_shape.py`'s `host_shell_dialect`, as a copy, because
+    this file runs before any checkout of the standard exists (#711):
+    `"nt"`, PowerShell's dialect, on a Windows host whose environment has
+    no `MSYSTEM` or an empty one, and `"posix"`, `sh`'s, everywhere else,
+    Git Bash included. `name` and `environ` are `os.name` and `os.environ`
+    when None. Its docstring there says why `MSYSTEM`, and what it does not
+    cover: a PowerShell started from inside Git Bash inherits `MSYSTEM` and
+    is answered `sh`'s. `tests/test_git_bash_dialect.py` holds the two
+    copies to one answer."""
+    name = os.name if name is None else name
+    environ = os.environ if environ is None else environ
+    return "nt" if name == "nt" and not environ.get("MSYSTEM") else "posix"
 
 
 def shell_word(value, posix: bool = False) -> str:
-    """`value` as ONE word of a command pasted into this host's shell: bare
-    where every character is itself to it, else in single quotes, doubled
-    inside for PowerShell, closed-escaped-reopened for `sh` (#486). A
-    leading `=` is quoted too, which zsh would expand.
+    """`value` as ONE word of a command pasted into this host's shell, the
+    one `host_shell_dialect` answers (#711): bare where every character is
+    itself to it, else in single quotes, doubled inside for PowerShell,
+    closed-escaped-reopened for `sh` (#486). A leading `=` is quoted too,
+    which zsh would expand.
+
+    ASKED AT EACH CALL, NOT AT IMPORT. The alphabet a word may stay bare in
+    and the escape it is quoted with are one answer, taken from the
+    environment the line is printed in, where `MSYSTEM` says Git Bash. The
+    alphabet used to be fixed at import (`SHELL_BARE`, from `os.name`) and
+    the escape asked `os.name` at each call, two reads of one question.
 
     `posix` spells it for `sh` on EVERY host, Windows too: Git Bash reads
     the backslash of a bare `C:\\work` as an escape and an apostrophe doubled
     for PowerShell as two quotes, and #532 rules the printed commands
     POSIX-only. The lines #538 adds or changes pass it, as the scaffold's
     NEXT STEPS clone does (`shell_line(..., "posix")`); the family lines
-    (`family_next_command`) are #532's and still take this host's dialect."""
+    (`family_next_command`) are #532's and take the host's dialect, which
+    under Git Bash is `sh`'s (#711, L2-29)."""
     text = str(value)
-    bare = SHELL_BARE_POSIX if posix else SHELL_BARE
+    windows = not posix and host_shell_dialect() == "nt"
+    bare = SHELL_BARE_NT if windows else SHELL_BARE_POSIX
     if not text.startswith("=") and bare.fullmatch(text):
         return text
-    if os.name == "nt" and not posix:
+    if windows:
         return "'" + re.sub("(['\u2018\u2019\u201a\u201b])", r"\1\1",
                             text) + "'"
     return "'" + text.replace("'", "'\\''") + "'"

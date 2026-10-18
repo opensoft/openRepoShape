@@ -771,13 +771,49 @@ def _read_member_project(path: Path, project: str, repository: str,
 
 def _holder_branch(root: Path) -> str | None:
     """The branch the holder's HEAD is on, or None: detached, or a HEAD
-    that names something other than a branch."""
+    that names something other than a branch.
+
+    READ AS THE BYTES GIT WROTE (#765). Exactly one newline and exactly
+    `refs/heads/` come off the bytes, and the rest is decoded with
+    `surrogateescape`. `strip()` also took a trailing U+00A0, U+2028 or
+    U+0085, which a branch name may end in: a holder on `feat<U+00A0>` was
+    read as `feat`, a branch of its own, and the NEXT line pushed that one
+    and not the commit the act made. A NAME THAT IS NOT UTF-8 IS REFUSED
+    here, `family-branch-not-utf8`: no line this tool prints can spell it,
+    and a push line naming another branch is worse than none. The real run
+    of each act asks this before it reads the member or writes anything,
+    and its dry run at the line that would name the branch."""
     try:
-        ref = _git_bytes(["symbolic-ref", "-q", "HEAD"], root).decode(
-            "utf-8", "surrogateescape").strip()
+        ref = _git_bytes(["symbolic-ref", "-q", "HEAD"], root)
     except CommandFailed:
         return None
-    return ref[len(HEADS_PREFIX):] if ref.startswith(HEADS_PREFIX) else None
+    ref = ref[:-1] if ref.endswith(b"\n") else ref
+    heads = HEADS_PREFIX.encode("ascii")
+    if not ref.startswith(heads):
+        return None
+    raw = ref[len(heads):]
+    branch = raw.decode("utf-8", "surrogateescape")
+    try:
+        branch.encode("utf-8")
+    except UnicodeEncodeError:
+        # NAMED BY ITS BYTES, `b'caf<0xE9>'`, as `trailer-not-utf8` names a
+        # trailer, and THE HOLDER as `shown_path` names a path, as
+        # `_checked_branch`'s other refusals name it (#766). The remedy is
+        # quoted for a POSIX shell, as bump-leg's and update-shape's are, so
+        # README's sentence on the lines quoted for PowerShell stays true;
+        # a command to paste, it holds the holder's path raw inside its
+        # quotes, as their `switch -c` does (#459).
+        raise Refusal(
+            "family-branch-not-utf8",
+            f"{shown_path(root)} is on the branch {raw!r}, whose name is not "
+            "UTF-8, so no line this tool prints can name it: the NEXT line "
+            "would push a branch that is not there. Nothing was committed, "
+            "and the holder's work tree and index are as they were.",
+            "Remediation: give the branch a name that is UTF-8 text, then "
+            "run the same command again:\n    "
+            + shell_line(["git", "-C", root, "branch", "-m"], "posix")
+            + " <a new name>") from None
+    return branch
 
 
 #: A branch-name component the suggestion may use as it stands: dot-separated
