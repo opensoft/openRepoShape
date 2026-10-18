@@ -3724,6 +3724,39 @@ def pin_source_path(typed: str | None, *, nothing_made: str) -> Path | None:
     return Path(typed)
 
 
+def folder_flag_path(typed, flag: str, code: str, *, names: str,
+                     absent: str) -> Path | None:
+    """A folder flag as the `Path` the tool reads, or None when it was not
+    given; a value that names no path is refused as `code`.
+
+    `pin_source_path`'s question, asked of the folders the scaffold and
+    `family.py init` make things in (#972's review, S2): `--work-dir` and
+    `--local-remote-dir` in both, and `init`'s `--into`. Each was parsed as
+    a `Path`, and `Path("")` is `Path(".")`, so a flag passed empty was read
+    as the directory the tool ran in, without a word: from the root of a
+    checkout of openRepoShape, `init --into ''` planned the holder inside
+    it, where no `--into` is refused as `family-landing-in-standard`. Each
+    tool takes them as TEXT now and asks here, before anything exists and
+    before any process starts, under `--dry-run` alike. A typed `.` still
+    means the current directory, and a flag not given keeps its default.
+
+    `names` says what the folder is for and `absent` what the run does with
+    no flag, each in the tool's words, so the remedy names the three ways
+    on: a path, `.`, or no flag at all.
+    """
+    if typed is None:
+        return None
+    if not str(typed):
+        raise Refusal(
+            code,
+            f"`{flag} ''` names no path. An empty path would be read as the "
+            "directory this runs in.",
+            "Remediation: nothing was created, and `--dry-run` refuses the "
+            f"same. Give {names} (`{flag} <dir>`), or `.` to mean this "
+            f"directory; with no {flag}, {absent}.")
+    return Path(typed)
+
+
 def refuse_an_unread_pin_source(pin_source, pins, chain=None, *,
                                 nothing_made: str) -> None:
     """`--pin-source` is read by this run, or this refuses it as

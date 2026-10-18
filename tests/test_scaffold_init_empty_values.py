@@ -23,7 +23,19 @@ among them, are refused by the new project's or holder's own validator
 flag as passed, never "(not given, so ...)". The fallbacks answer only
 where the flag is not given.
 
-Every run is a `--dry-run` into `--local-remote-dir`, which never calls `gh`.
+AND THE FOLDER FLAGS (#972's review, S2). `--work-dir` and
+`--local-remote-dir` in both tools, and `init`'s `--into`, were parsed as a
+`Path`, and `Path("")` is `.`: passed empty, each was read as the directory
+the run is in, without a word, and from the root of a checkout of
+openRepoShape `init --into ''` planned the holder inside it. Each is now
+refused by name, `<flag>-no-path`, as `--pin-source ''` is
+(`pin-source-no-path`), by the dry run and the real run alike, before
+anything is made. A typed `.` is still this directory, and a flag not given
+keeps its default.
+
+Every run is into `--local-remote-dir`, which never calls `gh`; a row that
+passes it empty would read it as `.`, a local folder too. Every run is a
+`--dry-run`, and each folder row is also run for real.
 """
 
 from __future__ import annotations
@@ -169,3 +181,113 @@ def test_with_no_identity_an_empty_creator_is_named_as_passed(
     omitted = dry_run(tmp_path / "omitted", tool, who=False, env=NO_IDENTITY)
     assert omitted.returncode == 2, omitted.stdout + omitted.stderr
     assert refused_line(omitted).startswith(refusal), omitted.stderr
+
+
+# --- the folder flags (#972's review, S2) -----------------------------------
+
+#: Each folder flag a tool takes, by `(tool, flag)`: the code it is refused
+#: as when passed empty, what its remedy says the folder is for, and what it
+#: says the run does with no flag at all, in that tool's words.
+FOLDER_ROWS = {
+    ("scaffold", "--work-dir"): (
+        "work-dir-no-path", "the folder the working trees are built in",
+        "they are built in a temporary directory"),
+    ("scaffold", "--local-remote-dir"): (
+        "local-remote-dir-no-path",
+        "the folder the bare repositories are made in",
+        "they are created on GitHub"),
+    ("family", "--into"): (
+        "into-no-path", "the parent folder the family folder is made in",
+        "it is made in the directory you stand in, which is refused inside "
+        "a checkout of openRepoShape"),
+    ("family", "--work-dir"): (
+        "work-dir-no-path", "the folder the holder is made in",
+        "the holder lands in a family folder, by --into"),
+    ("family", "--local-remote-dir"): (
+        "local-remote-dir-no-path",
+        "the folder the holder's bare repository is made in",
+        "it is created on GitHub"),
+}
+FOLDER_PARAMS = [pytest.param(tool, flag, id=f"{tool}{flag}")
+                 for tool, flag in FOLDER_ROWS]
+
+
+def folder_run(tmp_path, tool: str, flag: str, value: str | None, *,
+               dry_run: bool = True):
+    """One run of `tool` for `NorthWind` from `tmp_path/here`, an empty
+    folder, with `flag` given `value`, or left out when `value` is None.
+    The other folder flags name folders under `tmp_path` that do not exist:
+    `--local-remote-dir`, and `--work-dir` but beside `init`'s `--into`,
+    which it excludes."""
+    spec = TOOLS[tool]
+    here = tmp_path / "here"
+    here.mkdir(exist_ok=True)
+    folders = {"--local-remote-dir": tmp_path / "remotes",
+               "--work-dir": tmp_path / "work"}
+    if flag == "--into":
+        del folders["--work-dir"]
+    folders.pop(flag, None)
+    if value is not None:
+        folders[flag] = value
+    return run_script(
+        *spec["command"], "--org", ORG, *spec["name"],
+        spec["who"], "Test Human", spec["when"], "2026-09-02",
+        *(f"{name}={folder}" for name, folder in folders.items()),
+        *(["--dry-run"] if dry_run else []),
+        cwd=here, env={"GIT_AUTHOR_NAME": FALLBACK})
+
+
+def everything_under(root) -> list:
+    """Every path under `root`, so a test sees whether a run made one."""
+    return sorted(path.relative_to(root).as_posix()
+                  for path in root.rglob("*"))
+
+
+@pytest.mark.parametrize("dry_run", [True, False], ids=["dry-run", "real-run"])
+@pytest.mark.parametrize("tool, flag", FOLDER_PARAMS)
+def test_a_folder_flag_passed_empty_is_refused_by_name(tmp_path, tool, flag,
+                                                       dry_run):
+    """One row per folder flag per tool, by the dry run and the real run:
+    passed empty, the flag is refused by name before anything is made, and
+    told the three ways on, a path, `.`, or no flag. Read as a `Path` it was
+    `.`, so each built, made or landed in the directory the run stood in."""
+    code, names, absent = FOLDER_ROWS[tool, flag]
+    (tmp_path / "here").mkdir()
+    before = everything_under(tmp_path)
+    result = folder_run(tmp_path, tool, flag, "", dry_run=dry_run)
+    said = (f"REFUSED {code}: `{flag} ''` names no path. An empty path would "
+            "be read as the directory this runs in.")
+    assert_refused_by_name(result, said)
+    assert refused_line(result) == said, result.stderr
+    assert (f"\nRemediation: nothing was created, and `--dry-run` refuses the "
+            f"same. Give {names} (`{flag} <dir>`), or `.` to mean this "
+            f"directory; with no {flag}, {absent}.\n") in result.stderr
+    assert everything_under(tmp_path) == before, "the run made something"
+
+
+@pytest.mark.parametrize("tool, flag", FOLDER_PARAMS)
+def test_a_folder_flag_typed_as_a_dot_is_still_this_directory(tmp_path, tool,
+                                                              flag):
+    """THE CONTROL: the remedy's `.` is taken, as it always was, and the
+    dry run plans the folder it names and makes nothing."""
+    result = folder_run(tmp_path, tool, flag, ".")
+    assert result.returncode == 0, result.stdout + result.stderr
+    assert DRY_RUN_DONE in result.stdout
+    assert everything_under(tmp_path) == ["here"]
+
+
+@pytest.mark.parametrize("tool, flag", [
+    pytest.param(tool, flag, id=f"{tool}{flag}")
+    for tool, flag in FOLDER_ROWS if flag != "--local-remote-dir"])
+def test_a_folder_flag_not_given_keeps_its_default(tmp_path, tool, flag):
+    """THE CONTROL: with no `--work-dir` the scaffold builds in a temporary
+    directory, and with neither `--into` nor `--work-dir` `init` lands where
+    the person stands, as before. (No `--local-remote-dir` is GitHub, which
+    the tests of a dry run against `gh` hold.)"""
+    result = folder_run(tmp_path, tool, flag, None)
+    assert result.returncode == 0, result.stdout + result.stderr
+    assert DRY_RUN_DONE in result.stdout
+    if tool == "family":
+        holder = (tmp_path / "here" / "NorthWind" / "NorthWind").resolve()
+        assert f"landing      {holder}" in result.stdout, result.stdout
+    assert everything_under(tmp_path) == ["here"]

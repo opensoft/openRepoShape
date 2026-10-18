@@ -186,7 +186,7 @@ from repo_shape import (  # noqa: E402
 from shape_materialize import (  # noqa: E402
     FAMILY_RULESET_HINT, SHAPE_REPOSITORY, CommandFailed, check_program,
     commit_trailers, env_commit, escape_what_stdout_cannot_encode,
-    force_stage, inherited_child_environment, make_folder,
+    folder_flag_path, force_stage, inherited_child_environment, make_folder,
     materialize_family_root, refuse_bad_branch, refuse_unless_not_found,
     refuse_unmakeable_folder, run, shown_source, stage_written,
     target_in_the_way, target_remediation, trailer_line, write_lf,
@@ -709,7 +709,8 @@ def _classify_family_name(policy: NamingPolicy, name: str) -> None:
             f"{name!r} matches no family in the naming policy",
             f"Remediation: --family takes {FAMILY_NAME_RULE}. A holder is "
             "spelled like an assembly root, but those two forms are "
-            "unambiguous by construction and cannot be declared into one.")
+            "unambiguous by construction and cannot be declared into a "
+            "holder.")
     if found.family != "family":
         raise Refusal(
             "naming-not-a-family",
@@ -2036,6 +2037,33 @@ def _refuse_landing_in_standard(into: Path, holder: Path,
         "override (`<dir>/<Family>`, no family folder). There is no --force.")
 
 
+def _folder_flags(args) -> None:
+    """`init`'s three folder flags as the `Path`s every later step reads,
+    each refused by name when passed empty (#972's review, S2), first, before
+    anything reads one: `--into ''` as `into-no-path`, `--work-dir ''` as
+    `work-dir-no-path` and `--local-remote-dir ''` as
+    `local-remote-dir-no-path`, as the scaffold refuses its own two.
+
+    As a `Path`, `''` is `.`, the directory `init` runs in, so each was taken
+    without a word: from the root of a checkout of openRepoShape, `--into
+    ''` planned the holder inside it, where no `--into` is refused as
+    `family-landing-in-standard`. A flag not given is None, as it was."""
+    args.into = folder_flag_path(
+        args.into, "--into", "into-no-path",
+        names="the parent folder the family folder is made in",
+        absent="it is made in the directory you stand in, which is refused "
+               "inside a checkout of openRepoShape")
+    args.work_dir = folder_flag_path(
+        args.work_dir, "--work-dir", "work-dir-no-path",
+        names="the folder the holder is made in",
+        absent="the holder lands in a family folder, by --into")
+    args.local_remote_dir = folder_flag_path(
+        args.local_remote_dir, "--local-remote-dir",
+        "local-remote-dir-no-path",
+        names="the folder the holder's bare repository is made in",
+        absent="it is created on GitHub")
+
+
 def _landing(args, family: str) -> tuple[Path | None, Path]:
     """`(the family folder, the holder)` — WHERE `init` PUTS THINGS.
 
@@ -2113,13 +2141,13 @@ DERIVED_FAMILY_ID_REMEDIATION = (
     "its family folder.")
 
 
-def _refuse_bad_family_id(family_id: str, given: str | None,
-                          policy: NamingPolicy, family: str) -> None:
+def _refuse_bad_family_id(family_id: str, args, policy: NamingPolicy,
+                          family: str) -> None:
     """`family-bad-id`: an id `validate-family.py` would not take
     (`PROJECT_ID_RE`), named by where it came from (#659), as the scaffold
     names `scaffold-bad-id`.
 
-    `given` is `--id` as parsed. One the person passed, `''` among them
+    `args.id` is `--id` as parsed. One the person passed, `''` among them
     (#911), is named as the flag they typed, value as typed, and is told
     what an id may hold (`PASSED_FAMILY_ID_REMEDIATION`). With none, the id
     is `--family` lowercased, and `--id 'north_wind' must match` named a
@@ -2129,15 +2157,24 @@ def _refuse_bad_family_id(family_id: str, given: str | None,
     A REFUSED NAME SPEAKS FIRST (#911). `--family North_Wind --id
     north_wind` was refused for its id, and the remedy's retype then met
     `naming-unclassified`, which no `--id` mends. So a passed id is refused
-    only once `--family` is a name a holder can have
-    (`_classify_family_name`, which `_checked_family_identity` asks next
-    anyway, and which reads nothing but the policy). A derived id keeps its
-    own refusal: its remedy is already the naming rule."""
+    only once `--family` is a name a holder can have: one the policy holds
+    as a holder (`_classify_family_name`), one a Windows disk can make a
+    folder of (`_refuse_an_unholdable_holder_name`), and, where GitHub is
+    asked, one GitHub keeps a repository's name to
+    (`_refuse_a_holder_name_github_cannot_hold`). `_checked_family_identity`
+    asks each of them next anyway, in this order, and none reads anything
+    but the name, the policy and whether `--local-remote-dir` was given, so
+    none starts a process: `--family NUL --id foo_bar` and a
+    `--family` of 105 characters with a bad id were told to retype the id
+    first (#972's review, S1). A derived id keeps its own refusal: its
+    remedy is already the naming rule."""
     if PROJECT_ID_RE.match(family_id):
         return
     pattern = PROJECT_ID_RE.pattern
-    if given is not None:
+    if args.id is not None:
         _classify_family_name(policy, family)
+        _refuse_an_unholdable_holder_name(family)
+        _refuse_a_holder_name_github_cannot_hold(args, family)
         raise Refusal("family-bad-id",
                       f"--id {family_id!r} must match {pattern}",
                       PASSED_FAMILY_ID_REMEDIATION)
@@ -2180,6 +2217,23 @@ ORG_SPELLING_REMEDIATION = (
     "`<org>` of `https://github.com/<org>`.")
 
 
+def _refuse_a_holder_name_github_cannot_hold(args, family: str) -> None:
+    """`family-name-too-long`: a `--family` over GitHub's 100 for the
+    holder's repository, `<org>/<Family>` (#863). Asked first by
+    `_refuse_what_github_cannot_hold`, and before a passed id that is no id
+    (`_refuse_bad_family_id`, #972's review, S1). Not asked under
+    `--local-remote-dir`, where a bare repository's name is the disk's."""
+    if args.local_remote_dir is not None:
+        return
+    if len(family) > GITHUB_NAME_MAX:
+        raise Refusal(
+            "family-name-too-long",
+            f"--family is {_both_ends(family)}, {len(family)} characters, and "
+            "GitHub keeps a repository's name, the holder's "
+            f"`<org>/<Family>`, to at most {GITHUB_NAME_MAX}",
+            HOLDER_TOO_LONG_REMEDIATION)
+
+
 def _refuse_what_github_cannot_hold(args, family: str, family_id: str,
                                     topic: str) -> None:
     """What GitHub will not take of the holder, refused where GitHub is
@@ -2204,13 +2258,7 @@ def _refuse_what_github_cannot_hold(args, family: str, family_id: str,
     not given."""
     if args.local_remote_dir is not None:
         return
-    if len(family) > GITHUB_NAME_MAX:
-        raise Refusal(
-            "family-name-too-long",
-            f"--family is {_both_ends(family)}, {len(family)} characters, and "
-            "GitHub keeps a repository's name, the holder's "
-            f"`<org>/<Family>`, to at most {GITHUB_NAME_MAX}",
-            HOLDER_TOO_LONG_REMEDIATION)
+    _refuse_a_holder_name_github_cannot_hold(args, family)
     refuse_an_owner_github_cannot_have("family-org-too-long", args.org,
                                        "--org", ORG_REMEDIATION)
     refuse_an_owner_github_cannot_spell("family-bad-org", args.org, "--org",
@@ -2252,7 +2300,7 @@ def _checked_family_identity(args) -> tuple[str, str, str]:
     # trailing line break.
     family_id = args.id if args.id is not None else family.lower()
     policy = NamingPolicy.load(NAMING_POLICY)
-    _refuse_bad_family_id(family_id, args.id, policy, family)
+    _refuse_bad_family_id(family_id, args, policy, family)
     family_id = checked_value("--id", family_id)
     _classify_family_name(policy, family)
     _refuse_an_unholdable_holder_name(family)
@@ -3420,6 +3468,7 @@ def refuse_unholdable_manifest(args, values: dict,
 
 
 def cmd_init(args) -> int:
+    _folder_flags(args)
     family, family_id, topic = _checked_family_identity(args)
     created_by = _creator_name(args)
     local, repository, url = _holder_remote(args, family)
@@ -9676,17 +9725,20 @@ def build_parser() -> argparse.ArgumentParser:
                            "commits, use it as the holder instead of "
                            "refusing. A repository with commits is still "
                            "refused: that is live, not a slot.")
-    init.add_argument("--local-remote-dir", type=Path, default=None,
+    # THE THREE FOLDER FLAGS ARE TEXT, not `type=Path`: `Path("")` is `.`,
+    # so an empty value could not be told from a typed `.` once parsed.
+    # `_folder_flags` makes each a `Path`, refusing an empty one first.
+    init.add_argument("--local-remote-dir", default=None,
                       help="create a bare repository here instead of calling "
                            "`gh repo create` (the TEST path; no network)")
-    init.add_argument("--into", type=Path, default=None, metavar="DIR",
+    init.add_argument("--into", default=None, metavar="DIR",
                       help="the PARENT directory the family folder is made "
                            "in (default: the directory you are standing in, "
                            "which is refused inside a checkout of "
                            "openRepoShape: from its root, pass `--into ..`). "
                            "The holder lands at <into>/<Family>/<Family>, "
                            "beside where `make siblings` clones the members.")
-    init.add_argument("--work-dir", type=Path, default=None,
+    init.add_argument("--work-dir", default=None,
                       help="THE OVERRIDE: land the holder at "
                            "<work-dir>/<Family> and make no family folder at "
                            "all. Mutually exclusive with --into.")

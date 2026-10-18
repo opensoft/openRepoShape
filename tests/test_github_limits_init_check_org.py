@@ -300,6 +300,20 @@ def test_init_refuses_an_empty_id_as_passed_before_its_topic(
     assert FAMILY_TOPIC_TOO_LONG not in err
 
 
+def test_init_refuses_a_long_family_before_a_passed_bad_id(
+        family, only_the_branch_question, capsys, tmp_path):
+    """#972's review, S1: a `--family` longer than GitHub keeps a
+    repository's name was refused as `family-bad-id` for a passed id that is
+    no id, and the retype then met `family-name-too-long`, which no `--id`
+    mends. The name speaks first, as `scaffold-name-too-long` does in the
+    scaffold, with no process started."""
+    err = refused_init(family, capsys, tmp_path, "--family",
+                       a_name(NAME_MAX + 5), "--id", "foo_bar")
+    assert err.startswith(f"{FAMILY_NAME_TOO_LONG}: --family is "
+                          "Abbbbbbbbbbb...bbbbbbbbbbbb, 105 characters, "), err
+    assert "family-bad-id" not in err
+
+
 def test_init_names_a_passed_id_as_passed(family, only_the_branch_question,
                                           capsys, tmp_path):
     err = refused_init(family, capsys, tmp_path, "--id", an_id(ID_MAX + 1))
