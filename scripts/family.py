@@ -163,6 +163,7 @@ from __future__ import annotations
 
 import argparse
 import datetime as _dt
+import errno
 import json
 import os
 import re
@@ -173,7 +174,7 @@ import subprocess
 import sys
 import tempfile
 from pathlib import Path
-from typing import NamedTuple
+from typing import Callable, NamedTuple
 
 SHAPE_ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(SHAPE_ROOT / "scripts"))
@@ -214,6 +215,9 @@ from shape_materialize import _unmountable_reason  # noqa: E402
 # a path is quoted (#610), as it is when printable and as Python's `repr`
 # spells it when it is not.
 from repo_shape import shown_path  # noqa: E402
+# The operating system's own words for a path it would not let this read
+# (#430), as `load_yaml` gives them for a file it cannot open.
+from repo_shape import _os_reason  # noqa: E402
 # A reused holder's own visibility and the Free-plan secrets note, asked as
 # the scaffold asks them of its root (#660).
 from shape_materialize import (  # noqa: E402
@@ -286,6 +290,187 @@ LEG_SUFFIX_RE = re.compile(r"-(?:spec|code)$")
 
 
 # ---------------------------------------------------------------------------
+# A path this tool cannot read is not a path that is not there (#430)
+# ---------------------------------------------------------------------------
+#
+# `Path.is_file()`, `is_dir()` and `exists()` RAISED a refused `stat` on
+# Python 3.9 to 3.13 (`PermissionError`) and answered False only where nothing
+# was at the name; from 3.14 they answer False to ANY `OSError`. So a holder
+# this user may not search was "not a family root" on 3.14 and a traceback on
+# 3.12, a member checkout this user may not enter was `member-uninitialized`,
+# and `remove`'s rollback said the object store it could not read was "not
+# there" and made the member's directory again, empty. `os.path.lexists`, the
+# question several guards here asked, has answered False to any `OSError` on
+# every version. Asked as below, every Python answers alike, and a refused
+# `stat` is a refusal that names the path, exit 2. `bump-leg.py`'s `_is_a`
+# (#383) is the model, under the same names, which #430's hygiene test holds
+# to one errno set; `repo_shape.py` is a shape copy and stays as it is.
+
+#: The `OSError`s that `Path.is_file()` and `Path.is_dir()` answered False to
+#: on Python 3.9 to 3.13 (pathlib's `_ignore_error`), because each means there
+#: is nothing at the name to open: no such file, a part of the path that is
+#: not a directory, a bad descriptor, a symlink loop, and Windows' "not
+#: ready", "invalid name" and "cannot resolve". Every other one was raised.
+_ABSENT_ERRNOS = (errno.ENOENT, errno.ENOTDIR, errno.EBADF, errno.ELOOP)
+_ABSENT_WINERRORS = (21, 123, 1921)
+
+
+def _absent(exc: OSError) -> bool:
+    """Whether `exc`, raised by a `stat` or `lstat`, says nothing is at the
+    name (`_ABSENT_ERRNOS`, `_ABSENT_WINERRORS`)."""
+    return (exc.errno in _ABSENT_ERRNOS
+            or getattr(exc, "winerror", None) in _ABSENT_WINERRORS)
+
+
+def _is_a(path: Path, kind: Callable[[int], bool]) -> bool:
+    """Whether `path` is there and of `kind` (`stat.S_ISREG`, `stat.S_ISDIR`,
+    or any mode at all), following a link, raising the `OSError` of a `stat`
+    the operating system REFUSED (#430): `bump-leg.py`'s `_is_a` (#383).
+
+    NOT `Path.is_file()`, `is_dir()` OR `exists()`, whose answer depends on
+    the Python. Asked here, every Python answers as 3.9 to 3.13 did, and the
+    caller names the refused path instead of calling it absent.
+    """
+    try:
+        mode = path.stat().st_mode
+    except OSError as exc:
+        if _absent(exc):
+            return False
+        raise
+    except ValueError:
+        # a name the operating system cannot take at all (a NUL in it)
+        return False
+    return kind(mode)
+
+
+def _any_mode(mode: int) -> bool:
+    """`_is_a`'s `kind` for a question about any file at all, as
+    `Path.exists()` asks it."""
+    return True
+
+
+def _is_there(path: Path) -> bool:
+    """Whether anything is at `path`, NOT following a link (a dangling link
+    is there): `os.path.lexists`, asked as `_is_a` asks, so a refused `lstat`
+    is raised and not answered False (#430)."""
+    try:
+        path.lstat()
+    except OSError as exc:
+        if _absent(exc):
+            return False
+        raise
+    except ValueError:
+        return False
+    return True
+
+
+def _gone(path: Path) -> bool:
+    """Whether NOTHING is at `path`, not following a link, asked before a
+    removal or a rollback decides on it (#430): True ONLY where the `lstat`
+    says `ENOENT`, and any other `OSError` raised.
+
+    STRICTER THAN `_is_there`, ON PURPOSE. A part of the path that is not a
+    directory (`ENOTDIR`, a file where a folder was) or a link that loops
+    (`ELOOP`) says nothing is at the name for the question "is there a file
+    to read", and so `_is_a` answers. For "is there anything here to remove,
+    or was there nothing here before this run made it" it is not an answer:
+    a rollback that took it for one recorded a path as made by this run, or
+    skipped one, past something it never looked at.
+    """
+    try:
+        path.lstat()
+    except FileNotFoundError:
+        return True
+    return False
+
+
+#: What a path this tool must read and cannot is told, by cause (#430), in
+#: `validate-pins.py`'s words (`_unreadable_file`, #712) and `bump-leg.py`'s
+#: (#383): a refused permission is put right by the mode or the owner, and any
+#: other cause is not told to `chmod`.
+PERMISSION_ADVICE = (
+    "Make what this user may not open readable by this user: `chmod u+r` on "
+    "a file, `chmod u+rx` on a directory (and on every directory above "
+    "it{where}), or fix who owns it. ")
+OTHER_REASON = (
+    "Where the operating system gave another reason (a part of the path that "
+    "is a file where a directory belongs, a link that loops, an I/O error), "
+    "no `chmod` puts it right: put back in its place what belongs there, or "
+    "take away what nobody wants, and make sure nothing is changing the "
+    "holder while this runs. ")
+RUN_AGAIN = "Then run the same command again."
+
+
+def _cannot_read(named: str, exc: OSError) -> str:
+    """`<named>: cannot be read (<the operating system's reason>)`, the line
+    every refusal of a path this tool cannot read names it with (#430)."""
+    return f"{named}: cannot be read ({_os_reason(exc)})"
+
+
+def _named_in(root: Path, path: Path) -> str:
+    """`path` as a line names it: relative to the holder `root`, in POSIX,
+    where it is under it, else whole; as `shown_path` shows a path (#766)."""
+    try:
+        return shown_path(path.relative_to(root).as_posix())
+    except ValueError:
+        return shown_path(str(path))
+
+
+def _unreadable(code: str, named: str, exc: OSError, reads: str, *,
+                where: str = " inside the holder") -> Refusal:
+    """`code`'s refusal of a path this tool must read and the operating
+    system will not let it (#430): `_cannot_read`'s line, and a remedy that
+    says what was being read (`reads`, a sentence of its own) and the cure
+    for the cause, `PERMISSION_ADVICE` naming `where` the directories above
+    are, or `OTHER_REASON`."""
+    advice = (PERMISSION_ADVICE.format(where=where)
+              if isinstance(exc, PermissionError) else OTHER_REASON)
+    return Refusal(code, _cannot_read(named, exc),
+                   f"Remediation: {reads} A path it cannot read is refused, "
+                   "never taken for one that is not there. " + advice
+                   + RUN_AGAIN)
+
+
+def _refused(exc: OSError, asked: Path) -> Path:
+    """The path the operating system names in `exc` (its `filename`), else
+    `asked`: which of several paths a record asked about was refused."""
+    return Path(exc.filename) if isinstance(exc.filename, str) else asked
+
+
+def _member_unreadable(root: Path, path: Path, exc: OSError) -> Refusal:
+    """`member-unreadable`: a member's mount, its checkout's `.git` or its
+    object store in the holder, whose `stat` the operating system refused,
+    named relative to the holder, before anything is written (#430)."""
+    return _unreadable(
+        "member-unreadable", _named_in(root, path), exc,
+        "family.py reads what it would change in the holder, a member's "
+        "mount, its `.git` and its object store among them, before it "
+        "writes anything, to say what it would change and to put back what "
+        "it changed.")
+
+
+def _manifest_there(root: Path) -> bool:
+    """Whether the holder `root` has a `family.yaml` that is a file, asked
+    by `Family.open` and `siblings` before anything else; where its `stat`
+    is refused, `family-root-unreadable` (#430).
+
+    A HOLDER THIS USER MAY NOT SEARCH (`r--` or `---`) WAS "NOT A FAMILY
+    ROOT" on Python 3.14, `family-root-missing`, whose remedy runs `init`
+    over a holder that exists, and a `PermissionError` traceback on 3.12.
+    The holder is named whole, as `family-root-missing` names it: it is the
+    directory the person pointed at, and the one whose mode is the cure.
+    """
+    path = root / MANIFEST
+    try:
+        return _is_a(path, stat.S_ISREG)
+    except OSError as exc:
+        raise _unreadable(
+            "family-root-unreadable", shown_path(str(path)), exc,
+            f"family.py reads the holder's {MANIFEST} before anything else, "
+            "to know that it is a family root.", where="") from exc
+
+
+# ---------------------------------------------------------------------------
 # family.yaml: reading it, and rewriting the members block
 # ---------------------------------------------------------------------------
 
@@ -302,7 +487,7 @@ class Family:
     def open(cls, root_spec) -> "Family":
         root = Path(root_spec).expanduser().resolve()
         path = root / MANIFEST
-        if not path.is_file():
+        if not _manifest_there(root):
             raise Refusal(
                 "family-root-missing",
                 f"{path} does not exist, so this is not a family root",
@@ -775,7 +960,20 @@ def _read_member_project(path: Path, project: str, repository: str,
     every refusal here is the same either way.
     """
     manifest_path = path / "project.yaml"
-    if not manifest_path.is_file():
+    try:
+        there = _is_a(manifest_path, stat.S_ISREG)
+    except OSError as exc:
+        # A `project.yaml` WHOSE `stat` IS REFUSED, a link to a place this
+        # user may not search, was "no project.yaml" on Python 3.14, so
+        # `member-not-a-project` sent the person to scaffold a project that
+        # is one; a traceback on 3.12 (#430). It is the manifest that cannot
+        # be read, under that refusal's code and named as `shown` names it.
+        raise _unreadable(
+            "member-manifest-unreadable",
+            shown or shown_path(str(manifest_path)), exc,
+            "family.py reads the member's own project.yaml for the `id:` its "
+            "row records.", where="") from exc
+    if not there:
         # A LEG IS NAMED BY ITS ROOT (#203). The commonest way here is
         # `--member <org>/IRRS-spec`, and the legs of `IRRS-spec` are
         # `IRRS-spec-spec` and `IRRS-spec-code`, which no naming rule makes
@@ -6026,9 +6224,17 @@ def _checked_mount_path(root: Path, project: str, path: str,
     if spelled:
         raise _spellings_refusal(path, spelled,
                                  _gitmodules_first(root, spelled))
-    # A DIRECTORY NO LISTING COULD READ hides nothing: `lexists` asks the
-    # path itself, as it always did, after every listing has answered.
-    if os.path.lexists(root / path):
+    # A DIRECTORY NO LISTING COULD READ hides nothing: the path itself is
+    # asked, as it always was, after every listing has answered. Asked as
+    # `lexists` asks it and NOT with `os.path.lexists`, which answers False
+    # to a refused `lstat` (#430): a `members/` this user may not search
+    # passed as free, and the mount died at git's clone, or, on 3.12, the
+    # rollback's record raised a traceback before it.
+    try:
+        there = _is_there(root / path)
+    except OSError as exc:
+        raise _member_unreadable(root, root / path, exc) from exc
+    if there:
         raise taken
     try:
         run(["git", "--literal-pathspecs", "add", "--dry-run",
@@ -6168,7 +6374,14 @@ def _checked_add_target(family: Family, repository: str, project: str,
     # NAMED IN POSIX: git spells this `.git/modules/<path>`, and so does the
     # human who retypes the remediation below.
     _, cached = _module_dir(family.root, path)
-    if cached.exists():
+    # A STORE THIS USER MAY NOT REACH is named, not passed as absent (#430):
+    # `exists()` said "none" on Python 3.14, and the mount then died in git's
+    # clone, and raised a traceback on 3.12.
+    try:
+        there = _is_a(cached, _any_mode)
+    except OSError as exc:
+        raise _member_unreadable(family.root, cached, exc) from exc
+    if there:
         raise Refusal(
             "member-git-dir-cached",
             f"{cached.as_posix()} still holds the object store of a "
@@ -6525,18 +6738,27 @@ class MountRollback:
         #: steps (#302).
         self.index = _index_records(root)
         self.gitlink = self._entries(path)
-        self.files = {name: (self._bytes(name), self._entries(name))
-                      for name in (GITMODULES, MANIFEST)}
         self.registration = self._registration()
         module_shown, module = _module_dir(root, path)
-        #: `(directory, as it is named, its parents that do not exist yet)`
-        #: for each of the two directories the mount makes, if it is absent
-        #: now. Parents nearest first, which is the order they empty in.
-        self.trees = [(tree, shown, [p for p in tree.parents
-                                     if not p.exists()])
-                      for tree, shown in ((root / path, path),
-                                          (module, module_shown))
-                      if not tree.exists()]
+        try:
+            self.files = {name: (self._bytes(name), self._entries(name))
+                          for name in (GITMODULES, MANIFEST)}
+            #: `(directory, as it is named, its parents that do not exist
+            #: yet)` for each of the two directories the mount makes, if it
+            #: is absent now. Parents nearest first, which is the order they
+            #: empty in. ABSENT IS `_gone`'s `ENOENT` AND NOTHING ELSE (#430):
+            #: `undo` deletes what this records, so a directory whose `stat`
+            #: was refused, recorded as made by this run, was one `undo`
+            #: would delete once it could be read; it is refused instead,
+            #: before the mount, and nothing is written.
+            self.trees = [(tree, shown, [p for p in tree.parents
+                                         if _gone(p)])
+                          for tree, shown in ((root / path, path),
+                                              (module, module_shown))
+                          if _gone(tree)]
+        except OSError as exc:
+            raise _member_unreadable(root, _refused(exc, root / path),
+                                     exc) from exc
 
     def _head(self) -> str | None:
         """The commit HEAD names, or None if it names none — read ONE way,
@@ -6557,8 +6779,14 @@ class MountRollback:
             return None
 
     def _bytes(self, name: str) -> bytes | None:
+        """`name`'s bytes in the holder, or None for no file. A file there
+        was none of is the one `undo` deletes, so "none" is `_gone`'s
+        `ENOENT`, or something there that is no file (a directory, a dangling
+        link), and a refused `stat` is raised (#430)."""
         target = self.root / name
-        return target.read_bytes() if target.is_file() else None
+        if _gone(target) or not _is_a(target, stat.S_ISREG):
+            return None
+        return target.read_bytes()
 
     def _entries(self, name: str) -> list[bytes]:
         """The index records for exactly `name`, one per stage, in the form
@@ -6613,11 +6841,17 @@ class MountRollback:
             raise _EntryNotRestored(name, changed, exc) from exc
 
     def _undo_tree(self, tree: Path, parents: list[Path]) -> bool:
-        removed = tree.exists()
+        """`tree`, which this run made, deleted, and each of `parents` it
+        made that is empty. ASKED WITH `_gone` (#430): what cannot be read,
+        a file where a parent directory was, or a link that loops is raised,
+        and `undo` names the step as not done, instead of passing it as
+        nothing there and calling the holder as it was."""
+        removed = not _gone(tree)
         if removed:
             _rmtree(tree)
         for parent in parents:
-            if parent.is_dir() and not any(parent.iterdir()):
+            if not _gone(parent) and _is_a(parent, stat.S_ISDIR) and not any(
+                    parent.iterdir()):
                 parent.rmdir()
         return removed
 
@@ -7158,6 +7392,11 @@ def _store_git_uses(root: Path, path: str) -> tuple[str, Path] | None:
     return None if name is None else _module_dir(root, name)
 
 
+#: The code `_unrestorable` raises for an object store this user may not
+#: read (#430), which the rollback tells apart from a store that is gone.
+STORE_UNREADABLE = "member-unreadable"
+
+
 def _unrestorable(root: Path, path: str, commit: str | None) -> str | None:
     """Why `git submodule update --init --no-fetch -- <path>`, run in
     `root`, could NOT check `commit` out of an object store git already
@@ -7171,12 +7410,27 @@ def _unrestorable(root: Path, path: str, commit: str | None) -> str | None:
     `deinit` moves an embedded `.git` into the name's own, which a check of
     the recorded one called gone. A store that does not hold `commit` is not
     used either: `update` would fetch into it.
+
+    A STORE THIS USER MAY NOT READ IS RAISED, `member-unreadable` (#430), and
+    is no answer either way. `is_dir()` called it "not there, and clone it
+    there" on Python 3.14, so the sentence said the checkout came back only
+    from its remote, and raised a traceback out of the rollback on 3.12. It
+    is there to come back from once this user can read it.
     """
     found = _store_git_uses(root, path)
     if found is None:
         return f"no section of {GITMODULES} gives git {path}"
     shown, store = found
-    if not store.is_dir():
+    try:
+        there = _is_a(store, stat.S_ISDIR)
+    except OSError as exc:
+        cure = (": `chmod u+rx` on it, and on every directory above it inside "
+                "the holder, lets git read it"
+                if isinstance(exc, PermissionError) else "")
+        raise Refusal(STORE_UNREADABLE,
+                      f"git would check it out of {shown_path(shown)}, which "
+                      f"cannot be read ({_os_reason(exc)}){cure}") from exc
+    if not there:
         return (f"git would check it out of {shown}, which is not there, and "
                 "clone it there")
     if commit is not None and not _store_holds(store, commit, root):
@@ -7193,9 +7447,10 @@ def _member_head(member: Path) -> tuple[str | None, str | None]:
     submodule deinit` has emptied is a plain directory inside the holder, and
     git asked there answers with the HOLDER's HEAD (git 2.43, probed for
     #365): the rollback would have taken the holder's commit for the
-    member's.
+    member's. A `.git` whose `lstat` is refused is raised (`_is_there`,
+    #430), not read as no checkout.
     """
-    if not os.path.lexists(member / ".git"):
+    if not _is_there(member / ".git"):
         return None, None
     try:
         at = git_out(["rev-parse", "-q", "--verify", "HEAD^{commit}"],
@@ -7366,12 +7621,25 @@ class PinRollback:
         self.head = self._head()
         self.index = _index_records(root)
         self.gitlink = self.index.get(path.encode("utf-8"), [])
-        self.files = {name: (self._bytes(name),
-                             self.index.get(name.encode("utf-8"), []))
-                      for name in files}
-        self.at, self.branch = _member_head(self.member)
         self.registration = self._registration() if unmount else []
-        self.existed = self.member.is_dir()
+        # WHAT IS ON DISK IS READ AS `_is_a` AND `_gone` READ IT (#430): a
+        # member this user may not search was a checkout with no `.git` and
+        # no directory on Python 3.14, so a failed `remove` made it again,
+        # empty, and said so, and a traceback on 3.12. It is refused here,
+        # before the first write; `bump` and `remove` ask the same paths
+        # first, so this is what a path made unreadable in between meets.
+        try:
+            self.files = {name: (self._bytes(name),
+                                 self.index.get(name.encode("utf-8"), []))
+                          for name in files}
+            self.at, self.branch = _member_head(self.member)
+            self.existed = _is_a(self.member, stat.S_ISDIR)
+            #: Whether `remove` has a checkout to bring back: one with a
+            #: `.git` of its own.
+            self.checkout = unmount and _is_there(self.member / ".git")
+        except OSError as exc:
+            raise _member_unreadable(root, _refused(exc, self.member),
+                                     exc) from exc
         #: The commit the gitlink names, which `git submodule update` checks
         #: out: its stage-0 record's, or None for one the index holds
         #: conflicted.
@@ -7379,9 +7647,6 @@ class PinRollback:
                             (record.partition(b"\t")[0].split()
                              for record in self.gitlink)
                             if fields[2:] == [b"0"]), None)
-        #: Whether `remove` has a checkout to bring back: one with a `.git`
-        #: of its own.
-        self.checkout = unmount and os.path.lexists(self.member / ".git")
         #: The object store the checkout's own `.git` named. For the
         #: sentence only: the restore asks which store git will use.
         self.store: Path | None = None
@@ -7406,6 +7671,9 @@ class PinRollback:
             except CommandFailed as exc:
                 self.unread = _reason(exc)
                 self.store, self.legs, self.discards = None, [], False
+            except OSError as exc:
+                raise _member_unreadable(root, _refused(exc, self.member),
+                                         exc) from exc
         #: Set once `remove`'s checkout has been brought back, which is when
         #: what `deinit -f` discarded is known to be gone.
         self.emptied = False
@@ -7443,7 +7711,7 @@ class PinRollback:
             head, _, name = record.partition(b"\t")
             leg = name.decode("utf-8", "surrogateescape")
             if head.startswith(b"160000 ") and leg not in legs and \
-                    os.path.lexists(self.member / leg / ".git"):
+                    _is_there(self.member / leg / ".git"):
                 legs[leg] = (leg, head.split()[1].decode("ascii"),
                              *_member_head(self.member / leg))
         return list(legs.values())
@@ -7508,7 +7776,9 @@ class PinRollback:
 
     def _storeless(self) -> str | None:
         """Why the member's checkout cannot come back from an object store
-        git has, in the sentence's words; None when it can (#365)."""
+        git has, in the sentence's words; None when it can (#365). A store
+        this user may not read is raised, as `_unrestorable` raises it: it
+        is no store that is gone (#430)."""
         if self.unread is not None:
             return ("git could not read its checkout before this command "
                     f"({self.unread}), so no object store here is known to "
@@ -7522,9 +7792,19 @@ class PinRollback:
         that store is there and is not the one git looks in: what a human
         who renamed the section by hand needs to know to bring it back."""
         found = _store_git_uses(self.root, self.path)
-        if self.store is None or not self.store.is_dir() or (
+        if self.store is None or (
                 found is not None
                 and found[1].resolve() == self.store.resolve()):
+            return ""
+        # A STORE THIS USER MAY NOT READ IS NAMED AS ONE (#430), not left
+        # out as gone: once it can be read, the checkout comes back from it.
+        try:
+            there = _is_a(self.store, stat.S_ISDIR)
+        except OSError as exc:
+            self.store_said = True
+            return ("; the object store its checkout had, "
+                    + _cannot_read(self.store.as_posix(), exc))
+        if not there:
             return ""
         self.store_said = True
         return (f"; the object store its checkout had, "
@@ -7534,22 +7814,45 @@ class PinRollback:
         """The member's directory made again, empty, if it was there before
         and is not now: a gitlink with no directory reads as deleted, which a
         later `git commit -a` would record, and an empty one is how a member
-        never checked out stands."""
-        if self.existed and not self.member.is_dir():
+        never checked out stands. A directory whose `stat` is refused is
+        raised (#430), not made again over."""
+        if self._dir_gone():
             self.member.mkdir(parents=True)
             return True
         return False
+
+    def _made_again_if_can(self) -> bool:
+        """`_made_again`, where the directory can be read: one that cannot
+        is left as it is, and the refusal already being raised names what
+        the step met first (#430)."""
+        try:
+            return self._made_again()
+        except OSError:
+            return False
+
+    def _dir_gone(self) -> bool:
+        """Whether the member's directory was there before and is not now:
+        `_is_a`'s answer, a refused `stat` raised (#430)."""
+        return self.existed and not _is_a(self.member, stat.S_ISDIR)
 
     def _undo_work_tree(self) -> str | None:
         if not self.checkout:
             return (f"{self.path} made again, empty, as it was"
                     if self._made_again() else None)
-        if os.path.lexists(self.member / ".git") and \
+        if _is_there(self.member / ".git") and \
                 _member_head(self.member) == (self.at, self.branch):
             return None
         # THE STORE GIT WILL USE IS ASKED FIRST, and `update` is not run
-        # without it: it would clone (#365).
-        why = self._storeless()
+        # without it: it would clone (#365). One this user may not read is
+        # raised from here, named, and the commands typed by hand bring the
+        # checkout back from it once it can be read (#430); the directory is
+        # made again first, as for a store that is gone.
+        try:
+            why = self._storeless()
+        except Refusal as exc:
+            if exc.code == STORE_UNREADABLE and self._made_again_if_can():
+                exc.detail += f", and {self.path} was made again, empty"
+            raise
         if why is not None:
             self.storeless = True
             if self._made_again():
@@ -7616,7 +7919,13 @@ class PinRollback:
         sentence's `git status` shows them."""
         data, entries = self.files[name]
         typed = [_entries_by_hand(name, entries)]
-        if self._bytes(name) == data:
+        try:
+            same = self._bytes(name) == data
+        except OSError:
+            # Named by the step that met it (#430); the index entry is still
+            # this command's to type, and the bytes are `git status`'s.
+            return typed
+        if same:
             return typed
         if data is None:
             return typed + [f"rm -f -- {shlex.quote(name)}"]
@@ -7656,13 +7965,21 @@ class PinRollback:
         rollback runs it with. Where git does not, the directory is made
         again, empty, and the sentence says where the checkout comes back
         from (`undo`). Nothing already back is typed again."""
-        made = ([f"mkdir {shlex.quote(self.path)}"]
-                if self.existed and not self.member.is_dir() else [])
+        try:
+            gone = self._dir_gone()
+        except OSError:
+            # Named by the step that met it; no command here reaches it.
+            gone = False
+        made = [f"mkdir {shlex.quote(self.path)}"] if gone else []
         if not self.checkout:
             return made
         try:
             storeless = self._storeless() is not None
-        except (CommandFailed, Refusal):
+        except Refusal as exc:
+            # A store this user may not read is one the checkout comes back
+            # from once it can (#430): its update is typed, after the cure.
+            storeless = exc.code != STORE_UNREADABLE
+        except CommandFailed:
             storeless = True
         if storeless:
             self.storeless = True
@@ -8701,7 +9018,15 @@ def cmd_bump(args) -> int:
     _checked_no_operation_in_progress(family.root, "bump")
     _checked_manifest_committed(family.root, "bump")
     _checked_inside_sparse_rules(family.root, "bump", [path, MANIFEST])
-    if not (member / ".git").exists():
+    # A MEMBER THIS USER MAY NOT ENTER IS NOT AN UNINITIALIZED ONE (#430):
+    # `exists()` said "no `.git`" on Python 3.14, and the remedy ran `git
+    # submodule update --init` over a checkout that is there; a traceback on
+    # 3.12. Its `.git` is named, `member-unreadable`, under `--dry-run` too.
+    try:
+        initialized = _is_a(member / ".git", _any_mode)
+    except OSError as exc:
+        raise _member_unreadable(family.root, member / ".git", exc) from exc
+    if not initialized:
         raise Refusal(
             "member-uninitialized",
             f"{path} is not an initialized submodule checkout, so the new "
@@ -9295,6 +9620,32 @@ def _checked_index_unlocked(root: Path, path: str) -> None:
         "again.")
 
 
+def _checked_mount_readable(root: Path, path: str) -> bool:
+    """Whether the member's mount `path` is on disk, asked by `remove`
+    before it writes anything and under `--dry-run` alike; where it, or its
+    checkout's `.git`, cannot be read, `member-unreadable` (#430).
+
+    ASKED AS A REMOVAL ASKS, WITH `_gone`: `remove` empties the mount and
+    deletes it, and its rollback records what to bring back from what is
+    there. Nothing at the name (`ENOENT`) is a mount not on disk, as it
+    always was. Anything else that is not an answer is refused, a part of
+    the path that is a file (`ENOTDIR`) included: a `members` that is a
+    file is not a mount `git rm` has anything of to delete, and the run
+    went past it with exit 0. A `members/` this user may not search was
+    "not on disk" in the dry run, then a traceback on Python 3.12 and, on
+    3.14, a `git submodule deinit -f` that ran before `git rm` failed.
+    """
+    mount = root / path
+    try:
+        if _gone(mount):
+            return False
+        if _is_a(mount, stat.S_ISDIR):
+            _gone(mount / ".git")
+    except OSError as exc:
+        raise _member_unreadable(root, _refused(exc, mount), exc) from exc
+    return True
+
+
 def _unmount_and_drop(family: Family, row: dict, path: str) -> int:
     """The part of `remove` that writes: the unmount, the row and the ONE
     commit. Returns the exit code. Runs inside the caller's `PinRollback`
@@ -9330,7 +9681,20 @@ def _unmount_and_drop(family: Family, row: dict, path: str) -> int:
     # POSIX for the same reason it is POSIX in `add`: git spells this path
     # `.git/modules/<path>`, and so does the human who deletes it.
     cached = family.root / ".git" / "modules" / path
-    if cached.exists():
+    # THE COMMIT HAS LANDED, so a store this user may not read is a NOTE
+    # that says so, exit 0, and never a silence (Python 3.14's `exists()`,
+    # False) or a traceback over a commit that is made (3.12's) (#430).
+    try:
+        left = _is_a(cached, _any_mode)
+    except OSError as exc:
+        print("  NOTE " + _cannot_read(_named_in(family.root, cached), exc)
+              + ", so whether `git rm` left that member's object store "
+              "behind is not known. It leaves one on purpose, in case "
+              "somebody committed inside the mount: once this user can read "
+              "the directory, look, and delete it before adding this member "
+              "back.")
+        return 0
+    if left:
         # The directory alone on a line, then the command, quoted (#486),
         # exactly as `add`'s `member-git-dir-cached` names the same store.
         print("  NOTE that member's object store is left behind. `git rm` "
@@ -9341,7 +9705,7 @@ def _unmount_and_drop(family: Family, row: dict, path: str) -> int:
 
 
 def _remove_dry_run(family: Family, row: dict, path: str,
-                    suggested: str) -> int:
+                    suggested: str, on_disk: bool) -> int:
     """`remove --dry-run` (#326): what a real `remove` would take out, and
     no git command that writes.
 
@@ -9375,6 +9739,11 @@ def _remove_dry_run(family: Family, row: dict, path: str,
     (`_checked_gitmodules_as_staged`). So by here the work tree's file is the
     index's copy, or none of the work tree, the index and HEAD holds one, and
     `deinit` reads what this reads.
+
+    `on_disk` IS `_checked_mount_readable`'s ANSWER (#430): `os.path.lexists`
+    said "not on disk" of a mount in a `members/` this user may not search,
+    and the real run then raised a traceback on Python 3.12, or, on 3.14,
+    ran `git submodule deinit -f` before `git rm` failed.
     """
     project = str(row["project"])
     root = family.root
@@ -9420,7 +9789,7 @@ def _remove_dry_run(family: Family, row: dict, path: str,
     print(f"directory    {path}  " + (
         "deleted with everything in it: `git submodule deinit -f` discards "
         "uncommitted work in the member, and `git rm` the directory"
-        if os.path.lexists(root / path) else "not on disk"))
+        if on_disk else "not on disk"))
     for line in _branch_said(family, "remove", suggested):
         print(line)
     print("\n--dry-run: nothing was changed: the index, .gitmodules, "
@@ -9471,12 +9840,16 @@ def cmd_remove(args) -> int:
     # gitlink is staged by `git rm`, which refuses it the same way.
     _checked_inside_sparse_rules(family.root, "remove",
                                  [GITMODULES, path, MANIFEST])
+    # The mount and its `.git`, which `deinit -f` empties and `git rm`
+    # deletes and the rollback reads to put them back, asked as a removal
+    # asks (#430).
+    on_disk = _checked_mount_readable(family.root, path)
     # Every refusal above is the same under `--dry-run`, which leaves here,
     # before the unmount, the real run's first write (#326), and reports the
     # branch the real run refuses (#487) rather than refusing it.
     suggested = _suggested_branch("remove", str(row.get("id") or project))
     if args.dry_run:
-        return _remove_dry_run(family, row, path, suggested)
+        return _remove_dry_run(family, row, path, suggested, on_disk)
     branch = _checked_branch(family, "remove", suggested)
     # WHAT CAN BE ASKED BEFORE THE UNMOUNT IS (#365); what fails after it is
     # put back (`PinRollback`). A `members:` block this tool will not rewrite
@@ -9527,7 +9900,7 @@ def cmd_siblings(args) -> int:
     the Makefile's words, which name `update-shape.py` and its `--add`.
     """
     root = Path(args.family_root).expanduser().resolve()
-    if not (root / MANIFEST).is_file():
+    if not _manifest_there(root):
         raise Refusal(
             "family-root-missing",
             f"{root / MANIFEST} does not exist, so this is not a family root",
@@ -9535,7 +9908,18 @@ def cmd_siblings(args) -> int:
             "one; point --family-root at the HOLDER (the `<Family>/<Family>` "
             "clone), not at the family folder around it.")
     script = root / SIBLINGS_SCRIPT
-    if not script.is_file():
+    # A SCRIPT THIS USER MAY NOT REACH IS NOT ONE THE HOLDER LACKS (#430):
+    # `is_file()` said so on Python 3.14, under a remedy that adds a file
+    # the holder has with `update-shape.py`, and raised a traceback on 3.12.
+    try:
+        there = _is_a(script, stat.S_ISREG)
+    except OSError as exc:
+        raise _unreadable(
+            "siblings-script-unreadable", SIBLINGS_SCRIPT, exc,
+            f"family.py siblings runs the holder's own {SIBLINGS_SCRIPT}, as "
+            "`make siblings` does, and has no second implementation to fall "
+            "back on, so nothing was cloned or fetched.") from exc
+    if not there:
         raise Refusal(
             "siblings-script-missing",
             f"family.py siblings needs {SIBLINGS_SCRIPT}, which this holder "
