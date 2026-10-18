@@ -41,6 +41,9 @@ HOLDER = "Orbit"
 ROOT = f"{ORG}/{PROJECT}"
 SPEC, CODE = f"{ROOT}-spec", f"{ROOT}-code"
 BAD_GATEWAY = "HTTP 502: Bad Gateway (https://api.github.com/graphql)"
+#: gh's answer for a repository it does not find, which is not an answer
+#: about its visibility either.
+NOT_FOUND = "GraphQL: Could not resolve to a Repository"
 PLAN_STARTS = "project      "
 DRY_RUN_DONE = "--dry-run: nothing was created."
 VISIBILITY_ASKED = f"repo view {ROOT} --json visibility"
@@ -86,7 +89,7 @@ def unread_legs(*legs: str) -> str:
             f"internal, give {ROOT} a GitHub App (SHAPE_LEGS_APP_ID + "
             "SHAPE_LEGS_APP_PRIVATE_KEY, preferred) or a SHAPE_LEGS_TOKEN PAT "
             f"(contents:read on {which}, fallback), or the `validate` check "
-            f"cannot check it out. {asks}")
+            f"cannot check {them} out. {asks}")
 
 
 def calls_of(log) -> list:
@@ -158,38 +161,50 @@ def test_a_real_run_reads_the_reused_root_once(tmp_path, errors):
 # --- U163: a reused leg it could not read -----------------------------------
 
 @WINDOWS_SKIP
-@pytest.mark.parametrize("repos, flags, plan, unread, said, hint", [
+@pytest.mark.parametrize("repos, flags, plan, unread, said, hint, error", [
     # L2-92's first run: everything private, a public run, a Free plan. On
     # main: no leg NOTE and no hint, though the root is private on Free.
     ({PROJECT: "PRIVATE", f"{PROJECT}-spec": "PRIVATE",
       f"{PROJECT}-code": "PRIVATE"}, ("--visibility", "public"), "free",
-     ("spec", "code"), (), True),
+     ("spec", "code"), (), True, BAD_GATEWAY),
     # Its second: everything public, a private run. On main the NOTE called
     # both legs private.
     ({PROJECT: "PUBLIC", f"{PROJECT}-spec": "PUBLIC",
       f"{PROJECT}-code": "PUBLIC"}, ("--visibility", "private"), "free",
-     ("spec", "code"), (), False),
+     ("spec", "code"), (), False, BAD_GATEWAY),
     # One leg unread, the other read private: the one read is named at its
     # visibility, the other said to be unread, and a paid plan has no hint.
     ({PROJECT: "PRIVATE", f"{PROJECT}-spec": "PUBLIC",
       f"{PROJECT}-code": "PRIVATE"}, (), "team", ("spec",),
-     (f"NOTE {CODE} is private: give {ROOT} a way to read it",), False),
+     (f"NOTE {CODE} is private: give {ROOT} a way to read it",), False,
+     BAD_GATEWAY),
+    # The same, where gh's answer for the leg is not-found rather than a
+    # failure: it is no answer about the leg's visibility either, so the run
+    # does not take the leg at its own. A leg found a moment before and not
+    # now, as a token's access changing mid-run, reads so.
+    ({PROJECT: "PRIVATE", f"{PROJECT}-spec": "PRIVATE",
+      f"{PROJECT}-code": "PRIVATE"}, ("--visibility", "public"), "team",
+     ("spec",),
+     (f"NOTE {CODE} is private: give {ROOT} a way to read it",), False,
+     NOT_FOUND),
 ], ids=["private-legs-under-a-public-run", "public-legs-under-a-private-run",
-        "one-leg-unread"])
+        "one-leg-unread", "one-leg-not-found"])
 def test_a_reused_leg_it_could_not_read_is_said_to_be_unread(
-        tmp_path, repos, flags, plan, unread, said, hint):
+        tmp_path, repos, flags, plan, unread, said, hint, error):
     """L2-92: a reused leg whose visibility GitHub does not give is said to
     be unread, by name, with what its answer would mean, and the legs it
     could read are named as before; the Free-plan hint goes by the root. On
-    main the run's visibility stood in for each such leg."""
+    main the run's visibility stood in for each such leg. A leg gh does not
+    find (`error` the not-found answer) is unread as one whose read failed
+    is, and not taken at the run's visibility."""
     legs = {"spec": f"{PROJECT}-spec", "code": f"{PROJECT}-code"}
     env, _log = fake_gh(tmp_path, repos, plan=plan, visibility_errors={
-        legs[role]: BAD_GATEWAY for role in unread})
+        legs[role]: error for role in unread})
     result = on_github(tmp_path, "--reuse-empty-repo", *flags, env=env)
     assert result.returncode == 0, result.stderr + result.stdout
     printed = result.stdout + result.stderr
-    assert printed.count(unread_legs(*(f"{ORG}/{legs[role]}"
-                                       for role in unread))) == 1, printed
+    unread_note = unread_legs(*(f"{ORG}/{legs[role]}" for role in unread))
+    assert result.stdout.count(unread_note) == 1, printed
     notes = [line for line in result.stdout.splitlines()
              if line.startswith("NOTE ") and ": give " in line]
     assert len(notes) == len(said), notes

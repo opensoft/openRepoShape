@@ -196,11 +196,12 @@ def test_each_tool_says_what_github_said_of_the_root_and_its_plan(
 def member_note(holder: str) -> str:
     """The NOTE `init` prints for every holder on GitHub (#913, L2-95): about
     the members a person adds, whatever the holder's own visibility."""
-    return ("NOTE a private or internal member you add needs a way for "
-            f"{holder}, public or not, to read it — a GitHub App "
-            "(SHAPE_LEGS_APP_ID + SHAPE_LEGS_APP_PRIVATE_KEY, preferred) or a "
-            "SHAPE_LEGS_TOKEN PAT with contents:read on the members AND their "
-            "legs — or the `validate` check cannot check that member out.")
+    return ("NOTE a member you add that is, or has a leg that is, private or "
+            f"internal needs a way for {holder}, public or not, to read "
+            "it — a GitHub App (SHAPE_LEGS_APP_ID + "
+            "SHAPE_LEGS_APP_PRIVATE_KEY, preferred) or a SHAPE_LEGS_TOKEN "
+            "PAT with contents:read on the members AND their legs — or the "
+            "`validate` check cannot check that member out.")
 
 
 @WINDOWS_SKIP
@@ -260,8 +261,9 @@ def test_init_takes_a_holder_gh_cannot_be_asked_about_as_unread(
     """A reused holder whose visibility read cannot start `gh` (an `OSError`)
     is unread, as a failed read is: `ROOT_VISIBILITY_UNREAD`, and no hint at
     the run's `--visibility`, which is not the holder's (#660's F8); the
-    members' NOTE, which goes by no visibility (#913). In process, so it runs on every platform: the topic edit and
-    the plan are answered here, and nothing reaches `gh`."""
+    members' NOTE, which goes by no visibility (#913). In process, so it runs
+    on every platform: the topic edit and the plan are answered here, and
+    nothing reaches `gh`."""
     family = load_without_bytecode(FAMILY, "family_free_plan_hint_reads")
     edits: list = []
     monkeypatch.setattr(family, "run",

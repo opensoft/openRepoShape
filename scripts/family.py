@@ -2982,11 +2982,12 @@ def _finish_holder_remote(args, repository: str, topic: str, local: bool,
             visibility = repository_visibility(repository)
         except OSError:
             visibility = None
-    print("NOTE a private or internal member you add needs a way for "
-          f"{repository}, public or not, to read it — a GitHub App "
-          "(SHAPE_LEGS_APP_ID + SHAPE_LEGS_APP_PRIVATE_KEY, preferred) or a "
-          "SHAPE_LEGS_TOKEN PAT with contents:read on the members AND their "
-          "legs — or the `validate` check cannot check that member out.")
+    print("NOTE a member you add that is, or has a leg that is, private or "
+          f"internal needs a way for {repository}, public or not, to read "
+          "it — a GitHub App (SHAPE_LEGS_APP_ID + SHAPE_LEGS_APP_PRIVATE_KEY, "
+          "preferred) or a SHAPE_LEGS_TOKEN PAT with contents:read on the "
+          "members AND their legs — or the `validate` check cannot check "
+          "that member out.")
     note = free_plan_secrets_note(args.org, repository, visibility)
     if note:
         print(note)

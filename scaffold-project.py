@@ -1641,10 +1641,12 @@ def _private_leg_note(args, repositories: dict, local: bool,
     named as before, and the Free-plan note follows either NOTE, since an
     unread leg may be closed.
     """
+    if local:
+        return
     closed = [role for role in ("spec", "code")
               if standing[role] in ("private", "internal")]
     unread = [role for role in ("spec", "code") if standing[role] is None]
-    if not local and closed:
+    if closed:
         both = len(closed) == 2
         who = " and ".join(repositories[role] for role in closed)
         are = "are" if both else "is"
@@ -1658,9 +1660,9 @@ def _private_leg_note(args, repositories: dict, local: bool,
               "SHAPE_LEGS_APP_PRIVATE_KEY, preferred) or a SHAPE_LEGS_TOKEN "
               f"PAT (contents:read on {which}, fallback) — or the `validate` "
               f"check cannot check {them} out.")
-    if not local and unread:
+    if unread:
         print(_unread_legs_note(repositories, unread))
-    if not local and (closed or unread):
+    if closed or unread:
         note = free_plan_secrets_note(args.org, repositories["assembly"],
                                       standing["assembly"])
         if note:
@@ -1688,7 +1690,7 @@ def _unread_legs_note(repositories: dict, unread: list) -> str:
             f"or internal, give {root} a GitHub App (SHAPE_LEGS_APP_ID + "
             "SHAPE_LEGS_APP_PRIVATE_KEY, preferred) or a SHAPE_LEGS_TOKEN "
             f"PAT (contents:read on {which}, fallback), or the `validate` "
-            f"check cannot check it out. {asks}")
+            f"check cannot check {them} out. {asks}")
 
 
 def _take_held_seed(work: Path, url: str, seed: str, tracking: str) -> str:
