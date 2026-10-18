@@ -605,10 +605,16 @@ def not_a_clone(target: Path) -> tuple[str, str] | None:
     clone`, and the real run ended `CLONE FAILED`, because git cannot clone
     into a path that is a link to nothing. Somebody made that link, so it
     is reported and left as it is, in the doctor's words for it too.
+
+    AND SO IS A JUNCTION TO NOTHING (#793), the link Windows makes without
+    privilege: `is_symlink` says no to one, and Python 3.12's
+    `os.path.isjunction` says yes. Python before 3.12 has none, so it is
+    asked as `family_link` asks it, and says no there.
     """
     try:
         if not target.exists():
-            if target.is_symlink():
+            junction = getattr(os.path, "isjunction", lambda _: False)
+            if target.is_symlink() or junction(target):
                 return "is a link to nothing", "link"
             return None
         if not target.is_dir():

@@ -44,7 +44,7 @@ one today, and the generator refuses to write this file if one ever appears.
 
 | tool | what it is for |
 | --- | --- |
-| [`templates/assembly-root/scripts/bootstrap.py`](#templatesassembly-rootscriptsbootstrappy) | The one command after `git clone --recurse-submodules`: places each leg on its tracking branch AT the pinned commit. What `make bootstrap` runs. |
+| [`templates/assembly-root/scripts/bootstrap.py`](#templatesassembly-rootscriptsbootstrappy) | The one command after `git clone --recurse-submodules`: places each leg on its tracking branch AT the pinned commit only where that loses no commit, and otherwise leaves its checkout where it is, saying why. What `make bootstrap` runs. |
 | [`templates/assembly-root/scripts/validate-manifest.py`](#templatesassembly-rootscriptsvalidate-manifestpy) | The project's own `project.yaml` validator: the manifest against the naming and path policies it was cut from. |
 | [`templates/assembly-root/scripts/validate-pins.py`](#templatesassembly-rootscriptsvalidate-pinspy) | The project's own LOCKSTEP validator: the gitlink, the pin and the workflow references must agree, and every digest must recompute. |
 | [`templates/family-root/scripts/bootstrap.py`](#templatesfamily-rootscriptsbootstrappy) | The holder's own bootstrap: mounts every member at its pin and runs each member's. |
@@ -68,8 +68,12 @@ usage: setup-project.py [<Project>] [options] [-- <extra scaffold flags>]
                           the same thing as --project; give one or the other.
   --project <Project>     the assembly-root name: ONE CamelCase token, no
                           hyphen, underscore, dot or space. Prompted for when
-                          omitted and a terminal is attached.
+                          omitted and a terminal is attached. At most 95
+                          characters without --local-remote-dir: GitHub keeps
+                          a repository's name to 100, and -spec adds 5.
   --id <id>               lowercase project id      (default: project lowercased)
+                          At most 39 characters without --local-remote-dir:
+                          GitHub keeps the topic xf-project-<id> to 50.
   --name "<Display>"      display name              (default: the project name)
   --visibility private|public|internal              (default: private)
   --elected-by "<Name>"   who is electing the shape (default: your gh login)
@@ -89,7 +93,9 @@ usage: setup-project.py [<Project>] [options] [-- <extra scaffold flags>]
   --org <org>             override the detected organisation. REQUIRED when
                           run outside a checkout of openRepoShape
                           (self-bootstrap mode): there is no origin to read it
-                          from.
+                          from. At most 39 characters without
+                          --local-remote-dir, GitHub's limit on an
+                          organisation's name.
   --allow-upstream-org    permit `--org opensoft` itself: opensoft is the
                           upstream owner of openRepoShape, and almost never
                           what you meant to scaffold into.
@@ -113,7 +119,9 @@ Set $OPENREPOSHAPE_REPO to clone a fork or mirror in self-bootstrap mode
 instead of opensoft/openRepoShape.
 
 Anything after `--` is passed straight through to scaffold-project.py. A
-`--dry-run` there ends this run at the plan, creating nothing.
+`--dry-run` there ends this run at the plan, creating nothing, and makes
+none of the preflight's offers: a run without it, or --preflight, makes
+them.
 ```
 
 ### `openRepoShape`
@@ -203,8 +211,12 @@ usage: setup-project.py [<Project>] [options] [-- <extra scaffold flags>]
                           the same thing as --project; give one or the other.
   --project <Project>     the assembly-root name: ONE CamelCase token, no
                           hyphen, underscore, dot or space. Prompted for when
-                          omitted and a terminal is attached.
+                          omitted and a terminal is attached. At most 95
+                          characters without --local-remote-dir: GitHub keeps
+                          a repository's name to 100, and -spec adds 5.
   --id <id>               lowercase project id      (default: project lowercased)
+                          At most 39 characters without --local-remote-dir:
+                          GitHub keeps the topic xf-project-<id> to 50.
   --name "<Display>"      display name              (default: the project name)
   --visibility private|public|internal              (default: private)
   --elected-by "<Name>"   who is electing the shape (default: your gh login)
@@ -224,7 +236,9 @@ usage: setup-project.py [<Project>] [options] [-- <extra scaffold flags>]
   --org <org>             override the detected organisation. REQUIRED when
                           run outside a checkout of openRepoShape
                           (self-bootstrap mode): there is no origin to read it
-                          from.
+                          from. At most 39 characters without
+                          --local-remote-dir, GitHub's limit on an
+                          organisation's name.
   --allow-upstream-org    permit `--org opensoft` itself: opensoft is the
                           upstream owner of openRepoShape, and almost never
                           what you meant to scaffold into.
@@ -248,7 +262,9 @@ Set $OPENREPOSHAPE_REPO to clone a fork or mirror in self-bootstrap mode
 instead of opensoft/openRepoShape.
 
 Anything after `--` is passed straight through to scaffold-project.py. A
-`--dry-run` there ends this run at the plan, creating nothing.
+`--dry-run` there ends this run at the plan, creating nothing, and makes
+none of the preflight's offers: a run without it, or --preflight, makes
+them.
 ```
 
 ### `scaffold-project.py`
@@ -274,9 +290,15 @@ Create a project's three repositories in the shape this standard describes.
 
 options:
   -h, --help            show this help message and exit
-  --org ORG
-  --project PROJECT     the assembly-root name, e.g. Atlas
-  --id ID               lowercase project id (default: --project lowercased)
+  --org ORG             the organisation the three repositories are created
+                        in; at most 39 characters without --local-remote-dir,
+                        GitHub's limit on an organisation's name
+  --project PROJECT     the assembly-root name, e.g. Atlas; at most 95
+                        characters without --local-remote-dir, as GitHub keeps
+                        a repository's name to 100 and `-spec` adds 5
+  --id ID               lowercase project id (default: --project lowercased);
+                        at most 39 characters without --local-remote-dir, as
+                        GitHub keeps the topic `xf-project-<id>` to 50
   --name NAME           display name
   --visibility {private,public,internal}
                         default: private for a fresh scaffold; with --reuse-
@@ -428,14 +450,22 @@ options:
                         `source-unresolvable` refuses an empty value, and one
                         that is neither a path that exists nor an `org/repo`.
   --project PROJECT     the assembly-root name; for an in-place adoption it is
-                        the source repository's own name
+                        the source repository's own name. `execute` refuses
+                        one over 95 characters without --local-remote-dir:
+                        GitHub keeps a leg's name, `<Project>-spec`, to 100.
   --org ORG             the organisation the source repository is in, which
                         the plan records as `org:` (default: the organisation
                         of an `org/repo` --source, or the one a local source's
                         `origin` url names). A source whose `origin` is a
                         path, or that has none, names no organisation: `plan`
                         refuses it as `adopt-no-org` unless --org is given.
-  --id ID
+                        `execute` refuses one over 39 characters without
+                        --local-remote-dir, GitHub's limit on an
+                        organisation's name.
+  --id ID               lowercase project id (default: --project lowercased).
+                        `execute` refuses one over 39 characters without
+                        --local-remote-dir: GitHub keeps a topic to 50, and
+                        the topic is `xf-project-<id>`.
   --visibility {private,public,internal}
   --elected-by ELECTED_BY
                         the human electing the shape (default: `git config
@@ -555,9 +585,15 @@ options:
                         but the clone, when `plan` writes no plan that records
                         it. One that cannot be made, or that this user cannot
                         write in when a source is cloned into it, is refused
-                        as `adopt-work-dir-unwritable`. One that already holds
-                        `source-readonly/<repo>`, where a source is cloned, is
-                        refused as `adopt-work-dir-occupied`.
+                        as `adopt-work-dir-unwritable`. Where a source is
+                        cloned, one whose `source-readonly` is a file or a
+                        symlink, or holds `<repo>` already, even empty, is
+                        refused as `adopt-work-dir-occupied`. Except on
+                        Windows, `adopt-work-dir-shared` refuses, before
+                        anything is made, one that a user other than this one
+                        or root owns or every user can write in without the
+                        sticky bit, one under such a directory, and one whose
+                        `source-readonly` is one.
 ```
 
 #### `adopt-project.py check`
@@ -605,9 +641,15 @@ options:
                         it. One this user cannot write in is a finding,
                         `adopt-work-dir-unwritable`, and is refused under that
                         code where a source would be cloned into it or cannot
-                        be opened, as one that cannot be made is. One that
-                        already holds `source-readonly/<repo>`, where a source
-                        is cloned, is refused as `adopt-work-dir-occupied`.
+                        be opened, as one that cannot be made is. Where a
+                        source is cloned, one whose `source-readonly` is a
+                        file or a symlink, or holds `<repo>` already, even
+                        empty, is refused as `adopt-work-dir-occupied`. Except
+                        on Windows, `adopt-work-dir-shared` refuses, before
+                        anything is made, one that a user other than this one
+                        or root owns or every user can write in without the
+                        sticky bit, one under such a directory, and one whose
+                        `source-readonly` is one.
 ```
 
 #### `adopt-project.py execute`
@@ -656,7 +698,11 @@ options:
                         refused as `adopt-work-dir-occupied`, and one that
                         cannot be made, or that this user cannot write in, as
                         `adopt-work-dir-unwritable`, before any leg repository
-                        exists.
+                        exists. Except on Windows, `adopt-work-dir-shared`
+                        refuses, before anything is made, one that a user
+                        other than this one or root owns or every user can
+                        write in without the sticky bit, one under such a
+                        directory, and one whose `source-readonly` is one.
 ```
 
 ### `update-shape.py`
@@ -842,9 +888,16 @@ named.
 
 options:
   -h, --help            show this help message and exit
-  --org ORG
-  --family FAMILY       the holder's name, ONE CamelCase token, e.g. InkRouter
-  --id ID               lowercase family id (default: --family lowercased)
+  --org ORG             the organisation the holder is created in; at most 39
+                        characters without --local-remote-dir, GitHub's limit
+                        on an organisation's name
+  --family FAMILY       the holder's name, ONE CamelCase token, e.g.
+                        InkRouter, and its repository's: at most 100
+                        characters without --local-remote-dir, GitHub's limit
+                        on a repository's name
+  --id ID               lowercase family id (default: --family lowercased); at
+                        most 39 characters without --local-remote-dir, as
+                        GitHub keeps the topic `xf-project-<id>` to 50
   --name NAME           display name (default: --family); validate-family.py
                         holds it to the same rule
   --visibility {private,public,internal}

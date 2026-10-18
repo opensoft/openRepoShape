@@ -35,7 +35,10 @@ from pathlib import Path
 
 import pytest
 
-from conftest import BASH, BASH_SKIP, REPO, bash_path, git, native_path
+from conftest import (BASH, BASH_SKIP, REF_PARTS, REPO,
+                      assert_a_copy_answers_as_git_does,
+                      assert_the_refusal_states_the_ref_rule, bash_path, git,
+                      native_path)
 
 COMMAND = REPO / "openRepoShape"
 SETUP = REPO / "setup.sh"
@@ -2418,13 +2421,15 @@ PINNED = "v9.9.9"
 OTHER = "other"
 
 
-def install_at(tmp_path, ref=None, command=COMMAND, opt_in=True):
+def install_at(tmp_path, ref=None, command=COMMAND, opt_in=True,
+               env_also=None):
     """`--install` from `command` into `<tmp_path>/bin`, with
     `$OPENREPOSHAPE_REF` set to `ref` when one is given, and asked to record
-    it (`$OPENREPOSHAPE_RECORD_REF=1`) unless `opt_in` is false; the result,
-    and the path of the command it places."""
+    it (`$OPENREPOSHAPE_RECORD_REF=1`) unless `opt_in` is false, and with
+    `env_also` added to the environment; the result, and the path of the
+    command it places."""
     bin_dir = tmp_path / "bin"
-    env = {"OPENREPOSHAPE_BIN_DIR": bash_path(bin_dir)}
+    env = {"OPENREPOSHAPE_BIN_DIR": bash_path(bin_dir), **(env_also or {})}
     if ref is not None:
         env["OPENREPOSHAPE_REF"] = ref
         if opt_in:
@@ -2526,6 +2531,45 @@ def test_a_ref_that_is_not_one_is_refused_before_anything_is_placed(
     assert result.returncode == 2, result.stdout + result.stderr
     assert "$OPENREPOSHAPE_REF is 'bad..ref'" in result.stderr
     assert not installed.parent.exists(), "a refused install placed something"
+
+
+@pytest.mark.parametrize("name, takes", REF_PARTS)
+def test_an_install_records_a_ref_as_git_takes_it_and_refuses_the_rest(
+        tmp_path, name, takes):
+    """GIT'S RULE FOR A REF IS PER PART, AND `ref_fault`'S SHAPE LINE HOLDS
+    IT (#874). It tested only the whole name (`*..*`, `*.lock`), so an
+    install asked to record `a.lock/b`, `a/.b` or `a//b` wrote it beside the
+    command, where every later run hands it to the fetch of `setup.sh` and on
+    to `--shape-ref`. Each name of the table goes to the launcher and,
+    through `git check-ref-format --branch`, to git, and the two must answer
+    alike.
+
+    Reached through `--install` with the opt-in, since `--version` asks a ref
+    only its characters (#866): a ref `ref_fault` takes is recorded, exit 0,
+    and one it refuses exits 2 with the rule it applied and places nothing.
+    A `gh` and a `curl` that log and fail stand first on `$PATH`: no `curl` is
+    run and no `gh` but the `gh auth status` that the machine report of an
+    install that placed the command asks.
+    """
+    network = tmp_path / "network.log"
+    result, installed = install_at(
+        tmp_path, name, env_also=fake_github(tmp_path, (), log=network))
+    asked = network.read_text(encoding="utf-8").splitlines() \
+        if network.exists() else []
+    assert [call for call in asked if call != "gh auth status"] == []
+    recorded = record_of(installed)
+    assert_a_copy_answers_as_git_does("openRepoShape", name, takes,
+                                      result.returncode == 0)
+    if takes:
+        assert recorded.read_text(encoding="utf-8") == f"{name}\n"
+        return
+    assert result.returncode == 2, result.stdout + result.stderr
+    assert not installed.parent.exists(), "a refused install placed something"
+    assert asked == [], "a refused install asked for something"
+    assert_the_refusal_states_the_ref_rule(
+        result.stderr,
+        f"REFUSED: $OPENREPOSHAPE_REF is '{name}', which is not a branch, "
+        "tag or commit this tool will pass to `git checkout`: ")
 
 
 @pytest.mark.parametrize("text, shown", [

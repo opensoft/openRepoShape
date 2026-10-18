@@ -538,8 +538,11 @@ def test_a_blank_that_is_also_a_line_break_is_refused_too(tmp_path, blank):
 
 
 def test_an_organisation_the_validator_accepts_is_still_accepted(tmp_path):
-    """`_` and `.` are in the validator's `QUALIFIED_RE`: the scaffold does
-    not refuse more than the project does."""
+    """`_` and `.` are in the validator's `QUALIFIED_RE`, and the validator
+    still reads them as it did: under `--local-remote-dir`, as `scaffold`
+    runs here, the scaffold does not refuse more than the project does.
+    Where GitHub is asked, GitHub's own rule refuses the `.` as
+    `scaffold-bad-org` (#863, `tests/test_github_limits_init_check_org.py`)."""
     result = scaffold(tmp_path, "--dry-run", "--org=my_org.x")
     assert result.returncode == 0, result.stderr + result.stdout
 
@@ -631,13 +634,15 @@ def test_the_longest_name_a_disk_keeps_is_still_accepted(tmp_path, monkeypatch,
     """246 characters is `<project>-spec.git` at exactly 255 bytes. A dry run
     only: a real tree this deep is a Windows path the OS will not open.
     Without `--local-remote-dir` the dry run asks GitHub whether the three
-    exist (#537), so that half runs in process and asks a stand-in."""
+    exist (#537), so that half runs in process and asks a stand-in. There
+    the longest is GitHub's, not the disk's (#838): 95 characters, with an
+    `--id` short enough for the topic (`tests/test_github_name_limits.py`)."""
     result = scaffold(tmp_path, "--project", "N" * 246, "--dry-run")
     assert result.returncode == 0, result.stderr + result.stdout
     code, _out, err, asked = scaffold_dry_run_on_github(
-        monkeypatch, capsys, *IDENTITY, "--project", "N" * 250)
+        monkeypatch, capsys, *IDENTITY, "--project", "N" * 95, "--id", "n")
     assert code == 0, err
-    assert asked == [f"{ORG}/{'N' * 250}{tail}" for tail in
+    assert asked == [f"{ORG}/{'N' * 95}{tail}" for tail in
                      ("", "-spec", "-code")]
 
 
