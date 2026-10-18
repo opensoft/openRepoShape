@@ -5651,17 +5651,28 @@ def gitmodules_entry(root: Path, rel: str) -> tuple[str | None, str | None]:
 
     AND ONLY THAT ONE COPY: the first that EXISTS, as `rev-parse --verify`
     finds it, which is how git's `config_from_gitmodules` chooses (#668).
-    A copy with no section for `rel`, or one git cannot parse, is no url,
-    and git does not look further: measured, over an index copy of either
-    kind beside a HEAD copy that gives the url, `submodule init` exits 128,
-    `No url found`. Reading the next copy wherever one would not list named
-    a url there, and a line that exits 128.
+    A copy with no section for `rel`, or one git cannot parse before it, is
+    no url, and git does not look further: measured, over an index copy of
+    either kind beside a HEAD copy that gives the url, `submodule init` exits
+    128, `No url found`. Reading the next copy wherever one would not list
+    named a url there, and a line that exits 128.
 
     The copy is read by `gitmodules_listing`, the one reading
     `submodule_config` makes too, and `section_url` picks the section out of
-    it.
+    it. A copy from the index or HEAD is read up to its first bad line, as
+    git reads it, and a section before that line still gives its url
+    (`submodule_keys`, #733): git refuses only the working tree's file
+    whole.
+
+    NO COPY AT ALL WHILE `.gitmodules` IS UNMERGED (#733): git reads none
+    then (`is_gitmodules_unmerged`), so `submodule init` says `No url found`,
+    exit 128, measured with the conflict resolved in the working tree and
+    with that copy deleted, where this named the resolved url or HEAD's.
     """
-    if os.path.lexists(root / ".gitmodules"):
+    if git_answer(["ls-files", "-u", "--", ".gitmodules"], root):
+        return None, None
+    working_tree = os.path.lexists(root / ".gitmodules")
+    if working_tree:
         source = ["--file", ".gitmodules"]
     else:
         found = next((copy for copy in (":.gitmodules", "HEAD:.gitmodules")
@@ -5670,14 +5681,15 @@ def gitmodules_entry(root: Path, rel: str) -> tuple[str | None, str | None]:
         if found is None:
             return None, None
         source = ["--blob", found]
-    listing = gitmodules_listing(root, source)
+    listing = gitmodules_listing(root, source, partial=not working_tree)
     if listing is None:
-        # The copy git reads, and one it cannot parse: git stops there.
+        # The working tree's copy, and one git cannot parse: git dies there.
         return None, None
-    return section_url(listing, rel)
+    return section_url(listing, rel, working_tree)
 
 
-def section_url(listing: str, rel: str) -> tuple[str | None, str | None]:
+def section_url(listing: str, rel: str, working_tree: bool = True
+                ) -> tuple[str | None, str | None]:
     """`(name, url)` of the section whose `path` is `rel`, read out of one
     `gitmodules_listing`, which is what `gitmodules_entry` asks git for:
     `(None, None)` when no section gives that path, and `(name, None)` when
@@ -5690,11 +5702,16 @@ def section_url(listing: str, rel: str) -> tuple[str | None, str | None]:
 
     THE LAST VALUE GIVEN WINS, for a path two sections give and for a key a
     section gives twice, because git reads `.gitmodules` with each later
-    value overwriting the one before. An empty `url =` is no url.
+    value overwriting the one before. An empty `url =` is no url, and a file
+    git refuses whole gives no section (#733). `working_tree` says which
+    copy the listing is of, as `submodule_keys` reads it.
     """
+    keys = submodule_keys(listing, working_tree)
+    if keys is None:
+        return None, None
     named = None
     urls: dict[str, str] = {}
-    for name, field, value in submodule_keys(listing):
+    for name, field, value in keys:
         if field == "path" and value == rel:
             named = name
         elif field == "url":
@@ -5704,10 +5721,77 @@ def section_url(listing: str, rel: str) -> tuple[str | None, str | None]:
     return named, urls.get(named) or None
 
 
-def submodule_keys(listing: str) -> list[tuple[str, str, str]]:
+#: A `.gitmodules` section name git ignores, every key of it
+#: (`check_submodule_name`): `..` as a component, between `/` or `\`. An
+#: empty name is ignored too. `a..b` is a name like any other.
+DOTDOT_COMPONENT = re.compile(r"(?:^|[/\\])\.\.(?:[/\\]|$)")
+
+#: The keys of a section that git refuses the WHOLE file over when one is
+#: given with no value at all, `[submodule "q"]` then a bare `url`
+#: (`config_error_nonbool`). Measured on git 2.43: `bad config line N`,
+#: exit 128, and `branch` crashes it (exit 139). A bare `shallow`,
+#: `fetchRecurseSubmodules` or unknown key is read as true.
+VALUED_KEYS = ("path", "url", "ignore", "update", "branch")
+
+#: A boolean as git reads one where a section gives it (`git_config_bool`):
+#: one of these words in any case, or an integer `GIT_INT` reads.
+GIT_BOOL_WORDS = ("", "true", "yes", "on", "false", "no", "off")
+
+#: An integer as `strtoimax` reads one, base 0, after the white space it
+#: skips: a sign, then decimal, `0x` hex or `0` octal digits, then a unit,
+#: `k`, `m` or `g`, each a power of 1024 (`git_parse_int`). It must fit an
+#: `int`.
+GIT_INT = re.compile(r"([+-]?)(0[xX][0-9a-fA-F]+|0[0-7]*|[1-9][0-9]*)"
+                     r"([kKmMgG]?)")
+
+
+def git_bool(value: str) -> bool:
+    """Whether git reads `value` as a boolean (`GIT_BOOL_WORDS`, `GIT_INT`)
+    rather than dying on it (#733).
+
+    The words are compared as they stand, as `strcasecmp` compares them, so
+    `" true"` dies. An integer may follow white space, which `strtoimax`
+    skips, so `" 1"` is taken (measured). Its range is the one git 2.55,
+    which CI runs, checks: -2**31 to 2**31 - 1, the policy the bare
+    `branch` in `submodule_keys` follows too. git 2.43 stops one short
+    below, `-max / factor > val`, so `-2147483648` and `-2g` die there.
+    """
+    if value.lower() in GIT_BOOL_WORDS:
+        return True
+    number = GIT_INT.fullmatch(value.lstrip(" \t\n\v\f\r"))
+    if number is None:
+        return False
+    sign, digits, unit = number.groups()
+    base = 16 if digits[:2] in ("0x", "0X") else 8 if digits[0] == "0" else 10
+    # " kmg".index: no unit is 1024 ** 0, `k` 1024 ** 1, and so on.
+    scaled = int(digits, base) * 1024 ** " kmg".index(unit.lower() or " ")
+    return -2 ** 31 <= (-scaled if sign == "-" else scaled) < 2 ** 31
+
+
+def git_dies_on(field: str, value: str) -> bool:
+    """Whether git `die()`s on this value of a section's key, whichever copy
+    of `.gitmodules` it reads, so that no submodule has a url (#733).
+    Measured on git 2.43, `invalid value` or `bad boolean config value`,
+    exit 128: an `update` other than these four (`!command` included), a
+    `shallow` that is no boolean, and a `fetchRecurseSubmodules` that is
+    neither a boolean nor `on-demand`. git lists a key's name in lower
+    case."""
+    if field == "update":
+        return value not in ("none", "checkout", "rebase", "merge")
+    if field == "shallow":
+        return not git_bool(value)
+    if field == "fetchrecursesubmodules":
+        return value != "on-demand" and not git_bool(value)
+    return False
+
+
+def submodule_keys(listing: str, working_tree: bool = True
+                   ) -> list[tuple[str, str, str]] | None:
     """`(name, field, value)` for each `submodule.<name>.path` and `.url`
-    key of one `gitmodules_listing`, in git's order, and no other key
-    (#668).
+    key of one `gitmodules_listing` that git reads, in git's order, and no
+    other key (#668), or None where git refuses the file whole (#733).
+    `working_tree` says which copy it is: the working tree's file, or one
+    git reads from the index or HEAD.
 
     PURE, as `section_url` is. Each record ends in a NUL and is the key, a
     newline and the value: a key holds no newline and a value may, so the
@@ -5725,22 +5809,55 @@ def submodule_keys(listing: str) -> list[tuple[str, str, str]]:
     with no keep line. The value is compared and printed, so it takes the
     replacement, as `make siblings` reads the same file (#432) and
     `origin_url` reads a remote (#385).
+
+    AND ONLY WHAT GIT READS (#733), by git's own tests, each measured
+    against `git submodule init -- <path>`, which says `No url found` and
+    exits 128 where the doctor and `make siblings` named a url:
+
+    - a section whose name is empty or holds a `..` component is ignored,
+      every key of it (`DOTDOT_COMPONENT`);
+    - a `path` or `url` whose value begins with `-` is ignored, that key
+      alone, so an earlier url of the section still stands;
+    - a value git dies on (`git_dies_on`), in a section git reads, refuses
+      the whole file, whichever copy it is: None;
+    - a key of `VALUED_KEYS` given with no value at all, in a section git
+      reads, is where git STOPS reading. The working tree's file is then
+      refused whole (`CONFIG_ERROR_DIE`): None. A copy from the index or
+      HEAD keeps every key before it (`CONFIG_ERROR_ERROR`), so they are
+      handed back: measured, `p`'s section and then a bare `url` registers
+      `p` from an index copy, and with the bare `url` first registers none.
+      git 2.43 crashes on a bare `branch` (exit 139) where git 2.55 stops
+      there as at any other.
     """
     keys = []
     for record in listing.split("\0"):
-        key, _, value = record.partition("\n")
+        key, valued, value = record.partition("\n")
         section, _, field = key.rpartition(".")
-        if section.startswith("submodule.") and field in ("path", "url"):
-            keys.append((section[len("submodule."):], field,
+        name = section[len("submodule."):]
+        if (not section.startswith("submodule.") or not name
+                or DOTDOT_COMPONENT.search(name)):
+            continue
+        if not valued and field in VALUED_KEYS:
+            return None if working_tree else keys
+        if git_dies_on(field, value):
+            return None
+        if field in ("path", "url") and not value.startswith("-"):
+            keys.append((name, field,
                          value.encode("utf-8", "surrogateescape").decode(
                              "utf-8", "replace")))
     return keys
 
 
-def gitmodules_listing(root: Path, source: list[str]) -> str | None:
+def gitmodules_listing(root: Path, source: list[str],
+                       partial: bool = False) -> str | None:
     """`git config -z <source> --list` in `root`: every key of one copy of
     `.gitmodules`, or None where git reads no such copy (it is not there,
     git cannot parse it, there is no git to run).
+
+    `partial` is for a copy from the index or HEAD, which git reads up to
+    its first bad line, keeping every key before it (#733): `--list` prints
+    those keys before it exits 128 (measured), and they are handed back
+    rather than None. The working tree's file git refuses whole.
 
     ONE READING, FOR `gitmodules_entry` AND `submodule_config` (#668), and
     the one `validate-family.py`'s `_gitmodules_sections` and `family.py`
@@ -5761,11 +5878,13 @@ def gitmodules_listing(root: Path, source: list[str]) -> str | None:
     nothing.
     """
     try:
-        raw = git_out(["config", "-z", *source, "--list"], cwd=root,
-                      binary=True)
-    except (Refusal, OSError):
+        proc = subprocess.run(["git", "config", "-z", *source, "--list"],
+                              cwd=str(root), capture_output=True, check=False)
+    except OSError:
         return None
-    return raw.decode("utf-8", "surrogateescape")
+    if proc.returncode != 0 and not partial:
+        return None
+    return proc.stdout.decode("utf-8", "surrogateescape")
 
 
 def configured_url(root: Path, name: str) -> str | None:
@@ -8581,7 +8700,8 @@ def submodule_config(root: Path) -> dict:
     """
     fields: dict = {}
     listing = gitmodules_listing(root, ["--file", ".gitmodules"])
-    for name, field, value in submodule_keys(listing or ""):
+    # A file git refuses whole gives no section (#733).
+    for name, field, value in submodule_keys(listing or "") or []:
         fields.setdefault(name, {})[field] = value
     return fields
 
@@ -8616,17 +8736,26 @@ def mounted_from(root: Path, rel: str, repository: str) -> str:
     and the row's answer rests on the `repository:` comparison alone --
     which is the state `verify_sibling` is in for the same holder.
 
-    THE LAST SECTION THAT GIVES `rel` A URL WINS, as git reads the file,
-    each later value overwriting the one before, and as
-    `siblings.py::submodule_urls` maps it (#668). The first named a remote
-    that `git submodule update` and `make siblings` both pass over.
+    THE LAST SECTION THAT GIVES `rel` A URL WINS, as
+    `siblings.py::submodule_urls` maps it (#668), and as git reads a file
+    whose sections are written one after another, each later value
+    overwriting the one before. The first named a remote that `git
+    submodule update` and `make siblings` both pass over. That holds for
+    sections written whole: a section REOPENED further down the file is
+    ordered here by the first key it gives, in `siblings.py` by its first
+    url, and by git by its last `path`, so with one the three can name
+    different sections (#733).
+
+    ONLY A SECTION WITH A `path` MOUNTS ANYTHING (#733). One that gives a
+    url and no path is mounted nowhere by git (`No url found` for its name
+    as a path, measured), so its NAME is not read as a path, here or in
+    `siblings.py`.
     """
     url = None
-    for name, mount in submodule_config(root).items():
-        # A submodule's NAME is its path unless somebody mounted it by hand
-        # under another one, which git allows and this reads rather than
-        # assumes.
-        if mount.get("path", name) == rel and mount.get("url"):
+    for mount in submodule_config(root).values():
+        # The section's NAME is not the path: a member mounted by hand
+        # under another name, which git allows, is found by its `path`.
+        if mount.get("path") == rel and mount.get("url"):
             url = mount["url"]
     if url is None:
         return f"https://github.com/{repository}.git"
