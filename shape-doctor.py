@@ -1378,9 +1378,36 @@ class Context:
             return None
 
     def legs(self) -> list[dict]:
-        """The non-assembly legs `project.yaml` declares, in its own order."""
-        return [leg for leg in ((self.manifest or {}).get("legs") or [])
+        """The non-assembly legs `project.yaml` declares, in its own order.
+
+        A `legs:` THAT IS NOT A LIST DECLARES NO LEG THIS CAN NAME (#832), as
+        `validate-manifest.py` reads it (#714), and an entry that is not a
+        mapping is no leg; `legs_unread` says each. Iterated as `legs or []`,
+        `legs: 5` ended the whole report in a `TypeError`, in `declared_pins`
+        under the `manifest kinds` row, and a scalar `openXdox` or a mapping
+        was walked one character, or one key, at a time, so the `legs` row
+        called the project one with no legs.
+        """
+        declared = (self.manifest or {}).get("legs")
+        if not isinstance(declared, list):
+            return []
+        return [leg for leg in declared
                 if isinstance(leg, dict) and leg.get("role") != "assembly"]
+
+    def legs_unread(self) -> list[str]:
+        """What in `legs:` names no leg `legs` can read, each as
+        `validate-manifest.py`'s finding, in its words (#714, #832): a
+        `legs:` that is not a list, or each entry of one that is not a
+        mapping. Absent or null is neither: it declares no leg, and
+        `validate-manifest.py` says `legs is missing or empty` of it."""
+        declared = (self.manifest or {}).get("legs")
+        if declared is None:
+            return []
+        if not isinstance(declared, list):
+            return [f"manifest-legs: legs is {declared!r}, expected a list of "
+                    "`role:`, `repository:` and `path:` mappings"]
+        return [f"manifest-leg: a leg is not a mapping: {leg!r}"
+                for leg in declared if not isinstance(leg, dict)]
 
     def members(self) -> list[dict]:
         return [row for row in ((self.manifest or {}).get("members") or [])
@@ -2023,11 +2050,15 @@ def validator_command(shape: Path, used: Path, own_copy: bool, args: list,
     return f"env PYTHONPATH={quote_arg(scripts, target)} {command}"
 
 
-def lost_repo_shape_cure(ctx: Context, own: str, lost: Path,
-                         rerun: str) -> tuple[str | None, str]:
+def lost_repo_shape_cure(ctx: Context, own: str, lost: Path, rerun: str,
+                         again: bool = True) -> tuple[str | None, str]:
     """`(the NEXT, the why)` for a root's own validator `own` that crashed
     because `lost`, the `repo_shape.py` it imports from beside itself, is not
     there, where `rerun` is the line that runs `own` (#697).
+
+    `again` says "run it AGAIN" where the doctor ran the gate and it crashed,
+    as the validator rows' crash does; the `legs` and `members` rows' lockstep
+    line is one the reader never ran, and says "run it" (#750).
 
     THE NEXT IS THE CURE, NOT THE VALIDATOR. The row used to print `rerun`,
     and a reader whose own `PYTHONPATH`, or a `.pth` in whose site-packages,
@@ -2050,14 +2081,14 @@ def lost_repo_shape_cure(ctx: Context, own: str, lost: Path,
     only: the standard's template copy has none beside it by design.
     """
     relative = lost.relative_to(ctx.root).as_posix()
-    then = (f"run `{rerun}` again once the file is back; before that, a "
-            "reader whose own PYTHONPATH or site-packages reaches another "
-            "repo_shape sees it run on that one, which says nothing about "
-            "this root's own copy")
+    then = (f"run `{rerun}`{' again' if again else ''} once the file is "
+            "back; before that, a reader whose own PYTHONPATH or "
+            "site-packages reaches another repo_shape sees it run on that "
+            "one, which says nothing about this root's own copy")
     if head_holds(ctx.root, relative):
         return (restore_from_head(ctx.root, relative),
                 f"it puts back the {relative} HEAD holds, the copy this "
-                f"project committed and {own} imports, where update-shape.py "
+                f"root committed and {own} imports, where update-shape.py "
                 f"apply would copy a newer one. Then {then}")
     return None, (f"HEAD does not hold {relative}, so no git checkout HEAD "
                   f"puts it back and {own} would only crash again: a "
@@ -2316,7 +2347,7 @@ def unloaded_manifest_row(ctx: Context, check_id: str, label: str, own: str,
         return Row(check_id, label, FINDING, reason,
                    restore_from_head(ctx.root, lost), detail,
                    why=f"it puts back the {lost} HEAD holds, the copy this "
-                       f"project committed and {own} imports, where "
+                       f"root committed and {own} imports, where "
                        "update-shape.py apply would copy a newer one, then "
                        f"run {own} again: it refuses {name} by name until it "
                        "loads. A deletion already committed comes back from "
@@ -2365,6 +2396,36 @@ def waiting_row(ctx: Context, check_id: str, label: str, needs: str,
                f"{ctx.manifest_path.name} does not load, so {needs}; the "
                f"`{owner}` row quotes why and names the fix", None,
                {**(detail or {}), "waits_on": owner})
+
+
+def legs_unread_row(ctx: Context, check_id: str, label: str, needs: str,
+                    detail: dict | None = None) -> Row | None:
+    """The `n/a` a row that reads the LEGS gives where `legs:` names none it
+    can read (#832), or None: where it names a leg, and where it names none
+    at all (absent, null or `[]`), which the row's own sentence is about.
+
+    A `legs:` that is not a list, or a list in which no leg but the assembly
+    leg is a mapping and some entry is not one, is not a project with no
+    legs, which is what these rows said of `openXdox`, `{a: b}` and `[5]`
+    ("a one-repository project has none"): it is a manifest nobody can read
+    legs out of. ONE FAULT, ONE FINDING, as `waiting_row` reasons: the
+    project's own `validate-manifest.py` says the fault, and the `manifest`
+    row runs it, so this row is `n/a`, says the same sentence
+    (`Context.legs_unread`) and names that row in `waits_on`. A list that
+    holds a leg as well as an entry that is not one is checked leg by leg,
+    as `validate-pins.py` checks the rest past such an entry, and the entry
+    is left to the `manifest` row.
+    """
+    unread = ctx.legs_unread()
+    if not unread or ctx.legs():
+        return None
+    what = ("holds an entry that is not a mapping"
+            if isinstance(ctx.manifest.get("legs"), list) else "is not a list")
+    return Row(check_id, label, NA,
+               f"{ctx.manifest_path.name}'s `legs:` {what} "
+               f"({'; '.join(unread)}), so {needs}; the `manifest` row's "
+               "command names the fault", None,
+               {**(detail or {}), "waits_on": "manifest"})
 
 
 # ---------------------------------------------------------------------------
@@ -4997,17 +5058,30 @@ def objects_lacking(shape: Path, commit: str) -> int | None:
     `--missing=` turns git's lazy fetch off for its run: measured with git
     2.43, no fetch in a trace2 log, and the same objects missing after it.
     It is asked before any `ls-tree`, which fetches a tree a
-    `--filter=tree:0` clone lacks. A commit the clone does not hold is
-    `bad object` there, exit 128, and None, which `partial_clone_row`
-    counts as lacking: `update-shape.py`'s first read of that commit, its
-    `rev-parse`, fetches it (measured with git 2.43).
+    `--filter=tree:0` clone lacks.
+
+    A COMMIT THE CLONE DOES NOT HOLD IS NONE, ON EVERY GIT (#754). Before
+    git 2.45 `rev-list` refuses it, `bad object`, exit 128; from 2.45 on it
+    takes a missing tip as missing too and prints it, `?<commit>`, exit 0
+    (git's `rev-list` documentation, "If some tips passed to the traversal
+    are missing"). Counted as one object there, the commit was "lacked"
+    rather than absent, and `remotes_holding` asked `--contains` of a commit
+    the clone does not hold, a read that fetches it. `partial_clone_row`
+    counts None as lacking: `update-shape.py`'s first read of that commit,
+    its `rev-parse`, fetches it (measured with git 2.43).
+
+    A FLOOR, NOT A COUNT, WHERE A TREE IS MISSING (#754). `rev-list` cannot
+    walk into a tree it does not hold, so a `--filter=tree:0` clone's
+    missing root tree is one `?<id>` with everything under it uncounted,
+    and the id alone does not say it was a tree. So the row says "at
+    least" of every count.
     """
     listed = git_answer(["rev-list", "--objects", "--no-walk",
                          "--missing=print", commit], shape, binary=True)
-    if listed is None:
+    lines = (listed or b"").split(b"\n")
+    if listed is None or b"?" + commit.lower().encode("ascii") in lines:
         return None
-    return sum(1 for line in listed.split(b"\n")
-               if MISSING_OBJECT.fullmatch(line))
+    return sum(1 for line in lines if MISSING_OBJECT.fullmatch(line))
 
 
 #: `partial_clone_row`'s `error` (#683).
@@ -5046,12 +5120,20 @@ def partial_clone_row(ctx: Context, pinned: str) -> Row | None:
     THAT ROW'S, MADE TO FIT: there, the fetch a person runs to put in this
     checkout what it lacks. Here `fetch --all` would put in no blob, since
     a promisor remote's fetch keeps its `partialclonefilter`, so the NEXT
-    is `fetch --refetch --no-filter` from the remote a read would fetch
-    from: measured with git 2.43, it leaves the clone lacking nothing and
-    its config as it was, and the doctor run again answers. It is the
-    person's fetch, never this doctor's, and the `why` names the other way,
-    a full clone of the standard, as the precedent's names a clone that
-    has the commit.
+    is `fetch --refetch --no-filter`: measured with git 2.43, it leaves the
+    clone lacking nothing at what it fetches and its config as it was, and
+    the doctor run again answers. It is the person's fetch, never this
+    doctor's, and the `why` names the other way, a full clone of the
+    standard, as the precedent's names a clone that has the commit.
+    `--refetch` needs git 2.36 or later, and the `why` says so.
+
+    FROM THE REMOTE THAT HOLDS IT, AND OF THE COMMITS IT LACKS (#754). The
+    NEXT fetched the first promisor remote whole, and looped where that
+    remote's branches do not hold the pinned commit: with two promisor
+    remotes and the commit on the second's, and in a `--single-branch`
+    clone whose pin is on another branch, which then still does not hold
+    it. So it names each commit lacked by id, from the remote
+    `partial_clone_fetch` picks, and the `why` says where each commit is.
     """
     remotes = promisor_remotes(ctx.shape)
     if not remotes:
@@ -5063,29 +5145,174 @@ def partial_clone_row(ctx: Context, pinned: str) -> Row | None:
                if count != 0}
     if not lacking:
         return None
-    said = []
-    for commit, count in lacking.items():
-        which = ("the pinned commit" if commit == pinned
-                 else "this standard's commit")
-        said.append(f"git cannot list {which} {commit[:12]} there"
-                    if count is None else
-                    f"it lacks {count} object{'' if count == 1 else 's'} "
-                    f"at {which} {commit[:12]}")
-    remote = remotes[0]
+    remote, commits, whence = partial_clone_fetch(ctx.shape, remotes,
+                                                  pinned, lacking)
     return Row("shape-currency", LABEL_SHAPE_CURRENCY, FINDING,
                "the copies cannot be compared without fetching: this "
                "checkout of the standard is a partial clone, and "
-               + " and ".join(said),
-               f"git -C {quote_arg(ctx.shape)} fetch --refetch --no-filter "
-               f"{quote_arg(remote)}",
+               + lacking_said(lacking, pinned),
+               refetch_command(ctx.shape, remote, commits),
                {"error": PARTIAL_CLONE_LACKS, "environment": True,
                 "pinned": pinned, "standard": standard, "remote": remote,
                 "lacking": lacking},
                why="this checkout of the standard is a partial clone, and "
-                   "a read of an object it lacks fetches it from "
-                   f"{remote}, which this doctor never does; fetch every "
-                   f"object {remote} holds, then run the doctor again, or "
-                   "run it from a full clone of the standard")
+                   "a read of an object it lacks fetches it from a promisor "
+                   "remote, which this doctor never does; " + whence
+                   + ", or run it from a full clone of the standard")
+
+
+def lacked_commit(commit: str, pinned: str) -> str:
+    """How `partial_clone_row` names a commit the clone lacks objects at:
+    the pinned commit or this standard's, by its id's first twelve
+    digits."""
+    if commit == pinned:
+        return f"the pinned commit {commit[:12]}"
+    return f"this standard's commit {commit[:12]}"
+
+
+def lacking_said(lacking: dict, pinned: str) -> str:
+    """The reason's account of `lacking`: each commit the clone does not
+    hold at all, and how many objects at least it lacks at each it does
+    hold."""
+    said = []
+    for commit, count in lacking.items():
+        if count is None:
+            said.append(f"it does not hold {lacked_commit(commit, pinned)} "
+                        "at all")
+        else:
+            said.append(f"it lacks at least {count} object"
+                        f"{'' if count == 1 else 's'} at "
+                        f"{lacked_commit(commit, pinned)}")
+    return " and ".join(said)
+
+
+def refetch_command(shape: Path, remote: str, commits: list) -> str:
+    """The fetch that puts in `shape` every object at each of `commits`,
+    from `remote`, whatever its `partialclonefilter` (#683, #754)."""
+    return (f"git -C {quote_arg(shape)} fetch --refetch --no-filter "
+            f"{quote_arg(remote)} " + " ".join(commits))
+
+
+def partial_clone_fetch(shape: Path, remotes: list, pinned: str,
+                        lacking: dict) -> tuple:
+    """`(remote, commits, whence)` for a partial clone at `shape` that
+    lacks objects at `lacking`'s commits: the promisor remote the NEXT
+    fetches from, the commits it names, and the `why`'s account of where
+    each commit is and what to run (#754).
+
+    ONLY THE COMMITS THE REMOTE IS KNOWN TO HOLD, WHERE ONE IS. A fetch by
+    id from a remote that does not have one of the ids fails whole, exit
+    128, `not our ref`, and puts in nothing. Measured by RV-f on #773: in
+    a sparse clone whose HEAD lacked objects on `origin`'s branches alone,
+    with the pinned commit on `second`'s alone, the NEXT fetched both from
+    `origin`, git refused it, and the row came back the same, its `why`
+    saying no branch held them. So where some remote's branches hold a
+    lacking commit, the NEXT fetches from the first remote whose branches
+    hold every such commit, else from the first that holds the pinned
+    commit, and names only the commits that remote's branches hold. The
+    doctor run again names the rest: two runs at most, for two commits.
+
+    THE FIRST PROMISOR REMOTE, AND EVERY COMMIT, WHERE NONE IS. A commit
+    the clone does not hold, or holds only on a tag or on no ref, is on no
+    branch it tracks, and no read that fetches nothing says which remote
+    has it. The NEXT asks the first promisor remote, the one git's own
+    lazy fetch asks first, and the `why` spells out the same fetch from
+    each other promisor remote, so that each is a line to paste.
+    """
+    holding = {commit: remotes_holding(shape, remotes, commit)
+               for commit, count in lacking.items() if count is not None}
+    known = {commit: names for commit, names in holding.items() if names}
+    remote = fetch_source(remotes, pinned, known)
+    commits = [commit for commit, names in known.items()
+               if remote in names] or list(lacking)
+    said = [where_lacked(commit, holding.get(commit), pinned)
+            for commit in lacking]
+    said.append(fetch_said(shape, remotes, remote, commits,
+                           fetched_named(commits, lacking, pinned),
+                           bool(known)))
+    return (remote, commits,
+            "; ".join(said) + then_said(commits, lacking, pinned))
+
+
+def fetch_source(remotes: list, pinned: str, known: dict) -> str:
+    """The promisor remote the NEXT fetches from, of `known`, each lacking
+    commit some remote's branches hold and the remotes that hold it: the
+    first remote that holds every one -- the first promisor remote, where
+    `known` is empty -- else the first that holds the pinned commit
+    (#754)."""
+    for name in remotes:
+        if all(name in names for names in known.values()):
+            return name
+    return (known.get(pinned) or next(iter(known.values())))[0]
+
+
+def where_lacked(commit: str, holders: list | None, pinned: str) -> str:
+    """The `why`'s word on where `commit` is: not in this clone at all,
+    where `holders` is None, on no branch this clone tracks, where it is
+    empty, or on the branches of each of `holders` (#754)."""
+    named = lacked_commit(commit, pinned)
+    if holders is None:
+        return f"{named} is not in this clone at all"
+    if not holders:
+        return f"no branch this clone tracks holds {named}"
+    return (f"{named} is on "
+            + " and ".join(f"{name}'s" for name in holders) + " branches")
+
+
+def fetch_said(shape: Path, remotes: list, remote: str, commits: list,
+               them: str, known: bool) -> str:
+    """The `why`'s word on the fetch: every object at `them` from
+    `remote`, whose branches hold them, or, where none is `known` to, by
+    id from `remote` and else from each other promisor remote, that fetch
+    spelled out as a line to paste (#754)."""
+    if known:
+        return f"so fetch every object at {them} from {remote}"
+    said = f"so fetch {them} by id from {remote}"
+    others = [f"from {name}: `{refetch_command(shape, name, commits)}`"
+              for name in remotes if name != remote]
+    if others:
+        said += (f", or, where {remote} does not have {them}, "
+                 + ", or ".join(others))
+    return said
+
+
+def fetched_named(commits: list, lacking: dict, pinned: str) -> str:
+    """How the `why` names the commits the NEXT fetches: `it` or `them`,
+    where they are every commit `lacking` holds, else each by name
+    (#754)."""
+    if len(commits) < len(lacking):
+        return " and ".join(lacked_commit(commit, pinned)
+                            for commit in commits)
+    return "it" if len(commits) == 1 else "them"
+
+
+def then_said(commits: list, lacking: dict, pinned: str) -> str:
+    """The end of the `why`'s word on the fetch: the git it needs, the
+    doctor run again, and the commits of `lacking` that run names a fetch
+    for, those the NEXT leaves out (#754)."""
+    said = " (--refetch needs git 2.36 or later), then run the doctor again"
+    rest = [lacked_commit(commit, pinned) for commit in lacking
+            if commit not in commits]
+    if rest:
+        said += ", which names the fetch for " + " and ".join(rest)
+    return said
+
+
+def remotes_holding(shape: Path, remotes: list, commit: str) -> list:
+    """Those of `remotes` whose branches here -- their tracking refs,
+    `refs/remotes/<name>/` -- hold `commit`, in `remotes`' order (#754).
+
+    `for-each-ref --contains` reads commits alone, and a `--filter` clone
+    holds every commit a fetch brought, so it fetches nothing: measured with
+    git 2.43, no fetch in a trace2 log. It is never asked of a commit the
+    clone does not hold, which no branch here can hold and whose read would
+    fetch it: `partial_clone_fetch` asks only of the commits
+    `objects_lacking` could list.
+    """
+    return [name for name in remotes
+            if git_answer(["for-each-ref", "--count=1",
+                           "--format=%(refname)", f"--contains={commit}",
+                           f"refs/remotes/{name}/"], shape)]
 
 
 def check_shape_currency(ctx: Context) -> Row:
@@ -5371,6 +5598,15 @@ def lockstep_next(ctx: Context, gate: tuple, noun: str) -> tuple:
     The `legs` and `members` rows say the same thing about a leg and about a
     member, so the sentence is written here once -- and it is the row's
     `why`, apart from the line, never a `   # ` tail on it (#277).
+
+    A GATE THAT CANNOT IMPORT `repo_shape` IS NOT THE LINE (#750). The root's
+    own copy, beside a lost `scripts/repo_shape.py`, dies on that import and
+    exits 1, the code it uses for findings, so that line cannot do what the
+    sentence says of it, and the `pins` and `family` rows beside it already
+    print the cure (#697). So the line is theirs, from
+    `lost_repo_shape_cure`: the one command that puts the file back, or none
+    where HEAD no longer holds it. Its `why` says to run the gate once the
+    file is back, and the sentence above follows it.
     """
     used, _, own_copy = validator_for(ctx, *gate)
     if (not used.is_file()
@@ -5378,10 +5614,16 @@ def lockstep_next(ctx: Context, gate: tuple, noun: str) -> tuple:
         return None, None
     command = validator_command(ctx.shape, used, own_copy,
                                 ["--root", str(ctx.root)])
-    return command, (f"no submodule update cures a {noun} whose gitlink "
-                     "or pin is missing or disagrees, or a mount git cannot "
-                     f"read a HEAD in. {used.name} prints what it finds and "
-                     "names the repair where it has one")
+    said = (f"no submodule update cures a {noun} whose gitlink "
+            "or pin is missing or disagrees, or a mount git cannot "
+            f"read a HEAD in. {used.name} prints what it finds and "
+            "names the repair where it has one")
+    if own_copy and not imports_repo_shape(ctx.shape, used, own_copy):
+        cure, why = lost_repo_shape_cure(
+            ctx, gate[0], repo_shape_for(ctx.shape, used, own_copy), command,
+            again=False)
+        return cure, f"{why}. {said[:1].upper()}{said[1:]}"
+    return command, said
 
 
 def gitmodules_entry(root: Path, rel: str) -> tuple[str | None, str | None]:
@@ -6039,7 +6281,10 @@ def check_legs(ctx: Context) -> Row:
 
     THE LEGS ARE THE MANIFEST'S, and a manifest that does not load declares
     none that this row can name -- which is not "declares no non-assembly
-    leg", the sentence below, about a project that has none (#205).
+    leg", the sentence below, about a project that has none (#205). Nor is
+    a `legs:` that is not a list, or one holding only entries that are not
+    mappings: `legs_unread_row` says which, in `validate-manifest.py`'s
+    words, and waits on the `manifest` row (#832).
 
     THE NEXT IS CHOSEN BY WHAT IS WRONG, AND IT CURES THE FIRST KIND (#276).
     `make bootstrap` was named for all of it and does not answer it: it
@@ -6107,9 +6352,10 @@ def check_legs(ctx: Context) -> Row:
     an unborn HEAD or a leg with no url gets the same sentence it gets with
     no line at all, which ends by saying to run the doctor again.
     """
-    waiting = waiting_row(ctx, "legs", "legs",
-                          "the legs it declares are not known and none is "
-                          "checked against its pin", {"legs": []})
+    needs = ("the legs it declares are not known and none is checked against "
+             "its pin")
+    waiting = (waiting_row(ctx, "legs", "legs", needs, {"legs": []})
+               or legs_unread_row(ctx, "legs", "legs", needs, {"legs": []}))
     if waiting is not None:
         return waiting
     legs = ctx.legs()
@@ -6468,8 +6714,11 @@ def check_leg_shape_files(ctx: Context) -> Row:
     compare every leg, say what was found, and offer a copy for the files a
     copy would fix.
     """
-    waiting = waiting_row(ctx, "leg-shape-files", LABEL_LEG_SHAPE_FILES,
-                          "there are no legs to compare", {"legs": []})
+    needs = "there are no legs to compare"
+    waiting = (waiting_row(ctx, "leg-shape-files", LABEL_LEG_SHAPE_FILES,
+                           needs, {"legs": []})
+               or legs_unread_row(ctx, "leg-shape-files",
+                                  LABEL_LEG_SHAPE_FILES, needs, {"legs": []}))
     if waiting is not None:
         return waiting
     legs = ctx.legs()
@@ -7644,11 +7893,13 @@ def check_placement(ctx: Context) -> Row:
             "a family holder has no legs of its own: each member is an "
             "assembly root and answers this in its own report")
     # Before the sentence below, which is about a project that declares no
-    # leg, not one whose manifest nobody could read (#205). And `n/a` is what
-    # makes `--placement-plan` refuse by name and write nothing: there is no
-    # leg to write a plan about until the manifest loads.
-    waiting = waiting_row(ctx, "placement", "placement",
-                          "there is no leg to classify a path in")
+    # leg, not one whose manifest nobody could read (#205), nor one whose
+    # `legs:` names no leg that can be read (#832). And `n/a` is what makes
+    # `--placement-plan` refuse by name and write nothing: there is no leg to
+    # write a plan about until the manifest loads and names one.
+    needs = "there is no leg to classify a path in"
+    waiting = (waiting_row(ctx, "placement", "placement", needs)
+               or legs_unread_row(ctx, "placement", "placement", needs))
     if waiting is not None:
         return placement_row(NA, waiting.reason, None, waiting.detail)
     legs = ctx.legs()
@@ -8509,8 +8760,9 @@ def working_clone(sibling: Path, row: dict,
 def unclonable(sibling: Path) -> str | None:
     """What stands at `sibling`, a path with no `.git` of its own, that
     nothing can be cloned into: `files` (a folder with something in it),
-    `file` (anything that is not a folder) or `unlistable` (a folder this
-    process cannot list). None for nothing at all, or an empty folder.
+    `file` (anything that is not a folder), `unlistable` (a folder this
+    process cannot list) or `dangling` (a link to nothing, #784). None for
+    nothing at all, or an empty folder.
 
     A FOLDER THAT CANNOT BE LISTED IS NOT EMPTY (#669). A directory that
     can be entered and not listed (mode `0311`, or `711`, which is common
@@ -8519,10 +8771,15 @@ def unclonable(sibling: Path) -> str | None:
     not be run, so a COMPLIANT holder read DRIFTED, exit 1. Nobody can say
     it is empty, and `git clone` refuses a folder it cannot read, so it is
     a slot nothing is cloned into.
+
+    A LINK TO NOTHING IS NOT NOTHING (#784). `exists` follows a link, so a
+    dangling one read as `absent`, and the row said `make siblings` places
+    the member there, where git ends `CLONE FAILED`: it cannot clone into a
+    path that is a link to nothing.
     """
     try:
         if not sibling.exists():
-            return None
+            return "dangling" if sibling.is_symlink() else None
         if not sibling.is_dir():
             return "file"
         return "files" if any(sibling.iterdir()) else None
@@ -8543,13 +8800,15 @@ def sibling_slot(root: Path, sibling: Path, row: dict,
     the parent-folder rule `make siblings` asks before either, which the row
     only names.
 
-    A FILE, OR A FOLDER THAT CANNOT BE LISTED OR ENTERED, IS `not-a-clone`
-    TOO: nothing can be cloned into it. A holder whose pinned `siblings.py`
-    predates #735 ends `make siblings` in a traceback on each, and one that
-    has #735 calls it NOT A CLONE, so the row says what is there and
-    nothing of what `make siblings` does with it (`beside_sentence`), which
-    is true of both. A folder that cannot be entered cannot be asked for its
-    `.git` either, so that question's `OSError` reads "no `.git`".
+    A FILE, A FOLDER THAT CANNOT BE LISTED OR ENTERED, OR A LINK TO NOTHING
+    IS `not-a-clone` TOO: nothing can be cloned into it. A holder whose
+    pinned `siblings.py` predates #735 ends `make siblings` in a traceback
+    on the first two, one that predates #784 ends `CLONE FAILED` on the
+    link, and one that has both calls each NOT A CLONE, so the row says
+    what is there and nothing of what `make siblings` does with it
+    (`beside_sentence`), which is true of every one of them. A folder that
+    cannot be entered cannot be asked for its `.git` either, so that
+    question's `OSError` reads "no `.git`".
     """
     if sibling == root:
         return "is-the-holder", None
@@ -8695,10 +8954,12 @@ BESIDE_THE_HOLDER = {
 }
 
 #: What stands at a `not-a-clone` slot that a holder's pinned `siblings.py`
-#: from before #735 ends in a traceback on, as `unclonable` names it: the
-#: row says what is there and no word of what `make siblings` does with it.
+#: from before #735 ends in a traceback on, or from before #784 ends `CLONE
+#: FAILED` on, as `unclonable` names it: the row says what is there and no
+#: word of what `make siblings` does with it.
 UNREADABLE_BESIDE = {"file": "is a file, not a folder",
-                     "unlistable": "is a folder that cannot be listed"}
+                     "unlistable": "is a folder that cannot be listed",
+                     "dangling": "is a link to nothing"}
 
 
 def beside_sentence(ctx: Context, entry: dict) -> str:
@@ -8712,10 +8973,11 @@ def beside_sentence(ctx: Context, entry: dict) -> str:
     an ESC or a CR in one reached the terminal as the control it is.
     `--json` keeps them raw: `json.dumps` escapes them.
 
-    A FILE, OR A FOLDER THAT CANNOT BE LISTED, is `not-a-clone` with no
-    word from `make siblings`, which ends in a traceback on it in a holder
-    whose pinned copy predates #735: the sentence stops at what stands
-    there (`UNREADABLE_BESIDE`).
+    A FILE, A FOLDER THAT CANNOT BE LISTED, OR A LINK TO NOTHING is
+    `not-a-clone` with no word from `make siblings`, which ends in a
+    traceback on the first two in a holder whose pinned copy predates #735,
+    and `CLONE FAILED` on the link in one that predates #784: the sentence
+    stops at what stands there (`UNREADABLE_BESIDE`).
     """
     state = entry["sibling"]
     where = ctx.root.parent / entry["project"]

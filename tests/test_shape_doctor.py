@@ -4003,8 +4003,9 @@ SLOT_SAYS = {
 }
 
 #: What the row says instead of a `not-a-clone` slot that a holder's pinned
-#: `siblings.py` from before #735 ends in a traceback on: what is there, and
-#: nothing of what `make siblings` does with it.
+#: `siblings.py` from before #735 ends in a traceback on, or from before
+#: #784 ends `CLONE FAILED` on: what is there, and nothing of what `make
+#: siblings` does with it.
 UNREADABLE_SAYS = {
     "file": "is a file, not a folder, so it is not counted as its working "
             "clone",
@@ -4012,6 +4013,8 @@ UNREADABLE_SAYS = {
                   "as its working clone",
     "unenterable": "is a folder that cannot be listed, so it is not counted "
                    "as its working clone",
+    "dangling": "is a link to nothing, so it is not counted as its working "
+                "clone",
 }
 
 #: The state the holder's own `scripts/siblings.py --dry-run` prints in its
@@ -4058,14 +4061,21 @@ SLOTS = [
     pytest.param("clone", "working-clone", id="the-working-clone"),
 ]
 
-#: A file at `../IRRS`, and the two `LOCKED` folders: `not-a-clone`, and the
-#: slots `make siblings` ended in a traceback on before #735.
+#: A symbolic link needs a privilege on Windows.
+LINKS_HOLD = pytest.mark.skipif(
+    os.name == "nt", reason="a symbolic link needs a privilege on Windows")
+
+#: A file at `../IRRS`, the two `LOCKED` folders and a link to nothing, each
+#: `not-a-clone`: before #735 `make siblings` ended in a traceback on the
+#: first three, and before #784 in `CLONE FAILED` on the link.
 UNREADABLE_SLOTS = [
     pytest.param("file", "not-a-clone", id="a-file"),
     pytest.param("unlistable", "not-a-clone", id="a-folder-it-cannot-list",
                  marks=LOCKED_HOLDS),
     pytest.param("unenterable", "not-a-clone",
                  id="a-folder-it-cannot-enter", marks=LOCKED_HOLDS),
+    pytest.param("dangling", "not-a-clone", id="a-link-to-nothing",
+                 marks=LINKS_HOLD),
 ]
 
 
@@ -4090,6 +4100,8 @@ def holder_with_slot(holder: dict, tmp_path: Path, slot: str) -> Path:
         (beside / "notes.txt").write_text("somebody's\n", encoding="utf-8")
     elif slot == "file":
         beside.write_text("somebody's\n", encoding="utf-8")
+    elif slot == "dangling":
+        beside.symlink_to(folder / "nowhere", target_is_directory=True)
     elif slot == "another-repository":
         git("init", "-q", "-b", "main", ".", cwd=beside)
     elif slot not in ("holder", "nothing", "empty"):
