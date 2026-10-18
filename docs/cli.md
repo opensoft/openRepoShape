@@ -421,7 +421,12 @@ options:
                         `source-ambiguous` refuses a name that is also a path
                         here, as `acme/Atlas` is beside a directory
                         `acme/Atlas`: pass `./acme/Atlas` for the directory,
-                        or the url for the repository.
+                        or the url for the repository. The path is a
+                        repository's top-level directory (`git rev-parse
+                        --show-toplevel` prints it): `source-not-top-level`
+                        refuses a file, or a directory inside a repository.
+                        `source-unresolvable` refuses an empty value, and one
+                        that is neither a path that exists nor an `org/repo`.
   --project PROJECT     the assembly-root name; for an in-place adoption it is
                         the source repository's own name
   --org ORG             the organisation the source repository is in, which
@@ -550,9 +555,15 @@ options:
                         but the clone, when `plan` writes no plan that records
                         it. One that cannot be made, or that this user cannot
                         write in when a source is cloned into it, is refused
-                        as `adopt-work-dir-unwritable`. One that already holds
-                        `source-readonly/<repo>`, where a source is cloned, is
-                        refused as `adopt-work-dir-occupied`.
+                        as `adopt-work-dir-unwritable`. Where a source is
+                        cloned, one whose `source-readonly` is a file or a
+                        symlink, or holds `<repo>` already, even empty, is
+                        refused as `adopt-work-dir-occupied`. Except on
+                        Windows, `adopt-work-dir-shared` refuses, before
+                        anything is made, one that a user other than this one
+                        or root owns or every user can write in without the
+                        sticky bit, one under such a directory, and one whose
+                        `source-readonly` is one.
 ```
 
 #### `adopt-project.py check`
@@ -573,14 +584,22 @@ options:
                         `plan` made (`source.cloned: true`) and is gone or no
                         longer whole, its `source.repository` is cloned again,
                         and any other `local_path` that is gone is refused as
-                        `plan-source-gone`.
+                        `plan-source-gone`; one that is a file, or a directory
+                        inside a repository, as `source-not-top-level`.
   --local-remote-dir LOCAL_REMOTE_DIR
                         the directory `execute --local-remote-dir` will be
                         given (the TEST path): each relative submodule url the
                         plan keeps in a leg is resolved from the bare
                         repository `execute` would create there, as that run
-                        resolves it, and not from GitHub's. Nothing is created
-                        there.
+                        resolves it, and not from GitHub's, and `check` asks,
+                        as `execute` asks before it makes either leg, whether
+                        each leg's bare repository is already there and
+                        whether this directory can be made and written in.
+                        Nothing is created there. Without it, `check` asks
+                        GitHub with `gh repo view --json nameWithOwner`
+                        whether either leg's name exists (a name GitHub only
+                        redirects to a repository renamed or moved away does
+                        not), and a `gh` that cannot answer is a NOTE.
   --work-dir WORK_DIR   where `check` works: an `org/repo` --source, or the
                         plan's `source.repository` where the clone `plan` made
                         is gone or no longer whole, is cloned there. Give the
@@ -592,9 +611,15 @@ options:
                         it. One this user cannot write in is a finding,
                         `adopt-work-dir-unwritable`, and is refused under that
                         code where a source would be cloned into it or cannot
-                        be opened, as one that cannot be made is. One that
-                        already holds `source-readonly/<repo>`, where a source
-                        is cloned, is refused as `adopt-work-dir-occupied`.
+                        be opened, as one that cannot be made is. Where a
+                        source is cloned, one whose `source-readonly` is a
+                        file or a symlink, or holds `<repo>` already, even
+                        empty, is refused as `adopt-work-dir-occupied`. Except
+                        on Windows, `adopt-work-dir-shared` refuses, before
+                        anything is made, one that a user other than this one
+                        or root owns or every user can write in without the
+                        sticky bit, one under such a directory, and one whose
+                        `source-readonly` is one.
 ```
 
 #### `adopt-project.py execute`
@@ -616,10 +641,15 @@ options:
                         `plan` made (`source.cloned: true`) and is gone or no
                         longer whole, its `source.repository` is cloned again,
                         and any other `local_path` that is gone is refused as
-                        `plan-source-gone`.
+                        `plan-source-gone`; one that is a file, or a directory
+                        inside a repository, as `source-not-top-level`.
   --local-remote-dir LOCAL_REMOTE_DIR
                         create the legs as bare repositories here instead of
-                        calling `gh` (the TEST path)
+                        calling `gh` (the TEST path). Both are asked about
+                        before either is made: one already there, or a
+                        directory that cannot be made and written in, is
+                        refused, as `gh repo view` finding either leg's name
+                        is without it.
   --allow-empty-leg {spec,code}
                         proceed even though NO path is assigned to this leg,
                         seeding it from the shape's template. Unioned with the
@@ -638,7 +668,11 @@ options:
                         refused as `adopt-work-dir-occupied`, and one that
                         cannot be made, or that this user cannot write in, as
                         `adopt-work-dir-unwritable`, before any leg repository
-                        exists.
+                        exists. Except on Windows, `adopt-work-dir-shared`
+                        refuses, before anything is made, one that a user
+                        other than this one or root owns or every user can
+                        write in without the sticky bit, one under such a
+                        directory, and one whose `source-readonly` is one.
 ```
 
 ### `update-shape.py`

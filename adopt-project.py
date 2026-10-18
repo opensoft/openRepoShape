@@ -90,9 +90,17 @@ THREE SUBCOMMANDS, BECAUSE THE MIDDLE ONE IS A HUMAN.
            that clone is still on this machine, with no network: a partial
            clone (`git clone --filter`), whose `git` would fetch what it
            lacks, is not asked, and a NOTE names each pin it was not
-           rechecked for (#449). It prints what will happen and changes
-           nothing.
-  execute  creates the two legs, extracts them with `git filter-repo`, makes
+           rechecked for (#449). Last, it asks what `execute` asks before
+           it makes either leg (#798): given `--local-remote-dir`, whether
+           each leg's bare repository is already there and whether that
+           directory can be made and written in, and without it, with `gh
+           repo view --json nameWithOwner`, whether GitHub already has
+           either leg's name, where a name GitHub only redirects (a
+           repository renamed or moved away) is free -- a NOTE and no
+           finding where gh cannot answer, so that `check` stays usable
+           offline. It prints what will happen and changes nothing.
+  execute  asks about both legs before it makes either (#798), then
+           creates the two legs, extracts them with `git filter-repo`, makes
            the one split commit on a branch of the source, sets the
            `xf-project-<id>` topic on all three and then opens the split's
            pull request against the tracking branch (both skipped for local
@@ -118,6 +126,11 @@ only when it is given the same `--local-remote-dir` (#417), and asked there
 whether it answers, and
 the place outside the assembly that a symlink kept at a path the shape writes
 leads to asked again of the disk, a climb from its own work directory.
+And last, before it makes either leg, it refuses at once everything that
+stands in their way (#798), as `check` finds it: a leg repository already
+there, on the disk or on GitHub, a `--local-remote-dir` that cannot hold
+them, and a `gh repo view` that fails otherwise than gh's not-found answer
+or answers with no `nameWithOwner` to read.
 
 THE NEW PROJECT MUST BE ABLE TO HOLD WHAT `execute` WRITES INTO IT (#261).
 `execute` puts the plan's values into the root's `project.yaml`, and the
@@ -177,6 +190,7 @@ import contextlib
 import datetime as _dt
 import errno
 import itertools
+import json
 import os
 import re
 import shlex
@@ -186,6 +200,7 @@ import subprocess
 import sys
 import tempfile
 from pathlib import Path, PurePosixPath
+from typing import NamedTuple
 
 SHAPE_ROOT = Path(__file__).resolve().parent
 sys.path.insert(0, str(SHAPE_ROOT / "scripts"))
@@ -268,6 +283,14 @@ from shape_materialize import check_program  # noqa: E402
 # say it of theirs (#660).
 from shape_materialize import (  # noqa: E402
     free_plan_secrets_note, visibility_in,
+)
+# What `execute` asks of both leg repositories before it makes either, and
+# `check` with it (#798): the folder `--local-remote-dir` names, asked as the
+# scaffold and `family.py` ask theirs, and gh's not-found answer, the one
+# failure of `gh repo view` that means a repository is absent (#609); the
+# other is an answer naming another repository, a redirect.
+from shape_materialize import (  # noqa: E402
+    CANNOT_WRITE_IN, GH_NOT_FOUND_WORDS, folder_in_the_way,
 )
 
 #: The naming policy this tool classifies leg names against. One constant,
@@ -1607,10 +1630,28 @@ GITHUB_HOST = "github.com"
 #: The refusal of a `--source` that is both a path here and a GitHub name.
 SOURCE_AMBIGUOUS = "source-ambiguous"
 #: The refusal of a plan's `source.local_path` that is gone, or no longer a
-#: whole clone, where nothing clones it again.
+#: whole clone, where nothing clones it again, or that names no path; and
+#: its way out.
 PLAN_SOURCE_GONE = "plan-source-gone"
+PLAN_SOURCE_GONE_REMEDY = (
+    "Remediation: pass the source again with --source: the path its clone is "
+    "at now; or, where `plan` cloned it from GitHub, the `org/repo` it "
+    "cloned, which clones it again. Either is held to the plan's `commit:`.")
 #: The refusal of a `--source` that names nothing, as `Source.open` words it.
 SOURCE_UNRESOLVABLE = "source-unresolvable"
+#: The refusal of a local source that is no repository's top-level
+#: directory: a file, or a directory inside a repository (#796).
+SOURCE_NOT_TOP_LEVEL = "source-not-top-level"
+#: What `source-not-top-level` says a source is, and its way out, for a
+#: `--source` and a plan's `source.local_path` alike.
+TOP_LEVEL_ONLY = "a source is the top-level directory of a repository"
+TOP_LEVEL_REMEDY = (
+    "Remediation: pass --source the repository's top-level directory, which "
+    "`git rev-parse --show-toplevel` prints in any directory of it, or its "
+    "`org/repo`.")
+#: GitHub's host as a browser's address bar spells it, read as
+#: `GITHUB_HOST` (#796): on main it was refused as another host.
+WWW_GITHUB_HOST = f"www.{GITHUB_HOST}"
 #: One segment of a GitHub `owner/repo` as `gh` reads it. `.` and `..` match
 #: it and are refused apart, so the clone directory is always one name.
 GITHUB_SEGMENT_RE = re.compile(r"[A-Za-z0-9_.-]+")
@@ -1619,11 +1660,13 @@ GITHUB_SEGMENT_RE = re.compile(r"[A-Za-z0-9_.-]+")
 PATH_SPELLING_RE = re.compile(r"[/~]|\.{1,2}(?:[/\\]|$)|\\\\")
 #: A `--source` written as a URL that names a repository on a host: a scheme
 #: and its host, git's `user@host:` form, or `github.com/` with no scheme,
-#: which `gh` itself reads as `HOST/OWNER/REPO`. `path` is the rest.
+#: which `gh` itself reads as `HOST/OWNER/REPO`, or `www.github.com/` (#796).
+#: `path` is the rest.
 SOURCE_URL_RE = re.compile(
     r"(?:(?:https?|ssh|git)://(?:[^@/]+@)?(?P<host>[^/:@]+)(?::\d*)?/"
     r"|[^@/:]+@(?P<scp>[^/:]+):"
-    r"|(?P<bare>github\.com)/)(?P<path>.*)", re.IGNORECASE | re.DOTALL)
+    r"|(?P<bare>(?:www\.)?github\.com)/)(?P<path>.*)",
+    re.IGNORECASE | re.DOTALL)
 
 
 def _github_name(written: str) -> str | None:
@@ -1638,14 +1681,22 @@ def _github_name(written: str) -> str | None:
     auth status`. Two segments must be left, each one `gh` takes, neither
     `.` nor `..`, and the owner beginning with neither `.`, which no
     GitHub owner does, nor `-`, which gh's parser reads as an option: `-u/x`
-    set its `--upstream-remote-name` (S8705). Case is kept as typed."""
+    set its `--upstream-remote-name` (S8705). Case is kept as typed.
+
+    NOR IS THE REPOSITORY `.git` (#796), in any case, as `owner/.git`,
+    `owner/.GIT` and `owner/.git.git` leave it: on main `gh` was handed
+    `owner/.git`, to clone into `source-readonly/.git`, and refused it
+    `source-unclonable`, with a remedy about `gh auth status`. GitHub reads
+    a repository's name without regard to case, and so does a disk that
+    ignores case, where `source-readonly/.GIT` is `source-readonly/.git`;
+    so the trailing `.git` is dropped in any case too."""
     segments = [part for part in written.split("/") if part]
     if len(segments) != 2:
         return None
     owner, repo = segments
-    if repo.endswith(".git") and len(repo) > len(".git"):
+    if repo.lower().endswith(".git") and len(repo) > len(".git"):
         repo = repo[:-len(".git")]
-    if owner.startswith(("-", ".")) or not all(
+    if owner.startswith(("-", ".")) or repo.lower() == ".git" or not all(
             GITHUB_SEGMENT_RE.fullmatch(part) and part not in (".", "..")
             for part in (owner, repo)):
         return None
@@ -1668,8 +1719,11 @@ def _repository_in_url(spec: str, url: re.Match, candidate: Path) -> str:
     """The `owner/repo` a url `--source` names (`SOURCE_URL_RE`'s `url`):
     refused where its host is not GitHub's, where it names no `owner/repo`,
     and, for `github.com/<owner>/<repo>` written with no scheme, where it is
-    a path here as well (`candidate`), as `_source_spec` refuses a name."""
+    a path here as well (`candidate`), as `_source_spec` refuses a name.
+    `www.github.com` is GitHub's host, as a browser spells it (#796)."""
     host = (url["host"] or url["scp"] or url["bare"]).lower()
+    if host == WWW_GITHUB_HOST:
+        host = GITHUB_HOST
     name = _github_name(url["path"])
     if host != GITHUB_HOST:
         raise Refusal(
@@ -1713,8 +1767,29 @@ def _source_spec(spec: str) -> tuple[Path | None, str | None]:
     TEXT (#255), which `_github_name` never reads as one, NOR ONE THAT BEGINS
     WITH `-`, the first argument `gh repo clone` is given, which gh's own
     parser reads as an option. A one-segment name (`Atlas`) is a path, as on
-    main, where it never reached `gh`."""
-    candidate = Path(spec).expanduser()
+    main, where it never reached `gh`.
+
+    A PATH IS A REPOSITORY'S TOP-LEVEL DIRECTORY, OR IT IS REFUSED (#796),
+    by name and before git reads anything else in it: the path is given
+    back resolved by `_top_level`. On main a file ended `plan`, `check` and
+    `execute` in a `NotADirectoryError` traceback, and a directory inside a
+    repository, or `.` run in one, was planned, exit 0, holding only what
+    is under it. An EMPTY value names no path, and is refused as
+    `pin-source-no-path` refuses an empty `--pin-source`: as a `Path` it is
+    `.`, so `--source "$SRC"` with `SRC` unset planned the directory it ran
+    in. A `~user` is expanded as `os.path.expanduser` expands it, which
+    leaves one this machine has not as typed, a path that is not there:
+    `Path.expanduser` raised `RuntimeError` for one mistyped user name,
+    which bash passes through unchanged."""
+    if not spec:
+        raise Refusal(
+            SOURCE_UNRESOLVABLE,
+            "--source '' names no path: an empty one would be read as the "
+            "directory this runs in",
+            "Remediation: pass the repository's top-level directory (`.` for "
+            "this directory), or its `org/repo`. Without --source, `check` "
+            "and `execute` read the plan's own source.")
+    candidate = Path(os.path.expanduser(spec))
     written_as_a_path = bool(PATH_SPELLING_RE.match(spec)
                              or WINDOWS_ABSOLUTE_RE.match(spec))
     url = None if written_as_a_path else SOURCE_URL_RE.fullmatch(spec)
@@ -1725,7 +1800,7 @@ def _source_spec(spec: str) -> tuple[Path | None, str | None]:
     if candidate.exists():
         if name is not None:
             raise _ambiguous(spec, name)
-        return candidate, None
+        return _top_level(candidate, f"--source {spec!r}"), None
     if name is None:
         raise Refusal(
             SOURCE_UNRESOLVABLE,
@@ -1733,6 +1808,59 @@ def _source_spec(spec: str) -> tuple[Path | None, str | None]:
             "`org/repo` name",
             "Remediation: pass a local clone's path, or `org/repo`.")
     return None, name
+
+
+def _top_level(path: Path, named: str) -> Path:
+    """`path`, a local source that exists, resolved, where it is the
+    top-level directory of a repository; refused as `source-not-top-level`
+    where it is not a directory, or is a directory inside a repository
+    (#796). `named` is how the refusal names it: `--source '<it>'`, or the
+    plan's `source.local_path`, which `Plan._recorded_source` reads.
+
+    BEFORE GIT READS ANYTHING ELSE IN IT. A file is asked of the disk, and
+    git is never run in it: `subprocess` raised `NotADirectoryError` for
+    one, a traceback. A directory is asked `git rev-parse
+    --is-inside-git-dir` first: a git directory itself (`<repo>/.git`, a
+    bare repository, `.git/modules/<m>`, `.git/worktrees/<w>`) is read
+    whole, as on main, and a directory below one (`.git/objects`, a bare
+    repository's `refs/`) is refused, naming the git directory `git
+    rev-parse --absolute-git-dir` gives. On main `plan` planned the whole
+    repository from `.git/objects`, exit 0, and recorded that directory,
+    which `check` then refused at `git ls-remote` of it, and `execute` as
+    `adopt-remote-unreadable`. Then `git rev-parse --show-prefix`, which
+    prints nothing at the top level, of a work tree or a git directory, and
+    the path of the directory below it otherwise; only then is
+    `--show-toplevel` asked, for the refusal to name. A directory git reads
+    no repository from is refused `git-failed` here, in git's own words, as
+    a later read refused it on main. On main a directory inside a
+    repository was read as the source: `git ls-tree` there lists what is
+    under it alone, so `plan` planned that, exit 0, and the plan recorded
+    it."""
+    resolved = Path(os.path.realpath(path))
+    if not resolved.is_dir():
+        raise Refusal(SOURCE_NOT_TOP_LEVEL,
+                      f"{named} is not a directory, and {TOP_LEVEL_ONLY}",
+                      TOP_LEVEL_REMEDY)
+    if git_out(["rev-parse", "--is-inside-git-dir"], cwd=resolved) == "true":
+        git_dir = os.fsdecode(git_out(["rev-parse", "--absolute-git-dir"],
+                                      cwd=resolved, binary=True).rstrip(b"\n"))
+        if Path(os.path.realpath(git_dir)) != resolved:
+            raise Refusal(
+                SOURCE_NOT_TOP_LEVEL,
+                f"{named} is inside the git directory {_spelled(git_dir)}, "
+                f"and {TOP_LEVEL_ONLY}", TOP_LEVEL_REMEDY)
+    prefix = os.fsdecode(git_out(["rev-parse", "--show-prefix"],
+                                 cwd=resolved, binary=True).rstrip(b"\n"))
+    if prefix:
+        top = os.fsdecode(git_out(["rev-parse", "--show-toplevel"],
+                                  cwd=resolved, binary=True).rstrip(b"\n"))
+        raise Refusal(
+            SOURCE_NOT_TOP_LEVEL,
+            f"{named} is {_spelled(prefix)} inside the repository at "
+            f"{_spelled(top)}, and {TOP_LEVEL_ONLY}: read from there, it "
+            f"would be only what is under {_spelled(prefix)}",
+            TOP_LEVEL_REMEDY)
+    return resolved
 
 
 def _occupied_clone_target(work_root: Path, path: Path, repository: str,
@@ -1744,23 +1872,332 @@ def _occupied_clone_target(work_root: Path, path: Path, repository: str,
     first in the way out as its other early refusals say it; `execute` keeps
     the clone it makes, so the way out says that too."""
     held = path.relative_to(work_root).as_posix()
+    # An empty directory is refused too, since #803: the run that made it
+    # may be cloning into it now (#457's L1-98).
+    empty = "" if _holds_something(path) else "an empty directory, "
+    why = ("a run clones only into a directory it has just made, so that it "
+           "never takes another run's for its own" if empty else
+           "`git clone` clones only into a directory that is new or empty")
     detail = (f"--work-dir {_spelled(str(work_root))} already holds "
-              f"{_spelled(held)}, where this run clones {repository}, and "
-              "`git clone` clones only into a directory that is new or empty")
-    another = ("a --work-dir that does not hold it, or none: without one, "
-               "each run makes a new one.")
-    remedy = f"Pass {another}"
+              f"{_spelled(held)}, {empty}where this run clones {repository}, "
+              f"and {why}")
+    remedy = f"Pass {ANOTHER_WORK_DIR}"
+    if empty:
+        remedy += (f" Or, where no run is using {_spelled(held)}, delete it: "
+                   "a run that was killed can leave it empty.")
     if taken:
         detail = f"{taken}; and {detail}"
         remedy = (f"It is no longer a whole clone: delete {_spelled(held)} "
                   "and run the command again, which clones it there anew; "
-                  f"or pass {another}")
+                  f"or pass {ANOTHER_WORK_DIR}")
     if done:
         remedy += (" An earlier `execute` given this --work-dir keeps the "
                    "clone it made there: where that is what it holds, delete "
                    "it once nothing in it is needed.")
     return Refusal("adopt-work-dir-occupied", detail,
                    f"Remediation: {done}{remedy}")
+
+
+#: The refusal of a `--work-dir`, or of the `source-readonly/` in it, that
+#: another user can rename or replace entries in (#803).
+WORK_DIR_SHARED = "adopt-work-dir-shared"
+#: The way out of a `--work-dir` that holds something in the clone's way.
+ANOTHER_WORK_DIR = ("a --work-dir that does not hold it, or none: without "
+                    "one, each run makes a new one.")
+#: The way out of a `--work-dir` another user can rename entries in, or
+#: rename it from a directory above it.
+WORK_DIR_OWN = ("Pass a --work-dir this user owns, that no other user can "
+                "write in, and that has no directory above it another user "
+                "can rename in, or none: without one, each run makes a new "
+                "one.")
+#: How a refusal names a file it found where it looked (#803: one spelling
+#: for the three refusals that say it).
+A_FILE = "a file"
+#: Whether `_remove_a_tree` removes a clone relative to a descriptor of the
+#: `source-readonly/` it was made in, never through its path (#803): what
+#: `shutil.rmtree(dir_fd=)` does from Python 3.11, where this platform's
+#: `rmtree` walks by descriptor (`avoids_symlink_attacks`): Linux and macOS,
+#: never Windows.
+FD_REMOVAL = (sys.version_info >= (3, 11)
+              and shutil.rmtree.avoids_symlink_attacks
+              and hasattr(os, "O_DIRECTORY") and hasattr(os, "O_NOFOLLOW"))
+#: Why a clone this run made is not removed where its path leads to another
+#: directory now (`_NotTheClone`).
+NOT_THE_CLONE = ("what that path leads to now is not the directory this run "
+                 "made, so nothing is removed through it")
+
+
+class _Claim(NamedTuple):
+    """The directory `Source.clone` made for a clone, with an exclusive
+    `mkdir`, and what `_remove_a_tree` holds its removal to (#803): its
+    path as the run spells it; its real path and its identity (`st_dev`,
+    `st_ino`), read right after the `mkdir`; the identity of the
+    `source-readonly/` it is in; and whether this run made that too."""
+    path: Path
+    made_at: str
+    identity: tuple
+    parent_identity: tuple
+    made_parent: bool
+
+
+class _NotTheClone(Exception):
+    """A clone's path that no longer leads to the directory this run made,
+    and why, in words (#803). Nothing is removed through it."""
+
+
+def _identity(status: os.stat_result) -> tuple:
+    return status.st_dev, status.st_ino
+
+
+def _same_spelling(path: str, other: str) -> bool:
+    """Whether two real paths name one entry as this platform compares
+    names: `os.path.normcase` on both, so that on Windows the disk's case,
+    `Source-Readonly` as `ntpath.realpath` returns it, is the recorded
+    `source-readonly` (#803, #457's L1-102)."""
+    return os.path.normcase(path) == os.path.normcase(other)
+
+
+def _owner(uid: int) -> str:
+    """The user `uid` names, in backticks, or the id where none does. POSIX
+    only, as `_shared_with_another_user` asks it."""
+    import pwd
+    try:
+        return _spelled(pwd.getpwuid(uid).pw_name)
+    except KeyError:
+        return f"user id {uid}"
+
+
+def _shared_with_another_user(status: os.stat_result) -> str | None:
+    """Why another user can rename or replace what is in the directory
+    `status` describes, an `os.lstat`, in words; None where nobody else can
+    (#803). A user other than this one or root owns it; or every user can
+    write in it, and its sticky bit, which keeps each entry to its owner as
+    in `/tmp`, is not set. ROOT IS TRUSTED, as OpenSSH's StrictModes trusts
+    it: root can do anything here anyway, and a directory an earlier `sudo`
+    run left is then `adopt-work-dir-unwritable`, which is true, and not a
+    claim that another user could write in it. GROUP WRITE IS NOT ASKED:
+    under `umask 002` every directory a user makes is group-writable, for a
+    group of that user alone. NOR IS ANYTHING ON WINDOWS, where neither the
+    owner nor the mode bits say it."""
+    if not hasattr(os, "geteuid"):
+        return None
+    if status.st_uid not in (os.geteuid(), 0):
+        return (f"is owned by {_owner(status.st_uid)}, not by this user or "
+                "root")
+    if status.st_mode & stat.S_IWOTH and not status.st_mode & stat.S_ISVTX:
+        return "can be written in by every user, without the sticky bit"
+    return None
+
+
+def _made_0755(path: Path, parents: bool = True) -> None:
+    """`path` made a directory where it is missing, and each missing
+    directory above it, as `Path.mkdir(parents=True, exist_ok=True)` makes
+    them and fails, but each with `os.mkdir(..., 0o755)` (#803): under
+    `umask 000` a work directory made 0777 would be refused as
+    `adopt-work-dir-shared` by the run that made it. The umask still narrows
+    it: under `umask 077` it is 0700. One another run made meanwhile is
+    taken, and is asked with the others above the work directory."""
+    try:
+        os.mkdir(path, 0o755)
+    except FileNotFoundError:
+        if not parents or path.parent == path:
+            raise
+        _made_0755(path.parent)
+        _made_0755(path, parents=False)
+    except OSError:
+        if not path.is_dir():
+            raise
+
+
+def _shared_above(root: Path) -> tuple[Path, str, bool] | None:
+    """The first directory above `root`, from `/` down, that another user
+    can rename in (`_shared_with_another_user`), why, and whether it is this
+    user's own; None where there is none (#803). `root` is the real path
+    `_work_root` read, and from then on the run uses it alone. Each entry
+    above it is asked down to the deepest one that is a directory: where
+    one is missing, or is no directory -- a file, or a symlink `realpath`
+    could not follow, such as a loop -- the walk stops there, and
+    `_made_0755` refuses it as #650 does, `adopt-work-dir-unwritable`. A
+    symlink always reads as mode 0777, and a file another user owns would
+    otherwise be named as a directory they can rename in (#843's
+    re-verification, N1).
+
+    THIS IS THE RULE OpenSSH's StrictModes HOLDS `authorized_keys` TO, but
+    for two things: the sticky bit counts, which is what keeps `/tmp` open,
+    and group write is not asked. A user who can rename in a directory above
+    the work directory can swap the work directory itself between this
+    run's claim and the identity it reads, so that the removal is held to
+    that user's directory (#843's review: a second process won 5 of 20 runs
+    on Python 3.12), and git's own cleanup of a failed clone removes by
+    path."""
+    if not hasattr(os, "geteuid"):
+        return None
+    for above in reversed(root.parents):
+        try:
+            status = os.lstat(above)
+        except OSError:
+            return None
+        if not stat.S_ISDIR(status.st_mode):
+            return None
+        shared = _shared_with_another_user(status)
+        if shared:
+            return above, shared, status.st_uid == os.geteuid()
+    return None
+
+
+def _refuse_a_shared_chain(root: Path, done: str) -> None:
+    """`adopt-work-dir-shared` for a `--work-dir` that has a directory above
+    it another user can rename in (`_shared_above`), naming that directory
+    and why. Where that directory is this user's, its mode is the reason,
+    and the way out also names its sticky bit: set, it keeps each entry in
+    the directory its owner's, and takes nothing from this user (#843's
+    re-verification)."""
+    found = _shared_above(root)
+    if not found:
+        return
+    above, shared, mine = found
+    remedy = WORK_DIR_OWN
+    if mine:
+        remedy += (f" Or, since {_spelled(str(above))} is this user's, set "
+                   "its sticky bit "
+                   f"({_spelled('chmod +t ' + shlex.quote(str(above)))}): "
+                   "each entry in it then stays its owner's.")
+    raise _shared_work_dir(
+        f"--work-dir {_spelled(str(root))} is under {_spelled(str(above))}, "
+        f"which {shared}, so another user could rename "
+        f"{_spelled(str(root))}, or a directory between them, and turn this "
+        "run's removal onto another directory", done, remedy)
+
+
+def _shared_work_dir(detail: str, done: str, remedy: str) -> Refusal:
+    """`adopt-work-dir-shared` for `detail`; `done` is said first in the way
+    out, as `_work_dir_refusal` says it."""
+    return Refusal(WORK_DIR_SHARED, detail, f"Remediation: {done}{remedy}")
+
+
+def _what_is_there(held: Path, status: os.stat_result, leads: str) -> str:
+    """What is at `held`, a `source-readonly` that is no directory of the
+    work directory's own, in words: a symlink and what it holds, a file, or
+    a directory that leads elsewhere, as a Windows junction does."""
+    if stat.S_ISLNK(status.st_mode):
+        with contextlib.suppress(OSError):
+            return f"a symlink to {_spelled(os.readlink(held))}"
+        return "a symlink"
+    if stat.S_ISREG(status.st_mode):
+        return A_FILE
+    if stat.S_ISDIR(status.st_mode):
+        return f"a directory that leads to {_spelled(leads)}"
+    return "neither a file nor a directory"
+
+
+def _source_readonly_refusal(work_root: Path, repository: str,
+                             done: str) -> Refusal | None:
+    """Why `<work_root>/source-readonly` cannot hold the clone of
+    `repository`, as the refusal; None where it can, or is not there yet
+    (#803). Asked before the NOTE, and before anything is made there.
+
+    It must be a directory of the work directory's own: no symlink, which
+    leads the clone and its removal elsewhere (#457's L1-99), and no file,
+    which ended each command in a `FileExistsError` traceback (L1-65), both
+    `adopt-work-dir-occupied`. No other user may be able to rename in it
+    (`_shared_with_another_user`): in a work directory every user can write
+    in, the user who made it first owns the clone's parent, and could turn
+    the clone, or its removal, onto another directory. That is
+    `adopt-work-dir-shared`. And this user must be able to make the clone's
+    directory in it, or it is `adopt-work-dir-unwritable`."""
+    held = work_root / SOURCE_READONLY
+    shown = _spelled(str(work_root))
+    try:
+        status = os.lstat(held)
+    except FileNotFoundError:
+        return None
+    except OSError as exc:
+        return _work_dir_refusal(
+            f"--work-dir {shown} cannot hold `{SOURCE_READONLY}`, where this "
+            f"run clones {repository}: reading it failed "
+            f"({exc.strerror or exc})", done)
+    leads = os.path.realpath(held)
+    if not stat.S_ISDIR(status.st_mode) or not _same_spelling(
+            leads, os.path.join(os.path.realpath(work_root), SOURCE_READONLY)):
+        return Refusal(
+            "adopt-work-dir-occupied",
+            f"--work-dir {shown} already holds `{SOURCE_READONLY}`, "
+            f"{_what_is_there(held, status, leads)}, where this run clones "
+            f"{repository} into a directory of its own",
+            f"Remediation: {done}Pass {ANOTHER_WORK_DIR}")
+    shared = _shared_with_another_user(status)
+    if shared:
+        return _shared_work_dir(
+            f"--work-dir {shown} holds `{SOURCE_READONLY}`, which {shared}, "
+            "so another user could rename or replace the clone this run "
+            "makes in it", done, f"Pass {ANOTHER_WORK_DIR}")
+    if not os.access(held, os.W_OK | os.X_OK):
+        return _work_dir_refusal(
+            f"--work-dir {shown} holds `{SOURCE_READONLY}`, where this run "
+            f"clones {repository}, and this user cannot make a directory in "
+            "it", done)
+    return None
+
+
+def _made_source_readonly(work_root: Path, parent: Path, repository: str,
+                          done: str) -> bool:
+    """Make `parent`, `source-readonly/`, where nothing is there, and say
+    whether this run made it (#803). One another run made meanwhile is
+    asked as `_source_readonly_refusal` asks it, and any other failure is
+    `adopt-work-dir-unwritable`, by name, where it was a traceback (#457's
+    L1-65). Made 0755 whatever the umask: under `umask 0` it would be one
+    every user can rename in. The work directory above it is made where it
+    is missing, as on main: `_work_root` makes it for every command, so
+    only a caller of `Source.open` that names another one meets that."""
+    if os.path.lexists(parent):
+        return False
+    try:
+        _made_0755(work_root)
+        os.mkdir(parent, 0o755)
+        return True
+    except FileExistsError:
+        refused = _source_readonly_refusal(work_root, repository, done)
+    except OSError as exc:
+        refused = _work_dir_refusal(
+            f"--work-dir {_spelled(str(work_root))} cannot hold "
+            f"`{SOURCE_READONLY}`, where this run clones {repository}: "
+            f"making it failed ({exc.strerror or exc})", done)
+    if refused:
+        raise refused
+    return False
+
+
+def _claimed(work_root: Path, path: Path, repository: str,
+             done: str) -> _Claim:
+    """`path`, the directory `repository` is cloned into, made by THIS run
+    with an exclusive `mkdir` before `gh` runs (`git clone` clones into an
+    empty directory), and `source-readonly/` above it where it is not there:
+    the claim `_remove_a_tree` holds a removal to (#803).
+
+    ON MAIN THE TARGET WAS LISTED WHERE IT DID NOT EXIST YET, and made by
+    `git clone`. So two runs given one `--work-dir` could both list it: the
+    one whose clone failed removed the other's, which that run's plan
+    recorded (#457's L1-98). Now the `mkdir` decides which run it is, and
+    one made meanwhile by another run is refused as
+    `adopt-work-dir-occupied`. Made 0755 whatever the umask."""
+    made_parent = _made_source_readonly(work_root, path.parent, repository,
+                                        done)
+    try:
+        os.mkdir(path, 0o755)
+    except OSError as exc:
+        if made_parent:
+            with contextlib.suppress(OSError):
+                os.rmdir(path.parent)
+        if isinstance(exc, FileExistsError):
+            raise _occupied_clone_target(work_root, path, repository,
+                                         done=done) from None
+        raise _work_dir_refusal(
+            f"--work-dir {_spelled(str(work_root))} holds "
+            f"`{SOURCE_READONLY}`, where this run clones {repository}, and "
+            f"making `{path.name}` in it failed ({exc.strerror or exc})",
+            done) from None
+    return _Claim(path, os.path.realpath(path), _identity(os.lstat(path)),
+                  _identity(os.lstat(path.parent)), made_parent)
 
 
 def _not_a_whole_clone(path: Path, commit: str) -> str | None:
@@ -1820,7 +2257,18 @@ class Source:
         `unwritable`, `made` and `done`). `instead` is `_default_branch`'s:
         the branch to read it at where its remote's default branch is no
         branch of its own."""
-        path, repository = _source_spec(spec)
+        return cls.of(_source_spec(spec), work_root, unwritable, made, done,
+                      instead)
+
+    @classmethod
+    def of(cls, named: tuple[Path | None, str | None], work_root: Path,
+           unwritable: str | None = None, made: list | None = None,
+           done: str = "", instead: str | None = None) -> "Source":
+        """The source `named` names, `_source_spec`'s answer, which `plan`
+        asks before it makes its work directory (#796): the top-level
+        directory it gave back, read in place, or the repository, cloned.
+        `instead` is as `open` takes it."""
+        path, repository = named
         if repository is not None:
             return cls.clone(repository, work_root, unwritable, made,
                              done=done, instead=instead)
@@ -1830,8 +2278,8 @@ class Source:
     def in_place(cls, path: Path, work_root: Path,
                  instead: str | None = None) -> "Source":
         """The repository at `path`, read where it is, named by its
-        `origin`."""
-        path = path.expanduser().resolve()
+        `origin`. `path` is a top-level directory `_top_level` gave back,
+        resolved (#796)."""
         return cls._at(path, _remote_repository(path), work_root, False,
                        instead)
 
@@ -1848,8 +2296,9 @@ class Source:
         (`_unwritable_work_dir`), or None. It is refused as
         `adopt-work-dir-unwritable` before any directory is made or any clone
         is said (#650): `plan` ended in a PermissionError traceback at
-        `source-readonly`. Then a target that already holds something is
-        refused as `adopt-work-dir-occupied` (#652): `git clone` refuses it,
+        `source-readonly`. Then a target that is already there is refused as
+        `adopt-work-dir-occupied` (#652, #803): `git clone` refuses one that
+        holds something,
         and the refusal was `source-unclonable` with a remedy about `gh auth
         status`. `taken` is what that refusal says first, when the occupant
         is the plan's own clone (`Plan.open_source`), and `done` what
@@ -1857,29 +2306,44 @@ class Source:
         that says why the plan's clone is made again, printed.
 
         `made` is the list a command keeps of the clones it made, for
-        `_leave_the_clones`: the target is put on it before `gh` runs, where
-        it did not exist, with the REAL path it has now, which is the only
-        path `_leave_the_clones` will remove, and whether this run made
-        `source-readonly/` too."""
+        `_leave_the_clones`. THE TARGET IS CLAIMED BEFORE `gh` RUNS (#803):
+        `source-readonly/` must be a directory of the work directory's own
+        that no other user can rename in (`_source_readonly_refusal`), asked
+        with the writable check and before the NOTE; ANY target already
+        there is refused, an empty one included; and this run then makes it
+        with an exclusive `mkdir` (`_claimed`). Only that `_Claim` goes on
+        `made`, and `_remove_a_tree` removes only the directory it names.
+        `execute` lists none and keeps its clone, but where the clone ends
+        any other way than in a clone -- `gh` failing, Ctrl-C, no `gh` at
+        all -- it removes the directory its own `mkdir` made, after the same
+        checks, and then raises what ended it: so that the run given the
+        same --work-dir again is not refused at an empty directory. Only a
+        kill or a power loss can still leave one, and its refusal says to
+        delete it where no run is using it."""
         path = work_root / SOURCE_READONLY / repository.split("/")[1]
         if unwritable:
             raise _work_dir_refusal(unwritable)
-        if _holds_something(path):
+        refused = _source_readonly_refusal(work_root, repository, done)
+        if refused:
+            raise refused
+        if os.path.lexists(path):
             raise _occupied_clone_target(work_root, path, repository, taken,
                                          done)
         if note:
             print(note)
-        made_parent = not os.path.lexists(path.parent)
-        if made is not None and not os.path.lexists(path):
-            made.append((path, os.path.join(os.path.realpath(work_root),
-                                            SOURCE_READONLY, path.name),
-                         made_parent))
-        path.parent.mkdir(parents=True, exist_ok=True)
-        print(f"cloning {repository} (read only) into {path}")
+        claim = _claimed(work_root, path, repository, done)
+        if made is not None:
+            made.append(claim)
         try:
+            print(f"cloning {repository} (read only) into {path}")
             run(["gh", "repo", "clone", repository, str(path), "--",
                  "--quiet"])
-        except CommandFailed as exc:
+        except BaseException as exc:
+            if made is None:
+                with contextlib.suppress(OSError, _NotTheClone):
+                    _remove_a_tree(claim)
+            if not isinstance(exc, CommandFailed):
+                raise
             raise Refusal(
                 "source-unclonable",
                 f"could not clone {repository}: {exc.output.strip()[:400]}",
@@ -1900,17 +2364,35 @@ class Source:
         return cls(path, repository, branch, commit, work_root, cloned)
 
     def tree(self) -> list[tuple[str, str, str, int]]:
-        """(path, mode, blob sha, size) for every file at the pinned commit."""
-        raw = git_out(["ls-tree", "-r", "-l", "-z", self.commit],
-                      cwd=self.path, binary=True)
+        """(path, mode, blob sha, size) for every file at the pinned commit.
+
+        A SIZE IS `-` OR DIGITS, OR THE SOURCE HAS LOST AN OBJECT (#796).
+        `git ls-tree -l` prints `BAD` for the size of a blob it cannot read
+        and still exits 0, and on main `int('BAD')` ended `plan`, `check`
+        and `execute` in a `ValueError` traceback. It is refused, naming
+        the path and `git fsck`, which names every object a repository
+        lacks."""
+        command = ["ls-tree", "-r", "-l", "-z", self.commit]
+        raw = git_out(command, cwd=self.path, binary=True)
         out = []
         for record in raw.split(b"\x00"):
             if not record:
                 continue
             head, _, path = record.partition(b"\t")
             mode, kind, oid, size = head.decode().split(maxsplit=3)
+            size = size.strip()
+            if size != "-" and not (size.isascii() and size.isdigit()):
+                raise Refusal(
+                    "git-failed",
+                    f"`git {' '.join(command)}` in {shown_path(self.path)} "
+                    f"gives no size for {_spelled(_git_path(path))}, whose "
+                    f"blob {oid} it cannot read: it prints {_spelled(size)}",
+                    f"Remediation: run `git fsck` in "
+                    f"{shown_path(self.path)}: it names each object the "
+                    "repository lacks. Restore them, or pass a clone that "
+                    "holds them all, and run the command again.")
             out.append((_git_path(path), mode, oid,
-                        0 if size.strip() == "-" else int(size)))
+                        0 if size == "-" else int(size)))
             del kind
         return sorted(out)
 
@@ -4616,9 +5098,9 @@ def _print_plan_report(args, source: Source, tree: list, entries: list,
     source, so a read that fails here (`symlink_targets`' `git cat-file
     --batch`) still leaves the line that says the plan exists (#799).
     """
-    print(f"source     {source.repository or _shown(str(source.path))} @ "
-          f"{source.commit[:12]} ({source.branch}), "
-          f"{len(tree)} files, {source.commit_count()} commits")
+    print(f"source     {_source_named(source)} @ {source.commit[:12]} "
+          f"({source.branch}), {len(tree)} files, "
+          f"{source.commit_count()} commits")
     print(f"project    {args.project} ({args.id}) in {args.org}, mode in-place")
     # Each pin as the scaffold's plan prints it: what is pinned, at which
     # commit and digest, the file `execute` writes, and how the digest was
@@ -4663,6 +5145,20 @@ def _print_plan_report(args, source: Source, tree: list, entries: list,
               "question before `execute` will run:")
         for entry in unresolved:
             print(f"  {_shown(entry.path)}\n      {entry.question}")
+
+
+def _source_named(source: Source) -> str:
+    """The source as `plan`'s `source` line names it. A clone `plan` made
+    is its repository. A source read in place is its directory, with the
+    repository its `origin` names beside it (#796): on main the line named
+    only that repository, so it read the same whatever directory of it was
+    read, a directory inside it included."""
+    if source.cloned:
+        return str(source.repository)
+    where = _shown(str(source.path))
+    if source.repository:
+        where += f" (origin: {_shown(source.repository)})"
+    return where
 
 
 #: The code `plan` refuses an `--out` it cannot write under (#799), whether
@@ -4855,6 +5351,13 @@ def cmd_plan(args) -> int:
     # traceback at the write, after the work directory was made, an
     # `org/repo` source cloned and the whole plan built.
     _refuse_an_unwritable_out(args)
+    # What `--source` names, next, before the work directory is made
+    # (#796): every refusal of it that needs none -- an empty value, a path
+    # that is no repository's top level, a name `gh` cannot clone -- is
+    # asked here, and only `git rev-parse` has run in a local source. On
+    # main a file ended `plan` in a traceback after the `--work-dir` it was
+    # given had been made, and that directory stayed.
+    named = _source_spec(args.source)
     work_root = _work_root(args)
     # An `org/repo` source is cloned into the work directory, so one this
     # user cannot write in is refused before the clone, as `check` refuses
@@ -4863,10 +5366,10 @@ def cmd_plan(args) -> int:
     # unless this run ends having written the plan that records it (#652).
     # Read at `--tracking-branch` where its remote's default branch is no
     # branch of its own, a `git clone -b` (#797).
-    source = Source.open(args.source, work_root,
-                         _unwritable_work_dir(args, work_root),
-                         getattr(args, "clones", None),
-                         instead=args.tracking_branch)
+    source = Source.of(named, work_root,
+                       _unwritable_work_dir(args, work_root),
+                       getattr(args, "clones", None),
+                       instead=args.tracking_branch)
     policy = PathPolicy.load(args.path_policy or PATH_POLICY)
     naming = NamingPolicy.load(NAMING_POLICY)
 
@@ -5100,11 +5603,27 @@ class Plan:
         A RECORDED NAME IS ALWAYS CLONED FROM GITHUB, never read as a
         directory here (#652): on main `check`, run where `./acme/Atlas`
         existed, said the plan's repository is cloned again and read that
-        directory instead."""
-        if override:
-            return Source.open(override, work_root, unwritable, made, done,
-                               self.read_at)
+        directory instead.
+
+        AN EMPTY `override` IS ONE GIVEN (#796), and `Source.open` refuses
+        it: on main `check --source ''` and `execute --source ''` dropped it
+        and read the plan's own source. So is an empty `local_path:`, which
+        no `plan` writes, refused as `plan-source-gone`: on main it was read
+        as no `local_path` at all, and the plan's `source.repository` was
+        cloned from GitHub, a path the person gave or a gitlab clone's
+        `origin` included, which `_recorded_source` never clones again."""
+        if override is not None:
+            source = Source.open(override, work_root, unwritable, made, done,
+                                 self.read_at)
+            self._keep_the_clone_at_the_record(made)
+            return source
         local_path = self.source.get("local_path")
+        if local_path == "":
+            raise Refusal(
+                PLAN_SOURCE_GONE,
+                "the plan's `source.local_path` is empty: it names no path, "
+                "and an empty path would be read as the directory this runs "
+                "in", PLAN_SOURCE_GONE_REMEDY)
         if local_path:
             return self._recorded_source(str(local_path), work_root,
                                          unwritable, made, done)
@@ -5115,6 +5634,22 @@ class Plan:
                           "nor a repository")
         return Source.clone(repository, work_root, unwritable, made,
                             done=done, instead=self.read_at)
+
+    def _keep_the_clone_at_the_record(self, made: list | None) -> None:
+        """Take off `made` the clone this run made from `--source` where it
+        is at the plan's own `source.local_path` (#803, #457's L1-97): it is
+        the plan's source again, as the clone `_recorded_source` makes there
+        is. On main `check` removed it, and the next run cloned it once
+        more."""
+        record = self.source.get("local_path")
+        if not (made and record):
+            return
+        try:
+            at = os.path.realpath(os.path.expanduser(str(record)))
+        except (OSError, ValueError):
+            return
+        made[:] = [claim for claim in made
+                   if not _same_spelling(claim.made_at, at)]
 
     def _recorded_repository(self) -> str | None:
         """The plan's `source.repository` as `_github_name` reads it, or None
@@ -5162,12 +5697,21 @@ class Plan:
         Where the clone would land on the plan's own clone, no longer whole
         (the same `--work-dir`), it is refused, and nothing there is
         removed; where that path is free, the clone made there is the one
-        the plan records, and is not on `made`."""
-        path = Path(local_path).expanduser()
+        the plan records, and is not on `made`.
+
+        A PATH THE PERSON GAVE IS HELD TO BEING A REPOSITORY'S TOP LEVEL, as
+        `--source` is (`_top_level`, #796), and refused by its key: a file
+        ended `check` and `execute` in a traceback, and a directory inside a
+        repository was read as the source. A `~user` this machine has not is
+        a path that is not there (`os.path.expanduser`): `Path.expanduser`
+        raised `RuntimeError` for it."""
+        path = Path(os.path.expanduser(local_path))
         there = path.exists()
         if self.source.get("cloned") is not True:
             if there:
-                return Source.in_place(path, work_root, self.read_at)
+                return Source.in_place(_top_level(
+                    path, f"the plan's `source.local_path`, "
+                          f"{_spelled(local_path)},"), work_root, self.read_at)
             raise self._gone(local_path, "names nothing that exists",
                              "the plan does not record it as a clone `plan` "
                              "made (`source.cloned` is not `true`), so "
@@ -5175,7 +5719,8 @@ class Plan:
         broken = _not_a_whole_clone(path, self.source_commit) if there \
             else None
         if there and broken is None:
-            return Source.in_place(path, work_root, self.read_at)
+            return Source.in_place(Path(os.path.realpath(path)), work_root,
+                                   self.read_at)
         state = (f"is a clone `plan` made that is no longer whole ({broken})"
                  if there else "no longer exists")
         repository = self._recorded_repository()
@@ -5208,11 +5753,7 @@ class Plan:
         return Refusal(
             PLAN_SOURCE_GONE,
             f"the plan's `source.local_path`, {_spelled(local_path)}, "
-            f"{state}, and {why}",
-            "Remediation: pass the source again with --source: the path its "
-            "clone is at now; or, where `plan` cloned it from GitHub, the "
-            "`org/repo` it cloned, which clones it again. Either is held to "
-            "the plan's `commit:`.")
+            f"{state}, and {why}", PLAN_SOURCE_GONE_REMEDY)
 
     def names(self) -> dict[str, str]:
         """The three repository names the plan declares, validated as values.
@@ -8566,7 +9107,7 @@ class _PlannedRoot:
         landed = _spelled(walk.landed)
         is_dir = (os.path.isdir(walk.landed) if walk.outside
                   else self._is_dir(walk.landed))
-        what = "a directory" if is_dir else "a file"
+        what = "a directory" if is_dir else A_FILE
         return (f"it lands on {landed}, {what} that is already there, where "
                 "the shape's copy cannot be written")
 
@@ -9138,9 +9679,11 @@ def _root_attributes(source: Source, walks: list, disk: _KeptTree,
     """The `.gitattributes` the split puts at the root, and under `shape/`,
     as `{path: bytes}`. Where the root keeps none, the shape's own. Where it
     keeps one, the shape's goes beside it and the split appends the block
-    for the copies `names` outside `shape/` (#471); a kept one that is not a
-    regular file gets no block, so it is asked as the block alone, the lines
-    #471's follow-up asks a regular file in its place to hold."""
+    for the copies `names` outside `shape/` (#471), each named where `walks`
+    land it, the path git tracks, and by its own name where that differs
+    (#807); a kept one that is not a regular file gets no block, so it is
+    asked as the block alone, the lines #471's follow-up asks a regular file
+    in its place to hold."""
     shapes = (SPLIT_TEMPLATE / ATTRIBUTES).read_text(
         encoding="utf-8").encode("utf-8")
     walk = next((walk for walk in walks if walk.path == ATTRIBUTES), None)
@@ -9150,8 +9693,8 @@ def _root_attributes(source: Source, walks: list, disk: _KeptTree,
     blobs = {path: oid for path, _, oid, _ in tree}
     own = (_blob_bytes(source.path, blobs[row[0]])
            if row and row[1] in FILE_MODES else b"")
-    return {ATTRIBUTES: with_eol_block(own, eol_block_paths(names,
-                                                           COLLISION_DIR)),
+    return {ATTRIBUTES: with_eol_block(own, eol_block_paths(
+                names, COLLISION_DIR, dict(_pinned_landings(walks)))),
             f"{COLLISION_DIR}/{ATTRIBUTES}": shapes}
 
 
@@ -9730,12 +10273,14 @@ def _rules_reaching(asked: _SplitRehearsal, source: Source, tree: list,
 
 def _as_the_split_writes(asked: _SplitRehearsal, rules: list, kept: set[str],
                          own: str | None, written: dict,
-                         names: list[str]) -> None:
+                         landings: list[tuple[str, str]]) -> None:
     """The root's rules as the split's `git add` reads them: the moved
     `.gitattributes` gone; the root's own followed by #471's block, or the
     shape's own where the root keeps none; and the shape's beside it, where
     the root keeps nothing there (`plan-root-blocks-shape-copy` names what
-    it keeps, #262)."""
+    it keeps, #262). The block names each pinned copy of `landings`
+    (`_pinned_landings`') where it lands, the path git tracks, and by its own
+    name where that differs (#807)."""
     for path, _, _ in rules:
         if path not in kept:
             asked.work.joinpath(*path.split("/")).unlink(missing_ok=True)
@@ -9746,7 +10291,8 @@ def _as_the_split_writes(asked: _SplitRehearsal, rules: list, kept: set[str],
     if own is not None:
         asked.place(ATTRIBUTES, with_eol_block(
             (asked.work / ATTRIBUTES).read_bytes(),
-            eol_block_paths(names, COLLISION_DIR)))
+            eol_block_paths([name for name, _ in landings], COLLISION_DIR,
+                            dict(landings))))
     if beside not in kept:
         asked.place(beside, written[beside])
 
@@ -9926,7 +10472,7 @@ def _reencoded_files_findings(plan: Plan, source: Source, tree: list,
             ["diff-files", "--name-only", "-z"], TAKEN) if path in moved]
         # The split's side: its `git add`, over the root it writes.
         try:
-            _as_the_split_writes(asked, rules, kept, own, written, names)
+            _as_the_split_writes(asked, rules, kept, own, written, landings)
         except OSError:
             return [_moved_finding(taken)] if taken else []
         held = {*[row for row in wanted if row[0] in kept],
@@ -10056,6 +10602,18 @@ def cmd_check(args) -> int:
         # and `check` never printed it (#716).
         if renamed is not None and exc.remediation == renamed:
             remediation.append(renamed)
+    else:
+        # LAST, as `execute` asks it last, right before it makes either leg
+        # (#798), and only of names `execute` would get that far with: what
+        # stands in the way of the two leg repositories, of the disk under
+        # `--local-remote-dir` and otherwise of GitHub, with `gh repo view
+        # --json nameWithOwner`.
+        # A question gh cannot answer is a NOTE here, not a finding.
+        legs, fixes, unasked = _leg_remote_findings(plan, names,
+                                                    local_remote_dir)
+        findings.extend(legs)
+        remediation.extend(fixes)
+        notes = [*notes, *unasked]
 
     _print_what_will_happen(plan, source, names,
                             naming.topic_for(plan.project_id),
@@ -10302,9 +10860,9 @@ def _nothing_rolled_back(urls: dict, pushed: list, work_root: Path,
                          source: Source | None = None) -> str:
     """The one notice for a failure once a leg repository exists.
 
-    `_create_leg_remotes` refuses a re-run while they exist:
-    `leg-remote-exists` under `--local-remote-dir`, and a `gh repo create`
-    that finds the name taken against GitHub. Every failure after it
+    `execute` refuses a re-run while they exist, before it makes either
+    (#798): `leg-remote-exists`, under `--local-remote-dir` and against
+    GitHub alike. Every failure after it
     therefore names the leg repositories this run `made` (both, unless the
     second could not be created, #188 N4), says which legs are already pushed
     (`pushed`, the roles in the order they were pushed), and gives the way
@@ -10356,9 +10914,9 @@ def _nothing_rolled_back(urls: dict, pushed: list, work_root: Path,
     notice = (f"NOTHING has been rolled back: {named} {exist}, and {state}. "
               f"{rerun} the adoption with {them} deleted or with {fresh} (a "
               "new --local-remote-dir, or new leg repositories): a re-run "
-              f"that meets {them} is refused, as `leg-remote-exists` under "
-              "--local-remote-dir, and against GitHub by `gh repo create`, "
-              "which finds the name already taken.")
+              f"that meets {them} is refused as `leg-remote-exists` before "
+              "it makes either leg, under --local-remote-dir and against "
+              "GitHub alike.")
     built = (_cloned_here(source, work_root)
              + [name for name, _ in _built_in(work_root, names)])
     if built:
@@ -10637,25 +11195,305 @@ def _refuse_a_split_branch_left_behind(source: Source, urls: dict,
         + _branch_deletion(source, urls, branch))
 
 
+# ---------------------------------------------------------------------------
+# Both leg repositories, asked about before either is made (#798)
+# ---------------------------------------------------------------------------
+#
+# `_create_leg_remotes` made the spec leg's repository and asked about the
+# code leg's only as it made that one: `leg-remote-exists` under
+# `--local-remote-dir`, and `gh repo create` finding the name taken against
+# GitHub. So a code leg that already existed was refused once the spec leg
+# had been made, which #188 N4's notice named and nothing prevented; on
+# GitHub that left a stray private `<P>-spec`, whose removal needs the
+# `delete_repo` scope. And a `--local-remote-dir` that could not hold them
+# ended in a traceback (a file at the path, `FileExistsError`; a folder above
+# it this user cannot write in, `PermissionError`) or in `git init`'s raw
+# failure (a folder this user cannot write in), each after `check` had said
+# `plan ok`.
+#
+# BOTH ARE ASKED ABOUT FIRST, and everything that stands in their way is
+# refused at once (`_refuse_what_stands_in_the_legs_way`):
+#
+# - under `--local-remote-dir`, whether each bare repository's path is taken
+#   (`os.path.lexists`, so a dangling link is taken too), the spec leg's and
+#   then the code leg's, and then whether the directory can be made and
+#   written in, asked as the scaffold and `family.py` ask theirs
+#   (`folder_in_the_way`, #609), which makes nothing;
+# - against GitHub, `gh repo view <name> --json nameWithOwner` of the spec
+#   leg's name and then the code leg's. A NAME IS TAKEN ONLY WHEN GITHUB
+#   ANSWERS WITH IT: gh's GraphQL follows a rename or a transfer, so the
+#   answer counts only when its `nameWithOwner` is the name asked, compared
+#   without case as GitHub compares names; an answer naming another
+#   repository is a redirect, which `gh repo create` takes over, and the
+#   name is free. A name that exists is `leg-remote-exists` before any `gh
+#   repo create`. Gh's not-found answer means absent, as #609 has it for the
+#   scaffold; a view that fails otherwise, or answers with no
+#   `nameWithOwner` to read, is `adopt-remote-unreadable`, naming the
+#   command and what it said.
+#
+# WHERE: right before `_create_leg_remotes`, after the yes, where
+# `leg-remote-exists` was always refused. Every refusal before it keeps its
+# order, and its precedence over this one: `adopt-branch-exists` and
+# `plan-split-branch-taken` already defer to a leg still on disk. And GitHub
+# is asked as close to `gh repo create` as it can be.
+#
+# `check` ASKS THE SAME, under the same flags and in the same order (#417's
+# one verdict): given `--local-remote-dir`, of the disk, and without it, of
+# GitHub; its findings come last, as `execute` asks them last. One
+# difference: where gh cannot answer -- no login, a bad token, a rate limit,
+# no network -- `check` says what it could not ask in a NOTE and still
+# passes, so that it stays usable offline, where `execute` refuses.
+#
+# WHAT CAN STILL FAIL AFTER THE FIRST MAKE keeps #188 N4's notice
+# (`_create_leg_remotes`): GitHub answers a repository the token cannot see
+# as not found, and `gh repo create` then finds the name taken; a rate limit
+# or an outage between the two creates; and under `--local-remote-dir` a
+# path made since the question, or a disk that fills, at the code leg's
+# `git init`.
+
+#: `check`'s finding, and `execute`'s refusal, of a leg repository that
+#: already exists (#174, #798).
+LEG_REMOTE_EXISTS = "leg-remote-exists"
+#: ... of a `--local-remote-dir` that cannot hold them, under the name the
+#: scaffold and `family.py` give theirs (#609).
+LEG_FOLDER_REFUSED = "adopt-folder-cannot-be-made"
+#: What each says to do: `check` after `Remediation:`, and `execute` after
+#: `NO_LEG_YET`.
+ON_DISK_FIX = (
+    "Choose an empty --local-remote-dir, and a --work-dir the run that made "
+    "it did not clone into (a fresh one, or none): `git clone` refuses a "
+    "directory it already cloned into. There is no --force: re-running over "
+    "a live leg is not an adoption.")
+ON_GITHUB_FIX = (
+    "A leg repository is created new, never over one that exists, and there "
+    "is no --force: re-running over a live leg is not an adoption. If an "
+    "earlier `execute` made it and its adoption is not one to keep, delete "
+    "it (`gh repo delete <repository>`, which needs the `delete_repo` "
+    "scope); another repository of that name is renamed on GitHub first. "
+    "Then run `check` and `execute` again.")
+UNREAD_FIX = (
+    "Only gh's own answer that a repository does not exist (exit 1, "
+    f"`{GH_NOT_FOUND_WORDS}`), or one naming another repository that the "
+    "name redirects to, lets `execute` create one; any other answer says "
+    "nothing about whether it is there. Check `gh auth status` (`gh "
+    "auth login` where it names a token that is missing, bad or expired), "
+    "or let a rate limit or an outage pass, then run `execute` again.")
+FOLDER_FIX = (
+    "Move what stands in the way aside, or pass a --local-remote-dir where "
+    "a folder can be made. There is no --force.")
+UNWRITABLE_FOLDER_FIX = (
+    "Give this user write and search permission on that folder, or pass "
+    "another --local-remote-dir.")
+
+
+def _leg_remote_answers(repositories: dict, names: dict,
+                        local_remote_dir: Path | None) -> list[tuple]:
+    """`(code, detail, fix, note)` for each thing that stands in the way of
+    making the two leg repositories, in the order they are asked (#798):
+    nothing when both can be made. It makes nothing.
+
+    Under `local_remote_dir` the disk is asked (`_in_the_way_on_disk`), and
+    otherwise GitHub, of `repositories` (`_in_the_way_on_github`). `note` is
+    what `check` prints instead of a finding, for a question gh could not
+    answer, and "" for every finding."""
+    if local_remote_dir is not None:
+        return _in_the_way_on_disk(names, local_remote_dir)
+    asked = [_in_the_way_on_github(role, repositories[role])
+             for role in EXTRACTED_LEGS]
+    return [answer for answer in asked if answer]
+
+
+def _the_remote_dir(local_remote_dir: Path) -> Path:
+    """`--local-remote-dir` as each leg's url is made of it (`_remote_urls`)
+    and asked about: resolved, and made absolute as given where it cannot be
+    resolved. `Path.resolve` raised `RuntimeError` out of `execute` for a
+    link loop, a traceback before anything was asked (#798);
+    `folder_in_the_way` names it now, in `check` and `execute` alike."""
+    try:
+        return local_remote_dir.resolve()
+    except (OSError, RuntimeError):
+        return local_remote_dir.absolute()
+
+
+def _in_the_way_on_disk(names: dict, local_remote_dir: Path) -> list[tuple]:
+    """The disk's answers under `--local-remote-dir`: each leg's bare
+    repository path that something already takes, the spec leg's and then
+    the code leg's, and then the directory, where it cannot be made and
+    written in. Every path `_spelled`, as the notice spells it (#212)."""
+    remote_dir = _the_remote_dir(local_remote_dir)
+    found = []
+    for role in EXTRACTED_LEGS:
+        bare = remote_dir / f"{names[role]}.git"
+        if os.path.lexists(bare):
+            found.append((LEG_REMOTE_EXISTS,
+                          f"{_spelled(str(bare))}, the {role} leg's bare "
+                          "repository, already exists", ON_DISK_FIX, ""))
+    in_the_way = folder_in_the_way(remote_dir)
+    if in_the_way:
+        here, why = in_the_way
+        found.append((
+            LEG_FOLDER_REFUSED,
+            f"--local-remote-dir {_spelled(str(remote_dir))} cannot hold the "
+            f"two leg repositories: {_spelled(str(here))} {why}",
+            UNWRITABLE_FOLDER_FIX if why == CANNOT_WRITE_IN else FOLDER_FIX,
+            ""))
+    return found
+
+
+def _first_said(output: str) -> str:
+    """`: <the first line gh said>`, each character a terminal would act on
+    spelled as `_spelled` spells it; "" when it said nothing."""
+    lines = [line.strip() for line in output.splitlines() if line.strip()]
+    if not lines:
+        return ""
+    return ": " + "".join(char if char.isprintable()
+                          else _spelled_character(char) for char in lines[0])
+
+
+def _name_with_owner(answer: str) -> str | None:
+    """The `nameWithOwner` a `gh repo view --json nameWithOwner` answer
+    names, or None for anything else: not JSON, not an object, no such
+    field, or one that is not a name."""
+    try:
+        value = json.loads(answer)
+    except ValueError:
+        return None
+    value = value.get("nameWithOwner") if isinstance(value, dict) else None
+    return value if isinstance(value, str) and value else None
+
+
+def _in_the_way_on_github(role: str, repository: str) -> tuple | None:
+    """GitHub's answer for one leg's `repository`, by `gh repo view --json
+    nameWithOwner`: `leg-remote-exists` when GitHub answers with that very
+    name, compared without case as GitHub compares names; None when gh
+    says it does not exist (#609), or answers with another repository's
+    name, which is a redirect left by a rename or a transfer, a name `gh
+    repo create` takes over; and `adopt-remote-unreadable` when gh failed
+    otherwise, could not be run or answered with no `nameWithOwner` to
+    read, which says nothing either way."""
+    command = ["gh", "repo", "view", repository, "--json", "nameWithOwner"]
+    shown = " ".join(command)
+    try:
+        answer = run(command)
+    except CommandFailed as exc:
+        if exc.code == 1 and GH_NOT_FOUND_WORDS in exc.output:
+            return None
+        how = f"`{shown}` exited {exc.code}{_first_said(exc.output)}"
+    except OSError as exc:
+        how = f"`gh` could not be run: {exc}"
+    else:
+        found = _name_with_owner(answer)
+        if found is None:
+            how = (f"`{shown}` exited 0, and what it printed holds no "
+                   f"`nameWithOwner`{_first_said(answer)}" if answer.strip()
+                   else f"`{shown}` exited 0 and printed nothing")
+        elif found.lower() == repository.lower():
+            return (LEG_REMOTE_EXISTS,
+                    f"{repository}, the {role} leg's repository, already "
+                    f"exists on GitHub: `{shown}` finds it", ON_GITHUB_FIX,
+                    "")
+        else:
+            # GitHub followed a rename or a transfer away from this name:
+            # the name itself is free, and `gh repo create` takes it over.
+            return None
+    named = f"{repository}, the {role} leg's repository,"
+    return (REMOTE_UNREADABLE,
+            f"whether {named} already exists on GitHub cannot be told: {how}",
+            UNREAD_FIX,
+            f"NOTE `check` could not ask GitHub whether {named} already "
+            f"exists: {how}. It is no finding here, so that `check` stays "
+            "usable offline; `execute` asks again before it makes either "
+            f"leg, and refuses as `{REMOTE_UNREADABLE}` while gh cannot "
+            "answer.")
+
+
+def _refuse_what_stands_in_the_legs_way(repositories: dict, names: dict,
+                                        local_remote_dir: Path | None
+                                        ) -> None:
+    """Refuse every answer `_leg_remote_answers` gives at once, BEFORE
+    either leg repository is made (#798): the code is the first one's own,
+    the detail lists each as `check` prints it, and the remediation says
+    what each asks for, once."""
+    answers = _leg_remote_answers(repositories, names, local_remote_dir)
+    if not answers:
+        return
+    raise Refusal(
+        answers[0][0],
+        "\n".join([f"{len(answers)} finding(s) about the two leg "
+                   "repositories, asked before either is made:",
+                   *(f"  FINDING {code}: {detail}"
+                     for code, detail, _fix, _note in answers)]),
+        f"Remediation: {NO_LEG_YET}" + " ".join(
+            dict.fromkeys(fix for _code, _detail, fix, _note in answers)))
+
+
+def _leg_remote_findings(plan: Plan, names: dict,
+                         local_remote_dir: Path | None
+                         ) -> tuple[list[str], list[str], list[str]]:
+    """`check`'s `(findings, remediation, notes)` about the two leg
+    repositories: `execute`'s answers (#798), each finding as its refusal
+    lists it, and a NOTE for each question gh could not answer. GitHub is
+    asked only of an `org:` `execute` would put on a `gh` command line;
+    another is `execute`'s to refuse first, as `unsafe-value`."""
+    repositories = {}
+    if local_remote_dir is None:
+        try:
+            org = checked_value("org", _plan_org(plan))
+        except Refusal:
+            return [], [], []
+        repositories = {role: f"{org}/{names[role]}"
+                        for role in EXTRACTED_LEGS}
+    findings, fixes, notes = [], [], []
+    for code, detail, fix, note in _leg_remote_answers(
+            repositories, names, local_remote_dir):
+        if note:
+            notes.append(note)
+        else:
+            findings.append(f"FINDING {code}: {detail}")
+            fixes.append(f"Remediation: {fix}")
+    return findings, list(dict.fromkeys(fixes)), notes
+
+
+def _make_the_remote_dir(remote_dir: Path) -> None:
+    """`--local-remote-dir`'s `mkdir`, after the question said it can be
+    made (`folder_in_the_way`): what fails here anyway -- a file put there
+    since, a permission `os.access` did not foresee -- is refused by name,
+    before any leg exists, and is no `OSError` traceback (#798)."""
+    try:
+        remote_dir.mkdir(parents=True, exist_ok=True)
+    except OSError as exc:
+        raise Refusal(
+            LEG_FOLDER_REFUSED,
+            f"--local-remote-dir {_spelled(str(remote_dir))} cannot be made: "
+            f"{exc.strerror or exc}",
+            f"Remediation: {NO_LEG_YET}"
+            + (UNWRITABLE_FOLDER_FIX if isinstance(exc, PermissionError)
+               else FOLDER_FIX)) from exc
+
+
 def _create_leg_remotes(plan: Plan, names: dict, repositories: dict,
                         urls: dict, tracking: str, local: bool,
                         work_root: Path, *,
                         source: Source | None = None) -> None:
     """(a) The two NEW repositories. The assembly root is never created here.
 
-    The spec leg's repository is created first, so a failure creating the
-    code leg's leaves one repository behind, and the re-run meets it:
-    against GitHub as `gh repo create` finding its name taken. That failure
-    therefore gets the notice too, naming the one that exists (#188 N4), and
-    is re-raised `reported`: `main` exits 2 on any of `LATE_FAILURES` without
-    printing it twice, and anything else (Ctrl-C) keeps its traceback. A
-    failure on the first leg leaves nothing, and `main` reports it as before.
-    `source` is handed on for the notice: nothing is built in the work
-    directory yet, but an `org/repo` source is already cloned there.
+    Both were asked about first (`_refuse_what_stands_in_the_legs_way`,
+    #798), so a name or a path already taken, and a `--local-remote-dir`
+    that cannot hold them, are refused before this runs. The spec leg's
+    repository is created first, so a failure creating the code leg's
+    that the question could not foresee -- a name GitHub hides from this
+    token, a path made since -- leaves one repository behind, and the re-run
+    meets it. That failure therefore gets the notice too, naming the one
+    that exists (#188 N4), and is re-raised `reported`: `main` exits 2 on
+    any of `LATE_FAILURES` without printing it twice, and anything else
+    (Ctrl-C) keeps its traceback. A failure on the first leg leaves nothing,
+    and `main` reports it as before. `source` is handed on for the notice:
+    nothing is built in the work directory yet, but an `org/repo` source is
+    already cloned there.
     """
     print("\ncreating the leg repositories")
     if local:
-        Path(urls["spec"]).parent.mkdir(parents=True, exist_ok=True)
+        _make_the_remote_dir(Path(urls["spec"]).parent)
     made: list[str] = []
     for role in EXTRACTED_LEGS:
         try:
@@ -10758,9 +11596,10 @@ def _create_leg_remote(plan: Plan, names: dict, repositories: dict,
         print(f"  gh    {repositories[role]}")
         return
     bare = Path(urls[role])
+    # Asked before either leg was made (#798); one there now was made since.
     if bare.exists():
         raise Refusal(
-            "leg-remote-exists", f"{bare} already exists",
+            LEG_REMOTE_EXISTS, f"{bare} already exists",
             "Remediation: choose an empty --local-remote-dir, and a "
             "--work-dir the run that made it did not clone into (a fresh "
             "one, or none): `git clone` refuses a directory it already "
@@ -10893,7 +11732,7 @@ MOUNT_REMEDIATION = (
     "keeps there on the way to them. Then run `execute` again with fresh "
     "leg repositories (delete the two this run made, or choose an empty "
     "`--local-remote-dir`: a leg that already exists meets "
-    "`leg-remote-exists`, or a `gh repo create` that finds the name taken) "
+    "`leg-remote-exists`, on the disk or on GitHub) "
     "and an empty `--work-dir`, or none: a `--work-dir` this run was given "
     "still holds its clones of both legs, and the next run cannot clone "
     "into them.")
@@ -10922,7 +11761,7 @@ def _index_entries(assembly: Path,
     for record in raw.split(b"\x00"):
         if record:
             head, _, name = record.partition(b"\t")
-            kind = INDEX_ENTRY_KINDS.get(int(head.split()[0], 8), "a file")
+            kind = INDEX_ENTRY_KINDS.get(int(head.split()[0], 8), A_FILE)
             entries.append((kind, name.decode("utf-8",
                                               "surrogateescape")))
     return entries
@@ -11178,8 +12017,9 @@ def _remote_urls(org: str, names: dict, local_remote_dir: Path | None,
                 for role, name in names.items()}
     # NOT created yet: nothing exists on disk until the human has said yes,
     # so a refused run leaves the directory it would have used absent rather
-    # than empty.
-    remote_dir = local_remote_dir.resolve()
+    # than empty. One that cannot be resolved (a link loop) is kept as given,
+    # for the question about it to refuse by name (#798).
+    remote_dir = _the_remote_dir(local_remote_dir)
     urls = {role: str(remote_dir / f"{name}.git")
             for role, name in names.items()}
     urls["assembly"] = str(source.path)
@@ -11989,10 +12829,9 @@ def _commit_the_split(plan: Plan, source: Source, assembly: Path,
             print(f"  beside  {actual} (the source already has {intended}; "
                   "nothing was overwritten)")
         if materialized.eol_block:
-            print(f"  appended to {ATTRIBUTES}: a `text eol=lf` line for "
-                  f"each of {len(materialized.eol_block)} pinned copies, so "
-                  "every checkout keeps their bytes (#471); none of its own "
-                  "lines was changed")
+            print(f"  appended to {ATTRIBUTES}: "
+                  f"{_appended_lines(materialized)}, so every checkout keeps "
+                  "their bytes (#471); none of its own lines was changed")
 
         follow_ups = _plan_follow_ups(plan)
         message = _split_message(names, paths_for, leg_commits, spec_path,
@@ -12088,6 +12927,11 @@ def cmd_execute(args) -> int:
                                    plan.entries, source.tree(), source.commit)
 
     # ---- (a) the two legs' remotes ----------------------------------------
+    # Both asked about first, and everything in their way refused at once,
+    # before either is made (#798): where `leg-remote-exists` always came,
+    # so every refusal above keeps its order.
+    _refuse_what_stands_in_the_legs_way(repositories, names,
+                                        args.local_remote_dir)
     _create_leg_remotes(plan, names, repositories, urls, tracking, local,
                         work_root, source=source)
 
@@ -12582,6 +13426,20 @@ def _accounted_for(source: Source, assembly: Path, work_root: Path, names,
     return findings + root_findings
 
 
+def _appended_lines(materialized: Materialized) -> str:
+    """What `execute` says it appended to the source's `.gitattributes`: a
+    line for each pinned copy outside `shape/`, and the second line each
+    copy written through a symlink has under its pinned path (#807)."""
+    copies = len(eol_block_paths(materialized.shape_files, COLLISION_DIR))
+    said = f"a `text eol=lf` line for each of {copies} pinned copies"
+    second = len(materialized.eol_block) - copies
+    if second:
+        said += (f", and {second} more under the pinned path of each copy "
+                 "written through a symlink, which governs it once the link "
+                 "is replaced")
+    return said
+
+
 def _land_the_eol_block(assembly: Path, split_commit: str, tree: list,
                         before: dict, after: dict) -> int:
     """Count the source's `.gitattributes` as landed in the root when the
@@ -12606,7 +13464,10 @@ def _land_the_eol_block(assembly: Path, split_commit: str, tree: list,
     a lookup among the tree's plain files found none, so the appended file
     was `adopt-lost` where main verified it (#471's review, SHOULD-3). A pin
     neither can read counts nothing here, and `_shape_file_findings` reports
-    it.
+    it. Each copy the block names is named where the split's symlinks lead
+    its pinned path (`_SplitTree.tracked_at`), the path git tracks, and then
+    by that pinned path where it differs, as the materializer named it
+    (#807).
     """
     source_oid = before.get(ATTRIBUTES)
     landed = after.get(ATTRIBUTES, [])
@@ -12615,11 +13476,13 @@ def _land_the_eol_block(assembly: Path, split_commit: str, tree: list,
             or root[0] == f"root:{source_oid}":
         return 0
     blobs = {path: oid for path, mode, oid, _ in tree if mode in FILE_MODES}
-    pin = _pin_through_links(_SplitTree(assembly, split_commit))
+    split = _SplitTree(assembly, split_commit)
+    pin = _pin_through_links(split)
     pinned = _pinned_shape_paths(assembly, pin) if pin else None
     if pinned is None or blobs.get(ATTRIBUTES) != root[0].split(":", 1)[1]:
         return 0
-    paths = eol_block_paths(pinned, COLLISION_DIR)
+    paths = eol_block_paths(pinned, COLLISION_DIR,
+                            {path: split.tracked_at(path) for path in pinned})
     expected = with_eol_block(_blob_bytes(assembly, source_oid), paths)
     if _blob_bytes(assembly, blobs[ATTRIBUTES]) != expected:
         return 0
@@ -13030,6 +13893,15 @@ class _SplitTree:
             raise _NotInTheSplitError(
                 f"is not in the split commit {self.commit}")
         return oid
+
+    def tracked_at(self, path: str) -> str | None:
+        """Where the split tracks what `path` leads to, each symlink on the
+        way followed (#807); None where the way leads out of the tree, above
+        it, round a loop, or through what is no directory in it."""
+        try:
+            return self._resolve(path)
+        except _NotInTheSplitError:
+            return None
 
     def _resolve(self, path: str) -> str:
         """`path` with each symlink on the way followed, as `open()` does."""
@@ -13590,18 +14462,40 @@ def _work_root(args, done: str = "") -> Path:
     1, and on a loop Python 3.12's `Path.resolve` raised RuntimeError
     first; `os.path.realpath` is the same reading without that raise. The
     code and the way out are #524's, for one this user cannot write in;
-    `done` is what the refusing command left as it was, said first."""
+    `done` is what the refusing command left as it was, said first.
+
+    A `--work-dir` ANOTHER USER CAN RENAME IN IS REFUSED NEXT, before
+    anything is made in it (#803): one another user owns, or one every user
+    can write in without the sticky bit (`_shared_with_another_user`), as
+    `adopt-work-dir-shared`. There another user could replace the clone
+    `plan` reads, or turn the clone's removal onto a directory of theirs
+    (#457's L1-99), or the legs `execute` builds. So is one under a
+    directory another user can rename in (`_shared_above`): asked of the
+    directories that exist BEFORE any is made, so that a refused run makes
+    nothing, and again after. Asked with `os.lstat` of the real path, which
+    is the one path the run uses from then on; never on Windows. Each
+    directory made here is 0755 whatever the umask (`_made_0755`). The
+    default work directory is not asked: `tempfile.mkdtemp` makes it 0700."""
     if not getattr(args, "work_dir", None):
         root = Path(tempfile.mkdtemp(prefix="openreposhape-adopt-"))
         args.made_work_root = root
         return root
     root = Path(os.path.realpath(args.work_dir))
+    _refuse_a_shared_chain(root, done)
     try:
-        root.mkdir(parents=True, exist_ok=True)
+        _made_0755(root)
+        status = os.lstat(root)
     except OSError as exc:
         raise _work_dir_refusal(
             f"--work-dir {_spelled(str(root))} cannot be made: making it a "
             f"directory failed ({exc.strerror or exc})", done) from None
+    _refuse_a_shared_chain(root, done)
+    shared = _shared_with_another_user(status)
+    if shared:
+        raise _shared_work_dir(
+            f"--work-dir {_spelled(str(root))} {shared}, so another user "
+            "could rename or replace what this run makes in it", done,
+            WORK_DIR_OWN)
     return root
 
 
@@ -13644,33 +14538,162 @@ def _removed_if_it_holds_no_file(root: Path) -> bool:
     return True
 
 
-def _remove_a_tree(path: Path) -> None:
-    """`shutil.rmtree` of `path`. What git wrote READ-ONLY, a clone's packs
-    and loose objects, Windows refuses to unlink: a file or directory whose
-    unlink or rmdir fails gets its write bit ADDED, and is removed again.
-    Every other failure is raised as it was, and no mode is ever lowered
-    (#652's review, F4): the handler once set the mode to exactly
-    `S_IWRITE`, taking read and search away, and called whatever function
-    failed, `os.open` included, which ended in a TypeError traceback. A
-    symlink is never changed, since `chmod` would follow it. The handler's
-    keyword is `onexc` from Python 3.12, whose `onerror` warns."""
-    def writable_then_removed(remove, target, error):
-        if remove not in (os.unlink, os.remove, os.rmdir) \
-                or os.path.islink(target):
-            raise error if isinstance(error, BaseException) else error[1]
-        os.chmod(target, stat.S_IMODE(os.lstat(target).st_mode)
-                 | stat.S_IWRITE)
-        remove(target)
+def _writable_then_removed(remove, target, error) -> None:
+    """`shutil.rmtree`'s handler where a clone is removed by path. What git
+    wrote READ-ONLY, a clone's packs and loose objects, Windows refuses to
+    unlink: a file or directory whose unlink or rmdir fails gets its write
+    bit ADDED, and is removed again. Every other failure is raised as it
+    was, and no mode is ever lowered (#652's review, F4): the handler once
+    set the mode to exactly `S_IWRITE`, taking read and search away, and
+    called whatever function failed, `os.open` included, which ended in a
+    TypeError traceback. A symlink is never changed, since `chmod` would
+    follow it."""
+    if remove not in (os.unlink, os.remove, os.rmdir) \
+            or os.path.islink(target):
+        raise error if isinstance(error, BaseException) else error[1]
+    os.chmod(target, stat.S_IMODE(os.lstat(target).st_mode) | stat.S_IWRITE)
+    remove(target)
 
-    keyword = "onexc" if sys.version_info >= (3, 12) else "onerror"
-    shutil.rmtree(path, **{keyword: writable_then_removed})
+
+#: The keyword `_writable_then_removed` is given as: `onexc` from Python
+#: 3.12, whose `onerror` warns.
+REMOVAL_HANDLER = "onexc" if sys.version_info >= (3, 12) else "onerror"
+
+
+def _opened_directory(path: str) -> int | None:
+    """A descriptor of the directory at `path`, opened without following a
+    symlink there; None where nothing is there. A symlink or anything else
+    that is no directory is `_NotTheClone`."""
+    try:
+        return os.open(path, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW)
+    except FileNotFoundError:
+        return None
+    except OSError as exc:
+        if exc.errno in (errno.ELOOP, errno.ENOTDIR):
+            raise _NotTheClone(NOT_THE_CLONE) from None
+        raise
+
+
+def _status_at(where: str, dir_fd: int | None) -> os.stat_result | None:
+    """`os.lstat` of `where`, in the directory `dir_fd` where one is given;
+    None where nothing is there. A path through something that is no
+    directory is `_NotTheClone`."""
+    try:
+        return os.lstat(where, dir_fd=dir_fd)
+    except FileNotFoundError:
+        return None
+    except NotADirectoryError:
+        raise _NotTheClone(NOT_THE_CLONE) from None
+
+
+def _held_to(status: os.stat_result, identity: tuple) -> None:
+    """`_NotTheClone` where `status`, an `lstat`, is not the directory
+    `identity` names: a symlink never is."""
+    if not stat.S_ISDIR(status.st_mode) or _identity(status) != identity:
+        raise _NotTheClone(NOT_THE_CLONE)
+
+
+def _removed_if_still(parent: str, identity: tuple) -> None:
+    """`os.rmdir` of `source-readonly/`, made by this run, where it is still
+    that directory and empty; and silently not, as on main (#652)."""
+    above, name = os.path.split(parent)
+    with contextlib.suppress(OSError, _NotTheClone):
+        held = _opened_directory(above) if FD_REMOVAL else None
+        where = name if held is not None else parent
+        try:
+            status = _status_at(where, held)
+            if status is not None:
+                _held_to(status, identity)
+                os.rmdir(where, dir_fd=held)
+        finally:
+            if held is not None:
+                os.close(held)
+
+
+def _remove_through_a_descriptor(claim: _Claim) -> None:
+    """`_remove_a_tree` where `FD_REMOVAL` holds: `source-readonly/` opened
+    once, never through a symlink, and held to its identity; the clone's
+    directory asked and removed relative to that descriptor alone."""
+    parent, name = os.path.split(claim.made_at)
+    held = _opened_directory(parent)
+    if held is None:
+        return
+    try:
+        _held_to(os.fstat(held), claim.parent_identity)
+        status = _status_at(name, held)
+        if status is not None:
+            _held_to(status, claim.identity)
+            shutil.rmtree(name, dir_fd=held)
+    finally:
+        os.close(held)
+    if claim.made_parent:
+        _removed_if_still(parent, claim.parent_identity)
+
+
+def _remove_by_path(claim: _Claim) -> None:
+    """`_remove_a_tree` where no removal by descriptor is had: Python 3.9
+    and 3.10, and Windows. The same checks, each with `os.lstat`, then
+    `shutil.rmtree` of the path, with `_writable_then_removed`."""
+    parent = os.path.dirname(claim.made_at)
+    status = _status_at(parent, None)
+    if status is not None:
+        _held_to(status, claim.parent_identity)
+        status = _status_at(claim.made_at, None)
+    if status is not None:
+        _held_to(status, claim.identity)
+        shutil.rmtree(claim.made_at,
+                      **{REMOVAL_HANDLER: _writable_then_removed})
+    if claim.made_parent:
+        _removed_if_still(parent, claim.parent_identity)
+
+
+def _remove_a_tree(claim: _Claim) -> None:
+    """Remove the directory `claim` names, and `source-readonly/` where
+    this run made that too, each only where it is still the directory this
+    run made (#803). Nothing at the path any more is nothing to remove;
+    anything else there is `_NotTheClone`, and nothing is removed through
+    it.
+
+    ON MAIN THE REAL PATH WAS ASKED, AND THEN THE PATH REMOVED: a
+    `source-readonly` swapped for a symlink between the two removed the
+    directory of that name wherever the link led (#457's L1-99 (b)). Now
+    the identity of each directory, `st_dev` and `st_ino` read right after
+    this run's `mkdir`, is asked of what is there, never through a symlink.
+    Where `FD_REMOVAL` holds, the removal is relative to the descriptor of
+    the `source-readonly/` so asked, so no rename of `source-readonly/` or
+    above it after the check redirects it. Elsewhere it is by path, after
+    the same checks. Either way, only someone who can rename in the work
+    directory, in its `source-readonly/` or in a directory above them could
+    swap one, and `_work_root` and `_source_readonly_refusal` refuse all
+    three before anything is made there: but for group write, which is not
+    asked, and on Windows, where nothing is."""
+    if FD_REMOVAL:
+        _remove_through_a_descriptor(claim)
+    else:
+        _remove_by_path(claim)
+
+
+def _why_kept(claim: _Claim) -> str | None:
+    """Remove the clone `claim` names (`_remove_a_tree`), and say why it is
+    not removed, in the words its NOTE ends with; None where it is."""
+    now = os.path.realpath(claim.path)
+    if not _same_spelling(now, claim.made_at):
+        return (f"is not removed: that path now leads to {_spelled(now)}, so "
+                "nothing is removed through it")
+    try:
+        _remove_a_tree(claim)
+    except _NotTheClone as kept:
+        return f"is not removed: {kept}"
+    except OSError as exc:
+        return (f"is kept: removing it failed ({exc.strerror or exc}). Delete "
+                "it once nothing in it is needed")
+    return None
 
 
 def _leave_the_clones(args) -> None:
     """Remove each clone of a source this command made that no plan records
-    (#652), however the command ended: `args.clones`, which `Source.clone`
-    fills for `plan` and `check`, each with the real path it had when it was
-    made and whether this run made `source-readonly/` too.
+    (#652), however the command ended: `args.clones`, the `_Claim` of each
+    directory `Source.clone` made for `plan` and `check`.
 
     ON MAIN EACH STAYED, and nothing said so: the clone `check --source
     <org/repo>` made, the one `check` made again where the plan's was gone,
@@ -13683,40 +14706,35 @@ def _leave_the_clones(args) -> None:
     WHAT IS NEVER REMOVED. A clone that a written plan records: once `plan`
     has written it (`args.plan_written`), whatever ends the run after, its
     report cut short by a closed pipe or Ctrl-C included (#652's review,
-    F2). `check` does not list a clone it made again at the plan's own
-    `local_path` (`Plan._recorded_source`). `execute` lists none: under
-    `--local-remote-dir` its clone IS the assembly the split is pushed into,
-    and the deletion command `adopt-branch-exists` prints runs in it; the
-    work directory it made is named on its last line (`_leave_the_work_root`).
-    A path is listed only where it did not exist before this run, so nothing
-    a person or an earlier run put there is. And a path is removed only
-    where its real path is still the one it had when it was made, so
-    nothing outside that work directory's own `source-readonly/` is: not
-    through a symlink or a junction there before the run, and not through
-    one put there during it, at the work directory or below (F1).
+    F2). `check` does not list a clone it made at the plan's own
+    `local_path` (`Plan._recorded_source`,
+    `Plan._keep_the_clone_at_the_record`).
+    `execute` lists none: under `--local-remote-dir` its clone IS the
+    assembly the split is pushed into, and the deletion command
+    `adopt-branch-exists` prints runs in it; the work directory it made is
+    named on its last line (`_leave_the_work_root`). A directory is listed
+    only where this run's own `mkdir` made it (#803), so nothing a person,
+    an earlier run or another run put there is. And it is removed only
+    where its path still leads to it, compared as the platform compares
+    names (#803), and where it is still the directory this run made
+    (`_remove_a_tree`), so nothing outside the work directory's own
+    `source-readonly/` is: not through a symlink or a junction there
+    before the run, and not through one put there during it.
 
-    A CLONE THAT CANNOT BE REMOVED IS NAMED, in a NOTE on stderr, and kept.
-    Nothing here raises: an exception the command raised reaches the
-    caller as it was, and the exit is the command's (F4)."""
+    A CLONE NOT REMOVED IS NAMED, in a NOTE on stderr: one that cannot be
+    removed, which is kept, and since #803 one whose path no longer leads
+    to it, where on main the skip said nothing (#457's L1-99 (a)). Nothing
+    here raises: an exception the command raised reaches the caller as it
+    was, and the exit is the command's (F4)."""
     if getattr(args, "plan_written", False):
         return
-    for path, made_at, made_parent in getattr(args, "clones", None) or ():
-        if os.path.realpath(path) != made_at:
-            continue
-        try:
-            if os.path.isdir(made_at):
-                _remove_a_tree(Path(made_at))
-        except OSError as exc:
+    for claim in getattr(args, "clones", None) or ():
+        why = _why_kept(claim)
+        if why:
             _flush_stdout()
             with contextlib.suppress(OSError, UnicodeError):
-                print(f"NOTE the clone this run made, {_spelled(made_at)}, "
-                      f"is kept: removing it failed ({exc.strerror or exc}). "
-                      "Delete it once nothing in it is needed.",
-                      file=sys.stderr)
-            continue
-        if made_parent:
-            with contextlib.suppress(OSError):
-                os.rmdir(os.path.dirname(made_at))
+                print(f"NOTE the clone this run made, "
+                      f"{_spelled(claim.made_at)}, {why}.", file=sys.stderr)
 
 
 def _leave_the_work_root(args, succeeded: bool) -> None:
@@ -13812,22 +14830,33 @@ def _work_dir_help(does: str, refused: str, but: str = "") -> str:
     return (f"{does} Default: a new directory in the system temp folder, "
             "removed when the run ends if it holds no file. A --work-dir "
             "you give is made where it is missing, and nothing in it is "
-            f"removed{but}. {refused}")
+            f"removed{but}. {refused} {WORK_DIR_SHARED_HELP}")
+
+
+#: What `_work_root` refuses in all three commands, said in each one's
+#: `--work-dir` help (#803).
+WORK_DIR_SHARED_HELP = (
+    "Except on Windows, `adopt-work-dir-shared` refuses, before anything is "
+    "made, one that a user other than this one or root owns or every user "
+    "can write in without the sticky bit, one under such a directory, and "
+    "one whose `source-readonly` is one.")
 
 
 #: What a work directory that holds the clone's directory is refused as, in
 #: `plan`'s and `check`'s `--work-dir` help (#652).
-CLONE_TARGET_HELD = ("One that already holds `source-readonly/<repo>`, where "
-                     "a source is cloned, is refused as "
-                     "`adopt-work-dir-occupied`.")
+CLONE_TARGET_HELD = ("Where a source is cloned, one whose `source-readonly` "
+                     "is a file or a symlink, or holds `<repo>` already, even "
+                     "empty, is refused as `adopt-work-dir-occupied`.")
 #: `--source`'s help on `check` and `execute`: how the source is read with
-#: it and without it (#652).
+#: it and without it (#652), and a recorded path refused (#796).
 SOURCE_OVERRIDE_HELP = (
     "override the source the plan names, read as `plan --source` reads it. "
     "Without it, the plan's `source.local_path` is read; where that is a "
     "clone `plan` made (`source.cloned: true`) and is gone or no longer "
     "whole, its `source.repository` is cloned again, and any other "
-    "`local_path` that is gone is refused as `plan-source-gone`.")
+    "`local_path` that is gone is refused as `plan-source-gone`; one that "
+    "is a file, or a directory inside a repository, as "
+    "`source-not-top-level`.")
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -13846,7 +14875,14 @@ def main(argv: list[str] | None = None) -> int:
                            "too. `source-ambiguous` refuses a name that is "
                            "also a path here, as `acme/Atlas` is beside a "
                            "directory `acme/Atlas`: pass `./acme/Atlas` for "
-                           "the directory, or the url for the repository.")
+                           "the directory, or the url for the repository. "
+                           "The path is a repository's top-level directory "
+                           "(`git rev-parse --show-toplevel` prints it): "
+                           "`source-not-top-level` refuses a file, or a "
+                           "directory inside a repository. "
+                           "`source-unresolvable` refuses an empty value, "
+                           "and one that is neither a path that exists nor "
+                           "an `org/repo`.")
     plan.add_argument("--project", required=True,
                       help="the assembly-root name; for an in-place adoption "
                            "it is the source repository's own name")
@@ -13970,8 +15006,17 @@ def main(argv: list[str] | None = None) -> int:
                             "submodule url the plan keeps in a leg is "
                             "resolved from the bare repository `execute` "
                             "would create there, as that run resolves it, "
-                            "and not from GitHub's. Nothing is created "
-                            "there.")
+                            "and not from GitHub's, and `check` asks, as "
+                            "`execute` asks before it makes either leg, "
+                            "whether each leg's bare repository is already "
+                            "there and whether this directory can be made "
+                            "and written in. Nothing is created there. "
+                            "Without it, `check` asks GitHub with `gh repo "
+                            "view --json nameWithOwner` whether either "
+                            "leg's name exists (a name GitHub only "
+                            "redirects to a repository renamed or moved "
+                            "away does not), and a `gh` that cannot answer "
+                            "is a NOTE.")
     check.add_argument(
         "--work-dir", type=Path, default=None,
         help=_work_dir_help(
@@ -13991,7 +15036,12 @@ def main(argv: list[str] | None = None) -> int:
     execute.add_argument("--source", default=None, help=SOURCE_OVERRIDE_HELP)
     execute.add_argument("--local-remote-dir", type=Path, default=None,
                          help="create the legs as bare repositories here "
-                              "instead of calling `gh` (the TEST path)")
+                              "instead of calling `gh` (the TEST path). Both "
+                              "are asked about before either is made: one "
+                              "already there, or a directory that cannot be "
+                              "made and written in, is refused, as `gh repo "
+                              "view` finding either leg's name is without "
+                              "it.")
     execute.add_argument("--allow-empty-leg", action="append", default=[],
                          choices=EXTRACTED_LEGS,
                          help="proceed even though NO path is assigned to this "
