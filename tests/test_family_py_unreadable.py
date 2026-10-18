@@ -68,10 +68,11 @@ ZEROS = "0" * 40
 #: cure, and how one for any other cause does: the two never mix.
 CHMOD = "`chmod u+rx` on a directory"
 NO_CHMOD = "no `chmod` puts it right"
-#: How a rollback step that met a path it could not read ends, after the
-#: path and the reason: the cure for a permission (#955's round 1).
-STEP_CURE = ("make it readable by this user (`chmod u+r` on a file, `chmod "
-             "u+rx` on a directory and on every directory above it inside "
+#: How a rollback step the operating system refused ends, after the path
+#: and its reason: the cure for a permission, which names reading and
+#: writing both, since the step may have done either (#955's rounds 1 and 2).
+STEP_CURE = ("give this user access to it (`chmod u+rw` on a file, `chmod "
+             "u+rwx` on a directory and on every directory above it inside "
              "the holder)")
 
 
@@ -504,6 +505,49 @@ def test_a_store_this_user_cannot_read_is_refused_by_remove(
     assert facts(holder, env) == before
 
 
+@needs_a_mode
+@pytest.mark.parametrize("dry", [True, False], ids=["dry-run", "real"])
+def test_a_store_head_this_user_cannot_read_is_refused_by_remove(
+        dry, holder, offline, tmp_path):
+    """r955's NIT-R1 on #955: the store's `HEAD` at 000, in a store this
+    user may search. `stat` asks no read permission of the file, so
+    `remove` landed, exit 0, past a store its rollback could not read."""
+    env = isolated(offline, tmp_path)
+    before = facts(holder, env)
+
+    with made_unopenable(holder, f"{STORE}/HEAD"):
+        result = remove(holder, env, *(["--dry-run"] if dry else []))
+
+    assert result.returncode == 2, result.stdout + result.stderr
+    assert "Traceback" not in result.stderr
+    assert refusal_detail(result.stderr, "member-unreadable") == [
+        f"REFUSED member-unreadable: {STORE}/HEAD: cannot be read "
+        "(Permission denied)"]
+    assert facts(holder, env) == before
+
+
+@pytest.mark.parametrize("dry", [True, False], ids=["dry-run", "real"])
+def test_a_missing_mount_whose_store_is_refused_is_named_by_remove(
+        dry, holder, offline, tmp_path, monkeypatch, capsys):
+    """X2 in r955's re-check of #955: the store is asked whether the mount
+    is on disk or not. A mount that is gone, beside a store whose `HEAD`
+    is refused, is refused, not planned as "not on disk"."""
+    env = isolated(offline, tmp_path)
+    aside(holder / PATH, tmp_path)
+    before = facts(holder, env)
+    refused(monkeypatch, "HEAD")
+
+    code = in_process(family_module(), monkeypatch, env, [
+        "remove", "--family-root", str(holder), "--member", MEMBER,
+        *(["--dry-run"] if dry else [])])
+
+    err = capsys.readouterr().err
+    assert code == 2, err
+    assert refusal_detail(err, "member-unreadable") == STORE_REFUSED
+    monkeypatch.undo()
+    assert facts(holder, env) == before
+
+
 def test_a_member_whose_store_is_gone_is_still_planned_for_removal(
         holder, offline, tmp_path):
     """The control, `ENOENT`: a member whose store is gone is removed as
@@ -768,8 +812,8 @@ def test_a_rollback_step_that_cannot_read_names_the_path_and_the_cure(
     assert result.returncode == 2, result.stdout + result.stderr
     assert "Traceback" not in result.stderr
     sentence = result.stderr.splitlines()[-1]
-    assert (f" from the object store `git rm` keeps: {PATH}/.git: cannot be "
-            f"read (Permission denied); {STEP_CURE}") in sentence
+    assert (f" from the object store `git rm` keeps: {PATH}/.git: Permission "
+            f"denied; {STEP_CURE}") in sentence
     git("config", "--local", "--unset", "core.hooksPath", cwd=holder)
     typed_by_hand(holder, sentence)
     assert_back_on_main(holder, at)
@@ -838,8 +882,8 @@ def test_an_undo_meeting_a_file_where_a_folder_was_says_so(holder, tmp_path):
 
     said = rollback.undo()
 
-    assert (f"; NOT {SPARE_PATH} removed: {SPARE_PATH}: cannot be read (Not "
-            f"a directory); {NO_CHMOD}") in said
+    assert (f"; NOT {SPARE_PATH} removed: {SPARE_PATH}: Not a directory; "
+            f"{NO_CHMOD}") in said
     assert (holder / "members").read_bytes() == data
 
 
@@ -853,8 +897,8 @@ def test_an_undo_meeting_a_refused_stat_deletes_nothing(holder, monkeypatch):
 
     said = rollback.undo()
 
-    assert (f"; NOT {SPARE_PATH} removed: {SPARE_PATH}: cannot be read "
-            f"(Permission denied); {STEP_CURE}") in said
+    assert (f"; NOT {SPARE_PATH} removed: {SPARE_PATH}: Permission denied; "
+            f"{STEP_CURE}") in said
     monkeypatch.undo()
     assert (holder / SPARE_PATH).is_dir()
 
@@ -867,9 +911,41 @@ def test_an_undo_under_a_folder_this_user_cannot_search_says_so(holder):
     with made_unopenable(holder, "members"):
         said = rollback.undo()
 
-    assert (f"; NOT {SPARE_PATH} removed: {SPARE_PATH}: cannot be read "
-            f"(Permission denied); {STEP_CURE}") in said
+    assert (f"; NOT {SPARE_PATH} removed: {SPARE_PATH}: Permission denied; "
+            f"{STEP_CURE}") in said
     assert (holder / SPARE_PATH).is_dir()
+
+
+@needs_a_mode
+@pytest.mark.parametrize("folder", ["members", ".git/modules/members"],
+                         ids=["mount", "store"])
+def test_an_add_rollback_that_cannot_write_is_not_told_cannot_be_read(
+        folder, family, holder, offline, tmp_path):
+    """r955's SHOULD-R1 on #955: a `pre-commit` hook takes write away from
+    the folder above what `add` made, and refuses. The rollback's `rmdir`
+    failed, and the step said the path "cannot be read" and to "make it
+    readable". Now it gives the operating system's reason and a cure for
+    reading and writing both."""
+    env = isolated(offline, tmp_path)
+    above = holder / folder
+    made = above / SPARE
+    hook(holder, tmp_path, "pre-commit",
+         f"chmod 555 '{above.as_posix()}'\nexit 1\n")
+    try:
+        result = run(env, *add_argv(holder, family))
+    finally:
+        above.chmod(0o755)
+        if made.is_dir():
+            # `_rmtree` leaves a folder it could not remove at 0200 (r955's
+            # FYI on #955, from before it), which nothing could list.
+            made.chmod(0o755)
+
+    assert result.returncode == 2, result.stdout + result.stderr
+    assert "Traceback" not in result.stderr
+    shown = f"{folder}/{SPARE}"
+    assert (f"; NOT {shown} removed: {shown}: Permission denied; "
+            f"{STEP_CURE}") in result.stderr
+    assert "cannot be read" not in result.stderr
 
 
 # --- `bump`'s and `remove`'s rollback: what it records (:7198-:7446) ---------

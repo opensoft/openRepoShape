@@ -404,9 +404,11 @@ OTHER_REASON = (
     "is a file where a directory belongs, a link that loops, an I/O error), "
     + OTHER_CURE + ". ")
 #: The cure for a permission, as a clause, for a sentence that names a path
-#: and goes on: a rollback step that could not read one (#430).
+#: and goes on: a rollback step the operating system refused (#430). The
+#: step may have read the path or written it (an `rmdir` needs the folder
+#: above writable), so the cure gives both (r955's SHOULD-R1 on #955).
 PERMISSION_CURE = (
-    "make it readable by this user (`chmod u+r` on a file, `chmod u+rx` on a "
+    "give this user access to it (`chmod u+rw` on a file, `chmod u+rwx` on a "
     "directory and on every directory above it inside the holder)")
 RUN_AGAIN = "Then run the same command again."
 
@@ -467,14 +469,20 @@ def _member_unreadable(root: Path, path: Path, exc: OSError) -> Refusal:
 
 def _undo_reason(root: Path, exc: BaseException, asked: Path) -> str:
     """Why a rollback step failed, for the sentence that names what is left:
-    `_reason`, but for an `OSError` the path the operating system refused,
-    relative to the holder `root` (`asked` where it names none), its reason
-    and its cure (#430). A step that met `Permission denied` and said only
-    that left the person to find which path, and the commands typed after
-    it failed until the mode was given back."""
+    `_reason`, but for an `OSError` `<path>: <reason>; <cure>`, the path the
+    operating system refused, relative to the holder `root` (`asked` where
+    it names none), its reason and its cure (#430). A step that met
+    `Permission denied` and said only that left the person to find which
+    path, and the commands typed after it failed until the mode was given
+    back.
+
+    NOT "CANNOT BE READ" (r955's SHOULD-R1 on #955): a step reads and
+    writes, and what failed may be the write (`rmdir`, `unlink`, `mkdir`), so
+    the line gives the operating system's reason as it is, and the cure for
+    a permission names reading and writing both."""
     if isinstance(exc, OSError):
-        return (_cannot_read(_named_in(root, _refused(exc, asked)), exc)
-                + "; " + _cure(exc))
+        return (f"{_named_in(root, _refused(exc, asked))}: "
+                f"{_os_reason(exc)}; " + _cure(exc))
     return _reason(exc)
 
 
@@ -9685,7 +9693,13 @@ def _checked_mount_readable(root: Path, path: str) -> bool:
     rollback after its first write said no store held the checkout and it
     came back only from its remote. Its `HEAD` is asked, as `_is_a` asks: a
     store that is gone (`ENOENT`) is the member #365 removes as it always
-    has, and one that cannot be read is refused, named.
+    has, and one that cannot be read is refused, named. The store is asked
+    whether the mount is on disk or not.
+
+    A `HEAD` THIS USER MAY NOT READ, in a store it may search, is refused
+    too (r955's NIT-R1 on #955), named: `stat` asks no read permission of
+    the file, so `remove` landed, exit 0, past a store that `git submodule
+    update`, the rollback's way back, cannot read. `os.access` asks it.
     """
     mount = root / path
     try:
@@ -9699,10 +9713,14 @@ def _checked_mount_readable(root: Path, path: str) -> bool:
         raise _member_unreadable(root, _refused(exc, mount), exc) from exc
     found = _store_git_uses(root, path)
     if found is not None:
+        head = found[1] / "HEAD"
         try:
-            _is_a(found[1] / "HEAD", stat.S_ISREG)
+            there = _is_a(head, stat.S_ISREG)
         except OSError as exc:
             raise _member_unreadable(root, found[1], exc) from exc
+        if there and not os.access(head, os.R_OK):
+            raise _member_unreadable(root, head, PermissionError(
+                errno.EACCES, os.strerror(errno.EACCES), str(head)))
     return on_disk
 
 
