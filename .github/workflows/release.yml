@@ -126,7 +126,9 @@ name: release
 #   install   on ubuntu, macOS and Windows, and on Python 3.9: pipx installs
 #             TestPyPI's file, taken by the recorded digest, with its one
 #             dependency from PyPI and never from TestPyPI, and the commands
-#             it placed are run.
+#             it placed are run: the doctor among them, over an empty
+#             repository and over a root `scaffold-project` makes on the
+#             disk, where every child it starts under -S must report (#894).
 #   pypi      uploads the same bytes to PyPI, in the `pypi` environment,
 #             which waits for Brett Heap's approval after the install check,
 #             then requires PyPI to serve exactly the recorded digest.
@@ -1071,7 +1073,20 @@ jobs:
       # (exit 2), and the machine row must find the git-filter-repo pipx put
       # in the package's environment, through the PATH the package gives
       # its children.
-      - name: openRepoShape --doctor over an empty repository finds git-filter-repo in its machine row
+      #
+      # AND ITS PREFLIGHT CHILD MUST HAVE RUN ITS CHECKS (#894). The doctor
+      # starts every child as `python -S` (#342, #636), and the machine
+      # row's child is `setup-project.py --preflight`. Its exit and its
+      # `[ok]`/`[!!]`/`[??]` lines are the row's `detail.exit` and
+      # `detail.report`, printed here whatever they are. A child that cannot
+      # start under -S on this system exits 1 and reports no line, and 1 is
+      # also the exit of a runner with no `gh` login, so the exit alone
+      # shows nothing. The report must hold the closing line the preflight
+      # prints for the exit it chose: `[ok] this machine is ready.` for 0,
+      # `[!!] this machine is not ready yet (see above).` for 1. That holds
+      # whatever `gh` can do on this runner, and fails for a child that died
+      # on an import or stopped part way through its checks.
+      - name: openRepoShape --doctor over an empty repository finds git-filter-repo in its machine row, whose preflight child ran its checks
         run: |
           cd "$RUNNER_TEMP"
           git init -q "$RUNNER_TEMP/empty"
@@ -1085,16 +1100,82 @@ jobs:
           python - doctor.json <<'PY'
           import json, os, pathlib, sys
 
+          #: The preflight's closing line for each exit it chooses
+          #: (`setup-project.py`'s `preflight_only`).
+          closing = {0: "[ok] this machine is ready.",
+                     1: "[!!] this machine is not ready yet (see above)."}
           venv = pathlib.Path(os.environ["PIPX_HOME"]) / "venvs" / "openreposhape"
           scripts = venv / ("Scripts" if os.name == "nt" else "bin")
           with open(sys.argv[1], encoding="utf-8") as handle:
               report = json.load(handle)
           [machine] = [row for row in report["rows"] if row["id"] == "machine"]
-          found = (machine.get("detail") or {}).get("git-filter-repo")
+          detail = machine.get("detail") or {}
+          found, code = detail.get("git-filter-repo"), detail.get("exit")
+          lines = detail.get("report") or []
           print(f"verdict {report['verdict']}; machine row: git-filter-repo at {found}")
+          print(f"its preflight child, started under -S, exited {code} and reported "
+                f"{len(lines)} line(s):")
+          for line in lines:
+              print(f"    {line}")
+          problems = []
           if not found or not os.path.samefile(os.path.dirname(found), scripts):
-              sys.exit(f"::error::the doctor's machine row found git-filter-repo at {found!r}, "
-                       f"not in the package's environment, {scripts}")
+              problems.append(f"the doctor's machine row found git-filter-repo at {found!r}, "
+                              f"not in the package's environment, {scripts}")
+          if not lines:
+              problems.append("the machine row's preflight child reported no [ok], [!!] or [??] "
+                              "line: it did not start under -S on this system, or died before "
+                              f"its first check ({machine['reason']})")
+          elif closing.get(code) not in lines:
+              problems.append(f"the machine row's preflight child exited {code!r}, and its report "
+                              f"does not hold {closing.get(code, 'a closing line: it exits 0 or 1')!r}: "
+                              "it stopped part way through its checks")
+          for problem in problems:
+              print(f"::error::{problem}")
+          sys.exit(1 if problems else 0)
+          PY
+
+      # A SHAPE ROOT, AND ITS VALIDATORS UNDER -S (#894). The empty
+      # repository above is no shape root: the doctor ran the naming script
+      # there, and none of a project's validators. `scaffold-project
+      # --local-remote-dir` makes a root with the commands pipx placed, from
+      # the clone the step above made: three bare repositories on this disk
+      # and the root's working tree, with no network, no `gh` and no token.
+      # The doctor over that root starts the naming script and the root's
+      # own `validate-manifest.py` and `validate-pins.py`, each as `python
+      # -S`, and every row that ran a child must have reached a verdict of
+      # its own: none may read "crashed before reaching a verdict", the
+      # doctor's words for a child that ended non-zero with no FINDING or
+      # REFUSED line of its own. Every such row is printed, and the verdict;
+      # whether the root is compliant is not this step's question.
+      - name: openRepoShape --doctor over a scaffolded root, where every child it starts under -S reaches a verdict
+        run: |
+          cd "$RUNNER_TEMP"
+          scaffold-project --org releasecheck --project Sample \
+              --elected-by "the release install check" \
+              --local-remote-dir "$RUNNER_TEMP/remotes" --work-dir "$RUNNER_TEMP/work"
+          status=0
+          openRepoShape --doctor "$RUNNER_TEMP/work/Sample" --json > root.json || status=$?
+          echo "openRepoShape --doctor over the scaffolded root exited $status"
+          python - root.json <<'PY'
+          import json, sys
+
+          #: The rows a project root answers by a child: the naming script,
+          #: and the root's own two validators.
+          wanted, crashed = {"naming", "manifest", "pins"}, "crashed before reaching a verdict"
+          with open(sys.argv[1], encoding="utf-8") as handle:
+              report = json.load(handle)
+          children = {row["id"]: row for row in report["rows"] if row["id"] != "machine"
+                      and isinstance((row.get("detail") or {}).get("exit"), int)}
+          print(f"verdict {report['verdict']}; the rows that ran a child under -S:")
+          for name, row in children.items():
+              print(f"    {name}: {row['status']}, exit {row['detail']['exit']}: {row['reason']}")
+          problems = [f"the doctor ran no child for its {name} row over the scaffolded root"
+                      for name in sorted(wanted - set(children))]
+          problems += [f"the {name} row: {row['reason']}" for name, row in children.items()
+                       if row["detail"].get("crashed") or crashed in row["reason"]]
+          for problem in problems:
+              print(f"::error::{problem}")
+          sys.exit(1 if problems else 0)
           PY
 
       # GIT ITSELF FINDS IT TOO: `git filter-repo`, which adopt runs, with
