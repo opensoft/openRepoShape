@@ -58,6 +58,8 @@ from conftest import (STEP_FOUR_WORDS,
 from conftest import (REF_PARTS, assert_a_copy_answers_as_git_does,
                       assert_the_refusal_states_the_ref_rule)
 
+from test_openreposhape_command import fake_github
+
 SETUP = REPO / "setup.sh"
 DEGRADE_LINE = "authority is not wallet-carried in this org"
 
@@ -934,11 +936,13 @@ def test_the_shim_takes_a_shape_ref_as_git_does_before_any_clone(
     goes on to `git clone` and fails there, offline and at once: it has
     taken the ref when it printed `(0) self-bootstrap`. A ref it refuses
     prints neither that nor a `git clone` line, exits 2 with the rule it
-    applied, and leaves nothing in `$TMPDIR`.
+    applied, and leaves nothing in `$TMPDIR`. A `gh` and a `curl` that log
+    and fail stand first on `$PATH`, and neither is called.
     """
     outside = make_outside_checkout(tmp_path)
     temporary = tmp_path / "tmp"
     temporary.mkdir()
+    network = tmp_path / "network.log"
     result = run_bare_setup(outside / "setup.sh",
                             "--org", "demoorg", "--project", "Sample", "--yes",
                             "--shape-ref", name,
@@ -946,7 +950,10 @@ def test_the_shim_takes_a_shape_ref_as_git_does_before_any_clone(
                             cwd=outside,
                             extra_env={"OPENREPOSHAPE_REPO":
                                        str(tmp_path / "no-standard-here"),
-                                       "TMPDIR": str(temporary)})
+                                       "TMPDIR": str(temporary),
+                                       **fake_github(tmp_path, (),
+                                                     log=network)})
+    assert not network.exists(), network.read_text(encoding="utf-8")
     took = "(0) self-bootstrap" in result.stdout
     assert_a_copy_answers_as_git_does("setup.sh", name, takes, took)
     assert list(temporary.iterdir()) == [], "a shape checkout was left behind"
