@@ -70,7 +70,8 @@ from conftest import (CHAIN_LINK_TREES, DRIVE_WAY_OUT, WRITE_IT,
                       assert_an_empty_pin_source_is_the_plans_to_refuse)
 
 from conftest import (STEP_FOUR_WORDS, load_without_bytecode,
-                      assert_step_four_speaks_in_the_plans_words)
+                      assert_step_four_speaks_in_the_plans_words,
+                      clear_ambient_pin_sources)
 
 sys.path.insert(0, str(REPO / "scripts"))
 import shape_materialize  # noqa: E402
@@ -2383,7 +2384,9 @@ def test_a_dry_run_is_read_as_the_scaffold_reads_one(passthrough, dry):
     # ...as the scaffold's `Path` reads it: a value that starts with `-` is
     # not given as the next word (argparse reads it as a flag), and is kept
     # after an `=`. A value `PRODUCT=PATH` would be read as keyed by the
-    # naming check where the scaffold reads one path, so it is spelled `./`.
+    # naming check where the scaffold reads one path; joined to the
+    # standard's checkout it has a separator before its first `=`, which no
+    # link's name holds, so it is one path to the naming check too (#907).
     (["--referent-chain", "openXdox,openDox", "--pin-source", "--wat"],
      ["--referent-chain=openXdox,openDox"]),
     (["--referent-chain", "openXdox,openDox", "--pin-source"],
@@ -2392,11 +2395,11 @@ def test_a_dry_run_is_read_as_the_scaffold_reads_one(passthrough, dry):
      ["--referent-chain=openXdox,openDox", "--link-source=-odd"]),
     (["--referent-chain", "openXdox,openDox", "--pin-source",
       "openXdox=layer"],
-     ["--referent-chain=openXdox,openDox", "--link-source=./openXdox=layer"]),
+     ["--referent-chain=openXdox,openDox", "--link-source=openXdox=layer"]),
     (["--referent-chain", "openXdox,openDox", "--pin-source", "a/b=c"],
      ["--referent-chain=openXdox,openDox", "--link-source=a/b=c"]),
     # ...and where `=` follows a Windows separator or a drive, the text before
-    # it cannot be a link's name, so nothing is added: `[^/\\:=]` holds each.
+    # it cannot be a link's name either.
     (["--referent-chain", "openXdox,openDox", "--pin-source", "a\\b=c"],
      ["--referent-chain=openXdox,openDox", "--link-source=a\\b=c"]),
     (["--referent-chain", "openXdox,openDox", "--pin-source", "C:x=y"],
@@ -2452,8 +2455,20 @@ def test_the_declarations_are_read_as_the_scaffold_reads_them(passthrough,
                                                               declared):
     """#538: each `--pin`'s product, at its last `/` and before `@`; the
     last `--referent-chain`, in any spelling the scaffold takes for it; and
-    nothing from a flag that only shares a prefix with one of them."""
-    assert entry_point_module().naming_declarations(passthrough) == declared
+    nothing from a flag that only shares a prefix with one of them. A
+    `--link-source` in the table is the `--pin-source` as typed, and goes
+    as the plan names it (`as_named_by_the_plan`)."""
+    assert entry_point_module().naming_declarations(
+        passthrough, REPO) == as_named_by_the_plan(declared)
+
+
+def as_named_by_the_plan(declared: list) -> list:
+    """`declared` with each `--link-source=<path>` as step (4) passes it
+    since #907 (U171): joined to the standard's checkout, the folder the
+    scaffold runs in, and resolved, as step (5) names it."""
+    return [("--link-source=%s" % Path(REPO, arg.partition("=")[2]).resolve()
+             if arg.startswith("--link-source=") else arg)
+            for arg in declared]
 
 
 @pytest.mark.parametrize("passthrough,flag,values", [
@@ -2949,7 +2964,8 @@ def test_each_holder_is_given_the_plans_words(passthrough, spoken):
     check `--pin-source` is the flag and what each holder is offered."""
     module = entry_point_module()
     assert module.naming_declarations(
-        passthrough, shape_materialize.scaffold_link_remedies) == spoken
+        passthrough, REPO, shape_materialize.scaffold_link_remedies
+    ) == as_named_by_the_plan(spoken)
 
 
 def test_step_four_and_the_plan_share_one_set_of_words():
@@ -2967,3 +2983,86 @@ def test_step_four_and_the_plan_share_one_set_of_words():
 def test_step_four_speaks_in_the_plans_words(tmp_path, monkeypatch, case):
     assert_step_four_speaks_in_the_plans_words(run_entry, tmp_path,
                                                monkeypatch, case)
+
+
+# --- #907 (U061, U169): step (4) reads no checkout beside the standard ------
+
+#: What step (4) runs, out of this checkout: the naming check, the library
+#: it imports and the policy it finds beside itself.
+NAMING_CHECK_FILES = ("scripts/validate-repository-naming.py",
+                      "scripts/repo_shape.py",
+                      "contracts/repository-naming.yaml")
+
+
+def declaring(tree: Path, pin: str) -> Path:
+    """`tree`, a chain link's checkout as the naming check reads one: a
+    `project.yaml` that declares a pin on `pin`."""
+    tree.mkdir(parents=True)
+    (tree / "project.yaml").write_bytes(
+        ("schema_version: 1\nkind: project-manifest\n"
+         f"neutral_product_pins:\n  - {pin}\n").encode("utf-8"))
+    return tree
+
+
+def test_step_four_reads_no_checkout_beside_the_standard(tmp_path,
+                                                         monkeypatch, capfd):
+    """The issue's own row: a standard whose parent folder holds `openXdox/`
+    declaring `openDox`, and a `--pin-source` declaring `openYdox`, with the
+    chain `openXdox,openYdox,openDox`. Step (5) reads no checkout beside
+    anything, so it reads the `--pin-source` tree for `openXdox` and the
+    name is a descendant through the chain. On main step (4) ran the naming
+    check from the standard's checkout, which read `openXdox/` beside it
+    first: the `--pin-source` tree was "not used" and the chain broken,
+    exit 1. It runs from an empty folder now, inside a temporary folder
+    holding nothing else, and the temporary folders are made in that same
+    parent, so a run from an empty folder with the parent beside it would
+    read `openXdox/` too. Both are gone when the check is done."""
+    clear_ambient_pin_sources(monkeypatch)
+    module = entry_point_module()
+    parent = tmp_path / "parent"
+    standard = parent / "standard"
+    for name in NAMING_CHECK_FILES:
+        (standard / name).parent.mkdir(parents=True, exist_ok=True)
+        shutil.copyfile(REPO / name, standard / name)
+    declaring(parent / "openXdox", "openDox")
+    source = declaring(tmp_path / "source", "openYdox")
+    monkeypatch.setattr(tempfile, "tempdir", str(parent))
+    declared = module.naming_declarations(
+        ["--pin", f"openXdox@{A_COMMIT}",
+         "--referent-chain", "openXdox,openYdox,openDox",
+         "--pin-source", str(source)],
+        standard, shape_materialize.scaffold_link_remedies)
+    module.check_names(standard, "codexDox", "", declared)
+    said = capfd.readouterr()
+    heard = said.out + said.err
+    assert "codexDox: domain-descendant" in said.out, heard
+    assert ("CHAIN openXdox → openYdox → openDox   "
+            "[declared-unverified]") in said.out, heard
+    assert "broken" not in heard, heard
+    assert "NOTE" not in heard, heard
+    assert sorted(entry.name for entry in parent.iterdir()) == [
+        "openXdox", "standard"]
+
+
+def test_step_four_without_an_empty_folder_is_refused_with_the_way_on(
+        monkeypatch):
+    """No empty folder can be made for the naming check to run from: a
+    refusal naming the system's reason and the way on, before anything
+    exists, and no naming check is run. Not a traceback."""
+    module = entry_point_module()
+    runs = _Runs()
+    monkeypatch.setattr(module, "run", runs)
+
+    def no_folder(*_args, **_kwargs):
+        raise PermissionError(errno.EACCES, "Permission denied")
+
+    monkeypatch.setattr(module.tempfile, "TemporaryDirectory", no_folder)
+    with pytest.raises(module.Refusal) as refused:
+        module.check_names(REPO, "Sample")
+    assert refused.value.code == 2
+    assert str(refused.value) == (
+        "the naming check runs from an empty folder, and none could be made "
+        "in the temporary folder (Permission denied), so nothing was "
+        "created. Point TMPDIR (TEMP on Windows) at a folder you can write "
+        "in, then run this again.")
+    assert runs.calls == [], f"something was run: {runs.calls}"

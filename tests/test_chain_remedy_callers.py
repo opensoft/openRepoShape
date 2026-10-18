@@ -16,6 +16,11 @@ own sources, and how the naming gate spells what it prints (#661).
     `tests/conftest.py` (`assert_step_four_speaks_in_the_plans_words`).
   * L2-69. The gate named `--link-source` values and paths raw, so an ESC
     reached the terminal. One row per print, each with an ESC.
+  * #907. `--link-remedy` split its value at the first `=`, so a link
+    holding one lost its words to a link no chain names (U170); it kept the
+    blanks around its words, and a remedy no holder used was dropped with
+    no NOTE (U173). And no row gave a labelled run a KEYED `--link-source`,
+    so naming that by the label too passed every row (U174).
 
 No network and no GitHub.
 """
@@ -208,6 +213,7 @@ def test_the_gate_offers_each_holder_the_callers_words(tmp_path, monkeypatch):
         UNREACHED.format(holder="openYdox", held="openInk",
                          offer="LATER would do")]
     assert "--link-source" not in result.stderr
+    assert "NOTE" not in result.stderr, result.stderr
 
 
 def test_a_holder_given_no_words_keeps_the_gates_own(tmp_path, monkeypatch):
@@ -282,6 +288,126 @@ def test_an_unused_labelled_source_is_noted_by_its_label(tmp_path,
             "(SHAPE_PIN_SOURCE_<PRODUCT>, or a checkout beside the project)."
             "\n") in result.stderr, result.stderr
     assert "--link-source" not in result.stderr
+
+
+def test_a_labelled_run_names_a_keyed_source_by_its_own_flag(tmp_path,
+                                                             monkeypatch):
+    """#907, U174: the label names the bare PATH and nothing else. A keyed
+    value is the person's own `--link-source <link>=PATH`, so it is named
+    `(--link-source openXdox=...)` under a label too. Every labelled row
+    above passes a bare value, so naming a keyed one `(--pin-source)`, a
+    flag nobody typed for it, passed them all."""
+    clear_ambient_pin_sources(monkeypatch)
+    missing = tmp_path / "missing"
+    result = naming(tmp_path, *THREE, "--link-source-label=--pin-source",
+                    "--link-source", f"openXdox={missing}", "codexInk")
+    assert (f"WARNING link-source-unreadable: {missing} (--link-source "
+            "openXdox=...) could not answer for openXdox: no such file or "
+            "directory\n") in result.stderr, result.stderr
+    assert "(--pin-source)" not in result.stderr, result.stderr
+
+
+# --- #907: --link-remedy reads its link as --link-source reads a key --------
+
+#: A chain whose middle link holds `=`, as setup's step (4) hands one over
+#: (U170). Step (5) refuses it as `chain-link-malformed`; the gate asks no
+#: link's form.
+EQUALS = ("--pins", "openXdox", "--referent-chain", "openXdox,open=y,openInk")
+
+
+@pytest.mark.parametrize("chain, remedy, holder, held, words", [
+    pytest.param(EQUALS, "open=y=OURS for y", "open=y", "openInk",
+                 "OURS for y", id="a-link-holding-an-equals"),
+    pytest.param(EQUALS, "OPEN=Y=OURS for y", "open=y", "openInk",
+                 "OURS for y", id="in-capitals"),
+    pytest.param(THREE, "openXdox=a=b", "openXdox", "openYdox", "a=b",
+                 id="words-holding-an-equals"),
+])
+def test_a_remedys_link_is_the_one_a_chain_names(tmp_path, monkeypatch, chain,
+                                                 remedy, holder, held, words):
+    """U170: the link ends at the first `=` that leaves a link of a chain
+    here before it, and the rest is the words, `=` and all. Split at the
+    first `=`, `open=y=OURS for y` was the words `y=OURS for y` for a link
+    `open` that no chain names, and `open=y` was offered the gate's own
+    `--link-source open=y=<path>`, a flag setup does not take."""
+    clear_ambient_pin_sources(monkeypatch)
+    result = naming(tmp_path, *chain, "--link-remedy", remedy, "codexInk")
+    assert result.returncode == 0, result.stderr
+    assert UNREACHED.format(holder=holder, held=held, offer=words) in (
+        gate_warnings(result)), result.stderr
+    assert f"--link-source {holder}=" not in result.stderr, result.stderr
+    assert "NOTE" not in result.stderr, result.stderr
+
+
+def test_a_remedys_words_are_stripped(tmp_path, monkeypatch):
+    """U173: the words are offered without the blanks around them, as the
+    link is read without its own. `openXdox= padded ` offered
+    `( padded )`."""
+    clear_ambient_pin_sources(monkeypatch)
+    result = naming(tmp_path, *THREE, "--link-remedy", "openXdox= padded ",
+                    "codexInk")
+    assert gate_warnings(result)[0] == UNREACHED.format(
+        holder="openXdox", held="openYdox", offer="padded"), result.stderr
+
+
+@pytest.mark.parametrize("args, why", [
+    pytest.param((*THREE, "--link-remedy", "openNope=words", "codexInk"),
+                 "`openNope` is not a link of a referent chain here (links: "
+                 "openXdox, openYdox, openInk)", id="a-link-no-chain-names"),
+    pytest.param((*THREE, "--link-remedy", "openNope=words",
+                  "--link-source-label=--pin-source", "codexInk"),
+                 None, id="under-a-label"),
+    pytest.param((*THREE, "--link-remedy", "openInk=words", "codexInk"),
+                 "no name classified here reads openInk's own declaration",
+                 id="the-last-link"),
+    pytest.param((*THREE, "--link-remedy", "openXdox=words", "Atlas"),
+                 "no name classified here reads openXdox's own declaration",
+                 id="a-holder-no-name-reads"),
+    pytest.param(("--link-remedy", "openXdox=words", "codexInk"),
+                 "no name classified here records a referent chain",
+                 id="no-chain"),
+])
+def test_a_remedy_no_holder_used_is_noted(tmp_path, monkeypatch, args, why):
+    """U173: a `--link-remedy` no holder's lookup asked for is a NOTE, as a
+    `--link-source` no link used is, named as typed, with why. Under a
+    label it is not: a caller's remedies are its own words (setup's step
+    (4) passes one per holder), and the NOTE would name `--link-remedy`, a
+    flag the person never typed. On main each was dropped without a word."""
+    clear_ambient_pin_sources(monkeypatch)
+    result = naming(tmp_path, *args)
+    noted = [line for line in result.stderr.splitlines()
+             if line.startswith("NOTE --link-remedy ")]
+    remedy = args[args.index("--link-remedy") + 1]
+    assert noted == ([] if why is None else [
+        f"NOTE --link-remedy {remedy}: not used — {why}."]), result.stderr
+
+
+def test_a_remedy_a_later_one_replaced_is_noted(tmp_path, monkeypatch):
+    """The last value for a link wins, found by `pin_product_key`, and the
+    one it replaced is a NOTE saying so, as a replaced `--link-source` is."""
+    clear_ambient_pin_sources(monkeypatch)
+    result = naming(tmp_path, *THREE, "--link-remedy", "openXdox=A",
+                    "--link-remedy", "OPENXDOX=B", "codexInk")
+    assert gate_warnings(result)[0] == UNREACHED.format(
+        holder="openXdox", held="openYdox", offer="B"), result.stderr
+    assert [line for line in result.stderr.splitlines()
+            if line.startswith("NOTE ")] == [
+        "NOTE --link-remedy openXdox=A: not used — the later `--link-remedy "
+        "OPENXDOX=B` replaced it."], result.stderr
+
+
+def test_a_remedy_for_a_holder_whose_tree_answered_is_not_noted(tmp_path,
+                                                                monkeypatch):
+    """A holder that was asked used its words, whether its tree answered or
+    not: the words are offered only where it did not, which is the disk's
+    answer and not a mistake in the value."""
+    clear_ambient_pin_sources(monkeypatch)
+    first = tree(tmp_path / "trees" / "openXdox", "openYdox")
+    result = naming(tmp_path, *THREE, "--link-source", f"openXdox={first}",
+                    "--link-remedy", "openXdox=words", "codexInk")
+    assert result.returncode == 0, result.stderr
+    assert "words" not in result.stderr, result.stderr
+    assert "NOTE" not in result.stderr, result.stderr
 
 
 # --- L2-69: every --link-source value and path the gate prints is spelled ---
@@ -379,6 +505,21 @@ def test_an_unused_link_source_and_its_replacement_are_spelled(tmp_path,
             f"{shown_path(name)}` replaced it.") in result.stderr
     assert (f"NOTE --link-source {shown_path(name)}: not used — no name "
             "classified here records a referent chain.") in result.stderr
+
+
+@CONTROL_ARGV
+@pytest.mark.parametrize("name", CONTROL_NAMES)
+def test_an_unused_remedy_and_its_link_are_spelled(tmp_path, monkeypatch,
+                                                   name):
+    """`_unused_remedy_lines` (#907): the value as typed, and the text read
+    as its link, which no chain names."""
+    clear_ambient_pin_sources(monkeypatch)
+    result = naming(tmp_path, *THREE, "--link-remedy", f"{name}=words",
+                    "codexInk")
+    assert_clean(result)
+    assert (f"NOTE --link-remedy {shown_path(name + '=words')}: not used — "
+            f"`{shown_path(name.strip())}` is not a link of a referent chain "
+            "here") in result.stderr, result.stderr
 
 
 def test_a_printable_value_is_named_as_typed(tmp_path):
