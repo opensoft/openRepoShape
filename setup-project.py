@@ -177,7 +177,9 @@ Set $OPENREPOSHAPE_REPO to clone a fork or mirror in self-bootstrap mode
 instead of opensoft/openRepoShape.
 
 Anything after `--` is passed straight through to scaffold-project.py. A
-`--dry-run` there ends this run at the plan, creating nothing.
+`--dry-run` there ends this run at the plan, creating nothing, and makes
+none of the preflight's offers: a run without it, or --preflight, makes
+them.
 """
 
 
@@ -333,7 +335,8 @@ NAME_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9 ._'()&,+@-]{0,254}$")
 
 #: What a git REF may contain, conservatively: `--shape-ref` becomes
 #: `git checkout <ref>` in the temporary checkout. `git check-ref-format` is
-#: the authority; this is the subset of it that a person types.
+#: the authority; this is the subset of its characters that a person types,
+#: and `why_not_a_ref` asks the rest of its rule of a value that passes here.
 REF_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._/-]{0,254}$")
 
 #: What a PATH may contain: whatever the filesystem it names accepts - a drive
@@ -377,6 +380,16 @@ WHY_RANGE = ("It holds `..`, which git reads as a revision range and not as "
              "a ref.")
 WHY_LOCK = ("It ends in `.lock`, the name git gives the lock file it writes "
             "beside a ref.")
+#: The rest of git's rule for a ref, which is asked of each part between
+#: slashes and not of the whole alone (#857).
+WHY_LOCK_PART = ("A part of it before a `/` ends in `.lock`, the name git "
+                 "gives the lock file it writes beside a ref, and git takes "
+                 "no ref with such a part.")
+WHY_DOT_PART = ("A part of it after a `/` starts with `.`, and git takes no "
+                "ref with such a part.")
+WHY_EMPTY_PART = ("It holds `//` or ends in `/`, and git takes no ref with an "
+                  "empty part between slashes.")
+WHY_DOT_END = "It ends in `.`, and git takes no ref that does."
 
 #: What each pattern asks, in words and then as the pattern itself, as the
 #: sibling `repo_shape.checked_value` prints its own. `PATH_RE` has no row: it
@@ -474,19 +487,49 @@ def checked_project_length(what: str, name: str, local_mode: bool) -> str:
            PROJECT_NAME_MAX))
 
 
+def why_not_a_ref(text: str) -> str:
+    """The reason `git check-ref-format` refuses `text`, a value `REF_RE` has
+    passed, or "" when it takes it.
+
+    GIT'S RULE IS PER PART (#857). Each part between slashes is there (no
+    `//`, no `/` at the end), does not start with `.` and does not end in
+    `.lock`, and the whole holds no `..` and does not end in `.`. Only `..`
+    and a `.lock` at the very end were asked before, so `a.lock/b`, `a/.b`,
+    `a//b`, `a/b/` and `a.` passed, and in self-bootstrap mode the person met
+    git's own `pathspec ... did not match` after the standard was cloned.
+    A `/` or a `.` as the first character is `REF_RE`'s to refuse. The checks
+    run in this order, so the sentence names the first one the value failed.
+    """
+    parts = text.split("/")
+    if ".." in text:
+        return WHY_RANGE
+    if "" in parts:
+        return WHY_EMPTY_PART
+    if any(part.startswith(".") for part in parts):
+        return WHY_DOT_PART
+    if text.endswith(".lock"):
+        return WHY_LOCK
+    if any(part.endswith(".lock") for part in parts):
+        return WHY_LOCK_PART
+    if text.endswith("."):
+        return WHY_DOT_END
+    return ""
+
+
 def checked_ref(flag: str, value: str) -> str:
     """`--shape-ref`: narrower than a name, because git reads more into one.
 
-    `..` is a revision RANGE rather than a ref, and a ref ending in `.lock` is
-    the name git gives the lock file it writes beside one - neither is a thing
-    to check out, and both are refused here rather than discovered as a
-    confusing failure inside the temporary checkout.
+    `..` is a revision RANGE rather than a ref, a part ending in `.lock` is
+    the name git gives the lock file it writes beside one, and git takes no
+    ref with an empty part, a part that starts with `.`, or a `.` at its end
+    (`why_not_a_ref`) - none is a thing to check out, and each is refused
+    here rather than discovered as a confusing failure inside the temporary
+    checkout.
     """
     text = checked_value(flag, value, REF_RE)
-    if ".." in text:
-        refuse_value(flag, text, WHY_RANGE)
-    if text.endswith(".lock"):
-        refuse_value(flag, text, WHY_LOCK)
+    why = why_not_a_ref(text)
+    if why:
+        refuse_value(flag, text, why)
     return text
 
 
@@ -937,7 +980,12 @@ def run_command_text(text: str) -> int:
     return run_at_the_terminal(argv).returncode
 
 
-def offer(command_text: str) -> bool:
+#: What the terminal is told where a dry run makes no offer (#857).
+NOT_OFFERED = ("      not offered: --dry-run was passed through. A run without "
+               "it offers this here, and so does --preflight.")
+
+
+def offer(command_text: str, offering: bool = True) -> bool:
     """Show one install command and take exactly one typed `yes` for it.
 
     THE SIGNATURE IS THE GUARANTEE, not the care of whoever edits this next:
@@ -948,16 +996,26 @@ def offer(command_text: str) -> bool:
     AGENTS.md says the same thing to an assistant driving this: the human
     types this one.
 
-    NO TERMINAL, NO OFFER. `can_ask()` is the only gate, exactly as in
+    NO TERMINAL, NO OFFER. `can_ask()` is the gate, exactly as in
     `plan_and_confirm`: the person's terminal, which is stdin or, when a pipe
     is, the controlling terminal (#492). A run with neither, scheduled or in
     an assistant's shell, prints what it printed before any of this existed
     and stops where it stopped.
 
+    A DRY RUN, NO OFFER EITHER (#857). `offering` is False in a run passed
+    `--dry-run` after `--` (`preflight`), which ends at the plan saying
+    nothing was created: a `yes` typed here would still have installed
+    software, signed gh in, or written the person's global git config
+    (`gh auth setup-git`). The terminal is told the offer was not made, and
+    asked nothing. A bool, never `Options`, for the reason above.
+
     The `yes` is EXACT and the prompt is the one this file already asks:
     `y`, `Yes`, an empty line and EOF are all refusals.
     """
     if not can_ask():
+        return False
+    if not offering:
+        say(NOT_OFFERED)
         return False
     say("")
     if "\n" in command_text:
@@ -973,8 +1031,9 @@ def offer(command_text: str) -> bool:
 
 
 def offer_install(tool: str, command_text: str, probe,
-                  platform: str = "") -> bool:
+                  platform: str = "", offering: bool = True) -> bool:
     """One offer, one run, ONE re-check. True when the check now passes.
+    `offering` is `offer`'s (#857).
 
     Never a loop: a person told twice that the thing is still missing is
     watching this program guess, and the second guess is no better than the
@@ -993,7 +1052,7 @@ def offer_install(tool: str, command_text: str, probe,
       the next one.
     """
     platform = platform or sys.platform
-    if not offer(command_text):
+    if not offer(command_text, offering):
         return False
     if run_command_text(command_text) != 0:
         return False
@@ -1015,19 +1074,20 @@ def offer_install(tool: str, command_text: str, probe,
     return False
 
 
-def offer_missing(tool: str, probe) -> bool:
+def offer_missing(tool: str, probe, offering: bool = True) -> bool:
     """The offer a failed check makes: look this platform's command up, and
-    make no offer at all when there is none."""
+    make no offer at all when there is none. `offering` is `offer`'s."""
     command = offer_for(tool, sys.platform)
     if command is None:
         return False
-    return offer_install(tool, command, probe, sys.platform)
+    return offer_install(tool, command, probe, sys.platform, offering)
 
 
-def _check_git() -> bool:
+def _check_git(offering: bool = True) -> bool:
     if not shutil.which("git"):
         bad(GIT_MISSING)
-        if not offer_missing("git", lambda: bool(shutil.which("git"))):
+        if not offer_missing("git", lambda: bool(shutil.which("git")),
+                             offering):
             return False
     ok("git %s" % program_version(["git", "--version"], 2))
     return True
@@ -1080,7 +1140,7 @@ def _gh_login_suffix() -> str:
     return ""
 
 
-def _check_gh(opts: Options) -> bool:
+def _check_gh(opts: Options, offering: bool = True) -> bool:
     if opts.local_mode:
         ok("gh not required (--local-remote-dir: bare repositories on disk, "
            "no network)")
@@ -1097,18 +1157,19 @@ def _check_gh(opts: Options) -> bool:
             # command that follows it, and that is where we stop.
             say("      Homebrew installs it with `brew install gh`, and is "
                 "its own install: https://brew.sh")
-        if not offer_missing("gh", lambda: bool(shutil.which("gh"))):
+        if not offer_missing("gh", lambda: bool(shutil.which("gh")),
+                             offering):
             return False
     ok("gh %s" % program_version(["gh", "--version"], 2))
     if run(["gh", "auth", "status"], capture=True).returncode != 0:
         bad("gh is not authenticated. Run: gh auth login")
-        if not _offer_login():
+        if not _offer_login(offering):
             return False
     ok("gh is authenticated%s" % _gh_login_suffix())
     return True
 
 
-def _offer_login() -> bool:
+def _offer_login(offering: bool = True) -> bool:
     """`gh auth login`, offered and then run as a PLAIN ARGV.
 
     Never through a shell: it is a terminal UI that ends in a browser and
@@ -1117,8 +1178,9 @@ def _offer_login() -> bool:
     what its prompts and its one-time code need, and what the gate on the
     offer has already guaranteed is there. The browser half is the human's;
     this starts the login and asks `gh auth status` once when gh comes back.
+    `offering` is `offer`'s (#857).
     """
-    if not offer("gh auth login"):
+    if not offer("gh auth login", offering):
         return False
     if run_at_the_terminal(["gh", "auth", "login"]).returncode != 0:
         return False
@@ -1144,7 +1206,7 @@ def _credential_helper_configured() -> bool:
     return False
 
 
-def _check_credential_helper(opts: Options) -> None:
+def _check_credential_helper(opts: Options, offering: bool = True) -> None:
     """WARN, DO NOT REFUSE - the class `_warn_autocrlf` belongs to.
 
     The scaffold clones and pushes over HTTPS (`clone_and_bootstrap`), so a
@@ -1164,6 +1226,10 @@ def _check_credential_helper(opts: Options) -> None:
     `--preflight`: a warning that refuses is a refusal, and this one would
     refuse a machine whose remotes are SSH and whose HTTPS push this tool
     never makes.
+
+    A DRY RUN STILL WARNS AND OFFERS NOTHING (#857): `offering` is `offer`'s.
+    A `yes` here makes gh write its helper into the person's global git
+    config, which is no part of a run that ends at the plan.
     """
     if opts.local_mode:
         return
@@ -1171,7 +1237,7 @@ def _check_credential_helper(opts: Options) -> None:
         return
     warn("git has no credential helper for github.com, so the first push "
          "over HTTPS will fail. Fix it once: gh auth setup-git")
-    if not offer("gh auth setup-git"):
+    if not offer("gh auth setup-git", offering):
         return
     if run_at_the_terminal(["gh", "auth", "setup-git"]).returncode != 0:
         return
@@ -1208,13 +1274,14 @@ def _warn_autocrlf() -> None:
          "git config --global core.autocrlf false")
 
 
-def preflight_checks(opts: Options) -> bool:
+def preflight_checks(opts: Options, offering: bool = True) -> bool:
     """Every check, in order, and whether they all passed.
 
     SPLIT OUT OF `preflight` FOR `--preflight` (#59, renamed 2026-09-10), which runs exactly this
     and then reports instead of refusing. The scaffold path is unchanged: the
     refusal is still one refusal, still at the end, still naming everything
-    that was missing.
+    that was missing. `offering` False (`preflight`, #857) runs every check
+    and makes none of the offers.
     """
     say("openRepoShape setup")
     say("")
@@ -1223,20 +1290,29 @@ def preflight_checks(opts: Options) -> bool:
     # is told about git AND gh in one go rather than one missing thing per
     # re-run, which is what the original `failed = True` accumulator bought.
     # The list is complete before `all` reads it, so nothing short-circuits.
-    checked = [_check_git(), _check_python(), _check_bootstrap()]
+    checked = [_check_git(offering), _check_python(), _check_bootstrap()]
     # THE CREDENTIAL HELPER IS ASKED ABOUT ONLY WHEN gh IS READY. With no gh,
     # or no login, there is nothing to set up as a helper yet and the person
     # has already been told the thing that has to happen first.
-    gh_ready = _check_gh(opts)
+    gh_ready = _check_gh(opts, offering)
     checked.append(gh_ready)
     if gh_ready:
-        _check_credential_helper(opts)
+        _check_credential_helper(opts, offering)
     _warn_autocrlf()
     return all(checked)
 
 
 def preflight(opts: Options) -> None:
-    if not preflight_checks(opts):
+    """The scaffold run's preflight, refusing once if anything is missing.
+
+    A `--dry-run` PASSED THROUGH AFTER `--` MAKES NONE OF ITS OFFERS (#857).
+    That run ends at the plan, and its help and its last line say nothing was
+    created, so it reports what is missing and asks nothing that would change
+    this machine. `--preflight` (`preflight_only`) makes every offer whatever
+    follows `--`: it is the run that exists for them (#59), and it returns
+    before anything that reads the passthrough.
+    """
+    if not preflight_checks(opts, not passes_a_dry_run(opts.passthrough)):
         die(PREREQ_MISSING)
 
 
@@ -2152,7 +2228,8 @@ def passes_a_dry_run(passthrough: list) -> bool:
 
     The scaffold then creates nothing in step (6), and step (7) cloned three
     repositories that did not exist and refused saying they WERE created.
-    `plan_and_confirm` ends the run at the plan instead.
+    `plan_and_confirm` ends the run at the plan instead, and `preflight`
+    makes none of its offers in it (#857).
     """
     return any(names_flag(word, "--dry-run")
                for word in scaffold_words(passthrough))
@@ -2410,9 +2487,13 @@ def plan_and_confirm(opts: Options, shape_root: Path, org: str,
     say("clone into   %s" % clone)
 
     if passes_a_dry_run(opts.passthrough):
+        # AND THE PREFLIGHT CHANGED NOTHING EITHER (#857): `preflight` made
+        # none of its offers, and named each one where it would have asked.
         say("")
         say("--dry-run was passed through to the scaffold, so this run ends "
-            "at the plan above: nothing was created and nothing was cloned.")
+            "at the plan above: nothing was created and nothing was cloned. "
+            "The preflight made none of its offers; a run without --dry-run "
+            "makes each one marked `not offered` above.")
         return False
     if opts.assume_yes:
         return True
