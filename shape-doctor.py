@@ -24,7 +24,10 @@ ONE FLAG WRITES AT ALL, and it writes one file the caller named and nothing
 else: `--placement-plan <file>`, below. The upstream a project's copies are
 compared against is THE CHECKOUT THIS FILE IS RUN FROM, which is the whole of
 why the verdict is offline: no clone, no authenticated call, and the same
-answer on a machine that has never spoken to github.com. It runs the project's
+answer on a machine that has never spoken to github.com. A partial clone
+(`git clone --filter`) fetches what it lacks on a read, so it is asked first,
+without fetching, whether it holds what the comparison reads, and the verdict
+is CANNOT ANSWER where it does not (#683). It runs the project's
 own validators OFFLINE: `run_validator` starts each child with no token, no
 `gh` configuration and a proxy that goes nowhere (#297), so they are offline
 whatever their own contract says. ONE ROW IS THE EXCEPTION AND IT IS NAMED:
@@ -312,10 +315,10 @@ EXIT CODES
     3  usage or environment -- nothing here is a statement about the tree
        that was pointed at: no such root, this file is not sitting in a
        checkout of the standard, or THIS CHECKOUT cannot answer (a pin
-       naming a commit it does not carry; a validator of its own that
-       crashed or cannot be given its `PYTHONPATH`, its template copy or its
-       naming script, #278, #410; or its own naming policy not loading,
-       #678)
+       naming a commit it does not carry; a partial clone lacking what the
+       comparison reads, #683; a validator of its own that crashed or
+       cannot be given its `PYTHONPATH`, its template copy or its naming
+       script, #278, #410; or its own naming policy not loading, #678)
 
 THE VERDICT NAMES THE MOST SPECIFIC FINDING; THE TABLE NAMES EVERY ONE. Drift
 outranks a red validator on that line for one concrete reason: an edited shape
@@ -330,9 +333,14 @@ line. An unfinished merge outranks all three, for the reason drift outranks a
 red validator: the conflict it leaves is what turns the other rows red, and
 none of their fixes can be committed until it is finished.
 
-STANDARD LIBRARY ONLY, like everything else shipped here. Printed text is
-ASCII: a verdict a cp1252 console cannot render is a verdict nobody reads, and
-this tool is run on every platform the standard supports.
+STANDARD LIBRARY ONLY, like everything else shipped here. The report's own
+words are ASCII: a verdict a cp1252 console cannot render is a verdict nobody
+reads, and this tool is run on every platform the standard supports. A NAME
+is not the report's own words (#785): a path printed in a command is spelled
+so that the reader's shell turns it back into that path, as itself where the
+output can show it and escaped where it cannot (`quote_arg`), and a sentence
+shows it as itself where the output can and with `?` where it cannot
+(`ascii_text`).
 """
 
 from __future__ import annotations
@@ -417,7 +425,8 @@ try:
     #: reason, in place of a copy of `plan`'s regex (`origin_org`, #521).
     #: `spelled` is how `siblings.py` prints the values that row quotes (#673).
     from repo_shape import (  # noqa: E402
-        COMMIT_RE, NamingPolicy, PYTHON, Refusal, accepts_role, git_out,
+        COMMIT_RE, NamingPolicy, POWERSHELL_SINGLE_QUOTES, PYTHON,
+        Refusal, accepts_role, git_out,
         load_yaml, recorded_gitlink, redacted, remote_local_path,
         resolved_remote, same_repository, spelled, url_repository,
     )
@@ -659,20 +668,93 @@ EVERYWHERE = (
 )
 
 
-def ascii_text(text: str) -> str:
-    """`text` with the typography this repository is written in flattened.
+#: The typography this repository's prose is written in, and the ASCII
+#: `ascii_text` spells each one with. `quote_arg` never prints one of them as
+#: itself in a value (#785): `Row.__init__` passes every command and every
+#: `why` through `ascii_text`, which would make the value another path.
+FLATTENED = {"—": "--", "–": "-", "‘": "'", "’": "'", "“": '"', "”": '"',
+             "…": "...", "\N{NO-BREAK SPACE}": " "}
+
+
+#: The encoding the report is written for where that is not stdout's: UTF-8
+#: for `--json`, which `main` sets (#785, review S2 on PR #792). `json.dumps`
+#: writes ASCII whatever stdout's encoding is, and every character as an
+#: escape its reader decodes, so a JSON reader gets each character a UTF-8
+#: name holds as itself -- under `LC_ALL=C` and a `PYTHONIOENCODING=cp1252`
+#: pipe as under a UTF-8 terminal. None for the table, which IS stdout.
+REPORT_ENCODING: str | None = None
+
+
+def printed_encoding(encoding: str | None = None) -> str:
+    """`encoding`, or the one the report is written for: `REPORT_ENCODING`
+    where `main` set one, else `sys.stdout`'s, which `pythonw` and a stream
+    a caller replaced may not have (#785)."""
+    return (encoding or REPORT_ENCODING
+            or getattr(sys.stdout, "encoding", None) or "utf-8")
+
+
+def prints_as_itself(char: str, encoding: str) -> bool:
+    """Whether a report written in `encoding` shows `char` as itself (#785):
+    a printable character that `ascii_text` does not flatten, and that the
+    encoding writes and reads back unchanged.
+
+    PRINTABLE, because a control, a line separator or a bidirectional mark
+    is not seen as itself on any terminal: it moves the line it is printed
+    on, and a reader cannot copy what they cannot see. And not U+FFFD, the
+    mark a lossy read leaves where a byte did not decode, which a row has
+    printed as `?` since #385: it stands for no character a path holds."""
+    if (char in FLATTENED or char == "\N{REPLACEMENT CHARACTER}"
+            or not char.isprintable()):
+        return False
+    try:
+        return char.encode(encoding).decode(encoding) == char
+    except (UnicodeError, LookupError):
+        return False
+
+
+def ascii_text(text: str, encoding: str | None = None) -> str:
+    """`text` with the typography this repository is written in flattened,
+    and each character the report cannot show as itself replaced by `?`.
 
     Validator output is quoted into rows, and this repository's prose is full
     of em dashes, curly quotes and ellipses. A Windows console in the machine's
-    ANSI code page raises on the first of them, in the middle of a report whose
+    ANSI code page raised on the first of them, in the middle of a report whose
     whole job is to be read -- so the few characters that actually occur are
-    spelled out and anything else is replaced rather than raised on.
+    spelled out in ASCII on every console.
+
+    ANY OTHER CHARACTER IS REPLACED ONLY WHERE IT CANNOT BE SHOWN (#785). It
+    was replaced on every console, so `é` was `?` under a UTF-8 locale, whose
+    terminal shows it, and so was every character of a path `quote_arg` had
+    quoted for a command: a keep line named `caf?`, which is not there. Now a
+    character is kept where `prints_as_itself` says `encoding` (the report's
+    own when None, `printed_encoding`) shows it, and is `?` elsewhere, as
+    every one was: an ASCII console still reads an ASCII report, and a UTF-8
+    one reads the name. A value `quote_arg` spelled holds no character this
+    changes, so this pass leaves it whole.
     """
-    for source, target in (("—", "--"), ("–", "-"), ("‘", "'"),
-                           ("’", "'"), ("“", '"'), ("”", '"'),
-                           ("…", "..."), (" ", " ")):
+    for source, target in FLATTENED.items():
         text = text.replace(source, target)
-    return text.encode("ascii", "replace").decode("ascii")
+    encoding = printed_encoding(encoding)
+    return "".join(char if char.isascii() or prints_as_itself(char, encoding)
+                   else "?" for char in text)
+
+
+def path_bytes(char: str) -> bytes:
+    """The bytes one character of a path stands for on a POSIX disk (#785).
+
+    A byte of a name that is not in the encoding it was read with is carried
+    by `surrogateescape` as U+DC80..U+DCFF, how `os.fsdecode` reads a path
+    and how this file reads one git prints, and stands for that byte. Any
+    other character is in the filesystem encoding, which is how Python names
+    a path on disk, or in UTF-8 where that encoding has no such character,
+    which is how git wrote a name it printed (`LC_ALL=C` with Python's
+    UTF-8 mode off makes the filesystem encoding ASCII)."""
+    if 0xDC80 <= ord(char) <= 0xDCFF:
+        return bytes([ord(char) - 0xDC00])
+    try:
+        return char.encode(sys.getfilesystemencoding())
+    except UnicodeEncodeError:
+        return char.encode("utf-8", "surrogatepass")
 
 
 #: A value `sh` needs no quoting for: letters, digits, and the punctuation a
@@ -700,7 +782,7 @@ UNQUOTED_NT = re.compile(r"^[A-Za-z0-9_./:%+=\\-]+$")
 
 
 def quote_arg(value, platform: str | None = None, *,
-              always: bool = False) -> str:
+              always: bool = False, encoding: str | None = None) -> str:
     # A RAW docstring, because the Windows examples below are Windows paths:
     # `C:\Users\...` is a `\U` escape to the interpreter, and a docstring that
     # had to spell a reader's path with doubled backslashes would be a
@@ -757,20 +839,41 @@ def quote_arg(value, platform: str | None = None, *,
     become an argument to `git`, where every command is a list run with
     `shell=False` and the threat is argument injection, not a shell.
 
-    AND IT NORMALIZES BEFORE IT QUOTES, NOT AFTER. `Row.__init__` runs
-    `ascii_text` again, over the WHOLE assembled `next_command`, once every
-    value in it already sits quoted -- so a curly apostrophe that reached
-    this function unconverted came out the far side of THAT pass as a bare,
-    undoubled one, breaking the very quoting it sat inside (Copilot, PR
-    #102): `'O'Neill'` is an unterminated quotation to `sh`, and an
-    un-doubled apostrophe is exactly as broken to PowerShell's own verbatim
-    string. Normalizing HERE first leaves that later pass nothing to touch:
-    `ascii_text` maps this repository's own typography to ASCII, so calling
-    it twice on an already-ASCII string is a no-op. What the reader then sees
-    is the ASCII FLATTENING of their path rather than its own bytes -- which
-    is this file's PURE ASCII rule, stated at the top and true of every other
-    string in the report, and a command that names a path plainly and is
-    refused by name beats one no shell will parse.
+    A VALUE THAT IS NOT ASCII IS SPELLED AS THE PATH IT IS (#785). It was
+    flattened to ASCII first (Copilot, PR #102), because `Row.__init__`
+    runs `ascii_text` again over the whole assembled command, and a curly
+    apostrophe that pass found came out of it bare, breaking the quoting it
+    sat in. But the flattening named another path: every character that is
+    not ASCII became `?`, so a keep line under `Projets/Équipe` named
+    `Projets/?quipe`, which is not there, and the pasted line failed. Now
+    each character of such a value is one of two things:
+
+    - ITSELF, inside the quoting above, where `prints_as_itself` says the
+      report shows it: printable, not one of the typography `ascii_text`
+      flattens, and written by `encoding` (the report's own when None,
+      `printed_encoding`) -- for `sh`, as the very bytes the path holds
+      (`path_bytes`), so that what a terminal shows is what it pastes back;
+    - ESCAPED otherwise, and then the whole value is spelled that way. For
+      `sh` that is `$'...'`, every byte of such a character a three-digit
+      octal escape (`$'caf\303\251'`, `$'caf\351'` for a name that is not
+      UTF-8), which bash, zsh, ksh and a POSIX.1-2024 `sh` turn back into
+      those bytes; dash 0.5.12 (Ubuntu's `/bin/sh`, whose login shell is
+      bash) reads the `$` as itself. For PowerShell, which has no escape
+      inside a verbatim string, it is an expression in parentheses,
+      `('C:\Users\' + [char]0x00C9 + 'quipe')`, which is one argument to a
+      native command and a value to assign alike (`powershell_expression`).
+      On Windows that is rare: Python writes a console as UTF-8, which shows
+      every printable character, and only a stdout redirected to a file or a
+      pipe is in the ANSI code page.
+
+    So `ascii_text`'s later pass finds nothing in a value to change. The
+    report's encoding is stdout's for the table, and UTF-8 for `--json`,
+    whatever stdout's is (`REPORT_ENCODING`, review S2 on PR #792): a JSON
+    reader decodes each `\u` escape `json.dumps` writes into the character
+    it stands for, so a row's `next` holds a UTF-8 name as itself, and only
+    a byte that is not UTF-8, or a character `prints_as_itself` refuses, is
+    escaped there. The table escapes what its own encoding cannot write. A
+    value made of ASCII is quoted exactly as before, in both.
 
     AND THE ALPHABET CHECK MUST COVER THE VALUE WHOLE. `$` is content to
     match just before a trailing newline, so `.match` alone waved a value
@@ -803,10 +906,11 @@ def quote_arg(value, platform: str | None = None, *,
     answer. PowerShell's dialect is NOT changed: it expands no `=word`, so
     `UNQUOTED_NT` keeps its bare `=`, as in any other place in a word.
     """
-    # ASCII first, so the alphabet check and the quoting below it both see
-    # what `Row.__init__` will (Copilot, PR #102); see the docstring above.
-    text = ascii_text(str(value))
+    text = str(value)
     windows = (os.name if platform is None else platform) == "nt"
+    if not text.isascii():
+        # Never bare: neither alphabet holds a character that is not ASCII.
+        return quoted_beyond_ascii(text, windows, printed_encoding(encoding))
     # `.fullmatch`, not `.match`: a pattern ending in `$` still matches just
     # before a trailing newline, so `.match` alone would call "Atlas\n" bare
     # (Copilot, PR #102). And a leading `=` is never bare for `sh` (#532).
@@ -822,6 +926,94 @@ def quote_arg(value, platform: str | None = None, *,
     # report can see through, and both come back out of `shlex.split` as the
     # value that went in -- which is what `tests/test_shape_doctor.py` asserts.
     return "'" + text.replace("'", "'\\''") + "'"
+
+
+def quoted_beyond_ascii(text: str, windows: bool, encoding: str) -> str:
+    """`quote_arg` for a value holding a character that is not ASCII (#785):
+    quoted as any other value where every such character `prints_as_itself`
+    -- for `sh`, as the bytes the path holds -- and escaped whole where one
+    does not. See `quote_arg`'s docstring.
+
+    ON POSIX A NAME IS READ AS UTF-8 FIRST (review S2 on PR #792). Under
+    `LC_ALL=C` with Python's UTF-8 mode off the filesystem encoding is
+    ASCII, so `os.fsdecode` carries each byte of `é` as a `surrogateescape`
+    byte of its own, and a report in UTF-8 -- `--json` -- could not show
+    it. Those bytes are read again as UTF-8, which joins each run that
+    spells a character into that character and leaves every other byte as
+    it was. A value that holds a surrogate `surrogateescape` never makes
+    (outside U+DC80..U+DCFF) cannot be written back to bytes like that, and
+    is left as it is: such a character is not printable, so it is escaped.
+
+    AND THE JOINED NAME IS KEPT ONLY WHERE IT NAMES THE SAME BYTES (review
+    M1 on PR #792, round 2). `path_bytes` writes a joined character in the
+    filesystem encoding, which is ASCII or UTF-8 under `C` and gives the
+    bytes back; but under a legacy multibyte one -- EUC-JP, Big5, EUC-KR --
+    a directory named `日` in UTF-8 (`\\xe6\\x97\\xa5`) is read in as three
+    escaped bytes, and the joined `日` is written `\\xc6\\xfc` in EUC-JP:
+    another directory. So the join is checked byte for byte against the
+    value as it was read, and the escaped bytes stay where it differs."""
+    if not windows:
+        try:
+            joined = text.encode("utf-8", "surrogateescape").decode(
+                "utf-8", "surrogateescape")
+        except UnicodeEncodeError:
+            joined = text
+        if (b"".join(map(path_bytes, joined))
+                == b"".join(map(path_bytes, text))):
+            text = joined
+
+    def shown(char: str) -> bool:
+        if char.isascii():
+            return True
+        if not prints_as_itself(char, encoding):
+            return False
+        return windows or char.encode(encoding) == path_bytes(char)
+    if all(shown(char) for char in text):
+        if windows:
+            return powershell_verbatim(text)
+        return "'" + text.replace("'", "'\\''") + "'"
+    if windows:
+        return powershell_expression(text, shown)
+    return "$'" + "".join(
+        char if char.isascii() and char.isprintable() and char not in "\\'"
+        else "".join(f"\\{byte:03o}" for byte in path_bytes(char))
+        for char in text) + "'"
+
+
+def powershell_verbatim(text: str) -> str:
+    """`text` in PowerShell's verbatim string, each of the single quotes
+    PowerShell reads as one doubled, as `repo_shape.shell_quoted` doubles
+    them: the curly ones end the string too (#486)."""
+    return "'" + "".join(char * 2 if char in POWERSHELL_SINGLE_QUOTES
+                         else char for char in text) + "'"
+
+
+def powershell_expression(text: str, shown) -> str:
+    """`text` as a PowerShell expression, `('...' + [char]0x00C9 + '...')`,
+    where a character of it is not `shown` (#785).
+
+    Each such character is a `[char]` of each of its UTF-16 code units, and
+    the characters between them are verbatim strings, joined by `+`. The
+    FIRST operand is always a string -- `''` where the value starts with an
+    escaped character -- because `+` on two `[char]`s adds them as numbers,
+    and a string on the left makes every `+` after it a concatenation. A
+    printable ASCII character is always shown; a control is escaped too, as
+    it is in `sh`'s `$'...'`."""
+    parts, run = [], ""
+    for char in text:
+        if char.isprintable() and shown(char):
+            run += char
+            continue
+        if run or not parts:
+            parts.append(powershell_verbatim(run))
+            run = ""
+        units = char.encode("utf-16-le", "surrogatepass")
+        for at in range(0, len(units), 2):
+            unit = int.from_bytes(units[at:at + 2], "little")
+            parts.append(f"[char]0x{unit:04X}")
+    if run:
+        parts.append(powershell_verbatim(run))
+    return "(" + " + ".join(parts) + ")"
 
 
 # ---------------------------------------------------------------------------
@@ -850,9 +1042,10 @@ class Row:
         self.label = label
         self.status = status
         self.reason = ascii_text(reason)
-        # `quote_arg` ascii-normalizes every value it quotes BEFORE it
-        # quotes it (Copilot, PR #102), so this pass has nothing left to do
-        # to a `next_command` already built from it -- it only does its
+        # `quote_arg` spells every value it quotes in characters this pass
+        # keeps -- each one itself only where `ascii_text` keeps it, and the
+        # value escaped otherwise (#785) -- so this pass has nothing to do
+        # to a value in a `next_command` or a `why`. It only does its
         # ordinary job, flattening this repository's own typography, on the
         # literal words a caller wrote around those values.
         self.next_command = ascii_text(next_command) if next_command else None
@@ -1335,6 +1528,23 @@ def head_holds(root: Path, relative: str) -> bool:
     return kind == "blob"
 
 
+def restore_from_head(root: Path, relative: str,
+                      platform: str | None = None) -> str:
+    """The line that puts `relative` back as the root's HEAD holds it:
+    `git -C <root> checkout HEAD -- <relative>`, spelled for the READER'S
+    shell (#298, #697).
+
+    ONE SPELLING FOR EVERY ROW THAT RESTORES THE FILE `head_holds` has
+    asked about: the unloaded-manifest row and an own-copy validator row
+    that crashed on the same loss print the same line, and `platform` is
+    passed on to `quote_arg` as `bump_leg_command`'s is, so both dialects
+    are asserted from either host.
+    """
+    target = os.name if platform is None else platform
+    return (f"git -C {quote_arg(root, target)} checkout HEAD -- "
+            f"{quote_arg(relative, target)}")
+
+
 #: The four variables `gh` reads a token from, which no validator's child
 #: keeps (#297).
 GH_TOKEN_VARIABLES = ("GH_TOKEN", "GITHUB_TOKEN", "GH_ENTERPRISE_TOKEN",
@@ -1614,6 +1824,14 @@ def run_validator(ctx: Context, script: Path, args: list[str],
     gate can import in CI either. ONE RULE FOR EVERY CHILD, as the `env`
     block is: the flag does not ask which script it starts.
 
+    THAT IS TRUE OF AN UNEDITED COPY ONLY. A root whose own copy of a
+    validator gained an `import yaml` read `passes` here while `site` was on,
+    wherever the doctor's interpreter could import it, and now reads
+    `crashed before reaching a verdict (exit 1): ModuleNotFoundError: No
+    module named 'yaml'`, which is the crash its own CI gets, because
+    `validate.yml` installs nothing. That row is a fair answer for that root,
+    and `-S` stays as it is: it does not ask whether a copy was edited.
+
     WHICH AGREEMENT THE ROW KEEPS (#306, #342): the row reports the
     project's own GATE as CI runs it, with no inherited `PYTHONPATH` and no
     `site`; it does not predict what a pasted line prints in the reader's
@@ -1623,6 +1841,9 @@ def run_validator(ctx: Context, script: Path, args: list[str],
     where the row says FINDING. That is their variable and their
     site-packages, and the gate has neither: the row is about the gate, and
     the line it prints is the project's own command, with no `-S` in it.
+    WHERE THE CRASH IS THE ROOT'S LOST `scripts/repo_shape.py` THE LINE IS
+    THE CURE INSTEAD, because that is the one crash the reader's own
+    environment can hide (#697): `lost_repo_shape_cure`.
 
     AND NO CHILD REACHES A NETWORK UNLESS ITS CALLER SAYS SO (#297). A
     project that pins a neutral product has a `validate-pins.py` that, with
@@ -1788,6 +2009,48 @@ def validator_command(shape: Path, used: Path, own_copy: bool, args: list,
     return f"env PYTHONPATH={quote_arg(scripts, target)} {command}"
 
 
+def lost_repo_shape_cure(ctx: Context, own: str, lost: Path,
+                         rerun: str) -> tuple[str | None, str]:
+    """`(the NEXT, the why)` for a root's own validator `own` that crashed
+    because `lost`, the `repo_shape.py` it imports from beside itself, is not
+    there, where `rerun` is the line that runs `own` (#697).
+
+    THE NEXT IS THE CURE, NOT THE VALIDATOR. The row used to print `rerun`,
+    and a reader whose own `PYTHONPATH`, or a `.pth` in whose site-packages,
+    reaches another `repo_shape` ran it and saw a pass, or a different
+    finding, under a row that said the gate crashed: the doctor starts every
+    child with no inherited `PYTHONPATH` and no `site` (#306, #342), and a
+    pasted line has neither guard. `-E -S` on the line would have stopped
+    both routes and was declined: the line stays the project's own command.
+    So the NEXT is the one command that puts the file back, the line the
+    unloaded-manifest row prints for the same loss (`restore_from_head`,
+    #298), and `rerun` is the why's, to run once the file is back.
+
+    NO NEXT WHERE HEAD DOES NOT HOLD THE FILE (`head_holds`): a deletion
+    already committed is not in HEAD, so the line could not restore it, and
+    the gate would only crash again. The why says so, where the file comes
+    back from, and the gate to run after.
+
+    THE CONDITION IS THE ROW'S REASON'S -- the file is not beside the root's
+    own copy (`imports_repo_shape`) -- and it is asked of the root's own copy
+    only: the standard's template copy has none beside it by design.
+    """
+    relative = lost.relative_to(ctx.root).as_posix()
+    then = (f"run `{rerun}` again once the file is back; before that, a "
+            "reader whose own PYTHONPATH or site-packages reaches another "
+            "repo_shape sees it run on that one, which says nothing about "
+            "this root's own copy")
+    if head_holds(ctx.root, relative):
+        return (restore_from_head(ctx.root, relative),
+                f"it puts back the {relative} HEAD holds, the copy this "
+                f"project committed and {own} imports, where update-shape.py "
+                f"apply would copy a newer one. Then {then}")
+    return None, (f"HEAD does not hold {relative}, so no git checkout HEAD "
+                  f"puts it back and {own} would only crash again: a "
+                  "deletion already committed comes back from the parent of "
+                  f"the commit that made it. Then {then}")
+
+
 def validator_row(ctx: Context, check_id: str, label: str, own: str,
                   template: str, args: list[str], *,
                   output: list[str] | None = None) -> Row:
@@ -1814,7 +2077,11 @@ def validator_row(ctx: Context, check_id: str, label: str, own: str,
     imports (`imports_repo_shape`). The TEMPLATE copy
     crashing is this checkout's failure and not the project's: it carries
     `detail.environment`, so the verdict is CANNOT ANSWER, exit 3. Either
-    way the NEXT is the validator's own line, which shows where it stopped.
+    way the NEXT is the validator's own line, which shows where it stopped
+    -- EXCEPT where the root's own copy crashed for want of that
+    `repo_shape.py` (#697): its NEXT is `git checkout HEAD` on the file, or
+    none where HEAD does not hold it, and the validator's line is the why's
+    (`lost_repo_shape_cure`).
 
     AND A TEMPLATE THIS CHECKOUT CANNOT GIVE ITS `PYTHONPATH` IS NOT RUN
     (#278): `pythonpath_unnamable` says why, the row is an environment row
@@ -1879,18 +2146,21 @@ def validator_row(ctx: Context, check_id: str, label: str, own: str,
         detail["crashed"] = True
         reason = f"{which} crashed before reaching a verdict (exit {code}): " \
             f"{crash}"
+        command = validator_command(ctx.shape, used, own_copy, args)
+        why = CRASH_WHY
         if not imports_repo_shape(ctx.shape, used, own_copy):
             lost = repo_shape_for(ctx.shape, used, own_copy)
             reason += (f"; {lost.relative_to(ctx.root).as_posix()}, which it "
                        "imports from beside itself, is not there"
                        if own_copy else f"; {lost} is not there")
+            if own_copy:
+                command, why = lost_repo_shape_cure(ctx, own, lost, command)
         if not own_copy:
             detail["environment"] = True
             reason += ("; that copy is this checkout's, not the project's, "
                        "so nothing here is a statement about the project")
-        command = validator_command(ctx.shape, used, own_copy, args)
         return Row(check_id, label, FINDING, reason, command, detail,
-                   why=CRASH_WHY)
+                   why=why)
     verb = "refuses" if code >= 2 else "reports a finding"
     reason = f"{which} {verb} (exit {code})" + (f": {quoted}" if quoted else "")
     # A COMMAND THAT RUNS WHEN IT IS PASTED. This row used to print
@@ -2030,8 +2300,7 @@ def unloaded_manifest_row(ctx: Context, check_id: str, label: str, own: str,
                        f"that deleted it, and then {own} refuses {name} by "
                        "name until it loads", None, detail)
         return Row(check_id, label, FINDING, reason,
-                   f"git -C {quote_arg(ctx.root)} checkout HEAD -- "
-                   f"{quote_arg(lost)}", detail,
+                   restore_from_head(ctx.root, lost), detail,
                    why=f"it puts back the {lost} HEAD holds, the copy this "
                        f"project committed and {own} imports, where "
                        "update-shape.py apply would copy a newer one, then "
@@ -2686,6 +2955,18 @@ def with_merged_away_rows(ctx: Context, row: Row, output: str) -> Row:
     (`linked_record_row`), so both of this row's sentences were false. The
     same `linked_record` question that row asks keeps this one the gate
     until the link is replaced; the doctor run again then names `check`.
+
+    AND ONLY WHERE THAT `apply` IS NOT REFUSED (#676). A pinned COPY kept
+    as a link is no record `linked_record` asks about: `check` reads that
+    root, calls the copy `copy-is-link` and says REFUSAL AHEAD over it, and
+    the `apply` it prints is refused, `update-rewrite-symlink`, writing
+    nothing. So "the `apply` it prints drops its pin row" was false there,
+    and of a `both`, an `upstream-removed`, an `unmapped` row or a file
+    `apply` would rewrite that has a hard link. `refusals_ahead` asks
+    `check`'s own two questions; where it names anything, the row keeps the
+    gate, says what `check` reports, merged-away and REFUSAL AHEAD both,
+    and leaves the sentence about `apply` out. Where the doctor cannot ask
+    them -- the `shape currency` row says why -- it keeps the gate too.
     """
     if row.status != FINDING or row.detail.get("exit") != 1 \
             or row.detail.get("crashed"):
@@ -2696,14 +2977,27 @@ def with_merged_away_rows(ctx: Context, row: Row, output: str) -> Row:
     us = ctx.update_shape()
     if us.linked_record(ctx.root, us.root_kind(ctx.root)) is not None:
         return row
+    ahead = refusals_ahead(ctx, us)
+    if ahead is None:
+        return row
     one = len(merged) == 1
     copies = ", ".join(f"{path} (merged into {original})"
                        for path, original in merged.items())
-    reason = (f"{row.reason}. {copies} "
-              + ("is a collision copy" if one else "are collision copies")
-              + " the root merged away, so `update-shape.py check` reports "
-              + ("it" if one else "them") + " `merged-away`, and the "
-              "`apply` it prints drops "
+    said = (f"{row.reason}. {copies} "
+            + ("is a collision copy" if one else "are collision copies")
+            + " the root merged away, so `update-shape.py check` reports "
+            + ("it" if one else "them") + " `merged-away`")
+    if ahead:
+        refused = ", ".join(f"{path} ({why})" for path, why in ahead.items())
+        return Row(row.id, row.label, row.status,
+                   f"{said}, but it also says REFUSAL AHEAD over {refused}, "
+                   "and the `apply` it prints refuses while "
+                   + ("that is" if len(ahead) == 1 else "those are")
+                   + " unresolved, so it drops no pin row yet",
+                   row.next_command,
+                   {**row.detail, "merged_away": merged,
+                    "refusal_ahead": ahead}, why=row.why)
+    reason = (f"{said}, and the `apply` it prints drops "
               + ("its pin row" if one else "their pin rows")
               + " in the re-pin commit: the step the `shape currency` row "
               "names too")
@@ -2712,6 +3006,46 @@ def with_merged_away_rows(ctx: Context, row: Row, output: str) -> Row:
                f"--root {quote_arg(ctx.root)} --upstream "
                f"{quote_arg(ctx.shape)}",
                {**row.detail, "merged_away": merged})
+
+
+def refusals_ahead(ctx: Context, us) -> dict | None:
+    """`{path: why}` for what `update-shape.py check` names under `REFUSAL
+    AHEAD` for this root, or None where the doctor cannot ask (#676).
+
+    `check`'S OWN TWO QUESTIONS, over the rows its own `prepare` classifies:
+    each row that is a conflict (`Row.is_conflict`: `both`,
+    `upstream-removed`, `unmapped`, `copy-missing`, `copy-is-link`, never
+    `merged-away`), by its state, and each file `apply` would rewrite in
+    place that has another name (`hard_linked_rewrites`, #422), as
+    `hard-link`. `apply` refuses while any of them is there, so its re-pin
+    commit drops no merged-away row.
+
+    NONE WHERE THE QUESTION CANNOT BE ASKED: the pin does not read, the
+    checkout of the standard is a partial clone short of what the
+    comparison reads, where `prepare` would fetch (`partial_clone_row`,
+    #683), or `prepare` refuses. The `shape currency` row says which, and
+    the `pins` row keeps its gate.
+    """
+    try:
+        pin, _rows = us.read_pin(ctx.root)
+    except Refusal:
+        return None
+    if partial_clone_row(ctx, str(pin["commit"]).lower()) is not None:
+        return None
+    args = argparse.Namespace(root=str(ctx.root), upstream=str(ctx.shape),
+                              at=None)
+    try:
+        root, _pin, rows, _added, upstream, _pinned, _target, kind = \
+            us.prepare(args)
+    except Refusal:
+        return None
+    try:
+        ahead = {row.path: row.state for row in rows if row.is_conflict}
+        for path, _names in us.hard_linked_rewrites(root, rows, kind):
+            ahead.setdefault(path, "hard-link")
+    finally:
+        upstream.close()
+    return ahead
 
 
 def check_family(ctx: Context) -> Row:
@@ -3601,9 +3935,10 @@ def pin_at(ctx: Context, rev: str, pin: str = SHAPE_PIN,
     puts back is what the row then reads.
 
     THE ROWS, NOT A YES, for the shape pin (review of PR #358): `rev` may
-    be an index stage, `:2` or `:3`, and the rows of the side of a merge
-    `pin_restore` takes whole are the copies that side's tool wrote, so
-    they are the conflicted files its `why` gives a person to merge (#485).
+    be an index stage, `:2` or `:3`, and the rows of each side of a merge
+    are the copies that side's tool wrote, so they are the conflicted files
+    `pin_restore`'s `why` takes with the pin or gives a person to merge
+    (#485, #687).
     """
     blob = git_answer(["cat-file", "blob", f"{rev}:./{pin}"],
                       ctx.root, binary=True)
@@ -3634,21 +3969,27 @@ def pin_restore(ctx: Context, detail: dict | None = None,
     these that applies decides, as `detail["restore"]`:
 
       unmerged     a merge left the pin conflicted. `checkout --ours`, or
-                   `--theirs` where only that side holds a pin, of THE PIN,
-                   which only a tool writes, so one side taken whole is one
-                   tool's output, and of no copy but one PROVED to be tool
-                   output on both sides (#547).
+                   `--theirs` where only that side holds a pin that reads,
+                   of THE PIN, which only a tool writes, so one side taken
+                   whole is one tool's output, and of no copy but one
+                   PROVED to be tool output on both sides (#547). A side
+                   whose pin does not read is never taken, as taken whole
+                   it left the pin as it was and this doctor named the same
+                   line again; where no side's pin reads, no line is named,
+                   `(restore, None, why)`, and the `why` says the merge is a
+                   person's call (`side_to_take`, #752).
                    A copy either side may have edited is never named with it
                    (#485), though a merge of two `update-shape.py apply`
                    runs conflicts in the two together: a copy can hold an
                    edit of the project, kept by `apply --accept-local` on one
                    side, and taken whole the other side's copy dropped it,
                    the hunks git merged cleanly with it, and the doctor then
-                   said COMPLIANT. The copies are the files the taken side's
+                   said COMPLIANT. The copies are the files EITHER side's
                    pin has `files:` rows for, their collision copies
                    included -- those rows and not this standard's copy
-                   lists, since a file the pin has no row for is not a shape
-                   copy, though the lists name its path (review of PR #358).
+                   lists, since a file neither pin has a row for is not a
+                   shape copy, though the lists name its path (review of PR
+                   #358). Only the taken side's can be taken (#687).
                    PROVE AND TAKE (Brett Heap, 2026-10-14T23:54:30Z, #547):
                    a conflicted copy whose two stages are each, byte for
                    byte, the standard's own file at the commit THAT side's
@@ -3680,6 +4021,36 @@ def pin_restore(ctx: Context, detail: dict | None = None,
                    is the person's word: AGENTS.md's rule 3 is never to
                    pass the flag to make a refusal go away, and nothing
                    here tells a copy merged by hand from one nobody merged.
+                   A COPY ONLY THE OTHER SIDE'S PIN HAS A ROW FOR (#687) --
+                   a path that side's `apply --add` took from the standard
+                   and the side taken here wrote as its own, say -- is
+                   never taken either: `as_the_standard_wrote_it` proves
+                   nothing of a side whose pin has no row for it. Nor is it
+                   left out of the `why`, though the pin taken here makes it
+                   the project's own file once the merge is finished: its
+                   conflict holds the other side's `apply` output, and the
+                   `merge` row lists it unmerged all the same. So the `why`
+                   says that the other side's pin calls it a copy and the
+                   pin taken here does not, and that a person merges it by
+                   hand, keeping the hunks git merged. Where one side
+                   deleted the copy, it says a person keeps or deletes it,
+                   as there are no hunks to keep (`other_sides_copies`,
+                   review of PR #736). The `--accept-local`
+                   sentence is not for it, and is said only where a copy the
+                   kept pin has a row for is left: `apply` refuses the flag
+                   on a path the pin has no row for. In the `manifest kinds`
+                   row such a copy under `contracts/` is `unmerged` while
+                   the pin is conflicted, as every file the `why` gives a
+                   person is, and `project` once the pin taken here reads.
+                   A COPY RENAMED ON ONE SIDE (#753) conflicts under its
+                   new name, as git carries the other side's edit, or
+                   deletion, there, and no pin has a row for that name. Its
+                   stage 1 is the merge base's blob of the copy, so
+                   `copies_renamed` finds the copy by that blob, where no
+                   other path of the base holds it, and the `why` names the
+                   path as renamed from the copy and gives it to a person
+                   (`renamed_copies`). It is never taken: neither side's
+                   pin has a row to prove it by.
                    The manifest and README.md are never named either, though
                    `apply` writes lines of them: every other line is the
                    project's own, and one side taken whole drops the other
@@ -3688,7 +4059,12 @@ def pin_restore(ctx: Context, detail: dict | None = None,
                    says a person merges it.
                    `detail["left_for_a_person"]` lists every file the `why`
                    gives a person. A file of the project's own is never
-                   named: its merge is theirs.
+                   named: its merge is theirs. Both pins decide which file
+                   that is, not the pin taken here alone: one NEITHER
+                   side's pin has a row for, under its name or under the
+                   one the merge base held it at. A file only the other
+                   side's pin calls a copy is named, as above (#687), and
+                   so is a copy's rename (#753).
       uncommitted  HEAD holds a pin that reads, and the tree or the index
                    differs from it. `checkout HEAD`, which drops a change no
                    tool of this standard leaves uncommitted.
@@ -3714,8 +4090,9 @@ def pin_restore(ctx: Context, detail: dict | None = None,
                    Nothing git can name fixes it, and the caller says so:
                    `(restore, None, None)`.
 
-    EVERY PIN THE COMMAND PUTS BACK IS READ FIRST, by `pin_reads_at`, except
-    the side of a merge, which is one tool's output either way.
+    EVERY PIN THE COMMAND PUTS BACK IS READ FIRST, by `pin_reads_at`, the
+    side of a merge included (#752): one tool's output either way, but a
+    commit on that side can hold a pin a slip broke.
 
     THE STATUS IS TWO FIXED-WIDTH LETTERS, READ AS BYTES: `git_out`'s text
     form strips its output, and the leading space of ` M` with it. And
@@ -3778,30 +4155,40 @@ def pin_restore(ctx: Context, detail: dict | None = None,
         us = ctx.update_shape()
         kind = us.root_kind(root)
         # `<mode> SP <object> SP <stage> TAB <path>`, one record per stage:
-        # `{path: {stage: mode}}`, the mode kept for `taken_with_the_pin`.
+        # `{path: {stage: mode}}`, the mode kept for `taken_with_the_pin`,
+        # and `{path: object}` of stage 1, the merge base's, which
+        # `copies_renamed` reads (#753).
         stages: dict[str, dict] = {}
+        bases: dict[str, bytes] = {}
         listing = git_answer(["ls-files", "-u", "-z"], root, binary=True)
         for record in (listing or b"").split(b"\0"):
             meta, _tab, path = record.partition(b"\t")
             if path:
                 stages.setdefault(path.decode("utf-8", "replace"), {})[
                     meta.rsplit(b" ", 1)[-1]] = meta.split(b" ", 1)[0]
-        pin_stages = stages.get(pin, {})
-        side, stage = (("--ours", b"2") if b"2" in pin_stages else
-                       ("--theirs", b"3") if b"3" in pin_stages else
-                       (None, None))
+                if meta.endswith(b" 1"):
+                    bases[path.decode("utf-8", "replace")] = meta.split()[1]
+        side, stage, note = side_to_take(ctx, pin, stages.get(pin, {}), what)
+        if note and not side:
+            return "unmerged", None, note
         if side:
-            note = (f"--theirs takes the other side. Take one side of the "
-                    f"{what} whole" if b"3" in pin_stages and side == "--ours"
-                    else f"only that side of the merge holds a {what}. Take "
-                    "it whole")
-            lines, copies, taken, partial = [], [], [], False
+            lines, copies, other_side, taken, partial = [], [], [], [], False
+            renamed: dict[str, str] = {}
+            kept: set = set()
             if pin == SHAPE_PIN:
                 lines = sorted(name for name in (kind.manifest, us.README)
                                if name in stages)
-                copies = sorted(name for name in set(
-                    pin_at(ctx, f":{stage.decode()}") or ())
-                    if name in stages)
+                # Both pins say what is a copy, and the kept one what can be
+                # taken: a copy only the other side's is never taken (#687).
+                kept = set(pin_at(ctx, f":{stage.decode()}") or ())
+                other = set(pin_at(ctx, ":3" if stage == b"2" else ":2")
+                            or ())
+                copies = sorted(name for name in kept if name in stages)
+                other_side = sorted(name for name in other - kept
+                                    if name in stages)
+                renamed = copies_renamed(ctx, kept | other, {
+                    name: base for name, base in bases.items()
+                    if name not in kept | other | {pin, *lines}})
                 # A read of a partial clone can fetch: prove nothing there.
                 partial = bool(copies) and partial_clone(ctx.shape)
                 if not partial:
@@ -3821,9 +4208,10 @@ def pin_restore(ctx: Context, detail: dict | None = None,
                     + ("them" if len(taken) > 1 else "it") + " at the "
                     "commit that side's pin names, so neither side holds an "
                     "edit of the project")
-            if lines or copies:
+            if lines or copies or other_side or renamed:
                 if detail is not None:
-                    detail["left_for_a_person"] = sorted(lines + copies)
+                    detail["left_for_a_person"] = sorted(
+                        lines + copies + other_side + list(renamed))
                 if lines:
                     said.append(
                         f"{' and '.join(lines)} "
@@ -3854,6 +4242,8 @@ def pin_restore(ctx: Context, detail: dict | None = None,
                              "check calls it both, as update-conflict, and "
                              "either refusal asks for --accept-local on that "
                              "path")
+                said += other_sides_copies(other_side, stages)
+                said += renamed_copies(renamed, stages, kept)
             if said:
                 then = ". " + ". ".join(said) + ". Then finish"
             return "unmerged", (
@@ -3910,6 +4300,199 @@ def pin_restore(ctx: Context, detail: dict | None = None,
             f"Commit that rather than editing the {what}"
             + gitlink_left_behind(ctx, before, pin))
     return "none", None, None
+
+
+def other_sides_copies(names: list, stages: dict) -> list:
+    """The sentences of a conflicted shape pin's `why` for `names`, the
+    files conflicted beside it that only the side NOT taken has `files:`
+    rows for (#687): never taken, and a person's to resolve. `stages` is
+    `{path: {stage: mode}}`, as `pin_restore` reads `ls-files -u`.
+
+    WHAT IS KNOWN, AND NOTHING ELSE (review of PR #736). The pin taken here
+    reads, since `side_to_take` takes no side whose pin does not (#752),
+    and it has no row for them, so once the merge is finished each is the
+    project's own file, and the sentence says so.
+
+    ONE SENTENCE FOR THE FILES BOTH SIDES HOLD, ANOTHER FOR THOSE ONE SIDE
+    DELETED (`by_conflict`). A person merges the first by hand, keeping
+    the hunks git merged, and keeps or deletes the second.
+    """
+    said = []
+    for group, deleted in by_conflict(names, stages):
+        many = len(group) > 1
+        each = "each" if many else "it"
+        said.append(
+            f"{' and '.join(group)} {'are' if many else 'is'} conflicted "
+            "too, and the other side's pin calls "
+            + ("them copies" if many else "it a copy")
+            + " where the pin taken here does not"
+            + (f", and one side deleted {each}" if deleted else "")
+            + ", so neither side is taken whole: once the merge is finished "
+            f"{each} is the project's own file"
+            + (f" if kept, and a person keeps or deletes {each} by hand"
+               if deleted else f", and a person merges {each} by hand, "
+               "keeping the hunks git merged"))
+    return said
+
+
+def by_conflict(names: list, stages: dict) -> list:
+    """`names` as `(group, deleted)` pairs: those both sides of the merge
+    hold first, then those only one side holds, each pair only where its
+    group has a name. `stages` is `{path: {stage: mode}}`, as `pin_restore`
+    reads `ls-files -u`. Both sides' stages are there for a content
+    conflict, an add/add included, whose hunks a person keeps; one of them
+    alone is a delete/modify conflict, or a rename the other side did not
+    make, which has no hunks to keep (review of PR #736)."""
+    pairs = []
+    for deleted in (False, True):
+        group = [name for name in names
+                 if deleted != ({b"2", b"3"} <= set(stages.get(name, ())))]
+        if group:
+            pairs.append((group, deleted))
+    return pairs
+
+
+def copies_renamed(ctx: Context, copies: set, bases: dict) -> dict:
+    """`{path: copy}` for each path conflicted beside the shape pin whose
+    stages came from a rename of `copy`, a path a side's pin has a `files:`
+    row for (#753). `bases` is `{path: object}`, stage 1 of each conflicted
+    path no pin has a row for, the merge base's blob.
+
+    THE MERGE BASE'S OWN BLOB, AT A NAME THE BASE DID NOT HOLD. A rename on
+    one side and an edit on the other conflict under the new name, and git
+    gives that path the base's bytes of the old one as its stage 1: a path
+    the base did not hold has a stage 1 only where git paired it with one
+    the base did. So a path is a copy's rename where the base holds
+    nothing at it and its stage 1 is, object for object, the blob the base
+    holds at the copy's path. A path the base held is no rename, though its
+    bytes be a copy's, as the source's own file beside a collision copy
+    under `shape/` can be. Since the whole base is read (below), that check
+    is belt and braces: such a path's stage 1 is the blob the base holds at
+    that very path, which no pin lists, so the count or the copy check
+    below refuses it already. Alone it changes the answer only for a rename
+    onto a path the base held (rename/add), which stays unnamed (round 3 of
+    the review of PR #781). The base is `merge-base HEAD MERGE_HEAD`, read
+    as git keeps it for a merge; for any other kind of conflict, or where
+    git cannot say, no path is called a rename, as before.
+
+    ONE PATH IN THE WHOLE BASE TREE HOLDS THAT BLOB, AND IT IS A COPY
+    (review of PR #781). Reading the copies' paths alone, a file of the
+    project's own whose bytes are a copy's, renamed, was named a rename of
+    that copy, though such a file is never named. So the base's whole tree
+    is read, one `ls-tree -r`, and a blob two paths hold names nothing, a
+    copy's or not. Not git's own rename record (`diff -M` from the base to
+    each side): that is a similarity guess of its own, made apart from the
+    merge's, and nothing here guesses. What that costs is a copy renamed
+    whose exact bytes the base also holds at another path, which is named
+    no more than it was before #753; the `merge` row still lists it.
+    """
+    if not bases or not copies:
+        return {}
+    base = git_answer(["merge-base", "HEAD", "MERGE_HEAD"], ctx.root)
+    listing = base and git_answer(["ls-tree", "-r", "-z", base], ctx.root,
+                                  binary=True)
+    held: dict[bytes, list] = {}
+    for record in (listing or b"").split(b"\0"):
+        meta, _tab, path = record.partition(b"\t")
+        if path and len(meta.split()) == 3:
+            held.setdefault(meta.split()[2], []).append(
+                path.decode("utf-8", "replace"))
+    present = {name for names in held.values() for name in names}
+    return {name: held[blob][0] for name, blob in sorted(bases.items())
+            if name not in present and len(held.get(blob, ())) == 1
+            and held[blob][0] in copies}
+
+
+def renamed_copies(renamed: dict, stages: dict, kept: set) -> list:
+    """The sentences of a conflicted shape pin's `why` for `renamed`,
+    `{path: copy}` from `copies_renamed`: paths conflicted beside the pin
+    under a name no pin has a row for, each a rename of a copy (#753).
+    Never taken, as a copy only the other side's pin lists is never taken
+    (`other_sides_copies`), and a person's to resolve, its old name said so
+    the reader knows it for a copy.
+
+    WHAT THE DOCTOR SAYS ONCE THE MERGE IS FINISHED, where `kept`, the rows
+    of the pin taken here, still lists the old name (review of PR #781):
+    no file is there unless it is renamed back, so this doctor reports the
+    copy missing. Said only of such a copy: where the pin taken here has no
+    row for it, nothing is missing.
+    """
+    said = []
+    for group, deleted in by_conflict(sorted(renamed), stages):
+        many = len(group) > 1
+        each = "each" if many else "it"
+        said.append(
+            " and ".join(f"{name}, renamed from the copy {renamed[name]},"
+                         for name in group)
+            + f" {'are' if many else 'is'} conflicted too, and no pin has a "
+            f"row for {'them' if many else 'it'} under "
+            f"{'their new names' if many else 'its new name'}"
+            + (f", and one side alone holds {each}" if deleted else "")
+            + ", so neither side is taken whole: a person "
+            + (f"keeps or deletes {each} by hand" if deleted
+               else f"merges {each} by hand, keeping the hunks git merged"))
+    listed = sorted({copy for copy in renamed.values() if copy in kept})
+    if listed:
+        many = len(listed) > 1
+        said.append(
+            f"The pin taken here still lists {' and '.join(listed)}, so this "
+            f"doctor reports {'them' if many else 'it'} missing once the "
+            f"merge is finished, unless {'they are' if many else 'it is'} "
+            "renamed back")
+    return said
+
+
+#: The flag of `git checkout` that takes each side's stage of a merge.
+SIDE_OF_STAGE = {b"2": "--ours", b"3": "--theirs"}
+
+
+def side_to_take(ctx: Context, pin: str, pin_stages: dict,
+                 what: str) -> tuple:
+    """`(side, stage, note)` for `pin`, which a merge left conflicted with
+    `pin_stages` (`{stage: mode}`): the side `pin_restore` takes whole, as
+    a `checkout` flag and an index stage, and the start of its `why`, that
+    says why that side. `(None, None, why)` where no side's pin reads, the
+    `why` then whole, and `(None, None, None)` where neither side holds one.
+
+    THE SIDE TAKEN IS ONE WHOSE PIN READS (#752). `--ours` was taken
+    wherever ours held a pin, read or not: one tool's output either way,
+    but a commit can hold a pin a slip broke, and taken whole it left the
+    pin as it was, so this doctor named the same line again. So ours where
+    it reads, else theirs where that reads, and the `why` says that only
+    that side's pin reads; offering the other side, as `--theirs takes the
+    other side` does where both read, would offer that circle.
+
+    NO LINE WHERE NO SIDE'S PIN READS. Taking either side whole leaves a
+    pin that does not read, and a pin is never mended by hand, so no
+    command is named, and the `why` says that finishing the merge, or
+    aborting it to put back first the pin a side broke, is a person's call.
+    """
+    held = [number for number in (b"2", b"3") if number in pin_stages]
+    if not held:
+        return None, None, None
+    reads = [number for number in held
+             if pin_reads_at(ctx, f":{number.decode()}", pin)]
+    if not reads:
+        whose = (f"neither side's {what} reads as one" if len(held) > 1
+                 else f"the one side of it that holds a {what} holds one "
+                 "that does not read")
+        return None, None, (
+            f"a merge left the {what} conflicted, and {whose}, so no side "
+            f"taken whole puts back a {what} that reads, and this doctor "
+            f"would name the same line again. A {what} is never mended by "
+            "hand, so no line is named here: whether to finish the merge, "
+            f"or to abort it and first put back the {what} a side broke, is "
+            "a person's call")
+    if len(reads) > 1:
+        note = (f"--theirs takes the other side. Take one side of the "
+                f"{what} whole")
+    elif len(held) > 1:
+        note = (f"only that side's {what} reads as one, and the other side "
+                f"taken whole would leave a {what} that does not read. Take "
+                "it whole")
+    else:
+        note = f"only that side of the merge holds a {what}. Take it whole"
+    return SIDE_OF_STAGE[reads[0]], reads[0], note
 
 
 def taken_with_the_pin(ctx: Context, kind, copies: list,
@@ -3995,16 +4578,61 @@ PARTIAL_CLONE_WHY = (
 
 def partial_clone(shape: Path) -> bool:
     """Whether the checkout of the standard at `shape` is a partial clone:
-    its config names a promisor remote or a partial-clone filter (#547).
+    its config names a remote git fetches a missing object from (#547).
 
     A READ THERE CAN FETCH. `git show` of a blob a `--filter` clone left
     out asks its promisor remote for it, and Brett Heap's ruling for
     `taken_with_the_pin` is never to fetch, clone or touch the network. So
-    `pin_restore` proves no copy there and every one stays the hand merge.
-    The config is only read, which fetches nothing and writes nothing.
+    `pin_restore` proves no copy there and every one stays the hand merge,
+    and the `shape currency` row asks first, without fetching, whether the
+    clone holds what it reads (`partial_clone_row`, #683). Which remotes
+    those are is `promisor_remotes`' answer.
     """
-    return bool(git_answer(["config", "--get-regexp", r"^(extensions\."
-                            r"partialclone|remote\..*\.promisor)$"], shape))
+    return bool(promisor_remotes(shape))
+
+
+#: The config keys `promisor_remotes` reads: git's, in `promisor-remote.c`.
+PROMISOR_KEYS = (r"^(remote\..*\.(promisor|partialclonefilter)"
+                 r"|extensions\.partialclone)$")
+
+
+def promisor_remotes(shape: Path) -> list:
+    """The remotes git fetches a missing object from in the checkout at
+    `shape`, by the rule git 2.43's `promisor-remote.c` reads its config
+    with (#683): a remote whose `promisor` is true, a remote with a
+    `partialclonefilter`, and the remote `extensions.partialclone` names,
+    that one last, as git asks them. Each name once, in the config's order.
+
+    `promisor = false` ALONE IS NOT ONE (#683). `partial_clone` matched
+    `remote.<name>.promisor` whatever its value, so `false` counted.
+    Measured with git 2.43 on a `--filter=blob:none` clone: with `promisor
+    = false` and no `partialclonefilter`, a read of a blob the clone lacks
+    fails and fetches nothing; with the filter kept beside it, the read
+    fetches, as with `promisor = true`, a bare `promisor` key or
+    `extensions.partialclone = origin` alone. So `false` is git's `false`,
+    read by `git config --type=bool`, and a filter makes a remote one on
+    its own. A missing object where no remote is one is a read that fails,
+    which `update-shape.py` refuses (`update-upstream-unreadable`). The
+    config is only read, which fetches nothing and writes nothing.
+    """
+    true = git_answer(["config", "--type=bool", "-z", "--get-regexp",
+                       r"^remote\..*\.promisor$"], shape, binary=True)
+    promised = {key for key, _newline, value in (
+        record.partition(b"\n") for record in (true or b"").split(b"\0"))
+        if value == b"true"}
+    listed = git_answer(["config", "-z", "--get-regexp", PROMISOR_KEYS],
+                        shape, binary=True)
+    names: list[str] = []
+    named = None
+    for record in (listed or b"").split(b"\0"):
+        key, _newline, value = record.partition(b"\n")
+        if key == b"extensions.partialclone":
+            named = value
+        elif key.endswith(b".partialclonefilter") or key in promised:
+            name = key[len(b"remote."):key.rindex(b".")]
+            names.append(name.decode("utf-8", "replace"))
+    last = [] if named is None else [named.decode("utf-8", "replace")]
+    return [name for name in dict.fromkeys(names) if name not in last] + last
 
 
 def as_the_standard_wrote_it(ctx: Context, us, kind, standard, copy: str,
@@ -4022,7 +4650,8 @@ def as_the_standard_wrote_it(ctx: Context, us, kind, standard, copy: str,
     try:
         source = us.source_for(copy, standard, commit, kind)
         wrote = standard.blob(commit, source) if source else None
-    except (OSError, ValueError):
+    except (Refusal, OSError, ValueError):
+        # `Refusal`: a read `Upstream.blob` could not make (#683).
         return False
     return wrote is not None and wrote == held
 
@@ -4199,7 +4828,7 @@ UNREADABLE_BY_HAND = (
 
 def unreadable_next(ctx: Context, unreadable: list,
                     detail: dict | None = None
-                    ) -> tuple[dict, str, str | None]:
+                    ) -> tuple[dict, str | None, str | None]:
     """`(restore, command, why)` for the `manifest kinds` row's files that
     do not load (#291): each file's case, the one command the row prints,
     and the sentence that goes with that command -- the row's `why`, apart
@@ -4212,7 +4841,11 @@ def unreadable_next(ctx: Context, unreadable: list,
     prints one command, and the next run names the next file. A copy or a
     neutral product pin, which a person may have edited, gets the
     read-only command `pin_restore` picks for it instead, a `git diff`
-    that shows what breaks it, and nothing is put back.
+    that shows what breaks it, and nothing is put back. A pin a merge left
+    conflicted where no side's pin reads gets no command (#752): where no
+    other file has one, the row names none either, and says `pin_restore`'s
+    `why`, as the `shape currency` row does, rather than send the reader to
+    this doctor again, which would say the same.
 
     A FILE OF THE PROJECT'S OWN IS NOT, whatever it is called, and its case
     is `project`, with git not asked. `tool_written` reads what the root
@@ -4227,12 +4860,16 @@ def unreadable_next(ctx: Context, unreadable: list,
 
     WHAT THE SHAPE PIN'S MERGE LEAVES TO A PERSON IS SAID HERE TOO (#485).
     While the shape pin does not read, no row says what is a copy, so a
-    copy conflicted beside it is not `tool_written`. The side of the merge
-    `pin_restore` takes does say, and its `why` gives each such copy to a
-    person. That copy's case is `unmerged`, the one it has once the pin
-    reads, and not `project`, and `detail` gets the `left_for_a_person`
-    the `shape currency` row's has, so both rows say the same of the same
-    command. A copy that command takes whole with the pin, proved tool
+    copy conflicted beside it is not `tool_written`. The two sides of the
+    merge do say, and `pin_restore`'s `why` gives each such copy to a
+    person. That copy's case is `unmerged`, and not `project`, and
+    `detail` gets the `left_for_a_person` the `shape currency` row's has,
+    so both rows say the same of the same command. Where the pin taken
+    here has a row for the copy, `unmerged` is the case it has once the
+    pin reads. A copy under `contracts/` that only the other side's pin
+    lists (#687) is `project` then, as the pin taken here has no row for
+    it: `unmerged` is its case only while the pin is conflicted and the
+    `why` names it. A copy the NEXT takes whole with the pin, proved tool
     output on both sides (#547), is `unmerged` too, and `detail` gets the
     `taken_with_the_pin` that row's has: the command overwrites it, and
     `project` would say git was not asked about a file the NEXT puts back.
@@ -4240,6 +4877,9 @@ def unreadable_next(ctx: Context, unreadable: list,
     restore: dict[str, str] = {}
     #: `(command, why)` for each file with a command, in the row's order.
     commands: dict[str, tuple[str, str | None]] = {}
+    #: The `why` of each file a tool wrote that git was asked about and no
+    #: line puts back: a merge where no side's pin reads (#752).
+    stuck: dict[str, str] = {}
     held: dict = {}
     for rel in unreadable:
         if tool_written(ctx, rel):
@@ -4247,6 +4887,8 @@ def unreadable_next(ctx: Context, unreadable: list,
                 ctx, held if rel == SHAPE_PIN else None, pin=rel)
             if found:
                 commands[rel] = (found, why)
+            elif why:
+                stuck[rel] = why
         else:
             restore[rel] = "project"
     left = held.get("left_for_a_person", [])
@@ -4260,7 +4902,9 @@ def unreadable_next(ctx: Context, unreadable: list,
         detail["taken_with_the_pin"] = taken
     command, why = (commands.get(SHAPE_PIN)
                     or next(iter(commands.values()), (None, None)))
-    if command is None:
+    if command is None and stuck:
+        why = stuck.get(SHAPE_PIN) or next(iter(stuck.values()))
+    elif command is None:
         command = (f"{PYTHON} {quote_arg(ctx.shape / 'shape-doctor.py')} "
                    f"--root {quote_arg(ctx.root)}")
         why = UNREADABLE_BY_HAND
@@ -4302,14 +4946,17 @@ def unreadable_pin_row(ctx: Context, exc: Refusal) -> Row:
     same `read_pin`, refuses it the same way, and its remediation is about
     submodules, adoption or a hand edit, none of which fits. That command
     stays only where git can name nothing, and its `why` says the rest is a
-    person's call. Every sentence is the row's `why`, off the command's line,
-    so a pasted line is one command in any shell (#277).
+    person's call. Where a merge left the pin conflicted and no side's pin
+    reads, the row names no command at all, and `pin_restore`'s `why` says
+    the merge is a person's call (#752). Every sentence is the row's `why`,
+    off the command's line, so a pasted line is one command in any shell
+    (#277).
     """
     detail = {"error": exc.code, "pin": SHAPE_PIN,
               "refusal": {"code": exc.code, "detail": exc.detail}}
     restore, command, why = pin_restore(ctx, detail)
     detail["restore"] = restore
-    if command is None:
+    if restore == "none":
         command = (f"{PYTHON} {quote_arg(ctx.shape / 'update-shape.py')} "
                    f"check --root {quote_arg(ctx.root)} --upstream "
                    f"{quote_arg(ctx.shape)}")
@@ -4319,6 +4966,112 @@ def unreadable_pin_row(ctx: Context, exc: Refusal) -> Row:
                f"the copies cannot be compared, because {SHAPE_PIN} does not "
                f"read as a pin: REFUSED {exc.code}: {exc.detail}",
                command, detail, why=why)
+
+
+#: A line `rev-list --missing=print` writes for an object the clone lacks:
+#: `?` and the object's id, SHA-1 or SHA-256.
+MISSING_OBJECT = re.compile(rb"\?(?:[0-9a-f]{40}|[0-9a-f]{64})")
+
+
+def objects_lacking(shape: Path, commit: str) -> int | None:
+    """How many of the objects `commit` and its tree reach the checkout at
+    `shape` lacks, asked without fetching (#683), or None where git cannot
+    list them there.
+
+    `git rev-list --objects --no-walk --missing=print` walks the commit's
+    tree and prints `?<id>` for each object it does not hold, and
+    `--missing=` turns git's lazy fetch off for its run: measured with git
+    2.43, no fetch in a trace2 log, and the same objects missing after it.
+    It is asked before any `ls-tree`, which fetches a tree a
+    `--filter=tree:0` clone lacks. A commit the clone does not hold is
+    `bad object` there, exit 128, and None, which `partial_clone_row`
+    counts as lacking: `update-shape.py`'s first read of that commit, its
+    `rev-parse`, fetches it (measured with git 2.43).
+    """
+    listed = git_answer(["rev-list", "--objects", "--no-walk",
+                         "--missing=print", commit], shape, binary=True)
+    if listed is None:
+        return None
+    return sum(1 for line in listed.split(b"\n")
+               if MISSING_OBJECT.fullmatch(line))
+
+
+#: `partial_clone_row`'s `error` (#683).
+PARTIAL_CLONE_LACKS = "shape-doctor-partial-clone"
+
+
+def partial_clone_row(ctx: Context, pinned: str) -> Row | None:
+    """The `shape currency` row for a checkout of the standard that is a
+    partial clone and lacks an object the comparison reads, or None where
+    it is no partial clone or lacks none of them (#683).
+
+    THE DOCTOR FETCHED, AND OFFLINE IT CALLED UNEDITED COPIES `both`.
+    `update-shape.py`'s comparison reads each copy's blob at the pinned
+    commit and at this standard's, and a `--filter` clone fetches a blob it
+    lacks on that read. Measured on #683 with git 2.43,
+    a `--filter=blob:none` clone made five lazy fetches for the five copies
+    the standard had changed since the pin; with its remote out of reach
+    the reads failed, `Upstream.blob` read each failure as "no such file at
+    the pinned commit", and the row said `DRIFTED (5 both)` of copies
+    nobody edited. So before anything reads this checkout, where
+    `partial_clone` holds, `objects_lacking` asks of the pinned commit and
+    of HEAD whether every object their trees reach is here.
+
+    THE WHOLE TREE, NOT THE COPIES' PATHS. `--missing=print` names a missing
+    object by its id alone, and which path it sits at is read from the tree
+    that holds it, which a `--filter=tree:0` clone lacks too; and the paths
+    the comparison reads are `prepare`'s, whose second definition here
+    would be one to drift. So a partial clone pinned behind its HEAD, where
+    the clone lacks what its checkout never needed, is this row even where
+    no copy changed. That is the cost of never fetching, and the NEXT
+    below ends it. A partial clone whose pin names its HEAD lacks nothing
+    and answers as a full clone does.
+
+    CANNOT ANSWER, as the row for a checkout short of the pin's commit is:
+    `environment`, exit 3, nothing said about the repository. THE NEXT IS
+    THAT ROW'S, MADE TO FIT: there, the fetch a person runs to put in this
+    checkout what it lacks. Here `fetch --all` would put in no blob, since
+    a promisor remote's fetch keeps its `partialclonefilter`, so the NEXT
+    is `fetch --refetch --no-filter` from the remote a read would fetch
+    from: measured with git 2.43, it leaves the clone lacking nothing and
+    its config as it was, and the doctor run again answers. It is the
+    person's fetch, never this doctor's, and the `why` names the other way,
+    a full clone of the standard, as the precedent's names a clone that
+    has the commit.
+    """
+    remotes = promisor_remotes(ctx.shape)
+    if not remotes:
+        return None
+    standard = head_of(ctx.shape)
+    lacking = {commit: objects_lacking(ctx.shape, commit)
+               for commit in dict.fromkeys((pinned, standard)) if commit}
+    lacking = {commit: count for commit, count in lacking.items()
+               if count != 0}
+    if not lacking:
+        return None
+    said = []
+    for commit, count in lacking.items():
+        which = ("the pinned commit" if commit == pinned
+                 else "this standard's commit")
+        said.append(f"git cannot list {which} {commit[:12]} there"
+                    if count is None else
+                    f"it lacks {count} object{'' if count == 1 else 's'} "
+                    f"at {which} {commit[:12]}")
+    remote = remotes[0]
+    return Row("shape-currency", LABEL_SHAPE_CURRENCY, FINDING,
+               "the copies cannot be compared without fetching: this "
+               "checkout of the standard is a partial clone, and "
+               + " and ".join(said),
+               f"git -C {quote_arg(ctx.shape)} fetch --refetch --no-filter "
+               f"{quote_arg(remote)}",
+               {"error": PARTIAL_CLONE_LACKS, "environment": True,
+                "pinned": pinned, "standard": standard, "remote": remote,
+                "lacking": lacking},
+               why="this checkout of the standard is a partial clone, and "
+                   "a read of an object it lacks fetches it from "
+                   f"{remote}, which this doctor never does; fetch every "
+                   f"object {remote} holds, then run the doctor again, or "
+                   "run it from a full clone of the standard")
 
 
 def check_shape_currency(ctx: Context) -> Row:
@@ -4340,6 +5093,15 @@ def check_shape_currency(ctx: Context) -> Row:
     not by a list of refusal codes or a match on their text, and a refusal
     `read_pin` or `open_upstream` learns later lands on the right side
     without this file being told.
+
+    A PARTIAL CLONE IS ASKED BEFORE ANYTHING READS IT (#683). Once the pin
+    reads, and before `prepare` opens this checkout, `partial_clone_row`
+    asks, without fetching, whether a partial clone holds every object the
+    comparison reads, and where it does not this row is CANNOT ANSWER with
+    a fetch of its own for a person to run. A read that fails anyway --
+    a clone that lacks objects and has no promisor remote, a damaged one --
+    is `update-upstream-unreadable` from `prepare`, CANNOT ANSWER too, and
+    never a copy called `both`.
     """
     us = ctx.update_shape()
     # A PIN OR MANIFEST KEPT AS A LINK IS ASKED ABOUT FIRST, before anything
@@ -4352,13 +5114,27 @@ def check_shape_currency(ctx: Context) -> Row:
     args = argparse.Namespace(root=str(ctx.root), upstream=str(ctx.shape),
                               at=None)
     try:
-        us.read_pin(ctx.root)
+        pin, _rows = us.read_pin(ctx.root)
     except Refusal as exc:
         return unreadable_pin_row(ctx, exc)
+    partial = partial_clone_row(ctx, str(pin["commit"]).lower())
+    if partial is not None:
+        return partial
     try:
         _root, _pin, rows, additions, upstream, pinned, target, _kind = \
             us.prepare(args)
     except Refusal as exc:
+        if exc.code == us.UPSTREAM_UNREADABLE:
+            # A READ THAT FAILED, NOT A COMMIT THAT IS NOT HERE (#683), so
+            # the `fetch --all` below would bring nothing to read it.
+            return Row("shape-currency", LABEL_SHAPE_CURRENCY, FINDING,
+                       f"the copies cannot be compared: {exc.detail}", None,
+                       {"error": exc.code, "environment": True},
+                       why="git could not read what this checkout of the "
+                           "standard holds at that commit, so no copy was "
+                           "compared and none is called both over it; run "
+                           "the doctor from a clone of the standard that "
+                           "git reads whole")
         # NOT A VERDICT ABOUT THE REPOSITORY. A pin naming a commit THIS
         # checkout does not carry -- a fork, a branch pin, a clone made
         # before the commit landed -- is this standard being unable to
@@ -4376,17 +5152,19 @@ def check_shape_currency(ctx: Context) -> Row:
         added = [add for add in additions if not add.present]
         reported = list(rows) + added
         counts = us.counted(reported)
-        # A MERGED-AWAY ROW IS COUNTED WHERE THERE IS ONE (#502, review of PR
-        # #512). The five states every root has a word for are always
-        # printed; without `merged-away` beside them the counts fell one
-        # short of the rows for each such row, and the path `named` below
-        # stood under no count, in the reason of the very row whose `apply`
-        # drops it. Zero is left unsaid, so a root with no such row reads
-        # as it always did.
-        states = (us.UNCHANGED, us.UPSTREAM_CHANGED, us.LOCALLY_MODIFIED,
+        # EVERY STATE `check` COUNTS IS COUNTED WHERE THERE IS ONE (#502,
+        # review of PR #512; #676). The five states every root has a word
+        # for are always printed; any other state of `update-shape.py`'s
+        # `ORDER` follows them, in that order, where its count is not zero.
+        # Without them the counts fell one short of the rows for each such
+        # row -- `merged-away` until #502, `copy-is-link`, `copy-missing`,
+        # `upstream-removed`, `unmapped` and `already-at-target` until #676
+        # -- and the path `named` below stood under no count. Zero is left
+        # unsaid, so a root with none of them reads as it always did.
+        always = (us.UNCHANGED, us.UPSTREAM_CHANGED, us.LOCALLY_MODIFIED,
                   us.BOTH, us.UPSTREAM_ADDED)
-        if counts.get(us.MERGED_AWAY):
-            states += (us.MERGED_AWAY,)
+        states = always + tuple(state for state in us.ORDER
+                                if state not in always and counts.get(state))
         summary = " / ".join(f"{counts.get(state, 0)} {state}"
                              for state in states)
         by_state: dict[str, list[str]] = {}
@@ -4681,13 +5459,25 @@ def submodule_keys(listing: str) -> list[tuple[str, str, str]]:
     `submodule.` and its last dot, so a name that holds a space, a dot, a
     quote or an `=` is read whole, and the field is what follows that dot,
     which git lists in lower case.
+
+    THE NAME KEEPS GIT'S BYTES AND THE VALUE IS TEXT (#732). The name is
+    only ever handed back to git, by `configured_url` and `kept_gitdir`
+    through `git_bytes`, so a byte that is not UTF-8 stays the
+    `surrogateescape` the listing was decoded with: replaced, a section
+    named `caf\\xe9` was looked up as `caf\\ufffd`, a name git has nowhere,
+    and a member with a commit on its detached HEAD got the update line
+    with no keep line. The value is compared and printed, so it takes the
+    replacement, as `make siblings` reads the same file (#432) and
+    `origin_url` reads a remote (#385).
     """
     keys = []
     for record in listing.split("\0"):
         key, _, value = record.partition("\n")
         section, _, field = key.rpartition(".")
         if section.startswith("submodule.") and field in ("path", "url"):
-            keys.append((section[len("submodule."):], field, value))
+            keys.append((section[len("submodule."):], field,
+                         value.encode("utf-8", "surrogateescape").decode(
+                             "utf-8", "replace")))
     return keys
 
 
@@ -4709,16 +5499,17 @@ def gitmodules_listing(root: Path, source: list[str]) -> str | None:
     them, and a name a space: git's plain listing, split at line breaks and
     at the first space, cut such a url short and such a name in two.
 
-    Decoded with the replacement, as `make siblings` reads the same file
-    (#432) and `origin_url` reads a remote (#385). Read only: `--list`
-    writes nothing.
+    Decoded with `surrogateescape`, so nothing git listed is lost:
+    `submodule_keys` keeps a section's name as git's own bytes and gives
+    each value with the replacement (#732). Read only: `--list` writes
+    nothing.
     """
     try:
         raw = git_out(["config", "-z", *source, "--list"], cwd=root,
                       binary=True)
     except (Refusal, OSError):
         return None
-    return raw.decode("utf-8", "replace")
+    return raw.decode("utf-8", "surrogateescape")
 
 
 def configured_url(root: Path, name: str) -> str | None:
@@ -4736,17 +5527,44 @@ def configured_url(root: Path, name: str) -> str | None:
     128, measured), so neither is helped by this.
 
     `git config --get` in the root, which reads what git reads: the
-    repository's config and the ones above it. Read only.
+    repository's config and the ones above it. Read only. The key is
+    handed to git as the bytes the section was named with (`git_bytes`,
+    #732).
     """
     try:
         proc = subprocess.run(["git", "config", "--get",
-                               f"submodule.{name}.url"],
+                               git_bytes(f"submodule.{name}.url")],
                               cwd=str(root), capture_output=True, check=False)
     except OSError:
         return None
     if proc.returncode != 0:
         return None
     return proc.stdout.decode("utf-8", "replace").strip() or None
+
+
+def git_bytes(text: str) -> str | bytes:
+    """`text`, read out of git as UTF-8 with `surrogateescape`, as the
+    argument that hands git back the same bytes (#732).
+
+    BYTES ON POSIX, whose command line is bytes. A `str` there is encoded
+    with the filesystem encoding, which is ASCII under `LC_ALL=C
+    PYTHONUTF8=0`: a section named `caf\\xc3\\xa9`, valid UTF-8, then raised
+    `UnicodeEncodeError` out of `subprocess`, a traceback with no verdict,
+    and one named `caf\\xe9` too. THE TEXT ITSELF ON WINDOWS, whose command
+    line is text: `subprocess` would have to decode bytes there, and a byte
+    that is not UTF-8 is not text to it.
+
+    SO ON WINDOWS A NAME THAT IS NOT UTF-8 IS STILL NOT FOUND: Git for
+    Windows' `xwcstoutf` turns the lone surrogate into the bytes ED B3 A9,
+    not E9. A UTF-8 name is found there. What would find the other is a
+    lookup with no name on the command line: read the root's config with
+    `git config -z --list` and match the key's bytes in Python, and build
+    the kept repository's path from `git rev-parse --git-common-dir`,
+    `modules/` and the name's bytes.
+    """
+    if os.name == "nt":
+        return text
+    return text.encode("utf-8", "surrogateescape")
 
 
 def submodule_url(root: Path, rel: str) -> tuple[str | None, str | None]:
@@ -4781,11 +5599,21 @@ def kept_gitdir(root: Path, name: str) -> Path | None:
 
     BY NAME, which is not always the path: `--git-path modules/<name>` says
     where git keeps it, in the common directory of a linked worktree too.
+
+    AND BY THE NAME'S OWN BYTES (#732): the name goes to git through
+    `git_bytes`, and the path git answers with is read as a path
+    (`os.fsdecode`), which `kept_head` and the keep line hand back to git
+    unchanged. A strict decode of it found no repository for a section
+    named `caf\\xe9`, and the commit on its detached HEAD got no keep line.
     """
     try:
-        where = git_out(["rev-parse", "--git-path", f"modules/{name}"],
-                        cwd=root)
-    except (Refusal, OSError, UnicodeDecodeError):
+        proc = subprocess.run(["git", "rev-parse", "--git-path",
+                               git_bytes(f"modules/{name}")],
+                              cwd=str(root), capture_output=True, check=False)
+        if proc.returncode != 0:
+            return None
+        where = os.fsdecode(proc.stdout.rstrip(b"\r\n"))
+    except (OSError, ValueError):
         return None
     path = Path(where)
     if not path.is_absolute():
@@ -6458,6 +7286,13 @@ def audit_leg(adopt, policy, patterns: list, role: str, rel: str,
     the record answers into this leg, which are returned apart, and
     `unslashed_rows` names the rows for this leg that name a directory
     without its `/`.
+
+    AND A LEG'S `single-repository.yaml` IS ASKED THE RECORD'S QUESTION ONLY
+    WHERE IT IS THE RECORD (#691). The walk asks it by name; `plan`'s own
+    `ask_about_a_record_only` reads the file's `kind:` and gives any other
+    the general question. It is called here over the leg's INDEX, which is
+    what this row lists, so a file edited or deleted on disk and a link are
+    read as `plan` reads them.
     """
     entry = {"role": role, "path": rel}
     mount = root / rel
@@ -6494,7 +7329,11 @@ def audit_leg(adopt, policy, patterns: list, role: str, rel: str,
     kept = [(path, size) for path, size in files
             if path not in gitlinks
             and not any(regex.match(path) for regex in patterns)]
-    walked = adopt.walk(policy, kept)
+    # `plan`'s own `ask_about_a_record_only` (#528, #691), over the leg's
+    # INDEX -- `""` is git's `:<path>`, the index `leg_tracked_files`
+    # lists -- so a link is read as its blob and never followed.
+    walked = adopt.ask_about_a_record_only(
+        policy, adopt.walk(policy, kept), adopt.Source(mount, None, "", ""))
     submodules, wrong = leg_submodules(policy, role, rel, held, record)
     answered = gitmodules_the_record_answers(adopt, submodules, unwritable)
     misplaced, review, settled = walked_findings(walked, role, rel, answered)
@@ -7451,7 +8290,7 @@ def submodule_config(root: Path) -> dict:
     `except` there did not name -- it is a `ValueError`, neither a
     `Refusal` nor an `OSError` -- so `--root` ended in a traceback, exit 1,
     which is also the code of a finding, with no verdict. The bytes are
-    asked for, and `gitmodules_listing` says how they are decoded.
+    asked for, and `submodule_keys` says how each part is decoded.
 
     THE URL IS KEPT, NOT DROPPED. The row exists to agree with `make
     siblings` about one directory (#146): a clone whose own `origin` is the
@@ -7467,7 +8306,8 @@ def submodule_config(root: Path) -> dict:
     is COMPARED with `origin_url`'s reading of a clone's remote, which is
     the replacement (#385): the same bytes read two ways are two strings,
     so a clone made from this very url would stop being the member's
-    working clone.
+    working clone. A section's NAME, which is handed back to git and never
+    compared, keeps the `surrogateescape` (#732).
     """
     fields: dict = {}
     listing = gitmodules_listing(root, ["--file", ".gitmodules"])
@@ -7685,11 +8525,12 @@ def sibling_slot(root: Path, sibling: Path, row: dict,
     only names.
 
     A FILE, OR A FOLDER THAT CANNOT BE LISTED OR ENTERED, IS `not-a-clone`
-    TOO: nothing can be cloned into it. `make siblings` itself ends in a
-    traceback on each today (`siblings.py:558`, #735), so the row says what
-    is there and nothing of what `make siblings` does with it
-    (`beside_sentence`). A folder that cannot be entered cannot be asked
-    for its `.git` either, so that question's `OSError` reads "no `.git`".
+    TOO: nothing can be cloned into it. A holder whose pinned `siblings.py`
+    predates #735 ends `make siblings` in a traceback on each, and one that
+    has #735 calls it NOT A CLONE, so the row says what is there and
+    nothing of what `make siblings` does with it (`beside_sentence`), which
+    is true of both. A folder that cannot be entered cannot be asked for its
+    `.git` either, so that question's `OSError` reads "no `.git`".
     """
     if sibling == root:
         return "is-the-holder", None
@@ -7834,9 +8675,9 @@ BESIDE_THE_HOLDER = {
                      "project.yaml that says it is this member", ""),
 }
 
-#: What stands at a `not-a-clone` slot `make siblings` cannot read today, as
-#: `unclonable` names it: it ends in a traceback on each (#735), so the row
-#: says what is there and no word of what `make siblings` does with it.
+#: What stands at a `not-a-clone` slot that a holder's pinned `siblings.py`
+#: from before #735 ends in a traceback on, as `unclonable` names it: the
+#: row says what is there and no word of what `make siblings` does with it.
 UNREADABLE_BESIDE = {"file": "is a file, not a folder",
                      "unlistable": "is a folder that cannot be listed"}
 
@@ -7853,8 +8694,9 @@ def beside_sentence(ctx: Context, entry: dict) -> str:
     `--json` keeps them raw: `json.dumps` escapes them.
 
     A FILE, OR A FOLDER THAT CANNOT BE LISTED, is `not-a-clone` with no
-    word from `make siblings`, which ends in a traceback on it today (#735):
-    the sentence stops at what stands there (`UNREADABLE_BESIDE`).
+    word from `make siblings`, which ends in a traceback on it in a holder
+    whose pinned copy predates #735: the sentence stops at what stands
+    there (`UNREADABLE_BESIDE`).
     """
     state = entry["sibling"]
     where = ctx.root.parent / entry["project"]
@@ -9551,6 +10393,9 @@ def main(argv: list[str] | None = None) -> int:
     # a name stdout cannot encode rather than raising on it (#214).
     escape_what_stdout_cannot_encode()
     args = build_parser().parse_args(argv)
+    # Before any row is built: `quote_arg` and `ascii_text` read it (#785).
+    global REPORT_ENCODING
+    REPORT_ENCODING = "utf-8" if args.as_json else None
     if [marker for marker in SHAPE_MARKERS
             if not (SHAPE_ROOT / marker).exists()]:
         return not_in_the_standard("")

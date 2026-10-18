@@ -75,6 +75,9 @@ from repo_shape import (  # noqa: E402
 # How a `--pin-source` that is not printable is named, the one spelling the
 # scaffold's chain WARNING gives it too (#610).
 from repo_shape import shown_path  # noqa: E402
+# What git answers about where a `--pin-source` is, and why, in its own
+# words, where it cannot (#800).
+from repo_shape import git_out  # noqa: E402
 # What the Free-plan secrets hint goes by (#660): GitHub's three
 # visibilities, and the hint's own words, which stay in the pinned copy.
 from repo_shape import FREE_PLAN_HINT, VISIBILITY_CHOICES  # noqa: E402
@@ -159,11 +162,11 @@ def escape_what_stdout_cannot_encode(stream=None) -> None:
     file it is, and two names that differ only outside the code page do not
     both print as `??.md`. (A backslash is not escaped, so a name that holds
     the six characters `\\u65e5` prints as one holding `日` does.) ONCE, AT
-    THE START OF `main()`, and not at each `print`: `shape-doctor.py`'s
-    `ascii_text` and `shape_advisory.printable` flatten their own text to
-    ASCII on every console, which a name cannot afford -- it would change
-    what a UTF-8 terminal shows -- and a guard at each site is a guard the
-    next `print` goes without.
+    THE START OF `main()`, and not at each `print`: `shape_advisory.printable`
+    flattens its own text to ASCII on every console, as `shape-doctor.py`'s
+    `ascii_text` did until #785, which a name cannot afford -- it would
+    change what a UTF-8 terminal shows -- and a guard at each site is a
+    guard the next `print` goes without.
 
     GUARDED, because failing to set a handler is no reason to refuse the
     run: a stream a caller replaced may have no `reconfigure`, a closed or
@@ -1199,6 +1202,24 @@ BRANCH_UNCHECKED_REMEDIATION = (
 #: the person's name: a git that refuses this one too could not answer.
 BRANCH_CONTROL = "main"
 
+#: What git adds to a branch's last part to lock its ref while it makes it:
+#: `refs/heads/<name>.lock`, a file in the same directory.
+BRANCH_LOCK_SUFFIX = ".lock"
+
+#: The remedy for a part too long for the disk (#689), whose own words are
+#: the same for a flag and for a plan's key, so `adopt-project.py`'s `check`
+#: prints it as it stands. `BRANCH_REMEDIATION` would send the person to
+#: `git check-ref-format --branch`, which accepts every such name.
+BRANCH_LENGTH_REMEDIATION = (
+    "Remediation: shorten the part of the name the line above says is too "
+    "long. Git keeps a branch as a file under `.git/refs/heads/`, each part "
+    "before the last a directory and the last part the file, and it locks "
+    f"the branch by first creating `<last part>{BRANCH_LOCK_SUFFIX}` beside "
+    "it; most disks keep a file or directory name to 255 bytes, so the last "
+    "part may be at most 250 bytes and every other part at most 255. "
+    "`git check-ref-format` has no length limit, so it accepts such a name, "
+    "and git fails only when it first writes the branch.")
+
 
 def _ask_git_branch(name: str) -> str:
     """`git check-ref-format --branch <name>`, asked of NO repository and
@@ -1227,8 +1248,9 @@ def _ask_git_branch(name: str) -> str:
 
 def _branch_verdict(what: str, value) -> tuple[str | None, str]:
     """`(problem, remediation)`: `branch_problem`'s sentence, and the remedy
-    that fits it, which is about the NAME when git judged the name and about
-    GIT when git could not answer."""
+    that fits it, which is about the NAME when git judged the name, about
+    GIT when git could not answer, and about the DISK when a part of the
+    name is too long for it (#689, `_branch_length_verdict`)."""
     text = str(value)
     refused = f"{what} is {text!r}, which is not a branch name git will create"
     unchecked = f"{what} is {text!r}, which could not be checked"
@@ -1264,12 +1286,55 @@ def _branch_verdict(what: str, value) -> tuple[str | None, str]:
     if answer != text:
         return (f"{refused}: `git check-ref-format --branch` reads it as "
                 f"{answer!r}, not as written", BRANCH_REMEDIATION)
+    return _branch_length_verdict(what, text)
+
+
+def _branch_length_verdict(what: str, text: str) -> tuple[str | None, str]:
+    """`_branch_verdict`'s last question, asked of a name git accepted
+    (#689): can the disk hold the files git makes for it?
+
+    `git check-ref-format` has NO LENGTH LIMIT, so a tracking branch of 251
+    to 255 characters, inside `checked_value`'s 255, passed it and passed
+    `--dry-run`, and the real run died at the first commit with every remote
+    already made: `fatal: cannot lock ref 'HEAD': Unable to create
+    '.../refs/heads/aaa....lock': File name too long`. The limit is the
+    disk's, not git's, so it is the one question here that is written down
+    and not asked of git. Git keeps a branch as a file under `refs/heads/`:
+    each part before the last is a directory and the last part is the file,
+    which git locks by first creating `<last part>.lock` beside it. So the
+    last part may be at most `NAME_MAX - len(".lock")` = 250 bytes and any
+    other part `NAME_MAX` = 255 (measured: `<255 a's>/x` and `x/<250 a's>`
+    are created, `x/<251 a's>` and `<251 a's>` are not). BYTES, as
+    `refuse_unstorable_names` counts them, in the form the operating system
+    is given (`os.fsencode`). One refusal, for the first part over its limit.
+    """
+    parts = text.split("/")
+    for number, part in enumerate(parts, 1):
+        last = number == len(parts)
+        limit = NAME_MAX - (len(BRANCH_LOCK_SUFFIX) if last else 0)
+        size = len(os.fsencode(part))
+        if size <= limit:
+            continue
+        # BOTH ENDS, as `refuse_unstorable_names` shows a long name: the
+        # tail is what tells two long names apart.
+        shown = text if len(text) <= 27 else f"{text[:12]}...{text[-12:]}"
+        if len(parts) == 1:
+            which = "it"
+        elif last:
+            which = "its last part"
+        else:
+            which = f"its part {number}"
+        return (f"{what} is {shown!r}, which is not a branch name git will "
+                f"create: {which} is {size} bytes long, and may be at most "
+                f"{limit}", BRANCH_LENGTH_REMEDIATION)
     return None, BRANCH_REMEDIATION
 
 
 def branch_problem(what: str, value) -> str | None:
     """None when `git check-ref-format --branch` accepts `value` exactly as
-    written; otherwise the sentence that says what git made of it.
+    written and the disk can hold the files git makes for it (#689);
+    otherwise the sentence that says what git made of it, or which part is
+    too long.
 
     `what` names the value as the person met it (`--tracking-branch`,
     `tracking_branch`), the way `leg_path_problem` is given its flag. Git is
@@ -1291,8 +1356,10 @@ def refuse_bad_branch(refusal: str, what: str, value) -> None:
 
     `refusal` is the caller's own code (`scaffold-bad-tracking-branch`), so
     each tool refuses in its own voice, as `refuse_bad_leg_paths` lets it.
-    The remedy is `BRANCH_REMEDIATION` when git judged the name, and
-    `BRANCH_UNCHECKED_REMEDIATION` when git could not answer at all.
+    The remedy is `BRANCH_REMEDIATION` when git judged the name,
+    `BRANCH_UNCHECKED_REMEDIATION` when git could not answer at all, and
+    `BRANCH_LENGTH_REMEDIATION` when a part of the name is too long for the
+    disk (#689).
     """
     problem, remediation = _branch_verdict(what, value)
     if problem:
@@ -1360,15 +1427,21 @@ def folder_cannot_be_made(path: Path) -> str | None:
     write in (the system's own answer, `os.access`, where it has one; it
     says yes for root, and for any folder on Windows, as `mkdir` would). A
     `path` nothing stands at is asked of the folder above it.
+
+    THE FOLDER IS NAMED AS `shown_source` NAMES A PATH (#692): as it is, and
+    as Python's `repr` spells it when a character in it is not printable.
+    Printed raw, an ESC in a folder's name reached the terminal and a line
+    break began a line of the person's choosing. A printable path is named
+    byte for byte, so `why.endswith(CANNOT_WRITE_IN)` still holds.
     """
     for here in (path, *path.parents):
         if not os.path.lexists(here):
             continue
         why = _not_a_folder(here)
         if why:
-            return f"{here} {why}"
+            return f"{shown_source(here)} {why}"
         if not os.access(here, os.W_OK | os.X_OK):
-            return f"{here} {CANNOT_WRITE_IN}"
+            return f"{shown_source(here)} {CANNOT_WRITE_IN}"
         return None
     return None
 
@@ -1396,11 +1469,13 @@ def refuse_unmakeable_folder(refusal: str, named: str, path: Path,
     or one above it) is not told to "move what stands in the way aside": it
     is told what `_unwritable_remediation` says, naming the flag `choose`,
     which is `named` unless it is no flag (`the family folder`, met by
-    `--into`). Every other answer keeps `FOLDER_REMEDIATION`."""
+    `--into`). Every other answer keeps `FOLDER_REMEDIATION`.
+
+    THE PATH IS NAMED AS `folder_cannot_be_made` NAMES IT (#692)."""
     why = folder_cannot_be_made(path)
     if why:
         raise Refusal(
-            refusal, f"{named} {path} cannot be made: {why}",
+            refusal, f"{named} {shown_source(path)} cannot be made: {why}",
             _unwritable_remediation(choose or named)
             if why.endswith(CANNOT_WRITE_IN) else FOLDER_REMEDIATION)
 
@@ -1412,12 +1487,13 @@ def make_folder(refusal: str, named: str, path: Path) -> None:
     The real run's `mkdir`, after `refuse_unmakeable_folder` has said yes:
     what still fails here (a file made in the meantime, a permission
     `os.access` did not foresee) is the same refusal, before any remote is
-    made."""
+    made. The path is named as `refuse_unmakeable_folder` names it (#692)."""
     try:
         path.mkdir(parents=True, exist_ok=True)
     except OSError as exc:
-        raise Refusal(refusal, f"{named} {path} cannot be made: "
-                      f"{exc.strerror or exc}", MKDIR_REMEDIATION) from exc
+        raise Refusal(refusal, f"{named} {shown_source(path)} cannot be "
+                      f"made: {exc.strerror or exc}",
+                      MKDIR_REMEDIATION) from exc
 
 
 def target_in_the_way(target: Path) -> str | None:
@@ -2921,6 +2997,8 @@ def pin_digest_from_source(source: Path, commit: str, repository: str) -> str:
     try:
         return _digest_from_pin_source(source, commit)
     except (Refusal, OSError) as exc:
+        if isinstance(exc, Refusal) and exc.code == PIN_SOURCE_NOT_A_CLONE:
+            raise  # its own refusal, which names the top level (#800)
         why = (exc.detail if isinstance(exc, Refusal)
                else exc.strerror or str(exc))
         named = shown_source(source)
@@ -2992,8 +3070,10 @@ def shown_source(source) -> str:
 
 def _digest_from_pin_source(source: Path, commit: str) -> str:
     """`tree_digest` over `source`, with a path that is no directory said
-    in `validate-pins.py`'s words (#339). Any other `OSError`, from `stat()`
-    or from git's `cwd=`, is left for `pin_digest_from_source` to name."""
+    in `validate-pins.py`'s words (#339), and a directory that is no
+    clone's top level refused `pin-source-not-a-clone` before anything is
+    digested (#800). Any other `OSError`, from `stat()` or from git's
+    `cwd=`, is left for `pin_digest_from_source` to name."""
     try:
         mode = source.stat().st_mode
     except (FileNotFoundError, NotADirectoryError):
@@ -3001,7 +3081,95 @@ def _digest_from_pin_source(source: Path, commit: str) -> str:
     if not stat.S_ISDIR(mode):
         raise Refusal("pin-source-not-a-directory",
                       "it is a file, not a directory")
+    _refuse_unless_a_clone_top_level(source)
     return tree_digest(source, commit)
+
+
+# ---------------------------------------------------------------------------
+# A `--pin-source` is a clone's top level (#800)
+# ---------------------------------------------------------------------------
+#
+# `tree_digest` runs `git ls-tree -r` IN the `--pin-source`, and there, with
+# no `--full-tree`, git lists only the part of the tree under the folder it
+# runs in. So a folder inside a clone was read as a clone: `glass/sub`
+# recorded the digest of `sub/` alone, a folder the commit does not hold
+# recorded the sha256 of nothing, and `adopt-project.py plan` and the
+# scaffold, `--dry-run` alike, wrote it with no word; `check` recomputed the
+# same number there, or, inside a partial clone, NOTEd that it did not ask.
+#
+# SO GIT IS ASKED FIRST, before any digest is read: a working tree's top
+# level, a linked worktree's among them, has an empty `rev-parse
+# --show-prefix` outside the git directory, and a bare clone's git directory
+# is the path itself. Any other path is `pin-source-not-a-clone`, naming the
+# top level git finds, or saying that it finds none. What a top level digests
+# is unchanged, byte for byte, and `repo_shape.tree_digest`, a pinned shape
+# copy, is not changed. `adopt-project.py check` asks a recorded path the
+# same question (`pin_source_not_top_level`) before a partial clone's NOTE.
+
+#: The refusal of a `--pin-source` that is no clone's top level.
+PIN_SOURCE_NOT_A_CLONE = "pin-source-not-a-clone"
+#: What it says to pass where git names no top level to pass.
+NO_TOP_LEVEL_REMEDIATION = (
+    "Remediation: pass --pin-source the top level of a clone of the pinned "
+    "product (`git rev-parse --show-toplevel` prints it in that clone's "
+    "working tree), or drop --pin-source and let `gh api` read the forge.")
+
+
+def _rev_parse(source: Path, *asked: str) -> str:
+    """What `git rev-parse <asked>` prints in `source`, its last line break
+    dropped and a path in it as `sys.argv` holds one. A git that fails is
+    `git_out`'s refusal, naming the folder and git's reason, spelled."""
+    printed = git_out(["rev-parse", *asked], cwd=source, binary=True)
+    return os.fsdecode(printed).removesuffix("\n")
+
+
+def pin_source_not_top_level(source: Path) -> tuple[str, Path | None] | None:
+    """None where `source` is a clone's top level (#800). Otherwise `(why,
+    top)`: why it is not, and the top level git finds for it, or None where
+    git finds none to pass. A `source` `subprocess` cannot enter raises the
+    `OSError` of `cwd=`, which is the caller's to name.
+
+    The answers come in one question where they can: `--show-prefix` is
+    printed last, so a folder whose name holds a line break is read whole."""
+    try:
+        bare, inside, prefix = _rev_parse(
+            source, "--is-bare-repository", "--is-inside-git-dir",
+            "--show-prefix").split("\n", 2)
+        if bare == "true":
+            top = Path(_rev_parse(source, "--absolute-git-dir"))
+            if os.path.samefile(top, source):
+                return None
+            return (f"it is a folder inside the bare clone at "
+                    f"{shown_source(top)}", top)
+        if inside == "true":
+            gitdir = Path(_rev_parse(source, "--absolute-git-dir"))
+            return (f"it is inside {shown_source(gitdir)}, the git directory "
+                    "of a clone, where git finds no top level", None)
+        if not prefix:
+            return None
+        top = Path(_rev_parse(source, "--show-toplevel"))
+    except Refusal as exc:
+        return f"git finds no clone there: {exc.detail}", None
+    return (f"it is a folder inside the clone at {shown_source(top)}, and a "
+            "digest read there covers only what the commit holds under that "
+            "folder", top)
+
+
+def _refuse_unless_a_clone_top_level(source: Path) -> None:
+    """`pin-source-not-a-clone` for a `source` that is no clone's top level
+    (`pin_source_not_top_level`), naming the top level to pass instead."""
+    found = pin_source_not_top_level(source)
+    if found is None:
+        return
+    why, top = found
+    raise Refusal(
+        PIN_SOURCE_NOT_A_CLONE,
+        f"--pin-source {shown_source(source)} is not a clone's top level: "
+        f"{why}",
+        NO_TOP_LEVEL_REMEDIATION if top is None else
+        f"Remediation: pass --pin-source {shown_source(top)}, the clone's "
+        "top level, where a pin's digest is read over its commit's whole "
+        "tree.")
 
 
 def _resolved_pin_source(source: Path) -> Path:
@@ -4681,13 +4849,84 @@ def manifest_invalid(values: dict, policy: NamingPolicy, what: dict,
     asked as the project asks it. `values` must be the complete table;
     `policy` is the naming policy the project carries a copy of. A WARNING of
     the validator (a chain link it cannot check offline) is a note and never
-    a refusal, exactly as the project's own exit code treats it.
+    a refusal, exactly as the project's own exit code treats it. Where the
+    project's own YAML reader refuses the file before the validator can be
+    asked, each sentence is the reader's, naming the value on the line it
+    refuses (`_unread_sentences`, #708).
     """
+    return [sentence for _, sentence in _invalid_problems(
+        values, policy, what, template_dir, ignore, not_text)]
+
+
+#: The kinds of problem `manifest_value_problems` names, each spelled once
+#: (#708): a value the project's reader reads back as something else, one
+#: its validator refuses, and a manifest the reader refuses before the
+#: validator can be asked, which `refuse_manifest_values` refuses under the
+#: code `invalid` still.
+KIND_MISREAD, KIND_INVALID, KIND_UNREADABLE = (
+    "misread", "invalid", "unreadable")
+
+
+def _invalid_problems(values: dict, policy: NamingPolicy, what: dict,
+                      template_dir: Path, ignore: tuple,
+                      not_text: tuple) -> list[tuple[str, str]]:
+    """`manifest_invalid`'s sentences, each with its kind: `invalid` for a
+    finding of the validator's, and `unreadable` where the project's own
+    YAML reader refuses the file the validator would read (#708), whose
+    words are the reader's and whose remedy is its own
+    (`MANIFEST_UNREADABLE_REMEDIATION`)."""
     notes = _validator_notes(values, policy, template_dir, ignore)
     if isinstance(notes, YamlError):
+        return [(KIND_UNREADABLE, sentence) for sentence
+                in _unread_sentences(values, what, template_dir, notes)]
+    return [(KIND_INVALID, sentence)
+            for sentence in _sentences_of(notes, values, what, not_text)]
+
+
+#: The placeholders that carry a value of `what` into the manifest where no
+#: line holds that value's own placeholder (#708): the organisation is the
+#: owner half of each leg's `repository:`, so the reader's refusal of such a
+#: line is `--org`'s, as the validator's finding about it is
+#: (`FINDING_PLACEHOLDER`'s `manifest-leg-repository`).
+CARRIED_BY = {"ASSEMBLY_REPOSITORY": "ORG", "SPEC_REPOSITORY": "ORG",
+              "CODE_REPOSITORY": "ORG"}
+
+
+def _unread_sentences(values: dict, what: dict, template_dir: Path,
+                      refusal: YamlError) -> list[str]:
+    """A sentence for each value of `what` that a line of the manifest the
+    project's own reader refuses carries, in the reader's words, and the
+    reader's `refusal` of the whole file where no such line is found.
+
+    THE VALUE IS NAMED AGAIN (#708). Until #392 and #393 the reader took
+    `repository: @x/Atlas` for text, so `--org @x` reached the validator,
+    whose `manifest-leg-repository` names `--org`. Since then the reader
+    refuses the file first, and the sentence named nothing: `plan --org
+    @x` (a typo of `@opensoft`, where GitHub owners never begin with `@`)
+    said only that the manifest was a file the reader refuses. So each
+    template line that carries a value of `what` (by its own placeholder,
+    or by one `CARRIED_BY` names) is rendered and read alone, as
+    `_misread_rows` reads one, and a value is named where the reader
+    refuses one of its lines.
+    """
+    said: dict[str, list[str]] = {}
+    template = (Path(template_dir) / MANIFEST_TEMPLATE).read_text(
+        encoding="utf-8")
+    for line in template.splitlines():
+        carried = {CARRIED_BY.get(key, key) for key in _placeholders_of(line)}
+        named = [key for key in what if key in carried and key in values]
+        if not named or line.lstrip().startswith("#"):
+            continue
+        reading = _reading_of(render(line, values, MANIFEST_TEMPLATE))
+        if isinstance(reading, YamlError):
+            for key in named:
+                said.setdefault(key, []).append(f"{reading}.")
+    if not said:
         return ["the manifest this run would write is a file the project's "
-                f"own YAML reader refuses: {notes}."]
-    return _sentences_of(notes, values, what, not_text)
+                f"own YAML reader refuses: {refusal}."]
+    return [f"{what[key]} is {str(values[key])!r}, which the project's own "
+            f"YAML reader refuses: {' '.join(words)}"
+            for key, words in said.items()]
 
 
 def _validator_notes(values: dict, policy: NamingPolicy, template_dir: Path,
@@ -4765,6 +5004,21 @@ MANIFEST_INVALID_REMEDIATION = (
     "Remediation: choose a value the project's own validate-manifest.py "
     "accepts; the words after each value are the validator's own, and a "
     "project it refuses is one whose first bootstrap would fail.")
+#: Where the project's own YAML reader refuses the manifest before its
+#: validator can be asked (#708), the words are the reader's, and a sentence
+#: may name no value (`_unread_sentences`), so the remedy says neither that
+#: they are the validator's nor that a value is always named.
+MANIFEST_UNREADABLE_REMEDIATION = (
+    "Remediation: choose another value for each one named; where none is "
+    "named, the text the reader's words quote holds it. The words are the "
+    "project's own YAML reader's, which refuses the manifest this run would "
+    "write before its validate-manifest.py can be asked, and a project "
+    "whose manifest it refuses is one whose first bootstrap would fail.")
+#: The remedy for each kind of problem, so a refusal names it by its kind
+#: (#708), with no conditional nested in another.
+KIND_REMEDIATIONS = {KIND_MISREAD: MANIFEST_MISREAD_REMEDIATION,
+                     KIND_INVALID: MANIFEST_INVALID_REMEDIATION,
+                     KIND_UNREADABLE: MANIFEST_UNREADABLE_REMEDIATION}
 
 
 def manifest_value_problems(values: dict, policy: NamingPolicy, what: dict,
@@ -4773,7 +5027,8 @@ def manifest_value_problems(values: dict, policy: NamingPolicy, what: dict,
                             template_dir: Path = ASSEMBLY_TEMPLATE
                             ) -> list[tuple[str, str]]:
     """`(kind, sentence)` for everything wrong with the values, `kind` being
-    `misread` or `invalid`; `[]` when the project would hold every one.
+    `misread`, `invalid` or `unreadable` (`_invalid_problems`); `[]` when
+    the project would hold every one.
 
     A misread comes FIRST and alone: a value the reader turns into something
     else makes the manifest invalid in ways that are its consequence (`id:
@@ -4784,10 +5039,9 @@ def manifest_value_problems(values: dict, policy: NamingPolicy, what: dict,
     if misreads:
         misread = manifest_misreads(values, what, template_dir)
         if misread:
-            return [("misread", sentence) for sentence in misread]
-    return [("invalid", sentence) for sentence
-            in manifest_invalid(values, policy, what, template_dir, ignore,
-                                not_text)]
+            return [(KIND_MISREAD, sentence) for sentence in misread]
+    return _invalid_problems(values, policy, what, template_dir, ignore,
+                             not_text)
 
 
 def refuse_manifest_values(prefix: str, values: dict, policy: NamingPolicy,
@@ -4796,16 +5050,18 @@ def refuse_manifest_values(prefix: str, values: dict, policy: NamingPolicy,
     """Raise `Refusal(<prefix>-manifest-misread)` or `<prefix>-manifest-
     invalid`, naming every value, when the project could not hold them; the
     caller's own `prefix` (`scaffold`, `adopt`) says which tool refused, and
-    its `tail` finishes the remediation with what only it knows."""
+    its `tail` finishes the remediation with what only it knows. A manifest
+    the project's reader refuses is `-invalid` still, the code a value it
+    refuses had when the validator was the one to refuse it, with the
+    reader's remedy (#708)."""
     problems = manifest_value_problems(values, policy, what,
                                        misreads=misreads)
     if problems:
         kind = problems[0][0]
-        remedy = (MANIFEST_MISREAD_REMEDIATION if kind == "misread"
-                  else MANIFEST_INVALID_REMEDIATION)
-        raise Refusal(f"{prefix}-manifest-{kind}",
+        code = KIND_MISREAD if kind == KIND_MISREAD else KIND_INVALID
+        raise Refusal(f"{prefix}-manifest-{code}",
                       " ".join(sentence for _, sentence in problems),
-                      f"{remedy} {tail}")
+                      f"{KIND_REMEDIATIONS[kind]} {tail}")
 
 
 # ---------------------------------------------------------------------------

@@ -16,6 +16,16 @@ merge asked of a checkout short of a side's commit is a hand merge. The
 one it leaves to a person. A copy whose mode one side changed, one a side
 deleted, one the other side's pin has no row for, and every copy where the
 standard's checkout is a partial clone, stay a person's (review of PR #586).
+A copy only the other side's pin has a row for -- a row the kept pin lost,
+or an add/add where one side's `apply --add` took a file the standard added
+and the other wrote its own -- is never taken either, and the `why` and
+`left_for_a_person` name it for a person (#687). Where one side deleted
+it, the `why` says a person keeps or deletes it, as there are no hunks to
+keep (review of PR #736). A side whose pin does not read is never taken:
+the NEXT takes the side whose pin reads, and where no side's pin reads,
+neither row names a NEXT (#752). A copy renamed on one side conflicts
+under a name no pin has a row for; the `why` names it as renamed from that
+copy, by the merge base's blob, and gives it to a person (#753).
 
 L2-9. A slip amended into `bump-leg.py`'s own commit leaves the commit
 before it holding the pin for the OLD leg commit. Putting that pin back is
@@ -49,6 +59,7 @@ from test_shape_doctor import (  # noqa: F401
     commit_in, compliant_again, doctor, pasted, pin_with, project, rows_of,
     run_pasted, scaffolded_here, standard,
 )
+from test_update_shape_add import MATERIALIZER, name_in_list
 
 #: The two copies these merges conflict, and the standard's file each is a
 #: verbatim copy of.
@@ -104,13 +115,15 @@ def the_standard_moved(standard: Path, tmp_path: Path, *sources: str):
     return moved, c2, c3, frozen
 
 
-def apply_on(moved: Path, root: Path, commit: str, branch: str) -> None:
+def apply_on(moved: Path, root: Path, commit: str, branch: str,
+             *extra: str) -> None:
     """The real `update-shape.py apply --at <commit> --yes --branch
-    <branch>`, from `main`."""
+    <branch>`, and `extra`, from `main`."""
     git("checkout", "-q", "main", cwd=root)
     applied = run_script(moved / "update-shape.py", "apply", "--root",
                          str(root), "--upstream", str(moved), "--at", commit,
-                         "--yes", "--branch", branch, env=GIT_IDENTITY)
+                         "--yes", "--branch", branch, *extra,
+                         env=GIT_IDENTITY)
     assert applied.returncode == 0, applied.stdout + applied.stderr
 
 
@@ -175,6 +188,8 @@ def assert_both_rows_name_it(rows: dict) -> dict:
     assert kinds["detail"]["restore"] == {SHAPE_PIN: "unmerged"}, kinds
     assert kinds["next"] == currency["next"], (kinds, currency)
     assert kinds["why"] == currency["why"], (kinds, currency)
+    assert kinds["detail"].get("left_for_a_person") \
+        == currency["detail"].get("left_for_a_person"), (kinds, currency)
     assert_a_plain_next(currency)
     return currency
 
@@ -594,17 +609,22 @@ def restaged(root: Path, rel: str, stages: dict) -> None:
                    cwd=str(root), input=data, capture_output=True, check=True)
 
 
-def assert_only_bootstrap_is_taken(rows: dict) -> dict:
+#: What the `why` says of the Makefile where the kept side's pin has its row.
+A_COPY_LEFT = f"{MAKEFILE} is a copy {LEFT}"
+
+
+def assert_only_bootstrap_is_taken(rows: dict, said: str = A_COPY_LEFT
+                                   ) -> dict:
     """Both rows name the pin and `scripts/bootstrap.py`, taken; the
-    Makefile goes to a person with `project.yaml`. The `shape currency`
-    row."""
+    Makefile goes to a person with `project.yaml`, and the `why` says
+    `said` of it. The `shape currency` row."""
     currency = assert_both_rows_name_it(rows)
     assert pasted(currency["next"])[3:] == [
         "checkout", "--ours", "--", SHAPE_PIN, BOOTSTRAP], currency["next"]
     detail = currency["detail"]
     assert detail["taken_with_the_pin"] == [BOOTSTRAP], detail
     assert detail["left_for_a_person"] == [MAKEFILE, "project.yaml"], detail
-    assert f"{MAKEFILE} is a copy {LEFT}" in currency["why"], currency["why"]
+    assert said in currency["why"], currency["why"]
     return currency
 
 
@@ -647,15 +667,63 @@ def test_a_copy_whose_mode_one_side_changed_is_left_to_a_person(
     assert_only_bootstrap_is_taken(rows)
 
 
+def a_pin_restaged(root: Path, number: int, changed) -> None:
+    """Stage `number` of the conflicted shape pin restaged as `changed`
+    makes it of the bytes the merge left there."""
+    stages = index_stages(root, SHAPE_PIN)
+    mode, oid = stages[number]
+    blob = subprocess.run(["git", "cat-file", "blob", oid], cwd=str(root),
+                          capture_output=True, check=True).stdout
+    held = changed(blob)
+    written = subprocess.run(["git", "hash-object", "-w", "--stdin"],
+                             cwd=str(root), input=held,
+                             capture_output=True, check=True)
+    stages[number] = (mode, written.stdout.decode("ascii").strip())
+    restaged(root, SHAPE_PIN, stages)
+    assert stage_of(root, number, SHAPE_PIN) == held
+
+
+def a_pin_without_a_row(root: Path, number: int, rel: str) -> None:
+    """Stage `number` of the conflicted shape pin restaged without `rel`'s
+    `files:` row, and every other byte of it as the merge left it."""
+    row = (rb'(?m)^  - path: ' + re.escape(rel.encode())
+           + rb'\n    sha256: "[0-9a-f]{64}"\n')
+
+    def without(blob: bytes) -> bytes:
+        held, count = re.subn(row, b"", blob)
+        assert count == 1, blob
+        return held
+
+    a_pin_restaged(root, number, without)
+
+
+#: What the `why` says of the Makefile one side deleted where only the
+#: other side's pin has its row (review of PR #736): no hunks to keep.
+OTHER_SIDES_DELETED = (
+    f"{MAKEFILE} is conflicted too, and the other side's pin calls it a "
+    "copy where the pin taken here does not, and one side deleted it, so "
+    "neither side is taken whole: once the merge is finished it is the "
+    "project's own file if kept, and a person keeps or deletes it by hand. "
+    "Then finish")
+
+
+@pytest.mark.parametrize("kept_row", [
+    pytest.param(True, id="the-kept-pin-has-its-row"),
+    pytest.param(False, id="only-the-other-sides-pin-has-its-row"),
+])
 def test_a_copy_one_side_deleted_is_left_to_a_person(standard, project,
-                                                     tmp_path):
+                                                     tmp_path, kept_row):
     """shape/a re-pins to C2 and then deletes its Makefile; shape/b
     re-pins to C3. Merged, the Makefile is a delete/modify conflict:
     stages 1 and 2, no stage 3, and shape/a's pin still has its row. No
     side's absence proves anything, so the Makefile is a person's -- taken
     whole as ours, the NEXT would drop the other side's deletion -- and
     bootstrap.py is still taken. Run, the NEXT leaves the Makefile
-    unmerged, as the merge left it."""
+    unmerged, as the merge left it.
+
+    With the kept side's pin restaged without the Makefile's row, only the
+    other side's pin calls it a copy (#687), and the `why` says a person
+    keeps or deletes it, since a deletion leaves no hunks to keep."""
     root = under_an_awkward_name(project, tmp_path)
     moved, c2, c3, _frozen = the_standard_moved(
         standard, tmp_path, UPSTREAM_TARGET, BOOTSTRAP_SOURCE)
@@ -667,8 +735,11 @@ def test_a_copy_one_side_deleted_is_left_to_a_person(standard, project,
     assert f"UD {MAKEFILE}" in status, status
     assert f"UU {SHAPE_PIN}" in status, status
     assert sorted(index_stages(root, MAKEFILE)) == [1, 2]
+    if not kept_row:
+        a_pin_without_a_row(root, 2, MAKEFILE)
     _verdict, rows = rows_from(moved, root)
-    currency = assert_only_bootstrap_is_taken(rows)
+    currency = assert_only_bootstrap_is_taken(
+        rows, A_COPY_LEFT if kept_row else OTHER_SIDES_DELETED)
     run_pasted(currency["next"])
     assert sorted(index_stages(root, MAKEFILE)) == [1, 2]
 
@@ -681,22 +752,234 @@ def test_a_copy_the_other_sides_pin_has_no_row_for_is_left_to_a_person(
     question, though its bytes are the standard's: the Makefile is left,
     and bootstrap.py, which both pins name, is still taken."""
     root = both_pure["root"]
-    stages = index_stages(root, SHAPE_PIN)
-    mode, oid = stages[3]
-    blob = subprocess.run(["git", "cat-file", "blob", oid], cwd=str(root),
-                          capture_output=True, check=True).stdout
-    row = (rb'(?m)^  - path: ' + re.escape(MAKEFILE.encode())
-           + rb'\n    sha256: "[0-9a-f]{64}"\n')
-    without, count = re.subn(row, b"", blob)
-    assert count == 1, blob
-    written = subprocess.run(["git", "hash-object", "-w", "--stdin"],
-                             cwd=str(root), input=without,
-                             capture_output=True, check=True)
-    stages[3] = (mode, written.stdout.decode("ascii").strip())
-    restaged(root, SHAPE_PIN, stages)
-    assert stage_of(root, 3, SHAPE_PIN) == without
+    a_pin_without_a_row(root, 3, MAKEFILE)
     _verdict, rows = rows_from(both_pure["moved"], root)
     assert_only_bootstrap_is_taken(rows)
+
+
+#: What the `why` says of a conflicted file only the side NOT taken has a
+#: `files:` row for (#687).
+OTHER_SIDES = (f"{MAKEFILE} is conflicted too, and the other side's pin "
+               "calls it a copy where the pin taken here does not, so "
+               "neither side is taken whole: once the merge is finished it "
+               "is the project's own file, and a person merges it by hand, "
+               "keeping the hunks git merged")
+
+
+def test_a_copy_only_the_other_sides_pin_has_a_row_for_is_named(both_pure):
+    """The mirror of the test above (#687): (a)'s merge with the KEPT
+    side's pin, stage 2, the one `checkout --ours` takes, restaged without
+    the Makefile's `files:` row. That pin says the Makefile is not a shape
+    copy, so nothing proves it unedited and the NEXT never takes it. The
+    other side's pin calls it one, and its conflict holds that side's
+    `apply` output, so it is a person's to merge and the `why` and
+    `left_for_a_person` say so, where they said nothing of it before. No
+    copy the kept pin has a row for is left, so the `why` sends nobody to
+    `--accept-local`, which refuses a path that pin has no row for.
+    bootstrap.py, which both pins name, is still taken. Run, the NEXT
+    leaves the Makefile unmerged, as the merge left it."""
+    root = both_pure["root"]
+    a_pin_without_a_row(root, 2, MAKEFILE)
+    _verdict, rows = rows_from(both_pure["moved"], root)
+    currency = assert_only_bootstrap_is_taken(rows, OTHER_SIDES)
+    assert "--accept-local" not in currency["why"], currency["why"]
+    held = (root / MAKEFILE).read_bytes()
+    run_pasted(currency["next"])
+    assert sorted(index_stages(root, MAKEFILE)) == [1, 2, 3]
+    assert (root / MAKEFILE).read_bytes() == held
+
+
+#: Both copies conflicted beside the pin, by the conflict each is.
+BOTH_COPIES = [MAKEFILE, "project.yaml", BOOTSTRAP]
+
+
+def test_copies_only_the_other_sides_pin_has_rows_for_are_named_together(
+        both_pure):
+    """The mirror with both copies' rows gone from the kept side's pin:
+    nothing is taken with the pin, and the `why` names the two in one
+    sentence."""
+    root = both_pure["root"]
+    for rel in (MAKEFILE, BOOTSTRAP):
+        a_pin_without_a_row(root, 2, rel)
+    _verdict, rows = rows_from(both_pure["moved"], root)
+    currency = assert_both_rows_name_it(rows)
+    assert pasted(currency["next"])[3:] == [
+        "checkout", "--ours", "--", SHAPE_PIN], currency["next"]
+    assert currency["detail"]["left_for_a_person"] == BOTH_COPIES, \
+        currency["detail"]
+    assert f"{MAKEFILE} and {BOOTSTRAP} are conflicted too, and the other " \
+        "side's pin calls them copies where the pin taken here does not, " \
+        "so neither side is taken whole: once the merge is finished each " \
+        "is the project's own file, and a person merges each by hand, " \
+        "keeping the hunks git merged. Then finish" in currency["why"], \
+        currency["why"]
+
+
+# --- a side whose pin does not read is never taken (#752) -------------------
+
+#: Bytes no pin reads as: a flow sequence nothing closes, RV-b's state.
+UNREADABLE_PIN = b"files: [\n"
+
+
+@pytest.mark.parametrize("broken, side", [
+    pytest.param(2, "--theirs", id="ours-does-not-read"),
+    pytest.param(3, "--ours", id="theirs-does-not-read"),
+])
+def test_the_side_taken_is_one_whose_pin_reads(both_pure, broken, side):
+    """(a)'s merge with one side's pin restaged as bytes that do not read.
+    `--ours` was taken wherever ours held a pin, and taken whole a pin that
+    does not read left the pin as it was, so the doctor named the same
+    line again (#752). Now the NEXT takes the side whose pin reads, and its
+    `why` says only that side's pin reads, never offering the other. No
+    copy is taken: the proof reads both sides' pins. Run as printed, the
+    pin in the tree reads, and neither row names it unreadable again."""
+    root, moved = both_pure["root"], both_pure["moved"]
+    a_pin_restaged(root, broken, lambda _blob: UNREADABLE_PIN)
+    _verdict, rows = rows_from(moved, root)
+    currency = assert_both_rows_name_it(rows)
+    assert pasted(currency["next"])[3:] == [
+        "checkout", side, "--", SHAPE_PIN], currency["next"]
+    assert "taken_with_the_pin" not in currency["detail"], currency
+    assert currency["detail"]["left_for_a_person"] == BOTH_COPIES, currency
+    assert currency["why"].startswith(
+        "only that side's pin reads as one, and the other side taken whole "
+        "would leave a pin that does not read. Take it whole and never a "
+        "hand-merged pin. "), currency["why"]
+    run_pasted(currency["next"])
+    _verdict, after = rows_from(moved, root)
+    assert "error" not in after["shape-currency"]["detail"], \
+        after["shape-currency"]
+    assert SHAPE_PIN not in after["manifest-kinds"]["detail"].get(
+        "restore", {}), after["manifest-kinds"]
+
+
+#: What the `why` says where no side's pin reads, by how many sides hold a
+#: pin: no line puts back one that reads (#752).
+NO_SIDE_READS = {
+    "both": "neither side's pin reads as one",
+    "one": "the one side of it that holds a pin holds one that does not "
+           "read",
+}
+
+
+@pytest.mark.parametrize("held", sorted(NO_SIDE_READS))
+def test_no_line_is_named_where_no_sides_pin_reads(both_pure, held):
+    """(a)'s merge with both sides' pins restaged as bytes that do not
+    read, or ours removed and theirs not reading. Either side taken whole
+    leaves a pin that does not read, so both rows name no NEXT, and the
+    same `why` says the merge is a person's call (#752). The doctor said
+    `checkout --ours` before, again after it ran."""
+    root = both_pure["root"]
+    a_pin_restaged(root, 3, lambda _blob: UNREADABLE_PIN)
+    if held == "both":
+        a_pin_restaged(root, 2, lambda _blob: UNREADABLE_PIN)
+    else:
+        stages = index_stages(root, SHAPE_PIN)
+        del stages[2]
+        restaged(root, SHAPE_PIN, stages)
+    _verdict, rows = rows_from(both_pure["moved"], root)
+    currency, kinds = rows["shape-currency"], rows["manifest-kinds"]
+    assert currency["next"] is None, currency
+    assert kinds["next"] is None, kinds
+    assert kinds["why"] == currency["why"], (kinds, currency)
+    assert currency["detail"]["restore"] == "unmerged", currency["detail"]
+    assert kinds["detail"]["restore"] == {SHAPE_PIN: "unmerged"}, kinds
+    assert currency["why"] == (
+        f"a merge left the pin conflicted, and {NO_SIDE_READS[held]}, so no "
+        "side taken whole puts back a pin that reads, and this doctor would "
+        "name the same line again. A pin is never mended by hand, so no line "
+        "is named here: whether to finish the merge, or to abort it and "
+        "first put back the pin a side broke, is a person's call"), \
+        currency["why"]
+
+
+def test_a_naming_copy_only_the_other_sides_pin_has_a_row_for_is_named(
+        standard, project, tmp_path):
+    """(h)'s merge, with the kept side's pin restaged without the naming
+    copy's row (#687). Nothing takes the copy, both rows give it to a
+    person, and the `manifest kinds` row calls it `unmerged` while the
+    shape pin is conflicted, as it calls every file the `why` gives a
+    person. Run, the NEXT leaves the copy as the merge left it, and once
+    the pin taken here reads, with no row for it, the copy is the project's
+    own file there, `project`, as the `why` said it would be."""
+    root = under_an_awkward_name(project, tmp_path)
+    moved, c2, c3, _frozen = the_standard_moved(standard, tmp_path,
+                                                NAMING_COPY)
+    status = two_applies_merged(moved, root, c2, c3)
+    assert f"UU {NAMING_COPY}" in status, status
+    a_pin_without_a_row(root, 2, NAMING_COPY)
+    _verdict, rows = rows_from(moved, root)
+    currency, kinds = rows["shape-currency"], rows["manifest-kinds"]
+    assert pasted(currency["next"])[3:] == [
+        "checkout", "--ours", "--", SHAPE_PIN], currency["next"]
+    assert kinds["why"] == currency["why"], (kinds, currency)
+    assert f"{NAMING_COPY} is conflicted too, and the other side's pin " \
+        "calls it a copy" in currency["why"], currency["why"]
+    assert kinds["detail"]["left_for_a_person"] == [
+        NAMING_COPY, "project.yaml"], kinds["detail"]
+    assert kinds["detail"]["restore"] == {NAMING_COPY: "unmerged",
+                                          SHAPE_PIN: "unmerged"}, kinds
+    held = (root / NAMING_COPY).read_bytes()
+    run_pasted(currency["next"])
+    assert (root / NAMING_COPY).read_bytes() == held
+    _verdict, rows = rows_from(moved, root)
+    assert rows["manifest-kinds"]["detail"]["restore"] == {
+        NAMING_COPY: "project"}, rows["manifest-kinds"]
+
+
+#: A file the standard adds to the assembly root's copy list, which one
+#: side takes with `apply --add` and the other writes as its own.
+ADDED = "SECURITY.md"
+
+
+def test_an_add_add_only_one_sides_pin_calls_a_copy_is_named(
+        standard, project, tmp_path):
+    """#687's state by a natural flow. At C2 the standard adds SECURITY.md
+    to the assembly root's copy list, as a pull request adding a template
+    file does, and at C3 its Makefile gains a line. shape/a re-pins to C2
+    and takes the new copy with `apply --add`; shape/b re-pins to C3
+    without it, since `apply` adds nothing unasked, and writes a
+    SECURITY.md of its own. Merged, SECURITY.md is an add/add conflict that
+    only the other side's pin calls a copy: the NEXT takes the pin alone,
+    and the `why` gives SECURITY.md to a person. Run, the NEXT leaves it
+    unmerged; a person keeps the project's own, and once the merge is
+    committed the doctor says COMPLIANT, the file the project's own, as the
+    `why` said."""
+    root = under_an_awkward_name(project, tmp_path)
+    moved = tmp_path / "moved" / "openRepoShape"
+    shutil.copytree(standard, moved, symlinks=True)
+    (moved / "templates" / "assembly-root" / ADDED).write_bytes(
+        b"# The standard's security policy.\n")
+    source = moved / MATERIALIZER
+    source.write_text(name_in_list(source.read_text(encoding="utf-8"),
+                                   "COPIED_VERBATIM", ADDED),
+                      encoding="utf-8")
+    commit_all(moved, f"c2: the standard adds {ADDED}")
+    c2 = git("rev-parse", "HEAD", cwd=moved).stdout.strip()
+    c3 = moved_on(moved, "c3", UPSTREAM_TARGET)
+    apply_on(moved, root, c2, "shape/a", "--add", ADDED)
+    apply_on(moved, root, c3, "shape/b")
+    (root / ADDED).write_bytes(b"# This project's own security policy.\n")
+    git("add", "--", ADDED, cwd=root)
+    commit_in(root, f"the project's own {ADDED}")
+    status = merge_a_into_b(root)
+    assert f"AA {ADDED}" in status, status
+    assert f"UU {SHAPE_PIN}" in status, status
+    _verdict, rows = rows_from(moved, root)
+    currency = assert_both_rows_name_it(rows)
+    assert pasted(currency["next"])[3:] == [
+        "checkout", "--ours", "--", SHAPE_PIN], currency["next"]
+    assert currency["detail"]["left_for_a_person"] == [
+        ADDED, "project.yaml"], currency["detail"]
+    assert OTHER_SIDES.replace(MAKEFILE, ADDED, 1) in currency["why"], \
+        currency["why"]
+    run_pasted(currency["next"])
+    assert sorted(index_stages(root, ADDED)) == [2, 3]
+    (root / ADDED).write_bytes(stage_of(root, 2, ADDED))
+    merge_by_ours(root, tmp_path, "project.yaml")
+    git("add", "--", SHAPE_PIN, ADDED, "project.yaml", cwd=root)
+    commit_in(root, "merge shape/a")
+    compliant_again(moved, root)
 
 
 def test_a_partial_clone_of_the_standard_proves_nothing_and_fetches_nothing(
@@ -739,3 +1022,209 @@ def test_a_partial_clone_of_the_standard_proves_nothing_and_fetches_nothing(
             "nothing was read from it to prove a copy unedited") \
         in currency["why"], currency["why"]
     assert left_out <= missing(), "the doctor fetched a blob"
+
+
+# --- a copy renamed on one side (#753) --------------------------------------
+
+#: The name one side gives its Makefile, which no pin has a row for.
+RENAMED = "build.mk"
+
+
+def renamed(old: str, new: str, line: bytes = b""):
+    """An act on a branch: `old` renamed to `new`, `line` appended there,
+    committed."""
+    def act(root: Path) -> None:
+        git("mv", "--", old, new, cwd=root)
+        if line:
+            (root / new).write_bytes((root / new).read_bytes() + line)
+            git("add", "--", new, cwd=root)
+        commit_in(root, f"{old} renamed to {new}")
+    return act
+
+
+def deleted(old: str):
+    """An act on a branch: `old` removed, committed."""
+    def act(root: Path) -> None:
+        git("rm", "-q", "--", old, cwd=root)
+        commit_in(root, f"{old} removed")
+    return act
+
+
+def edited(path: str, line: bytes):
+    """An act on a branch: `line` appended to `path`, committed."""
+    def act(root: Path) -> None:
+        (root / path).write_bytes((root / path).read_bytes() + line)
+        git("add", "--", path, cwd=root)
+        commit_in(root, f"a line in {path}")
+    return act
+
+
+def merged_after(standard: Path, project: Path, tmp_path: Path, acts: dict,
+                 own: tuple | None = None) -> tuple:
+    """`(root, the standard moved on)`: (a)'s two applies, each followed
+    on its branch by `acts[branch]`, then shape/b merging shape/a. `own`,
+    `(path, content)`, is a file of the project's own that main gains
+    first: `content` where it is bytes, else the committed blob of the
+    copy it names, byte for byte."""
+    root = under_an_awkward_name(project, tmp_path)
+    moved, c2, c3, _frozen = the_standard_moved(
+        standard, tmp_path, UPSTREAM_TARGET, BOOTSTRAP_SOURCE)
+    if own:
+        path, content = own
+        (root / path).parent.mkdir(parents=True, exist_ok=True)
+        (root / path).write_bytes(content if isinstance(content, bytes)
+                                  else blob_at(root, f"HEAD:{content}"))
+        git("add", "--", path, cwd=root)
+        commit_in(root, f"the project's own {path}")
+    for commit, branch in ((c2, "shape/a"), (c3, "shape/b")):
+        apply_on(moved, root, commit, branch)
+        if branch in acts:
+            acts[branch](root)
+    merge_a_into_b(root)
+    return root, moved
+
+
+def blob_at(root: Path, spec: str) -> bytes:
+    """The blob `git cat-file` reads at `spec`, as bytes."""
+    return subprocess.run(["git", "cat-file", "blob", spec], cwd=str(root),
+                          capture_output=True, check=True).stdout
+
+
+#: Each rename's merge: what each side does after its `apply`, the stages
+#: the merge leaves at the new name, and what the `why` then says of it.
+RENAMES = {
+    "renamed-on-the-side-ours-takes": (
+        {"shape/b": renamed(MAKEFILE, RENAMED)}, [1, 2, 3],
+        "so neither side is taken whole: a person merges it by hand, "
+        "keeping the hunks git merged"),
+    "renamed-on-the-other-side": (
+        {"shape/a": renamed(MAKEFILE, RENAMED)}, [1, 2, 3],
+        "so neither side is taken whole: a person merges it by hand, "
+        "keeping the hunks git merged"),
+    "renamed-on-one-side-deleted-on-the-other": (
+        {"shape/b": renamed(MAKEFILE, RENAMED), "shape/a": deleted(MAKEFILE)},
+        [1, 2],
+        "and one side alone holds it, so neither side is taken whole: a "
+        "person keeps or deletes it by hand"),
+}
+
+#: What the `why` adds where the pin taken here lists the old name, and
+#: what the doctor says once the merge is finished (review of PR #781).
+STILL_LISTED = ("The pin taken here still lists Makefile, so this doctor "
+                "reports it missing once the merge is finished, unless it is "
+                "renamed back")
+
+
+@pytest.mark.parametrize("merge", sorted(RENAMES))
+def test_a_copy_renamed_on_one_side_is_named_for_a_person(
+        standard, project, tmp_path, merge):
+    """Both copies re-copied by `apply` on both sides, and on ONE side the
+    project renames its Makefile to build.mk, while the other edits it, or
+    deletes it. git takes the conflict to the new name, a path no pin has
+    a row for, so the `why` and `left_for_a_person` said nothing of it, and
+    only the `merge` row listed it (#753). Its stage 1 is the merge base's
+    own Makefile, so the `why` now names build.mk as renamed from that copy
+    and gives it to a person, and the NEXT never takes it; bootstrap.py is
+    still taken. Run, the NEXT leaves build.mk as the merge left it.
+
+    The pin taken here still lists the Makefile, and the `why` says what
+    the doctor says once the merge is finished with build.mk kept: the
+    Makefile missing (review of PR #781)."""
+    acts, held, tail = RENAMES[merge]
+    root, moved = merged_after(standard, project, tmp_path, acts)
+    assert sorted(index_stages(root, RENAMED)) == held
+    _verdict, rows = rows_from(moved, root)
+    currency = assert_both_rows_name_it(rows)
+    assert pasted(currency["next"])[3:] == [
+        "checkout", "--ours", "--", SHAPE_PIN, BOOTSTRAP], currency["next"]
+    assert currency["detail"]["left_for_a_person"] == [
+        RENAMED, "project.yaml"], currency["detail"]
+    assert f"{RENAMED}, renamed from the copy {MAKEFILE}, is conflicted " \
+        f"too, and no pin has a row for it under its new name, {tail}. " \
+        f"{STILL_LISTED}. Then finish" in currency["why"], currency["why"]
+    before = (root / RENAMED).read_bytes()
+    run_pasted(currency["next"])
+    assert sorted(index_stages(root, RENAMED)) == held
+    assert (root / RENAMED).read_bytes() == before
+    assert finished_keeping(root, tmp_path, moved, RENAMED) \
+        == "DRIFTED (1 copy-missing)"
+
+
+def finished_keeping(root: Path, tmp_path: Path, moved: Path,
+                     name: str) -> str:
+    """The merge, its NEXT run, finished by a person who keeps `name` as
+    the side taken holds it, merges `project.yaml` and commits; the
+    doctor's verdict then, out of the standard moved on."""
+    (root / name).write_bytes(stage_of(root, 2, name))
+    merge_by_ours(root, tmp_path, "project.yaml")
+    git("add", "--", SHAPE_PIN, BOOTSTRAP, name, "project.yaml", cwd=root)
+    commit_in(root, f"merge shape/a, {name} kept")
+    return json.loads(doctor(moved, root, "--json").stdout)["verdict"]
+
+
+def test_a_rename_the_kept_pin_has_no_row_for_says_nothing_is_missing(
+        standard, project, tmp_path):
+    """The Makefile renamed on the side `--ours` takes, and that side's pin
+    restaged without the Makefile's row: only the other side's pin calls
+    it a copy. build.mk is still named as renamed from it, but the pin
+    taken here does not list it, so the `why` says nothing of it being
+    reported missing; finished with build.mk kept, the merge is not
+    `copy-missing` (round 3 of the review of PR #781)."""
+    root, moved = merged_after(standard, project, tmp_path,
+                               {"shape/b": renamed(MAKEFILE, RENAMED)})
+    a_pin_without_a_row(root, 2, MAKEFILE)
+    _verdict, rows = rows_from(moved, root)
+    currency = assert_both_rows_name_it(rows)
+    assert f"{RENAMED}, renamed from the copy {MAKEFILE}, is conflicted " \
+        "too" in currency["why"], currency["why"]
+    assert "still lists" not in currency["why"], currency["why"]
+    run_pasted(currency["next"])
+    verdict = finished_keeping(root, tmp_path, moved, RENAMED)
+    assert "copy-missing" not in verdict, verdict
+    assert verdict.startswith("COMPLIANT"), verdict
+
+
+#: Bytes of a file of the project's own that no other path holds.
+NOTES = b"# Notes this project keeps, in no copy of the standard.\n"
+
+#: Renames the rule never calls a copy's (review of PR #781): a file of
+#: the project's own, `(path, content)` as `merged_after` takes it, in
+#: the merge base; the path the merge then conflicts at; and what each
+#: side does. The own file renamed, with a copy's bytes or bytes of its
+#: own, or the copy renamed beside an own file holding its bytes.
+NOT_A_COPYS_RENAME = {
+    "the-projects-own-file-renamed": (
+        ("tools/bootstrap.py", BOOTSTRAP), "tools/boot.py",
+        {"shape/a": edited("tools/bootstrap.py", C2_LINE),
+         "shape/b": renamed("tools/bootstrap.py", "tools/boot.py",
+                            C3_LINE)}),
+    "the-copy-renamed-beside-its-twin": (
+        ("tools/Makefile.orig", MAKEFILE), RENAMED,
+        {"shape/b": renamed(MAKEFILE, RENAMED)}),
+    "the-projects-own-unique-file-renamed": (
+        ("docs/notes.md", NOTES), "docs/n.md",
+        {"shape/a": edited("docs/notes.md", C2_LINE),
+         "shape/b": renamed("docs/notes.md", "docs/n.md", C3_LINE)}),
+}
+
+
+@pytest.mark.parametrize("merge", sorted(NOT_A_COPYS_RENAME))
+def test_a_rename_of_no_copy_names_nothing(standard, project, tmp_path,
+                                           merge):
+    """A file of the project's own, renamed on one side and edited on the
+    other, conflicts under its new name with the base's blob of it as
+    stage 1. Where that blob is a copy's too, #781's first head named the
+    file a rename of the copy, though a file of the project's own is never
+    named; the copy renamed beside such a twin holds a blob two paths share
+    as well. One blob, two paths: neither is called a rename. And where no
+    copy holds the blob, the one path holding it is no copy: nothing is
+    called a rename either (review of PR #781, rounds 1 and 3)."""
+    own, new, acts = NOT_A_COPYS_RENAME[merge]
+    root, moved = merged_after(standard, project, tmp_path, acts, own)
+    assert sorted(index_stages(root, new)) == [1, 2, 3]
+    assert stage_of(root, 1, new) == blob_at(root, f"main:{own[0]}")
+    _verdict, rows = rows_from(moved, root)
+    currency = assert_both_rows_name_it(rows)
+    assert new not in currency["detail"].get("left_for_a_person", []), \
+        currency["detail"]
+    assert new not in currency["why"], currency["why"]

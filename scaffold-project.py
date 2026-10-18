@@ -86,7 +86,8 @@ sys.path.insert(0, str(SHAPE_ROOT / "scripts"))
 from repo_shape import (  # noqa: E402
     COMMIT_RE, NEUTRAL_PRODUCT_OWNER, PROJECT_ID_RE, TREE_DIGEST_DEFINITION,
     VISIBILITY_CHOICES, NamingPolicy, Refusal, accepts_role, checked_value,
-    git_out, link_pins_from_trees, repo_basename, shell_line, tree_digest,
+    git_out, link_pins_from_trees, repo_basename, shell_line, shown_path,
+    tree_digest,
 )
 from shape_materialize import (  # noqa: E402
     RULESET_HINT, SHAPE_REPOSITORY, CommandFailed,
@@ -131,8 +132,11 @@ from repo_shape import YamlError, double_quoted, parse_yaml  # noqa: E402
 # not-found answer as the one failure of `gh repo view` that means absent.
 from shape_materialize import (  # noqa: E402
     make_folder, refuse_unless_not_found, refuse_unmakeable_folder,
-    target_in_the_way, target_remediation,
+    shown_source, target_in_the_way, target_remediation,
 )
+# How the READMEs' `git clone` line spells the clone URL, one word (#693),
+# in the quoting `shell_line` gives the NEXT STEPS clone (#486).
+from repo_shape import shell_quoted  # noqa: E402
 
 #: How a refusal names each value the manifest records (#258, #261). The leg
 #: paths are not here: `refuse_bad_leg_paths` asks for them (#179, #225).
@@ -378,7 +382,10 @@ def main(argv: list[str] | None = None) -> int:
                              "--pin and no --referent-chain to read it, it "
                              "is refused as `pin-source-unused`; an empty "
                              "value is refused as `pin-source-no-path`, and "
-                             "`.` means this directory.")
+                             "`.` means this directory. A --pin's digest is "
+                             "read only at a clone's top level, or a bare "
+                             "clone's: any other path is refused as "
+                             "`pin-source-not-a-clone`.")
     parser.add_argument("--work-dir", type=Path, default=None,
                         help="where the working trees are built "
                              "(default: a temporary directory)")
@@ -546,6 +553,11 @@ def _reusable_remotes(names: dict, urls: dict, repositories: dict,
     always was, of `remote_is_empty` or `local_remote_is_empty`; the seed is
     asked only of a leg that is not empty, and a leg git cannot read is
     refused as one with commits, saying so (#542).
+
+    A LOCAL REMOTE IS NAMED AS `shown_path` NAMES A PATH (#766), as
+    `family.py init` names its holder's: it is a path under
+    `--local-remote-dir`, where `scaffold-unwritable-value` refuses a
+    control character first. A GitHub `<org>/<name>` is named as it is.
     """
     reused: dict[str, str | None] = {}
     with tempfile.TemporaryDirectory(prefix="openreposhape-seed-") as scratch:
@@ -567,7 +579,8 @@ def _reusable_remotes(names: dict, urls: dict, repositories: dict,
                 continue
             raise Refusal(
                 "scaffold-remote-exists",
-                f"{target} already exists" + ("" if local else " on GitHub")
+                f"{shown_path(target) if local else target} already exists"
+                + ("" if local else " on GitHub")
                 + ("" if empty else " and has commits"),
                 _exists_remedy(role, empty, reuse_flag, seed is not None,
                                unread))
@@ -902,18 +915,34 @@ def _refuse_unwritable_values(fields) -> None:
 #: What a `scaffold-unwritable-value` for the clone URL is told to do (#433).
 #: It is not `UNWRITABLE_REMEDIATION`, which says to retype a value: the path
 #: is a directory, so the way out is another directory, or GitHub.
+#:
+#: THE URL IS THE PATH `--local-remote-dir` RESOLVES TO (#693), so one typed
+#: as text can lead through a symbolic link to a directory whose name is not,
+#: or be relative to one; told only to pass a path that is "one line of UTF-8
+#: text", which it was, a person renames the link and is refused again, so
+#: the remedy says where the fault is. And as `UNWRITABLE_REMEDIATION` says
+#: (#282), a lone surrogate, which a Windows name can hold, cannot be
+#: written either: the READMEs quote the URL for a shell (#693) and write
+#: every character of it as itself but an apostrophe.
 CLONE_URL_REMEDIATION = (
     "Remediation: nothing was created, and `--dry-run` refuses the same. "
     "Pass a --local-remote-dir whose path is one line of UTF-8 text with no "
     "control character in it, a directory renamed or made anew, and run "
     "again; or scaffold against GitHub, without --local-remote-dir, where "
-    "the clone URL is `https://github.com/<org>/<name>.git`. The READMEs "
-    "print the clone URL as it stands: a byte that is not UTF-8 in the path "
-    "(a directory named in a legacy code page) cannot be written at all, a "
-    "line break or a control character would break or garble the line it is "
-    "written into, and a bidirectional embedding, override or isolate "
-    "control would show the rest of that line in another order than it is "
-    "written.")
+    "the clone URL is `https://github.com/<org>/<name>.git`. The clone URL "
+    "is the path --local-remote-dir resolves to, so where the path given is "
+    "text and the URL named above is not, the fault is in what it leads "
+    "through: a symbolic link on it whose target is not text, or, for a "
+    "relative path, the directory it was given from. Rename or replace the "
+    "directory whose name is not text, or pass a path that does not lead "
+    "through it; renaming a link changes nothing. The READMEs print the "
+    "clone URL in a `git clone` line, in quotes where a shell needs them, "
+    "every character but an apostrophe written as itself: a byte that is "
+    "not UTF-8 in the path (a directory named in a legacy code page), or a "
+    "lone surrogate, cannot be written at all, a line break or a control "
+    "character would break or garble the line it is written into, and a "
+    "bidirectional embedding, override or isolate control would show the "
+    "rest of that line in another order than it is written.")
 
 
 def _refuse_an_unwritable_clone_url(local: bool, url: str) -> None:
@@ -1303,7 +1332,7 @@ def _refuse_existing_trees(work_root: Path, names: dict) -> None:
         if why:
             raise Refusal(
                 "scaffold-target-exists",
-                f"{target} already exists and {why}",
+                f"{shown_source(target)} already exists and {why}",
                 target_remediation(
                     why,
                     "Remediation: choose an empty --work-dir. There is no "
@@ -1854,8 +1883,14 @@ def _scaffold(args) -> int:
         "SHAPE_COMMIT": shape_commit,
         "SHAPE_TREE_SHA256": shape_tree,
         "DIGEST_DEFINITION": TREE_DIGEST_DEFINITION,
-        "CLONE_URL": urls["assembly"],
-        "ASSEMBLY_CLONE_URL": urls["assembly"],
+        # ONE WORD OF A COMMAND A PERSON PASTES (#693): every README prints
+        # it in `git clone --recurse-submodules <url>`, and under
+        # `--local-remote-dir` it is a path, which was rendered raw, so one
+        # under `a b/` split the line when pasted. POSIX quoting whatever the
+        # host, as `_next_steps_clone` prints it (#532): a README is a
+        # committed file read on every OS. A GitHub URL is left bare.
+        "CLONE_URL": shell_quoted(urls["assembly"], "posix"),
+        "ASSEMBLY_CLONE_URL": shell_quoted(urls["assembly"], "posix"),
         "NEUTRAL_PRODUCT_PINS": _neutral_product_pins(pins),
         "ASSEMBLY_NAMING": naming_block(policy, names["assembly"], "assembly",
                                         declared_pins, chain=chain),

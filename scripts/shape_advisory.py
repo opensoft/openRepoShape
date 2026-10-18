@@ -169,13 +169,15 @@ BOM = "\ufeff"
 def printable(text: str) -> str:
     """`text` as ASCII, so printing it can never be what fails a run.
 
-    THE SAME FLATTENING `shape-doctor.py`'s `ascii_text` applies to every row,
-    for the same reason, here for the two tools that print the advisory
-    themselves: a record's `kind:` is a person's text and may carry anything,
-    and a console in an ANSI code page -- or a `PYTHONIOENCODING=ascii`
-    pipe -- raises `UnicodeEncodeError` on the first character it cannot
-    write. The typography this repository writes is spelled out; anything
-    else becomes `?` rather than an exception.
+    THE FLATTENING `shape-doctor.py`'s `ascii_text` applied to every row
+    until #785, for the same reason, here for the two tools that print the
+    advisory themselves: a record's `kind:` is a person's text and may carry
+    anything, and a console in an ANSI code page -- or a
+    `PYTHONIOENCODING=ascii` pipe -- raises `UnicodeEncodeError` on the first
+    character it cannot write. The typography this repository writes is
+    spelled out; anything else becomes `?` rather than an exception. (The
+    doctor's now keeps a character its stdout can show, because a row names
+    paths a reader pastes; a `kind:` is never pasted.)
     """
     for source, target in (("—", "--"), ("–", "-"),
                            ("‘", "'"), ("’", "'"),

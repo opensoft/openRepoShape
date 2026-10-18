@@ -17,6 +17,11 @@ THREE WAYS A ROW USED TO SAY MORE THAN THE VALIDATOR DID.
   way" for a root that had also lost `scripts/repo_shape.py`, where the gate
   dies on the import instead.
 
+#697 IS THE CRASH ROW'S NEXT FOR THAT SAME LOSS: the gate, which a reader
+whose own `PYTHONPATH` reaches another `repo_shape` runs and sees pass. It is
+the restore line #298 gave the unloaded-manifest row, and the gate is the
+row's why.
+
 EVERY ASSERTION IS ON WHAT A COMMAND DOES -- the row's status, its `detail`,
 the verdict, and a NEXT that is run -- and never on the words of a row's
 `why`, the sentence beside its NEXT (#277). The fixtures are those of
@@ -51,8 +56,8 @@ from test_scaffold_pin_and_reuse import product_repo
 from test_shape_doctor import (  # noqa: F401
     BREAKAGES, DOCTOR, FAMILY_BREAKAGES, FAMILY_NAME, TEMPLATE_FALLBACK,
     assert_next_runs_the_roots_own, break_manifest, doctor, doctor_module,
-    holder, loader_line, pasted_from_elsewhere, project, red_root, rows_of,
-    scaffolded_here, standard,
+    holder, loader_line, pasted_from_elsewhere, project, red_root,
+    root_without_its_repo_shape, rows_of, scaffolded_here, standard,
 )
 #: Doctor A's builders for a leg, and a member, whose gitlink is not its pin
 #: (#276): the lockstep line these rows hand over is A's, so its fixtures are
@@ -760,6 +765,153 @@ def test_a_crash_for_want_of_repo_shape_says_which_file_is_not_there(
     assert "ModuleNotFoundError" in row["reason"], row
     assert (f"{LOST}, which it imports from beside itself, is not there"
             in row["reason"]), row
+
+
+# --- #697: a gate that crashed for want of repo_shape is not its own NEXT ----
+#
+# The NEXT of an own-copy gate's crash row was the gate. Run by a reader whose
+# own `PYTHONPATH`, or a `.pth` in whose site-packages, reaches a `repo_shape`,
+# it printed `manifest ok` under a row that said FINDING. Where the crash is
+# the root's lost `scripts/repo_shape.py` the NEXT is the cure instead, the
+# line the unloaded-manifest row prints (#298), and the gate is the why's.
+
+def lost_gate(case: str, project: Path, holder: dict, tmp_path: Path,
+              committed: bool = False) -> Path:
+    """The root whose own `case` gate lost `scripts/repo_shape.py`, with a
+    VALID manifest, so the file is the only fault: the loss left in the tree,
+    which HEAD still holds, or with `committed` COMMITTED, which it does not.
+    """
+    root = root_without_its_repo_shape(case, project, holder, tmp_path,
+                                       red=False)
+    if committed:
+        git("rm", "-q", "--", LOST, cwd=root)
+        git("commit", "-q", "-m", "Drop repo_shape.py", "--", LOST, cwd=root)
+    return root
+
+
+def rerun_of(standard: Path, root: Path, case: str) -> str:
+    """The line that runs the root's own `case` gate on the root: what the
+    row's why tells a reader to run, and what its NEXT was before #697."""
+    return doctor_module(standard).validator_command(
+        standard.resolve(), root / TEMPLATE_FALLBACK[case]["own"], True,
+        ["--root", root])
+
+
+@pytest.mark.parametrize("case", sorted(TEMPLATE_FALLBACK))
+def test_a_gate_that_lost_repo_shape_is_sent_to_put_it_back(
+        standard, project, holder, tmp_path, case):
+    """The row is what it was -- a crash, a FINDING, exit 1, the verdict
+    DRIFTED -- and its NEXT is the one command that puts back the file HEAD
+    holds, the line the unloaded-manifest row prints for the same loss."""
+    root = lost_gate(case, project, holder, tmp_path)
+    result = doctor(standard, root, "--json")
+    row = rows_of(result)[case]
+    assert row["status"] == "FINDING", row
+    assert row["detail"]["crashed"] is True, row
+    assert row["detail"]["own_copy"] is True, row
+    assert row["detail"]["exit"] == 1, row
+    assert "ModuleNotFoundError" in row["reason"], row
+    assert result.returncode == 1, result.stdout + result.stderr
+    assert payload_of(result)["verdict"].startswith("DRIFTED"), result.stdout
+    assert command_of(row)[:2] == ["git", "-C"], row["next"]
+    assert Path(command_of(row)[2]).resolve() == root, row["next"]
+    assert command_of(row)[3:] == ["checkout", "HEAD", "--", LOST], row["next"]
+    assert row["next"] == doctor_module(standard).restore_from_head(root, LOST)
+
+
+@pytest.mark.parametrize("case", sorted(TEMPLATE_FALLBACK))
+def test_the_restore_line_puts_the_file_back_and_the_gate_then_passes(
+        standard, project, holder, tmp_path, case):
+    """Run, the NEXT exits 0 and the tree matches HEAD again; the why names
+    the gate to run after it, and that gate, run, passes, so does its row."""
+    root = lost_gate(case, project, holder, tmp_path)
+    row = rows_of(doctor(standard, root, "--json"))[case]
+    rerun = rerun_of(standard, root, case)
+    assert rerun in row["why"], row["why"]
+    restored = run_argv(command_of(row))
+    assert restored.returncode == 0, restored.stdout + restored.stderr
+    assert git("status", "--porcelain", "--", LOST, cwd=root).stdout == ""
+    gate = run_argv(rerun.split())
+    assert gate.returncode == 0, gate.stdout + gate.stderr
+    assert rows_of(doctor(standard, root, "--json"))[case]["status"] == "ok"
+
+
+@WINDOWS_SKIP
+@pytest.mark.skipif(shutil.which("sh") is None, reason="needs sh")
+@pytest.mark.parametrize("case", sorted(TEMPLATE_FALLBACK))
+def test_the_restore_line_pasted_from_elsewhere_lets_the_gate_pass(
+        standard, project, holder, tmp_path, case):
+    """Both lines PASTED, whole, from `/` with no `PYTHONPATH`: the
+    restore, then the gate the why names, which prints its `ok` and exits 0
+    where it died on `ModuleNotFoundError` before."""
+    root = lost_gate(case, project, holder, tmp_path)
+    row = rows_of(doctor(standard, root, "--json"))[case]
+    restore = pasted_from_elsewhere(row["next"], tmp_path)
+    assert restore.returncode == 0, restore.stdout + restore.stderr
+    gate = pasted_from_elsewhere(rerun_of(standard, root, case), tmp_path)
+    whole = gate.stdout + gate.stderr
+    assert gate.returncode == 0, whole
+    assert "ModuleNotFoundError" not in whole, whole
+
+
+@pytest.mark.parametrize("case", sorted(TEMPLATE_FALLBACK))
+def test_a_gate_whose_repo_shape_left_head_too_gets_no_line(
+        standard, project, holder, tmp_path, case):
+    """HEAD does not hold a file whose deletion was COMMITTED, so `checkout
+    HEAD` could not put it back and the gate would only crash again: the row
+    has no NEXT, is still the crash, and its why says why, where the file
+    comes back from, and the gate to run then."""
+    root = lost_gate(case, project, holder, tmp_path, committed=True)
+    result = doctor(standard, root, "--json")
+    row = rows_of(result)[case]
+    assert row["status"] == "FINDING", row
+    assert row["detail"]["crashed"] is True, row
+    assert row["next"] is None, row
+    assert result.returncode == 1, result.stdout + result.stderr
+    for said in (LOST, "HEAD", "parent of the commit",
+                 rerun_of(standard, root, case)):
+        assert said in row["why"], (said, row["why"])
+
+
+@pytest.mark.parametrize("case", sorted(TEMPLATE_FALLBACK))
+def test_a_crash_with_another_cause_keeps_the_gate_as_its_next(
+        standard, project, holder, tmp_path, case):
+    """`scripts/repo_shape.py` is there and the gate raises on a line of its
+    own: nothing to put back, so the NEXT is the gate, as it was, and the why
+    is the crash row's."""
+    here, root, row_id, _own = crashing(f"own-{case}", standard, project,
+                                        holder, tmp_path)
+    row = rows_of(doctor(here, root, "--json"))[row_id]
+    assert row["detail"]["crashed"] is True, row
+    assert row["next"] == rerun_of(here, root, case), row["next"]
+    assert row["why"] == doctor_module(here).CRASH_WHY, row["why"]
+
+
+#: `restore_from_head`'s line in each dialect, a path that needs no quoting
+#: and one that does (an apostrophe is `sh`'s `'\''` and PowerShell's `''`).
+RESTORE_SPELLINGS = [
+    ("posix", "/w/a", f"git -C /w/a checkout HEAD -- {LOST}"),
+    ("posix", "/w/it's here",
+     f"git -C '/w/it'\\''s here' checkout HEAD -- {LOST}"),
+    ("nt", "C:\\w\\a", f"git -C C:\\w\\a checkout HEAD -- {LOST}"),
+    ("nt", "C:\\it's here", f"git -C 'C:\\it''s here' checkout HEAD -- {LOST}"),
+]
+
+
+@pytest.mark.parametrize(("platform", "root", "line"), RESTORE_SPELLINGS)
+def test_the_restore_line_is_spelled_for_each_dialect(standard, platform, root,
+                                                      line):
+    assert doctor_module(standard).restore_from_head(root, LOST,
+                                                     platform) == line
+
+
+def test_the_unloaded_manifest_row_prints_the_same_restore_line(
+        standard, project, holder, tmp_path):
+    """One spelling for the two rows that restore `scripts/repo_shape.py`."""
+    root, row_id, _refusal = unloaded("project", project, holder, tmp_path,
+                                      "tree")
+    row = rows_of(doctor(standard, root, "--json"))[row_id]
+    assert row["next"] == doctor_module(standard).restore_from_head(root, LOST)
 
 
 # --- #278: the lockstep line of the `legs` and `members` rows ----------------
