@@ -649,9 +649,22 @@ def test_agents_md_is_short_enough_to_be_read():
     question, and `check` passes a default, so an assistant briefed from
     this file alone would let it through unread. The lines buy that it is
     a question too, which `execute` takes as written, answered like the
-    others."""
+    others.
+
+    2026-10-15: 492 -> 494 — the second way in, `pipx install
+    openreposhape` (#563), decision 6 of #563's design, which Brett Heap
+    approved that day ("approve all six for #563"). The argument is #38's:
+    a way in this file does not name is a way in performed from memory.
+    Both lines are in section 2: the installed command may be pipx's as
+    well as `install.sh`'s, on native Windows too, and pipx places
+    `scaffold-project`, `adopt-project`, `update-shape` and `shape-doctor`
+    beside it, the tools this file's procedures run, by name, so an
+    assistant on a machine that holds the package and no checkout can
+    still follow them. The first rule's sentence that the one-line install
+    is the human's to run now names the pipx install too, and was reworded
+    to cost no line."""
     lines = (REPO / "AGENTS.md").read_text().splitlines()
-    assert len(lines) <= 492, f"AGENTS.md is {len(lines)} lines; the cap is 492"
+    assert len(lines) <= 494, f"AGENTS.md is {len(lines)} lines; the cap is 494"
 
 
 def test_claude_md_points_at_agents_md():
@@ -1560,6 +1573,19 @@ def test_the_one_line_install_is_the_same_everywhere(name):
     assert ONE_LINE_INSTALL in text, (
         f"{name} must carry the one-line install byte for byte:\n"
         f"    {ONE_LINE_INSTALL}")
+
+
+def test_every_handbook_copy_of_the_one_line_install_is_the_same():
+    """The handbook shows the one line in three code blocks: the masthead's,
+    step 3's on the Linux, macOS and WSL2 tabs, and step 3's on the Windows
+    tab, for Git Bash (#461's line "The handbook's step 3 has no Git Bash
+    path", settled by #630). The test above finds ONE copy; this one holds
+    every copy, so a line edited on one tab alone fails here."""
+    page = (REPO / "docs" / "handbook.html").read_text(encoding="utf-8")
+    copies = [line for block in re.findall(r"<code>(.*?)</code>", page, re.S)
+              for line in block.splitlines() if "download/install.sh" in line]
+    assert len(copies) >= 3, copies
+    assert set(copies) == {ONE_LINE_INSTALL}, copies
 
 
 #: Where each document describes `openRepoShape --doctor`: the file, the

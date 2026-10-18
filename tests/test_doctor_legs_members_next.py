@@ -24,10 +24,11 @@ through `sh -c` exactly as the row printed it, and the row is asked again.
 Those tests are `WINDOWS_SKIP`: `sh` is a POSIX shell, and on Windows the
 reader's shell is PowerShell. The text-level assertions about what the line
 IS run on every OS. A git paste gets the file protocol per subprocess through
-`GIT_CONFIG_COUNT`, `GIT_CONFIG_KEY_0` and `GIT_CONFIG_VALUE_0` -- the
-fixtures' remotes are bare repositories on disk, which git refuses as a
-submodule URL by default -- and never `GIT_ALLOW_PROTOCOL`, which would
-override git's `user` policy for the whole run.
+git's `GIT_CONFIG_COUNT` entries -- the fixtures' remotes are bare
+repositories on disk, which git refuses as a submodule URL by default --
+appended at the call to the entries the environment holds (`paste_env`), and
+never through `GIT_ALLOW_PROTOCOL`, which would override git's `user` policy
+for the whole run.
 
 WHAT IS ASSERTED IS WHAT THE COMMAND DOES, and the explanation beside it is
 read through `why_of` alone, so that moving the `   # ` tail into a field of
@@ -48,7 +49,8 @@ from pathlib import Path, PurePosixPath, PureWindowsPath
 
 import pytest
 
-from conftest import (WINDOWS_SKIP, cloned_just_pushed, git, rmtree,
+from conftest import (WINDOWS_SKIP, appended_to_command_scope,
+                      cloned_just_pushed, git, rmtree,
                       submodule_update_through_git)
 from test_doctor_gitmodules_not_utf8 import listed_locale
 from test_shape_doctor import (  # noqa: F401
@@ -57,17 +59,28 @@ from test_shape_doctor import (  # noqa: F401
     scaffolded_here, standard,
 )
 
-#: What every pasted git line runs under: the identity a commit needs (this
-#: container has none, and neither does a fresh CI runner), the file
-#: protocol for ONE process tree, and no `PYTHONPATH` from the person
-#: running the suite -- a template line that needed one from the reader is
-#: exactly what these tests are not allowed to depend on.
-PASTE_ENV = {**{k: v for k, v in os.environ.items() if k != "PYTHONPATH"},
-             **GIT_IDENTITY,
-             "GIT_CONFIG_COUNT": "1",
-             "GIT_CONFIG_KEY_0": "protocol.file.allow",
-             "GIT_CONFIG_VALUE_0": "always",
-             "PYTHONDONTWRITEBYTECODE": "1"}
+
+def paste_env() -> dict:
+    """What every pasted git line runs under: the identity a commit needs
+    (this container has none, and neither does a fresh CI runner), the file
+    protocol for ONE process tree, and no `PYTHONPATH` from the person
+    running the suite -- a template line that needed one from the reader is
+    exactly what these tests are not allowed to depend on.
+
+    BUILT AT THE CALL, from the `os.environ` of that moment, and the file
+    protocol is APPENDED to the `GIT_CONFIG_COUNT` entries it holds
+    (`appended_to_command_scope`): the session's own (`no_auto_maintenance`
+    keeps git's automatic maintenance off, #645) and the two the Windows job
+    sets. This was a dict built when the module was imported, at collection,
+    before the session fixture ran, so it held none of those, and its own
+    `GIT_CONFIG_COUNT` of 1 would have dropped the ones the environment did
+    hold (#758)."""
+    return {**{k: v for k, v in os.environ.items() if k != "PYTHONPATH"},
+            **GIT_IDENTITY,
+            **appended_to_command_scope(
+                os.environ, [("protocol.file.allow", "always")]),
+            "PYTHONDONTWRITEBYTECODE": "1"}
+
 
 #: The git line's own words after `git -C <root>`: `--init` for a mount the
 #: clone never registered, `--recursive` for a member's own legs, and
@@ -100,7 +113,7 @@ def paste(row: dict, cwd: Path) -> subprocess.CompletedProcess:
     cwd.mkdir(exist_ok=True)
     return subprocess.run(["sh", "-c", row["next"]], cwd=str(cwd),
                           capture_output=True, text=True, encoding="utf-8",
-                          errors="replace", check=False, env=PASTE_ENV,
+                          errors="replace", check=False, env=paste_env(),
                           stdin=subprocess.DEVNULL)
 
 
@@ -441,7 +454,7 @@ def test_the_keep_line_in_the_explanation_keeps_a_detached_commit(
     assert keep, why_of(row)
     kept = subprocess.run(["sh", "-c", keep.group(0).replace("NAME", "kept")],
                           capture_output=True, text=True, check=False,
-                          env=PASTE_ENV)
+                          env=paste_env())
     assert kept.returncode == 0, kept.stdout + kept.stderr
     result = paste(row, tmp_path / "elsewhere")
     assert result.returncode == 0, result.stdout + result.stderr
@@ -513,7 +526,7 @@ def test_a_plain_clones_empty_mounts_are_cured_by_the_pasted_line(
     `submodule.active`, so every other paste here would pass without it."""
     plain = cloned_just_pushed(
         scaffolded_here["base"] / "remotes" / f"{PROJECT}.git",
-        tmp_path / "Plain", recurse=False, env=PASTE_ENV)
+        tmp_path / "Plain", recurse=False, env=paste_env())
     row = row_of(standard, plain, "legs")
     assert row["status"] == "FINDING", row
     assert command_of(row).endswith("-- spec code"), row["next"]
@@ -608,7 +621,7 @@ def test_the_git_line_does_not_cure_a_mount_git_cannot_read_a_head_in(
     result = subprocess.run(
         ["git", "-C", str(project), "submodule", "update", "--init",
          "--recursive", "--", "spec"], capture_output=True, text=True,
-        check=False, env=PASTE_ENV)
+        check=False, env=paste_env())
     assert result.returncode != 0, result.stdout + result.stderr
     after = row_of(standard, project, "legs")
     assert after["status"] == "FINDING", after
@@ -784,7 +797,7 @@ def test_a_pasted_members_git_line_keeps_a_detached_commit_on_the_kept_branch(
     keep = re.search(r"git -C \S+ branch NAME", why_of(row))
     assert keep, why_of(row)
     subprocess.run(["sh", "-c", keep.group(0).replace("NAME", "kept")],
-                   capture_output=True, check=True, env=PASTE_ENV)
+                   capture_output=True, check=True, env=paste_env())
     result = paste(row, tmp_path / "elsewhere")
     assert result.returncode == 0, result.stdout + result.stderr
     assert row_of(standard, root, "members")["status"] == "ok"
@@ -1018,7 +1031,7 @@ def sh(line: str, cwd: Path) -> subprocess.CompletedProcess:
     cwd.mkdir(exist_ok=True)
     return subprocess.run(["sh", "-c", line], cwd=str(cwd),
                           capture_output=True, text=True, encoding="utf-8",
-                          errors="replace", check=False, env=PASTE_ENV,
+                          errors="replace", check=False, env=paste_env(),
                           stdin=subprocess.DEVNULL)
 
 
@@ -1960,6 +1973,15 @@ def test_without_it_the_legs_own_submodule_commit_is_in_no_ref(
     assert commit in git("reflog", cwd=nested).stdout
 
 
+def clone_member(first: Path, ghost: Path) -> None:
+    """`ghost`, a plain clone of the member at `first`, read through git
+    (`cloned_just_pushed`): its own legs stay empty, as the first member's
+    are, which a recursive clone would fill from the urls `.gitmodules`
+    gives."""
+    cloned_just_pushed(first, ghost, recurse=False)
+    assert not any((ghost / "spec").iterdir()), "the clone filled a leg"
+
+
 def with_a_second_member_off_its_gitlink(root: Path) -> tuple[Path, str]:
     """A second member, `Ghost`, a clone of the first, recorded at a commit
     that is not its pin and detached at another past that one; and the
@@ -1971,8 +1993,7 @@ def with_a_second_member_off_its_gitlink(root: Path) -> tuple[Path, str]:
     ghost = root / "members" / "Ghost"
     url = git("config", "-f", ".gitmodules", "--get",
               f"submodule.members/{FAMILY_MEMBER}.url", cwd=root).stdout
-    git("-c", "protocol.file.allow=always", "clone", "-q", "--no-local",
-        str(first), str(ghost), cwd=root)
+    clone_member(first, ghost)
     add_member_row(root, "Ghost")
     git("config", "-f", ".gitmodules", "submodule.members/Ghost.path",
         "members/Ghost", cwd=root)
@@ -2072,8 +2093,7 @@ def with_a_second_member(root: Path, at_pin: bool, section: str) -> Path:
     ghost = root / "members" / "Ghost"
     url = git("config", "-f", ".gitmodules", "--get",
               f"submodule.members/{FAMILY_MEMBER}.url", cwd=root).stdout
-    git("-c", "protocol.file.allow=always", "clone", "-q", "--no-local",
-        str(first), str(ghost), cwd=root)
+    clone_member(first, ghost)
     add_member_row(root, "Ghost")
     if section != "none":
         git("config", "-f", ".gitmodules", "submodule.members/Ghost.path",

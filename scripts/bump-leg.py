@@ -121,12 +121,12 @@ SHAPE_ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(SHAPE_ROOT / "scripts"))
 from repo_shape import (  # noqa: E402
     COMMIT_RE, SAFE_PATH_RE, Refusal, checked_value, git_out, load_yaml,
-    recorded_gitlink, repo_basename, tree_digest,
+    recorded_gitlink, repo_basename, shown_path, spelled, tree_digest,
 )
 from shape_materialize import (  # noqa: E402
     CommandFailed, captured_child_environment, check_program, commit_trailers,
-    escape_what_stdout_cannot_encode, is_nested_key, rewrite_fault, run,
-    trailer_line, with_scalar, write_lf,
+    escape_what_stdout_cannot_encode, is_nested_key, pin_values_in,
+    rewrite_fault, run, trailer_line, with_scalar, write_lf,
 )
 
 MANIFEST = "project.yaml"
@@ -1067,11 +1067,35 @@ def commit_once(root: Path, message: str, paths: list[str],
     return git_out(["rev-parse", "HEAD"], cwd=root).lower()
 
 
+#: Where git keeps a branch: the root's HEAD names `refs/heads/<branch>`.
+HEADS = "refs/heads/"
+
+
 def current_branch(root: Path) -> str | None:
-    proc = subprocess.run(["git", "symbolic-ref", "--quiet", "--short", "HEAD"],
+    """The branch the root's HEAD is on, or None: detached, or a HEAD that
+    names a ref outside `refs/heads/`, which is no branch.
+
+    THE FULL REF, NOT `--short` (#672). `symbolic-ref --short` gives the
+    shortest name that is not ambiguous, so beside a tag of the same name it
+    printed `heads/<branch>`. Measured with a tag `main` beside the tracking
+    branch `main`: the compare with `tracking_branch` read `heads/main`
+    against `main`, `bump-leg-on-tracking-branch` was not given, and the bump
+    committed on the default branch and printed a push to it. The name after
+    `refs/heads/` is the branch's own, whatever tags there are.
+
+    ONLY THE NEWLINE IS TAKEN OFF. A ref name holds no control character,
+    so git's line ending is all there is to drop; `strip()` also took a
+    trailing U+00A0, U+2028 or U+0085, which a branch name may end in, and
+    read a root on `feat<U+00A0>` as `feat`, a branch of its own that the
+    push line then pushed instead of the bump.
+    """
+    proc = subprocess.run(["git", "symbolic-ref", "--quiet", "HEAD"],
                           cwd=str(root), capture_output=True, text=True,
                           encoding="utf-8", errors="replace", check=False)
-    return proc.stdout.strip() or None
+    ref = proc.stdout.rstrip("\n")
+    if not ref.startswith(HEADS):
+        return None
+    return ref[len(HEADS):] or None
 
 
 # ---------------------------------------------------------------------------
@@ -1123,11 +1147,22 @@ def _ensure_root_clean(root: Path) -> None:
     dirt = git_out(["status", "--porcelain", "--untracked-files=no",
                     "--ignore-submodules=untracked"], cwd=root, binary=True)
     if dirt:
-        shown = dirt.decode("utf-8", "backslashreplace").strip()
+        # EACH LINE `spelled` (#672), as `bootstrap.py` spells what it read
+        # from the disk: under `core.quotePath=false` git prints a name as
+        # the bytes it holds, so a C1 control or a bidi override in a file
+        # name reached the terminal raw. Split on git's own newlines and no
+        # others: `splitlines` also breaks at U+0085 and U+2028, which are
+        # `spelled`'s to show, and `strip()` took them off the last name and
+        # the leading space off the first line's ` M`, which then read as
+        # `M` (staged). git quotes a name with a control in it or a space at
+        # its end, so the last newline is all there is to take off. THE ROOT
+        # ABOVE THEM is named as `shown_path` names a path (#766): its name
+        # held a C1 control and a bidi override raw on the first line.
+        shown = dirt.decode("utf-8", "backslashreplace").rstrip("\n")
         raise Refusal(
             "bump-leg-root-dirty",
-            f"{root} has uncommitted changes:\n"
-            + "\n".join(f"    {line}" for line in shown.splitlines()),
+            f"{shown_path(root)} has uncommitted changes:\n"
+            + "\n".join(f"    {spelled(line)}" for line in shown.split("\n")),
             "Remediation: commit or stash them first. A lockstep commit that "
             "cannot be read as exactly one change is the thing the rule "
             "exists to keep readable.")
@@ -1160,9 +1195,10 @@ def _switch_command(root: Path, role: str, commit: str) -> str:
 #: stands now; going back to the old branch is right only where it holds work
 #: not merged yet, and `git switch` keeps its commits. IN WORDS, NOT A SECOND
 #: COMMAND, as `family.py` and the holder's `validate-family.py` say it: no
-#: line of ours changes, so none needs quoting, and the three tools follow one
-#: rule. THE SAME SENTENCE as their `BRANCH_LEFT` (#607), word for word, with
-#: "the project" where they say "the holder".
+#: line of ours changes, so none needs quoting. FOUR COPIES OF ONE RULE: the
+#: `BRANCH_LEFT` of `family.py`, of the holder's `validate-family.py` (#607)
+#: and of `setup-project.py` (#647) is this sentence word for word, with
+#: "the holder" where this one says "the project".
 BRANCH_LEFT = ("If `git switch -c` says that branch already exists, an "
                "earlier act left it: give the branch another name, which "
                "starts it where the project stands, or, only if that branch "
@@ -1183,21 +1219,23 @@ def _branch_to_bump_from(root: Path, project: "Project", role: str,
     the branch the real run needs (#477); a root on no branch at all is
     refused either way. Both refusals name that branch's `switch -c`
     through `_switch_command`, quoted (#532), and end with `BRANCH_LEFT`, the
-    sentence for a root that has that branch already (#647).
+    sentence for a root that has that branch already (#647). Each detail
+    names the root as `shown_path` names a path (#766), as the dirty root's
+    does.
     """
     branch = current_branch(root)
     if branch is None:
         raise Refusal(
             "bump-leg-root-detached",
-            f"{root} is not on a branch, so there is no branch to push and "
-            "open a pull request from",
+            f"{shown_path(root)} is not on a branch, so there is no branch "
+            "to push and open a pull request from",
             f"Remediation: `{_switch_command(root, role, commit)}` and "
             f"re-run.\n{BRANCH_LEFT}")
     if branch == project.tracking and not dry_run:
         raise Refusal(
             "bump-leg-on-tracking-branch",
-            f"{root} is on {branch!r}, which {MANIFEST} declares as this "
-            "project's tracking branch",
+            f"{shown_path(root)} is on {branch!r}, which {MANIFEST} declares "
+            "as this project's tracking branch",
             "Remediation: these organisations are pull-request only, so this "
             "will not make a commit whose only next step is a push to the "
             "default branch. Run:\n    "
@@ -1611,11 +1649,70 @@ def _apply_rewrite(root: Path, submodule: Path, commit: str, was: str,
         raise
 
 
+def _moved_from(was: str, commit: str, pin_text: str) -> str:
+    """The commit a bump moves the leg FROM, as the report's `commit` line
+    and the commit message name it (#672): the gitlink's, or, where the
+    gitlink already records `commit`, the pin's own `commit:`.
+
+    A person who moved the gitlink by hand and committed it left the pin
+    behind, and the bump is what brings the pin to it. `was` is the
+    gitlink's, so both lines read `X -> X` for a commit that moved the pin
+    from another one. The pin's value is read as the validators read it,
+    from the text `rewrite_pin` was given; one that does not read, or is
+    not a commit, leaves the gitlink's, and the `gitlink` line under it says
+    which one did not move.
+    """
+    if was != commit:
+        return was
+    try:
+        pinned = pin_values_in(pin_text)[0].strip().lower()
+    except ValueError:
+        return was
+    return pinned if COMMIT_RE.match(pinned) else was
+
+
+def _committed_paths(root: Path, head: str) -> str:
+    """The paths the commit `head` changes, as git records them, for the
+    `committed` line (#672), or a sentence saying they could not be read.
+
+    FROM GIT, NOT FROM THE LIST STAGED. The leg's path is staged whether or
+    not its gitlink moves, so where it already recorded the new commit the
+    line named `spec` beside the pin while the commit held the pin alone.
+    `diff-tree` is plumbing: it reads no `diff.ignoreSubmodules` (measured,
+    `git show` under `=all` drops the leg), and `--ignore-submodules=none`
+    overrides a `submodule.<name>.ignore` (measured, which `diff-tree` does
+    honour). NUL-separated, so a name is the bytes git holds, and each is
+    `spelled`, as the dirty-root list is.
+
+    AFTER THE COMMIT, NOTHING HERE MAY REFUSE: the bump has landed, and a
+    `git-failed` exit 2 would say it had not.
+    """
+    try:
+        raw = git_out(["diff-tree", "--no-commit-id", "--name-only", "-r",
+                       "-z", "--ignore-submodules=none", head], cwd=root,
+                      binary=True)
+    except (Refusal, OSError) as exc:
+        why = " ".join((exc.detail if isinstance(exc, Refusal)
+                        else str(exc)).split())
+        return (f"its paths could not be read back ({why}); `git show "
+                f"--name-only --ignore-submodules=none {head[:12]}` lists "
+                "them")
+    return ", ".join(spelled(name.decode("utf-8", "backslashreplace"))
+                     for name in raw.split(b"\0") if name)
+
+
 def cmd_bump(args) -> int:
     """Advance one leg. The ORDER is what makes `--dry-run` the real run's
     answer (#534, #438): everything that can REFUSE the move is asked before
     the dry-run return, so the dry run and the real run refuse alike and the
-    only thing the dry run skips is the writing.
+    only thing the dry run skips is the writing — and the project's own
+    validators, which judge the rewritten tree and so run only once it is
+    written. A pin they would refuse as it stands is previewed, exit 0, and
+    the real run ends `bump-leg-validators-red`, rolled back; the dry run's
+    closing paragraph says so (#672). Running them over the tree as it
+    stands would put `validate-pins.py`'s `gh api` call (#411) into a command
+    that promises to fetch into the leg and write nothing else, and would see
+    only what is red already.
 
     1. the root: clean, on a branch, the leg initialized and recorded;
     2. the fetch, and the commit `--to` names in the leg's objects (an
@@ -1661,7 +1758,14 @@ def cmd_bump(args) -> int:
     pin_text = _leg_pin_text(root, pin_path)
     plans = plan_workflows(root, repository, commit)
 
-    print(f"commit       {was[:12]} -> {commit[:12]}")
+    # `old`, NOT `was`, IS WHAT THE BUMP MOVES FROM (#672), on this line and
+    # in the commit message; `was` is the gitlink's, which the rollback
+    # restores. They differ only where the gitlink already records `commit`.
+    old = _moved_from(was, commit, pin_text)
+    print(f"commit       {old[:12]} -> {commit[:12]}")
+    if was == commit:
+        print(f"gitlink      {path} already records {commit[:12]}, so this "
+              "does not move it")
     print(f"tree         {digest[:12]}… ({digest})")
     print(f"pin          {pin_rel}")
     _print_workflow_plan(root, plans)
@@ -1688,14 +1792,18 @@ def cmd_bump(args) -> int:
         print("\n--dry-run: nothing was changed. The leg's object store was "
               "fetched into, which is how the digest above was computed; the "
               "working tree, the pin, the workflows and the index are "
-              "untouched.")
+              "untouched. A dry run does not run the project's own "
+              f"validators ({' and '.join(VALIDATORS)}): the real run runs "
+              "them after the rewrite, and can still end "
+              "`bump-leg-validators-red`, with every byte rolled back.")
         if branch == project.tracking:
             # LAST, after everything a dry run on a branch prints, so that
             # line and the sentence under it are the whole of the difference
             # between the two (#477, #647). The command is quoted, so a root
-            # under `My Projects/` pastes.
-            print(f"\nthe real run needs a branch: {root} is on {branch!r}, "
-                  "the tracking branch. Create one first with: "
+            # under `My Projects/` pastes; the root before it is named as
+            # `shown_path` names a path, as the refusals name it (#766).
+            print(f"\nthe real run needs a branch: {shown_path(root)} is on "
+                  f"{branch!r}, the tracking branch. Create one first with: "
                   + _switch_command(root, role, asked))
             print(BRANCH_LEFT)
         return 0
@@ -1705,32 +1813,51 @@ def cmd_bump(args) -> int:
     staged: list[str] = [path, pin_rel] + [
         wf_path.relative_to(root).as_posix() for wf_path, _, _ in plans]
     body = (
-        f"{was[:12]} -> {commit[:12]}, tree {digest}.\n\n"
+        f"{old[:12]} -> {commit[:12]}, tree {digest}.\n\n"
+        + (f"The gitlink at {path} already recorded {commit[:12]}, so this "
+           "commit does not move it.\n\n" if was == commit else "")
         + (f"{sum(count for _, _, count in plans)} workflow `@<sha>` "
            f"reference(s) in {len(plans)} file(s) moved with it.\n\n"
            if plans else
-           "No workflow reference names this leg, so the gitlink and the pin "
-           "file are the whole of it.\n\n")
-        + f"The gitlink at {path}, `commit:` and `digests.tree_sha256` in "
-          f"{pin_rel}, and every workflow reference to {repository} move in "
-          "ONE commit because `scripts/validate-pins.py` refuses when they "
-          "disagree — a gitlink advanced alone is red on the next pull "
-          "request, and on somebody else's change.\n\nWritten by "
+           "No workflow reference names this leg, so "
+           + ("the pin file is" if was == commit
+              else "the gitlink and the pin file are")
+           + " the whole of it.\n\n")
+        + (f"`commit:` and `digests.tree_sha256` in {pin_rel}, and every "
+           f"workflow reference to {repository}, are brought to the gitlink "
+           f"at {path} in ONE commit because `scripts/validate-pins.py` "
+           "refuses when they disagree — a gitlink advanced alone, as this "
+           "one was, is red on the next pull request, and on somebody "
+           "else's change.\n\n" if was == commit else
+           f"The gitlink at {path}, `commit:` and `digests.tree_sha256` in "
+           f"{pin_rel}, and every workflow reference to {repository} move "
+           "in ONE commit because `scripts/validate-pins.py` refuses when "
+           "they disagree — a gitlink advanced alone is red on the next "
+           "pull request, and on somebody else's change.\n\n")
+        + "Written by "
           "openRepoShape's `scripts/bump-leg.py`; the digest is recomputed "
           "from the leg's own objects, not adjusted.\n")
     head = _apply_rewrite(
         root, submodule, commit, was, pin_path, new_pin, plans, staged,
         f"Bump {role} leg to {commit[:12]} in {project.display_name}\n\n"
         + body, args.trailer)
-    print(f"\n  committed {head[:12]}: " + ", ".join(staged))
+    print(f"\n  committed {head[:12]}: {_committed_paths(root, head)}")
     print(f"  {path}/ is left DETACHED at {commit[:12]}; `make bootstrap` in "
           "the root puts it on its tracking branch AT the new pin, or says "
           "why not")
     # QUOTED WHOLE (#532), the root and the branch: a root under `My
     # Projects/` pasted as two arguments, and the line is the one this run
-    # ends on, the one a person runs next.
+    # ends on, the one a person runs next. THE BRANCH BY ITS FULL REFNAME,
+    # ON BOTH SIDES (#672): a bare `<branch>` is a refspec, and git reads a
+    # leading `+` as FORCE, so a root on `+x` was told `push -u origin +x`,
+    # which pushed a local `x` over origin's, forced, and not `+x` at all.
+    # `refs/heads/<branch>:refs/heads/<branch>` is that branch and nothing
+    # else, beside a tag of its name too, and `-u` still records
+    # `origin/<branch>` as its upstream. It is the form #689 and #674 give
+    # `family.py`'s and `update-shape.py`'s push lines: one for the three.
     print("\nNEXT  " + shlex.join(["git", "-C", str(root), "push", "-u",
-                                   "origin", branch]))
+                                   "origin",
+                                   f"{HEADS}{branch}:{HEADS}{branch}"]))
     print(f"      then open a pull request against {project.tracking}; never "
           "push the bump to the default branch directly")
     return 0

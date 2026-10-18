@@ -591,6 +591,14 @@ def test_the_header_says_how_to_release(workflow):
     assert "# ACCEPTED LIMITS, carried over from openDox-code's release.yml" \
         in text
     assert "lane\n#     sessions act as brettheap" in text
+    # #850's section, and the two sentences RV852 asked it to carry: a push
+    # runs the tests.yml its own commit holds, and the branch's newer push run
+    # decides after a fast-forward.
+    assert "# RELEASE BRANCHES AND BACK-PORTS (#850)" in text
+    assert "#   - a push runs the tests.yml its own commit holds, so a release" \
+        in text
+    assert "and that newer run decides. Tag once it has finished green." \
+        in text
 
 
 # --- RV599, SHOULD 2: the commit is on main or its release branch -------------------
