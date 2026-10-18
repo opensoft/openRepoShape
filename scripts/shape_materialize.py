@@ -1539,9 +1539,10 @@ def _not_a_folder(path: Path) -> str | None:
             else "is not a folder")
 
 
-def folder_cannot_be_made(path: Path) -> str | None:
-    """Why `path` cannot be made as a folder, with every folder above it, and
-    written in, or None when it can (#609). It makes nothing.
+def folder_in_the_way(path: Path) -> tuple[Path, str] | None:
+    """`(where, why)` when `path` cannot be made as a folder, with every
+    folder above it, and written in: the one that stands in the way, and
+    why. None when it can (#609). It makes nothing.
 
     The question `Path.mkdir(parents=True, exist_ok=True)` and the first
     write into the folder ask, put without making anything: the nearest of
@@ -1551,22 +1552,34 @@ def folder_cannot_be_made(path: Path) -> str | None:
     says yes for root, and for any folder on Windows, as `mkdir` would). A
     `path` nothing stands at is asked of the folder above it.
 
-    THE FOLDER IS NAMED AS `shown_source` NAMES A PATH (#692): as it is, and
-    as Python's `repr` spells it when a character in it is not printable.
-    Printed raw, an ESC in a folder's name reached the terminal and a line
-    break began a line of the person's choosing. A printable path is named
-    byte for byte, so `why.endswith(CANNOT_WRITE_IN)` still holds.
+    `folder_cannot_be_made` says it as one sentence, naming the folder as
+    `shown_source` names a path (#692). `adopt-project.py` asks it of
+    `--local-remote-dir` (#798), and names `where` its own way.
     """
     for here in (path, *path.parents):
         if not os.path.lexists(here):
             continue
         why = _not_a_folder(here)
         if why:
-            return f"{shown_source(here)} {why}"
+            return here, why
         if not os.access(here, os.W_OK | os.X_OK):
-            return f"{shown_source(here)} {CANNOT_WRITE_IN}"
+            return here, CANNOT_WRITE_IN
         return None
     return None
+
+
+def folder_cannot_be_made(path: Path) -> str | None:
+    """Why `path` cannot be made as a folder, with every folder above it, and
+    written in, or None when it can (#609): `folder_in_the_way`'s answer, as
+    `<where> <why>`. It makes nothing.
+
+    THE FOLDER IS NAMED AS `shown_source` NAMES A PATH (#692): as it is, and
+    as Python's `repr` spells it when a character in it is not printable.
+    Printed raw, an ESC in a folder's name reached the terminal and a line
+    break began a line of the person's choosing. A printable path is named
+    byte for byte, so `why.endswith(CANNOT_WRITE_IN)` still holds."""
+    found = folder_in_the_way(path)
+    return f"{shown_source(found[0])} {found[1]}" if found else None
 
 
 def _unwritable_remediation(choose: str) -> str:
