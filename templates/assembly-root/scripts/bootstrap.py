@@ -33,12 +33,14 @@ WHAT IT DOES, in order:
       a leg whose HEAD is on a branch that differs from the tracking branch
       only in case (`Main` for `main`), whether the tracking branch is
       behind the pin, at it or not there: a disk that folds case (macOS,
-      Windows) reads the two as one branch, so a branch moved or made as
-      `main` there could be the ref HEAD stands on, with the index left at
-      the old commit. No ref moves and none is made; the line says where
-      the leg is, and gives `git -C <leg> switch <branch>` as the way out,
-      or, for a branch that is not there, to keep the commits on a branch
-      named otherwise and check out the pin (#896). A leg
+      Windows) reads the two as one branch, so a branch moved as `main`
+      there could be the ref HEAD stands on, with the index left at the
+      old commit, and one made as `main` could hide the commits the twin
+      holds behind the new ref. No ref moves and none is made; the line
+      says where the leg is, and gives `git -C <leg> switch <branch>` as
+      the way out, or, for a branch that is not there, to keep the commits
+      on a branch named otherwise and check out the pin, whose sha it
+      gives (#896). A leg
       with a merge, a cherry-pick, a revert, a rebase or an `am` in progress
       is not moved at all: a checkout ends the first three, carrying what
       they staged onto the branch, and leaves the last two to go on over
@@ -742,8 +744,8 @@ TWIN_RISKS = {
             "the index at the old commit",
     "place": "the leg is already on {branch} there, and bootstrap would say "
              "it left a branch that keeps its commits",
-    "make": "making {branch} could hide the commits {twin} holds behind the "
-            "new ref",
+    "make": "making {branch} could hide the commits a branch spelled like "
+            "{branch} holds behind the new ref",
 }
 
 
@@ -766,7 +768,8 @@ def _say_twin(label: str, path: str, branch: str, current: str, state: str,
     way out on a disk that keeps case, so the commits `Main` holds are kept
     on a branch of another name, and the pin is checked out: on a disk that
     folds case, `checkout -b main` would write the file `Main` reads, and
-    hide what `Main` holds, packed or not, behind it.
+    hide behind it what `Main` holds in `packed-refs`. A loose `Main` there
+    makes `refs/heads/main` resolve, so this path never runs for it.
     """
     named = spelled(branch)
     twin = spelled(current[len("refs/heads/"):])
@@ -1133,7 +1136,8 @@ def create_at_pin(sub: Path, label: str, path: str, branch: str, pin: str,
     head, current = _head_of(sub)
     if _folded_twin(current, branch):
         _say_twin(label, path, branch, current,
-                  f"branch {named} does not exist", "make")
+                  f"branch {named} does not exist (the pin is "
+                  f"{_short(pin)})", "make")
         return
     if head is not None and current is None and head != pin:
         # `checkout -b <branch> <pin>` from a leg detached anywhere else

@@ -49,6 +49,7 @@ from __future__ import annotations
 
 import itertools
 import os
+import re
 import sys
 from pathlib import Path
 
@@ -73,8 +74,8 @@ RISKS = {
             "index at the old commit",
     "place": "the leg is already on main there, and bootstrap would say it "
              "left a branch that keeps its commits",
-    "make": "making main could hide the commits Main holds behind the new "
-            "ref",
+    "make": "making main could hide the commits a branch spelled like main "
+            "holds behind the new ref",
 }
 #: The way out of a leg with a branch to go to (T7, P9).
 SWITCH = ("          run `git -C spec switch main`, which moves no branch, "
@@ -263,7 +264,8 @@ def test_the_missing_branch_path_leaves_an_unborn_twin_and_makes_nothing(
     result = skip_validators(root)
     assert result.returncode == 0, result.stderr + result.stdout
     assert step_a(result.stdout) == twin_lines(
-        "branch main does not exist", "make", KEEP), result.stdout
+        f"branch main does not exist (the pin is {pin[:12]})", "make",
+        KEEP), result.stdout
     assert main_of(leg) is None, "no `main` is made"
     assert not (gitdir_of(leg) / "refs" / "heads" / "main").exists()
     assert head_ref(leg) == TWIN_REF, "HEAD stays where it was"
@@ -289,14 +291,18 @@ def test_the_missing_branch_path_leaves_a_packed_twin_with_commits(
     result = skip_validators(root)
     assert result.returncode == 0, result.stderr + result.stdout
     assert step_a(result.stdout) == twin_lines(
-        "branch main does not exist", "make", KEEP), result.stdout
+        f"branch main does not exist (the pin is {pin[:12]})", "make",
+        KEEP), result.stdout
     assert main_of(leg) is None, "no `main` is made"
     assert head_ref(leg) == TWIN_REF
     assert rev(leg) == mine, "HEAD stays on `Main`'s commit"
     assert status(leg) == ""
 
     git("branch", "-q", "kept-from-Main", cwd=leg)
-    git("checkout", "-q", "--detach", pin, cwd=leg)
+    shown = re.search(r"\(the pin is ([0-9a-f]{12})\)", result.stdout)
+    assert shown is not None, "the line prints the pin"
+    git("checkout", "-q", "--detach", shown.group(1), cwd=leg)
+    assert rev(leg) == pin, "the printed sha is the pin"
     again = skip_validators(root)
     assert again.returncode == 0, again.stderr + again.stdout
     assert step_a(again.stdout) == (
@@ -384,6 +390,8 @@ SURROGATE = chr(0xDCFF)
     pytest.param("refs/heads/feature", "main", False, id="another branch"),
     pytest.param("refs/heads/mains", "main", False, id="a longer name"),
     pytest.param("refs/Heads/main", "main", False, id="not refs/heads/"),
+    pytest.param("refs/notes/Main", "main", False, id="a notes ref"),
+    pytest.param("refs/tags/xMain", "main", False, id="a tag, 11 characters"),
     pytest.param(f"refs/heads/{SIGMA}", FINAL_SIGMA, True,
                  id="casefold folds a final sigma, lower() does not"),
     pytest.param(f"refs/heads/a{SURROGATE}b", f"a{SURROGATE}b", False,
