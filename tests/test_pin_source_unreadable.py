@@ -1,9 +1,11 @@
 # SPDX-License-Identifier: Apache-2.0
 """A `--pin-source` that cannot answer is `pin-source-unreadable` (#339).
 
-`pin_digest_from_source` caught only `Refusal`. A source that is a directory
-but no clone is git's own failure, a `Refusal`, and was always the refusal
-`pin-source-unreadable` with its remediation, exit 2. A source
+`pin_digest_from_source` caught only `Refusal`. A clone that cannot answer
+for the commit is git's own failure, a `Refusal`, and was always the refusal
+`pin-source-unreadable` with its remediation, exit 2. (A directory that is no
+clone at all is `pin-source-not-a-clone` since #800, asked before any digest,
+in `tests/test_pin_source_top_level.py`.) A source
 `subprocess.run` cannot enter at all never reaches git: `FileNotFoundError`
 for one that is not there, `NotADirectoryError` for a file,
 `PermissionError` for one under a parent this user cannot search, all raised
@@ -17,9 +19,10 @@ a fourth way in: `Path.resolve()` raised a `RuntimeError` before 3.13 (an
 Both tools reach the one function through `declared_pin_values`, so every case
 runs three ways: `scaffold-project.py --dry-run`, the same without it, and
 `adopt-project.py plan`. Each must give exit 2 and the refusal NAMING the
-source and the reason, with the remediation the not-a-clone refusal already
-had, no traceback, and nothing created: no remote directory and no work
-directory for the scaffold, no plan file for adopt. The reasons are the
+source and the reason, with the remediation git's own failure
+(`lacks-the-commit`) already had, no traceback, and nothing created: no
+remote directory and no work directory for the scaffold, no plan file for
+adopt. The reasons are the
 sentences `validate-pins.py` gives the same sources (#295, #312): "no such
 directory", "it is a file, not a directory", and the system's own for any
 other `OSError`.
@@ -55,7 +58,7 @@ COMMIT = "0123456789abcdef0123456789abcdef01234567"
 NO_SUCH_DIRECTORY = "no such directory"
 A_FILE = "it is a file, not a directory"
 
-#: What every refusal is told to do, as the not-a-clone refusal always said it.
+#: What every refusal is told to do, as git's own failure always said it.
 REMEDIATION = ("Remediation: point --pin-source at a clone of that repository "
                "that HAS the pinned commit (`git fetch --all` first), or drop "
                "--pin-source and let `gh api` read the forge.")
@@ -161,16 +164,18 @@ class Unreadable:
     pytest.param("source-not-searchable", marks=SEARCH_DENIED),
     "name-too-long",
     pytest.param("symlink-loop", marks=SYMLINKS),
-    "not-a-clone",
+    "lacks-the-commit",
 ])
 def unreadable(request, tmp_path):
     """Each way a source fails to answer, built under `tmp_path`.
 
     `missing`, `a-file` and `parent-not-searchable` are the issue's table;
     the rest are its neighbours, the other ways `stat()` or git's `cwd=`
-    can raise; `not-a-clone` is the refusal that always held, unchanged.
+    can raise; `lacks-the-commit`, a clone with no such commit, is the
+    refusal that always held, unchanged. (A directory that is no clone is
+    `pin-source-not-a-clone` since #800.)
     `relative-missing` is typed relative to the working directory the tool
-    runs in and is named absolute, as the not-a-clone refusal always named
+    runs in and is named absolute, as git's own failure always named
     its source.
     """
     case = request.param
@@ -214,6 +219,7 @@ def unreadable(request, tmp_path):
                             said=os.strerror(errno.ELOOP))
     else:
         (tmp_path / "plain").mkdir()
+        git("init", "-q", cwd=tmp_path / "plain")
         source = Unreadable(str(tmp_path / "plain"), git_says=True)
     if locked is not None:
         locked.chmod(0)
@@ -249,7 +255,7 @@ def assert_refused(result: subprocess.CompletedProcess, kind: str, base: Path,
 def test_a_pin_source_that_cannot_answer_is_pin_source_unreadable(
         kind, unreadable, tmp_path, adoptable):
     """The issue's table, and its neighbours, through every way in. The one
-    case that held before is `not-a-clone`, git's own failure, whose
+    case that held before is `lacks-the-commit`, git's own failure, whose
     sentence is git's and is asserted as the part of it that does not depend
     on where the repository is kept."""
     result = run(kind, tmp_path, adoptable, unreadable.typed,
@@ -383,11 +389,13 @@ def test_a_source_holding_a_control_character_is_named_spelled(
 @pytest.mark.parametrize("kind", ["scaffold-dry-run", "scaffold-run"])
 def test_git_s_own_reason_names_the_source_spelled_too(kind, tmp_path,
                                                        adoptable):
-    """A directory that is no clone is git's own failure, and git's reason
-    names the directory it ran in: spelled there as in the refusal's head."""
+    """A clone that cannot answer for the commit is git's own failure, and
+    git's reason names the directory it ran in: spelled there as in the
+    refusal's head."""
     typed = str(tmp_path / ("plain\x1b[31mRED\nREFUSED forged-line: this "
                             "line was not printed by the tool\r"))
     Path(typed).mkdir()
+    git("init", "-q", cwd=Path(typed))
     result = run(kind, tmp_path, adoptable, typed)
     assert_one_refusal_of_the_tools(result, typed)
     assert result.stderr.startswith(

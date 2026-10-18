@@ -366,7 +366,9 @@ options:
                         --pin and no --referent-chain to read it, it is
                         refused as `pin-source-unused`; an empty value is
                         refused as `pin-source-no-path`, and `.` means this
-                        directory.
+                        directory. A --pin's digest is read only at a clone's
+                        top level, or a bare clone's: any other path is
+                        refused as `pin-source-not-a-clone`.
   --work-dir WORK_DIR   where the working trees are built (default: a
                         temporary directory)
   --no-next-steps       leave out the closing NEXT STEPS (the clone, the cd
@@ -516,6 +518,9 @@ options:
                         Given with no --pin to read it, the flag is refused as
                         `pin-source-unused`; an empty value is refused as
                         `pin-source-no-path`, and `.` means this directory.
+                        `pin-source-not-a-clone` refuses any other path than a
+                        clone's top level, or a bare clone's, where a --pin's
+                        digest is read.
   --allow-empty-leg {spec,code}
                         record in the plan that this leg having NO path is
                         intended, so it may be SEEDED from the shape's
@@ -523,7 +528,18 @@ options:
                         are specifications with no code yet (2026-09-04):
                         `--allow-empty-leg code`. Repeatable.
   --path-policy PATH_POLICY
-  --out OUT
+  --out OUT             where the plan is written: a file, in a folder that is
+                        there and that this user can write in (default:
+                        `adoption-plan.yaml` in the current directory). Any
+                        other is refused as `adopt-out-unwritable`, and no
+                        plan is written: a folder, a pipe or a device, or a
+                        file in a folder that is missing or that nobody can
+                        write in. That is asked before the source is read or
+                        cloned and before a work directory is made, and a
+                        write that fails all the same is refused as the same
+                        code. The --work-dir, and for an org/repo source its
+                        `source-readonly/<repo>`, may be missing: the run
+                        makes them.
   --work-dir WORK_DIR   the directory an `org/repo` --source is cloned into,
                         as `source-readonly/<repo>`, which the plan records as
                         `source.local_path` for `check` and `execute` to read;
