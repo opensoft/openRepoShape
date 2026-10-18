@@ -871,7 +871,14 @@ def _checked_branch(family: "Family", verb: str, suggested: str) -> str:
     (#487). Asked by the real run, after the refusals about the arguments
     and the holder and before the member is read or anything is written;
     `--dry-run` asks `_branch_said` instead. The remedy's `switch -c` is
-    followed by `BRANCH_LEFT`, for a holder that has the branch (#607)."""
+    followed by `BRANCH_LEFT`, for a holder that has the branch (#607).
+
+    THE HOLDER IS NAMED AS `shown_path` NAMES A PATH (#766), as #692 names
+    the folders `init` makes: a holder whose path held an ESC sent it to the
+    terminal, and one with a line break began a line of its own choosing.
+    A printable path is named byte for byte. The remedy's `switch -c` is
+    a command to paste, and still holds the holder's path raw inside its
+    shell quotes (#459)."""
     branch = _holder_branch(family.root)
     if branch is not None and branch != family.tracking():
         return branch
@@ -884,16 +891,17 @@ def _checked_branch(family: "Family", verb: str, suggested: str) -> str:
     if branch is None:
         raise Refusal(
             "family-holder-detached",
-            f"{family.root} is not on a branch, so `{verb}` would write a "
-            "commit no branch holds, with nothing to push and open a pull "
-            "request from. No git command that writes was run and nothing "
-            "was written.", remedy)
+            f"{shown_path(family.root)} is not on a branch, so `{verb}` "
+            "would write a commit no branch holds, with nothing to push and "
+            "open a pull request from. No git command that writes was run "
+            "and nothing was written.", remedy)
     raise Refusal(
         "family-on-tracking-branch",
-        f"{family.root} is on {branch!r}, which {MANIFEST} declares as the "
-        f"holder's tracking branch, and `{verb}` will not write a commit "
-        "whose only next step is a push to the default branch. No git "
-        "command that writes was run and nothing was written.", remedy)
+        f"{shown_path(family.root)} is on {branch!r}, which {MANIFEST} "
+        "declares as the holder's tracking branch, and "
+        f"`{verb}` will not write a commit whose only next step is a push to "
+        "the default branch. No git command that writes was run and nothing "
+        "was written.", remedy)
 
 
 def _branch_said(family: "Family", verb: str, suggested: str) -> list[str]:
@@ -1033,6 +1041,34 @@ SEQUENCE_UNREADABLE = (
 REBASE_HEAD_NAMES = {"rebase-merge": "rebase-merge/head-name",
                      "rebase-apply": "rebase-apply/head-name"}
 
+#: THE TWO MARKS A REFTABLE KEEPS AS REFS (#684, #612's review E4). A holder
+#: whose refs are a reftable (`git init --ref-format=reftable`, git 2.45 and
+#: later) keeps `CHERRY_PICK_HEAD` and `REVERT_HEAD` in its ref store while
+#: a cherry-pick or a revert is stopped, and in no file; `MERGE_HEAD`,
+#: `rebase-merge/` and `sequencer/todo` stay files there (lane 5's probe, on
+#: git 2.47.1). The file check found neither, so the verb went on to the
+#: commit this check is there to keep it from. Each is asked of the ref store
+#: in its own row of `OPERATION_MARKS`, where its file is not there
+#: (`_in_ref_store`), and the refusal says git keeps it `IN_THE_REF_STORE`.
+#: `MERGE_HEAD` is asked as a file alone, because it is a file on both
+#: backends: a stopped merge leaves `MERGE_HEAD` a file on a reftable too
+#: (lane 5's probe, git 2.47.1), and git reads `MERGE_HEAD` and `FETCH_HEAD`
+#: from their files whatever the backend (`is_pseudo_ref`, git 2.47.1's
+#: `refs.c`), so the file is the whole answer. Asking the ref store for it
+#: would also stop the verbs on git 2.43, which answers `git show-ref
+#: --exists MERGE_HEAD` 1, `failed to look up reference: Success`, where no
+#: merge is in progress (measured; git 2.47.1 answers 2 there).
+REF_STORE_MARKS = ("CHERRY_PICK_HEAD", "REVERT_HEAD")
+IN_THE_REF_STORE = "in its ref store, not as a file"
+#: How `git show-ref --exists <name>` (git 2.43 and later) answers where the
+#: ref store holds no ref of that exact name: 2, `error: reference does not
+#: exist`; 0 where it holds one (both measured on git 2.43, for each mark,
+#: with a cherry-pick stopped, a revert stopped and neither). A git before
+#: 2.43 knows no `--exists` and exits 129, `error: unknown option `exists'`
+#: (measured on git 2.40.4).
+SHOW_REF_MISSING = 2
+GIT_UNKNOWN_OPTION = 129
+
 
 def _rebase_unreadable(mark: str) -> tuple:
     """`(finish, abort, effect)` for a `mark` directory that holds no
@@ -1071,6 +1107,36 @@ def _git_paths(root: Path, names: list[str]) -> list[Path]:
     return [root / line for line in lines]
 
 
+def _in_ref_store(root: Path, mark: str) -> bool:
+    """Whether the holder's ref store holds a ref called EXACTLY `mark`
+    (`REF_STORE_MARKS`, #684), asked with `git show-ref --exists <mark>`, one
+    process per mark, since `--exists` takes one name.
+
+    THE EXACT NAME. `git rev-parse -q --verify CHERRY_PICK_HEAD`, which the
+    issue named, also resolves a branch or a tag of that name, and no
+    operation leaves either: measured on git 2.43 with `git branch
+    CHERRY_PICK_HEAD` and `git tag REVERT_HEAD`, it answers each with the
+    commit, and `show-ref --exists` answers 2 for both.
+
+    GIT'S OWN FAILURE IS NEVER "NOTHING IN PROGRESS". Only 0 is "held" and
+    only 2 "not held"; any other exit is a `CommandFailed`, which the verb
+    prints as it prints every failed git command, exit 2, before its first
+    write. The one other exit read as "not held" is 129, from a git before
+    2.43, which knows no `--exists`: such a git cannot open a reftable at
+    all (`unknown repository extension found: refstorage`, exit 128 at the
+    `git rev-parse` `_git_paths` asks first, measured on git 2.43 and 2.40.4
+    with the extension set by hand), so a holder it gets this far in keeps
+    its refs as files, and the file asked first is the whole answer.
+    """
+    try:
+        _git_bytes(["show-ref", "--exists", mark], root)
+    except CommandFailed as exc:
+        if exc.code in (SHOW_REF_MISSING, GIT_UNKNOWN_OPTION):
+            return False
+        raise
+    return True
+
+
 def _sequence_act(todo: Path) -> tuple:
     """`(what, finish, abort, effect)` for the series `todo` holds, named from
     its first word as `git status` names it, or `SEQUENCE_UNREADABLE`."""
@@ -1092,18 +1158,24 @@ def _sequence_act(todo: Path) -> tuple:
 
 
 def _operation_in_progress(
-        root: Path) -> tuple[str, str, Path, str | None, str, str] | None:
+        root: Path,
+) -> tuple[str, str, Path | None, str | None, str, str] | None:
     """`(what, the mark's name, where it is, how to finish it, how to give it
     up, what the partial commit would do)` for the act the holder's git
     directory shows unfinished, or None; the first of `OPERATION_MARKS`
     that is there, then a `sequencer/`. `finish` is None where git can
-    continue nothing."""
+    continue nothing. `where` is None for a mark the holder's ref store holds
+    and no file does (`REF_STORE_MARKS`, #684): the ref store is asked in the
+    mark's own row, once its file is not there, so the rows keep their
+    order and a mark that is a file is named at its path, as before."""
     names = [*(mark for mark, *_ in OPERATION_MARKS), AM_MARK, SEQUENCER,
              SEQUENCER_TODO, *REBASE_HEAD_NAMES.values()]
     marks = dict(zip(names, _git_paths(root, names)))
     for mark, what, finish, abort, effect in OPERATION_MARKS:
         where = marks[mark]
         if not os.path.lexists(where):
+            if mark in REF_STORE_MARKS and _in_ref_store(root, mark):
+                return what, mark, None, finish, abort, effect
             continue
         if mark == "rebase-apply" and os.path.lexists(marks[AM_MARK]):
             what, finish, abort, effect = AM_OPERATION
@@ -1215,6 +1287,16 @@ def _checked_no_operation_in_progress(root: Path, verb: str) -> None:
     directory, never of a member's: a merge in a MEMBER's mount is that
     checkout's own business.
 
+    A REFTABLE KEEPS TWO OF THE MARKS AS REFS (#684, #612's review E4). A
+    holder whose refs are a reftable holds `CHERRY_PICK_HEAD` and
+    `REVERT_HEAD` in its ref store and in no file, and the file check found
+    neither, so a cherry-pick or a revert stopped there was not refused.
+    Where the file is not there, each is asked of the ref store too, by its
+    exact name (`_in_ref_store`), and the refusal says git keeps it there
+    (`IN_THE_REF_STORE`), with the same exit. A mark that is a file is named
+    at its path, byte for byte as before, and git's own failure to answer is
+    a failed git command, never "nothing in progress".
+
     WHEN IT IS ASKED (#612's review, N4; #684). Each verb asks it right
     after `Family.open` and the checks of its own arguments, so after
     `family.yaml` is parsed. The commonest merge conflict in a holder is in
@@ -1237,10 +1319,12 @@ def _checked_no_operation_in_progress(root: Path, verb: str) -> None:
     if found is None:
         return
     what, mark, where, _, _, effect = found
+    kept = (IN_THE_REF_STORE if where is None
+            else f"at {shown_source(where.as_posix())}")
     raise Refusal(
         "family-operation-in-progress",
-        f"{what} is unfinished in the family root: git keeps {mark} at "
-        f"{shown_source(where.as_posix())}. `{verb}` makes its commit with "
+        f"{what} is unfinished in the family root: git keeps {mark} "
+        f"{kept}. `{verb}` makes its commit with "
         "`git commit -- "
         f"<paths>`, and {effect.format(verb=verb)}. No git command that "
         "writes was run and nothing was written.",
@@ -1270,8 +1354,9 @@ def _unparsable_in_an_act(root: Path) -> str:
         return ""
     what, mark, where, *_ = found
     said = _operation_exit(found)
+    kept = IN_THE_REF_STORE if where is None else f"at {where.as_posix()}"
     return (f"Remediation: {what} is unfinished in the family root: git "
-            f"keeps {mark} at {where.as_posix()}, and where it left "
+            f"keeps {mark} {kept}, and where it left "
             f"{MANIFEST} conflicted, the reader cannot parse the lines git "
             "marks the conflict with (`<<<<<<<` reads as a YAML merge key). "
             + said[:1].upper() + said[1:])
@@ -1856,6 +1941,12 @@ def _refuse_landing_in_standard(into: Path, holder: Path,
     checkout the relative path that reaches its parent from there, so the
     printed flag lands the family beside the checkout wherever the person
     stands. Asked before anything is created, under `--dry-run` alike.
+
+    THE THREE PATHS ARE NAMED AS `shown_path` NAMES A PATH (#766): the
+    holder, the checkout and where `--into ..` lands, each under the
+    directory the person stands in, whose name can hold an ESC or a line
+    break. `--into {parent}` is `..` and `..`s, or on Windows a path no
+    control character can be in, and is named as it is.
     """
     checkout = _standard_checkout(into)
     if checkout is None:
@@ -1868,15 +1959,16 @@ def _refuse_landing_in_standard(into: Path, holder: Path,
     raise Refusal(
         "family-landing-in-standard",
         f"with neither --into nor --work-dir the holder lands where you are "
-        f"standing, at {holder}, which is inside {checkout}, a checkout of "
-        "openRepoShape itself (it holds scripts/family.py and "
-        "templates/family-root/). The family would be part of the "
-        "standard's tree, and `make siblings` would clone every member into "
-        "it too. Nothing was created, and `--dry-run` refuses the same.",
+        f"standing, at {shown_path(holder)}, which is inside "
+        f"{shown_path(checkout)}, a checkout of openRepoShape itself (it "
+        "holds scripts/family.py and templates/family-root/). The family "
+        "would be part of the standard's tree, and `make siblings` would "
+        "clone every member into it too. Nothing was created, and "
+        "`--dry-run` refuses the same.",
         f"Remediation: pass `--into {parent}` to land it beside this "
-        f"checkout, at {beside / family / family}, or `--into <dir>` for any "
-        "other parent directory; `--work-dir <dir>` is the override "
-        "(`<dir>/<Family>`, no family folder). There is no --force.")
+        f"checkout, at {shown_path(beside / family / family)}, or `--into "
+        "<dir>` for any other parent directory; `--work-dir <dir>` is the "
+        "override (`<dir>/<Family>`, no family folder). There is no --force.")
 
 
 def _landing(args, family: str) -> tuple[Path | None, Path]:
@@ -1910,12 +2002,15 @@ def _landing(args, family: str) -> tuple[Path | None, Path]:
     # `os.path.isfile`, which answers False for a holder this user cannot
     # search: `Path.is_file()` raised `PermissionError` there, a traceback
     # before the question about the holder (`_refuse_a_taken_holder`) that
-    # names it (#609's rule: a refusal by name, never a traceback).
+    # names it (#609's rule: a refusal by name, never a traceback). The two
+    # paths are named as `shown_path` names a path (#766): `--into`, or the
+    # directory the person stands in, can hold an ESC or a line break.
     if into.name == family and os.path.isfile(into / family / MANIFEST):
         raise Refusal(
             "family-holder-already-here",
-            f"{into} is already the {family} family folder and its holder "
-            f"is at {into / family}, so there is nothing to init",
+            f"{shown_path(into)} is already the {family} family folder and "
+            f"its holder is at {shown_path(into / family)}, so there is "
+            "nothing to init",
             f"Remediation: `{_add_command(into / family, args.org)}` grows "
             "it, and `make siblings` in the holder puts each member's "
             "working clone beside it. There is no --force.")
@@ -2466,6 +2561,13 @@ def _print_init_plan(values: dict, repository: str, url: str,
     and what a real run shows before it does anything.
 
     Split from `cmd_init` for #136.
+
+    THE FOLDER AND THE HOLDER ARE NAMED AS `shown_path` NAMES A PATH (#766).
+    Both lie under `--into`, `--work-dir` or the directory the person
+    stands in, and the plan is on stdout before any refusal, so a name with
+    a line break and then `WARNING forged-line: pwned` printed that line as
+    a line of the plan, on a dry run and on a run refused after it, and an
+    ESC reached the terminal. A printable path is named byte for byte.
     """
     print(f"family       {values['FAMILY_NAME']} ({values['FAMILY_ID']})")
     print(f"shape        {SHAPE_REPOSITORY} @ {shape_commit[:12]} "
@@ -2473,10 +2575,13 @@ def _print_init_plan(values: dict, repository: str, url: str,
     print(f"created by   {values['CREATED_BY']} on {values['CREATED_ON']}")
     print(f"  holder     {repository:<28} -> {url}")
     if folder is None:
-        print(f"landing      {holder}   (--work-dir: no family folder)")
+        print(f"landing      {shown_path(holder)}   (--work-dir: no family "
+              "folder)")
     else:
-        print(f"folder       {folder}   a plain folder, NOT a repository")
-        print(f"landing      {holder}   the holder clone, inside it")
+        print(f"folder       {shown_path(folder)}   a plain folder, NOT a "
+              "repository")
+        print(f"landing      {shown_path(holder)}   the holder clone, inside "
+              "it")
     print(f"members      mounted under {MEMBERS_DIR}/; none yet — "
           "`family.py add` puts one there")
     print("remotes      " + ("a bare repository on disk (no network)" if local
@@ -2572,6 +2677,12 @@ def _checked_reuse(reuse_empty_repo: bool, local: bool, url: str,
 
     Refused when the remote already exists WITH commits, or exists empty
     without `--reuse-empty-repo`. Split from `cmd_init` for #136.
+
+    A LOCAL REMOTE IS NAMED AS `shown_path` NAMES A PATH (#766): it is a
+    path under `--local-remote-dir`. `_refuse_an_unwritable_clone_url`
+    refuses a control character there first, so only a character that is
+    not printable and not refused (a zero-width space) reaches this from
+    the command line. A GitHub `<org>/<Family>` is named as it is.
     """
     # THE ONE REPOSITORY THAT MAY ALREADY EXIST is the holder, and only with
     # --reuse-empty-repo, and only with ZERO commits. `InkRouter` in the
@@ -2584,7 +2695,8 @@ def _checked_reuse(reuse_empty_repo: bool, local: bool, url: str,
     if not (reuse_empty_repo and empty):
         raise Refusal(
             "family-remote-exists",
-            f"{target} already exists" + ("" if local else " on GitHub")
+            f"{shown_path(target) if local else target} already exists"
+            + ("" if local else " on GitHub")
             + ("" if empty else " and has commits"),
             ("Remediation: it has ZERO commits, so it is a reserved name "
              "rather than a live repository — re-run with "
@@ -7727,6 +7839,11 @@ def _checked_index_unlocked(root: Path, path: str) -> None:
     `.git/index.lock`. A lock taken after this check is the rollback's to
     meet. The dry run does not ask: it writes nothing, and a lock is a fact
     about the moment.
+
+    THE DETAIL NAMES THE LOCK AS `shown_path` NAMES A PATH (#766): it lies
+    under the holder, whose path can hold an ESC or a line break. The
+    remedy's `rm -f` is quoted for a shell, as it was, and still holds
+    the lock's path raw inside those quotes (#459).
     """
     shown = _git_bytes(["rev-parse", "--git-path", "index.lock"],
                        root).decode("utf-8", "surrogateescape").strip()
@@ -7735,11 +7852,11 @@ def _checked_index_unlocked(root: Path, path: str) -> None:
         return
     raise Refusal(
         "family-index-locked",
-        f"the holder's index is locked: {lock.as_posix()} exists. `git "
-        f"submodule deinit` takes no such lock, so `remove` would empty "
-        f"{path} and drop its registration and then fail at `git rm`, its "
-        "first write to the index; it was refused before either, and "
-        "nothing was written.",
+        f"the holder's index is locked: {shown_path(lock.as_posix())} "
+        "exists. `git submodule deinit` takes no such lock, so `remove` "
+        f"would empty {path} and drop its registration and then fail at "
+        "`git rm`, its first write to the index; it was refused before "
+        "either, and nothing was written.",
         "Remediation: another git command is running in the holder, or one "
         "that stopped left the lock behind. Let it finish and run the same "
         "command again; if no git command is running, delete the lock (`rm "

@@ -267,8 +267,8 @@ its last line names that directory, the human's to delete once those have run.
    never changes the verdict: it says whether THIS workstation can run the fixes
    the other rows named. Relay a missing prerequisite; `openRepoShape
    --preflight` offers only the `gh` set-up, and the human types that yes.
-7. `--json` is the same report as one object, alone on stdout, each row
-   carrying its `id`, for when you have to act on a row rather than quote it.
+7. `--json` is the same report as one object, alone on stdout, each row with
+   its `id`, to act on a row. A `next` with `$'…'` needs bash or zsh, not `sh`.
 
 ## Updating a project's shape
 
@@ -292,8 +292,7 @@ git -C <path> push -u origin shape/update-<sha>   # then open a pull request
    `upstream-removed`, `unmapped` or `copy-missing`; `apply` refuses the last
    three. A file with no row is not a shape copy and is none of your business.
 2. **Show the human the verdicts and let them say yes.** Re-pinning records
-   which openRepoShape this project is a copy of. Do not pass `--yes` on your
-   own initiative.
+   which openRepoShape this project is a copy of. Never pass `--yes` yourself.
 3. **Never pass `--accept-local` to make a refusal go away.** It re-pins a
    locally edited file FROM THE PROJECT'S OWN BYTES, which makes the drift
    `validate-pins.py` reports today invisible. Whether the project keeps its
@@ -368,8 +367,7 @@ git -C <path> push -u origin <branch>   # then open a pull request
 
 A FAMILY is a holder that pins other projects' ASSEMBLY ROOTS as submodules
 under `members/`. It is not a project — no legs — and membership confers
-nothing. Use one when the parts DEPLOY SEPARATELY; one project is what parts
-that ship together already are.
+nothing. Use one when the parts DEPLOY SEPARATELY.
 
 ```sh
 python3 scripts/family.py init --org <org> --family <Name> --into .. [--reuse-empty-repo]
@@ -393,13 +391,15 @@ python3 scripts/family.py siblings --family-root <path>
    deliberate and reads like a mistake until somebody explains it.
 2. **A family pins ASSEMBLY ROOTS, never legs.** `--member <org>/<Project>`,
    never `<Project>-spec`: a leg has no `project.yaml`, and is rightly refused.
-3. **Each of `add`, `bump` and `remove` writes ONE commit** moving the
-   gitlink and the pin together, on a branch you make first (see above): the
-   tracking branch is refused (`family-on-tracking-branch`). Push the branch
-   as its `NEXT` line says and land it as a pull request; never suggest a
-   push to the default branch. Never hand-edit `family.yaml`'s `members:`
-   block — the tool rewrites it wholesale. `bump` takes the same repeatable
-   `--trailer "<Key>: <value>"` as `update-shape.py apply`.
+   A holder keeps `members/` in ONE spelling on every disk: `add` refuses
+   `family-members-dir-variant` (`member-path-taken` for a variant of the
+   member's own path) until a human renames what sits under another spelling.
+3. **Each of `add`, `bump` and `remove` writes ONE commit** moving the gitlink
+   and the pin together, on a branch made first (`family-on-tracking-branch`
+   refuses the tracking branch). Push it as its `NEXT` line says and land it as
+   a pull request; never suggest a push to the default branch. Never hand-edit
+   `family.yaml`'s `members:` block, which the tool rewrites wholesale, but for
+   a row repair `validate-family.py` names; the commit is then the person's.
 4. **The member must be scaffolded or adopted FIRST.** A family cannot make a
    project out of a repository; it can only pin one that already is.
 5. **`make siblings` in the holder — or `family.py siblings --family-root

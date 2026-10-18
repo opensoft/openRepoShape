@@ -84,12 +84,14 @@ from __future__ import annotations
 import os
 import shlex
 import shutil
+import subprocess
 from pathlib import Path
 
 import pytest
 
-from conftest import (ORG, PROJECT, REPO, SCAFFOLD, cloned_just_pushed, git,
-                      run_script)
+from conftest import (ORG, PROJECT, REPO, SCAFFOLD, appended_to_command_scope,
+                      cloned_just_pushed, git, run_script)
+from test_bootstrap_spelling import needs_a_byte_name
 
 BUMP = REPO / "scripts" / "bump-leg.py"
 MAIN = "refs/heads/main"
@@ -147,10 +149,7 @@ def configured(key: str, value: str) -> dict:
     and `GIT_CONFIG_VALUE_<n>` (git 2.31), never `git config`. APPENDED to
     what the environment holds: the Windows job sets two entries already
     (`.github/workflows/tests.yml`), and a count of 1 would drop both."""
-    held = int(os.environ.get("GIT_CONFIG_COUNT") or 0)
-    return {"GIT_CONFIG_COUNT": str(held + 1),
-            f"GIT_CONFIG_KEY_{held}": key,
-            f"GIT_CONFIG_VALUE_{held}": value}
+    return appended_to_command_scope(os.environ, [(key, value)])
 
 
 def failing_post_checkout(tmp_path: Path) -> dict:
@@ -493,15 +492,17 @@ def test_a_branch_another_worktree_has_checked_out_is_not_reset(
 
 def test_the_branch_is_spelled_in_the_lines_that_name_it(root):
     """A tracking branch git accepts and a terminal should not be handed
-    raw (U+2028), in the two lines that name it here: the checkout that is
-    neither, and the fast-forward. The validators are skipped, as in
+    raw (the byte 0xff, U+DCFF: since #715 step (a) refuses a U+2028), in
+    the two lines that name it here: the checkout that is neither, and
+    the fast-forward. The validators are skipped, as in
     `tests/test_bootstrap_spelling.py`: they are not what is asked."""
+    needs_a_byte_name(root.parent)
     manifest = root / "project.yaml"
     text = manifest.read_bytes()
     assert text.count(b'tracking_branch: "main"\n') == 1, text
     manifest.write_bytes(text.replace(b'tracking_branch: "main"\n',
-                                      b'tracking_branch: "tb\\u2028x"\n'))
-    named = r"tb\u2028x"
+                                      b'tracking_branch: "tb\\udcffx"\n'))
+    named = r"tb\udcffx"
     leg = root / "spec"
     old = rev(leg)
 
@@ -509,7 +510,7 @@ def test_the_branch_is_spelled_in_the_lines_that_name_it(root):
         result = run_script(root / "scripts" / "bootstrap.py",
                             "--skip-validators", cwd=root)
         assert result.returncode == 0, result.stderr + result.stdout
-        assert "\u2028" not in result.stdout, result.stdout
+        assert "\udcff" not in result.stdout, result.stdout
         return result.stdout
 
     assert f"branch {named} created at {old[:12]}" in printed()
@@ -536,13 +537,18 @@ def test_the_branch_and_its_upstream_are_spelled_in_the_move_back(root):
     """The line that moves a branch back names the branch, its upstream and
     a command with both in it; each is spelled (#391). The state is built
     by hand: a commit past the pin, a remote-tracking ref at it, the branch
-    tracking that ref, and the leg detached at the pin."""
+    tracking that ref, and the leg detached at the pin. Named with the byte
+    0xff since #715, as the test above is, and read from `tracking_branch:`;
+    the line is asked as the escape it must print, not as `spelled` makes
+    it. Its upstream is read as the system decodes it since #824 (#710), and
+    HEAD is read here as bytes, which git's answer is."""
+    needs_a_byte_name(root.parent)
     manifest = root / "project.yaml"
     text = manifest.read_bytes()
     assert text.count(b'tracking_branch: "main"\n') == 1, text
     manifest.write_bytes(text.replace(b'tracking_branch: "main"\n',
-                                      b'tracking_branch: "tb\\u2028x"\n'))
-    raw = "tb\u2028x"
+                                      b'tracking_branch: "tb\\udcffx"\n'))
+    raw = "tb\udcffx"
     leg = root / "spec"
     pin = rev(leg)
     tree = rev(leg, f"{pin}^{{tree}}")
@@ -554,12 +560,14 @@ def test_the_branch_and_its_upstream_are_spelled_in_the_move_back(root):
 
     result = skip_validators(root)
     assert result.returncode == 0, result.stderr + result.stdout
-    assert "\u2028" not in result.stdout, result.stdout
-    command = r"git -C spec merge --ff-only 'origin/tb\u2028x'"
-    assert moved_back(ahead, pin, r"tb\u2028x", command=command) in (
+    assert "\udcff" not in result.stdout, result.stdout
+    command = r"git -C spec merge --ff-only 'origin/tb\udcffx'"
+    assert moved_back(ahead, pin, r"tb\udcffx", command=command) in (
         result.stdout), result.stdout
     assert rev(leg, f"refs/heads/{raw}") == pin and rev(leg) == pin
-    assert head_ref(leg) is not None
+    head = subprocess.run(["git", "symbolic-ref", "--quiet", "HEAD"],
+                          cwd=str(leg), capture_output=True, check=True)
+    assert head.stdout == b"refs/heads/" + os.fsencode(raw) + b"\n"
 
 
 # --- a fresh clone of a leg whose remote moved past the pin -----------------

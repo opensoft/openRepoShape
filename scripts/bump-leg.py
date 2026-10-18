@@ -35,6 +35,11 @@ WHAT IT REFUSES, and why each is a refusal rather than a warning:
     says so and moves the commit, exactly as the real run does (#534). A
     tree, a blob or a tag of either is refused `bump-leg-target-not-a-commit`
     by name, in both runs.
+  * a manifest whose `legs:` is not a list, or holds an entry that is not a
+    mapping: `bump-leg-manifest-legs`, naming each in the words of the
+    project's own `validate-manifest.py`, before anything is fetched and
+    under `--dry-run` as well (#832). That validator refuses either, so a
+    bump over one could never land.
   * a commit the leg's REMOTE does not have. A pin nobody else can fetch is a
     root nobody else can bootstrap.
   * a dirty root. The commit is made with explicit pathspecs, so unrelated
@@ -121,8 +126,11 @@ SHAPE_ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(SHAPE_ROOT / "scripts"))
 from repo_shape import (  # noqa: E402
     COMMIT_RE, SAFE_PATH_RE, Refusal, checked_value, git_out, load_yaml,
-    recorded_gitlink, repo_basename, spelled, tree_digest,
+    recorded_gitlink, repo_basename, shown_path, spelled, tree_digest,
 )
+# On its own line, so the list above, which other changes extend, is
+# not a line two of them both rewrite (#715).
+from shape_materialize import readable_branch  # noqa: E402
 from shape_materialize import (  # noqa: E402
     CommandFailed, captured_child_environment, check_program, commit_trailers,
     escape_what_stdout_cannot_encode, is_nested_key, pin_values_in,
@@ -202,8 +210,39 @@ class Project:
 
     @property
     def legs(self) -> list[dict]:
-        return [row for row in (self.data.get("legs") or [])
-                if isinstance(row, dict)]
+        """The manifest's legs, in its own order.
+
+        A `legs:` THAT IS NOT A LIST, OR AN ENTRY OF IT THAT IS NOT A MAPPING,
+        IS REFUSED `bump-leg-manifest-legs` (#832), naming each in
+        `validate-manifest.py`'s words for it (#714), before anything is
+        fetched or written and under `--dry-run` as well. Iterated as `legs
+        or []`, `legs: 5` ended the run in a `TypeError`, and a scalar
+        `openXdox`, a mapping or `[5]` was refused `bump-leg-unknown-leg`,
+        "it declares" with nothing after it, and the remedy of a `--leg`
+        that was not wrong. A list holding a leg beside such an entry was
+        previewed, exit 0, and the real run refused `bump-leg-validators-red`
+        on that validator's `manifest-leg` finding: a bump that cannot land
+        is refused before the dry run says it would. Absent or null declares
+        no leg, which `leg` refuses `bump-leg-unknown-leg` as it did.
+        """
+        declared = self.data.get("legs")
+        if declared is None:
+            return []
+        if not isinstance(declared, list):
+            said = [f"manifest-legs: legs is {declared!r}, expected a list of "
+                    "`role:`, `repository:` and `path:` mappings"]
+        else:
+            said = [f"manifest-leg: a leg is not a mapping: {row!r}"
+                    for row in declared if not isinstance(row, dict)]
+        if said:
+            raise Refusal(
+                "bump-leg-manifest-legs", f"{self.path}: " + "; ".join(said),
+                "Remediation: each entry of `legs:` is one leg, a mapping "
+                "with `role:`, `repository:` and `path:`. The project's own "
+                "`scripts/validate-manifest.py` names this same fault; a leg "
+                "is not pinned around a manifest defect, so that comes "
+                "first, then this command again.")
+        return declared
 
     def leg(self, role: str) -> dict:
         # `assembly` IS declared, at path `.`, and is refused BEFORE the
@@ -243,7 +282,21 @@ class Project:
 
     @property
     def tracking(self) -> str:
-        return str(self.data.get("tracking_branch") or "main")
+        """The tracking branch, read through `readable_branch` (#715): a
+        name holding a character that does not print or is white space is
+        `unseen-branch`, exit 2, and any other name is taken as it is.
+
+        Compared raw, `tracking_branch: main` followed by U+00A0, which the
+        reader reads as YAML does since #715, was not `main`, so
+        `_branch_to_bump_from` let a commit be made on `main`. This tool
+        never hands the name to a command: it compares it
+        (`_branch_to_bump_from`, the dry run's last line) and prints it. So
+        `checked_value`'s pattern, which #823's first fix round read it
+        through, is not asked: it refused `feature/` and CJK, `a&b` and
+        every other name git creates and the root's own gate passes. Every
+        run asks this before it fetches or writes."""
+        return readable_branch("tracking_branch",
+                               self.data.get("tracking_branch") or "main")
 
 
 # ---------------------------------------------------------------------------
@@ -1155,11 +1208,13 @@ def _ensure_root_clean(root: Path) -> None:
         # `spelled`'s to show, and `strip()` took them off the last name and
         # the leading space off the first line's ` M`, which then read as
         # `M` (staged). git quotes a name with a control in it or a space at
-        # its end, so the last newline is all there is to take off.
+        # its end, so the last newline is all there is to take off. THE ROOT
+        # ABOVE THEM is named as `shown_path` names a path (#766): its name
+        # held a C1 control and a bidi override raw on the first line.
         shown = dirt.decode("utf-8", "backslashreplace").rstrip("\n")
         raise Refusal(
             "bump-leg-root-dirty",
-            f"{root} has uncommitted changes:\n"
+            f"{shown_path(root)} has uncommitted changes:\n"
             + "\n".join(f"    {spelled(line)}" for line in shown.split("\n")),
             "Remediation: commit or stash them first. A lockstep commit that "
             "cannot be read as exactly one change is the thing the rule "
@@ -1217,21 +1272,23 @@ def _branch_to_bump_from(root: Path, project: "Project", role: str,
     the branch the real run needs (#477); a root on no branch at all is
     refused either way. Both refusals name that branch's `switch -c`
     through `_switch_command`, quoted (#532), and end with `BRANCH_LEFT`, the
-    sentence for a root that has that branch already (#647).
+    sentence for a root that has that branch already (#647). Each detail
+    names the root as `shown_path` names a path (#766), as the dirty root's
+    does.
     """
     branch = current_branch(root)
     if branch is None:
         raise Refusal(
             "bump-leg-root-detached",
-            f"{root} is not on a branch, so there is no branch to push and "
-            "open a pull request from",
+            f"{shown_path(root)} is not on a branch, so there is no branch "
+            "to push and open a pull request from",
             f"Remediation: `{_switch_command(root, role, commit)}` and "
             f"re-run.\n{BRANCH_LEFT}")
     if branch == project.tracking and not dry_run:
         raise Refusal(
             "bump-leg-on-tracking-branch",
-            f"{root} is on {branch!r}, which {MANIFEST} declares as this "
-            "project's tracking branch",
+            f"{shown_path(root)} is on {branch!r}, which {MANIFEST} declares "
+            "as this project's tracking branch",
             "Remediation: these organisations are pull-request only, so this "
             "will not make a commit whose only next step is a push to the "
             "default branch. Run:\n    "
@@ -1796,9 +1853,10 @@ def cmd_bump(args) -> int:
             # LAST, after everything a dry run on a branch prints, so that
             # line and the sentence under it are the whole of the difference
             # between the two (#477, #647). The command is quoted, so a root
-            # under `My Projects/` pastes.
-            print(f"\nthe real run needs a branch: {root} is on {branch!r}, "
-                  "the tracking branch. Create one first with: "
+            # under `My Projects/` pastes; the root before it is named as
+            # `shown_path` names a path, as the refusals name it (#766).
+            print(f"\nthe real run needs a branch: {shown_path(root)} is on "
+                  f"{branch!r}, the tracking branch. Create one first with: "
                   + _switch_command(root, role, asked))
             print(BRANCH_LEFT)
         return 0
