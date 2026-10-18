@@ -947,11 +947,13 @@ def test_install_sh_carries_the_launchers_locale_reading_as_it_is():
 #: anything else `ANSI_X3.4-1968`. `HONEST` stops there; `FAILS` answers and
 #: then exits 1; `MISSING` exits 127, as a shell answers a name it cannot
 #: find. An `iconv` is this machine's (None), or `MISSING`, or `EMPTY`, one
-#: that prints nothing and exits 0, as no working one does, or `MARKS`, one
+#: that prints nothing and exits 0, as no working one does, or
+#: `READS_THEN_FAILS`, this machine's run in full and then exit 1, so that
+#: the whole reading is printed by an `iconv` that failed, or `MARKS`, one
 #: that leaves `iconv-ran` beside itself and exits 1, so that a run which
 #: must not ask it shows whether it did.
-HONEST, FAILS, MISSING, EMPTY, MARKS = (
-    "honest", "fails", "missing", "empty", "marks")
+HONEST, FAILS, MISSING, EMPTY, READS_THEN_FAILS, MARKS = (
+    "honest", "fails", "missing", "empty", "reads-then-fails", "marks")
 
 #: What a `locale` stub answers `locale charmap` with, as described above.
 CHARMAP_ANSWER = (
@@ -975,13 +977,14 @@ def put_a_locale(directory: Path, kind: str = HONEST,
         HONEST: CHARMAP_ANSWER, FAILS: CHARMAP_ANSWER + "exit 1\n",
         MISSING: "exit 127\n"}[kind])
     (directory / "locale").chmod(0o755)
+    real = shutil.which("iconv")
+    assert real, "this machine has no iconv, which these cases read with"
     if iconv is None:
-        real = shutil.which("iconv")
-        assert real, "this machine has no iconv, which these cases read with"
         put_on_path(directory, "iconv", real)
         return
     write_script(directory / "iconv", "#!/bin/sh\n" + {
         MISSING: "exit 127\n", EMPTY: "cat >/dev/null\nexit 0\n",
+        READS_THEN_FAILS: f'{shlex.quote(real)} "$@"\nexit 1\n',
         MARKS: f": > {shlex.quote(str(directory / 'iconv-ran'))}\nexit 1\n",
     }[iconv])
     (directory / "iconv").chmod(0o755)
@@ -1034,11 +1037,12 @@ PLACED_AS_THE_LOCALE_READS = [
 #: UTF-8, so a name holding either beside a hanzi the bytes refuse is
 #: refused as its reading says. And the bytes decide, in #804's and #837's
 #: words, where `locale` fails or is not there; where `iconv` is not there,
-#: or prints nothing; where GB18030 cannot read a byte (`0xFF`); under a
-#: single-byte charset, as Latin-1 reads U+FEFF's three bytes, each alone;
-#: with a newline at the end, which `$(…)` drops from a reading; and where
-#: `locale` answers nothing, UTF-8 or ASCII, under which `iconv` is never
-#: asked.
+#: prints nothing, or prints the whole reading and then fails, which the
+#: round trip alone would let through; where GB18030 cannot read a byte
+#: (`0xFF`); under a single-byte charset, as Latin-1 reads U+FEFF's three
+#: bytes, each alone; with a newline at the end, which `$(…)` drops from a
+#: reading; and where `locale` answers nothing, UTF-8 or ASCII, under which
+#: `iconv` is never asked.
 REFUSED_AS_THE_BYTES_SAY = [
     pytest.param("GB18030", HONEST, None,
                  A_HANZI_OF_C1_BYTES + "\udc81" + "0" + "\udc83" + "7",
@@ -1055,6 +1059,9 @@ REFUSED_AS_THE_BYTES_SAY = [
                  HOLDS_A_CONTROL_CHARACTER, id="no-iconv"),
     pytest.param("GB18030", HONEST, EMPTY, A_HANZI_OF_C1_BYTES,
                  HOLDS_A_CONTROL_CHARACTER, id="an-iconv-that-prints-nothing"),
+    pytest.param("GB18030", HONEST, READS_THEN_FAILS, A_HANZI_OF_C1_BYTES,
+                 HOLDS_A_CONTROL_CHARACTER,
+                 id="an-iconv-that-reads-then-fails"),
     pytest.param("GB18030", HONEST, None, A_HANZI_OF_C1_BYTES + chr(0xDCFF),
                  HOLDS_A_CONTROL_CHARACTER, id="a-byte-gb18030-cannot-read"),
     pytest.param("ISO-8859-1", HONEST, None, "a" + chr(0xFEFF) + "b",
