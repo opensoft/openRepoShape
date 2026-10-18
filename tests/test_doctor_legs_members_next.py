@@ -23,18 +23,23 @@ EVERY NEXT HERE IS PASTED AND RUN, from a directory that is not the root,
 through `sh -c` exactly as the row printed it, and the row is asked again.
 Those tests are `WINDOWS_SKIP`: `sh` is a POSIX shell, and on Windows the
 reader's shell is PowerShell. The text-level assertions about what the line
-IS carry no skip, so they run on whatever host the suite is run on.
+IS are not, so they run on whatever host the suite is run on, bar those that
+give way on Windows for a reason of their own: a member named in bytes cannot
+be in a Windows command line, and the keep line of a quoted root is not read
+by `shlex` there, which is `sh`'s reader and not PowerShell's.
 
 THE POWERSHELL FORM OF A LINE IS CHECKED AS TEXT AND NEVER RUN (#415).
-`test_the_line_is_spelled_for_the_readers_shell` asks `quote_arg` for it
-(`platform="nt"`, from any host) and compares the string; no test here pastes
-a line into `powershell`. A Windows-only test would not change that, because
-no job runs this file on Windows: `tests.yml` runs the suite on ubuntu-latest
-alone (the macOS and Windows jobs were dropped, #597), and its one Windows
-job, `tests-git-bash`, runs three files of the launcher's and the installer's
-suites and no other. A `skipif(os.name != "nt")` test added here would be
-skipped by every runner there is. The one test that does paste a PowerShell
-line, for a template validator's (`test_shape_doctor.py`,
+`test_the_line_is_spelled_for_the_readers_shell` and
+`test_413a_the_kept_repositorys_keep_line_is_spelled_for_the_readers_shell`
+ask `quote_arg` for it (`platform="nt"`, from any host) and compare the
+string; no test here pastes a line into `powershell`. A Windows-only test
+would not change that, because no job runs this file on Windows: `tests.yml`
+runs the suite on ubuntu-latest alone (the macOS and Windows jobs were
+dropped, #597), and its one Windows job, `tests-git-bash`, runs three files
+of the launcher's and the installer's suites and no other. A
+`skipif(os.name != "nt")` test added here would be skipped by every runner
+there is. The one test that does paste a PowerShell line, for a template
+validator's (`test_shape_doctor.py`,
 `test_a_template_validators_next_runs_when_pasted_into_powershell`), is no
 better placed: no job runs it either. What this file holds of a Windows
 reader's line is its text.
@@ -146,12 +151,15 @@ SHELL_SYNTAX = (";", "'", "`", "(", ")")
 def assert_fixed_words_are_plain(why: str, *spelled: str) -> None:
     """The explanation's FIXED words hold none of `SHELL_SYNTAX`.
 
-    `spelled` is each path the sentence names, as `quote_arg` spelled it. It
-    is asked for, so a sentence that names nothing fails here, and it is put
-    as `PATH` before the words are read: a path is the root's and not the
-    sentence's, and a root that needs quoting puts a `'` into it (#415). A
-    check over the whole sentence holds only for a root that needs none,
-    which pytest's temporary roots are."""
+    `spelled` is each path the sentence names, as `quote_arg` spelled it,
+    and it is put as `PATH` before the words are read: a path is the root's
+    and not the sentence's, and a root that needs quoting puts a `'` into it
+    (#415). A check over the whole sentence holds only for a root that needs
+    none, which pytest's temporary roots are. Each one passed must be in
+    `why`, so a sentence that does not name a path it should fails here. A
+    call that passes none, as the members git line's does (its sentence names
+    no path), reads the whole of `why`: there this is the loop it replaced,
+    and no more."""
     words = why
     for each in spelled:
         assert each in why, (each, why)
@@ -358,9 +366,11 @@ def test_the_line_is_spelled_for_the_readers_shell(standard):
     verbatim string, backslashes and all, in the line AND in the keep line
     the explanation names.
 
-    THE ONLY CHECK OF THE POWERSHELL FORM, AND IT IS OF THE TEXT: no test in
-    this file runs it in `powershell`, and no job could (module docstring,
-    #415)."""
+    ONE OF TWO CHECKS OF THE POWERSHELL FORM, AND BOTH ARE OF THE TEXT. The
+    other, for the kept repository's keep line, is
+    `test_413a_the_kept_repositorys_keep_line_is_spelled_for_the_readers_shell`
+    No test in this file runs the form in `powershell`, and no job does
+    (module docstring, #415)."""
     module = doctor_module(standard)
     posix_root = PurePosixPath("/srv/my atlas")
     line, why = module.submodule_update_next(
@@ -471,7 +481,10 @@ def test_the_explanations_fixed_words_hold_no_shell_syntax_over_a_quoted_root(
     assert len(keeps) == len(mounts), why
     for keep, mount, quoted in zip(keeps, mounts, spelled):
         assert quoted != str(mount), "this root needs no quoting"
-        if os.name != "nt":  # PowerShell quotes an apostrophe by doubling it
+        # Not on Windows: PowerShell doubles an apostrophe, which shlex
+        # would misread. (Git Bash is `host_shell_dialect() == "posix"`,
+        # where shlex is right; no job runs this file on Windows today.)
+        if os.name != "nt":
             assert shlex.split(keep) == [
                 "git", "-C", str(mount), "branch", "NAME"], keep
     assert_fixed_words_are_plain(why, *spelled)
