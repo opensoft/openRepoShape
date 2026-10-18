@@ -198,6 +198,13 @@ from repo_shape import YamlError, parse_yaml  # noqa: E402
 from shape_materialize import (  # noqa: E402
     FAMILY_TEMPLATED, PLACEHOLDER_RE, render,
 )
+# Where the holder's own reader refuses the manifest `init` would write: the
+# sentences that name the value on the line it refuses, and the first
+# sentence of their remedy, the scaffold's and `adopt-project.py`'s since
+# #708, asked of `family.yaml` (#929).
+from shape_materialize import (  # noqa: E402
+    KIND_INVALID, KIND_UNREADABLE, UNREADABLE_CHOICE, _unread_sentences,
+)
 # How every command this prints for a person to paste spells its paths
 # (#486), the quoting the holder's `scripts/siblings.py` uses too.
 from repo_shape import shell_line, shell_quoted  # noqa: E402
@@ -3272,17 +3279,50 @@ def family_manifest_invalid(values: dict, policy: NamingPolicy, what: dict,
     relates to another is asked as the holder asks it. `values` must be the
     complete table and `policy` the naming policy the holder carries a copy
     of. The validator's `Report` is asked for its findings alone: its notes
-    are what it says when nothing is wrong.
+    are what it says when nothing is wrong. Where the holder's own YAML
+    reader refuses the file before the validator can be asked, each
+    sentence is the reader's, naming the value on the line it refuses
+    (`_manifest_problems`, #929).
+    """
+    return [sentence for _, sentence in _manifest_problems(
+        values, policy, what, template_dir)]
+
+
+#: The placeholders that carry a value of `what` into `family.yaml` where no
+#: line holds that value's own placeholder (#929): the organisation is the
+#: owner half of the holder's `repository:`, so the reader's refusal of that
+#: line is `--org`'s. `shape_materialize.CARRIED_BY` is the project's.
+CARRIED_BY = {"FAMILY_REPOSITORY": "ORG"}
+
+
+def _manifest_problems(values: dict, policy: NamingPolicy, what: dict,
+                       template_dir: Path) -> list[tuple[str, str]]:
+    """`family_manifest_invalid`'s sentences, each with its kind, as
+    `shape_materialize` gives a project's (#708): `invalid` for a finding of
+    the validator's, and `unreadable` where the holder's own YAML reader
+    refuses the file the validator would read, whose words are the
+    reader's and whose remedy is its own (`MANIFEST_UNREADABLE_REMEDIATION`).
+
+    THE VALUE IS NAMED (#929). The reader refuses `repository: @x/Orbit`,
+    so `init --org @x --local-remote-dir <dir>` said only that the manifest
+    was a file the reader refuses, under a remedy calling the words the
+    validator's. `_unread_sentences`, the scaffold's and `adopt-project.py`'s
+    since #708, reads each line of `family.yaml` that carries a value alone
+    and names the value whose line the reader refuses, by its own
+    placeholder or by the one `CARRIED_BY` names; where none is, the
+    sentence is the reader's refusal of the whole file, as before.
     """
     template = (Path(template_dir) / MANIFEST).read_text(encoding="utf-8")
     try:
         manifest = parse_yaml(render(template, values, MANIFEST))
     except YamlError as exc:
-        return ["the manifest this run would write is a file the holder's "
-                f"own YAML reader refuses: {exc}."]
+        return [(KIND_UNREADABLE, sentence) for sentence in _unread_sentences(
+            values, what, template_dir, exc, manifest=MANIFEST,
+            carried_by=CARRIED_BY, reader="the holder's own YAML reader")]
     if not isinstance(manifest, dict):
-        return ["the manifest this run would write is not a mapping, which "
-                "is what the holder's own YAML reader makes of it."]
+        return [(KIND_INVALID, "the manifest this run would write is not a "
+                 "mapping, which is what the holder's own YAML reader makes "
+                 "of it.")]
     validator = family_validator(template_dir)
     # THE VALIDATOR'S OWN DEFECT, NEVER A FINDING. One that raises, one that
     # EXITS (a `sys.exit(0)` would end this run with a zero, having printed
@@ -3305,7 +3345,8 @@ def family_manifest_invalid(values: dict, policy: NamingPolicy, what: dict,
             raise _validator_unusable(
                 "answered with a finding that is not text",
                 f"its type is {type(finding).__name__}")
-    return _sentences_of(findings, values, what)
+    return [(KIND_INVALID, sentence)
+            for sentence in _sentences_of(findings, values, what)]
 
 
 #: The remediation of a value the reader turns into something else, without
@@ -3330,6 +3371,20 @@ MANIFEST_INVALID_REMEDIATION = (
     "it refuses is red from its first commit, because `make validate` and "
     "the `validate` workflow run it first, and `init` cannot be run again "
     "over a pushed holder: there is no --force.")
+#: Where the holder's own YAML reader refuses the manifest before its
+#: validator can be asked (#929), the words are the reader's and a sentence
+#: may name no value, so the remedy opens as the project's does
+#: (`UNREADABLE_CHOICE`, #708) and says the words are the reader's.
+MANIFEST_UNREADABLE_REMEDIATION = (
+    f"{UNREADABLE_CHOICE} The words are the holder's own YAML reader's, "
+    "which refuses the manifest this run would write before its "
+    "validate-family.py can be asked. A holder whose manifest it refuses is "
+    "red from its first commit, because `make validate` and the `validate` "
+    "workflow run that validator first, and `init` cannot be run again over "
+    "a pushed holder: there is no --force.")
+#: The remedy for each kind of problem `_manifest_problems` names.
+KIND_REMEDIATIONS = {KIND_INVALID: MANIFEST_INVALID_REMEDIATION,
+                     KIND_UNREADABLE: MANIFEST_UNREADABLE_REMEDIATION}
 
 
 def _manifest_flags(args) -> dict:
@@ -3360,6 +3415,9 @@ def refuse_unholdable_manifest(args, values: dict,
     and alone, because the validator's finding about it (`id is None`) is its
     consequence; one the validator refuses (`--created-by ' '`, `--name
     'Contoso Group'`) is `family-manifest-invalid`, in the validator's words.
+    A manifest the reader refuses before the validator can be asked (`--org
+    @x`, `repository: @x/<Family>`) is `family-manifest-invalid` still, in
+    the reader's words and with the reader's remedy (#929).
     """
     flags = _manifest_flags(args)
     nothing = " Nothing was created, and `--dry-run` refuses the same."
@@ -3367,11 +3425,12 @@ def refuse_unholdable_manifest(args, values: dict,
     if problems:
         raise Refusal("family-manifest-misread", " ".join(problems),
                       MANIFEST_MISREAD_REMEDIATION + nothing)
-    problems = family_manifest_invalid(
-        values, NamingPolicy.load(NAMING_POLICY), flags, template_dir)
-    if problems:
-        raise Refusal("family-manifest-invalid", " ".join(problems),
-                      MANIFEST_INVALID_REMEDIATION + nothing)
+    found = _manifest_problems(values, NamingPolicy.load(NAMING_POLICY), flags,
+                               template_dir)
+    if found:
+        raise Refusal("family-manifest-invalid",
+                      " ".join(sentence for _, sentence in found),
+                      KIND_REMEDIATIONS[found[0][0]] + nothing)
 
 
 def cmd_init(args) -> int:
