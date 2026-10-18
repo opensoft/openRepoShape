@@ -27,6 +27,8 @@ WHAT IS CHECKED
     `members/IRRS` and `members/irrs` are one directory on macOS and Windows,
     whatever `id:` each row records (#331). This one reads `family.yaml`
     alone, so `--no-members` asks it too.
+  - that every entry of `members:` is a mapping, the `member-row` finding
+    (#864). It reads `family.yaml` alone, so `--no-members` asks it too.
   - EVERY MEMBER, three ways:
       1. the GITLINK this repository records at `members/<Project>` equals
          `members[].pin.commit` — the same lockstep rule an assembly root
@@ -2618,6 +2620,10 @@ def _check_members(root: Path, members: list, no_members: bool,
     section of HEAD's `.gitmodules` gives (#611) or gives a url, and a
     row's own whose removal is staged (#762).
 
+    AND EVERY ENTRY OF `members:` THAT IS NOT A MAPPING, `member-row`
+    (#864), after the names and ids: it reads `family.yaml` alone, so
+    `--no-members` asks it too, and the loop below skips the entry.
+
     THEN EVERY ROW'S GITLINK, AND ONLY THEN ANY ROW'S CHECKOUT (#648). Each
     row used to be asked whole before the next was asked at all, so in a
     plain clone of a holder whose later row's gitlink is recorded only in
@@ -2643,6 +2649,14 @@ def _check_members(root: Path, members: list, no_members: bool,
     """
     _check_member_names_unique(members, report)
     _check_member_ids_unique(root, members, report)
+    # A ROW THAT IS NOT A MAPPING reads `family.yaml` alone too, so it is
+    # found here, in both modes (#864): found only in the loop below, past
+    # the `--no-members` return, it was counted as a member there, and the
+    # rows beside a `5` were `family ok`, exit 0.
+    for row in members:
+        if not isinstance(row, dict):
+            report.finding("member-row",
+                           f"a member is not a mapping: {row!r}")
     sections = _gitmodules_sections(root)
     as_read = sections
     refused_here, refused = _check_gitmodules_values(root, members, report)
@@ -2667,8 +2681,6 @@ def _check_members(root: Path, members: list, no_members: bool,
     gitlinked: list[Gitlinked] = []
     for row in members:
         if not isinstance(row, dict):
-            report.finding("member-row",
-                           f"a member is not a mapping: {row!r}")
             continue
         asked = _check_member(root, row, seen, report, gitlinks, removed)
         if asked is not None:
