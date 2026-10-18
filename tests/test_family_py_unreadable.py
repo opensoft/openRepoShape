@@ -37,9 +37,11 @@ questions (`_gone`, `_is_there`) meet the same refusal everywhere.
 
 from __future__ import annotations
 
+import errno
 import os
 import shutil
 import stat
+import sys
 from pathlib import Path
 
 import pytest
@@ -66,6 +68,11 @@ ZEROS = "0" * 40
 #: cure, and how one for any other cause does: the two never mix.
 CHMOD = "`chmod u+rx` on a directory"
 NO_CHMOD = "no `chmod` puts it right"
+#: How a rollback step that met a path it could not read ends, after the
+#: path and the reason: the cure for a permission (#955's round 1).
+STEP_CURE = ("make it readable by this user (`chmod u+r` on a file, `chmod "
+             "u+rx` on a directory and on every directory above it inside "
+             "the holder)")
 
 
 def refused(monkeypatch, *names: str) -> None:
@@ -231,6 +238,23 @@ def test_a_scripts_folder_this_user_cannot_search_is_named(holder, offline,
     assert_script_unreadable(result.returncode, result.stderr)
 
 
+@pytest.mark.skipif(sys.platform == "win32",
+                    reason="a link to itself is a POSIX symbolic link")
+def test_a_siblings_script_that_is_a_link_loop_is_missing(holder, offline,
+                                                          tmp_path):
+    """THE OTHER HALF, `ELOOP`: a link to itself is no file to run, as
+    every Python up to 3.13 answered, and stays `siblings-script-missing`,
+    not a file this user cannot read (r955's M19 on #955)."""
+    script = holder / "scripts" / "siblings.py"
+    aside(script, tmp_path)
+    os.symlink("siblings.py", script)
+
+    result = run(isolated(offline, tmp_path), *SIBLINGS, str(holder))
+
+    assert result.returncode == 2, result.stdout + result.stderr
+    assert result.stderr.startswith("REFUSED siblings-script-missing: ")
+
+
 # --- `bump`: the member's `.git` (:8704) -----------------------------------
 
 def bump_argv(holder: Path, dry: bool) -> list[str]:
@@ -296,6 +320,22 @@ def test_a_member_this_user_cannot_enter_is_named_by_bump(
     assert facts(holder, env) == before
 
 
+def test_a_member_under_a_file_is_still_uninitialized(holder, offline,
+                                                      tmp_path):
+    """THE OTHER HALF, `ENOTDIR`: a file where the member's mount was has no
+    `.git` under it, which `bump`, removing nothing, reads as absent, as
+    every Python up to 3.13 did: `member-uninitialized`, never a member
+    this user cannot read (r955's M18 on #955)."""
+    argv = bump_argv(holder, dry=True)
+    aside(holder / PATH, tmp_path)
+    (holder / PATH).write_bytes(b"a file where the mount was\n")
+
+    result = run(isolated(offline, tmp_path), *argv)
+
+    assert result.returncode == 2, result.stdout + result.stderr
+    assert result.stderr.startswith("REFUSED member-uninitialized: ")
+
+
 # --- `remove`: the mount it deletes (:9423, and the real run's record) -------
 
 MOUNT_UNREADABLE = [f"REFUSED member-unreadable: {PATH}: cannot be read "
@@ -318,9 +358,11 @@ def test_a_mount_that_is_not_there_is_still_not_on_disk(holder, offline,
 def test_a_mount_under_a_file_is_refused_not_removed_past(
         dry, holder, offline, tmp_path):
     """THE REMOVAL ROW, `ENOTDIR`: a file where `members/` was. The dry run
-    said "not on disk" and the real run unstaged and committed the member's
-    removal past a file it never looked at, exit 0. Now both refuse it, by
-    the system's reason and with no `chmod`, and change nothing."""
+    said "not on disk", exit 0, and the real run ran `git submodule deinit
+    -f` past a file it never looked at, met `git rm`'s exit 128 and was
+    rolled back, exit 2. Now both refuse it before any git command that
+    writes, by the system's reason and with no `chmod`, and change
+    nothing."""
     env = isolated(offline, tmp_path)
     before = facts(holder, env)
     data = file_where_members_was(holder, tmp_path)
@@ -373,6 +415,106 @@ def test_a_members_folder_this_user_cannot_search_is_named_by_remove(
     assert refusal_detail(result.stderr, "member-unreadable") == (
         MOUNT_UNREADABLE)
     assert facts(holder, env) == before
+
+
+# The next two are r955's rows on #955 (SHOULD-2), as r955 wrote them: the
+# mount's `.git`, which `remove` asks after the mount itself. `50178305`'s
+# dry run said "deleted with everything in it", exit 0.
+
+@pytest.mark.parametrize("dry", [True, False], ids=["dry-run", "real"])
+def test_a_mount_git_whose_stat_is_refused_is_named_by_remove(
+        dry, holder, offline, tmp_path, monkeypatch, capsys):
+    env = isolated(offline, tmp_path)
+    before = facts(holder, env)
+    refused(monkeypatch, ".git")
+
+    code = in_process(family_module(), monkeypatch, env, [
+        "remove", "--family-root", str(holder), "--member", MEMBER,
+        *(["--dry-run"] if dry else [])])
+
+    err = capsys.readouterr().err
+    assert code == 2, err
+    assert refusal_detail(err, "member-unreadable") == GIT_UNREADABLE
+    monkeypatch.undo()
+    assert facts(holder, env) == before
+
+
+@needs_a_mode
+@pytest.mark.parametrize("dry", [True, False], ids=["dry-run", "real"])
+def test_a_member_this_user_cannot_enter_is_named_by_remove(
+        dry, holder, offline, tmp_path):
+    env = isolated(offline, tmp_path)
+    before = facts(holder, env)
+
+    with made_unopenable(holder, PATH):
+        result = remove(holder, env, *(["--dry-run"] if dry else []))
+
+    assert result.returncode == 2, result.stdout + result.stderr
+    assert refusal_detail(result.stderr, "member-unreadable") == (
+        GIT_UNREADABLE)
+    assert facts(holder, env) == before
+
+
+#: What `remove` says of the object store git keeps for the member, when
+#: this user cannot read it (r955's SHOULD-1 on #955).
+STORE_REFUSED = [f"REFUSED member-unreadable: {STORE}: cannot be read "
+                 "(Permission denied)"]
+
+
+@pytest.mark.parametrize("dry", [True, False], ids=["dry-run", "real"])
+def test_a_store_whose_stat_is_refused_is_named_by_remove(
+        dry, holder, offline, tmp_path, monkeypatch, capsys):
+    """The store's `HEAD`, asked before anything is written: `remove`
+    committed past it, and a rollback after its first write said no store
+    held the checkout and it came back only from its remote."""
+    env = isolated(offline, tmp_path)
+    before = facts(holder, env)
+    refused(monkeypatch, "HEAD")
+
+    code = in_process(family_module(), monkeypatch, env, [
+        "remove", "--family-root", str(holder), "--member", MEMBER,
+        *(["--dry-run"] if dry else [])])
+
+    err = capsys.readouterr().err
+    assert code == 2, err
+    assert refusal_detail(err, "member-unreadable") == STORE_REFUSED
+    assert CHMOD in remedy(err)
+    monkeypatch.undo()
+    assert facts(holder, env) == before
+
+
+@needs_a_mode
+@pytest.mark.parametrize("dry", [True, False], ids=["dry-run", "real"])
+@pytest.mark.parametrize("where", [".git/modules/members", STORE],
+                         ids=["modules", "store"])
+def test_a_store_this_user_cannot_read_is_refused_by_remove(
+        where, dry, holder, offline, tmp_path):
+    """r955's SHOULD-1 rows: `remove` ran `deinit -f` and `git rm` and
+    committed, exit 0, over a store this user could not read."""
+    env = isolated(offline, tmp_path)
+    before = facts(holder, env)
+
+    with made_unopenable(holder, where):
+        result = remove(holder, env, *(["--dry-run"] if dry else []))
+
+    assert result.returncode == 2, result.stdout + result.stderr
+    assert "Traceback" not in result.stderr
+    assert refusal_detail(result.stderr, "member-unreadable") == (
+        STORE_REFUSED)
+    assert facts(holder, env) == before
+
+
+def test_a_member_whose_store_is_gone_is_still_planned_for_removal(
+        holder, offline, tmp_path):
+    """The control, `ENOENT`: a member whose store is gone is removed as
+    #365 removes it, and the dry run plans it so."""
+    rmtree(holder / STORE)
+
+    result = remove(holder, isolated(offline, tmp_path), "--dry-run")
+
+    assert result.returncode == 0, result.stdout + result.stderr
+    assert f"directory    {PATH}  deleted with everything in it" in (
+        result.stdout)
 
 
 # --- `remove`: the NOTE about the store left behind (:9333) ------------------
@@ -469,7 +611,62 @@ def test_a_store_whose_stat_is_refused_is_no_store_that_is_gone(
     refusal = refusal_of(module, module._unrestorable, holder, PATH, commit)
 
     assert refusal.code == "member-unreadable"
+    assert refusal.code == module.STORE_UNREADABLE
     assert refusal.detail == STORE_UNREAD
+
+
+def stat_failing(monkeypatch, name: str, error: OSError) -> None:
+    """`Path.stat` of `name` failing with `error`, a cause that is not a
+    permission, which `refused_stat` does not make."""
+    real = Path.stat
+
+    def failing(self, *args, **kwargs):
+        if self.name == name:
+            raise error
+        return real(self, *args, **kwargs)
+
+    monkeypatch.setattr(Path, "stat", failing)
+
+
+#: An I/O error: a cause no `chmod` puts right.
+EIO = OSError(errno.EIO, "Input/output error")
+
+
+def test_a_store_that_fails_for_another_cause_is_told_no_chmod(
+        holder, monkeypatch):
+    """r955's NIT 6 on #955: the cure follows the cause. An I/O error is
+    not told the mode (r955's M27)."""
+    module = family_module()
+    commit = pinned(holder)
+    stat_failing(monkeypatch, MEMBER, EIO)
+
+    refusal = refusal_of(module, module._unrestorable, holder, PATH, commit)
+
+    assert refusal.detail == (
+        f"git would check it out of {STORE}, which cannot be read "
+        f"(Input/output error): {module.OTHER_CURE}")
+    assert "chmod u+r" not in refusal.detail
+
+
+def test_a_store_that_fails_for_another_cause_is_noted_no_chmod(
+        holder, offline, tmp_path, monkeypatch, capsys):
+    """The NOTE after `remove`'s commit, for an I/O error: #430's
+    other-reason words, never "once this user can read the directory"."""
+    for key, value in isolated(offline, tmp_path).items():
+        monkeypatch.setenv(key, value)
+    module = family_module()
+    family_open = module.Family.open(holder)
+    row = family_open.member(MEMBER)
+    stat_failing(monkeypatch, MEMBER, EIO)
+
+    code = module._unmount_and_drop(family_open, row, PATH)
+
+    out = capsys.readouterr().out
+    assert code == 0, out
+    assert (f"  NOTE {STORE}: cannot be read (Input/output error), so whether"
+            in out)
+    assert module.OTHER_CURE in out
+    assert "once this user can read" not in out
 
 
 def assert_store_unread_said(sentence: str) -> None:
@@ -503,7 +700,12 @@ def test_a_rollback_meeting_a_refused_store_types_the_restore(
     err = capsys.readouterr().err
     assert code == 2, err
     assert "Traceback" not in err
-    assert_store_unread_said(err.splitlines()[-1])
+    sentence = err.splitlines()[-1]
+    assert_store_unread_said(sentence)
+    # The mount's own `stat` is refused too, so it is not made again over
+    # (r955's M30), and no `mkdir` is typed for it.
+    assert "was made again, empty" not in sentence
+    assert "`mkdir " not in sentence
 
 
 @needs_a_mode
@@ -533,10 +735,44 @@ def test_a_rollback_meeting_an_unreadable_store_is_put_right_as_typed(
     assert f", and {PATH} was made again, empty" in sentence
     git("config", "--local", "--unset", "core.hooksPath", cwd=holder)
     typed_by_hand(holder, sentence)
+    assert_back_on_main(holder, at)
+
+
+def assert_back_on_main(holder: Path, at: str) -> None:
+    """The member checked out on `main` at `at`, the holder clean."""
     assert git("rev-parse", "HEAD", cwd=holder / PATH).stdout.strip() == at
     assert git("symbolic-ref", "--short", "HEAD",
                cwd=holder / PATH).stdout.strip() == "main"
     assert git("status", "--porcelain", cwd=holder).stdout == ""
+
+
+@needs_a_mode
+def test_a_rollback_step_that_cannot_read_names_the_path_and_the_cure(
+        holder, offline, tmp_path):
+    """r955's SHOULD-3 on #955: a `pre-commit` hook takes `members/` away
+    from this user and refuses. The step that brings the checkout back
+    said only "Permission denied", and the commands typed after it failed
+    until the mode was given back. Now it names the path and the cure; with
+    the mode given back, the commands, typed as printed, put the member
+    back."""
+    env = isolated(offline, tmp_path)
+    at = git("rev-parse", "HEAD", cwd=holder / PATH).stdout.strip()
+    members = holder / "members"
+    hook(holder, tmp_path, "pre-commit",
+         f"chmod 000 '{members.as_posix()}'\nexit 1\n")
+    try:
+        result = remove(holder, env)
+    finally:
+        members.chmod(0o755)
+
+    assert result.returncode == 2, result.stdout + result.stderr
+    assert "Traceback" not in result.stderr
+    sentence = result.stderr.splitlines()[-1]
+    assert (f" from the object store `git rm` keeps: {PATH}/.git: cannot be "
+            f"read (Permission denied); {STEP_CURE}") in sentence
+    git("config", "--local", "--unset", "core.hooksPath", cwd=holder)
+    typed_by_hand(holder, sentence)
+    assert_back_on_main(holder, at)
 
 
 # --- `add`'s rollback: what it records and what it deletes (:6536-:6620) ----
@@ -602,7 +838,8 @@ def test_an_undo_meeting_a_file_where_a_folder_was_says_so(holder, tmp_path):
 
     said = rollback.undo()
 
-    assert f"; NOT {SPARE_PATH} removed: Not a directory" in said
+    assert (f"; NOT {SPARE_PATH} removed: {SPARE_PATH}: cannot be read (Not "
+            f"a directory); {NO_CHMOD}") in said
     assert (holder / "members").read_bytes() == data
 
 
@@ -616,7 +853,8 @@ def test_an_undo_meeting_a_refused_stat_deletes_nothing(holder, monkeypatch):
 
     said = rollback.undo()
 
-    assert f"; NOT {SPARE_PATH} removed: Permission denied" in said
+    assert (f"; NOT {SPARE_PATH} removed: {SPARE_PATH}: cannot be read "
+            f"(Permission denied); {STEP_CURE}") in said
     monkeypatch.undo()
     assert (holder / SPARE_PATH).is_dir()
 
@@ -629,7 +867,8 @@ def test_an_undo_under_a_folder_this_user_cannot_search_says_so(holder):
     with made_unopenable(holder, "members"):
         said = rollback.undo()
 
-    assert f"; NOT {SPARE_PATH} removed: Permission denied" in said
+    assert (f"; NOT {SPARE_PATH} removed: {SPARE_PATH}: cannot be read "
+            f"(Permission denied); {STEP_CURE}") in said
     assert (holder / SPARE_PATH).is_dir()
 
 
@@ -799,6 +1038,30 @@ def test_add_names_a_folder_this_user_cannot_search(
         f"REFUSED member-unreadable: {shown}: cannot be read (Permission "
         "denied)"]
     assert facts(holder, env) == before
+
+
+@pytest.mark.parametrize("dry", [True, False], ids=["dry-run", "real"])
+def test_add_refuses_a_file_where_the_stores_folder_belongs(
+        dry, family, holder, offline, tmp_path):
+    """r955's NIT 4 on #955: with a FILE at `.git/modules/members` the dry
+    run planned a mount, exit 0, that the real run's record refused. Both
+    refuse it now, before the member is read, with no `chmod`."""
+    env = isolated(offline, tmp_path)
+    modules = holder / ".git" / "modules" / "members"
+    aside(modules, tmp_path)
+    modules.write_bytes(b"a file where the stores' folder was\n")
+    before = facts(holder, env)
+
+    result = run(env, *add_argv(holder, family,
+                                *(["--dry-run"] if dry else [])))
+
+    assert result.returncode == 2, result.stdout + result.stderr
+    assert refusal_detail(result.stderr, "member-unreadable") == [
+        f"REFUSED member-unreadable: .git/modules/{SPARE_PATH}: cannot be "
+        "read (Not a directory)"]
+    assert NO_CHMOD in remedy(result.stderr)
+    assert facts(holder, env) == before
+    offline.assert_left_nothing()
 
 
 # --- the member's own `project.yaml` (:778) --------------------------------

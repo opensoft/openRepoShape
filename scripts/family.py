@@ -392,13 +392,29 @@ PERMISSION_ADVICE = (
     "Make what this user may not open readable by this user: `chmod u+r` on "
     "a file, `chmod u+rx` on a directory (and on every directory above "
     "it{where}), or fix who owns it. ")
+#: The cure for a cause other than a permission, as a clause, which
+#: `OTHER_REASON` is the sentence of and the rollbacks' sentences and
+#: `remove`'s NOTE end on (#430).
+OTHER_CURE = (
+    "no `chmod` puts it right: put back in its place what belongs there, or "
+    "take away what nobody wants, and make sure nothing is changing the "
+    "holder while this runs")
 OTHER_REASON = (
     "Where the operating system gave another reason (a part of the path that "
     "is a file where a directory belongs, a link that loops, an I/O error), "
-    "no `chmod` puts it right: put back in its place what belongs there, or "
-    "take away what nobody wants, and make sure nothing is changing the "
-    "holder while this runs. ")
+    + OTHER_CURE + ". ")
+#: The cure for a permission, as a clause, for a sentence that names a path
+#: and goes on: a rollback step that could not read one (#430).
+PERMISSION_CURE = (
+    "make it readable by this user (`chmod u+r` on a file, `chmod u+rx` on a "
+    "directory and on every directory above it inside the holder)")
 RUN_AGAIN = "Then run the same command again."
+
+
+def _cure(exc: OSError) -> str:
+    """`PERMISSION_CURE` for a `PermissionError`, else `OTHER_CURE`: the
+    advice follows the cause, as `_unreadable`'s does (#430)."""
+    return PERMISSION_CURE if isinstance(exc, PermissionError) else OTHER_CURE
 
 
 def _cannot_read(named: str, exc: OSError) -> str:
@@ -447,6 +463,19 @@ def _member_unreadable(root: Path, path: Path, exc: OSError) -> Refusal:
         "mount, its `.git` and its object store among them, before it "
         "writes anything, to say what it would change and to put back what "
         "it changed.")
+
+
+def _undo_reason(root: Path, exc: BaseException, asked: Path) -> str:
+    """Why a rollback step failed, for the sentence that names what is left:
+    `_reason`, but for an `OSError` the path the operating system refused,
+    relative to the holder `root` (`asked` where it names none), its reason
+    and its cure (#430). A step that met `Permission denied` and said only
+    that left the person to find which path, and the commands typed after
+    it failed until the mode was given back."""
+    if isinstance(exc, OSError):
+        return (_cannot_read(_named_in(root, _refused(exc, asked)), exc)
+                + "; " + _cure(exc))
+    return _reason(exc)
 
 
 def _manifest_there(root: Path) -> bool:
@@ -6377,8 +6406,14 @@ def _checked_add_target(family: Family, repository: str, project: str,
     # A STORE THIS USER MAY NOT REACH is named, not passed as absent (#430):
     # `exists()` said "none" on Python 3.14, and the mount then died in git's
     # clone, and raised a traceback on 3.12.
+    # A FILE WHERE A FOLDER ABOVE IT BELONGS is no answer either (r955's
+    # NIT 4 on #955): `_is_a` takes it for nothing there, and the dry run
+    # planned a mount the real run's record then refused. `_gone`, which
+    # `MountRollback` records the store with, is asked of what reads absent.
     try:
         there = _is_a(cached, _any_mode)
+        if not there:
+            _gone(cached)
     except OSError as exc:
         raise _member_unreadable(family.root, cached, exc) from exc
     if there:
@@ -6929,7 +6964,9 @@ class MountRollback:
                 failed.append(f"the index entry of {exc.name} put back as it "
                               f"was: {_reason(exc.cause)}")
             except (CommandFailed, Refusal, OSError) as exc:
-                failed.append(f"{said}: {_reason(exc)}")
+                failed.append(f"{said}: "
+                              + _undo_reason(self.root, exc,
+                                             self.root / self.path))
         # THE WHOLE INDEX, once every step has been asked (#302). A partial
         # unwind already says it is one, and names `git status`. An index
         # that cannot be read back leaves the steps undone but unconfirmed,
@@ -7394,6 +7431,12 @@ def _store_git_uses(root: Path, path: str) -> tuple[str, Path] | None:
 
 #: The code `_unrestorable` raises for an object store this user may not
 #: read (#430), which the rollback tells apart from a store that is gone.
+#: `PinRollback._undo_work_tree` (which makes the mount again for it) and
+#: `PinRollback._work_tree_by_hand` (which types the store's update for it,
+#: and calls no store-less checkout) route on this code; the only refusal
+#: either can meet with it is `_unrestorable`'s, since `_storeless` reads
+#: nothing else of the disk. `tests/test_family_py_unreadable.py` pins the
+#: two to one value.
 STORE_UNREADABLE = "member-unreadable"
 
 
@@ -7424,12 +7467,12 @@ def _unrestorable(root: Path, path: str, commit: str | None) -> str | None:
     try:
         there = _is_a(store, stat.S_ISDIR)
     except OSError as exc:
-        cure = (": `chmod u+rx` on it, and on every directory above it inside "
+        cure = ("`chmod u+rx` on it, and on every directory above it inside "
                 "the holder, lets git read it"
-                if isinstance(exc, PermissionError) else "")
+                if isinstance(exc, PermissionError) else OTHER_CURE)
         raise Refusal(STORE_UNREADABLE,
                       f"git would check it out of {shown_path(shown)}, which "
-                      f"cannot be read ({_os_reason(exc)}){cure}") from exc
+                      f"cannot be read ({_os_reason(exc)}): {cure}") from exc
     if not there:
         return (f"git would check it out of {shown}, which is not there, and "
                 "clone it there")
@@ -8122,7 +8165,8 @@ class PinRollback:
                 continue
             except (CommandFailed, Refusal, OSError) as exc:
                 missing.append(key)
-                failed.append(f"{said}: {_reason(exc)}")
+                failed.append(f"{said}: "
+                              + _undo_reason(self.root, exc, self.member))
                 typed += by_hand()
                 continue
             if done:
@@ -9629,21 +9673,37 @@ def _checked_mount_readable(root: Path, path: str) -> bool:
     deletes it, and its rollback records what to bring back from what is
     there. Nothing at the name (`ENOENT`) is a mount not on disk, as it
     always was. Anything else that is not an answer is refused, a part of
-    the path that is a file (`ENOTDIR`) included: a `members` that is a
-    file is not a mount `git rm` has anything of to delete, and the run
-    went past it with exit 0. A `members/` this user may not search was
-    "not on disk" in the dry run, then a traceback on Python 3.12 and, on
-    3.14, a `git submodule deinit -f` that ran before `git rm` failed.
+    the path that is a file (`ENOTDIR`) included: with a file where
+    `members/` was, the dry run said "not on disk", exit 0, and the real run
+    ran `git submodule deinit -f`, met `git rm`'s exit 128 and was rolled
+    back, exit 2. A `members/` this user may not search was "not on disk"
+    in the dry run, then a traceback on Python 3.12 and, on 3.14, a `git
+    submodule deinit -f` that ran before `git rm` failed.
+
+    THE OBJECT STORE GIT KEEPS FOR IT TOO (r955's SHOULD-1 on #955): a
+    store this user may not read was passed, `remove` committed, and a
+    rollback after its first write said no store held the checkout and it
+    came back only from its remote. Its `HEAD` is asked, as `_is_a` asks: a
+    store that is gone (`ENOENT`) is the member #365 removes as it always
+    has, and one that cannot be read is refused, named.
     """
     mount = root / path
     try:
         if _gone(mount):
-            return False
-        if _is_a(mount, stat.S_ISDIR):
-            _gone(mount / ".git")
+            on_disk = False
+        else:
+            on_disk = True
+            if _is_a(mount, stat.S_ISDIR):
+                _gone(mount / ".git")
     except OSError as exc:
         raise _member_unreadable(root, _refused(exc, mount), exc) from exc
-    return True
+    found = _store_git_uses(root, path)
+    if found is not None:
+        try:
+            _is_a(found[1] / "HEAD", stat.S_ISREG)
+        except OSError as exc:
+            raise _member_unreadable(root, found[1], exc) from exc
+    return on_disk
 
 
 def _unmount_and_drop(family: Family, row: dict, path: str) -> int:
@@ -9687,12 +9747,16 @@ def _unmount_and_drop(family: Family, row: dict, path: str) -> int:
     try:
         left = _is_a(cached, _any_mode)
     except OSError as exc:
+        # The cure follows the cause (#430): a permission is the mode, and
+        # any other cause is `OTHER_CURE`, never told to `chmod`.
+        then = ("once this user can read the directory, look"
+                if isinstance(exc, PermissionError) else
+                OTHER_CURE + "; then look")
         print("  NOTE " + _cannot_read(_named_in(family.root, cached), exc)
               + ", so whether `git rm` left that member's object store "
               "behind is not known. It leaves one on purpose, in case "
-              "somebody committed inside the mount: once this user can read "
-              "the directory, look, and delete it before adding this member "
-              "back.")
+              f"somebody committed inside the mount: {then}, and delete it "
+              "before adding this member back.")
         return 0
     if left:
         # The directory alone on a line, then the command, quoted (#486),
