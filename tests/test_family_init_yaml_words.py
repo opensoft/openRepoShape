@@ -53,6 +53,16 @@ READER_REMEDY = (
     "validate` and the `validate` workflow run that validator first, and "
     "`init` cannot be run again over a pushed holder: there is no --force.")
 
+#: The validator's remedy, as `init` gives it, before the sentence it ends
+#: with: what a finding of the validator's is told, and what the manifest
+#: that is not a mapping is still told (lane 5's review of #960, NIT 3).
+VALIDATOR_REMEDY = (
+    "Remediation: choose a value the holder's own validate-family.py "
+    "accepts; the words after each value are the validator's own. A holder "
+    "it refuses is red from its first commit, because `make validate` and "
+    "the `validate` workflow run it first, and `init` cannot be run again "
+    "over a pushed holder: there is no --force.")
+
 #: The sentence every `init` remedy ends with, nothing having been made.
 NOTHING = " Nothing was created, and `--dry-run` refuses the same."
 
@@ -108,13 +118,26 @@ def test_a_finding_of_the_validator_keeps_the_validators_remedy():
     assert caught.value.detail.startswith(
         "--created-by is ' ', which the holder's own validate-family.py "
         "refuses: family-created-by: "), caught.value.detail
-    assert caught.value.remediation == (
-        "Remediation: choose a value the holder's own validate-family.py "
-        "accepts; the words after each value are the validator's own. A "
-        "holder it refuses is red from its first commit, because `make "
-        "validate` and the `validate` workflow run it first, and `init` "
-        "cannot be run again over a pushed holder: there is no --force."
-        + NOTHING)
+    assert caught.value.remediation == VALIDATOR_REMEDY + NOTHING
+
+
+def test_a_manifest_that_is_not_a_mapping_keeps_its_kind_and_remedy(
+        tmp_path):
+    """LANE 5'S REVIEW OF #960, NIT 3. The manifest that is not a mapping
+    is still `invalid` in `_manifest_problems`, so it keeps main's words
+    and the validator's remedy, as the body says. The existing test of it
+    (`test_family_init_values.py`) holds only the sentence; this holds the
+    remedy too, so moving its kind to the reader's fails a test."""
+    template = template_copy(tmp_path, "list", quoted=True)
+    (template / "family.yaml").write_bytes(b"- one\n- two\n")
+    module = family_module()
+    with pytest.raises(module.Refusal) as caught:
+        module.refuse_unholdable_manifest(given(), table(), template)
+    assert caught.value.code == INVALID
+    assert caught.value.detail == (
+        "the manifest this run would write is not a mapping, which is what "
+        "the holder's own YAML reader makes of it.")
+    assert caught.value.remediation == VALIDATOR_REMEDY + NOTHING
 
 
 def test_the_projects_remedy_keeps_its_words():
