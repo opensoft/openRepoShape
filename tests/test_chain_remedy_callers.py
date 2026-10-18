@@ -17,7 +17,8 @@ own sources, and how the naming gate spells what it prints (#661).
   * L2-69. The gate named `--link-source` values and paths raw, so an ESC
     reached the terminal. One row per print, each with an ESC.
   * #907. `--link-remedy` split its value at the first `=`, so a link
-    holding one lost its words to a link no chain names (U170); it kept the
+    holding one lost its words to a link no chain names (U170), or to a
+    shorter link a chain names too (rv949 on #949); it kept the
     blanks around its words, and a remedy no holder used was dropped with
     no NOTE (U173). And no row gave a labelled run a KEYED `--link-source`,
     so naming that by the label too passed every row (U174).
@@ -307,7 +308,7 @@ def test_a_labelled_run_names_a_keyed_source_by_its_own_flag(tmp_path,
     assert "(--pin-source)" not in result.stderr, result.stderr
 
 
-# --- #907: --link-remedy reads its link as --link-source reads a key --------
+# --- #907: --link-remedy's link is the longest one a chain here names -------
 
 #: A chain whose middle link holds `=`, as setup's step (4) hands one over
 #: (U170). Step (5) refuses it as `chain-link-malformed`; the gate asks no
@@ -320,22 +321,46 @@ EQUALS = ("--pins", "openXdox", "--referent-chain", "openXdox,open=y,openInk")
                  "OURS for y", id="a-link-holding-an-equals"),
     pytest.param(EQUALS, "OPEN=Y=OURS for y", "open=y", "openInk",
                  "OURS for y", id="in-capitals"),
+    pytest.param(EQUALS, " open=y =OURS for y", "open=y", "openInk",
+                 "OURS for y", id="padded"),
     pytest.param(THREE, "openXdox=a=b", "openXdox", "openYdox", "a=b",
                  id="words-holding-an-equals"),
 ])
 def test_a_remedys_link_is_the_one_a_chain_names(tmp_path, monkeypatch, chain,
                                                  remedy, holder, held, words):
-    """U170: the link ends at the first `=` that leaves a link of a chain
-    here before it, and the rest is the words, `=` and all. Split at the
-    first `=`, `open=y=OURS for y` was the words `y=OURS for y` for a link
-    `open` that no chain names, and `open=y` was offered the gate's own
-    `--link-source open=y=<path>`, a flag setup does not take."""
+    """U170: the link ends at the LAST `=` that leaves a link of a chain
+    here before it, stripped, and the rest is the words, `=` and all. Split
+    at the first `=`, `open=y=OURS for y` was the words `y=OURS for y` for a
+    link `open` that no chain names, and `open=y` was offered the gate's own
+    `--link-source open=y=<path>`, a flag setup does not take. Unstripped,
+    ` open=y ` names no link, and the value fell back to `open`."""
     clear_ambient_pin_sources(monkeypatch)
     result = naming(tmp_path, *chain, "--link-remedy", remedy, "codexInk")
     assert result.returncode == 0, result.stderr
     assert UNREACHED.format(holder=holder, held=held, offer=words) in (
         gate_warnings(result)), result.stderr
     assert f"--link-source {holder}=" not in result.stderr, result.stderr
+    assert "NOTE" not in result.stderr, result.stderr
+
+
+def test_each_link_is_given_its_own_words_where_one_holds_another(
+        tmp_path, monkeypatch):
+    """NIT-1 (rv949 on #949): in a chain naming `openXdox` and `openXdox=y`
+    both, the longest link is read first, so each is given its own words.
+    Read from the first `=`, `openxdox=y=SECOND words` was `y=SECOND words`
+    for `openXdox`, which replaced its `FIRST words`, and `openXdox=y` kept
+    the gate's own. Step (5) refuses such a chain anyway."""
+    clear_ambient_pin_sources(monkeypatch)
+    result = naming(tmp_path, "--pins", "openXdox", "--referent-chain",
+                    "openXdox,openXdox=y,openInk",
+                    "--link-remedy=openxdox=FIRST words",
+                    "--link-remedy=openxdox=y=SECOND words", "codexInk")
+    assert result.returncode == 0, result.stderr
+    assert gate_warnings(result) == [
+        UNREACHED.format(holder="openXdox", held="openXdox=y",
+                         offer="FIRST words"),
+        UNREACHED.format(holder="openXdox=y", held="openInk",
+                         offer="SECOND words")], result.stderr
     assert "NOTE" not in result.stderr, result.stderr
 
 
@@ -360,6 +385,15 @@ def test_a_remedys_words_are_stripped(tmp_path, monkeypatch):
     pytest.param((*THREE, "--link-remedy", "openInk=words", "codexInk"),
                  "no name classified here reads openInk's own declaration",
                  id="the-last-link"),
+    # Named as the chain spells it, not as typed (rv949 on #949, G3).
+    pytest.param((*THREE, "--link-remedy", "OPENINK=words", "codexInk"),
+                 "no name classified here reads openInk's own declaration",
+                 id="the-last-link-in-capitals"),
+    # `open=y` leaves no words, so it is not read as the link, and the text
+    # before the first `=` is, which no chain names (rv949 on #949, G1).
+    pytest.param((*EQUALS, "--link-remedy", "open=y=", "codexInk"),
+                 "`open` is not a link of a referent chain here (links: "
+                 "openXdox, open=y, openInk)", id="a-link-left-no-words"),
     pytest.param((*THREE, "--link-remedy", "openXdox=words", "Atlas"),
                  "no name classified here reads openXdox's own declaration",
                  id="a-holder-no-name-reads"),
@@ -382,18 +416,32 @@ def test_a_remedy_no_holder_used_is_noted(tmp_path, monkeypatch, args, why):
         f"NOTE --link-remedy {remedy}: not used — {why}."]), result.stderr
 
 
-def test_a_remedy_a_later_one_replaced_is_noted(tmp_path, monkeypatch):
+@pytest.mark.parametrize("remedies, words, noted", [
+    pytest.param(("openXdox=A", "OPENXDOX=B"), "B",
+                 ["NOTE --link-remedy openXdox=A: not used — the later "
+                  "`--link-remedy OPENXDOX=B` replaced it."], id="a-b"),
+    # A, typed again, is the last value: it replaced B, and nothing replaced
+    # it (rv949 on #949, G4).
+    pytest.param(("openXdox=A", "openXdox=B", "openXdox=A"), "A",
+                 ["NOTE --link-remedy openXdox=B: not used — the later "
+                  "`--link-remedy openXdox=A` replaced it."], id="a-b-a"),
+    # The same value twice is one value, which nothing replaced (G5).
+    pytest.param(("openXdox=A", "openXdox=A"), "A", [], id="a-a"),
+])
+def test_a_remedy_a_later_one_replaced_is_noted(tmp_path, monkeypatch,
+                                                remedies, words, noted):
     """The last value for a link wins, found by `pin_product_key`, and the
-    one it replaced is a NOTE saying so, as a replaced `--link-source` is."""
+    one it replaced is a NOTE saying so, as a replaced `--link-source` is.
+    A value typed again is the one that wins, and is never said to have
+    been replaced, by another value or by itself."""
     clear_ambient_pin_sources(monkeypatch)
-    result = naming(tmp_path, *THREE, "--link-remedy", "openXdox=A",
-                    "--link-remedy", "OPENXDOX=B", "codexInk")
+    result = naming(tmp_path, *THREE, *(arg for remedy in remedies
+                                        for arg in ("--link-remedy", remedy)),
+                    "codexInk")
     assert gate_warnings(result)[0] == UNREACHED.format(
-        holder="openXdox", held="openYdox", offer="B"), result.stderr
+        holder="openXdox", held="openYdox", offer=words), result.stderr
     assert [line for line in result.stderr.splitlines()
-            if line.startswith("NOTE ")] == [
-        "NOTE --link-remedy openXdox=A: not used — the later `--link-remedy "
-        "OPENXDOX=B` replaced it."], result.stderr
+            if line.startswith("NOTE ")] == noted, result.stderr
 
 
 def test_a_remedy_for_a_holder_whose_tree_answered_is_not_noted(tmp_path,

@@ -3101,25 +3101,239 @@ def test_step_four_reads_no_checkout_beside_the_standard(tmp_path,
         "openXdox", "standard"]
 
 
+#: Why no folder could be made for the naming check, and the reason step
+#: (4)'s refusal gives for it: any `OSError`, with its `strerror`, or its
+#: class's name where it has none (rv949 on #949: S1, S3).
+NO_FOLDER = {
+    "permission-denied": (PermissionError(errno.EACCES, "Permission denied"),
+                          "Permission denied"),
+    "no-such-folder": (FileNotFoundError(errno.ENOENT,
+                                         "No such file or directory"),
+                       "No such file or directory"),
+    "no-reason": (OSError("odd"), "OSError"),
+}
+
+
+def no_empty_folder(reason: str) -> str:
+    """Step (4)'s refusal where no folder could be made, for `reason`."""
+    return ("the naming check runs from an empty folder, and none could be "
+            f"made in the temporary folder ({reason}), so nothing was "
+            "created. Point TMPDIR (TEMP on Windows) at a folder you can "
+            "write in, then run this again.")
+
+
+@pytest.mark.parametrize("case", NO_FOLDER)
 def test_step_four_without_an_empty_folder_is_refused_with_the_way_on(
-        monkeypatch):
+        monkeypatch, case):
     """No empty folder can be made for the naming check to run from: a
     refusal naming the system's reason and the way on, before anything
     exists, and no naming check is run. Not a traceback."""
     module = entry_point_module()
     runs = _Runs()
     monkeypatch.setattr(module, "run", runs)
+    raised, reason = NO_FOLDER[case]
 
     def no_folder(*_args, **_kwargs):
-        raise PermissionError(errno.EACCES, "Permission denied")
+        raise raised
 
-    monkeypatch.setattr(module.tempfile, "TemporaryDirectory", no_folder)
+    monkeypatch.setattr(module.tempfile, "mkdtemp", no_folder)
     with pytest.raises(module.Refusal) as refused:
         module.check_names(REPO, "Sample")
     assert refused.value.code == 2
-    assert str(refused.value) == (
-        "the naming check runs from an empty folder, and none could be made "
-        "in the temporary folder (Permission denied), so nothing was "
-        "created. Point TMPDIR (TEMP on Windows) at a folder you can write "
-        "in, then run this again.")
+    assert str(refused.value) == no_empty_folder(reason)
     assert runs.calls == [], f"something was run: {runs.calls}"
+
+
+class _OsWith:
+    """This process's `os`, with the functions named replaced, for the
+    module under test alone, as `_OsNamed` answers `name`: `tempfile`, which
+    makes the temporary folder, keeps the real ones."""
+
+    def __init__(self, **replaced) -> None:
+        self.__dict__.update(replaced)
+
+    def __getattr__(self, attr):
+        return getattr(os, attr)
+
+
+def test_step_four_takes_its_folder_away_when_it_cannot_make_one_inside(
+        tmp_path, monkeypatch):
+    """The temporary folder was made and the empty folder inside it was
+    not: the same refusal, no naming check run, and the temporary folder
+    taken away again (rv949 on #949, S2). It was left to
+    `TemporaryDirectory`'s finalizer, a `ResourceWarning` at exit."""
+    module = entry_point_module()
+    runs = _Runs()
+    monkeypatch.setattr(module, "run", runs)
+    monkeypatch.setattr(tempfile, "tempdir", str(tmp_path))
+
+    def no_room(path, *_args, **_kwargs):
+        raise OSError(errno.ENOSPC, "No space left on device", path)
+
+    monkeypatch.setattr(module, "os", _OsWith(mkdir=no_room))
+    with pytest.raises(module.Refusal) as refused:
+        module.check_names(REPO, "Sample")
+    assert str(refused.value) == no_empty_folder("No space left on device")
+    assert runs.calls == [], f"something was run: {runs.calls}"
+    assert list(tmp_path.iterdir()) == []
+
+
+def test_step_four_names_a_folder_it_cannot_take_away(tmp_path, monkeypatch,
+                                                     capfd):
+    """SHOULD-1 (rv949 on #949): a folder that cannot be taken away once the
+    names are judged, as on Windows while an indexer or an antivirus holds a
+    handle on it, is a `[??]` naming it, and step (4) goes on. Under
+    `TemporaryDirectory` it was a `PermissionError` traceback out of
+    `check_names`, which `main` does not catch."""
+    module = entry_point_module()
+    ran = []
+
+    def run(argv, cwd=None, capture=False, stdin=None, env=None):
+        ran.append(cwd)
+        return subprocess.CompletedProcess(argv, 0, "", "")
+
+    monkeypatch.setattr(module, "run", run)
+    monkeypatch.setattr(tempfile, "tempdir", str(tmp_path))
+    held = ("The process cannot access the file because it is being used by "
+            "another process")
+
+    def in_use(path, *_args, **_kwargs):
+        raise PermissionError(errno.EACCES, held, path)
+
+    monkeypatch.setattr(module, "os", _OsWith(rmdir=in_use))
+    assert module.check_names(REPO, "Sample") is None
+    [aside] = tmp_path.iterdir()
+    assert ran == [os.path.join(str(aside), "here")]
+    assert [entry.name for entry in aside.iterdir()] == ["here"]
+    assert capfd.readouterr().err == (
+        f"  [??] {aside}, the folder made in the temporary folder for the "
+        f"naming check to run from, could not be taken away again ({held}); "
+        "setup put nothing in it but an empty folder, and it is yours to "
+        "delete.\n")
+
+
+# --- #907, rv949 on #949 (MUST-1): a relative SHAPE_PIN_SOURCE_<LINK> -------
+
+#: `SHAPE_PIN_SOURCE_OPENYDOX` names `openYdox`'s tree relative to the
+#: standard's checkout, and `--pin-source` is `openXdox`'s, declaring
+#: `openYdox`: each case's project, chain, what `openYdox`'s tree declares,
+#: and the verdict on the chain that steps (4) and (5) both give.
+RELATIVE_VARIABLE = {
+    "verified": ("codexDox", "openXdox,openYdox,openDox", "openDox",
+                 "verified"),
+    "breaking": ("codexInk", "openXdox,openYdox,openInk", "openZdox",
+                 "broken"),
+}
+
+
+def step_four_verdict(step_four: str) -> str:
+    """What step (4)'s naming check says of the assembly root's chain: the
+    status its first `CHAIN` line ends with."""
+    statuses = re.findall(r"^\s*CHAIN .*\[([a-z-]+)\]$", step_four,
+                          re.MULTILINE)
+    return statuses[0] if statuses else "no CHAIN line"
+
+
+def step_five_verdict(plan: str, stderr: str) -> str:
+    """What step (5)'s plan says of the chain: broken where it refused it,
+    declared-unverified where it warned so, and verified where its
+    `declared` line reaches the referent through the chain and says
+    neither."""
+    if "REFUSED chain-not-declared:" in stderr:
+        return "broken"
+    if "WARNING declared-unverified:" in stderr:
+        return "declared-unverified"
+    declared = [line for line in plan.splitlines()
+                if line.startswith("declared     ")]
+    if declared and "through the declared pin chain" in declared[0] and (
+            "declared-unverified" not in declared[0]):
+        return "verified"
+    return "no verdict"
+
+
+@pytest.mark.parametrize("case", RELATIVE_VARIABLE)
+def test_step_four_reads_a_relative_variable_where_step_five_does(
+        tmp_path, monkeypatch, case):
+    """MUST-1: step (5) reads a relative `SHAPE_PIN_SOURCE_<LINK>` from the
+    standard's checkout, the folder the scaffold runs in, and step (4) now
+    reads it there too (`pin_sources_joined`), so the two steps give the
+    chain one verdict. Read from the empty folder step (4) runs in, the
+    variable named nothing: the chain step (5) verified was
+    `[declared-unverified]` in step (4), which offered the variable that
+    was set, and the chain step (5) refused as `chain-not-declared` passed
+    step (4) as a descendant. On main step (4) ran in the checkout and
+    agreed. The variable is the path from this checkout to the tree, which
+    leaves it by `..`."""
+    clear_ambient_pin_sources(monkeypatch)
+    project, chain, declares, verdict = RELATIVE_VARIABLE[case]
+    first = declaring(tmp_path / "openXdox", "openYdox")
+    git("init", "-q", "-b", "main", cwd=first)
+    git("add", "project.yaml", cwd=first)
+    git("commit", "-q", "-m", "seed", cwd=first)
+    commit = git("rev-parse", "HEAD", cwd=first).stdout.strip()
+    later = declaring(tmp_path / "yy", declares)
+    try:
+        relative = os.path.relpath(later.resolve(), REPO.resolve())
+    except ValueError:
+        pytest.skip("the temporary folder is on another drive than this "
+                    "checkout, so no relative path leads from one to the "
+                    "other")
+    result = run_entry("--project", project, "--org", "demoorg",
+                       "--local-remote-dir", str(tmp_path / "remotes"),
+                       "--into", str(tmp_path / "work"),
+                       "--", "--pin", f"openXdox@{commit}",
+                       "--referent-chain", chain, "--pin-source", str(first),
+                       "--dry-run",
+                       extra_env={"SHAPE_PIN_SOURCE_OPENYDOX": relative})
+    heard = result.stdout + result.stderr
+    assert not os.path.isabs(relative), relative
+    assert "(5) the plan" in result.stdout, heard
+    step_four, _, plan = result.stdout.partition("(4) naming policy")[
+        2].partition("(5) the plan")
+    assert step_four_verdict(step_four) == step_five_verdict(
+        plan, result.stderr) == verdict, heard
+    assert "SHAPE_PIN_SOURCE_OPENYDOX would let it be read" not in heard, (
+        heard)
+    assert "link-source-unreadable" not in result.stderr, result.stderr
+    assert not (tmp_path / "remotes").exists()
+
+
+def test_only_a_pin_source_variable_that_names_a_path_is_joined():
+    """`pin_sources_joined` joins a relative `SHAPE_PIN_SOURCE_<LINK>` to the
+    standard's checkout and leaves an absolute one as it is. An empty one
+    stays empty: neither step reads it, and joined it would name the
+    checkout itself. Every other variable is handed on as it is, one whose
+    name only holds the prefix too."""
+    module = entry_point_module()
+    elsewhere = str(Path(REPO, os.pardir, "elsewhere").resolve())
+    relative = os.path.join(os.pardir, "yy")
+    unjoined = {"SHAPE_PIN_SOURCE_OPENXDOX": elsewhere,
+                "SHAPE_PIN_SOURCE_OPENDOX": "",
+                "PYTHONIOENCODING": "utf-8:backslashreplace",
+                "NOT_SHAPE_PIN_SOURCE_OPENYDOX": relative}
+    assert module.pin_sources_joined(REPO, {
+        "SHAPE_PIN_SOURCE_OPENYDOX": relative, **unjoined}) == {
+        "SHAPE_PIN_SOURCE_OPENYDOX": os.path.join(str(REPO), relative),
+        **unjoined}
+
+
+@pytest.mark.parametrize("raised", [
+    pytest.param(RuntimeError("Symlink loop from 'loop'"), id="runtime-error"),
+    pytest.param(OSError(errno.ELOOP, "Too many levels of symbolic links"),
+                 id="os-error"),
+])
+def test_a_pin_source_that_cannot_be_resolved_goes_joined(monkeypatch,
+                                                          raised):
+    """Where `resolve()` fails, as on a symlink loop, the `--pin-source` goes
+    to the naming check joined to the standard's checkout and unresolved,
+    and step (4) goes on: the scaffold names it as typed then
+    (`_resolved_pin_source`), and a path the naming check is given has to
+    be absolute (rv949 on #949, S4)."""
+    module = entry_point_module()
+
+    def cannot(self, strict=False):
+        raise raised
+
+    monkeypatch.setattr(module.Path, "resolve", cannot)
+    assert module.as_the_plan_reads_it(REPO, "loop") == str(Path(REPO,
+                                                                 "loop"))

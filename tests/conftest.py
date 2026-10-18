@@ -2246,6 +2246,7 @@ STEP_FOUR_WORDS = {
     "blank": (" ", "openXdox,openDox", None, False),
     "holds-an-equals": ("openXdox=layer", "openXdox,openDox", None, False),
     "relative": ("./nowhere/", "openXdox,openDox", None, False),
+    "relative-to-the-parent": ("../nowhere", "openXdox,openDox", None, False),
     "a-link-holding-an-equals": ("tree", "openXdox,open=y,openDox", "open=y",
                                  False),
     "variable-first": ("tree", "openXdox,openDox", "openDox", True),
@@ -2274,7 +2275,10 @@ def assert_step_four_speaks_in_the_plans_words(run, tmp_path: Path,
     joined to the standard's checkout, this one, and resolved. Step (4)
     named it as typed, `nowhere (--pin-source)` for `./nowhere/`, and step
     (5) `<standard>/nowhere`; a blank value was a blank and `<standard>/ `.
-    A chain link holding `=` is offered step (5)'s words too (U170).
+    `../nowhere` is named `<the standard's parent>/nowhere` in both, which
+    tells a resolved path from one only joined, `<standard>/../nowhere`:
+    pathlib folds `./nowhere/` to `<standard>/nowhere` either way (rv949 on
+    #949). A chain link holding `=` is offered step (5)'s words too (U170).
     """
     clear_ambient_pin_sources(monkeypatch)
     source, chain, declares, variable = STEP_FOUR_WORDS[case]

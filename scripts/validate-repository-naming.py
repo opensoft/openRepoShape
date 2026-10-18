@@ -74,11 +74,13 @@ line, and the NOTE's advice to name the link (`--link-source <link>=PATH`)
 where the chains begin at more than one link, keep this script's own flag.
 `--link-remedy LINK=TEXT` is what would let LINK's tree be read in that
 caller's sources, offered in place of this script's own for a link that is
-declared-unverified. LINK is read as a `--link-source` key is (#907): the
-text before an `=` is a link only where a chain this run reads names it, so
-a link holding `=` keeps it, and the words are stripped. A `--link-remedy`
-no holder used is a NOTE saying why, except where the caller gave a label:
-its words are its own, not the person's. A project's own runs pass neither.
+declared-unverified. LINK is the longest text before an `=` that names a
+link of a chain this run reads and leaves words after it (#907), so a link
+holding `=` keeps it, and the words are stripped. A `--link-source` key is
+not read so: it is the text before the value's first `=`, so a link holding
+`=` is never one. A `--link-remedy` no holder used is a NOTE saying why,
+except where the caller gave a label: its words are its own, not the
+person's. A project's own runs pass neither.
 Every `--link-source` and `--link-remedy` value and path this prints, and
 the path of a `SHAPE_PIN_SOURCE_<PRODUCT>` or of a checkout beside the
 project it names, is named as it is, or as Python's `repr` spells it where a
@@ -180,7 +182,9 @@ def _link_remedy(value: str) -> str:
     """One `--link-remedy LINK=TEXT`, as typed; a value with no `=`, no
     link before its first `=` or no words after it is refused, exit 2.
     WHICH `=` ENDS THE LINK is decided once the chains this run reads are
-    known (`LinkSources._read_remedy`, #907), as a `--link-source` key is."""
+    known (`LinkSources._read_remedy`, #907): the last one that leaves a
+    link of theirs before it and words after it. A `--link-source` key
+    ends at the value's first `=`, whatever the chains name."""
     link, sep, text = value.partition("=")
     if not (sep and repo_basename(link.strip()) and text.strip()):
         raise argparse.ArgumentTypeError(
@@ -354,24 +358,28 @@ class LinkSources:
         self.unanswered: dict[tuple, list[str]] = {}
 
     def _read_remedy(self, typed: str) -> tuple[str, str]:
-        """`(link, words)` for one `--link-remedy`, read as a `--link-source`
-        key is read (#907): the text before an `=` is a LINK only where it
-        names a link of a referent chain this run reads, by
-        `pin_product_key`, and leaves words after it. The first `=` that
-        does so ends the link, so a link holding `=` keeps it: setup's step
-        (4) gives `open=y` its words as `--link-remedy=open=y=<words>`, and
-        splitting at the first `=` made them `y=<words>` for a link `open`
-        that no chain names. Where no `=` does, the text before the first
-        one is the link, which no chain here names, and `unused_lines` says
-        so. The link is spelled as the chain spells it, and the words are
-        stripped: `openXdox= padded` offered ` padded`."""
-        at = typed.find("=")
+        """`(link, words)` for one `--link-remedy` (#907): the text before
+        an `=` is a LINK only where it names a link of a referent chain this
+        run reads, by `pin_product_key`, and leaves words after it. The LAST
+        `=` that does so ends the link, so the longest link is read first
+        and a link holding `=` keeps it: setup's step (4) gives `open=y` its
+        words as `--link-remedy=open=y=<words>`, and splitting at the first
+        `=` made them `y=<words>` for a link `open` that no chain names. In
+        a chain naming `openXdox` and `openXdox=y` both, each is read for
+        its own words, and from the first `=` `openXdox=y=<words>` was
+        `y=<words>` for `openXdox`. Where no `=` does, the text before the
+        first one is the link, which no chain here names, and `unused_lines`
+        says so. A `--link-source` key is not read so: it is the text before
+        its first `=` alone (`__init__`). The link is spelled as the chain
+        spells it, and the words are stripped: `openXdox= padded` offered
+        ` padded`."""
+        at = typed.rfind("=")
         while at >= 0:
             link = repo_basename(typed[:at].strip())
             words = typed[at + 1:].strip()
             if words and pin_product_key(link) in self.names:
                 return self.names[pin_product_key(link)], words
-            at = typed.find("=", at + 1)
+            at = typed.rfind("=", 0, at)
         link, _sep, words = typed.partition("=")
         return repo_basename(link.strip()), words.strip()
 
@@ -1253,7 +1261,9 @@ def main(argv: list[str] | None = None) -> int:
                              "tree be read, offered in place of this "
                              "script's own where that link is "
                              "declared-unverified. Repeatable; the last "
-                             "value for a link wins.")
+                             "value for a link wins, and a value no holder "
+                             "used is noted (with --link-source-label, it "
+                             "is not).")
     parser.add_argument("--explain", action="store_true",
                         help="print every family each name satisfies, why one "
                              "of them won, and what the others are recorded as")
