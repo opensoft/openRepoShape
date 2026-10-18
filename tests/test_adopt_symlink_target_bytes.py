@@ -13,14 +13,15 @@ repositories existed:
   the root, it ended `adopt-lost` in the verification. Whatever the plan
   answered.
 - a target of 4096 or 5000 bytes is not made (`File name too long`), and the
-  clone exits 128; 4095 is made. A single name of 300 bytes is made too.
+  clone exits 128; 4095 is made on ext4 (macOS and XFS take at most 1023,
+  which `check` does not ask). A single name of 300 bytes is made too.
 - a root-kept `.github -> ci\\0xx` was refused as `plan-root-symlink`, which
   said it led to `ci\\x00xx`, "not in the source tree": Linux makes
   `.github -> ci`.
 - a link kept in the root AT `project.yaml` got two findings, and the second's
   `drop` helps no link that cannot be made.
 - `_PlannedRoot._link` started `git cat-file blob` for each link, per walk and
-  per disk: 3 processes for one link, 16 for five.
+  per disk: 3 processes for one link, 15 for five.
 
 Now `plan-bad-symlink-target` names each such link once, before any leg
 exists, and says what git makes of it; `plan-root-symlink` does not say it
@@ -29,12 +30,13 @@ is read in the one `git cat-file --batch` `check` already starts.
 
 The links are made in the INDEX with `git update-index --cacheinfo`, so no
 test builds a source on a disk that holds a NUL in a target, and all but the
-two that ask git to check a link out (marked `needs_disk_symlinks`) run on
+three that ask git to check a link out (marked `needs_disk_symlinks`) run on
 Windows too.
 """
 
 from __future__ import annotations
 
+import errno
 import importlib.util
 import os
 import re
@@ -120,7 +122,8 @@ def counted(trace: Path) -> dict:
 # --- the rule, in memory ---------------------------------------------------
 
 def test_the_limit_is_the_most_linux_takes(adopter):
-    """4095: `PATH_MAX` is 4096, counting the NUL that ends the string."""
+    """4095: `PATH_MAX` is 4096, counting the NUL that ends the string. A
+    host that takes less (macOS and XFS: 1023) is not asked."""
     assert adopter.SYMLINK_TARGET_MAX == 4095
 
 
@@ -160,11 +163,17 @@ def test_a_late_nul_says_what_git_makes_of_the_link(adopter):
         "target ends at its first NUL, so git makes `.github` a link to "
         "`ci`, not to the 5 bytes the blob holds. ")
     assert "\\x00" not in finding
+    assert ("the 5 bytes the blob holds. On Linux, where git makes symlinks "
+            "by default, each clone `execute` makes of the source holds "
+            "that other link") in finding
+    assert "There," not in finding
     assert "after both leg repositories were created" in finding
     assert "whatever the plan answers for it" in finding
     assert "`core.symlinks` is false" in finding
     assert remediation == [adopter.BAD_SYMLINK_TARGET_REMEDIATION]
     assert "`drop` included" in remediation[0]
+    assert ("a clone makes the link git makes of the target, or none, not "
+            "the blob's") in remediation[0]
     assert "no more than 4095 bytes" in remediation[0]
 
 
@@ -193,6 +202,29 @@ def test_a_target_the_nul_cuts_to_more_than_linux_takes_makes_no_link(
     assert "a link to" not in finding
 
 
+@pytest.mark.parametrize("cut, made", [
+    pytest.param(AT_MAX, True, id="4095-bytes-before-the-nul"),
+    pytest.param(OVER_MAX, False, id="4096-bytes-before-the-nul"),
+])
+def test_the_cut_a_nul_makes_is_a_link_at_4095_bytes_and_none_at_4096(
+        adopter, cut, made):
+    """The boundary of "those alone are too many": git hands `symlink(2)` the
+    bytes before the NUL, so 4095 of them make a link and 4096 do not."""
+    raw = cut + b"\0x"
+    found, _ = adopter._bad_symlink_target_findings(
+        [row("docs/link", len(raw), MAX_OID)], {MAX_OID: raw})
+    finding, = found
+    more = len(cut) - 100
+    if made:
+        assert (f"a link to `{AT_MAX[:100].decode('ascii')}` and {more} more "
+                f"bytes, not to the {len(raw)} bytes") in finding
+        assert "those alone are too many" not in finding
+    else:
+        assert (f"holds a NUL byte after its first {len(cut)} bytes at the "
+                "source commit, and those alone are too many") in finding
+        assert "a link to" not in finding
+
+
 def test_a_long_target_a_nul_cuts_to_a_short_one_is_a_link_to_the_short_one(
         adopter):
     found, _ = adopter._bad_symlink_target_findings(
@@ -216,9 +248,30 @@ def test_past_twenty_the_rest_are_counted(adopter):
         tree, {NUL_OID: CI_NUL, LONG_OID: LONG})
     assert len(found) == 21
     assert found[19].startswith(f"FINDING {CODE}: `l19` ")
-    assert found[20] == (f"FINDING {CODE}: ... and 3 more symlinks whose "
+    assert found[20] == (f"FINDING {CODE}: … and 3 more symlinks whose "
                          "target holds a NUL byte after its first or is "
                          "longer than Linux takes")
+
+
+def test_twenty_are_named_and_no_count_line_follows(adopter):
+    tree = [row(f"l{n:02d}", 5, NUL_OID) for n in range(20)]
+    found, _ = adopter._bad_symlink_target_findings(tree, {NUL_OID: CI_NUL})
+    assert len(found) == 20
+    assert not any("more symlinks" in finding for finding in found)
+
+
+def test_a_nul_after_one_byte_says_its_first_byte(adopter):
+    found, _ = adopter._bad_symlink_target_findings(
+        [row("l", 3, NUL_OID)], {NUL_OID: b"x\0y"})
+    assert ("holds a NUL byte after its first byte at the source commit; a "
+            "symlink's target ends at its first NUL, so git makes `l` a link "
+            "to `x`, not to the 3 bytes the blob holds") in found[0]
+
+
+def test_a_cut_of_exactly_a_hundred_bytes_is_spelled_with_no_count(adopter):
+    found, _ = adopter._bad_symlink_target_findings(
+        [row("l", 102, NUL_OID)], {NUL_OID: b"c" * 100 + b"\0x"})
+    assert ("a link to `" + "c" * 100 + "`, not to the 102 bytes") in found[0]
 
 
 def test_a_source_with_none_has_no_finding_and_no_remediation(adopter):
@@ -444,9 +497,117 @@ def test_a_link_kept_at_the_manifest_is_one_finding_and_says_what_helps(
     assert finding.startswith(
         f"FINDING {code}: `project.yaml` is a symlink whose target {head}")
     assert f"FINDING {MANIFEST}" not in result.stderr
+    assert ("The plan keeps it in the assembly root, where the shape writes "
+            "its manifest, `project.yaml`, and no copy stands in for that"
+            ) in finding
+    assert "once case is ignored" not in finding
     assert finding.endswith(
         "a target of its own would not end that, so remove the link or "
         "rename it in the source, commit, and re-run `plan`.")
+
+
+@pytest.mark.parametrize("target, code", [
+    pytest.param(b"", EMPTY, id="empty-target"),
+    pytest.param(LATE_NUL, CODE, id="late-nul"),
+    pytest.param(LONG, CODE, id="5000-bytes"),
+])
+def test_a_case_twin_of_the_manifest_is_one_finding_and_keeps_its_aside(
+        tmp_path, target, code):
+    """`Project.yaml` is the manifest's place only once case is ignored, as a
+    macOS or Windows disk does, and `plan-root-blocks-manifest` said so of it
+    before this finding took it over: on Linux the tail must not say the
+    shape writes its manifest AT `Project.yaml`."""
+    _, plan = planned_root(tmp_path, {}, {"Project.yaml": target},
+                           {"Project.yaml": ROOT})
+    result = check_root(plan)
+    assert result.returncode == 1, result.stdout + result.stderr
+    finding, = findings_of(result)
+    assert finding.startswith(
+        f"FINDING {code}: `Project.yaml` is a symlink whose target ")
+    assert ("The plan keeps it in the assembly root, at `project.yaml` once "
+            "case is ignored, as a macOS or Windows disk does, where the "
+            "shape writes its manifest, and no copy stands in for that "
+            ) in finding
+    assert f"FINDING {MANIFEST}" not in result.stderr
+    assert finding.endswith(
+        "a target of its own would not end that, so remove the link or "
+        "rename it in the source, commit, and re-run `plan`.")
+
+
+def test_a_bad_link_below_a_directory_kept_at_the_manifest_is_not_left_out(
+        tmp_path):
+    """The skip is for a link AT `project.yaml`. One below a directory the
+    plan keeps there is named by its own finding, and the directory still
+    blocks the manifest, which no change to the link ends."""
+    _, plan = planned_root(tmp_path, {}, {"project.yaml/x": LATE_NUL},
+                           {"project.yaml/": ROOT})
+    result = check_root(plan)
+    assert result.returncode == 1, result.stdout + result.stderr
+    own, blocked = findings_of(result)
+    assert own.startswith(f"FINDING {CODE}: `project.yaml/x` is a symlink ")
+    assert "where the shape writes its manifest" not in own
+    assert blocked.startswith(f"FINDING {MANIFEST}: ")
+
+
+@pytest.mark.parametrize("files, link, kept, code", [
+    pytest.param({}, "shape/README.md",
+                 {"shape/": ROOT, "README.md": ROOT},
+                 "plan-root-blocks-shape-copy", id="the-shape-copy"),
+    pytest.param({"contracts/x.md": "x\n"}, "contracts/shape-pin.yaml",
+                 {"contracts/": ROOT}, "plan-root-holds-pin",
+                 id="the-shape-pin"),
+])
+def test_only_the_manifest_finding_leaves_a_named_link_out(
+        tmp_path, files, link, kept, code):
+    """A KNOWN LIMIT, pinned so that lifting it is a decision: a link at
+    `shape/README.md` or at `contracts/shape-pin.yaml` is still named by
+    `plan-root-blocks-shape-copy` or `plan-root-holds-pin` after its own
+    finding, with a remedy (`drop` it, send it to a leg) that cannot help a
+    link no clone makes. It is a follow-up of #908, whose `named_links`
+    leaves out `plan-root-blocks-manifest` alone (L1-80)."""
+    _, plan = planned_root(tmp_path, files, {link: LATE_NUL}, kept)
+    result = check_root(plan)
+    assert result.returncode == 1, result.stdout + result.stderr
+    own, blocked = findings_of(result)
+    assert own.startswith(f"FINDING {CODE}: `{link}` is a symlink ")
+    assert blocked.startswith(f"FINDING {code}: ")
+
+
+@pytest.mark.parametrize("target, code", [
+    pytest.param(LATE_NUL, CODE, id="late-nul"),
+    pytest.param(b"", EMPTY, id="empty-target"),
+])
+@pytest.mark.parametrize("before, named", [
+    pytest.param(19, True, id="the-twentieth-is-named-one-by-one"),
+    pytest.param(20, False, id="the-twenty-first-is-only-counted"),
+])
+def test_a_link_at_the_manifest_is_left_to_its_own_finding_only_if_it_is_named(
+        tmp_path, target, code, before, named):
+    """The links are named in tree order, `a00`, `a01`, ... then
+    `project.yaml`, then `z00`: the 20th is named, the 21st is only counted,
+    and for it nothing else would name the link at the manifest, so
+    `plan-root-blocks-manifest` stays its own."""
+    links = {f"a{n:02d}": target for n in range(before)}
+    links[SHAPE_MANIFEST] = target
+    links["z00"] = target
+    _, plan = planned_root(tmp_path, {}, links, {path: ROOT for path in links})
+    result = check_root(plan)
+    assert result.returncode == 1, result.stdout + result.stderr
+    found = findings_of(result)
+    own = [f for f in found if f.startswith(
+        f"FINDING {code}: `{SHAPE_MANIFEST}` is a symlink ")]
+    blocks = [f for f in found if f.startswith(f"FINDING {MANIFEST}: ")]
+    counted = found[20]
+    if named:
+        assert len(own) == 1 and blocks == []
+        assert "where the shape writes its manifest" in own[0]
+        assert counted.startswith(f"FINDING {code}: … and 1 more ")
+    else:
+        assert own == []
+        block, = blocks
+        assert "the symlink `project.yaml` in the assembly root" in block
+        assert counted.startswith(f"FINDING {code}: … and 2 more ")
+    assert len(found) == 21 + len(blocks)
 
 
 @pytest.mark.parametrize("target", [
@@ -606,10 +767,11 @@ def clone_with_links(tmp_path: Path, target: bytes, name: str):
         f"{SYMLINK},{blob(source, target)},link", cwd=source)
     as_human("commit", "-qm", "A link", cwd=source)
     clone = tmp_path / f"{name}-clone"
+    # In the C locale, so that git's strerror is the one `os.strerror` gives.
     made = subprocess.run(
         ["git", "clone", "-q", "--config", "core.symlinks=true",
          str(source), str(clone)], capture_output=True, text=True,
-        check=False)
+        check=False, env={**os.environ, "LC_ALL": "C"})
     link = clone / "link"
     return (made.returncode, made.stderr,
             os.readlink(link) if os.path.islink(link) else None)
@@ -631,8 +793,8 @@ def test_git_makes_the_link_a_nul_cuts_to(adopter, tmp_path):
 def test_git_makes_a_link_of_the_limit_and_not_one_byte_more(
         adopter, tmp_path):
     """The limit is the measurement: 4095 bytes are made, 4096 are not
-    (`File name too long`, exit 128). Skipped where this disk takes less
-    than the limit, as one with a smaller `PATH_MAX` does."""
+    (ENAMETOOLONG, exit 128). Skipped where this disk takes less than the
+    limit, as macOS and XFS do (1023): `check` does not ask them."""
     probe = tmp_path / "probe"
     try:
         os.symlink(AT_MAX.decode("ascii"), probe)
@@ -645,7 +807,7 @@ def test_git_makes_a_link_of_the_limit_and_not_one_byte_more(
     over_code, over_stderr, over_link = clone_with_links(
         tmp_path, OVER_MAX, "over")
     assert over_code == 128, over_stderr
-    assert "File name too long" in over_stderr
+    assert os.strerror(errno.ENAMETOOLONG) in over_stderr
     assert over_link is None
 
 

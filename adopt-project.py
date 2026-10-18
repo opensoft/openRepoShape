@@ -5930,8 +5930,9 @@ def _leg_findings(plan: Plan, tree: list | None,
     is canonical (#169), and neither overlaps a path the assembly root holds
     (#172); and the root keeps nothing where the shape writes (#262, #263).
     `named_links` are the symlinks of the source that `plan-empty-symlink`
-    and `plan-bad-symlink-target` name (`_named_symlinks`, #908): one kept
-    AT `project.yaml` is theirs, and `plan-root-blocks-manifest` leaves it.
+    and `plan-bad-symlink-target` name one by one (`_named_symlinks`, #908):
+    one kept AT `project.yaml` is theirs, and `plan-root-blocks-manifest`
+    leaves it.
 
     The path findings live HERE, and not in `cmd_check`, so that whatever
     reads this function reports a bad path from the one place that knows what
@@ -5983,10 +5984,7 @@ def _leg_findings(plan: Plan, tree: list | None,
                 f"FINDING plan-bad-leg: {path} declares leg {leg!r}; it is "
                 f"one of {list(LEG_VALUES)}")
     if isinstance(plan.legs, dict):
-        # Handed over only where there is one, so that a caller of the two
-        # arguments `_root_shape_findings` took before #908 still works.
-        findings += (_root_shape_findings(plan, tree, named_links)
-                     if named_links else _root_shape_findings(plan, tree))
+        findings += _root_shape_findings(plan, tree, named_links)
         # THE PINS, LAST (#273): each `pins:` entry `execute` cannot write a
         # pin file from, two pins at one file, and a path the root keeps
         # where a pin is written, the shape's own pin among them (#524).
@@ -7860,11 +7858,12 @@ def _empty_symlink_findings(tree: list, targets: dict[str, bytes],
     finding, as `_unsafe_path_findings` does. Read from the tree and the
     targets (`symlink_targets`) alone: no answer of the plan's changes it.
     `at_the_manifest` holds the paths of the links the plan keeps in the
-    root AT `project.yaml`, whose finding says so (AT_THE_MANIFEST, #908)."""
+    root AT `project.yaml`, whose finding says so (`_at_the_manifest`,
+    #908)."""
     said = _empty_symlink_sentences(tree, targets)
     shown = list(zip(empty_symlinks(tree, targets), said))
     found = [f"FINDING {EMPTY_SYMLINK}: {sentence}."
-             f"{AT_THE_MANIFEST if path in at_the_manifest else ''}"
+             f"{_at_the_manifest(path) if path in at_the_manifest else ''}"
              for path, sentence in shown[:EMPTY_SYMLINKS_NAMED]]
     if len(said) > EMPTY_SYMLINKS_NAMED:
         found.append(f"FINDING {EMPTY_SYMLINK}: … and "
@@ -7912,23 +7911,34 @@ def _empty_symlink_notes(tree: list, targets: dict[str, bytes]) -> list[str]:
 #     clone holding the blob's bytes as a plain file; and a clone of that leg
 #     on Linux, symlinks on, then held `docs/link -> spec` with `git status`
 #     reading ` M docs/link`, or, for a target too long, exited 128.
-#   * A target of 4095 bytes is made, and one of 4096 or 5000 is not:
-#     `symlink(2)` fails with ENAMETOOLONG, `File name too long`, and the
-#     clone exits 128, `unable to checkout working tree`, after both legs
-#     exist. That is `PATH_MAX`, 4096 counting the NUL that ends the string,
-#     and `NAME_MAX` is not asked: a target that is one name of 300 bytes is
-#     made (a path is asked it only when something is opened through it).
+#   * On ext4, a target of 4095 bytes is made, and one of 4096 or 5000 is
+#     not: `symlink(2)` fails with ENAMETOOLONG, `File name too long`, and
+#     the clone exits 128, `unable to checkout working tree`, after both
+#     legs exist. That is `PATH_MAX`, 4096 counting the NUL that ends the
+#     string, and `NAME_MAX` is not asked: a target that is one name of 300
+#     bytes is made (a path is asked it only when something is opened
+#     through it).
+#   * Some hosts take less, which is NOT measured here and is read from
+#     their sources: macOS (`symlink(2)` copies the target in with
+#     `MAXPATHLEN`, 1024, counting the NUL) and XFS (`XFS_SYMLINK_MAXLEN`,
+#     1024) make a target of at most 1023 bytes.
 #
-# SO THE LIMIT IS 4095 (`SYMLINK_TARGET_MAX`), AND IT IS LINUX'S. `check`
+# SO THE LIMIT IS 4095 (`SYMLINK_TARGET_MAX`), GIT'S AND LINUX'S. `check`
 # reads the source's tree and never the disk it runs on, as #303 does, so one
 # plan gets one answer on every machine. A finding must never be false
-# anywhere, and 4095 is the largest number that holds on every platform whose
-# limit is known to be this or lower: a link refused here fails on Linux, and
-# on macOS, whose `PATH_MAX` is 1024. What is NOT asked is the macOS limit
-# (not measured here; a target of 1024 to 4095 bytes passes `check` and may
-# fail on a Mac). Windows makes no symlink by default (`core.symlinks` false
-# writes the target as a file's contents, which no length bounds); where it
-# is on, NTFS takes far longer targets, so the rule asks Windows nothing.
+# anywhere, and a target over 4095 bytes is made on no host: it fails on
+# every Linux filesystem, and on the hosts that take less still.
+#
+# IT IS NOT THE SMALLEST BOUND A HOST HAS, SO A TARGET UNDER IT CAN STILL
+# FAIL. A target of 4095 bytes is made on ext4-like filesystems; on macOS and
+# XFS the most is 1023 (above). A target of 1024 to 4095 bytes therefore
+# passes `check` and fails `execute`'s first clone there, after both leg
+# repositories exist: #908's own failure, in a window this rule leaves open
+# for those hosts. That is read from their sources, not measured here, and
+# it is a follow-up of #908. Windows makes no symlink by default
+# (`core.symlinks` false writes the target as a file's contents, which no
+# length bounds); where it is on, NTFS is thought to take far longer targets
+# (not measured here), and either way the rule asks Windows nothing.
 #
 # A NEW CODE, NOT A WIDENED `plan-empty-symlink`. #388 made a NUL-led target
 # the same finding because it is the same fault: Linux reads it as empty,
@@ -7948,8 +7958,9 @@ def _empty_symlink_notes(tree: list, targets: dict[str, bytes]) -> list[str]:
 # stays, says where the link sits, and ends with the remedy that does help;
 # `_root_shape_findings` leaves out the other for that link.
 
-#: What `symlink(2)` takes as a target on Linux, in bytes: `PATH_MAX` is 4096,
-#: counting the NUL that ends the string. 4095 is made, 4096 is not.
+#: The most `symlink(2)` takes as a target on Linux, in bytes: `PATH_MAX` is
+#: 4096, counting the NUL that ends the string. On ext4-like filesystems 4095
+#: is made and 4096 is not; macOS and XFS make at most 1023 (see above).
 SYMLINK_TARGET_MAX = 4095
 #: `check`'s finding for a symlink of the source's whose target holds a NUL
 #: byte after its first, which git cuts at, or is longer than
@@ -7965,19 +7976,28 @@ BAD_SYMLINK_TARGET_REMEDIATION = (
     "Remediation: a symlink's target is a fact of the source, and no answer "
     "in the plan changes it, `drop` included: `execute` clones the whole "
     "source before it takes out anything the plan sends elsewhere, and a "
-    "clone makes the link git makes of the target, which is not the "
+    "clone makes the link git makes of the target, or none, not the "
     "blob's. Give each such symlink a target of its own in the source, with "
     "no NUL byte in it and no more than "
     f"{SYMLINK_TARGET_MAX} bytes, or remove it there, commit, and re-run "
     "`plan`: a plan is written against one commit of the source, and "
     "`check` calls it `plan-stale` once the source has moved.")
-#: What a finding adds of a link the plan keeps AT `project.yaml`.
-AT_THE_MANIFEST = (
-    " The plan keeps it in the assembly root, where the shape writes its "
-    f"manifest, {_spelled(SHAPE_MANIFEST)}, and no copy stands in for "
-    f"that (`{ROOT_BLOCKS_MANIFEST}`, not said again here): a target of its "
-    "own would not end that, so remove the link or rename it in the "
-    "source, commit, and re-run `plan`.")
+
+
+def _at_the_manifest(path: str) -> str:
+    """What a finding adds of the link at `path` that the plan keeps AT
+    `project.yaml`: where it sits, and the remedy that helps. A link at the
+    manifest's case twin (`Project.yaml`) sits there only once case is
+    ignored, as `plan-root-blocks-manifest` says of it, so the aside stays."""
+    manifest = _spelled(SHAPE_MANIFEST)
+    where = (f"where the shape writes its manifest, {manifest}"
+             if path == SHAPE_MANIFEST else
+             f"at {manifest}{_CASE_ASIDE}, where the shape writes its "
+             "manifest")
+    return (f" The plan keeps it in the assembly root, {where}, and no copy "
+            f"stands in for that (`{ROOT_BLOCKS_MANIFEST}`, not said again "
+            "here): a target of its own would not end that, so remove the "
+            "link or rename it in the source, commit, and re-run `plan`.")
 
 
 def _unmade_target(raw: bytes) -> bool:
@@ -8041,7 +8061,7 @@ def _bad_symlink_target_sentence(path: str, raw: bytes) -> str:
         head = (f"holds a NUL byte after {after} at the source commit, and "
                 f"those alone are too many: {limit}")
     if nul and made:
-        then = ("There, where git makes symlinks by default, each clone "
+        then = ("On Linux, where git makes symlinks by default, each clone "
                 "`execute` makes of the source holds that other link, and "
                 "`execute` stops at it after both leg repositories were "
                 "created, whatever the plan answers for it; and where "
@@ -8078,14 +8098,14 @@ def _bad_symlink_target_findings(
     print ONCE after every finding, as `_empty_symlink_findings` does. Read
     from the tree and the targets alone: no answer of the plan's changes it.
     `at_the_manifest` holds the paths of the links the plan keeps in the
-    root AT `project.yaml`, whose finding says so (AT_THE_MANIFEST)."""
+    root AT `project.yaml`, whose finding says so (`_at_the_manifest`)."""
     said = _bad_symlink_target_sentences(tree, targets)
     found = [f"FINDING {BAD_SYMLINK_TARGET}: {sentence}."
-             f"{AT_THE_MANIFEST if path in at_the_manifest else ''}"
+             f"{_at_the_manifest(path) if path in at_the_manifest else ''}"
              for path, sentence in said[:BAD_SYMLINK_TARGETS_NAMED]]
     if len(said) > BAD_SYMLINK_TARGETS_NAMED:
         found.append(
-            f"FINDING {BAD_SYMLINK_TARGET}: ... and "
+            f"FINDING {BAD_SYMLINK_TARGET}: … and "
             f"{len(said) - BAD_SYMLINK_TARGETS_NAMED} more symlinks whose "
             "target holds a NUL byte after its first or is longer than "
             "Linux takes")
@@ -8123,11 +8143,22 @@ def _links_at_the_manifest(plan: Plan, tree: list) -> set[str]:
 
 
 def _named_symlinks(tree: list, targets: dict[str, bytes]) -> set[str]:
-    """The paths `plan-empty-symlink` and `plan-bad-symlink-target` name:
-    the symlinks of the source whose own finding says all there is to say of
-    them, so that no other finding of `check`'s names one again."""
-    return {*empty_symlinks(tree, targets),
-            *(path for path, _ in bad_symlink_targets(tree, targets))}
+    """The paths `plan-empty-symlink` and `plan-bad-symlink-target` name ONE
+    BY ONE, the first EMPTY_SYMLINKS_NAMED and BAD_SYMLINK_TARGETS_NAMED of
+    each: `_root_shape_findings` leaves out `plan-root-blocks-manifest` for
+    one of them at `project.yaml`, which its own finding says all of. A link
+    past those is only counted, and is named by nothing else if this leaves
+    it out too, so the manifest finding stays its own.
+
+    THE OTHER FINDINGS ABOUT A PATH THE SHAPE WRITES DO NOT LEAVE A NAMED
+    LINK OUT. A bad link at `shape/README.md` is also
+    `plan-root-blocks-shape-copy`, and one at `contracts/shape-pin.yaml`
+    also `plan-root-holds-pin`, each with a remedy (`drop` it, send it to a
+    leg) that cannot help a link no clone makes. That is L1-80's defect at
+    those two paths, outside #908's wording, and a follow-up of it."""
+    return {*empty_symlinks(tree, targets)[:EMPTY_SYMLINKS_NAMED],
+            *(path for path, _ in bad_symlink_targets(
+                tree, targets)[:BAD_SYMLINK_TARGETS_NAMED])}
 
 
 def _source_path_findings(plan: Plan, tree: list, targets: dict[str, bytes]
@@ -8321,7 +8352,11 @@ def _entry_findings(plan: Plan, source: Source,
     fixes: the fix is a commit in the source, and the fresh `plan` after it
     takes back every answer given before, so they are listed before the
     findings about those answers (`_source_path_findings`). Their
-    remediation is said once after the findings, with the others.
+    remediation is said once after the findings, with the others. The
+    same goes for each symlink whose target holds a NUL byte after its
+    first, or is longer than Linux takes (#908), as
+    `plan-bad-symlink-target`: git makes another link or none, which no
+    answer changes either.
 
     A VALUE NO FILE CAN HOLD IS SAID BEFORE THE VALIDATOR'S WORD ON IT (#255
     before #261). A lone surrogate, a line break or a bidi control in
@@ -9274,7 +9309,7 @@ class _PlannedRoot:
     def _read(self, oid: str) -> bytes:
         """The target the symlink blob `oid` holds, from the one batch read
         of every link's target (`symlink_targets`, #908): a link's own `git
-        cat-file` per walk, per disk and per question was 16 processes for
+        cat-file` per walk, per disk and per question was 15 processes for
         five links, and is now none beyond the batch, which `Source` keeps
         for the whole command. A link of size 0 is the empty blob, read
         from no one. A blob the batch did not return is read alone, as it
