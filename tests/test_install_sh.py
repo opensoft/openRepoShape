@@ -45,7 +45,9 @@ from pathlib import Path
 
 import pytest
 
-from conftest import BASH, BASH_SKIP, REPO, bash_path
+from conftest import (BASH, BASH_SKIP, REF_PARTS, REPO,
+                      assert_a_copy_answers_as_git_does,
+                      assert_the_refusal_states_the_ref_rule, bash_path)
 from test_openreposhape_command import (BIN_DIR_SPELLINGS, COMMAND,
                                         COMMAND_REFUSAL_ENDS,
                                         CYGPATH_STATES, HOLDS_A_COLON,
@@ -425,6 +427,32 @@ def test_a_version_that_is_not_a_ref_is_refused_before_any_request(
     assert net.calls() == []
     assert "forged" not in result.stderr
     assert "a" * 256 not in result.stderr
+
+
+@pytest.mark.parametrize("name, takes", REF_PARTS)
+def test_the_installer_takes_a_version_as_git_does_before_any_request(
+        net, name, takes):
+    """GIT'S RULE FOR A REF IS PER PART, AND THE INSTALLER HOLDS IT BEFORE
+    THE FETCH (#874). The version is the path of the URL the launcher is
+    fetched from, and its shape `case` tested only the whole name, so
+    `a.lock/b`, `a/.b` and `a//b` were asked of the network. Each name of the
+    table goes to the installer and, through `git check-ref-format
+    --branch`, to git, and the two must answer alike.
+
+    The fakes serve a release's files at `v9.9.9` only, so a version the
+    installer takes asks curl for the launcher and is told 404, and one it
+    refuses asks nothing: it has taken the version when a call was logged.
+    """
+    result = net.run(name)
+    asked = net.calls() != []
+    assert_a_copy_answers_as_git_does("install.sh", name, takes, asked)
+    if asked:
+        return
+    net.refused(result)
+    assert_the_refusal_states_the_ref_rule(
+        result.stderr,
+        f"REFUSED: the version is '{name}', which is not a release tag, "
+        "branch or commit: ")
 
 
 def test_a_failed_fetch_names_its_url_and_installs_nothing(net):
