@@ -1928,6 +1928,87 @@ def test_siblings_reports_a_directory_that_is_not_a_clone_at_all(estate):
     assert (estate["folder"] / "IRRS" / "notes.md").read_text() == "mine\n"
 
 
+#: A mode hides a folder's contents only on POSIX, and never from root.
+MODE_HOLDS = pytest.mark.skipif(
+    os.name == "nt" or getattr(os, "geteuid", lambda: 0)() == 0,
+    reason="a mode hides a folder's contents only on POSIX, from a user "
+           "who is not root")
+
+#: `(the folder's mode, or None for a file; what the finding says is there;
+#: what kind of thing it is)` for the slots `make siblings` ended in a
+#: traceback on (#735): a file, and a folder holding a file whose mode hides
+#: it, one that can be entered and not listed (`711` is common for another
+#: user's directory) and one that cannot be entered.
+SLOTS_NOT_READ = [
+    pytest.param(None, "is a file, not a folder", "file", id="a-file"),
+    pytest.param(0o311, "is a folder that cannot be listed", "directory",
+                 id="a-folder-it-cannot-list", marks=MODE_HOLDS),
+    pytest.param(0o000, "is a folder that cannot be listed", "directory",
+                 id="a-folder-it-cannot-enter", marks=MODE_HOLDS),
+]
+
+
+def slot_not_read(request, slot, mode):
+    """A file at `slot`, or, for a `mode`, a folder there holding `notes.md`
+    with that mode, given its own mode back when the test ends; the file
+    that says `mine` is returned."""
+    if mode is None:
+        slot.write_text("mine\n", encoding="utf-8")
+        return slot
+    slot.mkdir()
+    (slot / "notes.md").write_text("mine\n", encoding="utf-8")
+    slot.chmod(mode)
+    request.addfinalizer(lambda: slot.chmod(0o755))
+    return slot / "notes.md"
+
+
+@pytest.mark.parametrize("mode, found, thing", SLOTS_NOT_READ)
+def test_siblings_reports_a_slot_it_cannot_read_as_not_a_clone(
+        estate, request, mode, found, thing):
+    """#735: A FILE, OR A FOLDER IT CANNOT LIST, IS NOT A CLONE.
+
+    `place` asked only whether a folder had something in it, and `iterdir`
+    raised on these: `NotADirectoryError` for a file, `PermissionError` for
+    the two folders. `make siblings` ended in that traceback, exit 1, and
+    IRSS, the member after it, was never placed. Now each is `NOT A CLONE`,
+    as the doctor's `members` row calls the slot: the finding is the one a
+    folder of files gets, saying what stands there, the slot is left as it
+    is, and the next member is placed."""
+    slot = estate["folder"] / "IRRS"
+    mine = slot_not_read(request, slot, mode)
+    result = siblings(estate["holder"])
+    assert "Traceback" not in result.stderr, result.stderr
+    assert result.returncode == 1, result.stdout + result.stderr
+    assert "sibling IRRS NOT A CLONE -" in layout(result.stdout), \
+        result.stdout
+    where = estate["holder"].resolve().parent / "IRRS"
+    assert (f"FINDING IRRS: {where} {found}, so this command will not write "
+            f"into it. Move it aside or name the {thing} something else; "
+            f"nothing here overwrites a {thing} somebody made.") in \
+        result.stderr, result.stderr
+    assert (estate["folder"] / "IRSS" / ".git").is_dir()
+    if mode is not None:
+        slot.chmod(0o755)
+    assert mine.read_text(encoding="utf-8") == "mine\n"
+    assert not (slot / ".git").exists()
+
+
+@MODE_HOLDS
+@pytest.mark.skipif(shutil.which("make") is None,
+                    reason="needs `make` on PATH")
+def test_a_make_verb_skips_a_folder_it_cannot_enter(estate, request):
+    """#735's `--make` half: `dispatch` asked `(path / ".git").exists()`,
+    which Python 3.12 answers with `PermissionError` in a folder that cannot
+    be entered, so `make park` ended in that traceback. It is now a member
+    with no working clone, skipped by name, as every other one is."""
+    slot_not_read(request, estate["folder"] / "IRRS", 0o000)
+    result = siblings(estate["holder"], "--make", "park", "--dry-run")
+    assert "Traceback" not in result.stderr, result.stderr
+    assert "sibling IRRS SKIPPED no clone -" in [
+        " ".join(line.split()) for line in result.stdout.splitlines()], \
+        result.stdout
+
+
 def test_siblings_warns_about_the_parent_folder_and_moves_nothing(family,
                                                                   tmp_path):
     """THE DOCTOR PATTERN, NOT A MOVER (#76). The holder here sits under a

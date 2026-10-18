@@ -5146,13 +5146,25 @@ def submodule_keys(listing: str) -> list[tuple[str, str, str]]:
     `submodule.` and its last dot, so a name that holds a space, a dot, a
     quote or an `=` is read whole, and the field is what follows that dot,
     which git lists in lower case.
+
+    THE NAME KEEPS GIT'S BYTES AND THE VALUE IS TEXT (#732). The name is
+    only ever handed back to git, by `configured_url` and `kept_gitdir`
+    through `git_bytes`, so a byte that is not UTF-8 stays the
+    `surrogateescape` the listing was decoded with: replaced, a section
+    named `caf\\xe9` was looked up as `caf\\ufffd`, a name git has nowhere,
+    and a member with a commit on its detached HEAD got the update line
+    with no keep line. The value is compared and printed, so it takes the
+    replacement, as `make siblings` reads the same file (#432) and
+    `origin_url` reads a remote (#385).
     """
     keys = []
     for record in listing.split("\0"):
         key, _, value = record.partition("\n")
         section, _, field = key.rpartition(".")
         if section.startswith("submodule.") and field in ("path", "url"):
-            keys.append((section[len("submodule."):], field, value))
+            keys.append((section[len("submodule."):], field,
+                         value.encode("utf-8", "surrogateescape").decode(
+                             "utf-8", "replace")))
     return keys
 
 
@@ -5174,16 +5186,17 @@ def gitmodules_listing(root: Path, source: list[str]) -> str | None:
     them, and a name a space: git's plain listing, split at line breaks and
     at the first space, cut such a url short and such a name in two.
 
-    Decoded with the replacement, as `make siblings` reads the same file
-    (#432) and `origin_url` reads a remote (#385). Read only: `--list`
-    writes nothing.
+    Decoded with `surrogateescape`, so nothing git listed is lost:
+    `submodule_keys` keeps a section's name as git's own bytes and gives
+    each value with the replacement (#732). Read only: `--list` writes
+    nothing.
     """
     try:
         raw = git_out(["config", "-z", *source, "--list"], cwd=root,
                       binary=True)
     except (Refusal, OSError):
         return None
-    return raw.decode("utf-8", "replace")
+    return raw.decode("utf-8", "surrogateescape")
 
 
 def configured_url(root: Path, name: str) -> str | None:
@@ -5201,17 +5214,44 @@ def configured_url(root: Path, name: str) -> str | None:
     128, measured), so neither is helped by this.
 
     `git config --get` in the root, which reads what git reads: the
-    repository's config and the ones above it. Read only.
+    repository's config and the ones above it. Read only. The key is
+    handed to git as the bytes the section was named with (`git_bytes`,
+    #732).
     """
     try:
         proc = subprocess.run(["git", "config", "--get",
-                               f"submodule.{name}.url"],
+                               git_bytes(f"submodule.{name}.url")],
                               cwd=str(root), capture_output=True, check=False)
     except OSError:
         return None
     if proc.returncode != 0:
         return None
     return proc.stdout.decode("utf-8", "replace").strip() or None
+
+
+def git_bytes(text: str) -> str | bytes:
+    """`text`, read out of git as UTF-8 with `surrogateescape`, as the
+    argument that hands git back the same bytes (#732).
+
+    BYTES ON POSIX, whose command line is bytes. A `str` there is encoded
+    with the filesystem encoding, which is ASCII under `LC_ALL=C
+    PYTHONUTF8=0`: a section named `caf\\xc3\\xa9`, valid UTF-8, then raised
+    `UnicodeEncodeError` out of `subprocess`, a traceback with no verdict,
+    and one named `caf\\xe9` too. THE TEXT ITSELF ON WINDOWS, whose command
+    line is text: `subprocess` would have to decode bytes there, and a byte
+    that is not UTF-8 is not text to it.
+
+    SO ON WINDOWS A NAME THAT IS NOT UTF-8 IS STILL NOT FOUND: Git for
+    Windows' `xwcstoutf` turns the lone surrogate into the bytes ED B3 A9,
+    not E9. A UTF-8 name is found there. What would find the other is a
+    lookup with no name on the command line: read the root's config with
+    `git config -z --list` and match the key's bytes in Python, and build
+    the kept repository's path from `git rev-parse --git-common-dir`,
+    `modules/` and the name's bytes.
+    """
+    if os.name == "nt":
+        return text
+    return text.encode("utf-8", "surrogateescape")
 
 
 def submodule_url(root: Path, rel: str) -> tuple[str | None, str | None]:
@@ -5246,11 +5286,21 @@ def kept_gitdir(root: Path, name: str) -> Path | None:
 
     BY NAME, which is not always the path: `--git-path modules/<name>` says
     where git keeps it, in the common directory of a linked worktree too.
+
+    AND BY THE NAME'S OWN BYTES (#732): the name goes to git through
+    `git_bytes`, and the path git answers with is read as a path
+    (`os.fsdecode`), which `kept_head` and the keep line hand back to git
+    unchanged. A strict decode of it found no repository for a section
+    named `caf\\xe9`, and the commit on its detached HEAD got no keep line.
     """
     try:
-        where = git_out(["rev-parse", "--git-path", f"modules/{name}"],
-                        cwd=root)
-    except (Refusal, OSError, UnicodeDecodeError):
+        proc = subprocess.run(["git", "rev-parse", "--git-path",
+                               git_bytes(f"modules/{name}")],
+                              cwd=str(root), capture_output=True, check=False)
+        if proc.returncode != 0:
+            return None
+        where = os.fsdecode(proc.stdout.rstrip(b"\r\n"))
+    except (OSError, ValueError):
         return None
     path = Path(where)
     if not path.is_absolute():
@@ -7927,7 +7977,7 @@ def submodule_config(root: Path) -> dict:
     `except` there did not name -- it is a `ValueError`, neither a
     `Refusal` nor an `OSError` -- so `--root` ended in a traceback, exit 1,
     which is also the code of a finding, with no verdict. The bytes are
-    asked for, and `gitmodules_listing` says how they are decoded.
+    asked for, and `submodule_keys` says how each part is decoded.
 
     THE URL IS KEPT, NOT DROPPED. The row exists to agree with `make
     siblings` about one directory (#146): a clone whose own `origin` is the
@@ -7943,7 +7993,8 @@ def submodule_config(root: Path) -> dict:
     is COMPARED with `origin_url`'s reading of a clone's remote, which is
     the replacement (#385): the same bytes read two ways are two strings,
     so a clone made from this very url would stop being the member's
-    working clone.
+    working clone. A section's NAME, which is handed back to git and never
+    compared, keeps the `surrogateescape` (#732).
     """
     fields: dict = {}
     listing = gitmodules_listing(root, ["--file", ".gitmodules"])
@@ -8161,11 +8212,12 @@ def sibling_slot(root: Path, sibling: Path, row: dict,
     only names.
 
     A FILE, OR A FOLDER THAT CANNOT BE LISTED OR ENTERED, IS `not-a-clone`
-    TOO: nothing can be cloned into it. `make siblings` itself ends in a
-    traceback on each today (`siblings.py:558`, #735), so the row says what
-    is there and nothing of what `make siblings` does with it
-    (`beside_sentence`). A folder that cannot be entered cannot be asked
-    for its `.git` either, so that question's `OSError` reads "no `.git`".
+    TOO: nothing can be cloned into it. A holder whose pinned `siblings.py`
+    predates #735 ends `make siblings` in a traceback on each, and one that
+    has #735 calls it NOT A CLONE, so the row says what is there and
+    nothing of what `make siblings` does with it (`beside_sentence`), which
+    is true of both. A folder that cannot be entered cannot be asked for its
+    `.git` either, so that question's `OSError` reads "no `.git`".
     """
     if sibling == root:
         return "is-the-holder", None
@@ -8310,9 +8362,9 @@ BESIDE_THE_HOLDER = {
                      "project.yaml that says it is this member", ""),
 }
 
-#: What stands at a `not-a-clone` slot `make siblings` cannot read today, as
-#: `unclonable` names it: it ends in a traceback on each (#735), so the row
-#: says what is there and no word of what `make siblings` does with it.
+#: What stands at a `not-a-clone` slot that a holder's pinned `siblings.py`
+#: from before #735 ends in a traceback on, as `unclonable` names it: the
+#: row says what is there and no word of what `make siblings` does with it.
 UNREADABLE_BESIDE = {"file": "is a file, not a folder",
                      "unlistable": "is a folder that cannot be listed"}
 
@@ -8329,8 +8381,9 @@ def beside_sentence(ctx: Context, entry: dict) -> str:
     `--json` keeps them raw: `json.dumps` escapes them.
 
     A FILE, OR A FOLDER THAT CANNOT BE LISTED, is `not-a-clone` with no
-    word from `make siblings`, which ends in a traceback on it today (#735):
-    the sentence stops at what stands there (`UNREADABLE_BESIDE`).
+    word from `make siblings`, which ends in a traceback on it in a holder
+    whose pinned copy predates #735: the sentence stops at what stands
+    there (`UNREADABLE_BESIDE`).
     """
     state = entry["sibling"]
     where = ctx.root.parent / entry["project"]
