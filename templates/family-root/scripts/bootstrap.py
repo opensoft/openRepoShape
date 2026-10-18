@@ -30,13 +30,19 @@ WHAT IT DOES, in order:
       no url for, nor where it read nothing from `.gitmodules`, both below,
       since it fetched nothing then (#839).
 
-      Where every row's member is checked out and git's init died all the
-      same, at a gitlink it has no url for or at a `.gitmodules` a merge
-      left unmerged, git updated none of them, so the run fails, saying
-      where git stopped and what cures it, as below, with no advice
-      (#879). It said `family bootstrap ok` there, beside git's exit 128,
-      as a run with every member checked out passes (#648), and gave the
-      advice where git stopped at a gitlink.
+      Where every row's member is checked out and git's init in this
+      holder died all the same, at a gitlink this holder records with no
+      url or at a `.gitmodules` a merge left unmerged, git updated none of
+      them, so the run fails, saying where git stopped and what cures it,
+      as below, with no advice (#879). It said `family bootstrap ok`
+      there, beside git's exit 128, as a run with every member checked
+      out passes (#648), and gave the advice where git stopped at a
+      gitlink. This holder's records are the test, so an exit 128 they do
+      not show is read as before, the advice and `ok` where every member
+      is checked out: git stopped inside a member, at a gitlink in that
+      member's own index with no url, or at a gitlink of this holder's at
+      a commit no remote holds (`not our ref`) (lane 1's SHOULD 4 on
+      #889).
 
       "every member and leg fetched" is said only where git exited 0 AND
       every row's member is checked out (#648). A member left NOT CHECKED
@@ -100,8 +106,10 @@ WHAT IT DOES, in order:
   (c) EXITS 0 unless a member's own command failed, or (a) left a member not
       checked out that no credential would check out, or found a line or a
       value in `.gitmodules` that git cannot read (#768), or found that,
-      with every member checked out, git's init died at a gitlink it has
-      no url for or at an unmerged `.gitmodules` (#879). Any
+      with every member checked out, git's init in this holder died at a
+      gitlink this holder records with no url or at an unmerged
+      `.gitmodules` (#879); an exit 128 this holder's records do not show
+      is no failure here, as (a) says. Any
       other member that is not checked out is REPORTED and skipped, not a
       failure: it is the state a missing credential leaves, and it is
       already reported in (a).
@@ -151,6 +159,10 @@ NO_SECTION = f"no section of {GITMODULES} gives that path"
 NO_URL = "git has no url for that path"
 EXITED_0 = "git exited 0 and checked nothing out there"
 STOPPED = "git stopped at {}, a gitlink it has no url for"
+#: What (a)'s line says where git updated no member, by whether `members:`
+#: names any row: under "0 member(s)" it said no member was updated (lane
+#: 1's NIT 5 on #889).
+NONE_UPDATED = {True: "NO MEMBER UPDATED", False: "NOTHING UPDATED"}
 #: The whys a `.gitmodules` git read only up to a line it cannot parse, or
 #: up to a key with no value it stops at, may be the cause of, since what
 #: it did not read is past that line (`Gitmodules.cut`, #856).
@@ -213,8 +225,10 @@ def fetch_members(root: Path, rows: list[dict]) -> list[str]:
     `.gitmodules`, or on a work tree file it cannot parse, or its init
     died at a `.gitmodules` a merge left unmerged, so it updated none of
     them, the one failure line it returns is for `.gitmodules` (#768,
-    #879); where its init died at a gitlink it has no url for, it is for
-    that gitlink (`updated_none`, #879).
+    #879); where its init in this holder died at a gitlink this holder
+    records with no url, it is for that gitlink (`updated_none`, #879).
+    Its line says no member was updated, or, where `rows` names none,
+    nothing was (lane 1's NIT 5 on #889).
 
     Returns a failure line for each of `rows` whose member it leaves not
     checked out where no credential would check it out (`unfetchable`), for
@@ -245,23 +259,24 @@ def fetch_members(root: Path, rows: list[dict]) -> list[str]:
     if proc.returncode != 0:
         fetch_incomplete(proc, source, token,
                          credential_advice(bool(left), stopper, modules))
-    whole = updated_none(left, stopper, modules)
     if left:
         print("  NOT CHECKED OUT, and not for want of a credential: "
               + ", ".join(f"{spelled(path)} ({reason(why, stopper, modules)})"
                           for _, path, why in left)
               + ". " + cures(left, stopper, rows, modules), file=sys.stderr)
-    elif whole is not None:
-        print("  NO MEMBER UPDATED, and not for want of a credential: "
-              + reason(whole, stopper, modules) + ". "
+        return [f"{spelled(row.get('project') or '?')} (not checked out)"
+                for row, _, _ in left]
+    whole = updated_none(stopper, modules)
+    if whole is not None:
+        print(f"  {NONE_UPDATED[bool(rows)]}, and not for want of a "
+              "credential: " + reason(whole, stopper, modules) + ". "
               + cures(left, stopper, rows, modules, (whole,)),
               file=sys.stderr)
         return [f"{spelled(stopper)} (git stopped at it)" if whole == STOPPED
                 else f"{GITMODULES} (git cannot read it)"]
-    elif proc.returncode == 0:
+    if proc.returncode == 0:
         print("  every member and leg fetched")
-    return [f"{spelled(row.get('project') or '?')} (not checked out)"
-            for row, _, _ in left]
+    return []
 
 
 def fetch_incomplete(proc: subprocess.CompletedProcess, source: str,
@@ -946,16 +961,15 @@ def file_reason(modules: Gitmodules) -> str | None:
     return UNREADABLE if modules.unreadable else None
 
 
-def updated_none(left: list[tuple[dict, str, str]], stopper: str | None,
-                 modules: Gitmodules) -> str | None:
+def updated_none(stopper: str | None, modules: Gitmodules) -> str | None:
     """Why git updated no member, where every row's member is checked out
-    (`left` empty) and git did not exit 0, or None: what `file_reason`
-    says, or `STOPPED` where git's init died at a gitlink it has no url
-    for (`stopper`, `init_stop`), before it updated any (#879). None
-    where it asked for a credential, as a leg's fetch does, and where
-    `left` names a row, which (a)'s line says why of."""
-    if left:
-        return None
+    and git did not exit 0, or None: what `file_reason` says, or `STOPPED`
+    where git's init in this holder died at a gitlink this holder records
+    with no url (`stopper`, `init_stop`), before it updated any (#879).
+    None where it asked for a credential, as a leg's fetch does.
+    `fetch_members` asks it only where `unfetchable` left no row, whose
+    line says why of each, so it asks nothing of the rows (lane 1's NIT 4
+    on #889: a check of them here decided nothing)."""
     return file_reason(modules) or (None if stopper is None else STOPPED)
 
 

@@ -54,6 +54,17 @@ gitlink and is no checkout, a directory holding a file or a file, and
 none over an empty directory, which git takes the plain line over (NIT
 2). NIT 3's clause is in `STAGE_SAID`, which the C3 rows pin.
 
+LANE 1'S REVIEW OF #889, ROUND 1, TAKEN HERE: a staged removal's section
+written back key by key is staged too, and the first removal puts back
+HEAD's file where the index's lacks a section a second removal needs
+(MUST 1, its P4 and P5); no removal puts HEAD's file back over an earlier
+finding's write with the file on disk either (SHOULD 1); a clone of its
+own at a case variant is said to be one (SHOULD 2); a checkout `git mv`
+moved out of `members/` is named (SHOULD 3); a symbolic link to an empty
+directory takes `-f` (NIT 2); the move says what is on disk at each
+variant (NIT 3); a run with no row says nothing was updated (NIT 5); and
+the value finding's put-back serves the removal after it (NIT 6).
+
 THE SAME FAMILY, OFFLINE RULES AND HELPERS as
 `tests/test_family_holder_bootstrap_texts.py` (#839) and
 `tests/test_family_unnamed_gitlink.py` (#878). A case variant is an index
@@ -66,6 +77,7 @@ from __future__ import annotations
 
 import re
 import shlex
+import shutil
 from pathlib import Path
 
 import pytest
@@ -90,9 +102,10 @@ from test_family_holder_bootstrap_texts import (
 from test_family_member_path import MEMBER, OTHER, raw
 from test_family_remove_gitmodules import verb_args
 from test_family_unnamed_gitlink import (
-    COMMIT_THAT, FORCED_NO_HEAD, STAGE_LINE, STAGE_SAID, TAKE_OUT, TOOLS,
-    assert_a_plain_clone_checks_out_every_member, at_tools,
+    COMMIT_THAT, FORCED_NO_HEAD, RENAMED, STAGE_LINE, STAGE_SAID, TAKE_OUT,
+    TOOLS, assert_a_plain_clone_checks_out_every_member, at_tools,
     found_in_every_mode, outside, section_taken_out_alone, staged_at,
+    submodule_added,
 )
 from test_validate_family_typed_states import (
     GONE, ROW, SECTION_GIVEN_BACK, URL_ABSENT, VARIANT_PATH, gone,
@@ -325,6 +338,25 @@ def url_of(root: Path, env: dict, path: str) -> str:
                f"submodule.{path}.url").stdout.decode("utf-8").strip()
 
 
+#: What `member-gitlink-removal-staged` says its stage line does, and what
+#: it says after its lines where they stage `.gitmodules` (lane 1's MUST 1
+#: on #889).
+STAGED_WHOLE = ("that section in the index, staging .gitmodules whole, which "
+                "stages every other change in it too")
+STAGED_BACK = (": commit .gitmodules then, with what the lines above write "
+               "in it, and nothing else is left to commit.")
+
+
+def written_back(root: Path, env: dict, path: str) -> list[str]:
+    """The removal's lines that write the section of HEAD's `.gitmodules`
+    named `path` back, key by key as HEAD has it, then stage the file (lane
+    1's MUST 1 on #889). Read before the state is made."""
+    return [f"git config -f .gitmodules submodule.{path}.path {path}",
+            f"git config -f .gitmodules submodule.{path}.url "
+            f"{shlex.quote(url_of(root, env, path))}",
+            "git add -- .gitmodules"]
+
+
 def test_c2_a_section_git_rm_took_is_written_back_into_the_file_put_back(
         family, holder, offline, tmp_path):
     """C2's other half, found with it: a plain `git rm members/IRRS`, which
@@ -333,13 +365,14 @@ def test_c2_a_section_git_rm_took_is_written_back_into_the_file_put_back(
     deleted. The absent finding puts back the index's, which lacks MEMBER's
     section, and the removal's `git checkout HEAD -- .gitmodules` took
     OTHER's out again. Now the removal writes MEMBER's section back, key by
-    key as HEAD has it, into the file put back, before the update, which
-    dies `No url found` without it. Typed in order and committed, the gate
-    passes and a plain clone checks both out."""
+    key as HEAD has it, into the file put back, and stages the file (lane
+    1's MUST 1 on #889), before the update, which dies `No url found`
+    without it. Typed in order and committed, the gate passes and a plain
+    clone checks both out."""
     env = cloning(offline, tmp_path, family)
     data = raw(holder, env, "show", f"HEAD:{GITMODULES}").stdout
     committed_gitmodules(holder, env, section_taken_out(data, OTHER))
-    member_url = url_of(holder, env, ROW)
+    lines = written_back(holder, env, ROW)
     raw(holder, env, "rm", "-q", "--", ROW)
     gone(holder, env, "deleted")
 
@@ -349,15 +382,12 @@ def test_c2_a_section_git_rm_took_is_written_back_into_the_file_put_back(
                              "member-gitlink-removal-staged"]
     removal = findings(result)[1]
     assert commands(removal) == [
-        f"git reset -q -- {ROW}",
-        f"git config -f .gitmodules submodule.{ROW}.path {ROW}",
-        f"git config -f .gitmodules submodule.{ROW}.url "
-        f"{shlex.quote(member_url)}",
+        f"git reset -q -- {ROW}", *lines,
         f"git submodule update --init --recursive -- {ROW}"]
     assert ("the first its gitlink, the second to the third the .gitmodules "
             "section git rm took out, key by key as HEAD has it, in the file "
-            "a line above put back, the fourth its checkout, and nothing is "
-            "left to commit.") in removal, removal
+            f"a line above put back, the fourth {STAGED_WHOLE}, the fifth its "
+            "checkout" + STAGED_BACK) in removal, removal
     typed_in_order(holder, env, result)
     staged_and_committed(holder, env, "Typed in order")
     ends_well(holder, env, family, tmp_path)
@@ -423,13 +453,19 @@ def test_c2_control_with_the_file_on_disk_the_removal_is_as_it_was(
 
 # --- C3: a git rm of a gitlink after a value finding's lines ----------------
 
-def value_committed(root: Path, env: dict) -> None:
-    """MEMBER's section given `update = None`, committed (#768)."""
-    data = raw(root, env, "show", f"HEAD:{GITMODULES}").stdout
-    line = f"\tpath = {ROW}\n".encode()
+def valued(data: bytes, path: str) -> bytes:
+    """`.gitmodules` bytes with the section giving `path` given `update =
+    None` too, a value git dies on (#768)."""
+    line = f"\tpath = {path}\n".encode()
     assert data.count(line) == 1, data
-    committed_gitmodules(root, env,
-                         data.replace(line, line + b"\tupdate = None\n"))
+    return data.replace(line, line + b"\tupdate = None\n")
+
+
+def value_committed(root: Path, env: dict, path: str = ROW) -> None:
+    """The section giving `path`, MEMBER's unless said, given `update =
+    None`, committed (#768)."""
+    committed_gitmodules(root, env, valued(
+        raw(root, env, "show", f"HEAD:{GITMODULES}").stdout, path))
 
 
 def staged_first(text: str) -> str:
@@ -536,14 +572,18 @@ def test_c3_the_wrong_case_move_s_git_rm_stages_the_file_first_after_a_value(
 #: What `member-gitlink-removal-staged` says of the checkout `git mv` moved
 #: to `Members/IRRS`, before its update (C4).
 MOVED = (
-    " The checkout git mv moved to {variant} stays there, untracked, and "
-    "family.py add refuses it as family-members-dir-variant: its .git file "
+    " The checkout git mv moved to {variant} stays there, untracked{refused}: "
+    "its .git file "
     "names the member's store under this holder's .git/modules/ by a path "
     "relative to it, and its commits are kept there whatever becomes of the "
     "checkout, so only what is not committed is in the checkout alone, which "
     "`git -C {variant} status` shows. Delete it by hand once nothing only it "
     "holds is needed, before the last line: that update points the store at "
     "{path}, after which `git -C {variant} status` reads {path} instead.")
+
+#: What it says of one at a case variant: `family.py add` refuses it.
+REFUSED_AS_VARIANT = (", and family.py add refuses it as "
+                      "family-members-dir-variant")
 
 #: The `git mv` states: nothing more, and #876's two.
 MOVES = {"clean": lambda checkout, env: None, **WORK}
@@ -572,7 +612,8 @@ def test_c4_the_checkout_git_mv_moved_is_named_before_the_update(
     found = found_alike(holder, *MODES)
 
     assert ("and nothing is left to commit."
-            + MOVED.format(variant=VARIANT_PATH, path=ROW)
+            + MOVED.format(variant=VARIANT_PATH, path=ROW,
+                           refused=REFUSED_AS_VARIANT)
             + " If it is to go,") in found[-1], found[-1]
     lines = [line for finding in found for line in commands(finding)]
     assert lines[-1] == f"git submodule update --init --recursive -- {ROW}"
@@ -808,15 +849,31 @@ def an_empty_directory_at(root: Path, path: str) -> None:
     (root / path).mkdir(parents=True)
 
 
+def a_link_to_an_empty_directory_at(root: Path, path: str) -> None:
+    """A symbolic link at `path` to an empty directory outside the holder
+    (lane 1's NIT 2 on #889), or a skip where none can be made."""
+    target = root.parent / "an-empty-directory"
+    target.mkdir()
+    (root / path).parent.mkdir(parents=True, exist_ok=True)
+    try:
+        (root / path).symlink_to(target, target_is_directory=True)
+    except OSError as exc:
+        pytest.skip(f"no symbolic link can be made here: {exc}")
+
+
 #: `(what is on disk at tools/x, the flag its git rm --cached carries, what
 #: the text says of it)`: git 2.43 refused the plain line over the first
-#: two and took it over the third (rv882's NIT 2).
+#: two (rv882's NIT 2) and the fourth (`use -f to force removal`, exit 1,
+#: lane 1's NIT 2 on #889), and took it over the third.
 ON_DISK = {
     "a-directory-holding-a-file": (files_at, " -f", FORCED_NO_HEAD.replace(
         "over a checkout", f"over {OVER_FILES}")),
     "a-file": (a_file_at, " -f", FORCED_NO_HEAD.replace(
         "over a checkout", f"over {OVER_FILES}")),
     "an-empty-directory": (an_empty_directory_at, "", COMMIT_THAT),
+    "a-link-to-an-empty-directory": (
+        a_link_to_an_empty_directory_at, " -f", FORCED_NO_HEAD.replace(
+            "over a checkout", f"over {OVER_FILES}")),
 }
 
 
@@ -873,3 +930,391 @@ def test_rv882_nit_2_the_move_takes_f_over_what_is_no_checkout(
     commit_all(holder, env, "Moved as printed")
     assert (holder / VARIANT_PATH / "kept.txt").read_bytes() == b"kept\n"
     assert validate(holder).returncode == 0
+
+
+# --- lane 1's review of #889, round 1 ---------------------------------------
+
+OTHER_ROW = f"members/{OTHER}"
+
+
+def test_round1_must_1_p4_the_first_removal_puts_back_head_s_file(
+        family, holder, offline, tmp_path):
+    """Lane 1's MUST 1 on #889, its P4: `git rm --cached members/IRRS`,
+    `git rm members/IRSS`, and the work tree's `.gitmodules` deleted. The
+    first removal put back the index's file, which the second `git rm` had
+    taken IRSS's section out of, and the second wrote that section into
+    the work tree's file alone: `MM .gitmodules`, and a plain commit
+    dropped it from HEAD. The first puts back HEAD's now, since the
+    index's lacks a section another staged removal needs, and the second
+    prints no line for the file, as #876's head printed. Typed in order,
+    nothing is left to commit, and the gate passes in every mode."""
+    env = cloning(offline, tmp_path, family)
+    raw(holder, env, "rm", "-q", "--cached", "--", ROW)
+    raw(holder, env, "rm", "-q", "--", OTHER_ROW)
+    gone(holder, env, "deleted")
+
+    found = found_alike(holder, *MODES)
+
+    assert [commands(finding) for finding in found] == [
+        [f"git reset -q -- {ROW}", "git checkout HEAD -- .gitmodules"],
+        [f"git reset -q -- {OTHER_ROW}",
+         f"git submodule update --init --recursive -- {OTHER_ROW}"]]
+    typed_in_order(holder, env, validate(holder, "--no-members"))
+    assert raw(holder, env, "status", "--porcelain").stdout == b""
+    ends_well(holder, env, family, tmp_path)
+
+
+@pytest.mark.parametrize("how", ["deleted", "on-disk"])
+def test_round1_must_1_p5_the_section_written_back_is_staged(
+        family, holder, offline, tmp_path, how):
+    """Lane 1's MUST 1, its P5: MEMBER recorded only at `Members/IRRS`
+    (`moved_in_head`), then `git rm members/IRSS`, under `--no-members`.
+    Where the work tree's `.gitmodules` was gone, the move put back the
+    index's, which lacks IRSS's section, and the removal wrote that
+    section into the work tree's file alone, so the commit the move names
+    dropped it; on disk, the removal's `git checkout HEAD -- .gitmodules`
+    took the move's write out. Either way it writes IRSS's section back
+    key by key and stages the file now. Typed in order and committed with
+    a plain `git commit`, as the move says, nothing is left, HEAD's
+    `.gitmodules` gives both members, and the gate passes in every mode."""
+    env = cloning(offline, tmp_path, family)
+    moved_in_head(holder, env)
+    lines = written_back(holder, env, OTHER_ROW)
+    raw(holder, env, "rm", "-q", "--", OTHER_ROW)
+    if how == "deleted":
+        gone(holder, env, how)
+
+    result = validate(holder, "--no-members")
+
+    assert codes(result)[0] == "member-gitlink-unnamed"
+    assert codes(result)[-1] == "member-gitlink-removal-staged"
+    assert commands(findings(result)[-1]) == [
+        f"git reset -q -- {OTHER_ROW}", *lines,
+        f"git submodule update --init --recursive -- {OTHER_ROW}"]
+    typed_in_order(holder, env, result)
+    commit_all(holder, env, "Committed as the move says")
+    assert raw(holder, env, "status", "--porcelain").stdout == b""
+    assert head_paths(holder, env) == {ROW, OTHER_ROW}
+    ends_well(holder, env, family, tmp_path)
+
+
+def stale_section(root: Path, env: dict, family) -> None:
+    """A section for `members/IRQS`, which no row names and no gitlink is
+    at, committed in HEAD's `.gitmodules`: one `family.py remove` left."""
+    data = raw(root, env, "show", f"HEAD:{GITMODULES}").stdout
+    committed_gitmodules(root, env, data + (
+        f'[submodule "members/{SPARE}"]\n\tpath = members/{SPARE}\n'
+        f"\turl = https://github.com/InkRouter/{SPARE}.git\n").encode())
+
+
+def mounted_with_its_section(root: Path, env: dict, family) -> None:
+    """A member mounted by hand at `members/IRQS` with `git submodule
+    add`, its section with it, committed, and no row."""
+    submodule_added(root, env, family, f"members/{SPARE}")
+    commit_all(root, env, "A member mounted by hand with its section")
+
+
+def head_edited(edit):
+    """A state made by `edit` on HEAD's `.gitmodules` bytes, committed."""
+    def made(root: Path, env: dict, family) -> None:
+        data = raw(root, env, "show", f"HEAD:{GITMODULES}").stdout
+        committed_gitmodules(root, env, edit(data))
+    return made
+
+
+def value_staged_out(path: str):
+    """A state in which `update = None` is committed in the section giving
+    `path`, and the file without it is staged: git rm dies reading a work
+    tree's file that gives such a value (`invalid value for
+    'submodule.<name>.update'`, exit 128), so the person mended it first."""
+    def made(root: Path, env: dict, family) -> None:
+        data = raw(root, env, "show", f"HEAD:{GITMODULES}").stdout
+        committed_gitmodules(root, env, valued(data, path))
+        (root / GITMODULES).write_bytes(data)
+        raw(root, env, "add", "--", GITMODULES)
+    return made
+
+
+#: `(the state before the removal, the code of the finding it makes)`: each
+#: finding's lines write the work tree's `.gitmodules`, or it says to
+#: commit the file as it stands, and the removal's `git checkout HEAD --
+#: .gitmodules` put HEAD's back over that (lane 1's SHOULD 1 on #889). The
+#: value in MEMBER's own section is one a section written back key by key
+#: must leave out.
+EARLIER_WRITES = {
+    "section-absent": (head_edited(
+        lambda data: section_taken_out(data, OTHER)),
+        "member-gitmodules-absent"),
+    "url-absent": (head_edited(lambda data: without_url(data, OTHER)),
+                   "member-gitmodules-url-absent"),
+    "value-in-another-section": (value_staged_out(OTHER_ROW),
+                                 "gitmodules-value-refused"),
+    "value-in-its-own-section": (value_staged_out(ROW),
+                                 "gitmodules-value-refused"),
+    "a-section-no-row-names": (stale_section, "gitmodules-path-unnamed"),
+    "a-hand-mount-with-its-section": (mounted_with_its_section,
+                                      "member-gitlink-unnamed"),
+}
+
+
+@pytest.mark.parametrize("make, code", EARLIER_WRITES.values(),
+                         ids=EARLIER_WRITES)
+def test_round1_should_1_no_put_back_over_an_earlier_write_on_disk(
+        family, holder, offline, tmp_path, make, code):
+    """Lane 1's SHOULD 1 on #889: a finding whose lines write the work
+    tree's `.gitmodules`, or that says to commit it as it stands, then a
+    plain `git rm members/IRRS`, with the file on disk. The removal's `git
+    checkout HEAD -- .gitmodules` put HEAD's file back over that, so the
+    commit after it had nothing to commit and the earlier finding came
+    back. It writes MEMBER's section
+    back key by key now, leaving out a value git dies on, and stages the
+    file, in every mode. Typed in order and committed, the gate passes in
+    every mode and a plain clone checks both out."""
+    env = cloning(offline, tmp_path, family)
+    lines = written_back(holder, env, ROW)
+    make(holder, env, family)
+    raw(holder, env, "rm", "-q", "--", ROW)
+
+    found = found_alike(holder, *MODES)
+
+    assert f"FINDING {code}: " in found[0], found[0]
+    assert found[-1].startswith("FINDING member-gitlink-removal-staged: ")
+    assert commands(found[-1]) == [
+        f"git reset -q -- {ROW}", *lines,
+        f"git submodule update --init --recursive -- {ROW}"]
+    assert ("the second to the third the .gitmodules section git rm took "
+            "out, key by key as HEAD has it, in the work tree's file, as the "
+            f"lines above leave it, the fourth {STAGED_WHOLE}, the fifth its "
+            "checkout" + STAGED_BACK) in found[-1], found[-1]
+    typed_in_order(holder, env, validate(holder, "--no-members"))
+    staged_and_committed(holder, env, "Typed in order")
+    ends_well(holder, env, family, tmp_path)
+
+
+def test_round1_should_1_a_second_section_taken_out_by_hand_stays_out(
+        family, holder, offline, tmp_path):
+    """Lane 1's SHOULD 1, beside `gitmodules-path-twice`, whose remedy is a
+    by-hand `--unset-all` of each key of the section that is not the
+    member's: a second section giving IRSS's path committed, then a plain
+    `git rm members/IRRS`. The removal's `git checkout HEAD --
+    .gitmodules` put the second section back. It writes MEMBER's section
+    back key by key now and stages the file. The second section taken out
+    by hand as that finding says, then the removal's lines, as printed
+    before, typed and committed, the gate passes in every mode."""
+    env = cloning(offline, tmp_path, family)
+    lines = written_back(holder, env, ROW)
+    data = raw(holder, env, "show", f"HEAD:{GITMODULES}").stdout
+    committed_gitmodules(holder, env, data + (
+        f'[submodule "second"]\n\tpath = {OTHER_ROW}\n'
+        "\turl = https://github.com/InkRouter/Second.git\n").encode())
+    raw(holder, env, "rm", "-q", "--", ROW)
+
+    found = found_alike(holder, *MODES)
+
+    assert [finding.split(":", 1)[0] for finding in found] == [
+        "FINDING gitmodules-path-twice",
+        "FINDING member-gitlink-removal-staged"]
+    assert commands(found[1]) == [
+        f"git reset -q -- {ROW}", *lines,
+        f"git submodule update --init --recursive -- {ROW}"]
+    for key in ("path", "url"):
+        raw(holder, env, "config", "-f", GITMODULES, "--unset-all",
+            f"submodule.second.{key}")
+    typed(holder, env, found[1])
+    staged_and_committed(holder, env, "Typed in order")
+    ends_well(holder, env, family, tmp_path)
+
+
+#: What `member-gitlink-removal-staged` says of a clone of its own at a case
+#: variant of the row's path (lane 1's SHOULD 2 on #889), as the wrong-case
+#: move says it.
+CLONE_KEPT = (
+    " The clone at {variant}, whose .git is a directory, stays there, "
+    "untracked, and family.py add refuses it as family-members-dir-variant: "
+    "it holds its commits there and nowhere else, and `git -C {variant} log "
+    "--oneline HEAD --branches --not --remotes` lists the ones not pushed, "
+    "so move it out of the holder whole, by hand, rather than delete it.")
+
+
+def test_round1_should_2_a_clone_at_a_case_variant_is_moved_out_whole(
+        family, holder, offline, tmp_path, case_sensitive_disk):
+    """Lane 1's SHOULD 2 on #889: `git rm --cached members/IRRS`, its
+    checkout deleted, IRRS cloned at `Members/IRRS` with a commit only that
+    clone holds, and `git add Members/IRRS`. The removal's finding said
+    the checkout `git mv` moved was there, its commits kept in the
+    member's store, to delete by hand: no `git mv` happened, its `.git` is
+    a directory, and deleted, the commit was lost. It says what a clone
+    of its own is now, in every mode, with the `git log` that lists that
+    commit, and to move it out whole. Typed in order, the clone moved out
+    of the holder as it says, nothing is left, the moved clone keeps the
+    commit, the gate passes in every mode and a plain clone checks both
+    out."""
+    env = cloning(offline, tmp_path, family)
+    raw(holder, env, "rm", "-q", "--cached", "--", ROW)
+    rmtree(holder / ROW)
+    (holder / "Members").mkdir()
+    raw(holder, env, "clone", "-q", "--",
+        str(family["remotes"] / f"{MEMBER}.git"), VARIANT_PATH)
+    clone = holder / VARIANT_PATH
+    raw(clone, env, "-c", "user.name=t", "-c", "user.email=t@t", "commit",
+        "-q", "--allow-empty", "-m", "Only this clone holds it")
+    made = raw(clone, env, "rev-parse", "HEAD").stdout.decode("ascii").strip()
+    raw(holder, env, "add", "--", VARIANT_PATH)
+
+    found = found_alike(holder, *MODES)
+
+    assert "The checkout git mv moved" not in found[-1]
+    assert CLONE_KEPT.format(variant=VARIANT_PATH) in found[-1], found[-1]
+    for finding in found:
+        typed(holder, env, finding)
+    listed = raw(holder, env, "-C", VARIANT_PATH, "log", "--oneline", "HEAD",
+                 "--branches", "--not", "--remotes").stdout.decode().split()
+    assert made.startswith(listed[0]), listed
+    kept = tmp_path / "kept-out"
+    shutil.move(str(clone), str(kept))
+    assert raw(holder, env, "status", "--porcelain").stdout == b""
+    assert raw(kept, env, "cat-file", "-e", made,
+               check=False).returncode == 0
+    ends_well(holder, env, family, tmp_path)
+
+
+def test_round1_should_3_a_checkout_git_mv_moved_out_of_members_is_named(
+        family, holder, offline, tmp_path):
+    """Lane 1's SHOULD 3 on #889: `git mv members/IRRS renamed-1`, staged,
+    with an untracked file in the checkout it moved. Typed as printed,
+    `renamed-1/` was left untracked and named by no finding, after the
+    update its status read members/IRRS, so the file went unseen, and the
+    gate passed. The removal's finding names it now, in every mode, as C4
+    names one at a case variant, with no `family.py add` refusal, which
+    only a variant meets; its section is written back key by key, after
+    the unnamed section's lines took it out. Typed in order but the last
+    line, its status shows the file; deleted by hand as the text says,
+    then the update typed and the file committed, nothing is left, the
+    gate passes in every mode and a plain clone checks both out."""
+    env = cloning(offline, tmp_path, family)
+    lines = written_back(holder, env, ROW)
+    raw(holder, env, "mv", "--", ROW, RENAMED)
+    (holder / RENAMED / "scratch.txt").write_bytes(b"mine\n")
+
+    found = found_alike(holder, *MODES)
+
+    assert codes_of(found) == ["gitmodules-path-unnamed",
+                               "member-gitlink-removal-staged"]
+    assert (MOVED.format(variant=RENAMED, path=ROW, refused="")
+            + " If it is to go,") in found[-1], found[-1]
+    assert commands(found[-1]) == [
+        f"git reset -q -- {ROW}", *lines,
+        f"git submodule update --init --recursive -- {ROW}"]
+    typed_lines = [line for finding in found for line in commands(finding)]
+    for line in typed_lines[:-1]:
+        type_line(holder, env, line)
+    status = raw(holder, env, "-C", RENAMED, "status", "--porcelain").stdout
+    assert b"?? scratch.txt\n" in status, status
+    rmtree(holder / RENAMED)
+    type_line(holder, env, typed_lines[-1])
+    staged_and_committed(holder, env, "Typed in order")
+    assert raw(holder, env, "status", "--porcelain").stdout == b""
+    ends_well(holder, env, family, tmp_path)
+
+
+def codes_of(found: list[str]) -> list[str]:
+    """The code of each of `found`, the findings as printed."""
+    return [finding.split(":", 1)[0].removeprefix("FINDING ")
+            for finding in found]
+
+
+def test_round1_nit_3_the_move_says_what_is_on_disk_at_each_variant(
+        family, holder, offline, tmp_path, case_sensitive_disk):
+    """Lane 1's NIT 3 on #889: MEMBER recorded only at `MEMBERS/IRRS` and
+    `Members/IRRS`, both then staged at another commit, a directory
+    holding a file at the one and a checkout at the other. The `-f`
+    sentence said of both "what is on disk there, which is no checkout"
+    once one was no checkout. It says each by its path now. Typed as
+    printed and committed, the lines exit 0, and the gate passes in
+    members mode."""
+    env = cloning(offline, tmp_path, family)
+    variants = ["MEMBERS/IRRS", VARIANT_PATH]
+    commit = recorded_at(holder, env, MEMBER, *variants)
+    other = spare_commits(family)[1]
+    for variant in variants:
+        stage_gitlink(holder, variant, other)
+    files_at(holder, variants[0])
+    raw(holder, env, "init", "-q", "--", variants[1])
+
+    refused = validate(holder)
+
+    assert refused.returncode == 2, refused.stdout + refused.stderr
+    assert refused.stderr.splitlines() == [
+        line.replace("over a checkout", f"over what is on disk at "
+                     f"{variants[0]}, which is no checkout, and over a "
+                     f"checkout at {variants[1]}")
+        for line in variant_refused(ROW, commit, variants,
+                                    dict.fromkeys(variants, other),
+                                    forced=tuple(variants))]
+    for line in refusal_lines(refused):
+        type_line(holder, env, line)
+    commit_all(holder, env, "Moved as printed")
+    assert validate(holder).returncode == 0
+
+
+#: What (a) says where no row is declared and git updated nothing (lane 1's
+#: NIT 5 on #889).
+NOTHING_UPDATED = NONE_UPDATED.replace("NO MEMBER UPDATED", "NOTHING UPDATED")
+
+
+def no_rows(root: Path, env: dict) -> None:
+    """`members: []` in `family.yaml`, staged: the rows are its last key,
+    rewritten wholesale by `family.py`."""
+    manifest = root / "family.yaml"
+    text = manifest.read_text(encoding="utf-8")
+    manifest.write_text(text[:text.index("\nmembers:")] + "\nmembers: []\n",
+                        encoding="utf-8")
+    raw(root, env, "add", "--", "family.yaml")
+
+
+def test_round1_nit_5_with_no_rows_nothing_updated_is_said(
+        family, holder, offline, tmp_path):
+    """Lane 1's NIT 5 on #889: `members: []`, and a gitlink at vendor/IRQS
+    that no section gives, committed. Git's init stops there, so the run
+    fails, as it should, where #876's head said ok; but its line said "NO
+    MEMBER UPDATED" under "0 member(s)". It says nothing was updated
+    now."""
+    env = cloning(offline, tmp_path, family)
+    no_rows(holder, env)
+    path = outside_gitlink(holder, env, family)
+
+    result = bootstrap(holder, env, "--skip-members")
+
+    assert result.returncode == 1, result.stdout + result.stderr
+    assert result.stdout.splitlines()[0].endswith(" 0 member(s)")
+    assert after_fetch_line(result) == [STOP_FAILED.format(path=path)]
+    assert NOTHING_UPDATED.format(
+        why=STOPPED.format(path=path),
+        cure=OUTSIDE_CURE.format(path=path)) in result.stderr.splitlines()
+
+
+def test_round1_nit_6_the_value_s_put_back_serves_the_removal_after_it(
+        family, holder, offline, tmp_path):
+    """Lane 1's NIT 6 on #889 (its mutant MX1): `update = None` committed
+    in IRSS's section, `git rm --cached members/IRRS`, and the work tree's
+    `.gitmodules` deleted. The value finding puts back HEAD's file and
+    records that, so the removal after it prints no line for the file,
+    which HEAD's gives MEMBER's section in. Put back again from the
+    index's, which holds the value, it undid the fix, and the commit died
+    (`invalid value for 'submodule.members/IRSS.update'`, exit 128).
+    Typed in order and committed, the gate passes in every mode and a
+    plain clone checks both out."""
+    env = cloning(offline, tmp_path, family)
+    value_committed(holder, env, OTHER_ROW)
+    raw(holder, env, "rm", "-q", "--cached", "--", ROW)
+    gone(holder, env, "deleted")
+
+    found = found_alike(holder, *MODES)
+
+    assert codes_of(found) == ["gitmodules-value-refused",
+                               "member-gitlink-removal-staged"]
+    assert commands(found[0])[0] == "git checkout HEAD -- .gitmodules"
+    assert commands(found[1]) == [f"git reset -q -- {ROW}"]
+    typed_in_order(holder, env, validate(holder, "--no-members"))
+    staged_and_committed(holder, env, "Typed in order")
+    ends_well(holder, env, family, tmp_path)
