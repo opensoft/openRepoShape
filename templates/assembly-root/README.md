@@ -110,7 +110,9 @@ fetch still failed — naming which source it used. That presence check reads
 job-level `env: SHAPE_LEGS_APP_SET` / `SHAPE_LEGS_TOKEN_SET` booleans rather
 than the `secrets` context directly in the step's `if:` — the `secrets`
 context is not allowed in a step-level `if:` expression, and using it there
-makes GitHub reject the whole workflow file instead of just that step.
+makes GitHub reject the whole workflow file instead of just that step. A
+`.gitmodules` that git refuses fails the run too, whatever the credential,
+naming the key or line.
 
 ## The lockstep invariant
 
