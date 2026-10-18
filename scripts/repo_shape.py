@@ -1055,11 +1055,20 @@ def load_yaml(path: Path) -> Any:
     and only then fails to decode it, so the `OSError` clause never sees it
     and, uncaught, it left every reader as a Python traceback (#192) rather
     than the `REFUSED yaml-unreadable` line a missing file already gets.
+
+    AN `OSError` NAMES THE FILE ONCE (#712). `str()` of one is `[Errno 13]
+    Permission denied: '<path>'`, so `<path>: <that>` named the path twice,
+    the second time in Python's quoting. The line is `<path>: cannot be read
+    (<the system's reason>)`, the words `validate-pins.py` gives a workflow
+    file it cannot open (#359), and the refusal is still raised `from` the
+    `OSError`, which that validator reads to name the file relative to its
+    root.
     """
     try:
         text = Path(path).read_text(encoding="utf-8")
     except OSError as exc:
-        raise Refusal("yaml-unreadable", f"{path}: {exc}") from exc
+        raise Refusal("yaml-unreadable",
+                      f"{path}: cannot be read ({_os_reason(exc)})") from exc
     except UnicodeDecodeError as exc:
         raise Refusal(
             "yaml-unreadable",

@@ -40,6 +40,7 @@ from pathlib import Path
 
 import pytest
 
+from conftest import cloned_just_pushed
 #: The family fixture and its names, from the module that owns them.
 from test_family import (  # noqa: F401
     NAME, ORG, family, manifest, validate,
@@ -232,8 +233,7 @@ def test_bump_to_a_commit_not_pushed_says_to_push_it_first(
     env = isolated(offline, tmp_path)
     remote = a_private_remote(holder, env, tmp_path)
     work = tmp_path / f"{MEMBER}-work"
-    raw(tmp_path, env, "clone", "-q", "--no-local", "-b", "main", "--",
-        str(remote), str(work))
+    cloned_just_pushed(remote, work, "main", recurse=False, env=env)
     (work / "LOCAL.md").write_bytes(b"made here, not pushed yet\n")
     raw(work, env, "add", "--", "LOCAL.md")
     raw(work, env, "commit", "-q", "-m", "A commit only the clone has")

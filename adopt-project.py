@@ -312,6 +312,9 @@ from shape_materialize import (  # noqa: E402
 #: How `plan`'s refusals of a `--pin-source` begin their remediation.
 PLAN_NOT_WRITTEN = "no plan was written."
 from repo_shape import SHA256_RE, repo_basename  # noqa: E402
+# Whether a recorded `--pin-source` is a clone's top level, asked as `plan`
+# asks it (#800).
+from shape_materialize import pin_source_not_top_level  # noqa: E402
 # One reading of an `origin`, shared with `shape-doctor.py` (#521).
 from repo_shape import origin_is_a_path, url_repository  # noqa: E402
 
@@ -336,6 +339,9 @@ ROOT_HOLDS_PIN = "plan-root-holds-pin"
 PIN_DIGEST_MISMATCH = "plan-pin-digest-mismatch"
 PIN_SOURCE_UNREADABLE = "plan-pin-source-unreadable"
 PIN_NOT_A_COMMIT = "plan-pin-not-a-commit"
+#: And about a clone `plan` read a digest from that is no clone's top level,
+#: which `plan` now refuses as `pin-source-not-a-clone` (#800).
+PIN_SOURCE_NOT_A_CLONE = "plan-pin-source-not-a-clone"
 #: How `plan` records where it read a digest (`_as_planned`): from a clone on
 #: this machine, `--pin-source` as typed, or from the forge.
 LOCAL_CLONE_RE = re.compile(r"local-clone \((?P<path>.+)\)")
@@ -694,10 +700,17 @@ def _pin_findings(plan: "Plan", tree: list) -> list[str]:
 # directory `check` or `execute` runs in, as `plan` read it from the one it
 # ran in, and every sentence naming one says where that is
 # (`_read_from_here`). Anything else at the path that cannot answer -- a
-# commit it lacks, a directory that is no clone, a file -- is
-# `plan-pin-source-unreadable`, as `validate-pins.py` finds a source it reads
-# that cannot answer. `check` and `execute` ask this through
-# `_entry_findings`, the one list.
+# commit it lacks, a file -- is `plan-pin-source-unreadable`, as
+# `validate-pins.py` finds a source it reads that cannot answer. `check` and
+# `execute` ask this through `_entry_findings`, the one list.
+#
+# A DIRECTORY THAT IS NO CLONE'S TOP LEVEL is asked about FIRST (#800), before
+# a partial clone's NOTE: a folder inside a clone, or a directory that is no
+# clone at all, is `plan-pin-source-not-a-clone`, as `plan` refuses it
+# `pin-source-not-a-clone`. In a folder `git ls-tree` lists only what is
+# under it, so the digest recomputed there was the wrong one `plan` read,
+# and `check` said it recomputes; inside a partial clone it said only that
+# it was not asked. The question reads no object, so it reads no network.
 
 #: Why a pin's digest `gh api` read was not rechecked.
 NOT_RECHECKED_GH = "`plan` read it with `gh api`, and `check` reads no network"
@@ -808,6 +821,30 @@ def _recomputed_pin_finding(said: str, values: dict) -> str | None:
             f"(`neutral-pin-digest-mismatch`): {_pin_fix(repository)}.")
 
 
+def _not_a_top_level_finding(said: str, how: str,
+                             repository: str) -> str | None:
+    """The FINDING for a pin whose `digest_source:` names a directory that is
+    no clone's top level (#800), asked as `plan` asks a `--pin-source`
+    (`pin_source_not_top_level`); None for a top level, and for a path that
+    is no directory or that cannot be entered, which the questions after
+    this one name as they always did."""
+    clone = _recorded_clone(how)
+    try:
+        found = (pin_source_not_top_level(Path(clone))
+                 if clone is not None and Path(clone).is_dir() else None)
+    except OSError:
+        return None
+    if found is None:
+        return None
+    why, top = found
+    fix = (f"re-run `plan` with `--pin-source {_shown(str(top))}`, its top "
+           "level" if top is not None else _pin_fix(repository))
+    return (f"FINDING {PIN_SOURCE_NOT_A_CLONE}: {said} records that `plan` "
+            f"read its digest from {_shown(clone)}{_read_from_here(clone)}, "
+            f"which is not a clone's top level: {why}. `plan` refuses such a "
+            f"--pin-source as `pin-source-not-a-clone`: {fix}.")
+
+
 def _pin_digest_findings(plan: "Plan") -> tuple[list[str], list[str]]:
     """`(findings, notes)` for each pin `execute` would write: a FINDING for
     a digest the clone `plan` read it from recomputes otherwise at the
@@ -818,8 +855,10 @@ def _pin_digest_findings(plan: "Plan") -> tuple[list[str], list[str]]:
     notes: list[str] = []
     for said, _, values in _read_pins(plan)[0]:
         how = values["PIN_DIGEST_SOURCE"]
-        why = _why_not_rechecked(how)
-        found = None if why else _recomputed_pin_finding(said, values)
+        found = _not_a_top_level_finding(said, how, values["PIN_REPOSITORY"])
+        why = None if found else _why_not_rechecked(how)
+        if not (found or why):
+            found = _recomputed_pin_finding(said, values)
         if why:
             notes.append(f"NOTE {said}: digest NOT rechecked here: {why}. The "
                          "root's own `validate-pins.py` recomputes it "
@@ -891,12 +930,22 @@ FALSE_WORD = "false"
 SEED_TEMPLATE = {"spec": "templates/spec-root", "code": "templates/code-root"}
 EXTRACTED_LEGS = ("spec", "code")
 
+#: In install.sh's order (#595): with the pipx or uv already there, else
+#: brew's, else pipx from apt or dnf, else Arch's own package. No `pip
+#: install --user`: Debian 12, Ubuntu 23.04 and Arch mark their own Python
+#: externally managed (PEP 668) and refuse it. The openreposhape package
+#: depends on git-filter-repo and puts it on PATH for the `adopt-project` it
+#: places, but not for this file run by its path (#563).
 FILTER_REPO_HINT = (
-    "Remediation: install it — `pip install git-filter-repo`, or "
-    "`apt install git-filter-repo`, or `brew install git-filter-repo`; it is "
-    "one file on PATH named `git-filter-repo`. It is NOT vendored here on "
-    "purpose: history extraction has one correct implementation and a copy of "
-    "it is a second one that drifts."
+    "Remediation: install it — `pipx install git-filter-repo==2.47.0`, or "
+    "`uv tool install git-filter-repo==2.47.0` where there is no pipx; with "
+    "neither, `brew install git-filter-repo`, or `sudo apt-get install -y "
+    "pipx && pipx install git-filter-repo==2.47.0 && pipx ensurepath` (`dnf` "
+    "for `apt-get` on Fedora), or `sudo pacman -S --needed git-filter-repo` "
+    "on Arch; it is one file on PATH named `git-filter-repo`. `pipx install "
+    "openreposhape` brings it for the `adopt-project` command it places. It "
+    "is NOT vendored here on purpose: history extraction has one correct "
+    "implementation and a copy of it is a second one that drifts."
 )
 
 
@@ -11321,6 +11370,29 @@ def answered_path_record(policy: PathPolicy, entries: list, tree: list,
     again by `ask_about_submodules` and `ask_about_refused_paths` as `plan`
     asks them. A question of the walk above is recorded as before.
 
+    AND AGAINST WHAT EACH LEG'S OWN WALK SAYS (#801). The doctor walks a
+    leg, not the source, and `walk` folds a directory by the files under it
+    in THAT leg. A directory the source's walk folds, split by hand, leaves
+    part of it in each leg, and a part may fold another way or not at all:
+    `engine/` is 3 of 4 `.py`, exactly the 75% `extension_majority:`, so it
+    folds to code; with `engine/c.py` answered `spec`, the code leg's
+    `engine/` is 2 of 3, which does not fold, and there `engine/x.md` is
+    spec by its own extension. Answers against their extensions can fold a
+    directory in a leg as the source's walk did not, over an entry beside
+    them left as `plan` wrote it. So `walk` is run again over each leg's
+    own files -- the paths `_answered_legs` keeps in it, gitlinks left out,
+    as the doctor runs it over the leg -- and an entry covering a path that
+    walk does not put in that leg is recorded too, whether the walk asks of
+    the path or puts it elsewhere. A row is added only where the doctor's
+    walk of that leg disputes the path. A plan left as `plan` wrote it,
+    over a source with no gitlink, gets none: each entry is whole in the
+    leg `plan` gave it, and no directory above one can fold to another leg
+    there, since at most a quarter of an entry's files read as one. Before
+    it walks, the doctor also sets aside the files every repository carries
+    (`everywhere_patterns`: names at the top of a leg, and `.github/`),
+    which change how no other directory folds, and a name no report can
+    carry, which can: this walk keeps both, as the one above does.
+
     A SOURCE WITH NO SUCH ENTRY GETS "" and so the `project.yaml` it always
     got, byte for byte.
     """
@@ -11333,14 +11405,31 @@ def answered_path_record(policy: PathPolicy, entries: list, tree: list,
             policy, [(path, size) for path, _, _, size in tree]), tree),
         tree)}
     answered = _answered_legs(entries, [path for path, _ in files])
+    in_its_leg = _walked_in_each_leg(policy, files, answered)
     kept = sorted({entry: leg for path, (leg, entry) in answered.items()
                    if leg in EXTRACTED_LEGS and entry != GITMODULES
-                   and leg != _walked_leg(called, path)
-                   and (_walked_leg(called, path) is None
-                        or leg != _walked_leg(shown, path))}.items())
+                   and (leg != in_its_leg.get(path)
+                        or (leg != _walked_leg(called, path)
+                            and (_walked_leg(called, path) is None
+                                 or leg != _walked_leg(shown, path))))
+                   }.items())
     return _record_block(ANSWER_RECORD_PREAMBLE,
                          [(entry, leg, entry) for entry, leg in kept],
                          entries, commit)
+
+
+def _walked_in_each_leg(policy: PathPolicy, files: list,
+                        answered: dict) -> dict:
+    """`{path: leg}` for each of `files` that `answered` keeps in a leg:
+    the leg `walk` gives it over THAT leg's files alone, as the doctor
+    walks the leg after the split; None for a question (#801)."""
+    out: dict = {}
+    for role in EXTRACTED_LEGS:
+        held = [(path, size) for path, size in files
+                if path in answered and answered[path][0] == role]
+        called = {entry.path: entry.leg for entry in walk(policy, held)}
+        out.update((path, _walked_leg(called, path)) for path, _ in held)
+    return out
 
 
 def _walked_leg(called: dict, path: str) -> str | None:
@@ -13325,7 +13414,10 @@ def main(argv: list[str] | None = None) -> int:
                            "Given with no --pin to read it, the flag is "
                            "refused as `pin-source-unused`; an empty value "
                            "is refused as `pin-source-no-path`, and `.` "
-                           "means this directory.")
+                           "means this directory. `pin-source-not-a-clone` "
+                           "refuses any other path than a clone's top level, "
+                           "or a bare clone's, where a --pin's digest is "
+                           "read.")
     plan.add_argument("--allow-empty-leg", action="append", default=[],
                       choices=EXTRACTED_LEGS,
                       help="record in the plan that this leg having NO path "

@@ -22,6 +22,12 @@ creates nothing whatever the answer. The real runs stand in a FAKE checkout
 under the test's own temporary directory (the two paths the detection reads,
 and nothing else), so a regression writes there and never into the
 repository under test. NO NETWORK: every remote is `--local-remote-dir`.
+
+THE PATHS ARE NAMED SAFE TO SHOW (#766). The plan's `folder` and `landing`
+rows, `family-landing-in-standard` and `family-holder-already-here` name a
+path under the directory the person gave or stands in, and printed it as it
+was. Each names it as `repo_shape.shown_path` does now: as it is, or as
+`repr` spells it where a character in it is not printable.
 """
 
 from __future__ import annotations
@@ -34,6 +40,10 @@ import sys
 import pytest
 
 from conftest import REPO, run_script
+#: The names no line may print raw, and how a line spells them (#766).
+from conftest import (PRINTABLE_NAME, SHOWN_NAMES, UNSAFE_NAMES,
+                      assert_shown_safe, named_as, refusal_detail,
+                      spelt, unsafe_folder)
 
 sys.path.insert(0, str(REPO / "scripts"))
 from repo_shape import PYTHON  # noqa: E402
@@ -196,3 +206,114 @@ def test_the_printed_next_runs_from_where_init_was_run(tmp_path, where):
                             check=False)
     assert helped.returncode == 0, helped.stderr
     assert helped.stdout.startswith("usage: family.py add"), helped.stdout
+
+
+# --- #766: the paths the plan and `_landing`'s refusals name ----------------
+
+def planned_rows(stdout: str) -> list[str]:
+    """The plan's `folder` and `landing` rows, in the order printed."""
+    return [line for line in stdout.splitlines()
+            if line.startswith(("folder ", "landing "))]
+
+
+@pytest.mark.parametrize("name", UNSAFE_NAMES)
+@pytest.mark.parametrize("flag", ["--work-dir", "--into"])
+def test_the_plan_names_the_folder_and_the_holder_safe_to_show(
+        tmp_path, flag, name):
+    """#766's first line, measured on #692's head: the plan printed the
+    family folder and the holder as they were, on stdout before any
+    refusal. A `--work-dir` or `--into` holding a line break and then
+    `WARNING forged-line: pwned` printed that line as a line of the plan,
+    on a dry run and on a run refused after the plan, and an ESC reached the
+    terminal. Each row names its path as `repr` spells it now, in both
+    runs, and nothing else on either stream holds the name raw."""
+    place = unsafe_folder(tmp_path, name).resolve()
+    if flag == "--work-dir":
+        holder = place / NAME
+        rows = [f"landing      {spelt(holder)}   (--work-dir: no family "
+                "folder)"]
+    else:
+        holder = place / NAME / NAME
+        rows = [f"folder       {spelt(place / NAME)}   a plain folder, NOT a "
+                "repository",
+                f"landing      {spelt(holder)}   the holder clone, inside it"]
+    dry = init(tmp_path, tmp_path, flag, str(place), "--dry-run")
+    assert dry.returncode == 0, dry.stdout + dry.stderr
+    # A file where the holder goes: the real run prints the same plan, and
+    # is refused after it (`family-target-exists`, #692's spelling).
+    holder.parent.mkdir(parents=True, exist_ok=True)
+    holder.write_bytes(b"somebody's\n")
+    real = init(tmp_path, tmp_path, flag, str(place))
+    assert real.returncode == 2, real.stdout + real.stderr
+    assert refusal_detail(real.stderr, "family-target-exists") == [
+        f"REFUSED family-target-exists: {spelt(holder)} already exists and "
+        "is a file, not a folder"]
+    for result in (dry, real):
+        assert planned_rows(result.stdout) == rows, result.stdout
+        assert_shown_safe(result.stdout, result.stderr)
+
+
+def test_the_plan_names_a_printable_folder_byte_for_byte(tmp_path):
+    """#766 changes no row a person could read before: a space and a letter
+    that is not ASCII are printable, so the folder and the holder are named
+    as they are, with no quotes."""
+    place = tmp_path / PRINTABLE_NAME
+    place.mkdir()
+    place = place.resolve()
+    result = init(tmp_path, tmp_path, "--into", str(place), "--dry-run")
+    assert result.returncode == 0, result.stdout + result.stderr
+    assert planned_rows(result.stdout) == [
+        f"folder       {place / NAME}   a plain folder, NOT a repository",
+        f"landing      {place / NAME / NAME}   the holder clone, inside it"]
+
+
+@pytest.mark.parametrize("name", UNSAFE_NAMES)
+def test_landing_in_a_checkout_names_its_three_paths_safe_to_show(
+        tmp_path, name):
+    """#766: `family-landing-in-standard` named the holder, the checkout and
+    where `--into ..` lands as they were, each under the directory the
+    person stands in, so a checkout under a name with a line break printed
+    a forged line in the detail and in the remedy. Each is named as `repr`
+    spells it, by the dry run and the real run alike, and the whole refusal
+    is safe to show: `--into ..` holds no name."""
+    checkout = fake_checkout(unsafe_folder(tmp_path, name) / "std").resolve()
+    for extra in (("--dry-run",), ()):
+        result = init(checkout, tmp_path, *extra)
+        assert result.returncode == 2, result.stdout + result.stderr
+        assert result.stdout == ""
+        assert refusal_detail(result.stderr, CODE) == [
+            f"REFUSED {CODE}: with neither --into nor --work-dir the holder "
+            "lands where you are standing, at "
+            f"{spelt(checkout / NAME / NAME)}, which is inside "
+            f"{spelt(checkout)}, a checkout of openRepoShape itself (it "
+            "holds scripts/family.py and templates/family-root/). "
+            "The family would be part of the standard's tree, and `make "
+            "siblings` would clone every member into it too. Nothing was "
+            "created, and `--dry-run` refuses the same."]
+        assert ("Remediation: pass `--into ..` to land it beside this "
+                f"checkout, at {spelt(checkout.parent / NAME / NAME)}, or "
+                "`--into <dir>`" in result.stderr), result.stderr
+        assert_shown_safe(result.stdout, result.stderr)
+    assert sorted(path.name for path in checkout.iterdir()) == [
+        "scripts", "templates"]
+
+
+@pytest.mark.parametrize("name", SHOWN_NAMES)
+def test_a_family_folder_already_here_is_named_safe_to_show(tmp_path, name):
+    """#766: `family-holder-already-here` named `--into` and the holder in
+    it as they were. The detail names both as `repr` spells them, on the
+    one line it is, and a printable path as it is, byte for byte, with no
+    quotes (rv766's P8 and P9). The remedy's `add` line is a command to
+    paste, quoted for a shell as it was (`_add_command`), and is not this
+    row's."""
+    into = unsafe_folder(tmp_path, name).resolve() / NAME
+    (into / NAME).mkdir(parents=True)
+    (into / NAME / "family.yaml").write_bytes(b"name: Orbit\n")
+    result = init(tmp_path, tmp_path, "--into", str(into), "--dry-run")
+    assert result.returncode == 2, result.stdout + result.stderr
+    assert result.stdout == ""
+    assert refusal_detail(result.stderr, "family-holder-already-here") == [
+        "REFUSED family-holder-already-here: "
+        f"{named_as(into, name)} is already the {NAME} family folder and "
+        f"its holder is at {named_as(into / NAME, name)}, so there is "
+        "nothing to init"]
