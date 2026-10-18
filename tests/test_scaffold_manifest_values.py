@@ -631,13 +631,15 @@ def test_the_longest_name_a_disk_keeps_is_still_accepted(tmp_path, monkeypatch,
     """246 characters is `<project>-spec.git` at exactly 255 bytes. A dry run
     only: a real tree this deep is a Windows path the OS will not open.
     Without `--local-remote-dir` the dry run asks GitHub whether the three
-    exist (#537), so that half runs in process and asks a stand-in."""
+    exist (#537), so that half runs in process and asks a stand-in. There
+    the longest is GitHub's, not the disk's (#838): 95 characters, with an
+    `--id` short enough for the topic (`tests/test_github_name_limits.py`)."""
     result = scaffold(tmp_path, "--project", "N" * 246, "--dry-run")
     assert result.returncode == 0, result.stderr + result.stdout
     code, _out, err, asked = scaffold_dry_run_on_github(
-        monkeypatch, capsys, *IDENTITY, "--project", "N" * 250)
+        monkeypatch, capsys, *IDENTITY, "--project", "N" * 95, "--id", "n")
     assert code == 0, err
-    assert asked == [f"{ORG}/{'N' * 250}{tail}" for tail in
+    assert asked == [f"{ORG}/{'N' * 95}{tail}" for tail in
                      ("", "-spec", "-code")]
 
 

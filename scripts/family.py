@@ -306,6 +306,7 @@ class Family:
                 "family-wrong-kind",
                 f"{path}: kind is {data.get('kind')!r}, expected "
                 "'family-manifest'")
+        _checked_members_readable(path, data.get("members"))
         return cls(root, data)
 
     @property
@@ -415,6 +416,44 @@ class Family:
                 "hand this once and commit that (`git commit -- "
                 f"{MANIFEST}`), then run the same command again.")
         return "\n".join(out) + "\n"
+
+
+#: What `add`, `bump` and `remove` say under `family-members-unreadable`.
+MEMBERS_UNREADABLE = (
+    "Remediation: `members:` is the list of rows `family.py add` writes, one "
+    "mapping per member, and this tool rewrites no `members:` it cannot read. "
+    "The holder's own `scripts/validate-family.py` names this same fault: "
+    f"mend `{MANIFEST}` by hand, commit it (`git commit -- {MANIFEST}`), then "
+    "run the same command again.")
+
+
+def _checked_members_readable(path: Path, members) -> None:
+    """Refuse a `members:` that is not a list, or that holds an entry that
+    is not a mapping, in the words of the holder's own `validate-family.py`
+    (#864): its `family-members-unreadable` refusal for the first, its
+    `member-row` finding for the second, the value spelled as it spells it.
+
+    ONCE, IN `Family.open`, so every verb stops here, before it fetches,
+    mounts or rewrites anything, the dry runs alike. Each verb read the rows
+    as `members or []`: `members: 5` ended `add`, `bump` and `remove` in a
+    `TypeError`, `openXdox` or `[5]` was a family with no members, so a
+    member mounted there was `member-unknown`, and in a list of rows and a
+    `5` the rows were read and the `5` dropped, so all three exited 0 and
+    committed a `family.yaml` without it. A `members:` this tool cannot read
+    is never one it rewrites. Absent or null is no members, as the gate
+    reads it, and is left to the verbs.
+    """
+    if members is None:
+        return
+    if not isinstance(members, list):
+        raise Refusal("family-members-unreadable",
+                      f"{path}: `members:` is {members!r}, expected a list",
+                      MEMBERS_UNREADABLE)
+    unread = [f"a member is not a mapping: {row!r}" for row in members
+              if not isinstance(row, dict)]
+    if unread:
+        raise Refusal("family-members-unreadable",
+                      f"{path}: {'; '.join(unread)}", MEMBERS_UNREADABLE)
 
 
 def _member_id(value) -> str:

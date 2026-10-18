@@ -25,7 +25,10 @@ WHAT IT DOES, in order:
       A fetch that fails is REPORTED and does not stop the run: the members
       that did arrive are still worth bootstrapping, and a family that
       refused to do anything because one member is unreachable would be worse
-      than one that says which.
+      than one that says which. The advice to set a credential is given only
+      where git asked for one: not where its init died at a gitlink it has
+      no url for, nor where it read nothing from `.gitmodules`, both below,
+      since it fetched nothing then (#839).
 
       "every member and leg fetched" is said only where git exited 0 AND
       every row's member is checked out (#648). A member left NOT CHECKED
@@ -40,14 +43,22 @@ WHAT IT DOES, in order:
       for (a stray case variant, a member mounted by hand), since git's
       init dies at the first such gitlink it asks about, before it checks
       out any member. Which section and which url git reads is its own
-      parser's answer, not `git config`'s (`gitmodules_sections`), and
-      while a merge leaves `.gitmodules` unmerged in the index git reads
-      none at all: every such member is said to be that, and the cure is
-      the file resolved and added. Git exits 0 over the second where a
-      recursive clone ran first, and 128 (`No url found for submodule
-      path`) in a plain clone; a missing credential exits non-zero too,
-      so what the holder records is the test, never git's words. The line
-      says what cures each (`cures`):
+      parser's answer, not `git config`'s (`gitmodules_sections`), from
+      the work tree's file or, where the work tree has none, the index's,
+      then HEAD's, and while a merge leaves `.gitmodules` unmerged in the
+      index git reads none at all: every such member is said to be that,
+      and the cure is the file resolved and added. Where the file gives a
+      submodule a value git dies on as it reads it (`refused_value`, #768),
+      every such member is said to be that, naming each key and its value,
+      and the cure is the key given a value git takes or its line taken
+      out; where every member was checked out the run fails all the same,
+      since git updated none of them. A work tree file git cannot parse at
+      all, a conflict marker or an open quote left in it, is said and
+      failed on the same way, and its cure is the file mended by hand. Git
+      exits 0 over the second where a recursive clone ran first, and 128
+      (`No url found for submodule path`) in a plain clone; a missing
+      credential exits non-zero too, so what the holder records is the
+      test, never git's words. The line says what cures each (`cures`):
       `validate-family.py` names the commit for the first two; for the
       fourth it prints the `git submodule update --init --checkout` that
       checks the member out whatever the clone chose. For the third and
@@ -64,10 +75,15 @@ WHAT IT DOES, in order:
       review-authority readout. This command does not reimplement any of
       that; it walks the members `family.yaml` names and calls theirs.
       `--members-make validate` runs `make validate` instead, which is what
-      the family Makefile's `validate` target uses.
+      the family Makefile's `validate` target uses. A member whose command
+      fails is named with that command's exit code, read from make's
+      `Error <code>` line, since make exits 2 for any command that fails,
+      so a member's finding (1) and its refusal (2) are told apart, and
+      from a failure of make's own, which prints no such line (#839).
 
   (c) EXITS 0 unless a member's own command failed, or (a) left a member not
-      checked out that no credential would check out. Any other member that
+      checked out that no credential would check out, or found a line or a
+      value in `.gitmodules` that git cannot read (#768). Any other member that
       is not checked out is REPORTED and skipped, not a failure: it is the
       state a missing credential leaves, and it is already reported in (a).
       Where (a) cannot start git, the run STOPS there, exit 2, refused
@@ -82,6 +98,7 @@ from __future__ import annotations
 
 import argparse
 import os
+import re
 import shlex
 import shutil
 import subprocess
@@ -104,13 +121,43 @@ GITLINK_MODE = b"160000"
 
 #: Why (a) left a row's member NOT CHECKED OUT where no credential would
 #: check it out (#648), in the order `unfetchable` asks. `STOPPED` is
-#: filled with the gitlink git's init died at (`init_stop`).
+#: filled with the gitlink git's init died at (`init_stop`), and `REFUSED`
+#: with each entry of `.gitmodules` git refused (`reason`). `UNREADABLE` is
+#: a work tree file git cannot parse at all (#768).
 UNMERGED = f"git reads no {GITMODULES} while a merge leaves it unmerged"
+REFUSED = f"git cannot read {GITMODULES}: {{}}"
+UNREADABLE = f"git cannot parse {GITMODULES}"
 NO_GITLINK = "no gitlink is recorded at that path"
 NO_SECTION = f"no section of {GITMODULES} gives that path"
 NO_URL = "git has no url for that path"
 EXITED_0 = "git exited 0 and checked nothing out there"
 STOPPED = "git stopped at {}, a gitlink it has no url for"
+
+#: What git 2.43 dies on in a `.gitmodules` it reads (#768), as
+#: `parse_config` in its submodule-config.c reads a submodule's key: these
+#: keys with no value (a `branch` with none crashes it, `BRANCH_READ_SINCE`),
+#: and an `update` other than these four. A `shallow` must be a boolean and
+#: a `fetchrecursesubmodules` a boolean or `on-demand` (`git_bool`).
+NO_VALUE_REFUSED = frozenset({"path", "url", "update", "ignore", "branch"})
+#: The first git that reads a `branch` with no value as it reads a `url`
+#: with none, `missing value` and `bad config line`, which dies in the work
+#: tree's file and ends the reading of the index's or HEAD's, a blob: 2.43.1,
+#: and 2.44.0 on its main line, by their submodule-config.c, and 2.47.1 as
+#: measured. A git before it crashes reading any `.gitmodules` that gives
+#: one, a blob too: 2.43.0 as measured (exit 139), and 2.42.4 and 2.39.5 by
+#: their source, which has the same `xstrdup` of no value
+#: (`crashes_on_branch`).
+BRANCH_READ_SINCE = (2, 43, 1)
+#: `git version 2.43.0`, `git version 2.45.1.windows.1`, `git version
+#: 2.39.3 (Apple Git-146)`: three numbers, since the third decides here.
+GIT_VERSION_RE = re.compile(r"git version (\d+)\.(\d+)\.(\d+)")
+UPDATE_VALUES = ("none", "checkout", "rebase", "merge")
+#: What git takes for a key whose value it refused, as (a)'s cure says it.
+TAKES = {"update": "one of `none`, `checkout`, `rebase` or `merge`",
+         "shallow": "a boolean, `true` or `false`",
+         "fetchrecursesubmodules": "a boolean or `on-demand`",
+         "ignore": "one of `untracked`, `dirty`, `all` or `none`",
+         "path": "a path", "url": "a url", "branch": "a branch name"}
 
 #: The two environment variables a leg/member credential may arrive in, in the
 #: order the `validate` workflow resolves them. An App-minted installation
@@ -134,11 +181,18 @@ def credential() -> tuple[str, str]:
 def fetch_members(root: Path, rows: list[dict]) -> list[str]:
     """(a) `git submodule update --init --recursive`, authenticated or not.
 
+    Where every member is checked out and git died on a value in
+    `.gitmodules`, or on a work tree file it cannot parse, so it updated
+    none of them, the one failure line it returns is for `.gitmodules`
+    (#768).
+
     Returns a failure line for each of `rows` whose member it leaves not
     checked out where no credential would check it out (`unfetchable`), for
     the run to end FAILED on (#648); every member and leg is said to be
-    fetched only where there is none and git exited 0. Raises the
-    `git-not-runnable` refusal where git cannot be started (#694)."""
+    fetched only where there is none and git exited 0. The advice to set a
+    credential is printed only where git asked for one
+    (`credential_advice`, #839). Raises the `git-not-runnable` refusal
+    where git cannot be started (#694)."""
     source, token = credential()
     args = ["git"]
     if token:
@@ -157,30 +211,63 @@ def fetch_members(root: Path, rows: list[dict]) -> list[str]:
         if refusal is None:
             raise
         raise refusal from exc
-    if proc.returncode != 0:
-        # The token can appear in git's own error text (it is in the URL it
-        # tried), so the output is scrubbed before it is printed.
-        message = (proc.stderr + proc.stdout).strip()
-        if token:
-            message = message.replace(token, "<redacted>")
-        print(f"  FETCH INCOMPLETE (git exit {proc.returncode}) using "
-              f"credential source '{source}':\n{message}", file=sys.stderr)
-        print("  If the members are PRIVATE, set SHAPE_LEGS_TOKEN (a "
-              "fine-grained PAT with contents:read on them) or export an "
-              "App-minted SHAPE_LEGS_APP_TOKEN, then re-run. What did arrive "
-              "is bootstrapped below.", file=sys.stderr)
     left, stopper, modules = unfetchable(root, rows, proc.returncode == 0)
+    if proc.returncode != 0:
+        fetch_incomplete(proc, source, token,
+                         credential_advice(bool(left), stopper, modules))
     if left:
         print("  NOT CHECKED OUT, and not for want of a credential: "
-              + ", ".join(f"{spelled(path)} ("
-                          + (STOPPED.format(spelled(stopper))
-                             if why == STOPPED else why) + ")"
+              + ", ".join(f"{spelled(path)} ({reason(why, stopper, modules)})"
                           for _, path, why in left)
               + ". " + cures(left, stopper, rows, modules), file=sys.stderr)
+    elif modules.refused or modules.unreadable:
+        why = REFUSED if modules.refused else UNREADABLE
+        print("  NO MEMBER UPDATED, and not for want of a credential: "
+              + reason(why, stopper, modules) + ". "
+              + cures(left, stopper, rows, modules), file=sys.stderr)
+        return [f"{GITMODULES} (git cannot read it)"]
     elif proc.returncode == 0:
         print("  every member and leg fetched")
     return [f"{spelled(row.get('project') or '?')} (not checked out)"
             for row, _, _ in left]
+
+
+def fetch_incomplete(proc: subprocess.CompletedProcess, source: str,
+                     token: str, advice: str) -> None:
+    """(a)'s report of a `git submodule update` that exited non-zero: git's
+    own words, then `advice`, where there is any (`credential_advice`)."""
+    # The token can appear in git's own error text (it is in the URL it
+    # tried), so the output is scrubbed before it is printed.
+    message = (proc.stderr + proc.stdout).strip()
+    if token:
+        message = message.replace(token, "<redacted>")
+    print(f"  FETCH INCOMPLETE (git exit {proc.returncode}) using "
+          f"credential source '{source}':\n{message}", file=sys.stderr)
+    if advice:
+        print(advice, file=sys.stderr)
+
+
+def credential_advice(denied: bool, stopper: str | None,
+                      modules: Gitmodules) -> str:
+    """(a)'s advice to set a credential, or nothing where git asked for none
+    (#839): where its init died at a gitlink it has no url for (`stopper`),
+    or it read nothing from `.gitmodules`, a merge leaving it unmerged, a
+    value git dies on or a file it cannot parse, it fetched nothing. Every
+    row (a) then leaves not checked out is said to be no credential's, and
+    the advice beside that was its denial (w768's candidate 1 on #819).
+    Anywhere else a fetch git made failed, a member's, or a leg's in a
+    member checked out, and the advice stands; where a row is said to be no
+    credential's beside it (`denied`), it is for the members that line does
+    not name."""
+    if (stopper is not None or modules.unmerged or modules.refused
+            or modules.unreadable):
+        return ""
+    which = ("the members the next line does not name" if denied
+             else "the members")
+    return (f"  If {which} are PRIVATE, set SHAPE_LEGS_TOKEN (a fine-grained "
+            "PAT with contents:read on them) or export an App-minted "
+            "SHAPE_LEGS_APP_TOKEN, then re-run. What did arrive is "
+            "bootstrapped below.")
 
 
 def git_not_started(exc: OSError) -> Refusal | None:
@@ -215,6 +302,12 @@ def cures(left: list[tuple[dict, str, str]], stopper: str | None,
 
     - A `.gitmodules` a merge left unmerged in the index, which git reads
       nothing from (`Gitmodules.unmerged`): the file resolved and added.
+    - A `.gitmodules` that gives a value git dies on (`Gitmodules.refused`,
+      #768): each key given a value git takes (`TAKES`), or its line taken
+      out, and the file committed, with `validate-family.py --no-members`,
+      whose `gitmodules-value-refused` prints the commands.
+    - A work tree `.gitmodules` git cannot parse (`Gitmodules.unreadable`):
+      the file mended by hand and committed.
     - A gitlink or a section the holder lacks at the row's path:
       `validate-family.py`, which names it and the commit that cures it,
       `member-gitlink-absent` (with the move, for a gitlink recorded only
@@ -237,10 +330,7 @@ def cures(left: list[tuple[dict, str, str]], stopper: str | None,
       clone chose. `--init` with the path registers a member a subset
       clone left out, and `--checkout` overrides an `update = none`."""
     whys = {why for _, _, why in left}
-    said = []
-    if UNMERGED in whys:
-        said.append(f"Resolve the merge in {GITMODULES} and `git add "
-                    f"{GITMODULES}`, then run this again.")
+    said = gitmodules_cures(whys, modules)
     if whys & {NO_GITLINK, NO_SECTION}:
         said.append(f"`{PYTHON} scripts/validate-family.py` names the cause "
                     "and the commit that cures it.")
@@ -280,6 +370,45 @@ def cures(left: list[tuple[dict, str, str]], stopper: str | None,
     return " ".join(said)
 
 
+def gitmodules_cures(whys: set[str], modules: Gitmodules) -> list[str]:
+    """`cures`' sentences for a `.gitmodules` git reads nothing from, each
+    in the order `cures` says them (#648, #768): a merge left unmerged,
+    for a row `whys` names so; each value git dies on; a work tree file
+    git cannot parse."""
+    said = []
+    if UNMERGED in whys:
+        said.append(f"Resolve the merge in {GITMODULES} and `git add "
+                    f"{GITMODULES}`, then run this again.")
+    if modules.refused:
+        given = "; ".join(
+            f"give `{spelled(key)}` a value git takes, "
+            f"{TAKES[key.rpartition('.')[2]]}, or take that line out"
+            for key in dict.fromkeys(key for key, _ in modules.refused))
+        said.append(f"{given[:1].upper()}{given[1:]}, and commit "
+                    f"{GITMODULES}. `{PYTHON} "
+                    "scripts/validate-family.py --no-members` prints the "
+                    "commands.")
+    if modules.unreadable:
+        said.append(f"Mend {GITMODULES} by hand (`git config -f "
+                    f"{GITMODULES} --list` says where it breaks), and "
+                    "commit it.")
+    return said
+
+
+def reason(why: str, stopper: str | None, modules: Gitmodules) -> str:
+    """`why` as (a)'s line says it: `STOPPED` names the gitlink git stopped
+    at, and `REFUSED` each entry of `.gitmodules` git refused, as "`<key>`
+    is `<value>`", or "has no value" (#768)."""
+    if why == STOPPED:
+        return STOPPED.format(spelled(stopper))
+    if why == REFUSED:
+        return REFUSED.format(" and ".join(
+            f"`{spelled(key)}` " + ("has no value" if value is None
+                                     else f"is `{spelled(value)}`")
+            for key, value in modules.refused))
+    return why
+
+
 class Gitmodules(NamedTuple):
     """`.gitmodules` as (a) asks it (#648), read by `gitmodules_sections`.
 
@@ -289,92 +418,229 @@ class Gitmodules(NamedTuple):
     `{path: name}`, the section git reads for each path, and `urls` is
     `{name: url}`, the url git takes from each, as git's own parser has
     them. `unmerged` says a merge left the file unmerged in the index, and
-    then git reads nothing from it, and the three are empty."""
+    `refused` holds each `(submodule.<name>.<key>, value)` git dies on as
+    it reads the file, None for a key with no value (#768): git reads
+    nothing from it then, and the three are empty. `unreadable` says the
+    work tree's file is one `git config --list` cannot parse, which git
+    dies reading: the three are empty then too."""
 
     given: Counter
     read: dict[str, str]
     urls: dict[str, str]
     unmerged: bool = False
+    refused: tuple[tuple[str, str | None], ...] = ()
+    unreadable: bool = False
 
 
 def gitmodules_sections(root: Path) -> Gitmodules:
     """`.gitmodules` as `git submodule update` reads it: the work tree's
-    file, which a fresh clone takes from HEAD. Nothing where there is no
-    such file, or one git cannot read: git has no url for any submodule
-    then either. Nothing, and `unmerged`, where the index holds the file
-    only at a merge's conflict stages (`git ls-files -u`): git reads no
+    file, which a fresh clone takes from HEAD, or, where the work tree has
+    none, as a deletion not yet committed or a sparse checkout leaves it,
+    the index's, then HEAD's (`gitmodules_source`, #768). Nothing where
+    none holds one, or git cannot read it: git has no url for any
+    submodule then either. Nothing, and `unreadable`, where that is the
+    work tree's file and `git config --list` cannot parse it: git dies
+    reading it (`bad config line`), before it checks out any member.
+    Nothing, and `unmerged`, where the index holds the file only at a
+    merge's conflict stages (`git ls-files -s`): git reads no
     `.gitmodules` at all then, whatever the work tree holds
     (`repo_read_gitmodules`), and its init dies at the first gitlink.
+    Nothing, and `refused`, where git dies on an entry as it reads the
+    file (`refused_value`, #768), before it checks out any member.
 
-    `read` and `urls` keep git 2.43's own rules (submodule-config.c), which
-    drop what `git config --list` keeps. Entry by entry, in file order:
-
-    - a section whose name is empty or has a `..` component, split on `/`
-      and on a backslash, is ignored whole (git warns `ignoring suspicious
-      submodule name`);
-    - a `path` or `url` that begins with `-` is dropped, and the value
-      before it stands (`may be interpreted as a command-line option`);
-    - where two sections give one path, the later in the file decides, as
-      a later value in one section replaces an earlier. A section that
-      gives a path again lets go of the one it gave, even where a later
-      section gave that one too: git then reads no section there."""
+    `read` and `urls` keep git's own rules (submodule-config.c), which
+    drop what `git config --list` keeps (`gitmodules_entries`,
+    `read_sections`)."""
     nothing = Gitmodules(Counter(), {}, {})
+    source = gitmodules_source(root)
+    if source is None:
+        return nothing._replace(unmerged=True)
     try:
-        stages = git_out(["ls-files", "-u", "-z", "--", GITMODULES],
+        listed = git_out(["config", "-z", *source, "--list"], cwd=root,
+                         binary=True)
+    except Refusal:
+        return nothing._replace(unreadable=os.path.isfile(root / GITMODULES))
+    entries = gitmodules_entries(root, listed, source[0] == "--blob")
+    refused = tuple(dict.fromkeys(
+        (f"submodule.{name}.{key}", value)
+        for name, key, value, ignored in entries
+        if not ignored and refused_value(root, key, value)))
+    if refused:
+        return nothing._replace(refused=refused)
+    return read_sections(entries)
+
+
+def gitmodules_source(root: Path) -> list[str] | None:
+    """What `git config` is given to read the `.gitmodules` git reads
+    (`config_from_gitmodules`, #768): `--file` for the work tree's, where
+    there is one, else `--blob` for the index's at stage 0, else HEAD's.
+    None where the index holds it only at a merge's conflict stages."""
+    try:
+        stages = git_out(["ls-files", "-s", "-z", "--", GITMODULES],
                          cwd=root, binary=True)
     except Refusal:
         stages = b""
-    if any(record.partition(b"\t")[2] == GITMODULES.encode()
-           for record in stages.split(b"\0")):
-        return nothing._replace(unmerged=True)
-    if not os.path.lexists(root / GITMODULES):
-        return nothing
-    try:
-        listed = git_out(["config", "-z", "--file", GITMODULES, "--list"],
-                         cwd=root, binary=True)
-    except Refusal:
-        return nothing
-    sections: dict[str, dict[str, str]] = {}
-    read: dict[str, str] = {}
-    held: dict[str, str] = {}
-    urls: dict[str, str] = {}
+    source = ["--blob", f"HEAD:{GITMODULES}"]
+    for record in stages.split(b"\0"):
+        meta, _, name = record.partition(b"\t")
+        fields = meta.split()
+        if name != GITMODULES.encode() or len(fields) != 3:
+            continue
+        if fields[2] != b"0":
+            return None
+        source = ["--blob", fields[1].decode("ascii")]
+    if os.path.lexists(root / GITMODULES):
+        return ["--file", GITMODULES]
+    return source
+
+
+def gitmodules_entries(root: Path, listed: bytes, blob: bool
+                       ) -> list[tuple[str, str, str | None, bool]]:
+    """`(name, key, value, ignored)` for each `submodule.<name>.<key>` that
+    `git config -z --list` printed in `listed`, in file order, as git's
+    submodule reader meets them: None for a key with no value, and
+    `ignored` for a section git ignores whole, whose name is empty or has
+    a `..` component, split on `/` and on a backslash (git warns `ignoring
+    suspicious submodule name`), a value git would die on included. In the
+    index's or HEAD's file, a `blob`, git reads nothing after a key it
+    refuses with no value (`ends_blob_reading`)."""
+    entries: list[tuple[str, str, str | None, bool]] = []
     for record in listed.split(b"\0"):
-        key, _, value = record.decode("utf-8",
-                                      "surrogateescape").partition("\n")
+        key, valued, value = record.decode("utf-8",
+                                           "surrogateescape").partition("\n")
         section, _, variable = key.rpartition(".")
         if not section.startswith("submodule."):
             continue
         name = section[len("submodule."):]
-        sections.setdefault(name, {})[variable] = value
-        if (not name or ".." in name.replace("\\", "/").split("/")
-                or value.startswith("-")):
+        ignored = not name or ".." in name.replace("\\", "/").split("/")
+        if blob and not ignored and not valued and ends_blob_reading(
+                root, variable):
+            break
+        entries.append((name, variable, value if valued else None, ignored))
+    return entries
+
+
+def ends_blob_reading(root: Path, key: str) -> bool:
+    """Whether a `key` with no value ends git's reading of the index's or
+    HEAD's `.gitmodules`, a blob, where `bad config line` is an error and
+    no die (#768): each key git refuses with no value, but a `branch` only
+    where git does not crash on it (`crashes_on_branch`); before 2.43.1
+    git crashes on it there too, and `refused_value` names it."""
+    return key in NO_VALUE_REFUSED and (key != "branch"
+                                        or not crashes_on_branch(root))
+
+
+def read_sections(entries: list[tuple[str, str, str | None, bool]]
+                  ) -> Gitmodules:
+    """`Gitmodules` of `entries` (`gitmodules_entries`) where git refuses
+    none. `given` counts every section that gives a path, an ignored one
+    too. `read` and `urls` keep git's rules: a section git ignores gives
+    neither; a `path` or `url` that begins with `-` is dropped, and the
+    value before it stands (`may be interpreted as a command-line
+    option`); where two sections give one path, the later in the file
+    decides, as a later value in one section replaces an earlier, and a
+    section that gives a path again lets go of the one it gave, even where
+    a later section gave that one too: git then reads no section there."""
+    sections: dict[str, dict[str, str]] = {}
+    read: dict[str, str] = {}
+    held: dict[str, str] = {}
+    urls: dict[str, str] = {}
+    for name, key, value, ignored in entries:
+        sections.setdefault(name, {})[key] = "" if value is None else value
+        if ignored or value is None or value.startswith("-"):
             continue
-        if variable == "path":
+        if key == "path":
             if name in held:
                 read.pop(held[name], None)
             held[name] = value
             read[value] = name
-        elif variable == "url":
+        elif key == "url":
             urls[name] = value
     return Gitmodules(Counter(keys["path"] for keys in sections.values()
                               if "path" in keys), read, urls)
 
 
-def submodule_config(root: Path) -> set[str]:
+def refused_value(root: Path, key: str, value: str | None) -> bool:
+    """Whether git 2.43 dies reading a `.gitmodules` that gives a submodule
+    `value` for `key`, None for no value (#768), as `parse_config` in its
+    submodule-config.c reads the key: a `path`, `url`, `update` or
+    `ignore` with no value (`bad config line`), and a `branch` with none
+    (it crashes, and git 2.43.1 and later refuse it as they refuse a `url`
+    with none); an `update` other than `none`, `checkout`, `rebase` or
+    `merge`, in that case, a `!command` included (`invalid value`); a
+    `shallow` that is no boolean (`bad boolean config value`); and a
+    `fetchrecursesubmodules` that is neither a boolean nor `on-demand`. An
+    `ignore` it does not know is a warning, and any other key takes any
+    value."""
+    if value is None:
+        return key in NO_VALUE_REFUSED
+    if key == "update":
+        return value not in UPDATE_VALUES
+    if key == "shallow" or (key == "fetchrecursesubmodules"
+                            and value != "on-demand"):
+        return git_bool(root, value) is None
+    return False
+
+
+def crashes_on_branch(root: Path, version: str | None = None) -> bool:
+    """Whether this git crashes reading a `.gitmodules` that gives a
+    submodule a `branch` with no value (#768): every git before 2.43.1
+    does, in the index's or HEAD's file too, where a later git reads that
+    line as the end of the file (`BRANCH_READ_SINCE`). `version` is what
+    `git version` printed, for a test to give; None asks this git. A git
+    whose version cannot be read is taken for one that crashes: the run
+    then fails naming the key, a cure true on every git, rather than pass
+    a member git never asked for as the missing credential's."""
+    if version is None:
+        try:
+            version = git_out(["version"], cwd=root)
+        except Refusal:
+            return True
+    found = GIT_VERSION_RE.match(version)
+    return (found is None
+            or tuple(map(int, found.groups())) < BRANCH_READ_SINCE)
+
+
+def git_bool(root: Path, value: str | None) -> bool | None:
+    """`value` read as a boolean by git itself, which reads one so for
+    every key (`git config --type=bool`, its `git_parse_maybe_bool`):
+    `true`, `yes`, `on` in any case, a number other than 0, or no value at
+    all are true, and `false`, `no`, `off`, 0 and an empty value false.
+    None where git takes it for no boolean, and dies. It is asked as the
+    `--default` of a key looked up in an empty file, so no `probe.value`
+    in any of the person's own config scopes is read in its place."""
+    if value is None:
+        return True
+    try:
+        answer = git_out(["config", "--file", os.devnull, "--type=bool",
+                          f"--default={value}", "--get", "probe.value"],
+                         cwd=root)
+    except Refusal:
+        return None
+    return answer == "true"
+
+
+def submodule_config(root: Path) -> dict[str, list[str | None]]:
     """Every `submodule.` key this repository's git config sets, in every
-    scope git reads, as git's init asks them: `submodule.active`, and
-    `submodule.<name>.url` as an earlier init writes it. None where git
-    lists none."""
+    scope git reads, with each value it gives, None for no value, as git's
+    init asks them: `submodule.active` and its patterns, a section's own
+    `submodule.<name>.active` (#768), and `submodule.<name>.url` as an
+    earlier init writes it. Empty where git lists none."""
     try:
         config = git_out(["config", "-z", "--get-regexp", r"^submodule\."],
                          cwd=root, binary=True)
     except Refusal:
-        return set()
-    return {record.decode("utf-8", "surrogateescape").partition("\n")[0]
-            for record in config.split(b"\0")}
+        return {}
+    found: dict[str, list[str | None]] = {}
+    for record in filter(None, config.split(b"\0")):
+        key, valued, value = record.decode("utf-8",
+                                           "surrogateescape").partition("\n")
+        found.setdefault(key, []).append(value if valued else None)
+    return found
 
 
-def has_url(modules: Gitmodules, config: set[str], path: str) -> bool:
+def has_url(modules: Gitmodules, config: dict[str, list[str | None]],
+            path: str) -> bool:
     """Whether git's init finds a url for the gitlink at `path`: in the
     section git reads for that path (`Gitmodules.read`), or in the git
     config under that section's name, as an earlier init writes it. Where
@@ -384,8 +650,8 @@ def has_url(modules: Gitmodules, config: set[str], path: str) -> bool:
                                  or f"submodule.{name}.url" in config)
 
 
-def init_stop(root: Path, modules: Gitmodules, config: set[str]
-              ) -> str | None:
+def init_stop(root: Path, modules: Gitmodules,
+              config: dict[str, list[str | None]]) -> str | None:
     """The gitlink `git submodule update --init` dies at, or None: the first
     in the index, in index order, that its init step asks about and has no
     url for (`No url found for submodule path`, exit 128), before it
@@ -394,11 +660,11 @@ def init_stop(root: Path, modules: Gitmodules, config: set[str]
     ASKED AS GIT 2.43 ASKS IT, of the index, `modules` and `config`, this
     repository's git config. Every gitlink the index records is asked, but
     where the config sets `submodule.active`, as a recursive clone sets it
-    (`.`), only those a section git reads gives a path: git counts no other
-    active. A gitlink git has no url for (`has_url`) stops it. So a stray
-    case variant or a member mounted by hand stops a plain clone's update,
-    and leaves a recursive clone's to the credential. Read nothing, it
-    answers None."""
+    (`.`), only those git counts active (`active`), and never one no
+    section git reads gives a path. A gitlink git has no url for
+    (`has_url`) stops it. So a stray case variant or a member mounted by
+    hand stops a plain clone's update, and leaves a recursive clone's to
+    the credential. Read nothing, it answers None."""
     try:
         index = git_out(["ls-files", "-s", "-z"], cwd=root, binary=True)
     except Refusal:
@@ -408,11 +674,52 @@ def init_stop(root: Path, modules: Gitmodules, config: set[str]
         if meta.split()[:1] != [GITLINK_MODE]:
             continue
         path = entry.decode("utf-8", "surrogateescape")
-        if path not in modules.read and "submodule.active" in config:
+        if ("submodule.active" in config
+                and not active(root, modules, config, path)):
             continue
         if not has_url(modules, config, path):
             return path
     return None
+
+
+def active(root: Path, modules: Gitmodules,
+           config: dict[str, list[str | None]], path: str) -> bool:
+    """Whether git's init counts the gitlink at `path` active where the
+    config sets `submodule.active` (`is_tree_submodule_active` in git
+    2.43's submodule.c): never where no section git reads gives that path;
+    else as the section's own `submodule.<name>.active` says, its last
+    value read as a boolean (`git_bool`), where the config sets one that
+    is (#768); else where one of `submodule.active`'s patterns names it
+    (`pattern_names`)."""
+    name = modules.read.get(path)
+    if name is None:
+        return False
+    own = config.get(f"submodule.{name}.active")
+    flag = git_bool(root, own[-1]) if own else None
+    if flag is not None:
+        return flag
+    return any(pattern_names(pattern, path)
+               for pattern in config["submodule.active"])
+
+
+def pattern_names(pattern: str | None, path: str) -> bool:
+    """Whether a `submodule.active` pattern names `path` (#768). A plain
+    path, as `git clone --recurse-submodules=<path>` writes one, names
+    itself and every path under it, as git's pathspec does, and `.` names
+    every path. A pattern with pathspec magic (a leading `:`), a glob
+    character or a backslash, or with an empty, `.` or `..` component past
+    a leading `./`, is read as naming every path, as every pattern was
+    before: this does not match those as git does."""
+    if (pattern is None or pattern.startswith(":")
+            or any(char in pattern for char in "*?[\\")):
+        return True
+    while pattern.startswith("./"):
+        pattern = pattern[2:]
+    pattern = pattern.rstrip("/")
+    if pattern in ("", ".") or any(part in ("", ".", "..")
+                                   for part in pattern.split("/")):
+        return True
+    return path == pattern or path.startswith(pattern + "/")
 
 
 def unfetchable(root: Path, rows: list[dict], exited_0: bool
@@ -425,7 +732,9 @@ def unfetchable(root: Path, rows: list[dict], exited_0: bool
 
     Asked of this holder's own records, never of git's words: any row at
     all while a merge leaves `.gitmodules` unmerged in the index, since git
-    then reads no section and asks for no credential; a row at
+    then reads no section and asks for no credential, or while the file
+    gives a value git dies on (`Gitmodules.refused`, #768), or is a work
+    tree file git cannot parse (`Gitmodules.unreadable`); a row at
     whose path the holder records no gitlink (`recorded_gitlink`,
     as `validate-family.py`'s `member-gitlink-absent` reads one), or whose
     gitlink no section of `.gitmodules` gives a path (as its
@@ -436,31 +745,49 @@ def unfetchable(root: Path, rows: list[dict], exited_0: bool
     died at a gitlink it has no url for, any row at all, since git then
     checked out no member and asked for no credential. Any other row not
     checked out is the missing credential's, and stays the skip it always
-    was. A path two rows give is said once."""
+    was. A path two rows give is said once. Where every row's member is
+    checked out and git did not exit 0, `.gitmodules` is read all the
+    same, for `fetch_members` to ask `refused` of."""
     left: dict[str, dict] = {}
     for row in rows:
         if not (member_path(root, row) / ".git").exists():
             left.setdefault(row_path(row), row)
-    if not left:
+    if not left and exited_0:
         return [], None, Gitmodules(Counter(), {}, {})
     modules = gitmodules_sections(root)
+    if not left:
+        return [], None, modules
     config = submodule_config(root)
     stopper = None if exited_0 else init_stop(root, modules, config)
     found: list[tuple[dict, str, str]] = []
     for path, row in left.items():
-        if modules.unmerged:
-            found.append((row, path, UNMERGED))
-        elif recorded_gitlink(root, path) is None:
-            found.append((row, path, NO_GITLINK))
-        elif not modules.given[path]:
-            found.append((row, path, NO_SECTION))
-        elif not has_url(modules, config, path):
-            found.append((row, path, NO_URL))
-        elif exited_0:
-            found.append((row, path, EXITED_0))
-        elif stopper is not None:
-            found.append((row, path, STOPPED))
+        why = row_reason(root, path, modules, config, exited_0, stopper)
+        if why is not None:
+            found.append((row, path, why))
     return found, stopper, modules
+
+
+def row_reason(root: Path, path: str, modules: Gitmodules,
+               config: dict[str, list[str | None]], exited_0: bool,
+               stopper: str | None) -> str | None:
+    """Why `unfetchable` says the member at `path`, not checked out, is
+    none a credential would check out (#648, #768), in the order it asks,
+    or None where it is the missing credential's."""
+    if modules.unmerged:
+        return UNMERGED
+    if modules.refused:
+        return REFUSED
+    if modules.unreadable:
+        return UNREADABLE
+    if recorded_gitlink(root, path) is None:
+        return NO_GITLINK
+    if not modules.given[path]:
+        return NO_SECTION
+    if not has_url(modules, config, path):
+        return NO_URL
+    if exited_0:
+        return EXITED_0
+    return None if stopper is None else STOPPED
 
 
 def members_of(root: Path) -> tuple[str, list[dict]]:
@@ -477,8 +804,24 @@ def members_of(root: Path) -> tuple[str, list[dict]]:
         raise Refusal("family-manifest-unreadable",
                       f"{manifest_path}: not a mapping")
     name = str(manifest.get("name") or root.name)
-    rows = [row for row in (manifest.get("members") or [])
-            if isinstance(row, dict)]
+    # A `members:` THAT IS NOT A LIST, OR HOLDS AN ENTRY THAT IS NOT A
+    # MAPPING, IS REFUSED BY NAME (#864), in `validate-family.py`'s words:
+    # read as `members or []`, `5` ended `make bootstrap` and `make siblings`
+    # in a `TypeError`, `openXdox` or `[5]` was "0 member(s)" and "family
+    # bootstrap ok", and the rows beside a `5` were fetched with the `5`
+    # unsaid. Absent or null is a family with no members.
+    rows = manifest.get("members")
+    if rows is None:
+        rows = []
+    if not isinstance(rows, list):
+        raise Refusal("family-members-unreadable",
+                      f"{manifest_path}: `members:` is {rows!r}, expected a "
+                      "list")
+    unread = [f"a member is not a mapping: {row!r}" for row in rows
+              if not isinstance(row, dict)]
+    if unread:
+        raise Refusal("family-members-unreadable",
+                      f"{manifest_path}: {'; '.join(unread)}")
     return name, rows
 
 
@@ -493,7 +836,9 @@ def member_path(root: Path, row: dict) -> Path:
 
 
 def run_member_target(root: Path, row: dict, target: str) -> str | None:
-    """(b) One member's own `make <target>`. Returns a failure line, or None."""
+    """(b) One member's own `make <target>`. Returns a failure line, or None:
+    one naming the exit code of the member's command where make names it,
+    else make's own (`run_make`, #839)."""
     # A member row is the family manifest's text (#391): what is PRINTED of it,
     # and of `--members-make`, is spelled. The path is built from the raw row.
     project = spelled(row.get("project") or "?")
@@ -514,11 +859,72 @@ def run_member_target(root: Path, row: dict, target: str) -> str | None:
         return None
     print(f"  --- {project}: make {named} ---")
     sys.stdout.flush()
-    proc = subprocess.run([make, target], cwd=str(path), check=False)
+    returncode, own = run_make(make, target, path)
     sys.stdout.flush()
-    if proc.returncode != 0:
-        return f"{project} (make {named} exited {proc.returncode})"
-    return None
+    if returncode == 0:
+        return None
+    if own is not None:
+        return f"{project} (make {named}: the member's command exited {own})"
+    return (f"{project} (make {named} exited {returncode} and printed no "
+            "`Error <code>` line for a command of the member's: make's own "
+            "message above says what failed)")
+
+
+#: The line GNU make prints where a command of the target exits non-zero,
+#: `make: *** [Makefile:44: bootstrap] Error 1` (`make[1]:` in a make run by
+#: make, `*** [bootstrap] Error 1` before make 4.0): the command's own exit
+#: code, which make's does not carry, since make exits 2 for any command
+#: that fails (#839).
+MAKE_ERROR_RE = re.compile(rb"\*\*\* \[[^\n]*\] Error (\d+)\s*$")
+
+
+def run_make(make: str, target: str, cwd: Path) -> tuple[int, int | None]:
+    """(b) `make <target>` in a member, as `(make's exit code, the exit code
+    of the member's command it names)`, the second None where make printed
+    no `MAKE_ERROR_RE` line (#839).
+
+    MAKE'S OWN CODE TELLS NOTHING APART. GNU make exits 2 for any command
+    that fails, measured (GNU Make 4.3) for a command exiting 1, 2, 3 or
+    126, and 2 for a failure of its own (`No rule to make target`), so the
+    line said `make bootstrap exited 2` for the member's own `bootstrap
+    FAILED` (1, a finding), for a refusal (2) and for make's own failure
+    alike (w764b, for lane 4). The command's code is the one make names
+    in its `Error <code>` line, the last on stderr, so make's stderr is
+    passed on to this run's own as it comes and that line read from the
+    end of it; a make that prints none, one of its own failures, a command
+    killed by a signal, or a make speaking another language, leaves make's
+    code alone. The member's command is never run around make: another
+    target than `bootstrap` (`--members-make validate`) has no script of
+    its own to call, as `make siblings` calls a member's
+    `scripts/bootstrap.py`."""
+    proc = subprocess.Popen([make, target], cwd=str(cwd),
+                            stderr=subprocess.PIPE)
+    tail = b""
+    for chunk in iter(lambda: proc.stderr.read1(65536), b""):
+        passed_on(chunk)
+        tail = (tail + chunk)[-4096:]
+    proc.stderr.close()
+    returncode = proc.wait()
+    found = [MAKE_ERROR_RE.search(line) for line in tail.splitlines()]
+    named = [int(match.group(1)) for match in found if match]
+    return returncode, (named[-1] if named else None)
+
+
+def passed_on(chunk: bytes) -> None:
+    """`chunk` of what a member's make wrote to its stderr, written to this
+    run's as it came (#839): as its bytes, after what this run wrote there
+    before, or as text where stderr has no byte buffer."""
+    stream = sys.stderr
+    if stream is None:
+        return
+    stream.flush()
+    sink = getattr(stream, "buffer", None)
+    if sink is None:
+        stream.write(chunk.decode("utf-8", "replace"))
+        stream.flush()
+        return
+    sink.write(chunk)
+    sink.flush()
 
 
 def main(argv: list[str] | None = None) -> int:

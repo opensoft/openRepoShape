@@ -135,8 +135,12 @@ USAGE = """usage: setup-project.py [<Project>] [options] [-- <extra scaffold fla
                           the same thing as --project; give one or the other.
   --project <Project>     the assembly-root name: ONE CamelCase token, no
                           hyphen, underscore, dot or space. Prompted for when
-                          omitted and a terminal is attached.
+                          omitted and a terminal is attached. At most 95
+                          characters without --local-remote-dir: GitHub keeps
+                          a repository's name to 100, and -spec adds 5.
   --id <id>               lowercase project id      (default: project lowercased)
+                          At most 39 characters without --local-remote-dir:
+                          GitHub keeps the topic xf-project-<id> to 50.
   --name "<Display>"      display name              (default: the project name)
   --visibility private|public|internal              (default: private)
   --elected-by "<Name>"   who is electing the shape (default: your gh login)
@@ -156,7 +160,9 @@ USAGE = """usage: setup-project.py [<Project>] [options] [-- <extra scaffold fla
   --org <org>             override the detected organisation. REQUIRED when
                           run outside a checkout of openRepoShape
                           (self-bootstrap mode): there is no origin to read it
-                          from.
+                          from. At most 39 characters without
+                          --local-remote-dir, GitHub's limit on an
+                          organisation's name.
   --allow-upstream-org    permit `--org opensoft` itself: opensoft is the
                           upstream owner of openRepoShape, and almost never
                           what you meant to scaffold into.
@@ -433,8 +439,56 @@ PATH_RE = re.compile(r"^[^\x00-\x1f\x7f]+$")
 CONTROL_RE = re.compile(r"[\x00-\x1f\x7f]")
 
 
-def refuse_value(what: str, text: str) -> None:
-    """ONE wording for every value this tool will not pass on.
+#: A GITHUB REPOSITORY NAME IS AT MOST 100 CHARACTERS, and a project is three
+#: repositories: `<Project>`, `<Project>-spec` and `<Project>-code`. The legs
+#: add five characters (`-spec` and `-code` are as long as each other), so a
+#: project name over 95 names repositories GitHub cannot create (#777). The
+#: 100 is GitHub's own documented limit. No run of this repository has
+#: measured it: none creates a real repository, and a probe against a real
+#: organisation is another lane's. Asked only where a GitHub repository will
+#: be made: under `--local-remote-dir` the limit is the disk's, which step (5)
+#: asks as `scaffold-name-too-long` (#261).
+GITHUB_NAME_MAX = 100
+PROJECT_NAME_MAX = GITHUB_NAME_MAX - len("-spec")
+
+
+#: WHY A VALUE IS REFUSED, one sentence each, said after the fixed first
+#: sentence of `refuse_value` (#777). The old refusal gave every value the same
+#: closing sentence, which explained only a leading `-`: `../x`, `a/b` and an
+#: accented name were told about a `-` none of them has.
+WHY_EMPTY = "It is empty, and a value here needs at least one character."
+WHY_DASH = ("It starts with `-`, and git reads its own arguments: a value "
+            "that starts with `-` is an option to git, not a name to us.")
+WHY_CONTROL = ("It holds a control character, which the quotation shows as "
+               "an escape: a newline ends a line in every terminal and log "
+               "this output reaches, so a value carrying one could print a "
+               "line that reads as this tool's own.")
+WHY_RANGE = ("It holds `..`, which git reads as a revision range and not as "
+             "a ref.")
+WHY_LOCK = ("It ends in `.lock`, the name git gives the lock file it writes "
+            "beside a ref.")
+
+#: What each pattern asks, in words and then as the pattern itself, as the
+#: sibling `repo_shape.checked_value` prints its own. `PATH_RE` has no row: it
+#: refuses only an empty value and a control character, and both are named
+#: before a pattern is asked; a pattern with no row is still named, as the
+#: sibling names it, by `why_refused`. The words say ASCII because the
+#: patterns are: "letters" and "spaces" alone describe `Caf\xe9` and a
+#: no-break space as values that pass (rv811).
+WHY_PATTERN = {
+    NAME_RE: ("It is not spellable as a name: an ASCII letter or digit "
+              "first, then ASCII letters, digits, the space and "
+              "`._'()&,+@-`, at most 255 characters in all (`%s`)."
+              % NAME_RE.pattern),
+    REF_RE: ("It is not spellable as a ref: an ASCII letter or digit first, "
+             "then ASCII letters, digits and `._/-`, at most 255 characters "
+             "in all (`%s`)." % REF_RE.pattern),
+}
+
+
+def refuse_value(what: str, text: str, why: str) -> None:
+    """ONE first sentence for every value this tool will not pass on, and the
+    reason it failed as the second (#777).
 
     `ascii()`, never `%r`: `repr` leaves a printable non-ASCII character as
     itself, and this file's output is ASCII to the byte (see the module
@@ -443,9 +497,26 @@ def refuse_value(what: str, text: str) -> None:
     PURE ASCII rule exists to prevent.
     """
     die("%s is %s, which is not a value this tool will put on a `git` or `gh` "
-        "command line. git reads its own arguments: a value that starts with "
-        "`-` is an option to git, not a name to us; the rest must be spellable "
-        "as a name, a ref or a path." % (what, ascii(text)))
+        "command line. %s" % (what, ascii(text), why))
+
+
+def why_refused(text: str, pattern) -> str:
+    """The reason `checked_value` refuses `text`, or "" when it does not.
+
+    Asked in the order a person would find them: nothing typed, a leading `-`,
+    a control character, and only then the pattern, so the sentence names the
+    first check the value failed and never one it passed.
+    """
+    if not text:
+        return WHY_EMPTY
+    if text.startswith("-"):
+        return WHY_DASH
+    if CONTROL_RE.search(text):
+        return WHY_CONTROL
+    if not pattern.fullmatch(text):
+        return WHY_PATTERN.get(pattern) or (
+            "It does not match `%s`." % pattern.pattern)
+    return ""
 
 
 def checked_value(flag: str, value: str, pattern=NAME_RE) -> str:
@@ -460,16 +531,37 @@ def checked_value(flag: str, value: str, pattern=NAME_RE) -> str:
     write).
 
     THE HOUSE PATTERN, COPIED RATHER THAN IMPORTED. `scripts/repo_shape.py`'s
-    `checked_value` is the same check in the same words for the same reason,
-    and `scaffold-project.py` calls it on the values this file forwards. This
+    `checked_value` is the same check for the same reason, and
+    `scaffold-project.py` calls it on the values this file forwards. This
     entry point cannot import it: it runs BEFORE there is a checkout to import
-    it from, which is the whole of self-bootstrap mode.
+    it from, which is the whole of self-bootstrap mode. The two refuse the
+    same values; each says why in its own words, and this file's name the
+    check the value failed (`why_refused`), where the sibling prints one
+    remediation for all of them.
     """
     text = str(value)
-    if (not text or text.startswith("-") or CONTROL_RE.search(text)
-            or not pattern.fullmatch(text)):
-        refuse_value(flag, text)
+    why = why_refused(text, pattern)
+    if why:
+        refuse_value(flag, text, why)
     return text
+
+
+def checked_project_length(what: str, name: str, local_mode: bool) -> str:
+    """A project name that GitHub will hold three repositories under, or a
+    refusal before step (4) explains three names it will not use (#777).
+
+    ASKED OF A NAME THAT HAS PASSED `checked_value`, so it is printable ASCII
+    and is quoted back as it is, both ends of it: the name is long, and a
+    name this long differs from its neighbours by its tail.
+    """
+    if local_mode or len(name) <= PROJECT_NAME_MAX:
+        return name
+    die("%s is %d characters long (%s...%s), and a project is three "
+        "repositories, `<Project>`, `<Project>-spec` and `<Project>-code`: "
+        "GitHub keeps a repository name to at most %d characters, so a "
+        "project name is at most %d. Nothing was created. Use a shorter name."
+        % (what, len(name), name[:12], name[-12:], GITHUB_NAME_MAX,
+           PROJECT_NAME_MAX))
 
 
 def checked_ref(flag: str, value: str) -> str:
@@ -481,8 +573,10 @@ def checked_ref(flag: str, value: str) -> str:
     confusing failure inside the temporary checkout.
     """
     text = checked_value(flag, value, REF_RE)
-    if ".." in text or text.endswith(".lock"):
-        refuse_value(flag, text)
+    if ".." in text:
+        refuse_value(flag, text, WHY_RANGE)
+    if text.endswith(".lock"):
+        refuse_value(flag, text, WHY_LOCK)
     return text
 
 
@@ -501,7 +595,8 @@ def checked_passthrough(rest: list) -> list:
     """
     for item in rest:
         if CONTROL_RE.search(item):
-            refuse_value("a passthrough argument after `--`", item)
+            refuse_value("a passthrough argument after `--`", item,
+                         WHY_CONTROL)
     return rest
 
 
@@ -664,6 +759,12 @@ def parse_args(argv, invocation_dir: str) -> Options:
     if opts.visibility not in VISIBILITY_CHOICES:
         die("--visibility is %s; it must be 'private', 'public' or 'internal'"
             % opts.visibility)
+    # ASKED HERE, NOT WHERE `--project` IS TAKEN: `--local-remote-dir` can
+    # come after it on the line, and decides whether a GitHub repository
+    # will be made (#777). Still before step (1) prints.
+    if opts.project:
+        spelling = "<Project>" if state.positional else "--project"
+        checked_project_length(spelling, opts.project, opts.local_mode)
     return opts
 
 
@@ -1556,7 +1657,7 @@ def run_at_the_terminal(argv) -> subprocess.CompletedProcess:
             os.close(descriptor)
 
 
-def ask_for_the_project_name() -> str:
+def ask_for_the_project_name(local_mode: bool) -> str:
     """The `project name` prompt, and the name typed at it, checked (#729).
 
     AN EMPTY LINE IS A NAME NOBODY TYPED, NOT A MISSING TERMINAL: `can_ask()`
@@ -1569,11 +1670,29 @@ def ask_for_the_project_name() -> str:
     only the last part of what it is handed. `a b` and `Bad_Name` pass here on
     purpose (`NAME_RE` is permissive); step (4) is where the policy rules on
     those.
+
+    THE SPACES AT THE ENDS ARE TAKEN OFF FIRST (#777). A trailing space
+    passed `NAME_RE` (a space is allowed after the first character, so `a b`
+    can reach step (4)) where a leading one was refused, and step (4) then
+    judged `Atlas `, `Atlas -spec` and `Atlas -code` and showed no space
+    anywhere. A stray space is what a prompt answer gets from a paste or a
+    slip of the thumb, and the run ends at the first mistake with no second
+    ask, so the prompt takes it off; an argv value is deliberate and is held
+    as typed. A line of nothing but spaces is then an empty line.
+
+    ONLY THE SPACE COMES OFF, NOT EVERY KIND OF WHITESPACE. `str.strip()`
+    with no argument also took off a tab, a form feed, `\\x1c` to `\\x1f`, a
+    no-break space and the ideographic space, so the prompt accepted each of
+    them where `--project` refuses it, as a control character or by the
+    pattern (rv811). Now only the space comes off, and the rest reach
+    `checked_value` as they were typed.
     """
     typed = ask("  project name (ONE CamelCase token, e.g. Atlas): ")
+    typed = typed.strip(" ")
     if not typed:
         die("no project name was typed; nothing was created.")
-    return checked_value("project name", typed)
+    return checked_project_length(
+        "project name", checked_value("project name", typed), local_mode)
 
 
 def resolve_project_and_elector(opts: Options, shape_root: Path) -> None:
@@ -1581,7 +1700,7 @@ def resolve_project_and_elector(opts: Options, shape_root: Path) -> None:
     say("")
     say("(3) project")
     if not opts.project and can_ask():
-        opts.project = ask_for_the_project_name()
+        opts.project = ask_for_the_project_name(opts.local_mode)
     if not opts.project:
         usage(sys.stderr)
         die("no --project given, and no terminal to ask on.")
