@@ -89,8 +89,8 @@ from pathlib import Path
 
 import pytest
 
-from conftest import (ORG, PROJECT, REPO, SCAFFOLD, cloned_just_pushed, git,
-                      run_script)
+from conftest import (ORG, PROJECT, REPO, SCAFFOLD, appended_to_command_scope,
+                      cloned_just_pushed, git, run_script)
 from test_bootstrap_spelling import needs_a_byte_name
 
 BUMP = REPO / "scripts" / "bump-leg.py"
@@ -149,10 +149,7 @@ def configured(key: str, value: str) -> dict:
     and `GIT_CONFIG_VALUE_<n>` (git 2.31), never `git config`. APPENDED to
     what the environment holds: the Windows job sets two entries already
     (`.github/workflows/tests.yml`), and a count of 1 would drop both."""
-    held = int(os.environ.get("GIT_CONFIG_COUNT") or 0)
-    return {"GIT_CONFIG_COUNT": str(held + 1),
-            f"GIT_CONFIG_KEY_{held}": key,
-            f"GIT_CONFIG_VALUE_{held}": value}
+    return appended_to_command_scope(os.environ, [(key, value)])
 
 
 def failing_post_checkout(tmp_path: Path) -> dict:
