@@ -53,13 +53,16 @@ from test_openreposhape_command import (BIN_DIR_SPELLINGS, COMMAND,
                                         LOCALES, NO_FILE_NAMED_SO,
                                         NO_NON_ASCII_INTO_GIT_BASH,
                                         NOT_CONTROLS,
+                                        PLACED_AS_THE_LOCALE_READS,
+                                        REFUSED_AS_THE_BYTES_SAY,
                                         REFUSED_IN_EVERY_LOCALE, RLO,
                                         UNNAMEABLE_BIN_DIRS,
                                         assert_a_bin_dir_is_refused,
                                         assert_refused_saying,
                                         drawn_as_another,
                                         command_env, machine_path,
-                                        put_cygpath, put_on_path, run_cmd,
+                                        put_a_locale, put_cygpath,
+                                        put_on_path, run_cmd,
                                         typed_bin_dir, write_script)
 
 INSTALLER = REPO / "install.sh"
@@ -968,6 +971,45 @@ def test_the_installer_refuses_in_every_locale_before_any_request(
     locale, and names what it found by its code point."""
     net = Net(tmp_path)
     typed = value.format(d=bash_path(tmp_path))
+    result = net.run(env={"OPENREPOSHAPE_BIN_DIR": typed, "LC_ALL": locale})
+    assert net.calls() == [], net.calls()
+    assert_a_bin_dir_is_refused(result, typed, said, INSTALLER_REFUSAL_ENDS)
+    net.refused(result)
+
+
+@NO_NON_ASCII_INTO_GIT_BASH
+@pytest.mark.parametrize("locale", LOCALES)
+@pytest.mark.parametrize("charmap, name", PLACED_AS_THE_LOCALE_READS)
+def test_the_installer_places_a_directory_a_multibyte_locale_reads_as_text(
+        tmp_path, charmap, name, locale):
+    """A name the bytes refuse, read as text by the locale's multibyte
+    charset (#858): install.sh asks `locale charmap` and reads it through
+    `iconv`, as the command does, and the command it fetched places itself
+    there, under the same `locale` and `iconv`, with the release recorded.
+    Neither refuses what the other places."""
+    net = Net(tmp_path)
+    put_a_locale(net.path, charmap)
+    net.bin = tmp_path / name
+    result = net.run(env={"OPENREPOSHAPE_BIN_DIR": bash_path(net.bin),
+                          "LC_ALL": locale})
+    assert result.returncode == 0, result.stdout + result.stderr
+    net.installed(result)
+
+
+@NO_NON_ASCII_INTO_GIT_BASH
+@pytest.mark.parametrize("locale", LOCALES)
+@pytest.mark.parametrize("charmap, iconv, name, said",
+                         REFUSED_AS_THE_BYTES_SAY)
+def test_the_installer_refuses_as_the_bytes_say_where_nothing_reads_them(
+        tmp_path, charmap, iconv, name, said, locale):
+    """Where nothing reads the name again (#858), install.sh refuses it as
+    the bytes say, in #804's or #837's words, before any request: exit 2,
+    nothing placed, nothing of the value in either stream. With no `locale`
+    on this `$PATH` at all, every other test of the directory here runs
+    that way too."""
+    net = Net(tmp_path)
+    put_a_locale(net.path, charmap, iconv)
+    typed = f"{bash_path(tmp_path)}/{name}"
     result = net.run(env={"OPENREPOSHAPE_BIN_DIR": typed, "LC_ALL": locale})
     assert net.calls() == [], net.calls()
     assert_a_bin_dir_is_refused(result, typed, said, INSTALLER_REFUSAL_ENDS)

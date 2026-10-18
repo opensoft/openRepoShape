@@ -862,14 +862,20 @@ def test_a_bin_dir_is_refused_in_every_locale_whatever_else_it_holds(
     assert list(tmp_path.iterdir()) == []
 
 
+def shell_function(path: Path, name: str) -> str:
+    """The function `name`, from its first line to its closing brace, as
+    the file at `path` carries it."""
+    [function] = re.findall(rf"^{name}\(\) \{{\n.*?^\}}\n",
+                            path.read_text(encoding="utf-8"), re.M | re.S)
+    return function
+
+
 def misdrawn_check(path: Path) -> str:
     """`MISDRAWN_CHARACTERS` and `misdrawn_characters`, as the file at
     `path` carries them (#837)."""
     text = path.read_text(encoding="utf-8")
     [listed] = re.findall(r"^MISDRAWN_CHARACTERS=\(.*?\)\n", text, re.M)
-    [function] = re.findall(r"^misdrawn_characters\(\) \{\n.*?^\}\n", text,
-                            re.M | re.S)
-    return listed + function
+    return listed + shell_function(path, "misdrawn_characters")
 
 
 def test_install_sh_carries_the_launchers_misdrawn_check_as_it_is():
@@ -924,6 +930,156 @@ def test_misdrawn_characters_names_its_own_and_nothing_else(tmp_path, name):
     assert dict(zip(SHARING_ITS_BYTES, named)) == {
         code: f"U+{code:04X}" if code in MISDRAWN else ""
         for code in SHARING_ITS_BYTES}
+
+
+def test_install_sh_carries_the_launchers_locale_reading_as_it_is():
+    """install.sh carries the launcher's `locale_reading` as well (#858),
+    so the two read a directory the bytes refuse alike, and neither places
+    one the other refuses."""
+    assert shell_function(REPO / "install.sh", "locale_reading") \
+        == shell_function(COMMAND, "locale_reading")
+
+
+#: HOW A `locale` OR AN `iconv` A TEST PUTS FIRST ON `$PATH` BEHAVES WHERE
+#: IT DOES NOT ANSWER WITH A CHARSET'S NAME (#858): `FAILS`, a `locale` that
+#: answers `GB18030` and exits 1; `MISSING`, one that exits 127, as a shell
+#: answers a name it cannot find; and `READS_ALL`, an `iconv` that reads any
+#: value at all as the word `read`, which would place it if it were asked.
+FAILS, MISSING, READS_ALL = "fails", "missing", "reads-all"
+
+
+def put_a_locale(directory: Path, charmap: str,
+                 iconv: str | None = None) -> None:
+    """A `locale` in `directory` that answers `locale charmap` with
+    `charmap`, or as `FAILS` or `MISSING` says, and an `iconv` beside it:
+    this machine's, or one that behaves as `MISSING` or `READS_ALL` says
+    (#858). No GB18030, GBK or Shift_JIS locale is installed here or on
+    CI, and none can be built, so it is `locale` that says the charset,
+    and bash's own locale stays `C` or `C.UTF-8`."""
+    answers = {FAILS: "printf 'GB18030\\n'\nexit 1\n", MISSING: "exit 127\n"}
+    write_script(directory / "locale", "#!/bin/sh\n" + answers.get(
+        charmap, '[ "$1" = charmap ] || exit 2\n'
+        f"printf '%s\\n' {shlex.quote(charmap)}\n"))
+    (directory / "locale").chmod(0o755)
+    if iconv is None:
+        real = shutil.which("iconv")
+        assert real, "this machine has no iconv, which these cases read with"
+        put_on_path(directory, "iconv", real)
+        return
+    write_script(directory / "iconv", "#!/bin/sh\n" + {
+        MISSING: "exit 127\n",
+        READS_ALL: "cat >/dev/null\nprintf read\n"}[iconv])
+    (directory / "iconv").chmod(0o755)
+
+
+#: One of the 32 hanzi that GBK, GB18030 and CP936 read `0xC2 0x80` to
+#: `0xC2 0x9F` as, which in UTF-8 are a C1 control's two bytes: Python
+#: hands `chr(0x9B)` to a child as `0xC2 0x9B`, U+8078 in GB18030 (#858).
+A_HANZI_OF_C1_BYTES = "a" + C1_CSI + "b"
+
+#: Names the bytes refuse that a multibyte charset reads as text, each with
+#: that charset (#858): the first, the issue's and the last of the 32 hanzi,
+#: so that a C1 range that stops one short at either end, where it decides
+#: whether to ask the locale, is caught; U+00AD's two bytes, U+9885 in GBK;
+#: U+2028's three, a kanji and a half-width katakana in Shift_JIS; and in
+#: Shift_JIS a half-width katakana (`0xC2`) before a character whose first
+#: byte is `0x81`, read as U+FF82 and then U+3005 or U+FF3F, whose UTF-8
+#: holds a `0x80` or a `0xBF`: the first and the last byte that continues a
+#: character, which the count of the reading's characters must not count.
+PLACED_AS_THE_LOCALE_READS = [
+    pytest.param("GB18030", "a" + chr(0x80) + "b", id="gb18030-0xc2-0x80"),
+    pytest.param("GB18030", A_HANZI_OF_C1_BYTES, id="gb18030-0xc2-0x9b"),
+    pytest.param("GB18030", "a" + chr(0x9F) + "b", id="gb18030-0xc2-0x9f"),
+    pytest.param("GBK", "a" + chr(0xAD) + "b", id="gbk-u+00ad-bytes"),
+    pytest.param("SHIFT_JIS", "a" + chr(0x2028) + "b",
+                 id="shift_jis-u+2028-bytes"),
+    pytest.param("SHIFT_JIS", "a" + chr(0x81) + "Xb",
+                 id="shift_jis-0xc2-0x81-0x58"),
+    pytest.param("SHIFT_JIS", "a" + chr(0x81) + "Qb",
+                 id="shift_jis-0xc2-0x81-0x51"),
+]
+
+#: Names the bytes refuse where nothing reads them again, and what the
+#: refusal says (#858): under UTF-8, three of `PLACED_AS_THE_LOCALE_READS`,
+#: in #804's and #837's words; where `locale` fails or is not there; where
+#: `iconv` is not there; where GB18030 cannot read a byte (`0xFF`); under a
+#: single-byte charset, as Latin-1 reads U+FEFF's three bytes, each alone;
+#: with a newline at the end, which `$(…)` drops from a reading; and where
+#: `locale` answers nothing, UTF-8 or ASCII, under which `iconv` is never
+#: asked, though the one there would read anything as text.
+REFUSED_AS_THE_BYTES_SAY = [
+    pytest.param("UTF-8", None, A_HANZI_OF_C1_BYTES,
+                 HOLDS_A_CONTROL_CHARACTER, id="utf-8-0xc2-0x9b"),
+    pytest.param("UTF-8", None, "a" + chr(0xAD) + "b",
+                 bin_dir_drawn_as_another("U+00AD"), id="utf-8-u+00ad"),
+    pytest.param("UTF-8", None, "a" + chr(0x2028) + "b",
+                 bin_dir_drawn_as_another("U+2028"), id="utf-8-u+2028"),
+    pytest.param(FAILS, None, A_HANZI_OF_C1_BYTES, HOLDS_A_CONTROL_CHARACTER,
+                 id="a-locale-that-fails"),
+    pytest.param(MISSING, None, A_HANZI_OF_C1_BYTES,
+                 HOLDS_A_CONTROL_CHARACTER, id="no-locale"),
+    pytest.param("GB18030", MISSING, A_HANZI_OF_C1_BYTES,
+                 HOLDS_A_CONTROL_CHARACTER, id="no-iconv"),
+    pytest.param("GB18030", None, A_HANZI_OF_C1_BYTES + chr(0xDCFF),
+                 HOLDS_A_CONTROL_CHARACTER, id="a-byte-gb18030-cannot-read"),
+    pytest.param("ISO-8859-1", None, "a" + chr(0xFEFF) + "b",
+                 bin_dir_drawn_as_another("U+FEFF"),
+                 id="a-single-byte-charset"),
+    pytest.param("GB18030", None, A_HANZI_OF_C1_BYTES + "\n",
+                 HOLDS_A_CONTROL_CHARACTER, id="a-newline-at-the-end"),
+    *(pytest.param(answer, READS_ALL, A_HANZI_OF_C1_BYTES,
+                   HOLDS_A_CONTROL_CHARACTER,
+                   id=f"iconv-unasked-under-{answer or 'no-answer'}")
+      for answer in ("", "UTF-8", "utf8", "ANSI_X3.4-1968", "US-ASCII")),
+]
+
+
+def install_under_a_locale(tmp_path: Path, typed: str, charmap: str,
+                           iconv: str | None, locale: str):
+    """`--install` into `typed`, under bash's `locale`, with
+    `put_a_locale`'s `locale` and `iconv` first on `$PATH` (#858)."""
+    tools = tmp_path / "tools"
+    tools.mkdir()
+    put_a_locale(tools, charmap, iconv)
+    return run_cmd("--install", home=tmp_path, cwd=tmp_path, env={
+        "OPENREPOSHAPE_BIN_DIR": typed, "LC_ALL": locale,
+        "PATH": f"{tools}{os.pathsep}{os.environ['PATH']}"})
+
+
+@NO_NON_ASCII_INTO_GIT_BASH
+@pytest.mark.parametrize("locale", LOCALES)
+@pytest.mark.parametrize("charmap, name", PLACED_AS_THE_LOCALE_READS)
+def test_a_bin_dir_a_multibyte_locale_reads_as_text_is_placed(
+        tmp_path, charmap, name, locale):
+    """The control check and `misdrawn_characters` look for UTF-8's bytes,
+    and GB18030 reads `0xC2 0x9B` as a hanzi, not as U+009B: the directory
+    was refused as holding a control character, in a locale where it holds
+    none (#858). Where the bytes are refused, `locale charmap` is asked,
+    and a multibyte charset's reading of the name, through `iconv`, has
+    the last word. So a name GB18030, GBK or Shift_JIS reads as text is
+    placed, under bash's `C` and `C.UTF-8` alike."""
+    result = install_under_a_locale(
+        tmp_path, f"{bash_path(tmp_path)}/{name}", charmap, None, locale)
+    assert result.returncode == 0, result.stdout + result.stderr
+    assert (tmp_path / name / "openRepoShape").read_bytes() \
+        == COMMAND.read_bytes()
+
+
+@NO_NON_ASCII_INTO_GIT_BASH
+@pytest.mark.parametrize("locale", LOCALES)
+@pytest.mark.parametrize("charmap, iconv, name, said",
+                         REFUSED_AS_THE_BYTES_SAY)
+def test_a_bin_dir_is_refused_as_its_bytes_say_where_nothing_reads_them_again(
+        tmp_path, charmap, iconv, name, said, locale):
+    """Where the locale's charset is UTF-8, ASCII, single-byte or not said,
+    where `iconv` is not there or cannot read the name, the bytes decide,
+    as before (#858): refused, exit 2, nothing placed, never echoed, and in
+    #804's or #837's words. A newline at the end is looked for in the bytes
+    as typed, not in the reading."""
+    typed = f"{bash_path(tmp_path)}/{name}"
+    result = install_under_a_locale(tmp_path, typed, charmap, iconv, locale)
+    assert_a_bin_dir_is_refused(result, typed, said, COMMAND_REFUSAL_ENDS)
+    assert [path.name for path in tmp_path.iterdir()] == ["tools"]
 
 
 #: A directory that already holds pipx's link (#563), whose name holds a
