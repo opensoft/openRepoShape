@@ -39,10 +39,11 @@ Every remedy is typed as printed. The case-variant states are index records
 and commits, and no test makes two directories whose names differ only in
 case; the holder's own are asked again with `core.ignorecase=true`. A
 clone's checkout is git's: on a disk that folds case, `Members/<P>` IS the
-row's directory, so the `mv` the text gives for a case-sensitive disk is
-typed only where the disk holds the two apart, as the text says, and a
-clone of a stray (`Members/<P>` beside `members/<P>`, rv648's S1) gets its
-two empty mounts there as one directory, which no assertion reads.
+row's directory, and the guarded `mv` the text gives, typed in a POSIX
+shell, moves nothing there; it moves the directory out only where the disk
+holds the two apart (#681). A clone of a stray (`Members/<P>` beside
+`members/<P>`, rv648's S1) gets its two empty mounts there as one
+directory, which no assertion reads.
 """
 
 from __future__ import annotations
@@ -51,20 +52,20 @@ import itertools
 import os
 import re
 import shlex
-import subprocess
 from pathlib import Path
 
 import pytest
 
-from conftest import clone_just_pushed, git, run_script
+from conftest import (appended_to_command_scope, clone_just_pushed, git,
+                      run_script)
 from repo_shape import PYTHON
 from test_family import NAME, SPARE, family, validate  # noqa: F401
 from test_family_add_refusals import holder, offline  # noqa: F401
 from test_family_dry_run import isolated
 from test_family_head_lost_gitmodules import (
-    DISKS, GITMODULES, assert_passes_in_every_mode, commit_all,
-    committed_gitmodules, head_lost, on_disk, pinned, recorded_at,
-    variant_refused,
+    DISKS, GITMODULES, GUARDED_MOVE, assert_passes_in_every_mode,
+    commit_all, committed_gitmodules, head_lost, on_disk, pinned,
+    recorded_at, typed_in_sh, variant_refused,
 )
 from test_family_member_path import MEMBER, OTHER, raw
 from test_validate_family_unnamed_mounts import (
@@ -131,10 +132,9 @@ NOT_ALL_FETCHED = ["", "(a) members and their legs",
 
 def with_config(env: dict, key: str, value: str) -> dict:
     """`env` with `key` set to `value`, one more `GIT_CONFIG_*` entry after
-    the ones it already holds, for every git the run starts."""
-    index = int(env.get("GIT_CONFIG_COUNT", "0"))
-    return {**env, "GIT_CONFIG_COUNT": str(index + 1),
-            f"GIT_CONFIG_KEY_{index}": key, f"GIT_CONFIG_VALUE_{index}": value}
+    the ones it already holds (`appended_to_command_scope`), for every git
+    the run starts."""
+    return {**env, **appended_to_command_scope(env, [(key, value)])}
 
 
 def fetching(env: dict) -> dict:
@@ -271,19 +271,21 @@ def type_line(root: Path, env: dict, line: str) -> None:
 
 
 def moved_out_where_apart(root: Path, remediation: str) -> None:
-    """Each backticked `mv` the text gives for a case-sensitive disk, typed
-    as printed where the disk holds its source apart from the row's own
-    directory, as the text says; on a disk that folds case it is the row's
-    directory, and the text says to leave it."""
-    for move in re.findall(r"`(mv -- [^`]*)`", remediation):
-        argv = shlex.split(move)
+    """Each backticked guarded `mv` the text gives, typed as printed in a
+    POSIX shell for each directory that is there, as the text says: it
+    moves the directory out where the disk holds it apart from the row's
+    own, and moves nothing where the disk folds the two names into one
+    directory, the row's (#681)."""
+    for move in GUARDED_MOVE.findall(remediation):
+        argv = shlex.split(move.rsplit(" || ", 1)[1])
         source = root / argv[2]
         own = root / "members" / argv[2].split("/", 1)[1]
-        if not source.exists() or (own.exists()
-                                   and os.path.samefile(source, own)):
+        if not source.exists():
             continue
-        subprocess.run(argv, cwd=str(root), check=True)
-        assert not source.exists()
+        apart = not (own.exists() and os.path.samefile(source, own))
+        typed = typed_in_sh(root, move)
+        assert typed.returncode == 0, typed.stderr
+        assert source.exists() is not apart
 
 
 # --- (a) bootstrap -----------------------------------------------------------
