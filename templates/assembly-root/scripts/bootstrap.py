@@ -444,6 +444,77 @@ def _load_manifest(root: Path, path: Path):
         raise
 
 
+class _Unreadable(Exception):
+    """A name in a leg that step (a) must look at and whose `stat` the
+    operating system refused (#430): `path`, and its `OSError`, `error`.
+
+    NOT AN `OSError`, so `_git_runs` never takes it for git's, and NOT A
+    `Refusal`, so it ends no run: the leg is said to be left as it is
+    (`_say_unreadable`), and the next leg is placed, as it is after a leg
+    git refused to move."""
+
+    def __init__(self, path: Path, error: OSError):
+        super().__init__(path, error)
+        self.path = path
+        self.error = error
+
+
+def _found(path: Path, *, link: bool = False) -> bool:
+    """Whether anything is at `path` in a leg (its `.git`, or the marker of
+    an operation in its git dir), asked as `_is_a` asks it, or `_Unreadable`
+    where the operating system refused the `stat` (#430)."""
+    try:
+        return _is_a(path, lambda _mode: True, link=link)
+    except OSError as exc:
+        raise _Unreadable(path, exc) from exc
+
+
+def _say_unreadable(where: str, root: Path, unread: _Unreadable) -> None:
+    """A leg step (a) cannot look into (#430): the name it could not reach,
+    in `_cannot_read`'s words, that the leg is left as it is, and what puts
+    it right. No move is made."""
+    print(f"  {where}: {_cannot_read(root, unread.path, unread.error)}, so "
+          "the leg is left as it is")
+    print(f"          {_cure(unread.error)}")
+
+
+def _initialized(root: Path, sub: Path, where: str, path: str) -> bool:
+    """Whether the leg at `sub` is a checkout step (a) can place, its `.git`
+    there, saying why not: NOT INITIALIZED, with the command that makes it
+    one, or `_say_unreadable` where the `stat` of its `.git` is refused
+    (#430). `Path.exists()` raised that refusal out of the run up to Python
+    3.13, a traceback, and from 3.14 answered False, so an initialized leg
+    in a mount this user cannot search was NOT INITIALIZED."""
+    try:
+        there = _found(sub / ".git")
+    except _Unreadable as unread:
+        _say_unreadable(where, root, unread)
+        return False
+    if not there:
+        print(f"  {where}: NOT INITIALIZED. Run "
+              f"`git submodule update --init {spelled(path)}` — the "
+              f"validators below will refuse until you do.")
+    return there
+
+
+def _stays_for_an_operation(root: Path, sub: Path, where: str,
+                            path: str) -> bool:
+    """Whether the leg stays where it is for an operation in progress in it
+    (`_say_in_progress`, #704), or for the marker of one that step (a)
+    cannot reach (`_say_unreadable`, #430), said either way. Asked through
+    `os.path.lexists`, a marker it could not reach was no marker, so a leg
+    whose `sequencer/` this user cannot search was moved over a cherry-pick
+    that was not done."""
+    try:
+        doing = _in_progress(sub)
+    except _Unreadable as unread:
+        _say_unreadable(where, root, unread)
+        return True
+    if doing is not None:
+        _say_in_progress(where, path, *doing)
+    return doing is not None
+
+
 #: What `_argument_fault` calls a character that does not print, or white
 #: space (#715): git takes the name, and no person can tell it from the name
 #: without it, so `_say_not_tried` gives it a line of its own.
@@ -832,77 +903,6 @@ def _on_a_branch(current: str | None) -> bool:
     """Whether HEAD is on a branch, `refs/heads/<name>`, one with no commit
     yet included: the one checkout besides the pin a move starts from."""
     return current is not None and current.startswith("refs/heads/")
-
-
-class _Unreadable(Exception):
-    """A name in a leg that step (a) must look at and whose `stat` the
-    operating system refused (#430): `path`, and its `OSError`, `error`.
-
-    NOT AN `OSError`, so `_git_runs` never takes it for git's, and NOT A
-    `Refusal`, so it ends no run: the leg is said to be left as it is
-    (`_say_unreadable`), and the next leg is placed, as it is after a leg
-    git refused to move."""
-
-    def __init__(self, path: Path, error: OSError):
-        super().__init__(path, error)
-        self.path = path
-        self.error = error
-
-
-def _found(path: Path, *, link: bool = False) -> bool:
-    """Whether anything is at `path` in a leg (its `.git`, or the marker of
-    an operation in its git dir), asked as `_is_a` asks it, or `_Unreadable`
-    where the operating system refused the `stat` (#430)."""
-    try:
-        return _is_a(path, lambda _mode: True, link=link)
-    except OSError as exc:
-        raise _Unreadable(path, exc) from exc
-
-
-def _say_unreadable(where: str, root: Path, unread: _Unreadable) -> None:
-    """A leg step (a) cannot look into (#430): the name it could not reach,
-    in `_cannot_read`'s words, that the leg is left as it is, and what puts
-    it right. No move is made."""
-    print(f"  {where}: {_cannot_read(root, unread.path, unread.error)}, so "
-          "the leg is left as it is")
-    print(f"          {_cure(unread.error)}")
-
-
-def _initialized(root: Path, sub: Path, where: str, path: str) -> bool:
-    """Whether the leg at `sub` is a checkout step (a) can place, its `.git`
-    there, saying why not: NOT INITIALIZED, with the command that makes it
-    one, or `_say_unreadable` where the `stat` of its `.git` is refused
-    (#430). `Path.exists()` raised that refusal out of the run up to Python
-    3.13, a traceback, and from 3.14 answered False, so an initialized leg
-    in a mount this user cannot search was NOT INITIALIZED."""
-    try:
-        there = _found(sub / ".git")
-    except _Unreadable as unread:
-        _say_unreadable(where, root, unread)
-        return False
-    if not there:
-        print(f"  {where}: NOT INITIALIZED. Run "
-              f"`git submodule update --init {spelled(path)}` — the "
-              f"validators below will refuse until you do.")
-    return there
-
-
-def _stays_for_an_operation(root: Path, sub: Path, where: str,
-                            path: str) -> bool:
-    """Whether the leg stays where it is for an operation in progress in it
-    (`_say_in_progress`, #704), or for the marker of one that step (a)
-    cannot reach (`_say_unreadable`, #430), said either way. Asked through
-    `os.path.lexists`, a marker it could not reach was no marker, so a leg
-    whose `sequencer/` this user cannot search was moved over a cherry-pick
-    that was not done."""
-    try:
-        doing = _in_progress(sub)
-    except _Unreadable as unread:
-        _say_unreadable(where, root, unread)
-        return True
-    if doing is not None:
-        _say_in_progress(where, path, *doing)
-    return doing is not None
 
 
 def _in_progress(sub: Path) -> tuple[tuple[str, str, str], str] | None:
