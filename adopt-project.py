@@ -3411,7 +3411,7 @@ def follow_ups_for(source: "Source", entries: list["Entry"], names: dict,
             "; but the source keeps a Makefile of its own at the root, so "
             f"that block waits in `{COLLISION_DIR}/{SHAPE_MAKEFILE}` until "
             "the two are merged, and the run adds none of it to the root's "
-            "Makefile before then")
+            "Makefile")
         out.append(
             f"{whose} Makefile wires `CONTRACTS_DIR` to the `contracts/` of "
             "the spec leg, where the plan's `legs.spec_path` mounts it, and "
@@ -9567,11 +9567,13 @@ def _refuse_symlinks_checked_out_as_files(plan: Plan, source: Source,
 # once those lines are in is named again by the next `check`, under the
 # file that then decides it. A deeper kept file that restores LF leaves
 # nothing to find, and one that alone keeps the copy LF is not named. A root
-# `.gitattributes` that is a symlink, which gives no rule (git follows no such
-# link, and a checkout reads only the link's own text, a path, which names
-# no attribute), is #471's follow-up, not this finding: its copies are asked
-# against the block that follow-up asks a regular file to hold, so a kept
-# nested file is still found, and the finding names that block's rule.
+# `.gitattributes` that is a symlink to a path, which gives no rule (git
+# follows no such link, and a checkout reads only the link's own text, the
+# path it leads to, which names no attribute unless it holds a space, a tab
+# or a carriage return, #906), is #471's follow-up, not this finding: its
+# copies are asked against the block that follow-up asks a regular file to
+# hold, so a kept nested file is still found, and the finding names that
+# block's rule.
 # Asked as a disk that keeps case does and again as one that ignores it, as
 # #262's findings are: there `core.ignorecase` folds git's patterns, and a
 # kept `.GitHub/.gitattributes` is read for `.github/`. A finding only the
@@ -9746,12 +9748,12 @@ def _kept_nested_attributes(plan: Plan, tree: list) -> list[tuple]:
     blob is its target, which git then reads as the file's rules: measured
     with git 2.43, a kept `.github/.gitattributes` linking to `*.yml
     eol=crlf` checked `.github/workflows/validate.yml` out with CRLF. A
-    target with no space or tab, a path, is a pattern and names no
-    attribute, and changes nothing; one with a space or a tab is a pattern
-    and the attributes after it, as any line of the file is read, so it is
-    asked like a file (#906: measured with `config/attributes`, which left
-    the copy LF, and `*.yml eol=crlf` and `*.yml` TAB `eol=crlf`, which
-    wrote it CRLF)."""
+    target with no space, tab or carriage return, a path, is a pattern and
+    names no attribute, and changes nothing; one with any of them is a
+    pattern and the attributes after it, as any line of the file is read, so
+    every link is asked like a file (#906: measured with `config/attributes`,
+    which left the copy LF, and `*.yml eol=crlf`, `*.yml` TAB `eol=crlf` and
+    `*.yml` CR `eol=crlf`, which wrote it CRLF)."""
     blobs = {path: oid for path, _, oid, _ in tree}
     return [(path, mode, blobs[path], entry)
             for path, mode, entry in _kept_in_root(plan.entries, tree)
@@ -10211,16 +10213,18 @@ READ_AGAIN = ("each one git reads again (every file of a small source; of a "
 #: refusal's own fixtures and the check that refuses them patched out (#906).
 #: A clone of the source meets the rule that refuses a checkout the first
 #: time `execute` makes one: extracting a leg (`REFUSED extracting the spec
-#: leg`, neither leg yet pushed). A `git add` is the split's last step, and
-#: stops it there (`REFUSED committing the split`), unless a step before it
-#: meets the same rule: the extraction, on a filter that fails, or the
-#: mount, where a rule over every file reaches the `.gitmodules` it writes
+#: leg`, where both legs are extracted, before either is pushed). The split's
+#: `git add -A` stops it at `REFUSED committing the split`, a step the push
+#: of the split branch follows, unless a step before it meets the same rule:
+#: the extraction, on a filter that fails; the seeding of a leg, which runs
+#: a `git add -A` of its own (`REFUSED seeding the code leg`); or the mount,
+#: where a rule over every file reaches the `.gitmodules` it writes
 #: (`REFUSED mounting the legs`, `failed to encode '.gitmodules'`).
 STOPS_AT_A_CLONE = "at its first clone of the source"
 STOPS_AT_THE_SPLIT = (
     "no later than committing the split, and sooner where a step before it "
-    "meets the same rule: extracting a leg, or mounting the legs, where the "
-    "rule reaches the `.gitmodules` it writes")
+    "meets the same rule: extracting or seeding a leg, or mounting the legs, "
+    "where the rule reaches the `.gitmodules` it writes")
 
 #: What git refused, where `execute` would stop, and the way out, for each
 #: step a refusal can stop.

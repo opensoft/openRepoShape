@@ -20,11 +20,12 @@ said what the run does not do:
 * L1-91. `plan-file-reencoded` said `execute` "would stop there, after the
   leg repositories exist", where `there` was the step git refuses. For `*
   working-tree-encoding=UTF-16LE` with `.gitattributes` exempted `execute`
-  stops earlier, mounting the legs, on the `.gitmodules` it writes. The
-  finding says where `execute` stops: measured below with the check that
-  refuses it patched out.
-* L1-93. A docstring said "a target that is a path names no attribute", which
-  holds only for a link target with no space or tab.
+  stops earlier, mounting the legs, on the `.gitmodules` it writes, and for a
+  seeded leg, seeding it. The finding says where `execute` stops: measured
+  below with the check that refuses it patched out.
+* L1-93. A docstring, and `shape_materialize.py`'s printed follow-up, said
+  "a path names no attribute", which holds only for a link target with no
+  space, tab or carriage return: git reads the target as one line of rules.
 * L1-75. Under `--local-remote-dir`, WHAT WILL HAPPEN printed `create
   <Project>-spec and <Project>-code (private)`, though a bare repository has
   no visibility.
@@ -46,9 +47,9 @@ from types import SimpleNamespace
 
 import pytest
 
-from conftest import (ADOPT, REPO, clone_just_pushed, findings, git,
-                      load_without_bytecode, make_source_repo, planned,
-                      run_script, write_plan)
+from conftest import (ADOPT, REPO, clone_just_pushed, cloned_just_pushed,
+                      findings, git, load_without_bytecode, make_source_repo,
+                      planned, run_script, write_plan)
 from test_adopt_contracts_dir import (EDITS, MAKEFILE_FOLLOW_UP, MOUNTS,
                                       OWN_MAKEFILE, OWN_MAKEFILE_FOLLOW_UP,
                                       PROJECT, READER, SPLIT_BRANCH, TREE,
@@ -175,7 +176,10 @@ def test_a_kept_makefile_wires_nothing_where_the_split_message_says_so(
         cwd=str(clone), capture_output=True, text=True, encoding="utf-8",
         errors="replace", check=False)
     assert in_the_shapes.returncode == 0, in_the_shapes.stderr
-    assert Path(in_the_shapes.stdout.strip()).is_dir()
+    contracts = Path(in_the_shapes.stdout.strip())
+    assert contracts.is_dir()
+    assert contracts.resolve() == (clone / "legs" / "spec"
+                                   / "contracts").resolve()
 
 
 # --- L2-73: the spec leg's own path, beside the mounts -----------------------
@@ -340,11 +344,12 @@ def test_the_path_the_split_message_prints_leads_to_the_spec_leg(tmp_path):
 # --- L1-91: where `execute` stops --------------------------------------------
 
 #: What `check` says of where `execute` stops for a `git add` that is
-#: refused: the last step, or one before it that meets the same rule first.
+#: refused: committing the split, which the push of its branch follows, or a
+#: step before it that meets the same rule first.
 STOPS_AT_THE_SPLIT = (
     "no later than committing the split, and sooner where a step before it "
-    "meets the same rule: extracting a leg, or mounting the legs, where the "
-    "rule reaches the `.gitmodules` it writes")
+    "meets the same rule: extracting or seeding a leg, or mounting the legs, "
+    "where the rule reaches the `.gitmodules` it writes")
 STOPS_AT_A_CLONE = "at its first clone of the source"
 #: `* working-tree-encoding=UTF-16LE`, with the one file that holds the rules
 #: exempted: the case #906 names, which stops mounting the legs.
@@ -365,6 +370,10 @@ STOPS = [
                  (*REQUIRED_ONLY, (f"filter.{REQUIRED}.smudge", "false")),
                  STOPS_AT_A_CLONE, "REFUSED extracting the spec leg.",
                  id="a-checkout-git-refuses"),
+    pytest.param({}, {"src/": ROOT, ".github/": ROOT},
+                 (("core.autocrlf", "true"), ("core.safecrlf", "true")),
+                 STOPS_AT_THE_SPLIT, "REFUSED seeding the code leg.",
+                 id="a-seeded-leg-meets-the-same-config"),
 ]
 
 
@@ -392,16 +401,18 @@ def test_execute_stops_where_the_finding_says(adopter, monkeypatch, capsys,
     on and stops at the step the finding names, after both leg repositories
     exist: committing the split for a `git add` that is refused, mounting
     the legs on the `.gitmodules` it writes where a rule reaches every file
-    but the rules', and the first clone of the source, extracting the spec
-    leg, for a checkout git refuses. The finding named it as `there` before,
-    and `there` was the split's `git add` in all three."""
+    but the rules', seeding a leg, whose own `git add -A` meets the same
+    config before the split does, and the first clone of the source,
+    extracting the spec leg, for a checkout git refuses. The finding named it
+    as `there` before, and `there` was the split's `git add` in all four."""
     plan = raw_plan(tmp_path, files, answers)
     configure(monkeypatch, config)
     monkeypatch.setattr(adopter, "_refuse_what_check_finds",
                         lambda *args, **kwargs: None)
     args = Namespace(plan=str(plan), source=None,
                      local_remote_dir=tmp_path / "remotes",
-                     allow_empty_leg=[], yes=True, work_dir=tmp_path / "work")
+                     allow_empty_leg=["code"] if "seeding" in step else [],
+                     yes=True, work_dir=tmp_path / "work")
     assert adopter.cmd_execute(args) == 2
     said = capsys.readouterr().err
     assert step in said, said
@@ -412,7 +423,8 @@ def test_execute_stops_where_the_finding_says(adopter, monkeypatch, capsys,
     # What the finding names covers where it stopped.
     named = {"committing the split": "committing the split",
              "mounting the legs": "mounting the legs",
-             "extracting the spec leg": "first clone of the source"}
+             "extracting the spec leg": "first clone of the source",
+             "seeding the code leg": "seeding a leg"}
     (where,) = [word for word in named if word in step]
     assert named[where] in stops
 
@@ -420,32 +432,60 @@ def test_execute_stops_where_the_finding_says(adopter, monkeypatch, capsys,
 # --- L1-93: what a link target names -----------------------------------------
 
 @pytest.mark.parametrize(("target", "found"), [
-    pytest.param("config/attributes", False, id="a-path-with-no-space"),
+    pytest.param("config/attributes", False, id="a-path-with-no-separator"),
     pytest.param("docs/read me.md", False,
                  id="a-space-and-an-attribute-no-line-ending-reads"),
     pytest.param("*.yml eol=crlf", True, id="a-pattern-and-an-attribute"),
     pytest.param("*.yml\teol=crlf", True, id="a-tab-between-them"),
+    pytest.param("*.yml\reol=crlf", True,
+                 id="a-carriage-return-between-them"),
 ])
-def test_a_link_target_names_an_attribute_only_with_a_space_or_a_tab(
+def test_a_link_target_names_an_attribute_only_with_a_separator(
         tmp_path, target, found):
     """Measured with git 2.43: a kept `.github/.gitattributes` linking to
     `config/attributes` left `.github/workflows/validate.yml` LF, and one
-    linking to `*.yml eol=crlf`, or to `*.yml` and `eol=crlf` with a tab
-    between them, wrote it CRLF: git reads the target as one line of rules.
-    A target with a space that names no line-ending attribute changes
-    nothing either."""
+    linking to `*.yml eol=crlf`, or to `*.yml` and `eol=crlf` with a tab or a
+    carriage return between them, wrote it CRLF: git reads the target as one
+    line of rules, and a space, a tab and a carriage return all separate its
+    fields. A target with a space that names no line-ending attribute
+    changes nothing either."""
     source = make_source_repo(tmp_path / "Thing", tree=dict(SOURCE), edits=())
     index_link(source, GITHUB_ATTRIBUTES, target)
     got = findings(planned(source, tmp_path, KEEP_GITHUB))
     assert [code for code, _ in got] == ([NESTED] if found else []), got
 
 
-def test_the_docstring_says_it_of_a_target_with_no_space_only(adopter):
+@pytest.mark.parametrize(("target", "crlf"), [
+    pytest.param("config/attributes", False, id="a-path-with-no-separator"),
+    pytest.param("docs/read me.md", False,
+                 id="a-space-and-an-attribute-no-line-ending-reads"),
+    pytest.param("* eol=crlf", True, id="a-space-between-them"),
+    pytest.param("*\teol=crlf", True, id="a-tab-between-them"),
+    pytest.param("*\reol=crlf", True, id="a-carriage-return-between-them"),
+])
+def test_a_root_link_is_read_as_rules_only_with_a_separator(tmp_path, target,
+                                                            crlf):
+    """The measurement `_attributes_link_follow_up`'s sentence rests on.
+    Measured with git 2.43: a clone of a source whose root `.gitattributes`
+    links to `config/attributes` writes a text file it commits LF with LF,
+    and one whose link leads to `* eol=crlf`, or to `*` and `eol=crlf` with a
+    tab or a carriage return between them, writes it CRLF. The printed
+    follow-up says no line-ending rule reaches the pinned copies "for a link
+    to a path" for that reason, and not for every link."""
+    source = make_source_repo(tmp_path / "Thing", tree={NOTES: "one\ntwo\n"},
+                              edits=())
+    index_link(source, ROOT_ATTRIBUTES, target)
+    clone = cloned_just_pushed(source, tmp_path / "clone", recurse=False)
+    written = (clone / NOTES).read_bytes()
+    assert written == (b"one\r\ntwo\r\n" if crlf else b"one\ntwo\n")
+
+
+def test_the_docstring_says_it_of_a_target_with_no_separator_only(adopter):
     said = " ".join(adopter._kept_nested_attributes.__doc__.split())
     assert "A target that is a path names no attribute" not in said
-    assert ("A target with no space or tab, a path, is a pattern and names "
-            "no attribute, and changes nothing; one with a space or a tab "
-            "is a pattern and the attributes after it") in said
+    assert ("A target with no space, tab or carriage return, a path, is a "
+            "pattern and names no attribute, and changes nothing; one with "
+            "any of them is a pattern and the attributes after it") in said
 
 
 # --- L1-75: no visibility for a bare repository ------------------------------

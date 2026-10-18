@@ -97,8 +97,7 @@ OWN_MAKEFILE_FOLLOW_UP = (
     "so the code leg's tooling takes the path from the environment instead "
     "of assuming it sits beside it; but the source keeps a Makefile of its "
     "own at the root, so that block waits in `shape/Makefile` until the two "
-    "are merged, and the run adds none of it to the root's Makefile before "
-    "then")
+    "are merged, and the run adds none of it to the root's Makefile")
 
 #: A source with nothing for the plan to ask about, no Makefile of its own
 #: (so the shape's, with the block, is the root's), and one code file that

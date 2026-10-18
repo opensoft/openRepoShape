@@ -341,10 +341,10 @@ def test_a_refusal_says_where_execute_stops_and_the_way_out(monkeypatch,
         "`fatal: CRLF would be replaced by LF in notes.txt`), so `execute` "
         "would stop after the leg repositories exist, no later than "
         "committing the split, and sooner where a step before it meets the "
-        "same rule: extracting a leg, or mounting the legs, where the rule "
-        "reaches the `.gitmodules` it writes. Commit the file git names in "
-        "the source as git stores it, or change the rule or the setting that "
-        "refuses it, and re-run `plan`.")]
+        "same rule: extracting or seeding a leg, or mounting the legs, where "
+        "the rule reaches the `.gitmodules` it writes. Commit the file git "
+        "names in the source as git stores it, or change the rule or the "
+        "setting that refuses it, and re-run `plan`.")]
 
 
 def test_the_finding_names_ten_paths_and_counts_the_rest(tmp_path):
