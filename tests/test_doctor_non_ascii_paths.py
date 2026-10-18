@@ -47,7 +47,7 @@ import pytest
 from conftest import REPO, WINDOWS_SKIP, blank_unnamed_pin_sources
 from test_doctor_gitmodules_not_utf8 import listed_locale
 from test_doctor_legs_members_next import (
-    PASTE_ENV, commit_in, detached_member, emptied_with_its_repository_kept,
+    paste_env, commit_in, detached_member, emptied_with_its_repository_kept,
 )
 from test_family_printed_quoting import powershell_words
 from test_shape_doctor import (  # noqa: F401
@@ -263,9 +263,9 @@ KEEP = re.compile(rb"git (?:-C )?\S+(?: \S+)? branch NAME(?: [0-9a-f]{40})?")
 
 
 def environ(codeset: str, changes: dict) -> dict:
-    """`PASTE_ENV` under `codeset`, with no locale or Python encoding the
+    """`paste_env()` under `codeset`, with no locale or Python encoding the
     person running the suite set, no lane and no pin-source override."""
-    env = {key: value for key, value in PASTE_ENV.items()
+    env = {key: value for key, value in paste_env().items()
            if not key.startswith(("LC_", "LANG", "PYTHONIO", "PYTHONUTF8"))}
     env.update(LANES_LANE="", LC_ALL=listed_locale(codeset), **changes)
     return blank_unnamed_pin_sources(env, {})
