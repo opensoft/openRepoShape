@@ -37,8 +37,9 @@ from pathlib import Path
 
 import pytest
 
-from conftest import (FILE_PROTOCOL, REPO, assert_read_through_git,
-                      assert_store_read_through_git, git, rmtree)
+from conftest import (FILE_PROTOCOL, REPO, appended_to_command_scope,
+                      assert_read_through_git, assert_store_read_through_git,
+                      git, rmtree)
 
 from conftest import assert_refuses_for_want_of_a_terminal
 
@@ -1170,7 +1171,8 @@ def test_an_empty_openreposhape_repo_means_unset(tmp_path):
     test) was found still claiming `checked_value` refuses "an empty value"
     for this variable, which is never reached for one.
 
-    Offline: `GIT_CONFIG_COUNT`/`_KEY_0`/`_VALUE_0` hand this one process a
+    Offline: git's `GIT_CONFIG_*` entries, appended to the ones the
+    environment holds, hand this one process a
     `url.<file-uri-of-this-checkout>.insteadOf <default>` rewrite, so `git
     clone` resolves the DEFAULT repository to THIS checkout without a
     network - which is what makes the echoed clone line naming the default
@@ -1194,9 +1196,9 @@ def test_an_empty_openreposhape_repo_means_unset(tmp_path):
                        cwd=outside, script=outside / "setup-project.py",
                        extra_env={
                            "OPENREPOSHAPE_REPO": "",
-                           "GIT_CONFIG_COUNT": "1",
-                           "GIT_CONFIG_KEY_0": "url.%s.insteadOf" % REPO.as_uri(),
-                           "GIT_CONFIG_VALUE_0": default_repo,
+                           **appended_to_command_scope(os.environ, [
+                               ("url.%s.insteadOf" % REPO.as_uri(),
+                                default_repo)]),
                        })
     assert result.returncode == 0, result.stderr + result.stdout
     match = re.search(r"^  git clone .*$", result.stdout, re.MULTILINE)
@@ -2126,17 +2128,16 @@ def test_the_changed_paste_lines_are_posix_quoted_on_windows_too(
     """#538, under #532's ruling that printed commands are POSIX-only: the
     hand-over's `cd <clone>` and the backstop's `cd <parent>` and `<assembly>`
     are spelled for `sh` on every host, as the scaffold's own NEXT STEPS
-    clone is (`shell_line(..., "posix")`). `os.name` and `SHELL_BARE` are
-    switched for the calls, the two things `shell_word` reads to choose
-    PowerShell's dialect, so this holds on any host; the lines are then read
-    back by `shlex.split`, as Git Bash reads them. The family lines are
-    #532's and are not asked."""
+    clone is (`shell_line(..., "posix")`). `os.name` is switched and
+    `MSYSTEM` unset for the calls, which is what `host_shell_dialect` reads
+    to answer PowerShell's dialect (#711), so this holds on any host; the
+    lines are then read back by `shlex.split`, as Git Bash reads them. The
+    family lines are #532's and are not asked."""
     module = entry_point_module()
     assembly, assembly_spelled = WINDOWS_ASSEMBLY
     urls = {"assembly": assembly, "spec": assembly, "code": assembly}
     monkeypatch.setattr(os, "name", "nt")
-    monkeypatch.setattr(module, "SHELL_BARE",
-                        re.compile(r"[A-Za-z0-9_./:%+=\\-]+"))
+    monkeypatch.delenv("MSYSTEM", raising=False)
     module.hand_over("Sample", clone, urls, "demoorg",
                      module.Landing(None, "", None))
     local = module.finish_by_hand(clone, assembly, "Sample", True)

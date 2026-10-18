@@ -217,10 +217,51 @@ MANIFEST = "family.yaml"
 MAKE_TARGET_RE = re.compile(r"[A-Za-z][A-Za-z0-9_.-]*")
 MAKE_ASSIGNMENT_RE = re.compile(r"[A-Za-z_][A-Za-z0-9_]*=[^\x00-\x1f\x7f]*")
 
+#: A `.gitmodules` section name git ignores, every key of it
+#: (`check_submodule_name`): `..` as a component, between `/` or `\`. An
+#: empty name is ignored too. The doctor's `members` row skips the same
+#: (#733).
+DOTDOT_COMPONENT = re.compile(r"(?:^|[/\\])\.\.(?:[/\\]|$)")
+
+#: The keys of a section that git refuses the WHOLE `.gitmodules` over when
+#: one is given with no value at all (measured, git 2.43: `bad config line
+#: N`, exit 128, and a bare `branch` crashes it) (#733).
+VALUED_KEYS = ("path", "url", "ignore", "update", "branch")
+
+#: A boolean as git reads one in `.gitmodules` (`git_config_bool`): one of
+#: these words in any case, as they stand, or an integer as `strtoimax`
+#: reads it after the white space it skips, base 0, times 1024 per `k`, `m`
+#: or `g`, from -2**31 to 2**31 - 1, the range git 2.55 checks (#733).
+GIT_BOOL_WORDS = ("", "true", "yes", "on", "false", "no", "off")
+GIT_INT = re.compile(r"([+-]?)(0[xX][0-9a-fA-F]+|0[0-7]*|[1-9][0-9]*)"
+                     r"([kKmMgG]?)")
+
 
 # ---------------------------------------------------------------------------
 # where a member comes from
 # ---------------------------------------------------------------------------
+
+
+def git_dies_on(field: str, value: str) -> bool:
+    """Whether git `die()`s on this value of a `.gitmodules` key, and so
+    reads no submodule at all (#733), as the doctor's `members` row asks
+    it: an `update` other than these four (`!command` included), a
+    `shallow` that is no boolean, a `fetchRecurseSubmodules` that is
+    neither a boolean nor `on-demand`. git lists a key in lower case."""
+    if field == "update":
+        return value not in ("none", "checkout", "rebase", "merge")
+    if (field not in ("shallow", "fetchrecursesubmodules")
+            or value.lower() in GIT_BOOL_WORDS
+            or (field == "fetchrecursesubmodules" and value == "on-demand")):
+        return False
+    number = GIT_INT.fullmatch(value.lstrip(" \t\n\v\f\r"))
+    if number is None:
+        return True
+    sign, digits, unit = number.groups()
+    base = 16 if digits[:2] in ("0x", "0X") else 8 if digits[0] == "0" else 10
+    # " kmg".index: no unit is 1024 ** 0, `k` 1024 ** 1, and so on.
+    scaled = int(digits, base) * 1024 ** " kmg".index(unit.lower() or " ")
+    return not -2 ** 31 <= (-scaled if sign == "-" else scaled) < 2 ** 31
 
 
 def submodule_urls(root: Path) -> dict[str, str]:
@@ -237,17 +278,34 @@ def submodule_urls(root: Path) -> dict[str, str]:
     AND READ AS GIT READS IT (#690): `git config -z --list`, the reading
     `validate-family.py`'s `_gitmodules_sections` makes and #668 gives the
     doctor's `members` row, so the two tools name one url for one member
-    (#146). Each record ends in a NUL and is the key, a newline and the
-    value; a key holds no newline and a value may, so a record is split at
-    its FIRST one. The plain listing this read was split by `str.splitlines`
-    and at the first `=`: a url holding NEL, U+2028, U+2029, VT, FF or
-    U+001C to U+001E, which git keeps whole, was cut there (`<remotes>/caf`
-    of `caf<NEL>e/IRRS.git`), and a section named `members/a=b` gave no url,
-    so its member was cloned from the `repository:` guess. A section's NAME
-    is all of its key between `submodule.` and the last dot, so a name
-    holding a space, a dot, a quote or an `=` is read whole; only its `path`
-    and `url` count, and the later value wins, as git reads the file. A
-    byte that is not UTF-8 is still replaced (#432).
+    (#146). Each record ends in a NUL and is the key and, where it is given
+    a value, a newline and the value; a key holds no newline and a value
+    may, so a record is split at its FIRST one. The plain listing this read
+    was split by `str.splitlines` and at the first `=`: a url holding NEL,
+    U+2028, U+2029, VT, FF or U+001C to U+001E, which git keeps whole, was
+    cut there (`<remotes>/caf` of `caf<NEL>e/IRRS.git`), and a section named
+    `members/a=b` gave no url, so its member was cloned from the
+    `repository:` guess. A section's NAME is all of its key between
+    `submodule.` and the last dot, so a name holding a space, a dot, a quote
+    or an `=` is read whole; only its `path` and `url` count, and the later
+    value wins, as git reads the file. A byte that is not UTF-8 is still
+    replaced in a VALUE (#432). A NAME keeps git's bytes, as the doctor's
+    `submodule_keys` keeps them (#732): replaced, `caf\\xe9` and `caf\\xe8`
+    were one section, and the path of one was given the url of the other.
+
+    AND OF THAT LISTING, ONLY WHAT GIT READS (#733), by git's own tests, as
+    the doctor's `members` row cuts the same listing (`submodule_keys`): a
+    section whose name is empty or holds a `..` component is ignored whole
+    (`DOTDOT_COMPONENT`); a `path` or `url` beginning with `-` is ignored,
+    that key alone, so an earlier value of it still stands; a key of
+    `VALUED_KEYS` given with no value at all, or a value git dies on
+    (`git_dies_on`), refuses the whole file, `{}`. A key given no value at
+    all is a record with NO newline (`submodule.q.url`), where `url =` is
+    one with a newline and an empty value. And a section with no `path`
+    mounts nothing, so its name is not read as one. git names no url for
+    any of these: `git submodule init` says `No url found` or `bad config
+    line`, or that the value is invalid, and a clone made from the url
+    would be of a member git does not mount.
     """
     path = root / ".gitmodules"
     if not path.is_file():
@@ -258,17 +316,28 @@ def submodule_urls(root: Path) -> dict[str, str]:
         return {}
     paths: dict[str, str] = {}
     urls: dict[str, str] = {}
-    for record in proc.stdout.decode("utf-8", "replace").split("\0"):
-        key, _, value = record.partition("\n")
+    for record in proc.stdout.decode("utf-8", "surrogateescape").split("\0"):
+        # `valued` is the newline: a key given no value at all has none.
+        key, valued, value = record.partition("\n")
+        # A NAME keeps git's bytes, as `submodule_keys` keeps them, so two
+        # names are one only where git has one; a value is replaced (#432).
+        value = value.encode("utf-8", "surrogateescape").decode(
+            "utf-8", "replace")
         section, _, field = key.rpartition(".")
         if not section.startswith("submodule."):
             continue
         name = section[len("submodule."):]
+        if not name or DOTDOT_COMPONENT.search(name):
+            continue
+        if (not valued and field in VALUED_KEYS) or git_dies_on(field, value):
+            return {}
+        if value.startswith("-"):
+            continue
         if field == "path":
             paths[name] = value
         elif field == "url":
             urls[name] = value
-    return {paths.get(name, name): url for name, url in urls.items()}
+    return {paths[name]: url for name, url in urls.items() if name in paths}
 
 
 def resolve_relative(url: str, root: Path) -> str:
@@ -504,6 +573,53 @@ def project_id(path: Path) -> str | None:
     return str(data.get("id")) if isinstance(data, dict) else None
 
 
+def holds_git(path: Path) -> bool:
+    """Does `path` hold a `.git`? False where that cannot be asked (#735):
+    in a folder that cannot be entered (mode `000`), Python 3.12's
+    `Path.exists` raises `PermissionError`, and `make siblings` and `make
+    park` ended in that traceback."""
+    try:
+        return (path / ".git").exists()
+    except OSError:
+        return False
+
+
+def not_a_clone(target: Path) -> tuple[str, str] | None:
+    """`(what stands at target, what kind of thing it is)` for a `target`
+    with no `.git` that this command will not write into, in the words its
+    `NOT A CLONE` finding says it in; None for nothing at all, or an empty
+    folder, which a clone goes into.
+
+    A FILE, OR A FOLDER THAT CANNOT BE LISTED, IS NOT A CLONE TOO (#735).
+    Only a folder with something in it was asked about, and `iterdir`
+    raised on the other two: `NotADirectoryError` for a file, and
+    `PermissionError` for a folder that can be entered and not listed (mode
+    `0311`; `711` is common for another user's directory) or cannot be
+    entered at all. Each ended `make siblings` in a traceback, exit 1, and
+    the members after it were never placed. Nothing can tell that such a
+    folder is empty, and `git clone` refuses one it cannot read. The words
+    are the ones the doctor's `members` row says of the same two slots.
+
+    A LINK TO NOTHING IS NOT A CLONE EITHER (#784). `exists` follows a
+    link, so a dangling one read as nothing at all: the dry run said `would
+    clone`, and the real run ended `CLONE FAILED`, because git cannot clone
+    into a path that is a link to nothing. Somebody made that link, so it
+    is reported and left as it is, in the doctor's words for it too.
+    """
+    try:
+        if not target.exists():
+            if target.is_symlink():
+                return "is a link to nothing", "link"
+            return None
+        if not target.is_dir():
+            return "is a file, not a folder", "file"
+        if any(target.iterdir()):
+            return "exists, is not empty and is not a git clone", "directory"
+        return None
+    except OSError:
+        return "is a folder that cannot be listed", "directory"
+
+
 def verify_sibling(row: dict, target: Path, url: str, repository: str,
                    sibling: Sibling) -> bool:
     """Is the clone at `target` the member this row names?
@@ -650,14 +766,15 @@ def place(root: Path, row: dict, urls: dict[str, str], prefix: list[str],
             f"the two are not the same path, then re-run.")
         return sibling
 
-    present = (target / ".git").exists()
-    if not present and target.exists() and any(target.iterdir()):
+    present = holds_git(target)
+    occupied = None if present else not_a_clone(target)
+    if occupied:
+        found, thing = occupied
         sibling.state = "NOT A CLONE"
         sibling.finding = (
-            f"{who}: {at} exists, is not empty and is not a git "
-            "clone, so this command will not write into it. Move it aside or "
-            "name the directory something else; nothing here overwrites a "
-            "directory somebody made.")
+            f"{who}: {at} {found}, so this command will not write into it. "
+            f"Move it aside or name the {thing} something else; nothing here "
+            f"overwrites a {thing} somebody made.")
         return sibling
 
     if not present:
@@ -828,7 +945,7 @@ def dispatch(root: Path, row: dict, urls: dict[str, str], target: str,
             "holder keeps its name) so the two are not the same path.")
         return sibling
 
-    if not (path / ".git").exists():
+    if not holds_git(path):
         sibling.state = "SKIPPED no clone"
         sibling.finding = (
             f"{who}: skipped: no working clone at {at}; run `make "

@@ -28,6 +28,10 @@ strictly, a HEAD or an `origin/HEAD` naming such a branch ended `plan`,
 is kept as a lone surrogate, and `plan` refuses the name as `unsafe-value`
 for `--tracking-branch` before any plan is written; `check` and `execute`
 name it too, or adopt past it when the plan tracks a branch that is text.
+
+And only git's line end comes off it, from the bytes (#797). The name was
+stripped once decoded, which takes U+00A0 off `main<U+00A0>` too: `plan`
+read the branch `main` beside it, a commit behind, and recorded that commit.
 """
 
 from __future__ import annotations
@@ -39,7 +43,8 @@ from pathlib import Path
 
 import pytest
 
-from conftest import REPO, git, make_source_repo
+from conftest import (REPO, appended_to_command_scope, git, make_source_repo,
+                      skip_where_a_name_cannot_be_not_utf_8)
 from test_adopt_template_values import (ADOPT_REFUSED, PLAN_FILE, PLAN_OK,
                                         PROJECT, REMOTES, SPLIT_BRANCH,
                                         VERIFIED, WORK, adopted, answer,
@@ -111,10 +116,8 @@ def command_scope(key: str, value: bytes) -> dict:
     The value goes in as the bytes it is, through `os.fsdecode`, which is how
     `sys.argv` and `os.environ` carry a byte that is not UTF-8 on POSIX. A
     Windows environment is text, so the caller does not use this there."""
-    held = int(os.environ.get("GIT_CONFIG_COUNT") or 0)
-    return {"GIT_CONFIG_COUNT": str(held + 1),
-            f"GIT_CONFIG_KEY_{held}": key,
-            f"GIT_CONFIG_VALUE_{held}": os.fsdecode(value)}
+    return appended_to_command_scope(os.environ,
+                                     [(key, os.fsdecode(value))])
 
 
 def global_user_name(base: Path, name: bytes) -> dict:
@@ -200,11 +203,10 @@ def test_the_user_name_given_is_appended_to_the_config_the_environment_holds(
     drop both, and every test after it would run with git's own line-end and
     long-path defaults. The two slots here are the job's, under keys no
     config of a machine this runs on sets."""
-    for variable, value in {"GIT_CONFIG_COUNT": "2",
-                            "GIT_CONFIG_KEY_0": "test.heldone",
-                            "GIT_CONFIG_VALUE_0": "one",
-                            "GIT_CONFIG_KEY_1": "test.heldtwo",
-                            "GIT_CONFIG_VALUE_1": "two"}.items():
+    held = appended_to_command_scope(
+        {}, [("test.heldone", "one"), ("test.heldtwo", "two")])
+    assert held["GIT_CONFIG_COUNT"] == "2", held
+    for variable, value in held.items():
         monkeypatch.setenv(variable, value)
     extra = global_user_name(tmp_path, LATIN1_NAME)
     assert extra["GIT_CONFIG_COUNT"] == "3", extra
@@ -461,12 +463,10 @@ def test_a_utf8_clone_of_a_source_whose_path_is_not_utf8_adopts(tmp_path):
     --source <the clone>` ended in this issue's traceback; it now adopts.
     Skipped where no directory can be named with the byte 0xE9 (Windows,
     macOS's APFS) or git will not work in one."""
-    try:
-        parent = Path(os.fsdecode(os.path.join(os.fsencode(tmp_path),
-                                               b"caf\xe9")))
-        parent.mkdir()
-    except (OSError, UnicodeError) as exc:
-        pytest.skip(f"no directory here is named b'caf\\xe9': {exc!r}")
+    skip_where_a_name_cannot_be_not_utf_8(tmp_path)
+    parent = Path(os.fsdecode(os.path.join(os.fsencode(tmp_path),
+                                           b"caf\xe9")))
+    parent.mkdir()
     try:
         source = make_source_repo(parent / "Thing")
     except AssertionError as exc:
@@ -522,32 +522,35 @@ LOST_FINDING = b"FINDING plan-tracking-branch-missing: " + BRANCH_LOST
 LOST_REFUSAL = b"REFUSED plan-tracking-branch-missing: "
 
 
-def with_default_branch(source: Path, where: str) -> Path:
-    """`source`, on `main`, with `BRANCH` as its default branch where git
-    says one: `head` is its HEAD, and `origin-head` is
-    `refs/remotes/origin/HEAD`, with HEAD left on `main`. `BRANCH` is one
-    commit AHEAD of `main`, which is still a branch of the source: a plan
-    that read the wrong branch would adopt the wrong commit, and a
-    `--tracking-branch main` names a branch it has.
+def with_default_branch(source: Path, where: str,
+                        branch: str = BRANCH) -> Path:
+    """`source`, on `main`, with `branch` (`BRANCH` unless given) as its
+    default branch where git says one: `head` is its HEAD, and
+    `origin-head` is `refs/remotes/origin/HEAD`, with HEAD left on `main`.
+    `branch` is one commit AHEAD of `main`, which is still a branch of the
+    source: a plan that read the wrong branch would adopt the wrong commit,
+    and a `--tracking-branch main` names a branch it has.
 
-    Skipped where no branch can be named with the byte 0xE9 (Windows, macOS's
-    APFS), or git here does not give the name back as it was written."""
+    Skipped where no branch can be named so (the byte 0xE9 on Windows or
+    macOS's APFS), or git here does not give the name back as it was
+    written."""
     ref = "refs/remotes/origin/HEAD" if where == ORIGIN_HEAD else "HEAD"
+    written = branch.encode("utf-8", "surrogateescape")
     try:
-        git("switch", "-q", "-c", BRANCH, cwd=source)
+        git("switch", "-q", "-c", branch, cwd=source)
         git("commit", "-q", "--allow-empty", "-m", "One ahead", cwd=source)
         if where == ORIGIN_HEAD:
             git("switch", "-q", "main", cwd=source)
-            for name in (BRANCH, "main"):
+            for name in (branch, "main"):
                 git("update-ref", f"refs/remotes/origin/{name}", name,
                     cwd=source)
-            git("symbolic-ref", ref, f"refs/remotes/origin/{BRANCH}",
+            git("symbolic-ref", ref, f"refs/remotes/origin/{branch}",
                 cwd=source)
     except (AssertionError, UnicodeError, OSError) as exc:
-        pytest.skip(f"no branch here is named {NOT_UTF8_BRANCH!r}: {exc!r}")
+        pytest.skip(f"no branch here is named {written!r}: {exc!r}")
     read = subprocess.run(["git", "symbolic-ref", ref], cwd=str(source),
                           capture_output=True, check=False)
-    if not read.stdout.rstrip(b"\r\n").endswith(b"/" + NOT_UTF8_BRANCH):
+    if not read.stdout.rstrip(b"\r\n").endswith(b"/" + written):
         pytest.skip(f"`git symbolic-ref {ref}` here is {read.stdout!r}")
     return source
 
@@ -609,12 +612,14 @@ def test_execute_refuses_a_plans_branch_gone_for_one_that_is_not_utf8(
     assert LOST_FINDING in refused.stderr, said(refused)
 
 
-def planned_past(base: Path, where: str) -> tuple[Path, dict]:
+def planned_past(base: Path, where: str,
+                 branch: str = BRANCH) -> tuple[Path, dict]:
     """`(source, runs)`: `plan --tracking-branch main` of a source whose
-    default branch is `BRANCH` (`with_default_branch`), the plan answered,
+    default branch is `branch` (`with_default_branch`), the plan answered,
     and `check`, each run there was. `main` is the branch to adopt into, so
-    nothing is asked of the name that is not UTF-8."""
-    source = with_default_branch(make_source_repo(base / "Thing"), where)
+    nothing is asked of the default branch's name."""
+    source = with_default_branch(make_source_repo(base / "Thing"), where,
+                                 branch)
     runs = {"plan": planned(base, source, TRACKING, "main")}
     assert runs["plan"].returncode == 0, said(runs["plan"])
     answer(base)
@@ -657,3 +662,96 @@ def test_execute_adopts_a_source_whose_default_branch_is_not_utf8(tmp_path,
     assert runs["execute"].returncode == 0, said(runs["execute"])
     assert VERIFIED in runs["execute"].stdout, said(runs["execute"])
     assert tip_of(source, f"{SPLIT_BRANCH}^") == tip_of(source, BRANCH)
+
+
+# --- `git symbolic-ref`: the name whole, white space and all (#797) ----------
+
+#: `main`, then U+00A0, NO-BREAK SPACE: a branch git keeps, and white space
+#: to `str.strip` (L1-68 on #457).
+NBSP_BRANCH = "main\u00a0"
+#: `plan`'s refusal of that default branch as the tracking branch it would
+#: take, as `UNSAFE_BRANCH` is of `caf<e9>`.
+UNSAFE_NBSP = (
+    b"REFUSED unsafe-value: --tracking-branch (not given, so the source's "
+    b"default branch) is 'main\\xa0', which is not a value this tool will "
+    b"put on a `git` or `gh` command line\n")
+
+
+@by_where
+def test_plan_refuses_a_default_branch_ending_in_white_space(tmp_path,
+                                                            where):
+    """L1-68: `_default_branch` stripped the name it decoded, which took
+    the U+00A0 off `main<U+00A0>`, so `plan` planned `main`, the branch
+    beside it, and said nothing. Only git's line end comes off now, and
+    the name is the tracking branch `plan` would take, refused as
+    `unsafe-value` before any plan is written."""
+    source = with_default_branch(make_source_repo(tmp_path / "Thing"), where,
+                                 NBSP_BRANCH)
+    refused = planned(tmp_path, source)
+    assert_no_traceback({"plan": refused})
+    assert refused.returncode == 2, said(refused)
+    assert UNSAFE_NBSP in refused.stderr, said(refused)
+    assert not (tmp_path / PLAN_FILE).exists()
+
+
+@by_where
+def test_plan_reads_a_default_branch_ending_in_white_space_whole(tmp_path,
+                                                                where):
+    """With `--tracking-branch main`, the source is read at `main<U+00A0>`
+    itself, with ITS commit, where the stripped name read `main`'s, a
+    commit behind; and the plan records the name as git keeps it."""
+    source, runs = planned_past(tmp_path, where, NBSP_BRANCH)
+    assert_no_traceback(runs)
+    read_at = load_yaml(tmp_path / PLAN_FILE)["source"]
+    assert read_at["default_branch"] == NBSP_BRANCH
+    assert read_at["commit"] == tip_of(source, NBSP_BRANCH)
+    assert runs["check"].returncode == 0, said(runs["check"])
+
+
+# --- the way through, for a name no command line carries (#797) -------------
+
+#: `ma`, U+2028 LINE SEPARATOR, `in`: a branch git keeps, and a line break
+#: to `str.splitlines`, as U+0085 is.
+LINE_SEPARATED = "ma\u2028in"
+#: How the remediation names a branch it cannot print as a command.
+FROM_ORIGINS = b"made from `origin`'s branch of that name, run in the source"
+
+
+def remembered_on(source: Path, branch: str) -> Path:
+    """`source` with `origin/HEAD` naming `origin/<branch>`, which it has
+    fetched, and no branch `branch` of its own, as `git clone -b main` of a
+    repository whose default branch is `branch` leaves it. Skipped as
+    `with_default_branch` is, where git refuses or alters the name."""
+    try:
+        git("update-ref", f"refs/remotes/origin/{branch}", "refs/heads/main",
+            cwd=source)
+        git("symbolic-ref", "refs/remotes/origin/HEAD",
+            f"refs/remotes/origin/{branch}", cwd=source)
+    except (AssertionError, UnicodeError, OSError) as exc:
+        pytest.skip(f"no ref here is named {branch!r}: {exc!r}")
+    return source
+
+
+@pytest.mark.parametrize("branch, spelled", [
+    (LINE_SEPARATED, b"`ma\\u2028in`"),
+    (BRANCH, b"`caf\\udce9`"),
+], ids=["u2028", "not-utf8"])
+def test_the_way_through_spells_a_name_no_command_line_carries(
+        tmp_path, branch, spelled):
+    """r797's second finding: the remediation printed `origin/HEAD`'s
+    branch raw in a `git branch` command. A U+2028 in it broke the
+    refusal's two lines in four for `str.splitlines`, and #425's
+    `caf<e9>` printed `git branch 'caf\\udce9' ...`, which git
+    refuses. The name is spelled now, and the step said in words."""
+    source = remembered_on(make_source_repo(tmp_path / "Thing"), branch)
+
+    refused = planned(tmp_path, source)
+
+    assert_no_traceback({"plan": refused})
+    assert refused.returncode == 2, said(refused)
+    assert len(refused.stderr.splitlines()) == 2, said(refused)
+    assert len(refused.stderr.decode("utf-8").splitlines()) == 2, \
+        said(refused)
+    assert b"a branch named " + spelled + b" " + FROM_ORIGINS in \
+        refused.stderr, said(refused)
+    assert b"`git branch " not in refused.stderr, said(refused)

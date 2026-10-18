@@ -58,7 +58,9 @@ A value the script only ECHOES BACK (`--elected-by`, `git config
 user.name`) and a CHILD PROCESS'S OWN OUTPUT are not this guarantee's to
 keep: they are whatever bytes they already are, and `main()` writes them
 through a UTF-8 `errors="replace"` stream rather than mangling or refusing
-on a byte this file never chose.
+on a byte this file never chose. A Python child that writes to that stream
+itself is told the same encoding (`child_environment`, #836), so the stream
+is in one encoding throughout.
 
 `tests/test_repo_hygiene.py::test_setup_project_py_is_pure_ascii` holds the
 source.
@@ -66,6 +68,7 @@ source.
 
 from __future__ import annotations
 
+import codecs
 import os
 import re
 import shutil
@@ -272,6 +275,79 @@ def rmtree(path) -> None:
     shutil.rmtree(path, onerror=clear_readonly)
 
 
+#: What a Python child whose output `run` CAPTURES is told to write in, which
+#: is what `run` reads the pipe as: UTF-8, with `backslashreplace` for the one
+#: thing UTF-8 cannot hold, a lone surrogate (a byte of a file name that was
+#: not UTF-8). `scripts/shape_materialize.py`'s `CAPTURED_CHILD_IOENCODING`.
+CAPTURED_CHILD_IOENCODING = "utf-8:backslashreplace"
+
+#: The built-in handlers that never raise on a character an encoding cannot
+#: hold, so a child is told the one its stream has. `strict` and
+#: `surrogateescape` raise on such a character, and are not among them.
+#: `scripts/shape_materialize.py`'s `_HANDLERS_THAT_NEVER_RAISE`.
+HANDLERS_THAT_NEVER_RAISE = frozenset((
+    "backslashreplace", "ignore", "namereplace", "replace",
+    "xmlcharrefreplace"))
+
+
+def child_environment(capture: bool = False) -> dict:
+    """The environment `run` starts EVERY child in: this process's own, with
+    `PYTHONIOENCODING` naming the encoding the child's words are read in
+    (#836).
+
+    WHAT WAS WRONG. `main` reconfigures this process's stdout and stderr to
+    UTF-8, and a child does not inherit a `reconfigure`: a Python child takes
+    its streams' encoding from its OWN environment (`PYTHONIOENCODING`, then
+    the locale). So on a stdout whose code page is not UTF-8 - Windows' ANSI
+    code page on any stdout that is not the console, emulated as
+    `PYTHONIOENCODING=cp1252:strict` or `cp1252:surrogateescape` - the
+    naming validator's em dash, the scaffold's ellipsis and the validators
+    `scripts/bootstrap.py` runs reached the same stream in cp1252, between
+    this file's UTF-8 lines: one stream in two encodings. The plan run again
+    to read why it was refused, the one child `run` captures, wrote cp1252
+    into a pipe `run` decodes as UTF-8.
+
+    THE RULE IS #254's, which `scripts/shape_materialize.py` writes as
+    `inherited_child_environment` and `captured_child_environment` and
+    `bump-leg.py`, `update-shape.py` and `family.py` pass as `env=`:
+    - a child that INHERITS this process's stdout is told that stream's own
+      encoding (UTF-8, once `main` has reconfigured it), with the stream's
+      own handler where that one never raises (`HANDLERS_THAT_NEVER_RAISE`)
+      and `backslashreplace` where it does: built-in names only, since a
+      child cannot find a handler only its parent registered;
+    - a child whose output is CAPTURED is told `CAPTURED_CHILD_IOENCODING`,
+      what `run` decodes the pipe as, whatever the operator had set.
+    A stdout with no usable encoding (`pythonw` has no stdout) leaves the
+    environment as it is: there is nothing for the child to agree with.
+
+    A COPY, NOT AN IMPORT. This file runs before any checkout of the standard
+    exists - self-bootstrap mode starts here, as one downloaded file - and
+    `run` is what clones one. `tests/test_validator_child_encoding.py` holds
+    this copy to `shape_materialize`'s answer for every stream it asks about.
+
+    Every child is given it, git and gh included. `PYTHONIOENCODING` is read
+    by Python alone, so a child that is not Python is unchanged by it, and a
+    Python program such a child runs in turn (a git hook, a credential
+    helper) writes into the same stream and is told the same. It names the
+    child's stdin too: the one Python child that reads stdin, the checkout's
+    own copy of this file, asks for answers in ASCII only (a CamelCase
+    project name, `yes`), and on Windows a console ignores it.
+    """
+    env = dict(os.environ)
+    if capture:
+        env["PYTHONIOENCODING"] = CAPTURED_CHILD_IOENCODING
+        return env
+    try:
+        encoding = codecs.lookup(sys.stdout.encoding).name
+    except (AttributeError, LookupError, TypeError):
+        return env
+    errors = getattr(sys.stdout, "errors", None)
+    if errors not in HANDLERS_THAT_NEVER_RAISE:
+        errors = "backslashreplace"
+    env["PYTHONIOENCODING"] = "%s:%s" % (encoding, errors)
+    return env
+
+
 def run(argv, cwd=None, capture: bool = False,
         stdin=None) -> subprocess.CompletedProcess:
     """One spelling of "run a program", with the output decoding pinned.
@@ -282,6 +358,14 @@ def run(argv, cwd=None, capture: bool = False,
     `scaffold-project.py` and the validators print straight to the terminal
     the way they do under setup.sh. So is stdin, unless `stdin` names a file
     descriptor: `run_at_the_terminal` is the one caller that does.
+
+    EVERY CHILD IS TOLD WHAT ITS WORDS ARE READ IN (#836): `env=` is
+    `child_environment(capture)`, here and not at each call, so it reaches
+    all six Python children - the checkout's own copy of this file
+    (`self_bootstrap`), the naming validator (`check_names`), the plan
+    (`plan_and_confirm`) and the plan run again, captured
+    (`why_the_plan_did_not_go_through`), the scaffold (`scaffold`) and
+    `scripts/bootstrap.py` (`clone_and_bootstrap`) - and the next one too.
 
     EVERY ARGV THAT CARRIES A VALUE FROM THE COMMAND LINE WAS CHECKED AT PARSE
     TIME. `argv` is a list and `shell=False`, so there is no shell to inject
@@ -294,7 +378,7 @@ def run(argv, cwd=None, capture: bool = False,
         return subprocess.run(argv, cwd=str(cwd) if cwd is not None else None,
                               capture_output=capture, text=True,
                               encoding="utf-8", errors="replace", check=False,
-                              stdin=stdin)
+                              stdin=stdin, env=child_environment(capture))
     except OSError:
         # A PROGRAM THAT IS NOT THERE IS A FAILED RUN, not a traceback.
         # `is_shape_checkout()` asks git a question before the preflight has
@@ -1478,12 +1562,32 @@ def run_at_the_terminal(argv) -> subprocess.CompletedProcess:
             os.close(descriptor)
 
 
+def ask_for_the_project_name() -> str:
+    """The `project name` prompt, and the name typed at it, checked (#729).
+
+    AN EMPTY LINE IS A NAME NOBODY TYPED, NOT A MISSING TERMINAL: `can_ask()`
+    at the call is the gate that refuses for want of one, so this refusal says
+    what happened and does not print the usage text.
+
+    THE TYPED NAME IS HELD TO THE CHECK THE SAME NAME GETS AS `--project` or
+    as the positional, before anything builds a path from it: `..` leaves
+    `--into`, an absolute name replaces it, and step (4)'s validator reads
+    only the last part of what it is handed. `a b` and `Bad_Name` pass here on
+    purpose (`NAME_RE` is permissive); step (4) is where the policy rules on
+    those.
+    """
+    typed = ask("  project name (ONE CamelCase token, e.g. Atlas): ")
+    if not typed:
+        die("no project name was typed; nothing was created.")
+    return checked_value("project name", typed)
+
+
 def resolve_project_and_elector(opts: Options, shape_root: Path) -> None:
     """setup.sh:355-386, transcribed."""
     say("")
     say("(3) project")
     if not opts.project and can_ask():
-        opts.project = ask("  project name (ONE CamelCase token, e.g. Atlas): ")
+        opts.project = ask_for_the_project_name()
     if not opts.project:
         usage(sys.stderr)
         die("no --project given, and no terminal to ask on.")
@@ -2589,32 +2693,55 @@ def clone_and_bootstrap(opts: Options, org: str, landing: Landing) -> dict:
 #: `SHELL_BARE_POSIX`. A backslash is not in it, so a Windows path is quoted.
 SHELL_BARE_POSIX = re.compile(r"[A-Za-z0-9_./:@%+=,-]+")
 
-#: A word this host's shell reads as itself, needing no quotes:
-#: `scripts/repo_shape.py`'s `SHELL_BARE_NT` on Windows, else its
-#: `SHELL_BARE_POSIX`. This file runs before any checkout of the standard
+#: A word PowerShell reads as itself: `scripts/repo_shape.py`'s
+#: `SHELL_BARE_NT`. This file runs before any checkout of the standard
 #: exists, so it carries its own copy of the rule, and
-#: `tests/test_family_printed_quoting.py` holds the two to one answer.
-SHELL_BARE = re.compile(r"[A-Za-z0-9_./:%+=\\-]+" if os.name == "nt"
-                        else SHELL_BARE_POSIX.pattern)
+#: `tests/test_git_bash_dialect.py` holds the two to one answer on every
+#: host, as `tests/test_family_printed_quoting.py` does on this one.
+SHELL_BARE_NT = re.compile(r"[A-Za-z0-9_./:%+=\\-]+")
+
+
+def host_shell_dialect(name=None, environ=None) -> str:
+    """`scripts/repo_shape.py`'s `host_shell_dialect`, as a copy, because
+    this file runs before any checkout of the standard exists (#711):
+    `"nt"`, PowerShell's dialect, on a Windows host whose environment has
+    no `MSYSTEM` or an empty one, and `"posix"`, `sh`'s, everywhere else,
+    Git Bash included. `name` and `environ` are `os.name` and `os.environ`
+    when None. Its docstring there says why `MSYSTEM`, and what it does not
+    cover: a PowerShell started from inside Git Bash inherits `MSYSTEM` and
+    is answered `sh`'s. `tests/test_git_bash_dialect.py` holds the two
+    copies to one answer."""
+    name = os.name if name is None else name
+    environ = os.environ if environ is None else environ
+    return "nt" if name == "nt" and not environ.get("MSYSTEM") else "posix"
 
 
 def shell_word(value, posix: bool = False) -> str:
-    """`value` as ONE word of a command pasted into this host's shell: bare
-    where every character is itself to it, else in single quotes, doubled
-    inside for PowerShell, closed-escaped-reopened for `sh` (#486). A
-    leading `=` is quoted too, which zsh would expand.
+    """`value` as ONE word of a command pasted into this host's shell, the
+    one `host_shell_dialect` answers (#711): bare where every character is
+    itself to it, else in single quotes, doubled inside for PowerShell,
+    closed-escaped-reopened for `sh` (#486). A leading `=` is quoted too,
+    which zsh would expand.
+
+    ASKED AT EACH CALL, NOT AT IMPORT. The alphabet a word may stay bare in
+    and the escape it is quoted with are one answer, taken from the
+    environment the line is printed in, where `MSYSTEM` says Git Bash. The
+    alphabet used to be fixed at import (`SHELL_BARE`, from `os.name`) and
+    the escape asked `os.name` at each call, two reads of one question.
 
     `posix` spells it for `sh` on EVERY host, Windows too: Git Bash reads
     the backslash of a bare `C:\\work` as an escape and an apostrophe doubled
     for PowerShell as two quotes, and #532 rules the printed commands
     POSIX-only. The lines #538 adds or changes pass it, as the scaffold's
     NEXT STEPS clone does (`shell_line(..., "posix")`); the family lines
-    (`family_next_command`) are #532's and still take this host's dialect."""
+    (`family_next_command`) are #532's and take the host's dialect, which
+    under Git Bash is `sh`'s (#711, L2-29)."""
     text = str(value)
-    bare = SHELL_BARE_POSIX if posix else SHELL_BARE
+    windows = not posix and host_shell_dialect() == "nt"
+    bare = SHELL_BARE_NT if windows else SHELL_BARE_POSIX
     if not text.startswith("=") and bare.fullmatch(text):
         return text
-    if os.name == "nt" and not posix:
+    if windows:
         return "'" + re.sub("(['\u2018\u2019\u201a\u201b])", r"\1\1",
                             text) + "'"
     return "'" + text.replace("'", "'\\''") + "'"
@@ -2785,9 +2912,12 @@ def _main(argv, invocation_dir: str) -> int:
 
 def main(argv=None) -> int:
     # PowerShell 5.1 hands a child process the machine's ANSI code page, and
-    # cp1252 cannot encode a character this file does not use - but a CHILD's
-    # output travels through this process's streams too, and the validators
-    # and the scaffold are not ASCII-only. Guarded: `reconfigure` is 3.7+ and
+    # cp1252 cannot encode a character this file does not use - but what it
+    # echoes of a child (a version string, a login) passes through these
+    # streams too. A Python child that writes to the terminal itself does NOT
+    # inherit this `reconfigure`, and the validators and the scaffold are not
+    # ASCII-only, so `run` tells each child the encoding these streams now
+    # have (`child_environment`, #836). Guarded: `reconfigure` is 3.7+ and
     # a stream that has been replaced (a test harness, a pipe wrapper) may not
     # have it at all, and failing to set an encoding is not a reason to refuse
     # to scaffold.

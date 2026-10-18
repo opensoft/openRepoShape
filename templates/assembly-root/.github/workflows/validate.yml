@@ -67,6 +67,21 @@ jobs:
       # in all three: it could print a workflow command of its own, and git
       # cannot clone it. And each repository is named once, however many
       # sections or paths give it.
+      #
+      # And only what git reads (#786), by the rules the doctor and `siblings.py`
+      # read the same file by (#733): only a `submodule.<name>.url` key counts;
+      # a section whose name is empty or holds a `..` component is ignored, as is
+      # one with no `path`; a value that begins with `-` is ignored, that value
+      # alone, so an earlier one stands; nothing is read while `.gitmodules` is
+      # unmerged; and a file git refuses whole (one it cannot parse, a `path`,
+      # `url`, `ignore`, `update` or `branch` with no value, an `update` other
+      # than none, checkout, rebase or merge, a `shallow` that is no boolean, a
+      # `fetchRecurseSubmodules` that is neither a boolean nor on-demand) fails
+      # the step with its cause and the key or line, since git reads none of it
+      # and a repository named from it would be one git never fetches. The two
+      # steps below that print the urls read by the same key rules; the fetch
+      # step refuses a file git refuses, and the failing step is never reached
+      # with one.
       - name: leg repository names from .gitmodules
         id: leg-names
         if: env.SHAPE_LEGS_APP_SET == 'true'
@@ -75,9 +90,49 @@ jobs:
         run: |
           set -e
           legs=""
-          if [ -f .gitmodules ]; then
+          if [ -f .gitmodules ] && [ -z "$(git ls-files -u -- .gitmodules)" ]; then
+            # git reads none of a file it refuses, and neither does this (#786). Whatever
+            # of the file is printed is workflow-command data: % and CR are escaped.
+            esc() { sed -e 's/%/%25/g' -e "s/$(printf '\r')/%0D/g"; }
+            if ! err=$(git config --file .gitmodules --list 2>&1 >/dev/null); then
+              err=$(printf '%s\n' "$err" | sed -n '$s/^fatal: //p' | esc)
+              printf '%s\n' "::error::.gitmodules holds a line git cannot parse${err:+ ($err)}, so git refuses the whole file: it reads none of it, and no repository is named from it. git submodule status names the line git stops at."
+              exit 1
+            fi
+            cause() { printf '%s (%s)\n' "$1" "$(printf '%s' "$key" | esc)"; }
+            us=$(printf '\001')
+            refusal=$(git config -z --file .gitmodules --list | tr '\000\n' '\n\001' | while IFS= read -r rec; do
+              case $rec in *"$us"*) value=${rec#*"$us"}; bare= ;; *) value=; bare=y ;; esac
+              key=${rec%%"$us"*}
+              section=${key%.*}
+              case $section in submodule.?*) ;; *) continue ;; esac
+              case /${section#submodule.}/ in *[/\\]..[/\\]*) continue ;; esac
+              field=${key##*.}
+              case $field in
+                path|url|ignore|update|branch)
+                  [ -z "$bare" ] || { case $field in ignore|update) a=an ;; *) a=a ;; esac; cause "$a $field key with no value"; break; } ;;
+              esac
+              case $field in
+                update)
+                  case $value in none|checkout|rebase|merge) ;; *) cause "an update that is not none, checkout, rebase or merge"; break ;; esac ;;
+                shallow)
+                  git -c "x.y=$value" config --type=bool --get x.y >/dev/null 2>&1 || { cause "a shallow that is not a boolean"; break; } ;;
+                fetchrecursesubmodules)
+                  [ "$value" = on-demand ] || git -c "x.y=$value" config --type=bool --get x.y >/dev/null 2>&1 || { cause "a fetchRecurseSubmodules that is neither a boolean nor on-demand"; break; } ;;
+              esac
+            done || true)
+            if [ -n "$refusal" ]; then
+              printf '%s\n' "::error::.gitmodules holds $refusal, so git refuses the whole file: it reads none of it, and no repository is named from it. git submodule status names the key and line git stops at."
+              exit 1
+            fi
             while IFS= read -r key; do
-              url=$(git config --file .gitmodules --get -- "$key") || continue
+              case $key in submodule.?*.url) ;; *) continue ;; esac
+              name=${key#submodule.}
+              name=${name%.url}
+              case /$name/ in *[/\\]..[/\\]*) continue ;; esac
+              # A value beginning with - is ignored, that value alone: git keeps an earlier one.
+              url=$(git config --file .gitmodules --get -- "$key" '^([^-]|$)') || continue
+              git config --file .gitmodules --get -- "submodule.$name.path" '^([^-]|$)' >/dev/null || continue
               # A url holding a line break could print a workflow command of its own.
               case $url in *'
           '*|*"$(printf '\r')"*) continue ;; esac
@@ -151,7 +206,9 @@ jobs:
       # carry: `https://github.com/...` and SSH `git@github.com:...`. With no
       # credential configured this falls back to a plain, unauthenticated
       # `git submodule update --init --recursive` — the same command that
-      # already ran here, unchanged, for a project whose legs are public.
+      # already ran here, unchanged, for a project whose legs are public. A fetch
+      # that fails over a `.gitmodules` git refuses is no such degrade: no
+      # credential cures it, so the step names the cause and fails (#786).
       - name: fetch the legs (submodules)
         id: submodules
         env:
@@ -185,14 +242,60 @@ jobs:
             echo "legs_available=true" >> "$GITHUB_OUTPUT"
           else
             echo "legs_available=false" >> "$GITHUB_OUTPUT"
+            readable=
+            if [ -f .gitmodules ] && [ -z "$(git ls-files -u -- .gitmodules)" ]; then readable=y; fi
+            if [ -n "$readable" ]; then
+              # git reads none of a file it refuses, and neither does this (#786). Whatever
+              # of the file is printed is workflow-command data: % and CR are escaped.
+              esc() { sed -e 's/%/%25/g' -e "s/$(printf '\r')/%0D/g"; }
+              if ! err=$(git config --file .gitmodules --list 2>&1 >/dev/null); then
+                err=$(printf '%s\n' "$err" | sed -n '$s/^fatal: //p' | esc)
+                printf '%s\n' "::error::.gitmodules holds a line git cannot parse${err:+ ($err)}, so git refuses the whole file: it reads none of it, and no repository is named from it. git submodule status names the line git stops at."
+                exit 1
+              fi
+              cause() { printf '%s (%s)\n' "$1" "$(printf '%s' "$key" | esc)"; }
+              us=$(printf '\001')
+              refusal=$(git config -z --file .gitmodules --list | tr '\000\n' '\n\001' | while IFS= read -r rec; do
+                case $rec in *"$us"*) value=${rec#*"$us"}; bare= ;; *) value=; bare=y ;; esac
+                key=${rec%%"$us"*}
+                section=${key%.*}
+                case $section in submodule.?*) ;; *) continue ;; esac
+                case /${section#submodule.}/ in *[/\\]..[/\\]*) continue ;; esac
+                field=${key##*.}
+                case $field in
+                  path|url|ignore|update|branch)
+                    [ -z "$bare" ] || { case $field in ignore|update) a=an ;; *) a=a ;; esac; cause "$a $field key with no value"; break; } ;;
+                esac
+                case $field in
+                  update)
+                    case $value in none|checkout|rebase|merge) ;; *) cause "an update that is not none, checkout, rebase or merge"; break ;; esac ;;
+                  shallow)
+                    git -c "x.y=$value" config --type=bool --get x.y >/dev/null 2>&1 || { cause "a shallow that is not a boolean"; break; } ;;
+                  fetchrecursesubmodules)
+                    [ "$value" = on-demand ] || git -c "x.y=$value" config --type=bool --get x.y >/dev/null 2>&1 || { cause "a fetchRecurseSubmodules that is neither a boolean nor on-demand"; break; } ;;
+                esac
+              done || true)
+              if [ -n "$refusal" ]; then
+                printf '%s\n' "::error::.gitmodules holds $refusal, so git refuses the whole file: it reads none of it, and no repository is named from it. git submodule status names the key and line git stops at."
+                exit 1
+              fi
+            fi
             echo "::warning::submodule checkout failed (git exit $status) using credential source '$legs_credential'. If the legs are PRIVATE or internal sibling repositories, the default GITHUB_TOKEN cannot read them. Configure a GitHub App (SHAPE_LEGS_APP_ID + SHAPE_LEGS_APP_PRIVATE_KEY, preferred) or set SHAPE_LEGS_TOKEN — a fine-grained PAT — with contents:read on the legs, as a repository or organisation secret. Leg URLs:"
-            git config --file .gitmodules --name-only --get-regexp '\.url$' | while IFS= read -r key; do
-              url=$(git config --file .gitmodules --get -- "$key") || continue
-              # A url holding a line break could print a workflow command of its own.
-              case $url in *'
+            if [ -n "$readable" ]; then
+              git config --file .gitmodules --name-only --get-regexp '\.url$' | awk '!seen[$0]++' | while IFS= read -r key; do
+                case $key in submodule.?*.url) ;; *) continue ;; esac
+                name=${key#submodule.}
+                name=${name%.url}
+                case /$name/ in *[/\\]..[/\\]*) continue ;; esac
+                # A value beginning with - is ignored, that value alone: git keeps an earlier one.
+                url=$(git config --file .gitmodules --get -- "$key" '^([^-]|$)') || continue
+                git config --file .gitmodules --get -- "submodule.$name.path" '^([^-]|$)' >/dev/null || continue
+                # A url holding a line break could print a workflow command of its own.
+                case $url in *'
           '*|*"$(printf '\r')"*) continue ;; esac
-              echo "::warning::  $url"
-            done
+                echo "::warning::  $url"
+              done
+            fi
           fi
 
       - uses: actions/setup-python@v5
@@ -229,19 +332,30 @@ jobs:
       # a credential that IS configured (App or PAT) that still could not
       # check out the legs (wrong scope, missing contents:read grant, an
       # incomplete App installation, a leg URL problem) is a finding a human
-      # must act on, so this fails the job — the only case that does. The
-      # root checkout above never depended on either credential, so a
-      # failure here can only mean the credential named below cannot read one
-      # of the LEG repositories.
+      # must act on, so this fails the job — the only case that does, but for a
+      # `.gitmodules` git refuses, which the fetch step above fails whatever the
+      # credential, since none cures it. The root checkout above never depended
+      # on either credential, so a failure here can only mean the credential
+      # named below cannot read one of the LEG repositories.
       - name: fail — a leg credential is configured but the legs still could not be fetched
         if: steps.submodules.outputs.legs_available != 'true' && (env.SHAPE_LEGS_TOKEN_SET == 'true' || env.SHAPE_LEGS_APP_SET == 'true')
         run: |
           echo "::error::A leg credential is configured (source: ${{ steps.submodules.outputs.legs_credential }}) but 'git submodule update --init --recursive' still failed. The root checkout does not use this token — it reads with the workflow's default token — so this means the '${{ steps.submodules.outputs.legs_credential }}' credential cannot read one or more of the following LEG repositories (wrong token/App scope, a missing contents:read grant, an incomplete App installation, or a leg URL problem):"
-          git config --file .gitmodules --name-only --get-regexp '\.url$' | while IFS= read -r key; do
-            url=$(git config --file .gitmodules --get -- "$key") || continue
-            # A url holding a line break could print a workflow command of its own.
-            case $url in *'
+          if [ -f .gitmodules ] && [ -z "$(git ls-files -u -- .gitmodules)" ]; then
+            # No refusal here: the fetch step above exits 1 on a file git refuses, so
+            # this step is never reached with one.
+            git config --file .gitmodules --name-only --get-regexp '\.url$' | awk '!seen[$0]++' | while IFS= read -r key; do
+              case $key in submodule.?*.url) ;; *) continue ;; esac
+              name=${key#submodule.}
+              name=${name%.url}
+              case /$name/ in *[/\\]..[/\\]*) continue ;; esac
+              # A value beginning with - is ignored, that value alone: git keeps an earlier one.
+              url=$(git config --file .gitmodules --get -- "$key" '^([^-]|$)') || continue
+              git config --file .gitmodules --get -- "submodule.$name.path" '^([^-]|$)' >/dev/null || continue
+              # A url holding a line break could print a workflow command of its own.
+              case $url in *'
           '*|*"$(printf '\r')"*) continue ;; esac
-            echo "::error::  $url"
-          done
+              echo "::error::  $url"
+            done
+          fi
           exit 1
