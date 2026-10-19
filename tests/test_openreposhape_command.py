@@ -1715,32 +1715,166 @@ def test_two_modes_is_a_refusal_not_last_wins(args, tmp_path):
     assert not bin_dir.exists(), "a refused run placed a command anyway"
 
 
-@pytest.mark.parametrize("ref", ["-x", "--upload-pack=touch /tmp/pwned",
-                                 "a" * 256, "refs/heads/..", "x.lock"])
+def doctor_from_stdin(where: Path, repo: str, ref: str | None = None,
+                      clone_fails: bool = True,
+                      temporary: Path | None = None):
+    """`--doctor` run from STDIN, so the clone path is the one taken, with a
+    `git` first on `$PATH` that logs what it is asked and clones nothing:
+    the clone fails, or (`clone_fails=False`) makes the empty directory it
+    is handed, which is a standard with no doctor in it. Returns the run,
+    the lines the `git` logged (each without a leading `-C <dir>`, so the
+    subcommand opens it) and the `$TMPDIR` the run was given: a folder made
+    here, or the path `temporary` names, made or not.
+
+    Each of these runs made a real clone of this checkout until #942, and
+    five of them took 188 s under load. `repo` is never reached: the `git`
+    here looks at no repository."""
+    fake = where / "fake-path"
+    fake.mkdir()
+    log = where / "git-asked"
+    if temporary is None:
+        temporary = where / "tmp"
+        temporary.mkdir()
+    write_script(fake / "git", "#!/bin/sh\n"
+                 'case "$1" in -C) shift 2 ;; esac\n'
+                 f"printf '%s\\n' \"$*\" >> '{bash_path(log)}'\n"
+                 '[ "$1" = clone ] || exit 0\n'
+                 + ("exit 1\n" if clone_fails else 'mkdir -p "$5"\n'))
+    (fake / "git").chmod(0o755)
+    env = {"OPENREPOSHAPE_REPO": repo, "TMPDIR": str(temporary),
+           "PATH": f"{fake}{os.pathsep}{os.environ['PATH']}"}
+    if ref is not None:
+        env["OPENREPOSHAPE_REF"] = ref
+    result = subprocess.run(
+        ["bash", "-s", "--", "--doctor", str(where)], executable=BASH,
+        capture_output=True, text=True, check=False,
+        input=COMMAND.read_text(encoding="utf-8"), cwd=str(where),
+        env=command_env(home=where, setup_sh=None, env=env))
+    asked = log.read_text(encoding="utf-8").splitlines() \
+        if log.exists() else []
+    return result, asked, temporary
+
+
+def asked_of_git(asked: list, subcommand: str) -> list:
+    """The logged calls of one subcommand of the `git` that
+    `doctor_from_stdin` put first on `$PATH`."""
+    return [call for call in asked if call.split()[:1] == [subcommand]]
+
+
+def assert_the_ref_was_refused_before_any_clone(result, asked, temporary,
+                                                ref: str) -> None:
+    """Exit 2 in `ref_fault`'s words for `ref`, no clone and no checkout
+    asked of git, and nothing in `$TMPDIR`: the ref was refused first (#942).
+    The over-long refusal does not echo the value back; the shape refusal
+    does, having passed the length and character checks."""
+    assert result.returncode == 2, result.stdout + result.stderr
+    if len(ref) > 255:
+        assert f"REFUSED: $OPENREPOSHAPE_REF is {len(ref)} characters long; " \
+            "a branch, tag or commit this tool will pass to `git checkout` " \
+            "is at most 255 characters." in result.stderr
+        assert ref not in result.stderr
+    else:
+        assert_the_refusal_states_the_ref_rule(
+            result.stderr,
+            f"REFUSED: $OPENREPOSHAPE_REF is '{ref}', which is not a "
+            "branch, tag or commit this tool will pass to `git checkout`: ")
+    assert "could not clone" not in result.stderr
+    assert asked_of_git(asked, "clone") == [], (
+        "a refused ref was asked of a clone first")
+    assert asked_of_git(asked, "checkout") == []
+    assert list(temporary.glob("*")) == []
+
+
+@pytest.mark.parametrize("ref", [
+    "-x", "--upload-pack=touch /tmp/pwned",
+    pytest.param("a" * 256, id="a-x256"), "refs/heads/..", "x.lock",
+    "a.lock/b", "a//b", "a.", "a/b/", "topic.lock"])
 def test_a_ref_the_doctor_would_check_out_is_validated(ref, tmp_path):
-    """$OPENREPOSHAPE_REF reaches `git checkout`, so it is checked first.
+    """$OPENREPOSHAPE_REF reaches `git checkout`, so it is checked first,
+    and before the clone (#942).
 
     `setup.sh` validates `--shape-ref` in three steps and this value lands
     in the same place, which the first cut of `--doctor` missed (Copilot,
     PR #96): a leading dash is an option to git, not a ref. Run from STDIN
-    so the clone path is the one taken: the command clones this checkout
-    first, then checks the ref, and refuses before `git checkout` is ever
-    handed it.
+    so the clone path is the one taken, with a `git` that logs what it is
+    asked: the command checks the ref first, and refuses before any clone,
+    so git is asked for no clone and no checkout, and what the person reads
+    is `ref_fault`'s sentence for that value. The check came after the
+    clone until #942, and each of these then made a whole clone first.
     """
-    result = subprocess.run(
-        ["bash", "-s", "--", "--doctor", str(tmp_path)], executable=BASH,
-        capture_output=True, text=True, check=False,
-        input=COMMAND.read_text(encoding="utf-8"), cwd=str(tmp_path),
-        env=command_env(home=tmp_path, setup_sh=None,
-                        env={"OPENREPOSHAPE_REPO": bash_path(REPO),
-                             "OPENREPOSHAPE_REF": ref}))
+    result, asked, temporary = doctor_from_stdin(tmp_path, "acme/x", ref)
+    assert_the_ref_was_refused_before_any_clone(result, asked, temporary, ref)
+
+
+@pytest.mark.parametrize("ref", [None, "main", "v1.2.0",
+                                 "release/v1.2.0-rc_1"])
+def test_a_ref_the_doctor_takes_still_clones_once_and_checks_out_once(
+        ref, tmp_path):
+    """Checking the ref first leaves a good one where it was (#942): one
+    clone of the standard, then one `git checkout` of the ref, and the
+    doctor's own refusal that this stand-in standard has no doctor, which
+    is as far as the run goes. No ref named is no checkout at all: the
+    clone's default branch is the standard."""
+    result, asked, _temporary = doctor_from_stdin(
+        tmp_path, "acme/x", ref, clone_fails=False)
     assert result.returncode == 2, result.stdout + result.stderr
-    assert "OPENREPOSHAPE_REF" in result.stderr
-    assert "git checkout" in result.stderr
-    # The over-long and control-character refusals must not echo the value
-    # back; the shape refusal may, having passed both.
-    if len(ref) > 255:
-        assert ref not in result.stderr
+    assert "has no shape-doctor.py" in result.stderr
+    assert "which is not a branch, tag or commit" not in result.stderr
+    clones = asked_of_git(asked, "clone")
+    assert len(clones) == 1, asked
+    assert clones[0].startswith(
+        "clone --quiet -- https://github.com/acme/x.git "), clones
+    expected = [] if ref is None else [f"checkout --quiet {ref} --"]
+    assert asked_of_git(asked, "checkout") == expected
+
+
+def test_a_ref_is_refused_where_the_clone_would_have_failed(tmp_path):
+    """OFFLINE, OR WITH A MIRROR THAT IS DOWN, a person who typed a bad ref
+    was told to make the clone work and told the ref was bad once it did
+    (#942). The ref is refused in its own words now, with no clone asked
+    for, and the clone's own refusal is still what a good ref meets."""
+    gone = "/nonexistent/openRepoShape.git"
+    bad = tmp_path / "bad"
+    bad.mkdir()
+    assert_the_ref_was_refused_before_any_clone(
+        *doctor_from_stdin(bad, gone, "a.lock/b"), "a.lock/b")
+
+    good = tmp_path / "good"
+    good.mkdir()
+    result, asked, _temporary = doctor_from_stdin(good, gone, "v1.2.0")
+    assert result.returncode == 2, result.stdout + result.stderr
+    assert f"REFUSED: could not clone {gone} into a temporary directory" \
+        in result.stderr
+    assert len(asked_of_git(asked, "clone")) == 1, asked
+    assert asked_of_git(asked, "checkout") == []
+
+
+@pytest.mark.parametrize("ref, refused", [
+    pytest.param("a.lock/b", True, id="a.lock-b"),
+    pytest.param("a" * 256, True, id="a-x256"),
+    pytest.param("v1.2.0", False, id="a-good-ref")])
+def test_a_ref_is_refused_before_a_directory_is_made_for_the_clone(
+        ref, refused, tmp_path):
+    """A REFUSED REF MAKES NO DIRECTORY (#942). `workdir` makes the folder
+    the clone goes into, under `$TMPDIR`, and refuses where it cannot. With
+    the check below it, a bad ref and a `$TMPDIR` that is not there ended in
+    "could not make a temporary directory", and the ref was never named.
+    The ref is refused in its own words now, with git asked nothing, and
+    the `$TMPDIR` is still not there; a good ref still meets the
+    `$TMPDIR` refusal, with git asked nothing as well."""
+    missing = tmp_path / "not-there"
+    result, asked, temporary = doctor_from_stdin(
+        tmp_path, "acme/x", ref, temporary=missing)
+    assert asked == []
+    assert not missing.exists()
+    if refused:
+        assert_the_ref_was_refused_before_any_clone(
+            result, asked, temporary, ref)
+        assert "could not make a temporary directory" not in result.stderr
+        return
+    assert result.returncode == 2, result.stdout + result.stderr
+    assert "REFUSED: could not make a temporary directory under " \
+        f"{bash_path(missing)}." in result.stderr
 
 
 def test_a_checkout_without_the_doctor_refuses_by_name(tmp_path):

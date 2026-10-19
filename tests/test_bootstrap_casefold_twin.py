@@ -31,8 +31,9 @@ behind the pin), P9 (it is at the pin) and the missing-branch path. No ref
 moves and none is made. The lines say where the leg is, why it is left, and
 the way out: `git -C <leg> switch <branch>` for T7 and P9, which on a disk
 that folds case re-spells HEAD and moves no file, and for the missing branch,
-where that command has no branch to go to, keeping the commits on a branch of
-another name and checking out the pin.
+where that command has no branch to go to, renaming the twin, which moves HEAD
+with it (#962: it first said to keep the commits on a branch of another name
+and check out the pin, which leaves the twin where it is).
 
 THE WORDS HOLD ON A DISK THAT KEEPS CASE TOO, where `Main` and `main` are two
 branches: they say that a disk that folds case reads them as one, never that
@@ -83,10 +84,11 @@ RISKS = {
 #: The way out of a leg with a branch to go to (T7, P9).
 SWITCH = ("          run `git -C spec switch main`, which moves no branch, "
           "and then run bootstrap again.\n")
-#: The way out of a leg with no `main` (#896's missing-branch path).
-KEEP = ("          not moving the checkout off it. Keep any commit made "
-        "there on a branch whose name differs from main by more than case, "
-        "check out the pin in the leg, and run bootstrap again.\n")
+#: The way out of a leg with no `main` (#896's missing-branch path, #962's
+#: rename of the twin, which git moves HEAD with).
+RENAME = ("          rename Main to a name that differs from main by more "
+          "than case, its commits staying on it: `git -C spec branch -m "
+          "Main Main-kept`, and run bootstrap again.\n")
 HEADING = "\n(a) legs on tracking branches, pins untouched\n"
 
 
@@ -168,6 +170,13 @@ def printed_way_out(stdout: str) -> str:
     """The command the `run ...` line gives, between its backticks."""
     line = next(row for row in stdout.splitlines()
                 if row.startswith("          run `"))
+    return line.split("`")[1]
+
+
+def printed_rename(stdout: str) -> str:
+    """The command the `rename ...` line gives, between its backticks."""
+    line = next(row for row in stdout.splitlines()
+                if row.startswith("          rename "))
     return line.split("`")[1]
 
 
@@ -258,7 +267,9 @@ def test_the_missing_branch_path_leaves_an_unborn_twin_and_makes_nothing(
     """`Main` unborn (no commit, the dangling symlink `Main -> main` a disk
     that folds case reads as one), `main` not there. `checkout -b main` made
     the file `Main` reads, and said the leg had been on a branch with no
-    commit yet."""
+    commit yet. The way out, run as printed through `/bin/sh`, renames the
+    unborn branch HEAD is on: HEAD goes with it, and the next run makes
+    `main` and says the leg was on `Main-kept`, a branch with no commit."""
     leg = root / "spec"
     pin = without_main(leg)
     twin_on_disk(leg)
@@ -268,11 +279,22 @@ def test_the_missing_branch_path_leaves_an_unborn_twin_and_makes_nothing(
     assert result.returncode == 0, result.stderr + result.stdout
     assert step_a(result.stdout) == twin_lines(
         f"branch main does not exist (the pin is {pin[:12]})", "make",
-        KEEP), result.stdout
+        RENAME), result.stdout
     assert main_of(leg) is None, "no `main` is made"
     assert not (gitdir_of(leg) / "refs" / "heads" / "main").exists()
     assert head_ref(leg) == TWIN_REF, "HEAD stays where it was"
     assert pin == rev(root, "HEAD:spec")
+
+    pasted(root, printed_rename(result.stdout))
+    assert head_ref(leg) == "refs/heads/Main-kept", "HEAD goes with it"
+    again = skip_validators(root)
+    assert again.returncode == 0, again.stderr + again.stdout
+    assert step_a(again.stdout) == (
+        f"  [spec] spec: branch main created at {pin[:12]} — at the pin\n"
+        "          the leg was on Main-kept, a branch with no commit yet; "
+        "it is on main now\n"), again.stdout
+    assert head_ref(leg) == MAIN
+    assert rev(leg) == pin
 
 
 def test_the_missing_branch_path_leaves_a_packed_twin_with_commits(
@@ -280,9 +302,10 @@ def test_the_missing_branch_path_leaves_a_packed_twin_with_commits(
     """The state that loses something on a disk that folds case: `Main`
     holds a commit of its own, packed (`git pack-refs --all`, which is
     what a `gc` leaves), and `main` is not there. A new loose `main` is the
-    file `Main` reads, which hides what `Main` holds. Left, with the way
-    out run as printed: the commit kept on a branch of another name, the
-    pin checked out, bootstrap again, which makes `main` at the pin."""
+    file `Main` reads, which shadows the name `Main`. Left, with the way
+    out run as printed through `/bin/sh`: `Main` renamed, which moves HEAD
+    with it, and bootstrap again, which makes `main` at the pin and says
+    the leg was on `Main-kept`, which keeps its commits."""
     needs_a_disk_that_keeps_case(tmp_path)
     leg = root / "spec"
     pin = rev(leg)
@@ -295,25 +318,29 @@ def test_the_missing_branch_path_leaves_a_packed_twin_with_commits(
     assert result.returncode == 0, result.stderr + result.stdout
     assert step_a(result.stdout) == twin_lines(
         f"branch main does not exist (the pin is {pin[:12]})", "make",
-        KEEP), result.stdout
+        RENAME), result.stdout
     assert main_of(leg) is None, "no `main` is made"
     assert head_ref(leg) == TWIN_REF
     assert rev(leg) == mine, "HEAD stays on `Main`'s commit"
     assert status(leg) == ""
-
-    git("branch", "-q", "kept-from-Main", cwd=leg)
     shown = re.search(r"\(the pin is ([0-9a-f]{12})\)", result.stdout)
-    assert shown is not None, "the line prints the pin"
-    git("checkout", "-q", "--detach", shown.group(1), cwd=leg)
-    assert rev(leg) == pin, "the printed sha is the pin"
+    assert shown is not None and shown.group(1) == pin[:12], (
+        "the line prints the pin")
+
+    pasted(root, printed_rename(result.stdout))
+    assert head_ref(leg) == "refs/heads/Main-kept", "HEAD goes with it"
+    assert rev(leg) == mine
     again = skip_validators(root)
     assert again.returncode == 0, again.stderr + again.stdout
     assert step_a(again.stdout) == (
-        f"  [spec] spec: branch main created at {pin[:12]} — at the pin\n"), (
-        again.stdout)
+        f"  [spec] spec: branch main created at {pin[:12]} — at the pin\n"
+        "          the leg was on Main-kept, which keeps its commits; it is "
+        "on main now\n"), again.stdout
     assert head_ref(leg) == MAIN
-    assert rev(leg, "refs/heads/kept-from-Main") == mine
-    assert rev(leg, TWIN_REF) == mine, "`Main` keeps its commit here"
+    assert rev(leg) == pin
+    assert rev(leg, "refs/heads/Main-kept") == mine
+    assert git("rev-parse", "--verify", "--quiet", TWIN_REF, cwd=leg,
+               check=False).stdout.strip() == "", "`Main` is renamed"
 
 
 def test_on_a_disk_that_keeps_case_the_words_are_true_too(
@@ -510,7 +537,8 @@ def test_a_shell_reads_each_word_of_the_way_out_as_the_bytes_of_its_name(
     assert read == os.fsencode(path) + b"\0" + os.fsencode(branch)
 
 
-def test_the_lines_spell_a_name_that_is_not_utf_8(bootstrap_module, capsys):
+def test_the_lines_spell_a_name_that_is_not_utf_8(
+        bootstrap_module, capsys, tmp_path):
     """A twin named with a byte that is not UTF-8 holds a surrogate escape
     here (#704): printed raw it would raise `UnicodeEncodeError`, so each
     name in the lines is spelled (#391), the leg's path too."""
@@ -518,9 +546,9 @@ def test_the_lines_spell_a_name_that_is_not_utf_8(bootstrap_module, capsys):
     branch = f"a{SURROGATE}b"
     leg = f"a{chr(0x1B)}b"
     spelled = bootstrap_module.spelled
-    bootstrap_module._say_twin(
-        f"[spec] {spelled(leg)}", leg, branch, f"refs/heads/{twin}",
-        f"branch {spelled(branch)} does not exist", "make")
+    bootstrap_module._say_spelling(
+        tmp_path, f"[spec] {spelled(leg)}", leg, branch, twin,
+        f"branch {spelled(branch)} does not exist", "the checkout is on")
     out = capsys.readouterr().out
     assert out.isascii(), "every name is written as an escape"
     assert chr(0x1B) not in out

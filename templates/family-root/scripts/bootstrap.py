@@ -105,7 +105,11 @@ WHAT IT DOES, in order:
       the member's make runs another, the code is the innermost command's,
       as far as make's lines tell it (`MakeErrors` says where they do not);
       make's stderr reaches the terminal through this run, and `run_make`
-      says what that changes for a member (#884).
+      says what that changes for a member (#884). Under the holder's `make
+      -jN`, each member's make runs its jobs one at a time and says
+      nothing of it: the jobserver of the make above this run, and the
+      `-j` that comes with it, are taken out of the `MAKEFLAGS` it
+      inherits (`member_make_env`, #888).
 
   (c) EXITS 0 unless a member's own command failed, or (a) left a member not
       checked out that no credential would check out, or found a line or a
@@ -1375,7 +1379,7 @@ def run_make(make: str, target: str, cwd: Path) -> tuple[int, int | None]:
     "Reaping losing child"), and the line would say `exited 2` for every
     failure again."""
     proc = subprocess.Popen([make, target], cwd=str(cwd),
-                            stderr=subprocess.PIPE)
+                            stderr=subprocess.PIPE, env=member_make_env())
     errors = MakeErrors()
     for chunk in iter(lambda: proc.stderr.read1(65536), b""):
         passed_on(chunk)
@@ -1399,6 +1403,66 @@ def passed_on(chunk: bytes) -> None:
         return
     sink.write(chunk)
     sink.flush()
+
+
+#: A word of `MAKEFLAGS` that names the jobserver of the make above this
+#: run (#888): `--jobserver-auth=3,4`, a pipe's two descriptors (GNU make
+#: 4.2 on), `--jobserver-auth=fifo:<path>`, a named pipe (4.4 on, where
+#: there is `mkfifo`), and `--jobserver-fds=3,4` (before 4.2, as macOS's
+#: make 3.81 writes it). `re.DOTALL` here and below, since a path may hold
+#: any character.
+JOBSERVER_WORD = re.compile(r"--jobserver-(?:auth|fds)=.*", re.DOTALL)
+#: The words `member_make_env` takes out where one names a jobserver: that
+#: word, and the jobs that come with it, `-j2`, or the bare `-j` a make
+#: before 4.2 writes beside `--jobserver-fds`.
+JOBS_WORD = re.compile(r"-j[0-9]*|--jobserver-(?:auth|fds)=.*", re.DOTALL)
+#: A word of `MAKEFLAGS` as make splits it: only at a space or a tab, and
+#: a backslash keeps the character after it in the word, a space or a tab
+#: included (`ARGS=a\ -j2` is one word). Any other character, a newline
+#: or a no-break space among them, is part of its word, as make reads it.
+MAKEFLAGS_WORD = re.compile(r"(?:\\.|[^ \t])+", re.DOTALL)
+
+
+def member_make_env() -> dict[str, str]:
+    """This run's environment for a member's make: `MAKEFLAGS` without the
+    jobserver of the make above this run, where it names one, and without
+    the `-j` that comes with it (`JOBS_WORD`, #888). Every other word is
+    kept, `-k`, `-s` and a variable given on the holder's command line
+    among them, each word as make splits it: only at a space or a tab,
+    a backslash keeping either in a value (`MAKEFLAGS_WORD`). A
+    `MAKEFLAGS` that names no jobserver is left as it is: `make -j` with
+    no number, which starts none, or a person's own `MAKEFLAGS=-j8` with
+    no make above this run.
+
+    WHY. Under the holder's `make -j2 bootstrap`, `validate`, `park` or
+    `resume`, a member's make found `-j2 --jobserver-auth=3,4` in the
+    `MAKEFLAGS` it inherits, and not the two descriptors: the holder's
+    rule runs this script with no `+`, so make closes them for it, and
+    `Popen` closes every descriptor past stderr. It printed `make[1]:
+    warning: jobserver unavailable: using -j1.  Add '+' to parent make
+    rule.`, of a rule the person does not own, and ran its jobs one at a
+    time (GNU Make 4.3, measured). It runs them one at a time now, and
+    says nothing.
+
+    WHY NOT HAND THE JOBSERVER ON, as a `+` on the holder's rules and the
+    descriptors passed to the member's make would, which then ran its
+    jobs together (measured):
+    - a `+` runs its line under `make -n` too: `make -n bootstrap`
+      fetched every member and leg (measured);
+    - a descriptor `MAKEFLAGS` names is a number, and no proof that it is
+      the jobserver's: with a file open there, a member's make read a
+      byte of it for a token and wrote a `+` into another (measured);
+    - the member's make is `$MAKE` or `make` on PATH, not the make that
+      ran the holder, which exports no `MAKE` (measured), and a make may
+      not read another's jobserver: GNU make 4.3 stops at 4.4's `fifo:`
+      (`invalid --jobserver-auth string`, measured).
+    Taken out, no make is asked to read a jobserver at all."""
+    env = dict(os.environ)
+    words = MAKEFLAGS_WORD.findall(env.get("MAKEFLAGS", ""))
+    if any(JOBSERVER_WORD.fullmatch(word) for word in words):
+        env["MAKEFLAGS"] = " ".join(
+            word for word in words if not JOBS_WORD.fullmatch(word))
+    return env
 
 
 def main(argv: list[str] | None = None) -> int:

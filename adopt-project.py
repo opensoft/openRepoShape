@@ -2273,6 +2273,11 @@ class Source:
         #: cannot clone into that directory again (`_cloned_here`). `plan`
         #: records it as `source.cloned` (#652).
         self.cloned = cloned
+        #: Each symlink blob `symlink_targets` has read, by blob id: a blob
+        #: is immutable, so the one `git cat-file --batch` of a command
+        #: serves every later question about a link's target (#908). A blob
+        #: git did not have is kept as None, and not asked for again.
+        self.link_targets: dict[str, bytes | None] = {}
 
     @classmethod
     def open(cls, spec: str, work_root: Path, unwritable: str | None = None,
@@ -3149,9 +3154,10 @@ def cross_leg_references(source: "Source",
     does: both are paths in the SOURCE, which no edit of the plan moves. The
     Makefile follow-up (#522's review, F1) and the tracking branch's (#493's
     review, F3) are written the same way. The path from the code leg to the
-    spec leg's `contracts/`, which a person has then to work out from the two
-    mounts, is printed next to the CURRENT mounts by the two sentences that
-    name them (`contracts_from_code_leg`, #600's review, F1).
+    spec leg, and to its `contracts/` where it holds one, which a person has
+    then to work out from the two mounts, is printed next to the CURRENT
+    mounts by the two sentences that name them (`contracts_from_code_leg`,
+    #600's review, F1; #906).
 
     EVERY NAME IS A NAME (#216). Both inputs are source paths, and git reads
     each as something else unless told not to. A spec directory passed bare
@@ -3255,11 +3261,29 @@ def spec_leg_from_code_leg(spec_path: str, code_path: str) -> str:
     return "/".join([".."] * (len(code) - shared) + spec[shared:])
 
 
-def contracts_from_code_leg(spec_path, code_path, spec_leg_paths) -> str:
-    """What the two sentences that print the plan's CURRENT mounts end with
-    when the spec leg holds `contracts/`: ", so from the code leg the spec
-    leg's `contracts/` is `../spec/contracts/`", or "" when there is nothing
-    true to say (#600's review, F1).
+#: What each read-across follow-up says of what the file must do: both the
+#: line `cross_leg_references` writes for a file that names a spec directory,
+#: and `_search_by_hand`'s for a name git could not search for (#906).
+READ_ACROSS = "read across the assembly root"
+
+
+def holds_a_read_across(follow_ups) -> bool:
+    """Whether `follow_ups` holds a read-across follow-up: a line that says
+    a file must `READ_ACROSS`. Asked of the plan's own list, as the plan
+    stands, and not of a `git grep`, which `check` and the split message
+    never run (#906)."""
+    return any(isinstance(item, str) and READ_ACROSS in item
+               for item in follow_ups)
+
+
+def contracts_from_code_leg(spec_path, code_path, spec_leg_paths,
+                            follow_ups=()) -> str:
+    """What the two sentences that print the plan's CURRENT mounts end with:
+    ", so from the code leg the spec leg is `../spec/`" where the plan holds a
+    read-across follow-up, and ", so from the code leg the spec leg's
+    `contracts/` is `../spec/contracts/`" where the spec leg holds
+    `contracts/`, both joined by " and " where both are true; or "" when
+    there is nothing true to say (#600's review, F1; #906).
 
     THE READ-ACROSS FOLLOW-UP NAMES `legs.code_path` AND `legs.spec_path` AND
     NO PATH, so no hand edit of either can contradict it, and it leaves the
@@ -3272,23 +3296,42 @@ def contracts_from_code_leg(spec_path, code_path, spec_leg_paths) -> str:
     `execute` made. It is never stored in `follow_ups:`, so it cannot go stale
     between a hand edit and the next `check`, and it needs no `git grep`.
 
-    NOTHING, in three cases. No path of the spec leg is `contracts/` or lies
-    under it, so there is no `contracts/` to lead to (the Makefile follow-up's
-    own condition). A mount is not text, or the two are not mount paths
-    `execute` accepts, or they overlap or differ only in case: `check` says
-    so as a finding, and a path computed from two strings that are not two
-    mounts leads nowhere. `spec_leg_paths` are the paths the plan assigns to
-    the spec leg, as `_leg_paths` reads them.
+    THE SPEC LEG'S OWN PATH, NOT ONLY ITS `contracts/` (#906). The follow-up
+    is written for a code file that names ANY directory the plan sends to
+    the spec leg, `specs/` as much as `contracts/`, and a person finishing
+    it needs the path to that directory. It gave one only where the spec leg
+    held `contracts/`, so a file naming `specs/` got the key-form line and no
+    ready path, where v1.0.1 printed `../spec/specs/`. The spec leg's own
+    path is the one every such directory lies below: from it the person
+    reaches `specs/` or any other. It is printed wherever `follow_ups` holds
+    a read-across line (`holds_a_read_across`), `contracts/` or not, and the
+    `contracts/` clause stays for the spec leg that holds one.
+
+    NOTHING, in three cases. The plan holds no read-across follow-up and no
+    path of the spec leg is `contracts/` or lies under it (the Makefile
+    follow-up's own condition), so there is nothing to lead to. A mount is
+    not text, or the two are not mount paths `execute` accepts, or they
+    overlap or differ only in case: `check` says so as a finding, and a path
+    computed from two strings that are not two mounts leads nowhere.
+    `spec_leg_paths` are the paths the plan assigns to the spec leg, as
+    `_leg_paths` reads them, and `follow_ups` the plan's, as
+    `_plan_follow_ups` reads them.
     """
-    if not any(path == "contracts/" or path.startswith("contracts/")
-               for path in spec_leg_paths):
+    holds_contracts = any(path == "contracts/" or path.startswith("contracts/")
+                          for path in spec_leg_paths)
+    reads_across = holds_a_read_across(follow_ups)
+    if not (holds_contracts or reads_across):
         return ""
     if leg_path_problems(("legs.spec_path", spec_path),
                          ("legs.code_path", code_path)):
         return ""
     across = spec_leg_from_code_leg(spec_path, code_path)
-    return (", so from the code leg the spec leg's `contracts/` is "
-            f"`{across}/contracts/`")
+    said = []
+    if reads_across:
+        said.append(f"the spec leg is `{across}/`")
+    if holds_contracts:
+        said.append(f"the spec leg's `contracts/` is `{across}/contracts/`")
+    return ", so from the code leg " + " and ".join(said)
 
 
 def _search_by_hand(named: str, why: str) -> str:
@@ -3298,6 +3341,20 @@ def _search_by_hand(named: str, why: str) -> str:
             f"`{named}` ({why}); find the ones that name it by hand: each "
             f"must read across the assembly root once `{named}` moves to the "
             "spec leg")
+
+
+def _root_keeps(surviving: set[str], path: str) -> bool:
+    """Whether the root keeps `path`: as its own entry, or inside a
+    directory it keeps there. `surviving` is each path the plan's entries
+    send to the root.
+
+    ONE DEFINITION, for `_predict_collisions`, which moves the shape's copy
+    of a path the root keeps under `shape/`, and for `follow_ups_for`, whose
+    Makefile line says where the block waits when that copy is the one that
+    moved (#906). Two readings of "the source keeps its own `Makefile`" is
+    how a follow-up says the root wires what `shape/Makefile` holds.
+    """
+    return path in surviving or f"{path.split('/')[0]}/" in surviving
 
 
 def follow_ups_for(source: "Source", entries: list["Entry"], names: dict,
@@ -3336,19 +3393,36 @@ def follow_ups_for(source: "Source", entries: list["Entry"], names: dict,
     one (#522's review, F1). So does the read-across line that
     `cross_leg_references` writes, for both mounts, and this function takes
     no mount path: no value of either key can reach a line it writes (#600).
-    The path from the code leg to the spec leg's `contracts/` is printed
-    beside the CURRENT mounts instead, where `check` and the split message
-    name them (`contracts_from_code_leg`).
+    The path from the code leg to the spec leg, and to its `contracts/`, is
+    printed beside the CURRENT mounts instead, where `check` and the split
+    message name them (`contracts_from_code_leg`).
+
+    WHERE THE ROOT KEEPS A `Makefile` OF THE SOURCE'S OWN, the shape's goes
+    beside it as `shape/Makefile` with the block in it, and the root's is
+    the source's, untouched: `make contracts-dir` there answers `No rule to
+    make target` until the two are merged. The line then says the block
+    waits in `shape/Makefile`, as #634 words it for the pinned
+    `AGENTS-shape.md`, of the plan's entries as `_predict_collisions` reads
+    them (`_root_keeps`), the reading that moves the copy (#906).
     """
     out = cross_leg_references(source, entries)
     if any(e.leg == "spec" and (e.path == "contracts/"
                                 or e.path.startswith("contracts/"))
            for e in entries):
+        own = _root_keeps({e.path for e in entries if e.leg == "root"},
+                          SHAPE_MAKEFILE)
+        whose = "the shape's" if own else "the root"
+        waits = (
+            "; but the source keeps a Makefile of its own at the root, so "
+            f"that block waits in `{COLLISION_DIR}/{SHAPE_MAKEFILE}` until "
+            "the two are merged, and the run adds none of it to the root's "
+            "Makefile")
         out.append(
-            "the root Makefile wires `CONTRACTS_DIR` to the `contracts/` of "
+            f"{whose} Makefile wires `CONTRACTS_DIR` to the `contracts/` of "
             "the spec leg, where the plan's `legs.spec_path` mounts it, and "
             "exports it, so the code leg's tooling takes the path from the "
-            "environment instead of assuming it sits beside it")
+            "environment instead of assuming it sits beside it"
+            + (waits if own else ""))
     if any(e.path in ("CODEOWNERS", ".github/CODEOWNERS") for e in entries):
         out.append(
             "CODEOWNERS in the assembly root now names paths that live in the "
@@ -4561,11 +4635,14 @@ def _checked_plan_inputs(args, source: Source,
     Split out of `cmd_plan` for #138, and the order inside it is the order the
     refusals came in: a run that got as far as naming the three legs before it
     refused an unparseable `--elected-on` would send a reader looking in the
-    wrong place for the line that was wrong.
+    wrong place for the line that was wrong. The refusals of a passed flag's
+    own value are asked before this, before the source is read
+    (`_checked_flag_inputs`, #903); what is here needs the source, or the
+    value a flag's default stands for, or is asked of the values as the plan
+    will record them (`naming-unclassified`, an empty `--elected-by`).
     """
     # Which of the flags `plan` fills in by itself were passed: a value it
     # filled in is named by where it came from, should it be refused below.
-    # Not `given`, which #479 binds below to whether `--tracking-branch` was.
     # PASSED IS ON THE COMMAND LINE, `''` INCLUDED (L2-53), as #479 reads
     # `--tracking-branch`: `--id ''` and `--elected-by ''` were read as not
     # passed, so `--id "$ID"` with `ID` unset planned the derived id, and an
@@ -4575,22 +4652,124 @@ def _checked_plan_inputs(args, source: Source,
     # `--org`, as it did.)
     flags_given = {key for key in FLAG_DEFAULTS
                    if getattr(args, key) is not None}
-    args.project = checked_value("--project", args.project)
-    # THE SOURCE'S OWN BRANCH, UNLESS ONE IS NAMED (#479): the branch `plan`
+    products = set(declared_pin_products(args))
+    # THE SOURCE'S OWN BRANCH, WHERE NONE IS NAMED (#479): the branch `plan`
     # reads the source at is the one its pull request can be opened against.
     # A default this tool filled in is named by where it came from, as
     # `--elected-by` is below, and not as a flag the person never passed.
-    given = args.tracking_branch is not None
-    tracking = _flag_named(TRACKING_KEY, {TRACKING_KEY} if given else set())
-    args.tracking_branch = (checked_value(tracking, args.tracking_branch)
-                            if given else
-                            _checked_default_branch(tracking, source.branch))
-    # Then git's own question (#420): a name inside that alphabet that git
-    # will not create (`a..b`, `~`, `x.lock`, `a/`) is refused here, in git's
-    # words, and is not written for `check` to find it no branch of the
-    # source and the plan to be written again.
-    refuse_bad_branch("adopt-bad-tracking-branch", tracking,
-                      args.tracking_branch)
+    # One that was passed was held to its rules before the source was read
+    # (`_checked_flag_inputs`). Git's own question (#420) is asked of the
+    # default too: a branch name inside that alphabet that git will not
+    # create is refused here, in git's words.
+    if args.tracking_branch is None:
+        tracking = _flag_named(TRACKING_KEY, set())
+        args.tracking_branch = _checked_default_branch(tracking,
+                                                       source.branch)
+        refuse_bad_branch("adopt-bad-tracking-branch", tracking,
+                          args.tracking_branch)
+    # Whether `--id` was passed is read BEFORE it is filled in: a refusal of
+    # the id names where it came from (#601), and says what to change. An
+    # `org/repo` source was asked it before it was cloned, and passes here.
+    args.id = args.id if "id" in flags_given else args.project.lower()
+    _refuse_bad_id(args.id, args.project, flags_given, source)
+    # The organisation, given or read from the source's `origin`, and named
+    # by which of the two it is should it be refused (#292, #427).
+    org_given = bool(args.org)
+    args.org = _planned_org(args.org, source)
+    # IN PLACE, THE SOURCE'S OWN NAME (#499), as soon as both halves are
+    # known and before any pin's digest is read: `execute` acts on the
+    # repository `--org` and `--project` name, so they must be the source.
+    # An `org/repo` source was asked before it was cloned
+    # (`_refuse_a_clone_of_another_repository`) and passes here again.
+    _refuse_another_repository(args, source, naming, products, org_given)
+    args.elected_on = args.elected_on or _dt.date.today().isoformat()
+    args.reference = args.reference or default_reference(args.elected_on)
+    # A value `plan` filled in by itself is named by where it came from, as
+    # #181 names one, and not as a flag the person never passed. A passed
+    # `--elected-by` was asked with the other flags' values already.
+    if ELECTED_BY_KEY not in flags_given:
+        args.elected_by = _elector()
+        _refuse_unwritable_flag_values(
+            [(_flag_named(ELECTED_BY_KEY, flags_given), args.elected_by,
+              ROOT_MANIFEST_AND_README)])
+    names = _names(args.project)
+    pins = _as_planned(declared_pin_values(args), args.pin_source)
+    _check_names(naming, names, set(pins), source)
+    # LAST here, over every value as the plan will record it: `execute`
+    # writes them into the project's own YAML. The project's own validator
+    # is asked FIRST (#261): a value it refuses is refused in its words
+    # alone, as on main (rv181f's G1). Then one its loader would read as
+    # something else that the validator accepts is refused before the plan
+    # exists (#181); since #259 and #514 that is only a value on a line
+    # written bare, so every value that refusal names is one `execute` would
+    # write and end `adoption verified` with, as its remediation says.
+    planned = _refuse_unholdable_values(args, flags_given, names, pins,
+                                        naming)
+    _refuse_misread_values(args, flags_given, pins, source, planned, naming)
+    return names, pins
+
+
+def _refuse_unwritable_flag_values(fields) -> None:
+    """`adopt-unwritable-value` for each `(what, value, where)` of `fields`
+    that `execute` could not write into a file, in the words `check` would
+    use (#255); nothing, where every one can be held. `plan` asks it twice
+    (#903): of the values it was passed, before anything exists
+    (`_checked_flag_inputs`), and of the elector it reads from `git config
+    user.name` where `--elected-by` was not (`_checked_plan_inputs`)."""
+    unwritable = unwritable_values(fields)
+    if unwritable:
+        raise Refusal("adopt-unwritable-value",
+                      " ".join(f"{problem}." for problem in unwritable),
+                      "Remediation: no plan was written. Pass each value "
+                      "named again, retyped; when `--elected-by` is not "
+                      "given, `plan` reads `git config user.name`, so pass "
+                      "the flag or correct that. " + WRITTEN_AS_TEXT)
+
+
+def _checked_flag_inputs(args) -> None:
+    """The refusals of a passed flag's own value, which `plan` makes from
+    its flags ALONE, in the order `_checked_plan_inputs` asked them, before
+    anything exists (#903): no work directory is made, no `git` reads the
+    source and no `gh repo clone` runs. `--pin-source` and `--out` were
+    asked first already (#450, #451, #799), and an `org/repo` source's own
+    name, and the id derived from `--project`, follow once `--source` is
+    read (`_refuse_a_clone_of_another_repository`). Each refusal keeps its
+    code and its words; only WHEN it is asked changed. On main they came
+    after `_work_root`, `Source.open` and, for an `org/repo` source, the
+    clone: with a stub `gh` that exits 97, a `--spec-path spec/` was
+    `source-unclonable` and never `adopt-bad-leg-path`.
+
+    The values it checks stay on `args`, as `_checked_plan_inputs` keeps
+    the rest, and what it asks of a flag that has a default waits for the
+    value: a `--tracking-branch` nobody passed is the source's own branch,
+    an `--id` nobody passed is `--project` lowercased, an `--org` nobody
+    passed is the source's, and an `--elected-by` nobody passed is `git
+    config user.name`. Those are `_checked_plan_inputs`', which reads the
+    source.
+
+    NOT EVERY REFUSAL A FLAG DECIDES IS HERE. Still after the source, for
+    an `org/repo` source as for a local one: `naming-unclassified` and
+    `naming-role-mismatch`, which `_check_names` asks of the names
+    `--project` makes, with a remedy about the source; an empty
+    `--elected-by`, which is a value `unwritable_values` holds and the
+    manifest validator refuses (`adopt-manifest-invalid`, in
+    `_refuse_unholdable_values`); and a missing `--path-policy`
+    (`yaml-unreadable`).
+    """
+    args.project = checked_value("--project", args.project)
+    # A `--tracking-branch` that was passed: PASSED IS ON THE COMMAND LINE,
+    # `''` INCLUDED, as #479 reads it. Git's own question follows
+    # `checked_value` (#420): a name inside its alphabet that git will not
+    # create (`a..b`, `~`, `x.lock`, `a/`) is refused here, in git's words,
+    # and is not written for `check` to find it no branch of the source and
+    # the plan to be written again. That question is asked of a throwaway
+    # repository in the system temp folder, which it removes, and never of
+    # the source.
+    if args.tracking_branch is not None:
+        tracking = _flag_named(TRACKING_KEY, {TRACKING_KEY})
+        args.tracking_branch = checked_value(tracking, args.tracking_branch)
+        refuse_bad_branch("adopt-bad-tracking-branch", tracking,
+                          args.tracking_branch)
     # The ONE question first -- spelling, Git's and Windows's names, then the
     # alphabet `checked_value` allows -- so `spec/` is refused here with the
     # spelling to retype, before a plan that `check` and `execute` would have
@@ -4617,58 +4796,37 @@ def _checked_plan_inputs(args, source: Source,
                       _leg_collision_remediation(products))
     args.spec_path = checked_value(*spec)
     args.code_path = checked_value(*code)
-    # Whether `--id` was passed is read BEFORE it is filled in: a refusal of
-    # the id names where it came from (#601), and says what to change.
-    args.id = args.id if "id" in flags_given else args.project.lower()
-    _refuse_bad_id(args.id, args.project, flags_given, source)
-    # The organisation, given or read from the source's `origin`, and named
-    # by which of the two it is should it be refused (#292, #427).
-    org_given = bool(args.org)
-    args.org = _planned_org(args.org, source)
-    # IN PLACE, THE SOURCE'S OWN NAME (#499), as soon as both halves are
-    # known and before any pin's digest is read: `execute` acts on the
-    # repository `--org` and `--project` name, so they must be the source.
-    _refuse_another_repository(args, source, naming, set(products),
-                               org_given)
-    args.elected_on = args.elected_on or _dt.date.today().isoformat()
+    # An `--id` that was passed is held to its rule here, named as the flag
+    # (#601): that branch of `_refuse_bad_id` reads no source, so it is
+    # given none. One derived from `--project` is refused where the source's
+    # own name is known, for its remedy names that: right after `--source`
+    # is read, for an `org/repo` one, and after git has read the `origin`
+    # of a local one.
+    if args.id is not None:
+        _refuse_bad_id(args.id, args.project, {"id"}, None)
+    # An `--org` that was passed, as `_planned_org` holds it. One that was
+    # not is the organisation of the source's name, read there.
+    if args.org:
+        checked_value(_flag_named("org", {"org"}), args.org)
     # Read before the plan is written, whether or not it is what chooses the
     # reference: a date the tools cannot parse would reach `execute` as a
-    # manifest field instead of as a question.
-    election_date(args.elected_on)
-    args.reference = args.reference or default_reference(args.elected_on)
-    # A value `plan` filled in by itself is named by where it came from, as
-    # #181 names one, and not as a flag the person never passed.
-    elector = _flag_named(ELECTED_BY_KEY, flags_given)
-    args.elected_by = (args.elected_by if ELECTED_BY_KEY in flags_given
-                       else _elector())
+    # manifest field instead of as a question. One nobody passed is today's,
+    # which `_checked_plan_inputs` fills in.
+    if args.elected_on:
+        election_date(args.elected_on)
     # Before the plan is written, in the words `check` would use (#255): a
-    # value `execute` writes into a file must be text one can hold. The
-    # date has had its answer above, `election_date`.
-    unwritable = unwritable_values(
-        ((elector, args.elected_by, ROOT_MANIFEST_AND_README),
-         ("--reference", args.reference, ROOT_MANIFEST_AND_README)))
-    if unwritable:
-        raise Refusal("adopt-unwritable-value",
-                      " ".join(f"{problem}." for problem in unwritable),
-                      "Remediation: no plan was written. Pass each value "
-                      "named again, retyped; when `--elected-by` is not "
-                      "given, `plan` reads `git config user.name`, so pass "
-                      "the flag or correct that. " + WRITTEN_AS_TEXT)
-    names = _names(args.project)
-    pins = _as_planned(declared_pin_values(args), args.pin_source)
-    _check_names(naming, names, set(pins), source)
-    # LAST here, over every value as the plan will record it: `execute`
-    # writes them into the project's own YAML. The project's own validator
-    # is asked FIRST (#261): a value it refuses is refused in its words
-    # alone, as on main (rv181f's G1). Then one its loader would read as
-    # something else that the validator accepts is refused before the plan
-    # exists (#181); since #259 and #514 that is only a value on a line
-    # written bare, so every value that refusal names is one `execute` would
-    # write and end `adoption verified` with, as its remediation says.
-    planned = _refuse_unholdable_values(args, flags_given, names, pins,
-                                        naming)
-    _refuse_misread_values(args, flags_given, pins, source, planned, naming)
-    return names, pins
+    # value `execute` writes into a file must be text one can hold. Of the
+    # values that were passed alone: an elector `plan` reads from `git
+    # config user.name` is asked in `_checked_plan_inputs`, after the
+    # source, and a reference it chooses is text it holds. An `--elected-by
+    # ''` is a value typed and is text one can hold, so it passes here and
+    # is refused by the manifest validator, after the source
+    # (`adopt-manifest-invalid`); a `--reference ''` is none.
+    passed = [(_flag_named(key, {key}), value, ROOT_MANIFEST_AND_README)
+              for key, value in ((ELECTED_BY_KEY, args.elected_by),
+                                 (REFERENCE_KEY, args.reference or None))
+              if value is not None]
+    _refuse_unwritable_flag_values(passed)
 
 
 def _org_read_from(source: Source) -> str:
@@ -5377,6 +5535,15 @@ def cmd_plan(args) -> int:
     # traceback at the write, after the work directory was made, an
     # `org/repo` source cloned and the whole plan built.
     _refuse_an_unwritable_out(args)
+    # Then the refusals of a passed flag's own value (#903): a leg path, a
+    # `--pin`, `--elected-on`, a `--reference` and the rest of
+    # `_checked_flag_inputs`. They were asked after the work directory was
+    # made, git had read the source and an `org/repo` one was cloned, and
+    # with a clone that failed they were never reached: no work directory
+    # is made, git reads nothing of the source and no `gh` runs before
+    # them. A passed `--tracking-branch` runs `git check-ref-format` in a
+    # throwaway repository first, and never touches the source.
+    _checked_flag_inputs(args)
     # What `--source` names, next, before the work directory is made
     # (#796): every refusal of it that needs none -- an empty value, a path
     # that is no repository's top level, a name `gh` cannot clone -- is
@@ -5384,20 +5551,31 @@ def cmd_plan(args) -> int:
     # main a file ended `plan` in a traceback after the `--work-dir` it was
     # given had been made, and that directory stayed.
     named = _source_spec(args.source)
+    naming = NamingPolicy.load(NAMING_POLICY)
+    # An `org/repo` source names its repository before it is cloned, so
+    # `--org` and `--project` are held to it here (#903). A local source
+    # names it by its `origin`, which `_checked_plan_inputs` reads.
+    repository = named[1]
+    if repository is not None:
+        _refuse_a_clone_of_another_repository(args, repository, naming)
     work_root = _work_root(args)
     # An `org/repo` source is cloned into the work directory, so one this
     # user cannot write in is refused before the clone, as `check` refuses
-    # it (#650); a local source is read in place, and writes nothing there.
+    # it (#650), in the words of what `plan` does there (#903). A local
+    # source is read in place, and writes nothing there: the directory is
+    # still made, because `--out` may lie in it, and refused where it
+    # cannot be made, but it is not asked whether it can be written in.
     # The clone goes on `args.clones`, and `_leave_the_clones` removes it
     # unless this run ends having written the plan that records it (#652).
     # Read at `--tracking-branch` where its remote's default branch is no
     # branch of its own, a `git clone -b` (#797).
-    source = Source.of(named, work_root,
-                       _unwritable_work_dir(args, work_root),
+    unwritable = (None if repository is None else
+                  _unwritable_work_dir(args, work_root,
+                                       _plan_clones(repository)))
+    source = Source.of(named, work_root, unwritable,
                        getattr(args, "clones", None),
                        instead=args.tracking_branch)
     policy = PathPolicy.load(args.path_policy or PATH_POLICY)
-    naming = NamingPolicy.load(NAMING_POLICY)
 
     # The project's own validator is asked inside, before #181's question.
     names, pins = _checked_plan_inputs(args, source, naming)
@@ -5533,7 +5711,7 @@ def _predict_collisions(entries: list[Entry], *,
     surviving = {e.path for e in entries if e.leg == "root"}
     beside = {path: f"{COLLISION_DIR}/{path}"
               for path in sorted(set(assembly_root_paths()))
-              if path in surviving or f"{path.split('/')[0]}/" in surviving}
+              if _root_keeps(surviving, path)}
     return [collision_follow_up(path, actual, beside,
                                 attributes_link=attributes_link)
             for path, actual in beside.items()]
@@ -5919,10 +6097,15 @@ def _coverage_findings(entry_paths: list[str], tree_paths: list[str]) -> list[st
     return findings
 
 
-def _leg_findings(plan: Plan, tree: list | None) -> list[str]:
+def _leg_findings(plan: Plan, tree: list | None,
+                  named_links: frozenset | set = frozenset()) -> list[str]:
     """`leg:` is answered with one of the four words, each leg's mount path
     is canonical (#169), and neither overlaps a path the assembly root holds
     (#172); and the root keeps nothing where the shape writes (#262, #263).
+    `named_links` are the symlinks of the source that `plan-empty-symlink`
+    and `plan-bad-symlink-target` name one by one (`_named_symlinks`, #908):
+    one kept AT `project.yaml` is theirs, and `plan-root-blocks-manifest`
+    leaves it.
 
     The path findings live HERE, and not in `cmd_check`, so that whatever
     reads this function reports a bad path from the one place that knows what
@@ -5974,7 +6157,7 @@ def _leg_findings(plan: Plan, tree: list | None) -> list[str]:
                 f"FINDING plan-bad-leg: {path} declares leg {leg!r}; it is "
                 f"one of {list(LEG_VALUES)}")
     if isinstance(plan.legs, dict):
-        findings += _root_shape_findings(plan, tree)
+        findings += _root_shape_findings(plan, tree, named_links)
         # THE PINS, LAST (#273): each `pins:` entry `execute` cannot write a
         # pin file from, two pins at one file, and a path the root keeps
         # where a pin is written, the shape's own pin among them (#524).
@@ -6039,6 +6222,9 @@ def _leg_findings(plan: Plan, tree: list | None) -> list[str]:
 # writes the manifest THROUGH and which the doctor on Linux then reads as a
 # shape root: a clone that makes no symlinks holds the link as a file naming
 # its target, and #183 refuses a link to nothing at a shape path anyway.
+# One whose target `plan-empty-symlink` or `plan-bad-symlink-target` names is
+# those findings' alone, which then say where it sits (#908): `drop` cannot
+# help a link no clone can make.
 # The other paths the shape writes keep the copy and the follow-up to merge
 # it, which `plan` already predicts for a `Makefile` or a `README.md` it
 # keeps in the root itself.
@@ -6258,7 +6444,9 @@ def _blocked_sentence(code: str, rels: list[str], copies: list[str],
         f"repositories were created and pushed. {SHAPE_DIR_RESERVED}: {fix}.")
 
 
-def _root_shape_findings(plan: Plan, tree: list) -> list[str]:
+def _root_shape_findings(plan: Plan, tree: list,
+                         named_links: frozenset | set = frozenset()
+                         ) -> list[str]:
     """`check`'s findings for a path the plan keeps in the root where the
     shape writes (#262, #263): one per kept path in the way, naming the
     first shape path it blocks and counting the rest. Asked of a disk that
@@ -6271,7 +6459,13 @@ def _root_shape_findings(plan: Plan, tree: list) -> list[str]:
     (`_kept_pin_findings`), and the copy under `shape/` is only its
     consequence: with the kept path gone, the shape writes its pin at its
     own path and nothing at the copy's. A path kept at the copy as well was
-    a second finding, `plan-root-blocks-shape-copy`, for one cause."""
+    a second finding, `plan-root-blocks-shape-copy`, for one cause.
+
+    A SYMLINK AT THE MANIFEST THAT `named_links` HOLDS IS LEFT OUT (#908,
+    L1-80 of #457): `plan-empty-symlink` or `plan-bad-symlink-target` names
+    it, says where it sits and ends with the remedy that helps, which is not
+    this finding's `drop`: no answer in the plan ends either. One link, one
+    finding."""
     kept = _kept_in_root(plan.entries, tree)
     if not kept:
         return []
@@ -6285,7 +6479,9 @@ def _root_shape_findings(plan: Plan, tree: list) -> list[str]:
         for code, rel, copy, group, rows in _shape_blocks(disk):
             if (code, rel, group) in seen or (
                     code == ROOT_BLOCKS_COPY and rel == SHAPE_PIN
-                    and _holds_a_pin(disk, rel)):
+                    and _holds_a_pin(disk, rel)) or (
+                    code == ROOT_BLOCKS_MANIFEST and group[0] == "at"
+                    and rows[0][0] in named_links):
                 continue
             seen.add((code, rel, group))
             rels, copies, _, folded = blocked.setdefault(
@@ -7708,7 +7904,8 @@ UNSAFE_PATH_REMEDIATION = (
 # one fault two names for every reader of this one to learn: `execute`'s
 # refusal, and the walk of #183, which says nothing of a link this finding
 # names. A NUL further on (`spec\0.md`) is another failure, a link git
-# makes to `spec`, and is not this one's to report.
+# makes to `spec`, and is not this one's to report: it is
+# `plan-bad-symlink-target`'s (#908), below.
 #
 # Size first, then the target. `Source.tree()` lists each entry with
 # `ls-tree -l`, and the size of a symlink's blob is the length of its
@@ -7750,33 +7947,40 @@ def symlink_targets(source: Source, tree: list) -> dict[str, bytes]:
     line feed, so it is cut by its size, and a target that holds a line feed
     is read whole. An id git does not have comes back as `<id> missing` and
     nothing else, and is left out: such a link is judged by its size alone.
+
+    EACH BLOB IS READ ONCE PER SOURCE (#908). What is read is kept on
+    `source.link_targets`, so a second call, `_PlannedRoot`'s every walk
+    among them, asks git for no blob it has already read, and for none at
+    all when the first read took them all.
     """
-    oids = list(dict.fromkeys(oid for _, mode, oid, size in tree
-                              if mode == SYMLINK_MODE and size))
-    if not oids:
-        return {}
-    args = [GIT_CAT_FILE, "--batch"]
-    read = subprocess.run(["git", *args], cwd=source.path,
-                          input="".join(f"{oid}\n" for oid in oids).encode(),
-                          capture_output=True, check=False)
-    if read.returncode:
-        raise Refusal(
-            "git-failed",
-            f"`git {' '.join(args)}` in {source.path} exited "
-            f"{read.returncode}: "
-            f"{read.stderr.decode('utf-8', 'replace').strip()}")
-    targets: dict[str, bytes] = {}
-    out, at = read.stdout, 0
-    for oid in oids:
-        end = out.find(b"\n", at)
-        if end < 0:
-            break
-        header, at = out[at:end].split(), end + 1
-        if len(header) == 3:
-            size = int(header[2])
-            targets[oid] = out[at:at + size]
-            at += size + 1
-    return targets
+    sized = list(dict.fromkeys(oid for _, mode, oid, size in tree
+                               if mode == SYMLINK_MODE and size))
+    known = source.link_targets
+    oids = [oid for oid in sized if oid not in known]
+    if oids:
+        args = [GIT_CAT_FILE, "--batch"]
+        read = subprocess.run(
+            ["git", *args], cwd=source.path,
+            input="".join(f"{oid}\n" for oid in oids).encode(),
+            capture_output=True, check=False)
+        if read.returncode:
+            raise Refusal(
+                "git-failed",
+                f"`git {' '.join(args)}` in {source.path} exited "
+                f"{read.returncode}: "
+                f"{read.stderr.decode('utf-8', 'replace').strip()}")
+        out, at = read.stdout, 0
+        for oid in oids:
+            known[oid] = None
+            end = out.find(b"\n", at)
+            if end < 0:
+                continue
+            header, at = out[at:end].split(), end + 1
+            if len(header) == 3:
+                size = int(header[2])
+                known[oid] = out[at:at + size]
+                at += size + 1
+    return {oid: known[oid] for oid in sized if known[oid] is not None}
 
 
 def empty_symlinks(tree: list, targets: dict[str, bytes]) -> list[str]:
@@ -7818,16 +8022,22 @@ def _empty_symlink_sentences(tree: list,
             for path in empty_symlinks(tree, targets)]
 
 
-def _empty_symlink_findings(tree: list, targets: dict[str, bytes]
+def _empty_symlink_findings(tree: list, targets: dict[str, bytes],
+                            at_the_manifest: frozenset | set = frozenset()
                             ) -> tuple[list[str], list[str]]:
     """A FINDING for each symlink of the source whose target is empty
     (#303) or begins with a NUL byte (#388), as `check` prints it, the first
     EMPTY_SYMLINKS_NAMED one by one; and what to print ONCE after every
     finding, as `_unsafe_path_findings` does. Read from the tree and the
-    targets (`symlink_targets`) alone: no answer of the plan's changes it."""
+    targets (`symlink_targets`) alone: no answer of the plan's changes it.
+    `at_the_manifest` holds the paths of the links the plan keeps in the
+    root AT `project.yaml`, whose finding says so (`_at_the_manifest`,
+    #908)."""
     said = _empty_symlink_sentences(tree, targets)
+    shown = list(zip(empty_symlinks(tree, targets), said))
     found = [f"FINDING {EMPTY_SYMLINK}: {sentence}."
-             for sentence in said[:EMPTY_SYMLINKS_NAMED]]
+             f"{_at_the_manifest(path) if path in at_the_manifest else ''}"
+             for path, sentence in shown[:EMPTY_SYMLINKS_NAMED]]
     if len(said) > EMPTY_SYMLINKS_NAMED:
         found.append(f"FINDING {EMPTY_SYMLINK}: … and "
                      f"{len(said) - EMPTY_SYMLINKS_NAMED} more symlinks "
@@ -7839,7 +8049,8 @@ def _empty_symlink_notes(tree: list, targets: dict[str, bytes]) -> list[str]:
     """What `plan` says of each symlink of the source whose target is empty
     or begins with a NUL byte: a NOTE in `check`'s words, and a line saying
     what follows. `plan` still writes the plan, but no answer in it will
-    pass `check`."""
+    pass `check`. Then the same for each whose target holds a NUL byte
+    after its first, or is longer than Linux takes (#908)."""
     notes: list[str] = []
     for sentence in _empty_symlink_sentences(tree, targets):
         notes += [f"\nNOTE {sentence}.",
@@ -7847,7 +8058,280 @@ def _empty_symlink_notes(tree: list, targets: dict[str, bytes]) -> list[str]:
                   "`execute` refuses it, whatever the plan answers: give it "
                   "a target in the source, or remove it there, commit, and "
                   "re-run `plan`."]
+    return notes + _bad_symlink_target_notes(tree, targets)
+
+
+# ---------------------------------------------------------------------------
+# A symlink in the source whose target holds a NUL after its first byte, or is
+# longer than Linux takes (#908)
+# ---------------------------------------------------------------------------
+#
+# #388 left "a NUL further on (`spec\0.md`)" to "another failure, a link git
+# makes to `spec`", and no check asked it; nor did any ask a target's length.
+# Both passed `check` and failed after both leg repositories existed. Measured
+# on the v1.1.1 release commit with git 2.43 on Linux (ext4):
+#
+#   * A target is handed to `symlink(2)` as a C string, which ends at its
+#     first NUL: a blob holding `ci\0xx` is the link `ci`, and `spec\0.md` is
+#     `spec`. Linux makes the link, a different one, so no clone fails there.
+#     A link `execute` meets in a leg's path stops at the split's `git rm`,
+#     which refuses the link the checkout made, as one that changed, after
+#     both legs were pushed; one kept in the root is `adopt-lost` in the
+#     verification, the split holding the 4 bytes `spec` where the source
+#     holds 8. Whatever the plan answers: `drop`, `spec` and `code` stop at
+#     the `git rm`, `root` at the verification.
+#   * Where `core.symlinks` is false, `execute` said `adoption verified`, the
+#     clone holding the blob's bytes as a plain file; and a clone of that leg
+#     on Linux, symlinks on, then held `docs/link -> spec` with `git status`
+#     reading ` M docs/link`, or, for a target too long, exited 128.
+#   * On ext4, a target of 4095 bytes is made, and one of 4096 or 5000 is
+#     not: `symlink(2)` fails with ENAMETOOLONG, `File name too long`, and
+#     the clone exits 128, `unable to checkout working tree`, after both
+#     legs exist. That is `PATH_MAX`, 4096 counting the NUL that ends the
+#     string, and `NAME_MAX` is not asked: a target that is one name of 300
+#     bytes is made (a path is asked it only when something is opened
+#     through it).
+#   * Some hosts take less, which is NOT measured here and is read from
+#     their sources: macOS (`symlink(2)` copies the target in with
+#     `MAXPATHLEN`, 1024, counting the NUL) and XFS (`XFS_SYMLINK_MAXLEN`,
+#     1024) make a target of at most 1023 bytes.
+#
+# SO THE LIMIT IS 4095 (`SYMLINK_TARGET_MAX`), GIT'S AND LINUX'S. `check`
+# reads the source's tree and never the disk it runs on, as #303 does, so one
+# plan gets one answer on every machine. A finding must never be false
+# anywhere, and a target over 4095 bytes is made on no host: it fails on
+# every Linux filesystem, and on the hosts that take less still.
+#
+# IT IS NOT THE SMALLEST BOUND A HOST HAS, SO A TARGET UNDER IT CAN STILL
+# FAIL. A target of 4095 bytes is made on ext4-like filesystems; on macOS and
+# XFS the most is 1023 (above). A target of 1024 to 4095 bytes therefore
+# passes `check` and fails `execute`'s first clone there, after both leg
+# repositories exist: #908's own failure, in a window this rule leaves open
+# for those hosts. That is read from their sources, not measured here, and
+# it is a follow-up of #908. Windows makes no symlink by default
+# (`core.symlinks` false writes the target as a file's contents, which no
+# length bounds); where it is on, NTFS is thought to take far longer targets
+# (not measured here), and either way the rule asks Windows nothing.
+#
+# A NEW CODE, NOT A WIDENED `plan-empty-symlink`. #388 made a NUL-led target
+# the same finding because it is the same fault: Linux reads it as empty,
+# and fails in the same clone for the same reason, with the same remedy. A
+# late NUL is a different one (Linux makes a link, and another command
+# stops), and a long target is no empty one at all, so a finding named
+# `plan-empty-symlink` would tell whoever relays it that a link of 5000
+# bytes is empty. The two codes never name one link: a target is empty or
+# NUL-led for `plan-empty-symlink`, and anything else here. Their remedy is
+# alike, and the finding says what git makes in place of the link.
+#
+# ONE FINDING FOR A LINK AT `project.yaml` (L1-80 of #457). A link the plan
+# keeps in the root AT the manifest was named twice, `plan-empty-symlink` for
+# its target and `plan-root-blocks-manifest` for its place, and the second's
+# remedy ("send it to a leg, `drop` it") cannot help an empty link: no
+# answer in the plan does. This finding is the plan-independent one, so it
+# stays, says where the link sits, and ends with the remedy that does help;
+# `_root_shape_findings` leaves out the other for that link.
+
+#: The most `symlink(2)` takes as a target on Linux, in bytes: `PATH_MAX` is
+#: 4096, counting the NUL that ends the string. On ext4-like filesystems 4095
+#: is made and 4096 is not; macOS and XFS make at most 1023 (see above).
+SYMLINK_TARGET_MAX = 4095
+#: `check`'s finding for a symlink of the source's whose target holds a NUL
+#: byte after its first, which git cuts at, or is longer than
+#: SYMLINK_TARGET_MAX (#908).
+BAD_SYMLINK_TARGET = "plan-bad-symlink-target"
+#: How many of them `check` names one by one; past it, a count.
+BAD_SYMLINK_TARGETS_NAMED = 20
+#: How many bytes of a target a sentence spells; it counts the rest.
+TARGET_SPELLED = 100
+#: What a plan whose source holds one is told to do. Said by `check`, once
+#: after its findings, and by `execute`'s refusal, after its own remediation.
+BAD_SYMLINK_TARGET_REMEDIATION = (
+    "Remediation: a symlink's target is a fact of the source, and no answer "
+    "in the plan changes it, `drop` included: `execute` clones the whole "
+    "source before it takes out anything the plan sends elsewhere, and a "
+    "clone makes the link git makes of the target, or none, not the "
+    "blob's. Give each such symlink a target of its own in the source, with "
+    "no NUL byte in it and no more than "
+    f"{SYMLINK_TARGET_MAX} bytes, or remove it there, commit, and re-run "
+    "`plan`: a plan is written against one commit of the source, and "
+    "`check` calls it `plan-stale` once the source has moved.")
+
+
+def _at_the_manifest(path: str) -> str:
+    """What a finding adds of the link at `path` that the plan keeps AT
+    `project.yaml`: where it sits, and the remedy that helps. A link at the
+    manifest's case twin (`Project.yaml`) sits there only once case is
+    ignored, as `plan-root-blocks-manifest` says of it, so the aside stays."""
+    manifest = _spelled(SHAPE_MANIFEST)
+    where = (f"where the shape writes its manifest, {manifest}"
+             if path == SHAPE_MANIFEST else
+             f"at {manifest}{_CASE_ASIDE}, where the shape writes its "
+             "manifest")
+    return (f" The plan keeps it in the assembly root, {where}, and no copy "
+            f"stands in for that (`{ROOT_BLOCKS_MANIFEST}`, not said again "
+            "here): a target of its own would not end that, so remove the "
+            "link or rename it in the source, commit, and re-run `plan`.")
+
+
+def _unmade_target(raw: bytes) -> bool:
+    """Whether git does not make the symlink a blob of `raw` describes as
+    that target: `raw` holds a NUL, which ends the string `symlink(2)` is
+    handed, or is longer than Linux takes (#908). An empty one, or one that
+    begins with a NUL, is `plan-empty-symlink`'s (#303, #388), and is so
+    here too: both are unmade."""
+    return not raw or b"\0" in raw or len(raw) > SYMLINK_TARGET_MAX
+
+
+def bad_symlink_targets(tree: list, targets: dict[str, bytes]
+                        ) -> list[tuple[str, bytes]]:
+    """`(path, target)` of each symlink of `tree` (`Source.tree()`'s rows)
+    whose target in `targets` (`symlink_targets`, by blob id) git does not
+    make as it stands and `empty_symlinks` does not name: it holds a NUL
+    byte after its first, or is longer than SYMLINK_TARGET_MAX. A link whose
+    target was not read is judged by `empty_symlinks` alone, by its size."""
+    found = []
+    for path, mode, oid, size in tree:
+        raw = targets.get(oid, b"") if mode == SYMLINK_MODE and size else b""
+        if raw and not raw.startswith(b"\0") and _unmade_target(raw):
+            found.append((path, raw))
+    return found
+
+
+def _target_spelled(raw: bytes) -> str:
+    """The target `raw` as a sentence spells it: `_spelled`, and only the
+    first TARGET_SPELLED bytes of a long one, with a count of the rest."""
+    head = _spelled(_git_path(raw[:TARGET_SPELLED]))
+    more = len(raw) - TARGET_SPELLED
+    return head if more <= 0 else f"{head} and {more} more bytes"
+
+
+def _bytes(count: int) -> str:
+    """`count` bytes, in the singular for one."""
+    return f"{count} byte{'' if count == 1 else 's'}"
+
+
+def _bad_symlink_target_sentence(path: str, raw: bytes) -> str:
+    """What `check` says of the symlink at `path` whose target is `raw`,
+    and `plan` notes: what is wrong with the blob, what git makes of it, and
+    what then fails (#908)."""
+    cut = raw.split(b"\0", 1)[0]
+    nul = len(cut) < len(raw)
+    made = len(cut) <= SYMLINK_TARGET_MAX
+    after = ("its first byte" if len(cut) == 1
+             else f"its first {len(cut)} bytes")
+    limit = (f"Linux takes at most {SYMLINK_TARGET_MAX} bytes in a "
+             "symlink's target (`PATH_MAX` is 4096, counting the NUL that "
+             "ends it), so git makes no symlink there: `symlink(2)` fails "
+             "with `File name too long`")
+    if not nul:
+        head = f"is {_bytes(len(raw))} at the source commit, and {limit}"
+    elif made:
+        head = (f"holds a NUL byte after {after} at the source commit; a "
+                "symlink's target ends at its first NUL, so git makes "
+                f"{_spelled(path)} a link to {_target_spelled(cut)}, not to "
+                f"the {_bytes(len(raw))} the blob holds")
+    else:
+        head = (f"holds a NUL byte after {after} at the source commit, and "
+                f"those alone are too many: {limit}")
+    if nul and made:
+        then = ("On Linux, where git makes symlinks by default, each clone "
+                "`execute` makes of the source holds that other link, and "
+                "`execute` stops at it after both leg repositories were "
+                "created, whatever the plan answers for it; and where "
+                "`core.symlinks` is false the clone holds the "
+                f"{_bytes(len(raw))} as a plain file, and a clone of the "
+                "leg or root the plan keeps it in, on Linux, then holds "
+                "the other link")
+    else:
+        then = ("There, where git makes symlinks by default, each clone "
+                "`execute` makes of the source stops at it after both leg "
+                "repositories were created, whatever the plan answers for "
+                "it; and where `core.symlinks` is false the clone holds it "
+                "as a plain file, and the leg or root the plan keeps it in "
+                "then cannot be cloned on Linux, where the root's own "
+                "`validate` workflow runs")
+    return f"{_spelled(path)} is a symlink whose target {head}. {then}"
+
+
+def _bad_symlink_target_sentences(tree: list, targets: dict[str, bytes]
+                                  ) -> list[tuple[str, str]]:
+    """`(path, sentence)` of each path `bad_symlink_targets` names, in its
+    order."""
+    return [(path, _bad_symlink_target_sentence(path, raw))
+            for path, raw in bad_symlink_targets(tree, targets)]
+
+
+def _bad_symlink_target_findings(
+        tree: list, targets: dict[str, bytes],
+        at_the_manifest: frozenset | set = frozenset()
+        ) -> tuple[list[str], list[str]]:
+    """A FINDING for each symlink of the source whose target holds a NUL
+    byte after its first, or is longer than Linux takes (#908), as `check`
+    prints it, the first BAD_SYMLINK_TARGETS_NAMED one by one; and what to
+    print ONCE after every finding, as `_empty_symlink_findings` does. Read
+    from the tree and the targets alone: no answer of the plan's changes it.
+    `at_the_manifest` holds the paths of the links the plan keeps in the
+    root AT `project.yaml`, whose finding says so (`_at_the_manifest`)."""
+    said = _bad_symlink_target_sentences(tree, targets)
+    found = [f"FINDING {BAD_SYMLINK_TARGET}: {sentence}."
+             f"{_at_the_manifest(path) if path in at_the_manifest else ''}"
+             for path, sentence in said[:BAD_SYMLINK_TARGETS_NAMED]]
+    if len(said) > BAD_SYMLINK_TARGETS_NAMED:
+        found.append(
+            f"FINDING {BAD_SYMLINK_TARGET}: … and "
+            f"{len(said) - BAD_SYMLINK_TARGETS_NAMED} more symlinks whose "
+            "target holds a NUL byte after its first or is longer than "
+            "Linux takes")
+    return found, [BAD_SYMLINK_TARGET_REMEDIATION] if found else []
+
+
+def _bad_symlink_target_notes(tree: list, targets: dict[str, bytes]
+                              ) -> list[str]:
+    """What `plan` says of each symlink of the source whose target holds a
+    NUL byte after its first, or is longer than Linux takes: a NOTE in
+    `check`'s words, and a line saying what follows, as
+    `_empty_symlink_notes` does."""
+    notes: list[str] = []
+    for _, sentence in _bad_symlink_target_sentences(tree, targets):
+        notes += [f"\nNOTE {sentence}.",
+                  f"     `check` reports this as `{BAD_SYMLINK_TARGET}` and "
+                  "`execute` refuses it, whatever the plan answers: give it "
+                  "a target of its own in the source, or remove it there, "
+                  "commit, and re-run `plan`."]
     return notes
+
+
+def _links_at_the_manifest(plan: Plan, tree: list) -> set[str]:
+    """Each symlink the plan keeps in the root AT `project.yaml`, which
+    #305's `plan-root-blocks-manifest` names (`_shape_blocks`), on a disk
+    that keeps case and on one that ignores it. Asked, as `_leg_findings`
+    asks it, of a plan whose `legs` it can read."""
+    if not isinstance(plan.legs, dict):
+        return set()
+    kept = _kept_in_root(plan.entries, tree)
+    return {rows[0][0] for fold in (False, True)
+            for code, _, _, group, rows in _shape_blocks(_KeptTree(kept, fold))
+            if code == ROOT_BLOCKS_MANIFEST and group[0] == "at"
+            and rows[0][1] == SYMLINK_MODE}
+
+
+def _named_symlinks(tree: list, targets: dict[str, bytes]) -> set[str]:
+    """The paths `plan-empty-symlink` and `plan-bad-symlink-target` name ONE
+    BY ONE, the first EMPTY_SYMLINKS_NAMED and BAD_SYMLINK_TARGETS_NAMED of
+    each: `_root_shape_findings` leaves out `plan-root-blocks-manifest` for
+    one of them at `project.yaml`, which its own finding says all of. A link
+    past those is only counted, and is named by nothing else if this leaves
+    it out too, so the manifest finding stays its own.
+
+    THE OTHER FINDINGS ABOUT A PATH THE SHAPE WRITES DO NOT LEAVE A NAMED
+    LINK OUT. A bad link at `shape/README.md` is also
+    `plan-root-blocks-shape-copy`, and one at `contracts/shape-pin.yaml`
+    also `plan-root-holds-pin`, each with a remedy (`drop` it, send it to a
+    leg) that cannot help a link no clone makes. That is L1-80's defect at
+    those two paths, outside #908's wording, and a follow-up of it."""
+    return {*empty_symlinks(tree, targets)[:EMPTY_SYMLINKS_NAMED],
+            *(path for path, _ in bad_symlink_targets(
+                tree, targets)[:BAD_SYMLINK_TARGETS_NAMED])}
 
 
 def _source_path_findings(plan: Plan, tree: list, targets: dict[str, bytes]
@@ -7856,10 +8340,23 @@ def _source_path_findings(plan: Plan, tree: list, targets: dict[str, bytes]
     paths, and what to print once after every finding for them: each entry
     path `execute` will not extract (#196), then each symlink of the source
     whose target is empty (#303) or begins with a NUL byte (#388), its
-    target read from `targets` (`symlink_targets`)."""
+    target read from `targets` (`symlink_targets`), and each whose target
+    holds a NUL byte after its first, or is longer than Linux takes (#908).
+    A link the plan keeps in the root AT `project.yaml` says so in its
+    finding, which is then the only one that names it."""
     unsafe, unsafe_remediation = _unsafe_path_findings(plan)
-    empty, empty_remediation = _empty_symlink_findings(tree, targets)
-    return unsafe + empty, unsafe_remediation + empty_remediation
+    # Asked only where a named link sits at the manifest's own name, which
+    # is rare: it reads the plan's answers, which no other finding here does.
+    named = _named_symlinks(tree, targets)
+    manifest = (_links_at_the_manifest(plan, tree)
+                if any(path.casefold() == SHAPE_MANIFEST for path in named)
+                else set())
+    empty, empty_remediation = _empty_symlink_findings(tree, targets,
+                                                       manifest)
+    bad, bad_remediation = _bad_symlink_target_findings(tree, targets,
+                                                        manifest)
+    return (unsafe + empty + bad,
+            unsafe_remediation + empty_remediation + bad_remediation)
 
 
 def _unsafe_path_findings(plan: Plan) -> tuple[list[str], list[str]]:
@@ -8028,7 +8525,11 @@ def _entry_findings(plan: Plan, source: Source,
     fixes: the fix is a commit in the source, and the fresh `plan` after it
     takes back every answer given before, so they are listed before the
     findings about those answers (`_source_path_findings`). Their
-    remediation is said once after the findings, with the others.
+    remediation is said once after the findings, with the others. The
+    same goes for each symlink whose target holds a NUL byte after its
+    first, or is longer than Linux takes (#908), as
+    `plan-bad-symlink-target`: git makes another link or none, which no
+    answer changes either.
 
     A VALUE NO FILE CAN HOLD IS SAID BEFORE THE VALIDATOR'S WORD ON IT (#255
     before #261). A lone surrogate, a line break or a bidi control in
@@ -8067,13 +8568,13 @@ def _entry_findings(plan: Plan, source: Source,
     source, and is not also said to be missing from this one.
     """
     tree = source.tree()
-    unsafe, unsafe_remediation = _source_path_findings(
-        plan, tree, symlink_targets(source, tree))
+    targets = symlink_targets(source, tree)
+    unsafe, unsafe_remediation = _source_path_findings(plan, tree, targets)
     findings = (unsafe
                 + _coverage_findings([str(e.get("path"))
                                       for e in plan.entries],
                                      [path for path, _, _, _ in tree])
-                + _leg_findings(plan, tree))
+                + _leg_findings(plan, tree, _named_symlinks(tree, targets)))
     # Beside the pins' other findings, which `_leg_findings` lists last: a
     # digest the clone `plan` read it from recomputes otherwise (#449).
     digest_findings, pin_notes = _pin_digest_findings(plan)
@@ -8576,8 +9077,12 @@ def _print_what_will_happen(plan: Plan, source: Source, names: dict,
     # Every value below that is the plan's own is `_shown`, as a name is:
     # since #247 the reader gives back a lone surrogate, which raised on a
     # strict stdout before the FINDING about it was printed (#255).
-    print(f"  create {names['spec']} and {names['code']} "
-          f"({_shown(str(plan.get('visibility', 'private')))})")
+    # A bare repository on disk has no visibility, so under
+    # `--local-remote-dir` none is printed: `execute` creates the legs with
+    # `git init --bare`, and never calls `gh repo create` (#906).
+    visibility = ("" if local else
+                  f" ({_shown(str(plan.get('visibility', 'private')))})")
+    print(f"  create {names['spec']} and {names['code']}{visibility}")
     print(f"  extract {len(moved)} path(s) with `git filter-repo`, history "
           "preserved")
     for role in seeded:
@@ -8591,7 +9096,8 @@ def _print_what_will_happen(plan: Plan, source: Source, names: dict,
     # Beside the mounts, the path the read-across follow-up leaves to them,
     # from the mounts as the plan stands (#600's review, F1).
     across = contracts_from_code_leg(mounts[0], mounts[1],
-                                     _leg_paths(plan)["spec"])
+                                     _leg_paths(plan)["spec"],
+                                     _plan_follow_ups(plan))
     print(f"  ONE split commit on branch "
           f"{_shown(str(plan.get('adopt_branch', ADOPT_BRANCH)))} "
           f"of {names['assembly']}: `git rm -r` those paths, mount the "
@@ -8733,9 +9239,11 @@ class _Walk:
     materializer's `open()` will follow it: the symlinks met on the way, in
     order, as `(path, target)`; where it lands, and whether that is outside
     the assembly; whether something is already there, so that `place`
-    writes the shape's copy beside it under `shape/`; the symlink with an
-    empty target it met, if any; and, once a symlink has been met, what
-    stops it, or None."""
+    writes the shape's copy beside it under `shape/`; the symlink it met that
+    git does not make as the blob holds it, if any, whose target is empty
+    (#303, #388), holds a NUL byte, or is longer than Linux takes (#908),
+    and which a finding of the source names and the walk does not; and,
+    once a symlink has been met, what stops it, or None."""
 
     def __init__(self, path: str) -> None:
         self.path = path
@@ -8790,6 +9298,7 @@ class _PlannedRoot:
         self.source = source
         self.probe = probe
         self.fold = fold
+        self._tree = tree
         self.entries: dict[str, tuple[str, str]] = {
             GITMODULES: (FILE_MODES[0], "")}
         self.gone: dict[str, str] = {}
@@ -8812,6 +9321,7 @@ class _PlannedRoot:
         # those are `check`'s findings, and `execute` writes no file for them.
         self.pins = list(dict.fromkeys(_declared_pins(plan)))
         self._targets: dict[str, str] = {}
+        self._blobs: dict[str, bytes] | None = None
         self._walks: list[_Walk] | None = None
 
     def _keep(self, plan: Plan, tree: list) -> None:
@@ -8971,10 +9481,26 @@ class _PlannedRoot:
         if mode != SYMLINK_MODE:
             return None
         if real not in self._targets:
-            self._targets[real] = _git_path(git_out(
-                [GIT_CAT_FILE, "blob", oid], cwd=self.source.path,
-                binary=True))
+            self._targets[real] = _git_path(self._read(oid))
         return real, self._targets[real]
+
+    def _read(self, oid: str) -> bytes:
+        """The target the symlink blob `oid` holds, from the one batch read
+        of every link's target (`symlink_targets`, #908): a link's own `git
+        cat-file` per walk, per disk and per question was 15 processes for
+        five links, and is now none beyond the batch, which `Source` keeps
+        for the whole command. A link of size 0 is the empty blob, read
+        from no one. A blob the batch did not return is read alone, as it
+        was, and git says why it cannot."""
+        if self._blobs is None:
+            empty = {row_oid: b"" for _, mode, row_oid, size in self._tree
+                     if mode == SYMLINK_MODE and not size}
+            self._blobs = {**empty, **symlink_targets(self.source,
+                                                      self._tree)}
+        if oid in self._blobs:
+            return self._blobs[oid]
+        return git_out([GIT_CAT_FILE, "blob", oid], cwd=self.source.path,
+                       binary=True)
 
     def _through(self, walk: _Walk, link: tuple[str, str], ends: tuple,
                  queue: list) -> list:
@@ -8987,12 +9513,19 @@ class _PlannedRoot:
             walk.problem = (f"it follows too many symlinks at {_spelled(at)}: "
                             f"{TOO_MANY_SYMLINKS}")
             return []
-        if not target or target.startswith("\0"):
+        if _unmade_target(target.encode("utf-8", "surrogateescape")):
             # A target that begins with NUL ends there, and is as empty to
             # Linux as an empty one: `plan-empty-symlink` names both (#388).
+            # One that holds a NUL further on, or is longer than Linux takes,
+            # is not the link the blob says: `plan-bad-symlink-target` names
+            # it (#908). The walk goes no further along any of them, and
+            # names none: one link, one finding.
             walk.empty = at
             walk.problem = (f"the symlink {_spelled(at)} has an empty target, "
                             "which leads nowhere")
+            if target and not target.startswith("\0"):
+                walk.problem = (f"the symlink {_spelled(at)} has a target "
+                                "git does not make as it stands")
             return []
         last = not queue
         if _absolute_here(target):
@@ -9258,7 +9791,11 @@ def _root_symlink_findings(plan: Plan, source: Source, tree: list,
     with a NUL byte (#388), is #303's to say: `plan-empty-symlink` names
     every such symlink in the source, first in `_entry_findings`' list, with
     the fix in the source, so it is not said again here, wherever in the
-    walk's chain that symlink is.
+    walk's chain that symlink is. So is one that holds a NUL byte further
+    on, or is longer than Linux takes, which `plan-bad-symlink-target` names
+    and says what git makes of it (#908): the walk used to read `ci\x00xx`
+    as where `.github` leads, and called that not in the source tree, where
+    Linux makes `.github` a link to `ci`.
 
     Where `git` checks a symlink out as a plain file, the link a reported
     walk meets first ABOVE its path is that file in the clone, and the
@@ -9308,7 +9845,9 @@ def _root_symlink_finding(walk: _Walk, why: str, aside: str, *,
                           as_a_file: bool = False) -> str:
     """The line `check` prints for a symlink `walk` cannot be written
     through, and what to do. A walk that stopped at a symlink with an empty
-    target never comes here: that symlink is #303's `plan-empty-symlink`.
+    target never comes here: that symlink is #303's `plan-empty-symlink`,
+    and a target git does not make as it stands is #908's
+    `plan-bad-symlink-target`.
 
     `as_a_file` (`_a_file_above`): the clone holds the link as a plain file.
     That is the reason then, in `adopt-symlinks-off`'s words, and not `why`,
@@ -9493,11 +10032,13 @@ def _refuse_symlinks_checked_out_as_files(plan: Plan, source: Source,
 # once those lines are in is named again by the next `check`, under the
 # file that then decides it. A deeper kept file that restores LF leaves
 # nothing to find, and one that alone keeps the copy LF is not named. A root
-# `.gitattributes` that is a symlink, which gives no rule (git follows no such
-# link, and a checkout reads only the link's own text, a path, which names
-# no attribute), is #471's follow-up, not this finding: its copies are asked
-# against the block that follow-up asks a regular file to hold, so a kept
-# nested file is still found, and the finding names that block's rule.
+# `.gitattributes` that is a symlink to a path, which gives no rule (git
+# follows no such link, and a checkout reads only the link's own text, the
+# path it leads to, which names no attribute unless it holds a space, a tab
+# or a carriage return, #906), is #471's follow-up, not this finding: its
+# copies are asked against the block that follow-up asks a regular file to
+# hold, so a kept nested file is still found, and the finding names that
+# block's rule.
 # Asked as a disk that keeps case does and again as one that ignores it, as
 # #262's findings are: there `core.ignorecase` folds git's patterns, and a
 # kept `.GitHub/.gitattributes` is read for `.github/`. A finding only the
@@ -9672,7 +10213,12 @@ def _kept_nested_attributes(plan: Plan, tree: list) -> list[tuple]:
     blob is its target, which git then reads as the file's rules: measured
     with git 2.43, a kept `.github/.gitattributes` linking to `*.yml
     eol=crlf` checked `.github/workflows/validate.yml` out with CRLF. A
-    target that is a path names no attribute, and changes nothing."""
+    target with no space, tab or carriage return, a path, is a pattern and
+    names no attribute, and changes nothing; one with any of them is a
+    pattern and the attributes after it, as any line of the file is read, so
+    every link is asked like a file (#906: measured with `config/attributes`,
+    which left the copy LF, and `*.yml eol=crlf`, `*.yml` TAB `eol=crlf` and
+    `*.yml` CR `eol=crlf`, which wrote it CRLF)."""
     blobs = {path: oid for path, _, oid, _ in tree}
     return [(path, mode, blobs[path], entry)
             for path, mode, entry in _kept_in_root(plan.entries, tree)
@@ -10128,17 +10674,38 @@ READ_AGAIN = ("each one git reads again (every file of a small source; of a "
               "large one, those checked out in the second git wrote its "
               "index)")
 
-#: What git refused, and the way out, for each step a refusal can stop.
+#: Where `execute` stops for each of git's refusals, measured with the
+#: refusal's own fixtures and the check that refuses them patched out (#906).
+#: A clone of the source meets the rule that refuses a checkout the first
+#: time `execute` makes one: extracting a leg (`REFUSED extracting the spec
+#: leg`, where both legs are extracted, before either is pushed). The split's
+#: `git add -A` stops it at `REFUSED committing the split`, a step the push
+#: of the split branch follows, unless a step before it meets the same rule:
+#: the extraction, on a filter that fails; the seeding of a leg, which runs
+#: a `git add -A` of its own (`REFUSED seeding the code leg`); or the mount,
+#: where a rule over every file reaches the `.gitmodules` it writes
+#: (`REFUSED mounting the legs`, `failed to encode '.gitmodules'`).
+STOPS_AT_A_CLONE = "at its first clone of the source"
+STOPS_AT_THE_SPLIT = (
+    "no later than committing the split, and sooner where a step before it "
+    "meets the same rule: extracting or seeding a leg, or mounting the legs, "
+    "where the rule reaches the `.gitmodules` it writes")
+
+#: What git refused, where `execute` would stop, and the way out, for each
+#: step a refusal can stop.
 CHECKOUT_REFUSED = (
     "to check the source's commit out as the split's clone does",
+    STOPS_AT_A_CLONE,
     "Change the rule or the setting git names, and re-run `plan`.")
 STORE_REFUSED = (
     "to store again what the plan keeps in the assembly root, as the split's "
     "`git add -A` does",
+    STOPS_AT_THE_SPLIT,
     "Commit the file git names in the source as git stores it, or change the "
     "rule or the setting that refuses it, and re-run `plan`.")
 COPY_REFUSED = (
     "to store the pinned shape copies the split writes",
+    STOPS_AT_THE_SPLIT,
     "Keep the rule off the copy git names with a line after it in the "
     "source's root `.gitattributes`, or narrow the rule, commit, and re-run "
     "`plan`.")
@@ -10441,11 +11008,17 @@ def _copies_finding(copies: list[str], at_the_root: dict) -> str:
             "the rules, commit, and re-run `plan`.")
 
 
-def _refused_finding(step: tuple[str, str], said: str) -> str:
-    what, way_out = step
+def _refused_finding(step: tuple[str, str, str], said: str) -> str:
+    """`check`'s line for a step of the split that git refuses: what it
+    refuses, in git's words, and where `execute` stops over it (`step`'s
+    `STOPS_AT_*`), which is never past the step git refuses and is not always
+    that step (#906: it said "there", and stopped on the mount's
+    `.gitmodules`, before the split's `git add`, for `* working-tree-encoding`
+    with `.gitattributes` exempted)."""
+    what, stops, way_out = step
     return (f"FINDING {REENCODED_FILES}: this machine's git refuses {what} "
-            f"(git said {_spelled(said)}), so `execute` would stop there, "
-            f"after the leg repositories exist. {way_out}")
+            f"(git said {_spelled(said)}), so `execute` would stop after the "
+            f"leg repositories exist, {stops}. {way_out}")
 
 
 def _reencoded_files_findings(plan: Plan, source: Source, tree: list,
@@ -11099,7 +11672,8 @@ def _work_dir_refusal(detail: str, done: str = "") -> Refusal:
                    f"Remediation: {done}{WORK_DIR_FIX}")
 
 
-def _unwritable_work_dir(args, work_root: Path) -> str | None:
+def _unwritable_work_dir(args, work_root: Path,
+                         needed: str | None = None) -> str | None:
     """Why this run cannot build in the `--work-dir` it was given, or None:
     a directory made in it, and removed again, could not be (#524).
 
@@ -11116,18 +11690,36 @@ def _unwritable_work_dir(args, work_root: Path) -> str | None:
     meets nothing an earlier run left there, and it is removed again.
 
     Without `--work-dir`, `_work_root` makes a new directory, which this
-    user owns and can write in, and nothing is asked."""
+    user owns and can write in, and nothing is asked.
+
+    `needed` is what the asking command does in the directory, and the
+    reason ends with it (#903): `execute`'s, which is what `check` and
+    `execute` give, where none is passed; `plan`'s own need of it is the
+    clone (`_plan_clones`)."""
     if not getattr(args, "work_dir", None):
         return None
     try:
         os.rmdir(tempfile.mkdtemp(prefix="write-probe-", dir=work_root))
     except OSError as exc:
+        needed = needed or (
+            f"`execute` builds {_and_listed(list(BUILT_IN.values()))} "
+            "there, only after it has made both leg repositories")
         return (f"--work-dir {_spelled(str(work_root))} cannot be written: "
                 "making a directory in it, and removing it again, failed "
-                f"({exc.strerror or exc}), and `execute` builds "
-                f"{_and_listed(list(BUILT_IN.values()))} there, only after "
-                "it has made both leg repositories")
+                f"({exc.strerror or exc}), and {needed}")
     return None
+
+
+def _plan_clones(repository: str) -> str:
+    """What `plan` does in a `--work-dir` (#903), as `_unwritable_work_dir`
+    ends its reason with it: it clones an `org/repo` `--source` into
+    `source-readonly/<repo>`, which is why the directory must be one this
+    user can write in. A local source is read in place, so `plan` does not
+    ask whether the directory can be written in; it still makes it, and
+    refuses one another user can rename in (#803), for `--out` may be
+    written there too."""
+    return (f"`plan` clones {repository} into "
+            f"`{SOURCE_READONLY}/{repository.split('/')[1]}` there")
 
 
 def _refuse_an_unwritable_work_dir(args, work_root: Path) -> None:
@@ -13481,6 +14073,10 @@ def _split_message(names, paths_for, leg_commits, spec_path, code_path,
                 f"was assigned to it. It is mounted and pinned like the other "
                 f"leg and carries no history from here, there being none.)"]
 
+    # Beside the mounts `execute` made, the path the read-across follow-up
+    # leaves to them (#600's review, F1; #906).
+    across = contracts_from_code_leg(spec_path, code_path, paths_for["spec"],
+                                     follow_ups)
     lines = [
         f"Adopt the three-repository shape: {names['spec']} and "
         f"{names['code']}",
@@ -13491,7 +14087,7 @@ def _split_message(names, paths_for, leg_commits, spec_path, code_path,
         "moved file keeps the commits that made it. Nothing was deleted: what "
         "leaves this tree arrives in a leg at the same path, mounted back "
         f"here at {spec_path}/ and {code_path}/"
-        f"{contracts_from_code_leg(spec_path, code_path, paths_for['spec'])}.",
+        f"{across}.",
         "",
         f"MOVED TO THE SPEC LEG ({names['spec']} @ {leg_commits['spec'][:12]}):",
     ]
@@ -14495,6 +15091,37 @@ def _refuse_another_repository(args, source: Source, naming: NamingPolicy,
         "request there and sets its topic on it",
         _own_name_remediation(repository, naming, pins,
                               "no plan was written. "))
+
+
+def _refuse_a_clone_of_another_repository(args, repository: str,
+                                          naming: NamingPolicy) -> None:
+    """What an `org/repo` `--source` is refused for BEFORE the clone (#903):
+    the id derived from `--project` (`adopt-bad-id`), and then
+    `adopt-not-the-source`, in the order `_checked_plan_inputs` asks them.
+    The source's name is the one `--source` gives, and `--org` and
+    `--project` are flags, so nothing here needs the clone. They were asked
+    after `gh repo clone`, so with a clone that failed `--source acme/Thing
+    --project Other` was `source-unclonable`, with a remedy about `gh auth
+    status`, and never the refusal that says it is not the repository.
+
+    Both are asked of a `Source` that holds the name alone and says it is
+    a clone, as the source `plan` is about to make is (`_org_read_from`
+    then names `--source`). `adopt-not-the-source` is
+    `_refuse_another_repository`'s own question and words; `args.org` is
+    read from it as `_checked_plan_inputs` reads it, and `args` is left as
+    it was, so that both are asked again of the clone, where they pass,
+    with `--org` still not given. A source read in place is asked after
+    git has read its `origin`, which is where its name is."""
+    named = Source(Path(SOURCE_READONLY), repository, "", "", cloned=True)
+    # An `--id` that was passed was asked with the flags. The one derived
+    # from `--project` is asked first, as `_checked_plan_inputs` asks it.
+    if args.id is None:
+        _refuse_bad_id(args.project.lower(), args.project, set(), named)
+    asked = argparse.Namespace(org=_planned_org(args.org, named),
+                               project=args.project)
+    _refuse_another_repository(asked, named, naming,
+                               set(declared_pin_products(args)),
+                               bool(args.org))
 
 
 def _last_two_directories(path: str) -> str | None:
