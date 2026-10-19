@@ -22,6 +22,19 @@
 - L4-154, `_neutral_pin_entry`'s docstring gave `id: -` as "the text",
   which the reader refuses since #393; its example is now one it reads.
 
+And two things the reader read without a word, from #459's triage (#917):
+
+- U021, A KEY WRITTEN TWICE. Both mapping builders kept the last, as
+  PyYAML does: `a: 1` then `a: 2` read `{'a': 2}`, and `k: {a: 1, a: 2}`
+  read `{'k': {'a': 2}}`. YAML requires a mapping's keys to be unique, and
+  Brett Heap ruled on 2026-10-14 to refuse one: each is refused by the
+  line of the second.
+- U181, A BLOCK SCALAR'S LINE INDENTED LESS THAN ITS FIRST lost the
+  characters left of the block's column: `k: |` over `    a`, `  bcd` and
+  `    e` read `'a\\nd\\ne\\n'`, where PyYAML refuses the document. It is
+  refused by its line. One opening `#` is a comment that ends the block,
+  as PyYAML reads it, where it was text.
+
 PyYAML is the ORACLE ONLY, as in `tests/test_yaml_indicator_openers.py`,
 whose helpers this file uses: where it is not installed, the comparisons
 are skipped and this reader's answers are still asserted.
@@ -873,3 +886,258 @@ def test_tracking_branch_of_names_a_nul_and_a_surrogate_as_the_validator_does(
     assert str(refused.value).startswith(
         f"REFUSED unseen-branch: tracking_branch is {value!r}, which holds "
         f"{words}\n"), refused.value
+
+
+# --- #917 U021: a key written twice -----------------------------------------
+
+#: The words a key written twice is refused with, `{line}` and `{key}` its.
+TWICE = "line {line}: key {key!r} is written twice"
+
+#: `(document, the line of the second key, the key, what PyYAML reads)`:
+#: the issue's two rows first, then the same wherever a mapping stands.
+#: PyYAML keeps the last, as this reader did.
+WRITTEN_TWICE = [
+    pytest.param("a: 1\na: 2", 2, "a", {"a": 2}, id="the-issue-block-row"),
+    pytest.param("k: {a: 1, a: 2}", 1, "a", {"k": {"a": 2}},
+                 id="the-issue-flow-row"),
+    pytest.param("k:\n  a: 1\n  a: 2", 3, "a", {"k": {"a": 2}},
+                 id="nested-block"),
+    pytest.param("j: 1\nk: {a: {b: 1, b: 2}}", 2, "b",
+                 {"j": 1, "k": {"a": {"b": 2}}}, id="nested-flow"),
+    pytest.param("j: 1\nk: [x, {a: 1, a: 2}]", 2, "a",
+                 {"j": 1, "k": ["x", {"a": 2}]},
+                 id="a-flow-mapping-in-a-flow-sequence"),
+    pytest.param("- a: 1\n  a: 2", 2, "a", [{"a": 2}], id="a-sequence-item"),
+    pytest.param("a:\n  b: 1\na:\n  c: 2", 3, "a", {"a": {"c": 2}},
+                 id="over-nested-values"),
+    pytest.param("k: 1\nk: |\n  a\n  b", 2, "k", {"k": "a\nb\n"},
+                 id="a-block-scalar-second"),
+    pytest.param("k: >\n  a\n  b\nk: 1", 4, "k", {"k": 1},
+                 id="a-block-scalar-first"),
+    pytest.param('a: 1\n"a": 2', 2, "a", {"a": 2},
+                 id="quoted-the-second-time"),
+    pytest.param("k: {a: 1, 'a': 2}", 1, "a", {"k": {"a": 2}},
+                 id="quoted-in-a-flow"),
+    pytest.param("files:\n  - path: a\nfiles: 5", 3, "files", {"files": 5},
+                 id="a-files-list-then-a-number"),
+]
+
+
+@pytest.mark.parametrize("text, line, key, pyyaml_reads", WRITTEN_TWICE)
+def test_a_key_written_twice_is_refused_by_the_line_of_the_second(
+        text, line, key, pyyaml_reads):
+    assert refusal_words(text) == TWICE.format(line=line, key=key)
+
+
+@NEEDS_PYYAML
+@pytest.mark.parametrize("text, line, key, pyyaml_reads", WRITTEN_TWICE)
+def test_pyyaml_keeps_the_last_of_each(text, line, key, pyyaml_reads):
+    assert stock(text) == pyyaml_reads
+
+
+def test_the_key_is_refused_before_its_second_value_is_read():
+    """A second value the reader refuses on its own is not what is named:
+    the key written twice is."""
+    assert refusal_words("a: ]") == (
+        f"{OPENS} `]`, which closes a flow sequence in YAML: ']'")
+    assert refusal_words("a: 1\na: ]") == TWICE.format(line=2, key="a")
+
+
+def test_a_key_read_as_the_same_text_is_one_key():
+    """This reader reads every key as text, so `1` and `'1'` are one key to
+    its caller, which would see one: refused, though YAML reads two."""
+    assert refusal_words("1: a\n'1': b") == TWICE.format(line=2, key="1")
+
+
+#: The same key in two mappings, and a value repeated: no key written twice.
+NOT_WRITTEN_TWICE = [
+    pytest.param("- a: 1\n- a: 2", [{"a": 1}, {"a": 2}],
+                 id="two-sequence-items"),
+    pytest.param("a:\n  a: 1", {"a": {"a": 1}}, id="the-key-of-its-value"),
+    pytest.param("a: {a: 1}", {"a": {"a": 1}}, id="the-key-of-a-flow-value"),
+    pytest.param("k: [{a: 1}, {a: 2}]", {"k": [{"a": 1}, {"a": 2}]},
+                 id="two-flow-mappings"),
+    pytest.param("a: 1\nb:\n  a: 2", {"a": 1, "b": {"a": 2}},
+                 id="a-nested-mapping"),
+    pytest.param("a: 1\nA: 2", {"a": 1, "A": 2}, id="another-case"),
+    pytest.param("k: [a, a]", {"k": ["a", "a"]}, id="a-repeated-item"),
+    pytest.param("a: 1\nb: 1", {"a": 1, "b": 1}, id="a-repeated-value"),
+]
+
+
+@pytest.mark.parametrize("text, expected", NOT_WRITTEN_TWICE)
+def test_the_same_key_in_another_mapping_still_reads(text, expected):
+    assert parse_yaml(text + "\n") == expected
+
+
+@NEEDS_PYYAML
+@pytest.mark.parametrize("text, expected", NOT_WRITTEN_TWICE)
+def test_pyyaml_reads_each_other_mapping_the_same(text, expected):
+    assert stock(text) == expected
+
+
+@pytest.mark.parametrize("seed, document", [
+    pytest.param(392393, 'k: {"a": "a", a: -a,}', id="seed-392393"),
+    pytest.param(3, 'k: {"a": "a", "a": ab}', id="seed-3"),
+])
+def test_the_fuzz_draws_a_key_written_twice_that_pyyaml_reads(seed,
+                                                               document):
+    """The seeded fuzz of `tests/test_yaml_indicator_openers.py` draws these,
+    which PyYAML reads, keeping the last; it counts them as refused by
+    design."""
+    assert document in fuzz_documents(seed)
+    assert refusal_words(document) == TWICE.format(line=1, key="a")
+
+
+#: A block scalar indented under a key that already has a value.
+STRAY_BLOCK = "a: 1\n  k: |\n    x\n    y"
+
+
+def test_a_stray_block_scalar_is_named_by_its_headers_line():
+    """A block scalar's record is on its header's line now, where its key
+    is, so a stray one is named there; on main the line was the body's
+    last, `line 4`."""
+    assert refusal_words(STRAY_BLOCK) == "line 2: unexpected indentation"
+
+
+@NEEDS_PYYAML
+def test_pyyaml_refuses_the_stray_block_scalar_too():
+    assert refused(stock(STRAY_BLOCK))
+
+
+# --- #917 U181: a block scalar's line indented less than its first ----------
+
+#: `(document, the line refused, its spaces, the block's)`. On main the
+#: issue's row read `'a\nd\ne\n'`, a line no longer than the block's
+#: column was lost whole (`all-of-it`, `one-space-short`), and the key in
+#: an item was read into the block as `' 1'`.
+UNDER_INDENTED = [
+    pytest.param("k: |\n    a\n  bcd\n    e", 3, 2, 4, id="the-issue-row"),
+    pytest.param("k: >\n    a\n  bcd\n    e", 3, 2, 4, id="folded"),
+    pytest.param("k: |-\n    a\n  bcd", 3, 2, 4, id="the-last-line"),
+    pytest.param("k: |\n      a\n    b", 3, 4, 6, id="all-of-it"),
+    pytest.param("k: |\n    a\n   b", 3, 3, 4, id="one-space-short"),
+    pytest.param("k: |\n    a\n\n  bcd", 4, 2, 4, id="after-a-blank-line"),
+    pytest.param("k:\n  j: |\n      a\n    bcd", 4, 4, 6, id="nested"),
+    pytest.param("- k: |\n      a\n    j: 1", 3, 4, 6, id="a-key-in-an-item"),
+    pytest.param("k: |\n    a\n  \tb", 3, 2, 4, id="a-tab-after-the-spaces"),
+]
+
+#: How a line indented less than its block is refused.
+UNDER = ("line {line}: a line of a block scalar is indented {spaces} spaces, "
+         "fewer than the {block} of its first line")
+
+
+@pytest.mark.parametrize("text, line, spaces, block", UNDER_INDENTED)
+def test_a_line_indented_less_than_its_block_is_refused_by_its_line(
+        text, line, spaces, block):
+    assert refusal_words(text) == UNDER.format(line=line, spaces=spaces,
+                                               block=block)
+
+
+@NEEDS_PYYAML
+@pytest.mark.parametrize("text, line, spaces, block", UNDER_INDENTED)
+def test_pyyaml_refuses_each_under_indented_line_too(text, line, spaces,
+                                                     block):
+    assert refused(stock(text)), f"PyYAML reads {text!r} as {stock(text)!r}"
+
+
+#: A comment indented less than the block ends it, as YAML's trailing
+#: comment does; a `#` at the block's column or on its first line is text;
+#: and a line deeper than the first keeps its extra spaces, as before.
+BLOCK_STILL_READ = [
+    pytest.param("k: |\n    a\n  # c\nj: 1", {"k": "a\n", "j": 1},
+                 id="a-comment-ends-the-block"),
+    pytest.param("k: |\n    a\n  #c", {"k": "a\n"},
+                 id="a-comment-with-no-space"),
+    pytest.param("- k: |\n      a\n    # c\n  j: 1", [{"k": "a\n", "j": 1}],
+                 id="a-comment-in-an-item"),
+    pytest.param("k: >-\n    one\n    two\n  # c\nj: 1",
+                 {"k": "one two", "j": 1},
+                 id="a-comment-after-a-folded-block"),
+    pytest.param("k: |\n    a\n    # c", {"k": "a\n# c\n"},
+                 id="a-hash-at-the-blocks-column-is-text"),
+    pytest.param("k: |\n  # c\n    a", {"k": "# c\n  a\n"},
+                 id="a-hash-on-the-first-line-is-text"),
+    pytest.param("k: |\n    a\n      b\n    c", {"k": "a\n  b\nc\n"},
+                 id="deeper-is-kept"),
+]
+
+
+@pytest.mark.parametrize("text, expected", BLOCK_STILL_READ)
+def test_a_comment_ends_the_block_and_the_rest_still_reads(text, expected):
+    assert parse_yaml(text + "\n") == expected
+
+
+@NEEDS_PYYAML
+@pytest.mark.parametrize("text, expected", BLOCK_STILL_READ)
+def test_pyyaml_reads_each_block_the_same(text, expected):
+    assert stock(text) == expected
+
+
+#: A line at the block's column after a comment that ended it.
+UNDER_THE_COMMENT = "k: |\n    a\n  # c\n    b"
+
+
+def test_a_line_under_the_comment_is_not_read_into_the_block():
+    """The comment ended the block, so the line after it stands where
+    nothing can, and is refused."""
+    assert refusal_words(UNDER_THE_COMMENT) == (
+        "line 4: unexpected indentation")
+
+
+@NEEDS_PYYAML
+def test_pyyaml_refuses_the_line_under_the_comment_too():
+    assert refused(stock(UNDER_THE_COMMENT))
+
+
+def test_an_indentation_digit_is_still_not_read_and_now_refuses():
+    """The header's indentation digit is accepted and never read: the
+    block's column is its first line's. `k: |2` over `    a` and `  b` is
+    `'  a\\nb\\n'` to PyYAML, and main read `'a\\n'`, losing `b`; it is
+    refused now, by the rule above, and not misread."""
+    assert refusal_words("k: |2\n    a\n  b") == UNDER.format(
+        line=3, spaces=2, block=4)
+
+
+# --- #917: a file holding one, and the copy a project carries ---------------
+
+@pytest.mark.parametrize("body, words", [
+    pytest.param(b"id: atlas\nid: other\n", TWICE.format(line=2, key="id"),
+                 id="a-block-key"),
+    pytest.param(b"id: atlas\npins: {a: 1, a: 2}\n",
+                 TWICE.format(line=2, key="a"), id="a-flow-key"),
+    pytest.param(b"id: atlas\nnote: |\n    a\n  bcd\n",
+                 UNDER.format(line=4, spaces=2, block=4),
+                 id="an-under-indented-line"),
+])
+def test_a_file_holding_one_is_yaml_unparsable_naming_the_line_once(
+        tmp_path, body, words):
+    path = tmp_path / "project.yaml"
+    path.write_bytes(body)
+    with pytest.raises(Refusal) as caught:
+        load_yaml(path)
+    assert caught.value.code == "yaml-unparsable"
+    assert caught.value.detail == f"{path}: {words}"
+    assert caught.value.remediation == ""
+
+
+def test_the_projects_own_validator_refuses_a_key_written_twice(project):
+    """The copy a project carries reads `project.yaml`: a second
+    `tracking_branch:` is no longer the branch, and its own
+    `validate-manifest.py` exits 2, naming the file and the line."""
+    manifest = project / "project.yaml"
+    data = manifest.read_bytes()
+    old = b'tracking_branch: "main"\n'
+    assert data.count(old) == 1, f"fixture drift: {old!r} in project.yaml"
+    edited = data.replace(old, old + b"tracking_branch: other\n", 1)
+    manifest.write_bytes(edited)
+    line = edited[:edited.index(b"tracking_branch: other")].count(b"\n") + 1
+    result = run_script(project / "scripts" / "validate-manifest.py",
+                        cwd=project)
+    assert result.returncode == 2, result.stderr
+    assert (f"REFUSED yaml-unparsable: {manifest}: line {line}: key "
+            "'tracking_branch' is written twice\n") in result.stderr
+    assert "Traceback" not in result.stderr
+    assert "manifest ok" not in result.stdout
+    assert manifest.read_bytes() == edited

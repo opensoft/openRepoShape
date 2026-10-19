@@ -1676,13 +1676,14 @@ def _shape_block_bounds(lines: list[str], kind: Kind) -> tuple[int, int]:
     written twice, as the reader reads it, and refused by name below.
 
     A HEADER THAT APPEARS TWICE IS REFUSED BY NAME (review of PR #558). The
-    reader keeps the last block, so a rewrite of the first would move a pin
-    nobody reads. That was left to `rewrite_fault`'s read-back, whose words
-    blame this tool's line rewrite, which is false of a key written twice.
-    And where the first header carries a comment, the exact match skipped it
-    and rewrote the last block, which is what the reader reads, so such a
-    manifest went through; this finder sees the first header, and would
-    have refused it in those same false words.
+    reader kept the last block, so a rewrite of the first would have moved a
+    pin nobody reads; since #917 it refuses the manifest, `key 'shape' is
+    written twice`, and so do the validators of a shape from then on. That
+    was left to `rewrite_fault`'s read-back, whose words blame this tool's
+    line rewrite, which is false of a key written twice. And where the first
+    header carries a comment, the exact match skipped it and rewrote the
+    last block, so such a manifest went through; this finder sees the first
+    header, and would have refused it in those same false words.
     """
     starts = [index for index, line in enumerate(lines)
               if _is_block_header(line, "shape")]
@@ -1691,11 +1692,12 @@ def _shape_block_bounds(lines: list[str], kind: Kind) -> tuple[int, int]:
             "update-manifest-unrecognised",
             f"{kind.manifest} holds the `shape:` key twice, at lines "
             + " and ".join(str(index + 1) for index in starts[:2])
-            + ", where exactly one was expected: the reader keeps the last "
-              "block, so this tool will not guess which of them is the "
-              "manifest's",
+            + ", where exactly one was expected: the reader refuses a key "
+              "written twice, so this tool will not guess which of them is "
+              "the manifest's",
             "Remediation: delete the extra `shape:` block by hand (the "
-            "validators read the last one) and run the same command again.")
+            "reader refuses a manifest that holds it twice) and run the "
+            "same command again.")
     start = starts[0] if starts else None
     if start is None:
         raise Refusal(
