@@ -660,16 +660,21 @@ def _reusable_remotes(names: dict, urls: dict, repositories: dict,
 #: Where git reaches GitHub over ssh, the clause each remedy for git's access
 #: names beside `gh auth setup-git` (#915): `_exists_remedy`'s for a leg git
 #: could not read, and `_login_remedy`'s for a push git had no login for.
-#: `ssh -T` is asked as git asks: of the host and the port the rule names,
-#: with whatever `core.sshCommand` adds. `ssh -T git@github.com`, which this
-#: named first, asks the default host, port and key, so it said nothing true
-#: of a rule naming a `Host` alias of `~/.ssh/config`, or `ssh.github.com`
-#: on port 443, or of a key that `core.sshCommand` gives by `-i` (RV971).
+#: `ssh -T` is asked as git asks: of the user, host and port the rule names,
+#: with whatever `GIT_SSH_COMMAND` or `core.sshCommand` adds (the variable
+#: overrides the setting, so a person with either set is told of both).
+#: `ssh -T git@github.com`, which this named first, asks the default host,
+#: port and key, so it said nothing true of a rule naming a `Host` alias of
+#: `~/.ssh/config`, or `ssh.github.com` on port 443, or of a key that
+#: `core.sshCommand` gives by `-i` (RV971). GitHub takes ssh only as the user
+#: `git`, so `ssh -T -p 443 ssh.github.com` without `git@` is refused
+#: whatever the key, which is why the user is named too (RV971, round 2).
 SSH_KEY_CLAUSE = ("where a `url.<base>.insteadOf` rule in your git config "
                   "sends `https://github.com/` over ssh, git logs in with an "
-                  "ssh key instead, and `ssh -T` against the host and port "
-                  "your rule names, with anything your `core.sshCommand` "
-                  "adds, says whether GitHub takes yours")
+                  "ssh key instead, and `ssh -T` against the user, host and "
+                  "port your rule names, with anything your "
+                  "`GIT_SSH_COMMAND` or `core.sshCommand` adds, says whether "
+                  "GitHub takes yours")
 
 
 def _exists_remedy(role: str, empty: bool, reuse_flag: bool,

@@ -694,14 +694,16 @@ UNREAD = (f"REFUSED scaffold-remote-exists: {SPEC_REPO} already exists on "
           f"(`git ls-remote https://github.com/{SPEC_REPO}.git` exited 128: "
           "fatal: ")
 #: The ssh key's clause, as each remedy for git's access names it (#915):
-#: `ssh -T` against the host and port the rule names, with what
-#: `core.sshCommand` adds, which `ssh -T git@github.com` was not for a `Host`
-#: alias, `ssh.github.com` on port 443 or a key given by `-i` (RV971).
+#: `ssh -T` against the user, host and port the rule names, with what
+#: `GIT_SSH_COMMAND` or `core.sshCommand` adds, which `ssh -T git@github.com`
+#: was not for a `Host` alias, `ssh.github.com` on port 443 or a key given by
+#: `-i` (RV971), and which `ssh -T -p 443 ssh.github.com` without the user
+#: `git` was not either: GitHub refuses it whatever the key (RV971, round 2).
 SSH_KEY = ("where a `url.<base>.insteadOf` rule in your git config sends "
            "`https://github.com/` over ssh, git logs in with an ssh key "
-           "instead, and `ssh -T` against the host and port your rule names, "
-           "with anything your `core.sshCommand` adds, says whether GitHub "
-           "takes yours")
+           "instead, and `ssh -T` against the user, host and port your rule "
+           "names, with anything your `GIT_SSH_COMMAND` or `core.sshCommand` "
+           "adds, says whether GitHub takes yours")
 UNREAD_EXIT = ("so whether its one commit is the seed this scaffold pushes "
                "cannot be asked. Let git read it (on GitHub, `gh auth "
                f"setup-git` gives git the login `gh` has; {SSH_KEY}), then "
@@ -964,7 +966,6 @@ def mo_bytes(messages: dict) -> bytes:
             + b"".join(text + b"\0" for text in keys + values))
 
 
-@pytest.fixture
 def git_speaks_xx(tmp_path) -> dict:
     """What makes git speak `xx` (`XX_GIT`): `LOCPATH` holds `C_UTF8` as
     `xx_XX.UTF-8`, `LC_ALL` names it, `LANGUAGE` asks for `xx`, and
@@ -991,10 +992,17 @@ def git_speaks_xx(tmp_path) -> dict:
     return speaks
 
 
+@pytest.fixture(params=["as-it-is", "translated"])
+def git_language(request, tmp_path) -> dict:
+    """What a test adds to its environment to run git as it is (`{}`) or
+    translated (`git_speaks_xx`, RV971's kit). Only the translated row is
+    skipped where `git_speaks_xx` skips; the other row runs there."""
+    return {} if request.param == "as-it-is" else git_speaks_xx(tmp_path)
+
+
 @WINDOWS_SKIP
-@pytest.mark.parametrize("language", ["as-it-is", "translated"])
 def test_a_leg_git_reaches_over_ssh_is_refused_with_ssh_s_reason(
-        tmp_path, request, language):
+        tmp_path, git_language):
     """#915. Where git config rewrites `https://github.com/` to ssh, git's
     one `fatal:` line for a leg ssh could not log in to is the generic
     `Could not read from remote repository.`, and ssh's own reason, which
@@ -1010,8 +1018,7 @@ def test_a_leg_git_reaches_over_ssh_is_refused_with_ssh_s_reason(
     its own command (RV971's M4)."""
     env, log = fake_gh(tmp_path, SEEN_SPEC, full=[f"{PROJECT}-spec"])
     env.update(git_reaches_github_over_ssh(tmp_path))
-    if language == "translated":
-        env.update(request.getfixturevalue("git_speaks_xx"))
+    env.update(git_language)
     result = on_github(tmp_path, "--reuse-empty-repo", env=env, cwd=tmp_path)
     assert result.returncode == 2, result.stderr + result.stdout
     assert (f"REFUSED scaffold-remote-exists: {SPEC_REPO} already exists on "
