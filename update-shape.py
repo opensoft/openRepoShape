@@ -2345,7 +2345,8 @@ def prepare(args) -> tuple[Path, dict, list[Row], list[Addition], Upstream,
     (#847) and reads a `Refusal` from here as the standard unable to
     answer. The root is asked first: its own `stat` (a folder above it
     this user cannot search), then whether it can be searched at all
-    (`_search`)."""
+    (`_search`). A read refused once the upstream is open closes it
+    first, as a `Refusal` does."""
     root = root_of(args)
     if not _is_a(root, stat.S_ISDIR):
         raise Refusal("update-root-missing", f"{root} is not a directory")
@@ -2369,7 +2370,13 @@ def prepare(args) -> tuple[Path, dict, list[Row], list[Addition], Upstream,
         upstream.resolve(pinned)
         classify(root, rows, upstream, pinned, target, kind)
         additions = find_additions(root, rows, upstream, target, kind)
-    except Refusal:
+    except (Refusal, OSError):
+        # CLOSED ON A REFUSED READ TOO (#430, review of PR #976): `classify`,
+        # `find_additions` and `merged_into` raise one out of here for
+        # `main`, or the doctor, to name, and closed on a `Refusal` alone,
+        # the bare clone `open_upstream` makes of the pin's `owner/repo` was
+        # left in the temporary directory by every `update-unreadable` from
+        # this block.
         upstream.close()
         raise
     return root, pin, rows, additions, upstream, pinned, target, kind

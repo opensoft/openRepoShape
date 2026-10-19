@@ -42,7 +42,7 @@ from pathlib import Path
 
 import pytest
 
-from conftest import REPO, run_script
+from conftest import REPO, load_without_bytecode, run_script
 #: The skip for a mode root reads through, and the stand-in for a refused
 #: `stat`, from the file that owns them (#383), as the doctor's and
 #: `validate-pins.py`'s #430 tests take them.
@@ -61,6 +61,8 @@ from repo_shape import Refusal, load_yaml  # noqa: E402
 from shape_materialize import SHAPE_REPOSITORY  # noqa: E402
 
 UPDATE = REPO / "update-shape.py"
+#: The gate whose words `update-unreadable` gives (`_unreadable_file`, #712).
+GATE = REPO / "templates" / "assembly-root" / "scripts" / "validate-pins.py"
 UNREADABLE = "update-unreadable"
 DENIED = "Permission denied"
 PIN = "contracts/shape-pin.yaml"
@@ -209,6 +211,42 @@ def test_a_refused_stat_is_named_on_every_python(
     assert pin_bytes(project) == before
 
 
+@pytest.fixture
+def temporaries(update_shape, monkeypatch, tmp_path):
+    """Every upstream a run opens, handed a temporary directory of its own
+    to close, as `open_upstream` hands the bare clone it makes of the pin's
+    `owner/repo`: `--upstream` here is this checkout, which has none. The
+    list holds the directories, for a test to ask whether each is gone."""
+    real = update_shape.open_upstream
+    made: list[Path] = []
+
+    def opening(spec):
+        upstream = real(spec)
+        temporary = tmp_path / f"openreposhape-upstream-{len(made)}"
+        temporary.mkdir()
+        (temporary / "HEAD").write_bytes(b"ref: refs/heads/main\n")
+        upstream._temporary = temporary
+        made.append(temporary)
+        return upstream
+
+    monkeypatch.setattr(update_shape, "open_upstream", opening)
+    return made
+
+
+@pytest.mark.parametrize("command", ["check", "apply"])
+def test_a_read_refused_in_prepare_closes_the_upstream(
+        update_shape, project, capsys, monkeypatch, temporaries, command):
+    """`prepare` closed the upstream it had opened on a `Refusal` alone, so
+    a refused `stat` out of `classify` went on to `main`'s refusal past it,
+    and the bare clone of the pin's `owner/repo` stayed in the temporary
+    directory, one per run (review of PR #976). It is closed on either."""
+    refused_stat(monkeypatch, *SCRIPTS)
+    code, said = run_here(update_shape, capsys, command, project)
+    assert_named(code, said, "scripts/validate-pins.py")
+    assert len(temporaries) == 1, temporaries
+    assert not os.path.lexists(temporaries[0]), said
+
+
 # --- the controls: what is not there is absent, as it always was ------------
 
 @pytest.mark.parametrize("as_314", [False, True], ids=["this-python",
@@ -291,6 +329,36 @@ def test_a_read_refused_is_named_on_every_python(
     monkeypatch.setattr(Path, method, refusing)
     code, said = run_here(update_shape, capsys, "check", project)
     assert_named(code, said, named)
+
+
+@pytest.fixture(scope="module")
+def gate():
+    """`validate-pins.py` of this working tree, loaded by path with no
+    bytecode written beside it, and `sys.path` put back after it puts its
+    own `scripts/` on it."""
+    with pytest.MonkeyPatch.context() as patch:
+        patch.setattr(sys, "path", list(sys.path))
+        return load_without_bytecode(GATE, "gate_update_shape_unreadable")
+
+
+@pytest.mark.parametrize("cause, reason", [
+    pytest.param(errno.EIO, "Input/output error", id="EIO"),
+    pytest.param(errno.ENAMETOOLONG, "File name too long",
+                 id="ENAMETOOLONG"),
+])
+def test_a_read_refused_for_another_reason_gets_the_gates_other_advice(
+        update_shape, project, gate, cause, reason):
+    """A read refused, and not for a permission: `chmod` cannot help it, so
+    the remedy is the gate's `OTHER_REASON`, word for word, and never the
+    permission advice every other test here reads (review of PR #976)."""
+    refusal = update_shape.unreadable_refusal(
+        project, OSError(cause, reason, str(project / "scripts" / "x.py")))
+    assert refusal.code == UNREADABLE
+    assert refusal.detail == f"scripts/x.py: cannot be read ({reason})"
+    assert refusal.remediation.endswith(
+        f"never an absence. {gate.OTHER_REASON}{gate.RUN_AGAIN}"), \
+        refusal.remediation
+    assert "chmod" not in refusal.remediation
 
 
 # --- the root itself ---------------------------------------------------------
@@ -586,3 +654,21 @@ def test_a_rollback_that_cannot_stat_what_it_made_says_so(update_shape,
     assert said.startswith("ROLLED BACK IN PART: the tree is NOT as it was.")
     assert (f"file      docs/new.md, written by --add, was not removed "
             f"({DENIED}): rm -- {tmp_path / 'docs' / 'new.md'}") in said
+
+
+def test_an_add_file_gone_before_the_rollback_is_not_listed(update_shape,
+                                                             tmp_path):
+    """An `--add` file something else took away between the write and the
+    rollback, a validator or the operator: there is nothing left to remove,
+    so nothing is listed as left, and the directory made for it goes as it
+    would have. An `unlink` asked regardless listed it `was not removed (No
+    such file or directory)` under "the tree is NOT as it was" (review of
+    PR #976)."""
+    ledger = update_shape.Rollback(tmp_path)
+    ledger.write_added(tmp_path / "docs" / "new.md", b"x\n", False)
+    (tmp_path / "docs" / "new.md").unlink()
+    said = ledger.undo()
+    assert said.startswith("ROLLED BACK: every byte this command wrote has "
+                           "been put back"), said
+    assert "    removed   docs/ (made to hold an --add file)" in said, said
+    assert "new.md" not in said, said
