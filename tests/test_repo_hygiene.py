@@ -1556,23 +1556,168 @@ def test_the_openrepotools_install_line_is_the_same_everywhere(name):
 
 #: THE ONE LINE THAT INSTALLS THIS STANDARD (#564), and every file that
 #: carries it: the installer it fetches, the command it installs (in its
-#: header), the README and its designed reading, and the release notes that
-#: introduced it. Pasted by people who cannot check it, like the two lines
-#: above, so the copies are held byte for byte. `releases/latest/download/`
-#: is what makes it the NEWEST release's `install.sh` every time.
+#: header), the README and its designed reading, and the notes of every
+#: release since v1.0.1, which introduced it. Pasted by people who cannot
+#: check it, like the two lines above, so the copies are held byte for byte.
+#: `releases/latest/download/` is what makes it the NEWEST release's
+#: `install.sh` every time.
 ONE_LINE_INSTALL = (
     "curl -fsSL https://github.com/opensoft/openRepoShape/releases/latest/"
     "download/install.sh | bash")
-ONE_LINE_INSTALL_IN = ["install.sh", "openRepoShape", "README.md",
-                       "docs/handbook.html", "docs/release-notes/v1.0.1.md"]
+#: The notes are read from `docs/release-notes/` when the tests are collected,
+#: not named, so a release's notes are held the day they are added, with no
+#: edit here (#885: the list named v1.0.1.md alone, so a mistyped line in
+#: v1.1.0.md passed). The set is the notes that predate the line: v1.0.0's
+#: carries none. A `.md` in that directory that is not a release's notes
+#: fails with them until it is named here; a `v*.md` other than v1.0.0.md
+#: named here fails the second test below.
+RELEASE_NOTES = REPO / "docs" / "release-notes"
+RELEASE_NOTES_WITHOUT_THE_ONE_LINE_INSTALL = {"v1.0.0.md"}
+ONE_LINE_INSTALL_IN = [
+    "install.sh", "openRepoShape", "README.md", "docs/handbook.html",
+    *(path.relative_to(REPO).as_posix()
+      for path in sorted(RELEASE_NOTES.glob("*.md"))
+      if path.name not in RELEASE_NOTES_WITHOUT_THE_ONE_LINE_INSTALL)]
+
+
+def _one_line_install_failure(name):
+    """The message for `name`, a file that lacks the one-line install.
+
+    Every file is told to carry the line. A file in the notes directory that
+    is no release's notes is also told it may be named in the set, and no
+    other is: the second test below refuses a release's `v*.md` other than
+    v1.0.0.md there, so offering it would send a person from one failure to
+    the next (#931). The line comes first, so the clause after it is no part
+    of it.
+    """
+    path = REPO / name
+    message = (f"{name} must carry the one-line install byte for byte:\n"
+               f"    {ONE_LINE_INSTALL}")
+    if path.parent == RELEASE_NOTES and not path.match("v*.md"):
+        message += (f"\nor, if it is not a release's notes, name {path.name!r}"
+                    " in RELEASE_NOTES_WITHOUT_THE_ONE_LINE_INSTALL")
+    return message
 
 
 @pytest.mark.parametrize("name", ONE_LINE_INSTALL_IN)
 def test_the_one_line_install_is_the_same_everywhere(name):
     text = (REPO / name).read_text(encoding="utf-8")
-    assert ONE_LINE_INSTALL in text, (
-        f"{name} must carry the one-line install byte for byte:\n"
-        f"    {ONE_LINE_INSTALL}")
+    assert ONE_LINE_INSTALL in text, _one_line_install_failure(name)
+
+
+def test_the_one_line_install_holds_the_release_notes_it_found():
+    """The notes are found, not named, so a directory that moved or a pattern
+    that stopped matching would hold none of them and pass; and the set is
+    for what is not a release's notes, so it may not name one: every `v*.md`
+    but v1.0.0.md, which predates the line, is held (#885). That one is
+    spelled out here, not read from the set this test holds to account."""
+    notes = {path.relative_to(REPO).as_posix()
+             for path in RELEASE_NOTES.glob("v*.md")
+             if path.name != "v1.0.0.md"}
+    assert {"docs/release-notes/v1.0.1.md",
+            "docs/release-notes/v1.1.0.md"} <= notes
+    unheld = sorted(notes - set(ONE_LINE_INSTALL_IN))
+    assert not unheld, (
+        f"{unheld} are release notes, so they are held, not named in "
+        "RELEASE_NOTES_WITHOUT_THE_ONE_LINE_INSTALL")
+
+
+def test_the_one_line_install_message_offers_the_set_only_where_it_works():
+    """The message offers the set to a file it can serve and to no other.
+
+    Every file is told to carry the line. The set is for names in the notes
+    directory that are no release's notes, so only such a file is told to
+    name itself there: a release's `v*.md` other than v1.0.0.md is refused in
+    it by the test above, and a file elsewhere is not looked up in it. A
+    message that told either would send a person to a second failure (#931).
+    The line between a release's notes and any other `.md` there is the
+    name's form, `v*.md`, not a `v` in it: draft-v1.2.0.md is no release's
+    notes. Nothing else reads the message, so without this a comparison
+    turned around in it passes every test.
+    """
+    clause = "RELEASE_NOTES_WITHOUT_THE_ONE_LINE_INSTALL"
+    release = _one_line_install_failure("docs/release-notes/v9.9.9.md")
+    other_note = _one_line_install_failure("docs/release-notes/README.md")
+    stray = _one_line_install_failure("docs/release-notes/draft-v1.2.0.md")
+    elsewhere = _one_line_install_failure("README.md")
+    for message in (release, other_note, elsewhere):
+        assert f":\n    {ONE_LINE_INSTALL}" in message
+    assert clause not in release
+    assert clause in other_note
+    assert clause in stray
+    assert clause not in elsewhere
+    assert other_note.index(ONE_LINE_INSTALL) < other_note.index(clause)
+
+
+#: What may follow the one line on a line of the notes that runs it: nothing,
+#: or the pinned form `install.sh` prints, ` -s -- v<major>.<minor>.<patch>`,
+#: then any run of a backtick, a period, a comma, a semicolon, a colon or a
+#: closing parenthesis, and trailing blanks. Nothing else: not a quote, `**`,
+#: a `#` comment or more words.
+ONE_LINE_INSTALL_MAY_END_WITH = re.compile(
+    r"(?: -s -- v\d+\.\d+\.\d+)?[`.,;:)]*\s*")
+
+
+def _one_line_install_fault(line):
+    """What is wrong with a line of the notes that runs the install, or ''."""
+    if ONE_LINE_INSTALL not in line:
+        return "runs the install but does not hold the one-line install"
+    after = line.partition(ONE_LINE_INSTALL)[2]
+    if not ONE_LINE_INSTALL_MAY_END_WITH.fullmatch(after):
+        return "has more than the pinned form after the one-line install"
+    return ""
+
+
+@pytest.mark.parametrize("tail", [
+    "", " -s -- v1.0.1", "`,", " -s -- v1.0.1`,", ".", "  ", ";", ":", ")",
+    " -s -- v10.20.30"])
+def test_the_one_line_install_may_end_as_the_notes_end_it(tail):
+    assert _one_line_install_fault(ONE_LINE_INSTALL + tail) == ""
+
+
+@pytest.mark.parametrize("tail", [
+    " -s -- --yes", " -s -- main", " -s -- v1.0", " -s -- v1.0.1.2",
+    " -s -- v1.0.1 --yes", "x"])
+def test_the_one_line_install_may_not_end_any_other_way(tail):
+    assert _one_line_install_fault(ONE_LINE_INSTALL + tail) != ""
+
+
+def test_a_mistyped_one_line_install_is_a_fault():
+    assert _one_line_install_fault(ONE_LINE_INSTALL[:-4] + "bsh") != ""
+
+
+def test_every_release_notes_line_that_installs_holds_the_one_line_install():
+    """Each line of the notes that runs the install holds the one line, and
+    what follows it is nothing or the pinned form (#931).
+
+    The test of every file asks only that it hold the line somewhere. A
+    mistyped copy passes while another line holds the right one (`| bsh` at
+    v1.0.1.md:12, beside the pinned line at :45), and so does a line that has
+    the line as a prefix (`| bash -s -- --yes`). A line runs the install if
+    it holds both `curl` and `download/install.sh`: the handbook's rule, any
+    line with `download/install.sh`, would take the bare URLs of the verify
+    commands too. The notes read are those that
+    test_the_one_line_install_holds_the_release_notes_it_found holds: every
+    `v*.md` but v1.0.0.md, which predates the line.
+    """
+    notes = [path for path in sorted(RELEASE_NOTES.glob("v*.md"))
+             if path.name != "v1.0.0.md"]
+    found, failures = {}, []
+    for path in notes:
+        where = path.relative_to(REPO).as_posix()
+        lines = path.read_text(encoding="utf-8").splitlines()
+        for number, line in enumerate(lines, 1):
+            if "curl" not in line or "download/install.sh" not in line:
+                continue
+            found[path.name] = found.get(path.name, 0) + 1
+            fault = _one_line_install_fault(line)
+            if fault:
+                failures.append(f"{where}:{number} {fault}:\n    {line}")
+    least = {"v1.0.1.md": 2, "v1.1.0.md": 1, "v1.1.1.md": 1}
+    assert all(found.get(name, 0) >= n for name, n in least.items()), (
+        "the rule found fewer install lines than the notes hold, "
+        f"found: {found}; wanted at least: {least}")
+    assert not failures, "\n".join(failures)
 
 
 def test_every_handbook_copy_of_the_one_line_install_is_the_same():
