@@ -6169,6 +6169,9 @@ def _checked_add_target(family: Family, repository: str, project: str,
     """
     held = family.holding(repository, project)
     if held is not None:
+        # THE `bump` IT NAMES RUNS AS PRINTED (#927): `bump` requires
+        # `--family-root`, so the line names this holder, spelled by
+        # `shell_quoted` as `_add_command`'s is.
         raise Refusal(
             "member-already-present",
             f"{project} is already a member of {family.data.get('name')}: "
@@ -6280,6 +6283,8 @@ def _checked_member_id(family: Family, repository: str, project: str,
     row = _row_recording(family, project_id)
     if row is not None:
         name = row["project"]
+        # THE `bump` IT NAMES RUNS AS PRINTED (#927), with this holder's
+        # `--family-root`, as `member-already-present`'s does.
         raise Refusal(
             "member-duplicate-id",
             f"{project} is already a member of {family.data.get('name')} "

@@ -276,6 +276,9 @@ class Project:
         # branch would never be reached, and the root is not a submodule of
         # itself to advance.
         if role == "assembly":
+            # `<holder>` IS A PLACEHOLDER (#927): `family.py bump` requires
+            # `--family-root`, and this tool is pointed at a root, which
+            # knows no holder, so it is said as `<Project>` and `<sha>` are.
             raise Refusal(
                 "bump-leg-assembly-is-not-a-leg",
                 "the assembly root is THIS repository, mounted at `.`, and it "
