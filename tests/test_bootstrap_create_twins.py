@@ -32,6 +32,13 @@ HEAD is on alike: git moves HEAD with the rename, and the next run makes `main`
 (an earlier way out, to keep the commits on another branch and check out the
 pin, left the twin where it was, so the refusal came back).
 
+THE NAME OF THE RENAME (#1000). `_kept_name` prints `<twin>-kept`, then
+`-kept-2` and on, and git refuses to make `Main-kept` over a branch stored
+under it, `Main-kept/x` (exit 128, a loose ref or a packed one), so such a name
+is skipped like one that is there; a branch that only starts with it
+(`Main-kept-x`) is no bar. A twin whose name has a slash (`Team/main` for
+`--branch team/main`) is named whole, not by its last part.
+
 THE WORDS HOLD ON A DISK THAT KEEPS CASE TOO, where a real `Main` is a branch
 of its own: every state here that makes a real name, packed or loose, runs the
 way out there, and skips on a disk that folds case, where it cannot be made.
@@ -94,18 +101,33 @@ def spelling_lines(state: str, spelling: str, branch: str = "main",
             f"{shlex.quote(kept)}`, and run bootstrap again.\n")
 
 
-def missing(pin: str) -> str:
-    return f"branch main does not exist (the pin is {pin[:12]})"
+def missing(pin: str, branch: str = "main") -> str:
+    return f"branch {branch} does not exist (the pin is {pin[:12]})"
 
 
-def created(pin: str) -> str:
-    return f"  [spec] spec: branch main created at {pin[:12]} — at the pin\n"
+def created(pin: str, branch: str = "main") -> str:
+    return (f"  [spec] spec: branch {branch} created at {pin[:12]} "
+            "— at the pin\n")
 
 
 def sha_of(leg: Path, ref: str) -> str:
     """What `ref` names in the leg, or the empty string where it is none."""
     return git("rev-parse", "--verify", "--quiet", ref, cwd=leg,
                check=False).stdout.strip()
+
+
+def twin_with_a_commit(leg: Path, twin: str,
+                       on_it: bool = False) -> tuple[str, str]:
+    """A branch `twin` with a commit of its own, packed (`git pack-refs
+    --all`), and the leg detached at the pin or, with `on_it`, left on the
+    twin. `main` is not touched. Returns the pin and the commit."""
+    pin = rev(leg)
+    git("checkout", "-q", "-b", twin, cwd=leg)
+    mine = commit_on(leg, "MINE.md")
+    if not on_it:
+        git("checkout", "-q", "--detach", pin, cwd=leg)
+    git("pack-refs", "--all", cwd=leg)
+    return pin, mine
 
 
 def detached_without_main(leg: Path) -> str:
@@ -457,6 +479,124 @@ def test_the_rename_is_taken_in_unicode_form_too(
     leg = root / "spec"
     git("branch", "-q", f"{NFD}-kept", cwd=leg)
     assert bootstrap_module._kept_name(leg, NFC) == f"{NFC}-kept-2"
+
+
+@pytest.mark.parametrize("names, spelling, expected", [
+    pytest.param(["Main-kept/x"], "Main", "Main-kept-2",
+                 id="a branch stored under it"),
+    pytest.param(["main-kept/x"], "Main", "Main-kept-2",
+                 id="a branch stored under it, in another case"),
+    pytest.param(["Main-kept/x/y"], "Main", "Main-kept-2",
+                 id="a branch stored deeper under it"),
+    pytest.param(["Main-kept/x", "Main-kept-2/y"], "Main", "Main-kept-3",
+                 id="a branch under each of the first two"),
+    pytest.param(["Main-kept-x"], "Main", "Main-kept",
+                 id="a name that only starts with it is no bar"),
+    pytest.param(["xMain-kept/y"], "Main", "Main-kept",
+                 id="a branch under another name that holds it is no bar"),
+    pytest.param(["team/main-kept/x"], "Team/main", "Team/main-kept-2",
+                 id="a twin whose name has a slash"),
+])
+def test_the_rename_is_to_a_name_with_no_branch_stored_under_it(
+        bootstrap_module, root, tmp_path, names, spelling, expected):
+    """`_kept_name` (#1000): git will not make `Main-kept` over a branch
+    stored under it, so the name is skipped, in another case too, at any
+    depth. A name that only starts with it, or holds it in the middle, is no
+    bar: these rows pass only for a check that asks for the slash, right
+    after the name."""
+    needs_a_disk_that_keeps_case(tmp_path)
+    leg = root / "spec"
+    for name in names:
+        git("branch", "-q", name, cwd=leg)
+    assert bootstrap_module._kept_name(leg, spelling) == expected
+
+
+@NEEDS_A_UTF8_PROCESS
+@pytest.mark.parametrize("held, spelling", [
+    pytest.param(NFD, NFC, id="NFD under, NFC name"),
+    pytest.param(NFC, NFD, id="NFC under, NFD name"),
+])
+def test_the_rename_is_barred_under_unicode_form_too(
+        bootstrap_module, root, tmp_path, held, spelling):
+    """A branch stored under `café-kept` in the other Unicode form bars the
+    name, though the two differ in bytes: a disk that folds forms reads both
+    as one directory. Either form may be the one held."""
+    if not keeps_forms(tmp_path):
+        pytest.skip("this disk reads NFC and NFD as one file")
+    leg = root / "spec"
+    git("branch", "-q", f"{held}-kept/x", cwd=leg)
+    assert bootstrap_module._kept_name(leg, spelling) == f"{spelling}-kept-2"
+
+
+@pytest.mark.parametrize("packed", [True, False],
+                         ids=["x packed", "x loose"])
+def test_a_branch_stored_under_the_name_makes_the_rename_another_name(
+        root, tmp_path, packed):
+    """#1000. The leg detached at the pin, `Main` packed with a commit, and a
+    branch `Main-kept/x`: the printed `branch -m Main Main-kept` exited 128
+    (git cannot make `Main-kept` over it), and the next run printed the same
+    line. `Main-kept-2` is printed, the line run as printed through `/bin/sh`
+    works, the commit is on `Main-kept-2`, `Main-kept/x` is where it was, and
+    the next run makes `main`."""
+    needs_a_disk_that_keeps_case(tmp_path)
+    leg = root / "spec"
+    pin, mine = twin_with_a_commit(leg, "Main")
+    git("branch", "-q", "-D", "main", cwd=leg)
+    git("branch", "-q", "Main-kept/x", pin, cwd=leg)
+    if packed:
+        git("pack-refs", "--all", cwd=leg)
+
+    first = skip_validators(root)
+    assert first.returncode == 0, first.stderr + first.stdout
+    assert step_a(first.stdout) == spelling_lines(
+        missing(pin), "Main", kept="Main-kept-2"), first.stdout
+    assert main_of(leg) is None, "no `main` is made"
+
+    pasted(root, printed_rename(first.stdout))
+    assert rev(leg, "refs/heads/Main-kept-2") == mine
+    assert sha_of(leg, "refs/heads/Main") == "", "`Main` is renamed"
+    assert rev(leg, "refs/heads/Main-kept/x") == pin, "the branch under stays"
+    again = skip_validators(root)
+    assert again.returncode == 0, again.stderr + again.stdout
+    assert step_a(again.stdout) == created(pin), again.stdout
+    assert head_ref(leg) == "refs/heads/main"
+
+
+@pytest.mark.parametrize("on_it", [False, True],
+                         ids=["detached", "on the twin"])
+def test_a_twin_whose_name_has_a_slash_is_named_whole_and_renamed(
+        root, tmp_path, on_it):
+    """`--branch team/main` with a packed `Team/main` holding a commit: the
+    refusal names the twin whole, `Team/main`, where a name cut at its last
+    slash would be `main` (rv984b's mutant O3); the printed `branch -m
+    Team/main Team/main-kept` works through `/bin/sh`, and the next run makes
+    `team/main` with the commit on `Team/main-kept`. Detached at the pin over
+    the twin, and ON it, where the rename moves HEAD."""
+    needs_a_disk_that_keeps_case(tmp_path)
+    leg = root / "spec"
+    pin, mine = twin_with_a_commit(leg, "Team/main", on_it)
+    bootstrap = root / "scripts" / "bootstrap.py"
+    args = ("--skip-validators", "--branch", "team/main")
+
+    first = run_script(bootstrap, *args, cwd=root)
+    assert first.returncode == 0, first.stderr + first.stdout
+    assert step_a(first.stdout) == spelling_lines(
+        missing(pin, "team/main"), "Team/main", "team/main",
+        where=ON if on_it else HAS), first.stdout
+    assert sha_of(leg, "refs/heads/team/main") == "", "none is made"
+    assert rev(leg, "refs/heads/Team/main") == mine
+
+    pasted(root, printed_rename(first.stdout))
+    assert rev(leg, "refs/heads/Team/main-kept") == mine
+    assert sha_of(leg, "refs/heads/Team/main") == "", "`Team/main` is renamed"
+    again = run_script(bootstrap, *args, cwd=root)
+    assert again.returncode == 0, again.stderr + again.stdout
+    left = ("          the leg was on Team/main-kept, which keeps its "
+            "commits; it is on team/main now\n" if on_it else "")
+    assert step_a(again.stdout) == created(pin, "team/main") + left, (
+        again.stdout)
+    assert head_ref(leg) == "refs/heads/team/main"
+    assert rev(leg) == pin
 
 
 @pytest.mark.skipif(os.name == "nt", reason="the words are `sh`'s")
