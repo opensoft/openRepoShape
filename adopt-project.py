@@ -368,6 +368,12 @@ from repo_shape import SHA256_RE, repo_basename  # noqa: E402
 from shape_materialize import pin_source_not_top_level  # noqa: E402
 # One reading of an `origin`, shared with `shape-doctor.py` (#521).
 from repo_shape import origin_is_a_path, url_repository  # noqa: E402
+# The one spelling of a `neutral_product_pins:` entry, which
+# `scaffold-project.py` calls too, and the plain scalar it and `y` write a
+# text bare by (#924).
+from shape_materialize import (  # noqa: E402
+    PLAIN_SCALAR_RE, neutral_pin_entry as _neutral_pin_entry,
+)
 
 #: The keys `plan` records for each pin, in the order it writes them, and the
 #: value of `contracts/neutral-product-pin.yaml` each one fills.
@@ -1021,9 +1027,11 @@ FILTER_REPO_HINT = (
 # `tests/test_adopt_plan.py` round-trips a plan through both, which is what
 # keeps the writer and the reader honest about each other.
 
-#: Ends at `\Z`, not `$`: `$` also matches before a FINAL newline, and wrote a
-#: file named `Icon\n` bare, over two lines of the plan (#199).
-_PLAIN_RE = re.compile(r"^[A-Za-z_.][A-Za-z0-9_./@:+-]*\Z")
+#: `shape_materialize`'s plain scalar since #924, the rule `neutral_pin_entry`
+#: writes a pin's product bare by, so the manifest's `neutral_product_pins:`
+#: entry is bare only where `y` writes the plan's `product:` bare. It ends
+#: at `\Z`, not `$` (#199).
+_PLAIN_RE = PLAIN_SCALAR_RE
 
 
 def loader_reading(line: str):
@@ -14162,38 +14170,25 @@ def _neutral_product_pins(pins) -> str:
     `1.5` for numbers, and its `validate-pins.py` refused the entry as
     `neutral-pin-entry-malformed`, so the project's first CI run was red.
 
-    EACH ENTRY IS SPELLED AS `y` SPELLS THE PLAN'S `product:`. Of the names
-    `--pin` takes, `y` writes bare only one that begins with a letter, `_`
-    or `.` and that the reader reads back as the same text, after `key: `
-    and as a `- ` item alike (#181), so `openGlass` is the line it always
-    was, `007` is `"007"`, and `true` and `null` are `"true"` and `"null"`.
-    The reader is asked once more of the entry as this list holds it, as
-    `family.py` asks it of a member's id (#259), rather than a list of its
-    words, and an entry it would not read back as the same text is
-    double-quoted all the same. Such a name reaches here from `plan` as
-    well as from a plan edited by hand: `plan` records it quoted, and
-    `check` passes it. The list is a block placeholder, so `render` writes
-    it as it stands, and nothing else quotes it.
+    EACH ENTRY IS SPELLED AS `y` SPELLS THE PLAN'S `product:`, by
+    `shape_materialize.neutral_pin_entry`, the one function
+    `scaffold-project.py` calls too (#924). Of the names `--pin` takes, it
+    writes bare only one that begins with a letter, `_` or `.` (`y`'s
+    `_PLAIN_RE`, the same rule) and that the reader reads back as the same
+    text, after `key: ` and as a `- ` item alike (#181), so `openGlass` is
+    the line it always was, `007` is `"007"`, and `true` and `null` are
+    `"true"` and `"null"`. The reader is asked once more of the entry as
+    this list holds it, as `family.py` asks it of a member's id (#259),
+    rather than a list of its words, and an entry it would not read back as
+    the same text is double-quoted all the same. Such a name reaches here
+    from `plan` as well as from a plan edited by hand: `plan` records it
+    quoted, and `check` passes it. The list is a block placeholder, so
+    `render` writes it as it stands, and nothing else quotes it.
     """
     if not pins:
         return "[]"
     return "\n" + "\n".join(f"  - {_neutral_pin_entry(product)}"
                             for product in sorted(pins))
-
-
-def _neutral_pin_entry(product: str) -> str:
-    """One `neutral_product_pins:` entry: `y`'s spelling of `product` where
-    the project's reader reads it back as `product`, and `product`
-    double-quoted where it does not."""
-    spelled = y(product)
-    try:
-        if parse_yaml(f"neutral_product_pins:\n  - {spelled}\n") \
-                == {"neutral_product_pins": [product]}:
-            return spelled
-    except YamlError:
-        # A spelling the reader refuses is not read back as anything.
-        pass
-    return double_quoted(product)
 
 
 def _template_values(plan: Plan, names, repositories, urls, spec_path,
