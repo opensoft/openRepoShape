@@ -4630,11 +4630,14 @@ def _checked_plan_inputs(args, source: Source,
     Split out of `cmd_plan` for #138, and the order inside it is the order the
     refusals came in: a run that got as far as naming the three legs before it
     refused an unparseable `--elected-on` would send a reader looking in the
-    wrong place for the line that was wrong.
+    wrong place for the line that was wrong. The refusals of a passed flag's
+    own value are asked before this, before the source is read
+    (`_checked_flag_inputs`, #903); what is here needs the source, or the
+    value a flag's default stands for, or is asked of the values as the plan
+    will record them (`naming-unclassified`, an empty `--elected-by`).
     """
     # Which of the flags `plan` fills in by itself were passed: a value it
     # filled in is named by where it came from, should it be refused below.
-    # Not `given`, which #479 binds below to whether `--tracking-branch` was.
     # PASSED IS ON THE COMMAND LINE, `''` INCLUDED (L2-53), as #479 reads
     # `--tracking-branch`: `--id ''` and `--elected-by ''` were read as not
     # passed, so `--id "$ID"` with `ID` unset planned the derived id, and an
@@ -4644,22 +4647,124 @@ def _checked_plan_inputs(args, source: Source,
     # `--org`, as it did.)
     flags_given = {key for key in FLAG_DEFAULTS
                    if getattr(args, key) is not None}
-    args.project = checked_value("--project", args.project)
-    # THE SOURCE'S OWN BRANCH, UNLESS ONE IS NAMED (#479): the branch `plan`
+    products = set(declared_pin_products(args))
+    # THE SOURCE'S OWN BRANCH, WHERE NONE IS NAMED (#479): the branch `plan`
     # reads the source at is the one its pull request can be opened against.
     # A default this tool filled in is named by where it came from, as
     # `--elected-by` is below, and not as a flag the person never passed.
-    given = args.tracking_branch is not None
-    tracking = _flag_named(TRACKING_KEY, {TRACKING_KEY} if given else set())
-    args.tracking_branch = (checked_value(tracking, args.tracking_branch)
-                            if given else
-                            _checked_default_branch(tracking, source.branch))
-    # Then git's own question (#420): a name inside that alphabet that git
-    # will not create (`a..b`, `~`, `x.lock`, `a/`) is refused here, in git's
-    # words, and is not written for `check` to find it no branch of the
-    # source and the plan to be written again.
-    refuse_bad_branch("adopt-bad-tracking-branch", tracking,
-                      args.tracking_branch)
+    # One that was passed was held to its rules before the source was read
+    # (`_checked_flag_inputs`). Git's own question (#420) is asked of the
+    # default too: a branch name inside that alphabet that git will not
+    # create is refused here, in git's words.
+    if args.tracking_branch is None:
+        tracking = _flag_named(TRACKING_KEY, set())
+        args.tracking_branch = _checked_default_branch(tracking,
+                                                       source.branch)
+        refuse_bad_branch("adopt-bad-tracking-branch", tracking,
+                          args.tracking_branch)
+    # Whether `--id` was passed is read BEFORE it is filled in: a refusal of
+    # the id names where it came from (#601), and says what to change. An
+    # `org/repo` source was asked it before it was cloned, and passes here.
+    args.id = args.id if "id" in flags_given else args.project.lower()
+    _refuse_bad_id(args.id, args.project, flags_given, source)
+    # The organisation, given or read from the source's `origin`, and named
+    # by which of the two it is should it be refused (#292, #427).
+    org_given = bool(args.org)
+    args.org = _planned_org(args.org, source)
+    # IN PLACE, THE SOURCE'S OWN NAME (#499), as soon as both halves are
+    # known and before any pin's digest is read: `execute` acts on the
+    # repository `--org` and `--project` name, so they must be the source.
+    # An `org/repo` source was asked before it was cloned
+    # (`_refuse_a_clone_of_another_repository`) and passes here again.
+    _refuse_another_repository(args, source, naming, products, org_given)
+    args.elected_on = args.elected_on or _dt.date.today().isoformat()
+    args.reference = args.reference or default_reference(args.elected_on)
+    # A value `plan` filled in by itself is named by where it came from, as
+    # #181 names one, and not as a flag the person never passed. A passed
+    # `--elected-by` was asked with the other flags' values already.
+    if ELECTED_BY_KEY not in flags_given:
+        args.elected_by = _elector()
+        _refuse_unwritable_flag_values(
+            [(_flag_named(ELECTED_BY_KEY, flags_given), args.elected_by,
+              ROOT_MANIFEST_AND_README)])
+    names = _names(args.project)
+    pins = _as_planned(declared_pin_values(args), args.pin_source)
+    _check_names(naming, names, set(pins), source)
+    # LAST here, over every value as the plan will record it: `execute`
+    # writes them into the project's own YAML. The project's own validator
+    # is asked FIRST (#261): a value it refuses is refused in its words
+    # alone, as on main (rv181f's G1). Then one its loader would read as
+    # something else that the validator accepts is refused before the plan
+    # exists (#181); since #259 and #514 that is only a value on a line
+    # written bare, so every value that refusal names is one `execute` would
+    # write and end `adoption verified` with, as its remediation says.
+    planned = _refuse_unholdable_values(args, flags_given, names, pins,
+                                        naming)
+    _refuse_misread_values(args, flags_given, pins, source, planned, naming)
+    return names, pins
+
+
+def _refuse_unwritable_flag_values(fields) -> None:
+    """`adopt-unwritable-value` for each `(what, value, where)` of `fields`
+    that `execute` could not write into a file, in the words `check` would
+    use (#255); nothing, where every one can be held. `plan` asks it twice
+    (#903): of the values it was passed, before anything exists
+    (`_checked_flag_inputs`), and of the elector it reads from `git config
+    user.name` where `--elected-by` was not (`_checked_plan_inputs`)."""
+    unwritable = unwritable_values(fields)
+    if unwritable:
+        raise Refusal("adopt-unwritable-value",
+                      " ".join(f"{problem}." for problem in unwritable),
+                      "Remediation: no plan was written. Pass each value "
+                      "named again, retyped; when `--elected-by` is not "
+                      "given, `plan` reads `git config user.name`, so pass "
+                      "the flag or correct that. " + WRITTEN_AS_TEXT)
+
+
+def _checked_flag_inputs(args) -> None:
+    """The refusals of a passed flag's own value, which `plan` makes from
+    its flags ALONE, in the order `_checked_plan_inputs` asked them, before
+    anything exists (#903): no work directory is made, no `git` reads the
+    source and no `gh repo clone` runs. `--pin-source` and `--out` were
+    asked first already (#450, #451, #799), and an `org/repo` source's own
+    name, and the id derived from `--project`, follow once `--source` is
+    read (`_refuse_a_clone_of_another_repository`). Each refusal keeps its
+    code and its words; only WHEN it is asked changed. On main they came
+    after `_work_root`, `Source.open` and, for an `org/repo` source, the
+    clone: with a stub `gh` that exits 97, a `--spec-path spec/` was
+    `source-unclonable` and never `adopt-bad-leg-path`.
+
+    The values it checks stay on `args`, as `_checked_plan_inputs` keeps
+    the rest, and what it asks of a flag that has a default waits for the
+    value: a `--tracking-branch` nobody passed is the source's own branch,
+    an `--id` nobody passed is `--project` lowercased, an `--org` nobody
+    passed is the source's, and an `--elected-by` nobody passed is `git
+    config user.name`. Those are `_checked_plan_inputs`', which reads the
+    source.
+
+    NOT EVERY REFUSAL A FLAG DECIDES IS HERE. Still after the source, for
+    an `org/repo` source as for a local one: `naming-unclassified` and
+    `naming-role-mismatch`, which `_check_names` asks of the names
+    `--project` makes, with a remedy about the source; an empty
+    `--elected-by`, which is a value `unwritable_values` holds and the
+    manifest validator refuses (`adopt-manifest-invalid`, in
+    `_refuse_unholdable_values`); and a missing `--path-policy`
+    (`yaml-unreadable`).
+    """
+    args.project = checked_value("--project", args.project)
+    # A `--tracking-branch` that was passed: PASSED IS ON THE COMMAND LINE,
+    # `''` INCLUDED, as #479 reads it. Git's own question follows
+    # `checked_value` (#420): a name inside its alphabet that git will not
+    # create (`a..b`, `~`, `x.lock`, `a/`) is refused here, in git's words,
+    # and is not written for `check` to find it no branch of the source and
+    # the plan to be written again. That question is asked of a throwaway
+    # repository in the system temp folder, which it removes, and never of
+    # the source.
+    if args.tracking_branch is not None:
+        tracking = _flag_named(TRACKING_KEY, {TRACKING_KEY})
+        args.tracking_branch = checked_value(tracking, args.tracking_branch)
+        refuse_bad_branch("adopt-bad-tracking-branch", tracking,
+                          args.tracking_branch)
     # The ONE question first -- spelling, Git's and Windows's names, then the
     # alphabet `checked_value` allows -- so `spec/` is refused here with the
     # spelling to retype, before a plan that `check` and `execute` would have
@@ -4686,58 +4791,37 @@ def _checked_plan_inputs(args, source: Source,
                       _leg_collision_remediation(products))
     args.spec_path = checked_value(*spec)
     args.code_path = checked_value(*code)
-    # Whether `--id` was passed is read BEFORE it is filled in: a refusal of
-    # the id names where it came from (#601), and says what to change.
-    args.id = args.id if "id" in flags_given else args.project.lower()
-    _refuse_bad_id(args.id, args.project, flags_given, source)
-    # The organisation, given or read from the source's `origin`, and named
-    # by which of the two it is should it be refused (#292, #427).
-    org_given = bool(args.org)
-    args.org = _planned_org(args.org, source)
-    # IN PLACE, THE SOURCE'S OWN NAME (#499), as soon as both halves are
-    # known and before any pin's digest is read: `execute` acts on the
-    # repository `--org` and `--project` name, so they must be the source.
-    _refuse_another_repository(args, source, naming, set(products),
-                               org_given)
-    args.elected_on = args.elected_on or _dt.date.today().isoformat()
+    # An `--id` that was passed is held to its rule here, named as the flag
+    # (#601): that branch of `_refuse_bad_id` reads no source, so it is
+    # given none. One derived from `--project` is refused where the source's
+    # own name is known, for its remedy names that: right after `--source`
+    # is read, for an `org/repo` one, and after git has read the `origin`
+    # of a local one.
+    if args.id is not None:
+        _refuse_bad_id(args.id, args.project, {"id"}, None)
+    # An `--org` that was passed, as `_planned_org` holds it. One that was
+    # not is the organisation of the source's name, read there.
+    if args.org:
+        checked_value(_flag_named("org", {"org"}), args.org)
     # Read before the plan is written, whether or not it is what chooses the
     # reference: a date the tools cannot parse would reach `execute` as a
-    # manifest field instead of as a question.
-    election_date(args.elected_on)
-    args.reference = args.reference or default_reference(args.elected_on)
-    # A value `plan` filled in by itself is named by where it came from, as
-    # #181 names one, and not as a flag the person never passed.
-    elector = _flag_named(ELECTED_BY_KEY, flags_given)
-    args.elected_by = (args.elected_by if ELECTED_BY_KEY in flags_given
-                       else _elector())
+    # manifest field instead of as a question. One nobody passed is today's,
+    # which `_checked_plan_inputs` fills in.
+    if args.elected_on:
+        election_date(args.elected_on)
     # Before the plan is written, in the words `check` would use (#255): a
-    # value `execute` writes into a file must be text one can hold. The
-    # date has had its answer above, `election_date`.
-    unwritable = unwritable_values(
-        ((elector, args.elected_by, ROOT_MANIFEST_AND_README),
-         ("--reference", args.reference, ROOT_MANIFEST_AND_README)))
-    if unwritable:
-        raise Refusal("adopt-unwritable-value",
-                      " ".join(f"{problem}." for problem in unwritable),
-                      "Remediation: no plan was written. Pass each value "
-                      "named again, retyped; when `--elected-by` is not "
-                      "given, `plan` reads `git config user.name`, so pass "
-                      "the flag or correct that. " + WRITTEN_AS_TEXT)
-    names = _names(args.project)
-    pins = _as_planned(declared_pin_values(args), args.pin_source)
-    _check_names(naming, names, set(pins), source)
-    # LAST here, over every value as the plan will record it: `execute`
-    # writes them into the project's own YAML. The project's own validator
-    # is asked FIRST (#261): a value it refuses is refused in its words
-    # alone, as on main (rv181f's G1). Then one its loader would read as
-    # something else that the validator accepts is refused before the plan
-    # exists (#181); since #259 and #514 that is only a value on a line
-    # written bare, so every value that refusal names is one `execute` would
-    # write and end `adoption verified` with, as its remediation says.
-    planned = _refuse_unholdable_values(args, flags_given, names, pins,
-                                        naming)
-    _refuse_misread_values(args, flags_given, pins, source, planned, naming)
-    return names, pins
+    # value `execute` writes into a file must be text one can hold. Of the
+    # values that were passed alone: an elector `plan` reads from `git
+    # config user.name` is asked in `_checked_plan_inputs`, after the
+    # source, and a reference it chooses is text it holds. An `--elected-by
+    # ''` is a value typed and is text one can hold, so it passes here and
+    # is refused by the manifest validator, after the source
+    # (`adopt-manifest-invalid`); a `--reference ''` is none.
+    passed = [(_flag_named(key, {key}), value, ROOT_MANIFEST_AND_README)
+              for key, value in ((ELECTED_BY_KEY, args.elected_by),
+                                 (REFERENCE_KEY, args.reference or None))
+              if value is not None]
+    _refuse_unwritable_flag_values(passed)
 
 
 def _org_read_from(source: Source) -> str:
@@ -5446,6 +5530,15 @@ def cmd_plan(args) -> int:
     # traceback at the write, after the work directory was made, an
     # `org/repo` source cloned and the whole plan built.
     _refuse_an_unwritable_out(args)
+    # Then the refusals of a passed flag's own value (#903): a leg path, a
+    # `--pin`, `--elected-on`, a `--reference` and the rest of
+    # `_checked_flag_inputs`. They were asked after the work directory was
+    # made, git had read the source and an `org/repo` one was cloned, and
+    # with a clone that failed they were never reached: no work directory
+    # is made, git reads nothing of the source and no `gh` runs before
+    # them. A passed `--tracking-branch` runs `git check-ref-format` in a
+    # throwaway repository first, and never touches the source.
+    _checked_flag_inputs(args)
     # What `--source` names, next, before the work directory is made
     # (#796): every refusal of it that needs none -- an empty value, a path
     # that is no repository's top level, a name `gh` cannot clone -- is
@@ -5453,20 +5546,31 @@ def cmd_plan(args) -> int:
     # main a file ended `plan` in a traceback after the `--work-dir` it was
     # given had been made, and that directory stayed.
     named = _source_spec(args.source)
+    naming = NamingPolicy.load(NAMING_POLICY)
+    # An `org/repo` source names its repository before it is cloned, so
+    # `--org` and `--project` are held to it here (#903). A local source
+    # names it by its `origin`, which `_checked_plan_inputs` reads.
+    repository = named[1]
+    if repository is not None:
+        _refuse_a_clone_of_another_repository(args, repository, naming)
     work_root = _work_root(args)
     # An `org/repo` source is cloned into the work directory, so one this
     # user cannot write in is refused before the clone, as `check` refuses
-    # it (#650); a local source is read in place, and writes nothing there.
+    # it (#650), in the words of what `plan` does there (#903). A local
+    # source is read in place, and writes nothing there: the directory is
+    # still made, because `--out` may lie in it, and refused where it
+    # cannot be made, but it is not asked whether it can be written in.
     # The clone goes on `args.clones`, and `_leave_the_clones` removes it
     # unless this run ends having written the plan that records it (#652).
     # Read at `--tracking-branch` where its remote's default branch is no
     # branch of its own, a `git clone -b` (#797).
-    source = Source.of(named, work_root,
-                       _unwritable_work_dir(args, work_root),
+    unwritable = (None if repository is None else
+                  _unwritable_work_dir(args, work_root,
+                                       _plan_clones(repository)))
+    source = Source.of(named, work_root, unwritable,
                        getattr(args, "clones", None),
                        instead=args.tracking_branch)
     policy = PathPolicy.load(args.path_policy or PATH_POLICY)
-    naming = NamingPolicy.load(NAMING_POLICY)
 
     # The project's own validator is asked inside, before #181's question.
     names, pins = _checked_plan_inputs(args, source, naming)
@@ -11207,7 +11311,8 @@ def _work_dir_refusal(detail: str, done: str = "") -> Refusal:
                    f"Remediation: {done}{WORK_DIR_FIX}")
 
 
-def _unwritable_work_dir(args, work_root: Path) -> str | None:
+def _unwritable_work_dir(args, work_root: Path,
+                         needed: str | None = None) -> str | None:
     """Why this run cannot build in the `--work-dir` it was given, or None:
     a directory made in it, and removed again, could not be (#524).
 
@@ -11224,18 +11329,36 @@ def _unwritable_work_dir(args, work_root: Path) -> str | None:
     meets nothing an earlier run left there, and it is removed again.
 
     Without `--work-dir`, `_work_root` makes a new directory, which this
-    user owns and can write in, and nothing is asked."""
+    user owns and can write in, and nothing is asked.
+
+    `needed` is what the asking command does in the directory, and the
+    reason ends with it (#903): `execute`'s, which is what `check` and
+    `execute` give, where none is passed; `plan`'s own need of it is the
+    clone (`_plan_clones`)."""
     if not getattr(args, "work_dir", None):
         return None
     try:
         os.rmdir(tempfile.mkdtemp(prefix="write-probe-", dir=work_root))
     except OSError as exc:
+        needed = needed or (
+            f"`execute` builds {_and_listed(list(BUILT_IN.values()))} "
+            "there, only after it has made both leg repositories")
         return (f"--work-dir {_spelled(str(work_root))} cannot be written: "
                 "making a directory in it, and removing it again, failed "
-                f"({exc.strerror or exc}), and `execute` builds "
-                f"{_and_listed(list(BUILT_IN.values()))} there, only after "
-                "it has made both leg repositories")
+                f"({exc.strerror or exc}), and {needed}")
     return None
+
+
+def _plan_clones(repository: str) -> str:
+    """What `plan` does in a `--work-dir` (#903), as `_unwritable_work_dir`
+    ends its reason with it: it clones an `org/repo` `--source` into
+    `source-readonly/<repo>`, which is why the directory must be one this
+    user can write in. A local source is read in place, so `plan` does not
+    ask whether the directory can be written in; it still makes it, and
+    refuses one another user can rename in (#803), for `--out` may be
+    written there too."""
+    return (f"`plan` clones {repository} into "
+            f"`{SOURCE_READONLY}/{repository.split('/')[1]}` there")
 
 
 def _refuse_an_unwritable_work_dir(args, work_root: Path) -> None:
@@ -14607,6 +14730,37 @@ def _refuse_another_repository(args, source: Source, naming: NamingPolicy,
         "request there and sets its topic on it",
         _own_name_remediation(repository, naming, pins,
                               "no plan was written. "))
+
+
+def _refuse_a_clone_of_another_repository(args, repository: str,
+                                          naming: NamingPolicy) -> None:
+    """What an `org/repo` `--source` is refused for BEFORE the clone (#903):
+    the id derived from `--project` (`adopt-bad-id`), and then
+    `adopt-not-the-source`, in the order `_checked_plan_inputs` asks them.
+    The source's name is the one `--source` gives, and `--org` and
+    `--project` are flags, so nothing here needs the clone. They were asked
+    after `gh repo clone`, so with a clone that failed `--source acme/Thing
+    --project Other` was `source-unclonable`, with a remedy about `gh auth
+    status`, and never the refusal that says it is not the repository.
+
+    Both are asked of a `Source` that holds the name alone and says it is
+    a clone, as the source `plan` is about to make is (`_org_read_from`
+    then names `--source`). `adopt-not-the-source` is
+    `_refuse_another_repository`'s own question and words; `args.org` is
+    read from it as `_checked_plan_inputs` reads it, and `args` is left as
+    it was, so that both are asked again of the clone, where they pass,
+    with `--org` still not given. A source read in place is asked after
+    git has read its `origin`, which is where its name is."""
+    named = Source(Path(SOURCE_READONLY), repository, "", "", cloned=True)
+    # An `--id` that was passed was asked with the flags. The one derived
+    # from `--project` is asked first, as `_checked_plan_inputs` asks it.
+    if args.id is None:
+        _refuse_bad_id(args.project.lower(), args.project, set(), named)
+    asked = argparse.Namespace(org=_planned_org(args.org, named),
+                               project=args.project)
+    _refuse_another_repository(asked, named, naming,
+                               set(declared_pin_products(args)),
+                               bool(args.org))
 
 
 def _last_two_directories(path: str) -> str | None:
