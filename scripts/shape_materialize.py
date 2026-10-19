@@ -511,6 +511,65 @@ def neutral_pin_path(product: str) -> str:
     return f"contracts/{product.lower()}-pin.yaml"
 
 
+#: THE PLAIN SCALAR: a text that begins with a letter, `_` or `.`, and holds
+#: only letters, digits and `_./@:+-`. `adopt-project.py`'s `y` writes a
+#: plan's text bare only where it is one and the reader reads it back
+#: (#181), and `neutral_pin_entry` writes a pin's product bare only where
+#: `y` would, so the rule is here, once, for both (#924). It ends at `\Z`,
+#: not `$`: `$` also matches before a FINAL newline, and wrote a file named
+#: `Icon\n` bare, over two lines of the plan (#199).
+PLAIN_SCALAR_RE = re.compile(r"^[A-Za-z_.][A-Za-z0-9_./@:+-]*\Z")
+
+
+def neutral_pin_entry(product: str) -> str:
+    """One `neutral_product_pins:` entry, as `scaffold-project.py` and
+    `adopt-project.py execute` both write it: `product` bare where it is a
+    plain scalar (`PLAIN_SCALAR_RE`) that the project's reader reads back as
+    `product`, and `double_quoted` (#284) where it is not.
+
+    ONE SPELLING, WHICHEVER TOOL MADE THE ROOT (#924). The scaffold wrote a
+    product bare wherever the reader read it back, and adopt wrote it as `y`
+    writes the plan's `product:`, so `--pin 0x1F@<commit>` was `- 0x1F` in a
+    scaffolded manifest and `- "0x1F"` in an adopted one, and `1_000`,
+    `1e3`, `3dGlass` and `-x` the same. The project's reader reads both back
+    as typed, but a standard YAML reader (PyYAML's `safe_load`) took the
+    scaffold's `0x1F` for 31 and its `1_000` for 1000. Both tools call this
+    one function now, and it is adopt's rule: a name that begins with a
+    digit or `-` is double-quoted, as `plan` quotes it in `product:`, and
+    `openGlass`, `007` and `yes` are written as both tools wrote them. A
+    bare `yes`, `on`, `.5` or `.inf` stays bare: the project's reader reads
+    it back as typed, though PyYAML does not (#457's L2-14, #912).
+
+    THE READER IS ASKED, as `family.py` asks it of a member's id (#259),
+    rather than a list of the words it takes for something else: in the two
+    places `y` asks it, after `key: ` and as a `- ` item (#181), and once
+    more of the LIST ENTRY, as the manifest's list holds it:
+    `  - - a` is a list of its own, where `id: - a` is the text (#715;
+    `id: -` is refused since #393). A spelling the reader refuses is read
+    back as nothing, so it is double-quoted too. A name it reads back bare,
+    `openGlass` and every other plain name, is the line it always was;
+    `007`, `2026`, `1.5`, `true` and `null` are double-quoted, and a
+    double-quoted name always reads back.
+    """
+    if PLAIN_SCALAR_RE.match(product) and all(
+            _reads_back(written, read) for written, read in (
+                (f"key: {product}", {"key": product}),
+                (f"- {product}", [product]),
+                (f"neutral_product_pins:\n  - {product}",
+                 {"neutral_product_pins": [product]}))):
+        return product
+    return double_quoted(product)
+
+
+def _reads_back(written: str, read) -> bool:
+    """Does the project's reader read `written`, a line or two of YAML, as
+    `read`? A spelling it refuses is not read back as anything."""
+    try:
+        return parse_yaml(written + "\n") == read
+    except YamlError:
+        return False
+
+
 # ---------------------------------------------------------------------------
 # The FAMILY root's own lists (2026-09-04)
 # ---------------------------------------------------------------------------
@@ -5172,10 +5231,18 @@ CARRIED_BY = {"ASSEMBLY_REPOSITORY": "ORG", "SPEC_REPOSITORY": "ORG",
 
 
 def _unread_sentences(values: dict, what: dict, template_dir: Path,
-                      refusal: YamlError) -> list[str]:
+                      refusal: YamlError, manifest: str = MANIFEST_TEMPLATE,
+                      carried_by: dict | None = None,
+                      reader: str = "the project's own YAML reader"
+                      ) -> list[str]:
     """A sentence for each value of `what` that a line of the manifest the
     project's own reader refuses carries, in the reader's words, and the
     reader's `refusal` of the whole file where no such line is found.
+
+    `manifest`, `carried_by` (`CARRIED_BY` when None) and `reader`, the
+    words that name the reader, are the project's unless the caller gives
+    its own: `family.py init` asks it of the holder's `family.yaml`, whose
+    `repository:` carries `--org` (#929).
 
     THE VALUE IS NAMED AGAIN (#708). Until #392 and #393 the reader took
     `repository: @x/Atlas` for text, so `--org @x` reached the validator,
@@ -5188,24 +5255,23 @@ def _unread_sentences(values: dict, what: dict, template_dir: Path,
     `_misread_rows` reads one, and a value is named where the reader
     refuses one of its lines.
     """
+    carried_by = CARRIED_BY if carried_by is None else carried_by
     said: dict[str, list[str]] = {}
-    template = (Path(template_dir) / MANIFEST_TEMPLATE).read_text(
-        encoding="utf-8")
+    template = (Path(template_dir) / manifest).read_text(encoding="utf-8")
     for line in template.splitlines():
-        carried = {CARRIED_BY.get(key, key) for key in _placeholders_of(line)}
+        carried = {carried_by.get(key, key) for key in _placeholders_of(line)}
         named = [key for key in what if key in carried and key in values]
         if not named or line.lstrip().startswith("#"):
             continue
-        reading = _reading_of(render(line, values, MANIFEST_TEMPLATE))
+        reading = _reading_of(render(line, values, manifest))
         if isinstance(reading, YamlError):
             for key in named:
                 said.setdefault(key, []).append(f"{reading}.")
     if not said:
-        return ["the manifest this run would write is a file the project's "
-                f"own YAML reader refuses: {refusal}."]
-    return [f"{what[key]} is {str(values[key])!r}, which the project's own "
-            f"YAML reader refuses: {' '.join(words)}"
-            for key, words in said.items()]
+        return ["the manifest this run would write is a file "
+                f"{reader} refuses: {refusal}."]
+    return [f"{what[key]} is {str(values[key])!r}, which {reader} refuses: "
+            f"{' '.join(words)}" for key, words in said.items()]
 
 
 def _validator_notes(values: dict, policy: NamingPolicy, template_dir: Path,
@@ -5286,13 +5352,17 @@ MANIFEST_INVALID_REMEDIATION = (
 #: Where the project's own YAML reader refuses the manifest before its
 #: validator can be asked (#708), the words are the reader's, and a sentence
 #: may name no value (`_unread_sentences`), so the remedy says neither that
-#: they are the validator's nor that a value is always named.
-MANIFEST_UNREADABLE_REMEDIATION = (
+#: they are the validator's nor that a value is always named. Its first
+#: sentence is `UNREADABLE_CHOICE`, which `family.py init`'s remedy for the
+#: holder's reader opens with too (#929).
+UNREADABLE_CHOICE = (
     "Remediation: choose another value for each one named; where none is "
-    "named, the text the reader's words quote holds it. The words are the "
-    "project's own YAML reader's, which refuses the manifest this run would "
-    "write before its validate-manifest.py can be asked, and a project "
-    "whose manifest it refuses is one whose first bootstrap would fail.")
+    "named, the text the reader's words quote holds it.")
+MANIFEST_UNREADABLE_REMEDIATION = (
+    f"{UNREADABLE_CHOICE} The words are the project's own YAML reader's, "
+    "which refuses the manifest this run would write before its "
+    "validate-manifest.py can be asked, and a project whose manifest it "
+    "refuses is one whose first bootstrap would fail.")
 #: The remedy for each kind of problem, so a refusal names it by its kind
 #: (#708), with no conditional nested in another.
 KIND_REMEDIATIONS = {KIND_MISREAD: MANIFEST_MISREAD_REMEDIATION,
