@@ -40,11 +40,17 @@ from repo_shape import shell_quoted
 #: The fixtures and helpers of the tests that already trigger these codes,
 #: imported from the files that own them rather than rebuilt: a holder or a
 #: project made any other way would test a different one.
-from test_bump_leg import advanced, branched, bump  # noqa: F401
+from test_bump_leg import branched, bump
 from test_family import FAMILY, family, manifest  # noqa: F401
 from test_family_add_member_id import PINNED, RENAMED, renamed_copy
 from test_family_add_refusals import offline  # noqa: F401
 from test_family_printed_quoting import copied_holder, host_words
+
+#: A commit id to put where a line says `<commit>` or `<sha>` when nothing is
+#: run with it. It is NOT a fixture's `advanced`: that one pushes a branch to
+#: the session's bare repositories, and a second module doing it makes
+#: `tests/test_bump_leg.py`'s own fail non-fast-forward.
+COMMIT = "0123456789abcdef0123456789abcdef01234567"
 
 #: Where the holder stands: a folder a shell reads whole, one with a space,
 #: and one with a space beside an apostrophe, where `sh` and PowerShell
@@ -138,13 +144,12 @@ def test_the_bump_a_remedy_names_parses(
     """Fed to `family.py`'s own parser, with a commit for `<commit>`, the
     printed words are accepted: no `the following arguments are required`."""
     stderr = refused_as(code, family, placed, offline, tmp_path)
-    commit = "0123456789abcdef0123456789abcdef01234567"
-    words = host_words(the_bump_line(stderr).replace("<commit>", commit))
+    words = host_words(the_bump_line(stderr).replace("<commit>", COMMIT))
     capsys.readouterr()
     args = parsed(family_module, words, capsys)
     assert args.family_root == str(placed)
     assert args.member == PINNED
-    assert args.to == commit
+    assert args.to == COMMIT
     assert args.func is family_module.cmd_bump
 
 
@@ -167,21 +172,21 @@ def test_the_bump_a_remedy_names_runs_as_printed(
 
 
 def test_the_assembly_remedy_of_bump_leg_names_the_holder(
-        project, scaffolded, advanced, family_module, capsys):
+        project, scaffolded, family_module, capsys):
     """`bump-leg.py` has no holder to name, so the line it prints says
     `<holder>` as it says `<Project>` and `<sha>`: the remedy for `--leg
     assembly` names `--family-root`, and with its three placeholders filled
     in, `family.py`'s own parser accepts it."""
     branched(project)
-    result = bump(project, scaffolded, advanced, leg="assembly")
+    result = bump(project, scaffolded, COMMIT, leg="assembly")
     assert result.returncode == 2, result.stdout + result.stderr
     assert "REFUSED bump-leg-assembly-is-not-a-leg: " in result.stderr
     line = the_bump_line(result.stderr, "scripts/")
     assert line == "bump --family-root <holder> --member <Project> --to <sha>"
     filled = (line.replace("<holder>", str(project.parent))
-              .replace("<Project>", PINNED).replace("<sha>", advanced))
+              .replace("<Project>", PINNED).replace("<sha>", COMMIT))
     capsys.readouterr()
     args = parsed(family_module, host_words(filled), capsys)
     assert args.family_root == str(project.parent)
     assert args.member == PINNED
-    assert args.to == advanced
+    assert args.to == COMMIT
