@@ -10,15 +10,16 @@ remedies named the verb without it, and typed as printed each ended in
   pins, and `member-duplicate-id`, which `add` says of a member that records
   an id another row records. Both KNOW the holder, so each names it, in the
   one word `shell_quoted` makes of its path, as `add`'s own line does.
-* `bump-leg-assembly-is-not-a-leg`, which says a family's member pin moves
-  with `family.py bump`. `bump-leg.py` has no holder to name, so it says
+* `bump-leg-assembly-is-not-a-leg`, `bump-leg-root-not-a-project` and
+  `bump-leg-wrong-kind`, which say a family's member pin moves with
+  `family.py bump`. `bump-leg.py` has no holder to name, so each says
   `<holder>`, the way it says `<Project>` and `<sha>`.
 
 Each family case is measured three ways, in a holder under a plain folder and
 under two with a space and an apostrophe in their names (the paths a shell
 would tear in half): the line names the holder as ONE word that comes back as
 the holder, `family.py`'s own parser accepts it, and it is RUN as printed and
-moves the pin. The `bump-leg.py` line is read the same way once its three
+moves the pin. Each `bump-leg.py` line is read the same way once its three
 placeholders are filled in.
 
 The fixtures are the ones the tests of these codes already use:
@@ -40,7 +41,7 @@ from repo_shape import shell_quoted
 #: The fixtures and helpers of the tests that already trigger these codes,
 #: imported from the files that own them rather than rebuilt: a holder or a
 #: project made any other way would test a different one.
-from test_bump_leg import branched, bump
+from test_bump_leg import BUMP, branched, bump
 from test_family import FAMILY, family, manifest  # noqa: F401
 from test_family_add_member_id import PINNED, RENAMED, renamed_copy
 from test_family_add_refusals import offline  # noqa: F401
@@ -171,16 +172,49 @@ def test_the_bump_a_remedy_names_runs_as_printed(
     assert git("status", "--porcelain", cwd=placed).stdout == ""
 
 
-def test_the_assembly_remedy_of_bump_leg_names_the_holder(
-        project, scaffolded, family_module, capsys):
-    """`bump-leg.py` has no holder to name, so the line it prints says
-    `<holder>` as it says `<Project>` and `<sha>`: the remedy for `--leg
-    assembly` names `--family-root`, and with its three placeholders filled
-    in, `family.py`'s own parser accepts it."""
+def assembly(project, scaffolded, tmp_path):
+    """`--leg assembly`: `bump-leg-assembly-is-not-a-leg`."""
     branched(project)
-    result = bump(project, scaffolded, COMMIT, leg="assembly")
+    return bump(project, scaffolded, COMMIT, leg="assembly")
+
+
+def a_holder(project, scaffolded, tmp_path):
+    """`--root` a family holder, which has a `family.yaml` and no
+    `project.yaml`: `bump-leg-root-not-a-project`."""
+    holder = tmp_path / "Holder"
+    holder.mkdir()
+    (holder / "family.yaml").write_text("kind: family-manifest\n")
+    return run_script(BUMP, "--root", str(holder), "--leg", "spec", "--to",
+                      COMMIT)
+
+
+def another_kind(project, scaffolded, tmp_path):
+    """A `project.yaml` that is a family's, not a project's:
+    `bump-leg-wrong-kind`."""
+    root = tmp_path / "Family"
+    root.mkdir()
+    (root / "project.yaml").write_text("kind: family-manifest\n")
+    return run_script(BUMP, "--root", str(root), "--leg", "spec", "--to",
+                      COMMIT)
+
+
+#: Each `bump-leg.py` code that points at `family.py bump`, and the run that
+#: is refused with it.
+BUMP_LEG_CASES = {"bump-leg-assembly-is-not-a-leg": assembly,
+                  "bump-leg-root-not-a-project": a_holder,
+                  "bump-leg-wrong-kind": another_kind}
+
+
+@pytest.mark.parametrize("code", BUMP_LEG_CASES)
+def test_a_bump_leg_remedy_that_names_family_bump_names_the_holder(
+        code, project, scaffolded, family_module, capsys, tmp_path):
+    """`bump-leg.py` has no holder to name, so the line it prints says
+    `<holder>` as it says `<Project>` and `<sha>`: each remedy names
+    `--family-root`, and with its three placeholders filled in,
+    `family.py`'s own parser accepts it."""
+    result = BUMP_LEG_CASES[code](project, scaffolded, tmp_path)
     assert result.returncode == 2, result.stdout + result.stderr
-    assert "REFUSED bump-leg-assembly-is-not-a-leg: " in result.stderr
+    assert f"REFUSED {code}: " in result.stderr
     line = the_bump_line(result.stderr, "scripts/")
     assert line == "bump --family-root <holder> --member <Project> --to <sha>"
     filled = (line.replace("<holder>", str(project.parent))

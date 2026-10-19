@@ -219,7 +219,8 @@ class Project:
                 "Remediation: --root takes the ASSEMBLY ROOT — the repository "
                 "an engineer clones — not a leg and not a family holder. A "
                 "family's member pins are moved with `scripts/family.py "
-                "bump`; a leg has no legs of its own to move.")
+                "bump --family-root <holder> --member <Project> --to "
+                "<sha>`; a leg has no legs of its own to move.")
         data = load_yaml(path)
         if not isinstance(data, dict):
             raise Refusal("bump-leg-manifest-unreadable",
@@ -231,7 +232,8 @@ class Project:
                 "'project-manifest'",
                 "Remediation: a family holder declares `kind: "
                 "family-manifest` and its members move with `scripts/"
-                "family.py bump`.")
+                "family.py bump --family-root <holder> --member <Project> "
+                "--to <sha>`.")
         return cls(root, data)
 
     @property
