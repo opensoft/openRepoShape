@@ -4,7 +4,9 @@ in a word a shell reads back as the same name (#932).
 
 `move_back_to_pin` prints `git -C <leg> merge --ff-only <upstream>`, and
 `_say_in_progress` a leg's `git -C <leg> <verb> --continue` and `--abort`.
-Both went through `spelled(shlex.quote(...))`. `spelled` writes a byte that
+Both went through `spelled(shlex.quote(...))`, and `_initialized` (#961) put
+`spelled(path)` in `git submodule update --init <leg>`, for a leg that is not
+there, with no quote and no `--`. `spelled` writes a byte that
 is not UTF-8 as #391's `\\udcXX` text, and a control character, a line
 separator and a bidirectional control as the escape Python spells it, and a
 shell reads `'origin/a\\udcffb'` as the characters it is. RV824 measured it
@@ -20,7 +22,10 @@ bare one (#961). Any other is `"$(printf -- '<octal escapes>')"`, which `sh`
 turns back into the bytes `os.fsencode` gives the name. A name that has no
 such word (one that ends in a line feed, which `$(...)` strips, one with a
 NUL, which it drops, and one `os.fsencode` cannot write) keeps what
-`spelled` made of it.
+`spelled` made of it. The leg's path in `git submodule update --init -- <leg>`
+is such a word too, after a `--`, which keeps a path that begins with `-`
+from being read as an option. The bytes git is handed are `os.fsencode`'s on
+POSIX and UTF-8 on Windows, where git is handed UTF-16 and stores UTF-8.
 
 THE TESTS THAT TAKE A `root` RUN WHAT WAS PRINTED, AS PRINTED: the command
 in the line, through a shell's `-c` from the root, and ask where the branch
@@ -105,6 +110,9 @@ PATHS = [
                  r'''"$(printf -- 'sp\303\251c')"''', id="UTF-8-as-bytes"),
     # zsh expands a bare `=spec` to the path of a command (#961).
     pytest.param("=spec", "=spec", "'=spec'", id="leading-equals"),
+    pytest.param("my spec", "my spec", "'my spec'", id="space"),
+    # `git -C -spec` takes the path; a `--init -spec` is an option (#961).
+    pytest.param("-spec", "-spec", "-spec", id="leading-dash-ASCII"),
 ]
 SHELLS = [pytest.param(shell, id=shell.rsplit("/", 1)[1]) for shell in
           ("/bin/sh", "/bin/dash", "/bin/bash", "/bin/zsh")]
@@ -136,6 +144,36 @@ class Latin1Os:
 
 
 LATIN1_FS = Latin1Os()
+#: The `printf` word of `origin/café` as git is handed it under UTF-8.
+CAFE_AS_BYTES = r'''"$(printf -- 'origin/caf\303\251')"'''
+
+
+class WindowsOs:
+    """`os` on Windows in its default mode: `nt`, and a UTF-8 `fsencode`,
+    which this system's is. Only `name` differs from this system's `os`."""
+
+    name = "nt"
+
+    def __getattr__(self, attr: str):
+        return getattr(os, attr)
+
+
+class LegacyMbcsOs(WindowsOs):
+    """`os` on Windows under `PYTHONLEGACYWINDOWSFSENCODING=1`: `fsencode`
+    is the code page's (`cp1252` here) with `replace`, so it is not the bytes
+    git is handed, which are UTF-8, as `LegacyWindowsOs` is for `fsdecode`."""
+
+    @staticmethod
+    def fsencode(name: str) -> bytes:
+        return name.encode("cp1252", "replace")
+
+    @staticmethod
+    def fsdecode(raw: bytes) -> str:
+        return raw.decode("cp1252", "replace")
+
+
+WINDOWS_FS = WindowsOs()
+LEGACY_MBCS_FS = LegacyMbcsOs()
 
 
 def pasted(root: Path, command: str, shell: str = "/bin/sh") -> None:
@@ -154,6 +192,32 @@ def pasted(root: Path, command: str, shell: str = "/bin/sh") -> None:
     assert proc.returncode == 0, (
         command + "\n" + (proc.stderr + proc.stdout).decode("utf-8",
                                                            "replace"))
+
+
+def emptied_leg_line(root: Path, tmp_path: Path, path: str
+                     ) -> tuple[Path, str]:
+    """The spec leg mounted at `path` and emptied (`git submodule deinit`),
+    so that step (a) finds it not there: its directory, and the line step
+    (a) prints for it (#961)."""
+    if "\udcff" in path:
+        needs_the_byte(tmp_path)
+    leg = mounted_at(root, path)
+    # Bytes: git's own line names the path, which may be the byte 0xff.
+    emptied = subprocess.run(["git", "submodule", "deinit", "-f", "--", path],
+                             cwd=str(root), capture_output=True, check=False)
+    assert emptied.returncode == 0, emptied.stderr.decode("utf-8", "replace")
+    assert not os.path.lexists(leg / ".git"), "the leg is emptied"
+    return leg, not_initialized_line(root)
+
+
+def not_initialized_line(root: Path) -> str:
+    """The one line of step (a) that says a leg is NOT INITIALIZED."""
+    result = skip_validators(root)
+    assert result.returncode == 0, result.stderr + result.stdout
+    lines = [line for line in step_a(result.stdout)
+             if "NOT INITIALIZED" in line]
+    assert len(lines) == 1, result.stdout
+    return lines[0]
 
 
 def printed_by(shell: str, word: str) -> bytes:
@@ -317,6 +381,61 @@ def test_the_commands_that_end_an_operation_are_pasteable_whatever_the_path(
     pasted(root, lines[1].split("`")[which])
     assert git("rev-parse", "-q", "--verify", "MERGE_HEAD", cwd=leg,
                check=False).returncode == 1, f"the merge is {done}"
+
+
+# --- the command that initializes a leg that is not there -------------------
+
+@pytest.mark.parametrize("path, label, word", [
+    row for row in PATHS if not row.values[0].startswith("-")])
+def test_the_initializing_command_is_pasteable_whatever_the_legs_path_is(
+        root, tmp_path, path, label, word):
+    """THE ISSUE (#961, rv932's SHOULD 3): `_initialized` printed `git
+    submodule update --init {spelled(path)}`, bare, which was two pathspecs
+    for `my spec`, expanded by zsh for `=spec`, an option for `-spec` and the
+    escape text for a byte that is not UTF-8. The leg is emptied (`git
+    submodule deinit`) and step (a) says it is not there; the command it
+    prints, run as printed from the root, puts the leg back at its pin:
+    its `.git` is there again, and its HEAD is the commit the root's index
+    records (the move of the leg is staged, not committed). A path that
+    begins with `-` is the next test's, as git holds no submodule there."""
+    leg, line = emptied_leg_line(root, tmp_path, path)
+
+    assert line == (f"  [spec] {label}: NOT INITIALIZED. Run `git submodule "
+                    f"update --init -- {word}` \u2014 the validators below "
+                    "will refuse until you do."), line
+    pasted(root, command_of(line))
+    assert os.path.lexists(leg / ".git"), "the leg is initialized again"
+    pin = git("rev-parse", f":{path}", cwd=root).stdout.strip()
+    assert rev(leg) == pin
+
+
+def test_the_initializing_command_reads_a_path_that_begins_with_a_dash(
+        root):
+    """Git ignores a `submodule.<name>.path` that begins with `-` (it warns
+    that it may be read as an option), so no command can initialize a leg
+    there. What `--` changes is what git says of it: that it found no
+    submodule at the PATH `-spec` (in words that differ by version), where
+    `--init -spec` is an option (#961)."""
+    leg = mounted_at(root, "-spec")
+    (leg / ".git").unlink()
+    line = not_initialized_line(root)
+
+    assert command_of(line) == "git submodule update --init -- -spec", line
+    proc = subprocess.run(["/bin/sh", "-c", command_of(line)], cwd=str(root),
+                          capture_output=True, check=False)
+    assert b"path '-spec'" in proc.stderr, proc.stderr
+
+
+@pytest.mark.parametrize("shell", SHELLS)
+def test_the_initializing_command_of_an_equals_sign_path_pastes_in_a_shell(
+        root, tmp_path, shell):
+    """A leg at `=spec`: zsh expands the bare word of `--init =spec` to the
+    path of a command called `spec` and stops, so the word is quoted, and
+    the command puts the leg back in each shell (#961)."""
+    leg, line = emptied_leg_line(root, tmp_path, "=spec")
+
+    pasted(root, command_of(line), shell)
+    assert os.path.lexists(leg / ".git"), "the leg is initialized again"
 
 
 # --- every ordinary line is what it was -------------------------------------
@@ -490,10 +609,8 @@ def test_a_name_the_codec_would_not_read_back_keeps_the_text_it_had(
 
 @pytest.mark.parametrize("encoding, filesystem, word", [
     pytest.param("utf-8", None, "'origin/café'", id="both-UTF-8"),
-    pytest.param("latin-1", None, r'''"$(printf -- 'origin/caf\303\251')"''',
-                 id="stdout-latin-1"),
-    pytest.param("cp1252", None, r'''"$(printf -- 'origin/caf\303\251')"''',
-                 id="stdout-cp1252"),
+    pytest.param("latin-1", None, CAFE_AS_BYTES, id="stdout-latin-1"),
+    pytest.param("cp1252", None, CAFE_AS_BYTES, id="stdout-cp1252"),
     pytest.param("utf-8", LATIN1_FS, r'''"$(printf -- 'origin/caf\351')"''',
                  id="filesystem-latin-1"),
     pytest.param("latin-1", LATIN1_FS, "'origin/café'", id="both-latin-1"),
@@ -527,6 +644,51 @@ def test_an_ascii_name_is_the_word_it_was_on_any_stdout(
     monkeypatch.setattr(sys, "stdout", Stdout(encoding))
     monkeypatch.setattr(bootstrap_module, "os", LATIN1_FS)
     assert bootstrap_module._paste_word("origin/main") == "origin/main"
+
+
+@pytest.mark.parametrize("encoding, filesystem, word", [
+    pytest.param("utf-8", LEGACY_MBCS_FS, "'origin/café'",
+                 id="legacy-mode-UTF-8-stdout"),
+    pytest.param("cp1252", WINDOWS_FS, CAFE_AS_BYTES,
+                 id="default-mode-cp1252-stdout"),
+    pytest.param("utf-8", WINDOWS_FS, "'origin/café'",
+                 id="default-mode-UTF-8-stdout"),
+])
+def test_on_windows_the_bytes_git_is_handed_are_utf_8(
+        bootstrap_module, monkeypatch, encoding, filesystem, word):
+    """git for Windows is handed UTF-16 and stores UTF-8, and Git Bash reads
+    a paste as UTF-8, so the stdout is compared with the UTF-8 of the name
+    and not with `os.fsencode`: under `PYTHONLEGACYWINDOWSFSENCODING=1` that
+    is `mbcs`, and a UTF-8 stdout got `origin/caf\\351`, a name Git Bash does
+    not hold, where the quoted word was right (rv973's NIT 1, #961). In
+    the default mode the two are the same bytes. The `printf` word of a name
+    a legacy-mode stdout cannot write is still made of `os.fsencode`'s
+    bytes, and no row here says it is right."""
+    monkeypatch.setattr(sys, "stdout", Stdout(encoding))
+    monkeypatch.setattr(bootstrap_module, "os", filesystem)
+    assert bootstrap_module._paste_word("origin/café") == word
+
+
+def test_the_euro_sign_is_quoted_on_a_utf_8_stdout_under_the_legacy_mode(
+        bootstrap_module, monkeypatch):
+    """The euro sign is one byte in `cp1252`, 0x80, and three in UTF-8: the
+    `printf` word of `os.fsencode`'s bytes was `\\2005` for `<euro>5`, which
+    is no name Git Bash holds (rv973's NIT 1, #961)."""
+    monkeypatch.setattr(sys, "stdout", Stdout("utf-8"))
+    monkeypatch.setattr(bootstrap_module, "os", LEGACY_MBCS_FS)
+    assert bootstrap_module._paste_word("\u20ac5") == "'\u20ac5'"
+
+
+def test_a_name_the_filesystem_encoding_cannot_write_keeps_the_text_it_had(
+        bootstrap_module, monkeypatch):
+    """`日本` is printable and this stdout writes it, but a latin-1 filesystem
+    has no bytes for it, so git cannot be handed it: the word is the text it
+    was, and the comparison of the bytes, asked inside `_prints_as_it_is`'s
+    `try`, raises nothing (rv973's NIT 2: moved out of it, `os.fsencode`
+    raised `UnicodeEncodeError`)."""
+    monkeypatch.setattr(sys, "stdout", Stdout("utf-8"))
+    monkeypatch.setattr(bootstrap_module, "os", LATIN1_FS)
+    assert bootstrap_module._paste_word("日本") == "'日本'"
 
 
 def test_a_stdout_with_no_such_codec_gets_the_printf_word(
