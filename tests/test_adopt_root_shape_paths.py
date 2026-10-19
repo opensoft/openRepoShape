@@ -1109,7 +1109,7 @@ def test_with_check_skipped_execute_stops_at_the_copy_and_overwrites_nothing(
     first, and why the refusal is reported with the notice of what the run
     left (`refused_in_the_materializer`)."""
     monkeypatch.setattr(adopter, "_root_shape_findings",
-                        lambda plan, tree: [])
+                        lambda plan, tree, *_: [])
     source, plan = kept_source(tmp_path,
                                with_files({"shape/README.md": OWN_NOTES}),
                                "shape")
