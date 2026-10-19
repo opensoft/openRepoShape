@@ -294,6 +294,26 @@ def test_check_finds_an_empty_reference_in_the_plan(tmp_path):
         checked.stderr
 
 
+@pytest.mark.parametrize("reference, chosen", [
+    (None, True), ('""', False)], ids=["no-reference", "empty-reference"])
+def test_a_bad_date_says_it_chooses_the_reference_only_where_none_is_set(
+        tmp_path, reference, chosen):
+    """With `reference: ""` a value, the date chooses no reference: #294's
+    finding of a bad `elected_on:` says it does only where the plan sets
+    none, as `execute` now reads it."""
+    plan = planned(tmp_path)
+    set_line(plan, "elected_on", '"someday"')
+    set_line(plan, "reference", reference)
+
+    checked = check(plan)
+
+    assert checked.returncode == 1, checked.stdout + checked.stderr
+    said = [line for line in findings(checked.stderr)
+            if line.startswith("FINDING election-date-malformed: ")]
+    assert len(said) == 1, checked.stderr
+    assert said[0].endswith("chooses the reference by it") == chosen, said
+
+
 # --- L2-88: a plan with no `id:` ---------------------------------------------
 
 def test_a_plan_with_no_id_names_its_id_as_derived_from_legs_assembly(
