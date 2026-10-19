@@ -20,10 +20,17 @@ an earlier run left (`tests/test_adopt_late_failure.py` holds that order).
 
 All repositories here are local, GitHub included: a run without
 `--local-remote-dir` is pointed at a bare repository on disk by git's own
-`url.<base>.insteadOf`, and its `gh` is never reached. Only the tests marked
-`needs_filter_repo` run `git filter-repo`; the rest call `cmd_execute` in
-this process with its probe for the tool stubbed, because every refusal
-under test comes before the tool would be used.
+`url.<base>.insteadOf`, which redirects `git` and not `gh`. `check` does run
+`gh`: given no `--local-remote-dir`, and once nothing before it ends `check`
+and the plan's names and `org:` pass, it asks
+`gh repo view --json nameWithOwner` of `testorg/Northwind-spec` and of
+`testorg/Northwind-code` (#798), and off Windows the session's guard answers
+each as a `gh` with no login does (`tests/gh_guard.py`). `execute` without
+`--local-remote-dir` is run in-process with `run` replaced by `no_gh`, which
+refuses and records every `gh` command, so none of `execute`'s reaches the
+guard. Only the tests marked `needs_filter_repo` run `git filter-repo`; the
+rest call `cmd_execute` in this process with its probe for the tool stubbed,
+because every refusal under test comes before the tool would be used.
 """
 
 from __future__ import annotations
@@ -722,10 +729,10 @@ def fetched(source: Path, bare: Path, *flags: str) -> None:
 
 def test_check_reads_github_as_the_sources_origin_last_fetched_it(
         adopter, tmp_path, monkeypatch):
-    """`check` reads no network, and does not know whether `execute` will
-    be given `--local-remote-dir`: where the source's `origin` is the
-    assembly repository, what it fetched from there is asked too, and the
-    finding says which run it is about. A run that pushes to the source
+    """`check` reads no network for the branches, and does not know whether
+    `execute` will be given `--local-remote-dir`: where the source's `origin`
+    is the assembly repository, what it fetched from there is asked too, and
+    the finding says which run it is about. A run that pushes to the source
     itself is not refused for it."""
     bare = github_repository(tmp_path)
     source = small_source(tmp_path)

@@ -509,12 +509,14 @@ GH_NOT_LOGGED_IN = (
 @WINDOWS_SKIP
 def test_a_two_line_gh_stderr_in_a_skip_keeps_the_ways_to_give_a_source(
         descendant_run, standard, tmp_path):
-    """`validate-pins.py`'s skip embeds `gh`'s stderr verbatim, so a `gh` whose
-    help is two lines splits the skip in two: the row's reason used to stop at
-    the first, which told the reader to `gh auth login` -- a login the
-    doctor's own offline environment would then undo -- and dropped the
-    `--pin-source`, `SHAPE_PIN_SOURCE_<PRODUCT>` and `../<product>` ways to
-    give the product a source, which are why the row has no NEXT.
+    """`validate-pins.py`'s skip embedded `gh`'s stderr verbatim, as a root
+    whose pinned copies predate #919 still does, so a `gh` whose help is two
+    lines split the skip in two: the row's reason used to stop at the first,
+    which told the reader to `gh auth login` -- a login the doctor's own
+    offline environment would then undo -- and dropped the `--pin-source`,
+    `SHAPE_PIN_SOURCE_<PRODUCT>` and `../<product>` ways to give the product
+    a source, which are why the row has no NEXT. Since #919 the skip is one
+    line, the break in gh's help an escape, and the row keeps the same ways.
 
     The same descendant, the same clone, with a stub that prints that help for
     every call and exits 4. The summary line the validator ends on is not

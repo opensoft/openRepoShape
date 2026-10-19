@@ -61,7 +61,6 @@ from __future__ import annotations
 
 import codecs
 import os
-import shlex
 import subprocess
 import sys
 from pathlib import Path
@@ -196,22 +195,27 @@ def past_the_pin(leg: Path, upstream: str, branch: str) -> tuple[str, str]:
 
 # --- the upstream's name goes back to git as the bytes it was ---------------
 
-@pytest.mark.parametrize("raw, upstream, byte", [
-    pytest.param("a\udcffb", "a\udcffb", True, id="the-byte-0xff"),
+@pytest.mark.parametrize("raw, upstream, byte, word", [
+    # The command's upstream, as the line prints it (#932): the byte 0xff has
+    # no spelling a shell reads, so it is the `printf` that prints it again.
+    pytest.param("a\udcffb", "a\udcffb", True,
+                 r'''"$(printf -- 'origin/a\377b')"''', id="the-byte-0xff"),
     # Since #715 step (a) refuses a BRANCH ending in U+00A0 (`UNSEEN`) before
     # git is asked, so the branch here is a printable `a\u00e9`, and the
     # UPSTREAM keeps the U+00A0 whose stripping this row was written for.
-    pytest.param("a\u00e9", "a\u00a0", False,
+    # A U+00A0 is no escape to `spelled`, so the word is the quoted name.
+    pytest.param("a\u00e9", "a\u00a0", False, None,
                  id="an-upstream-ending-in-U+00A0",
                  marks=NEEDS_A_UTF8_PROCESS),
 ])
 def test_a_branch_past_the_pin_is_moved_back_whatever_its_upstream_is_named(
-        root, tmp_path, bootstrap_module, raw, upstream, byte):
+        root, tmp_path, bootstrap_module, raw, upstream, byte, word):
     """LANE 5'S SITE: on main, a `UnicodeDecodeError` traceback over the
     byte 0xff, and, over an upstream ending in U+00A0, `not moving an
     existing branch`. Both are moved back now, the line naming the upstream
-    and the command as `move_back_to_pin` spells them, and HEAD is on the
-    branch whose name is the bytes git was given."""
+    and the command as `move_back_to_pin` spells them (#932: the byte as the
+    `printf` a shell turns back into it), and HEAD is on the branch whose
+    name is the bytes git was given."""
     if byte:
         needs_the_byte(tmp_path)
     leg = root / "spec"
@@ -223,8 +227,8 @@ def test_a_branch_past_the_pin_is_moved_back_whatever_its_upstream_is_named(
     assert "Traceback" not in result.stderr, result.stderr
     spelled = bootstrap_module.spelled
     held = "origin/" + upstream
-    command = ("git -C spec merge --ff-only "
-               f"{spelled(shlex.quote(held))}")
+    word = word or f"'{held}'"
+    command = f"git -C spec merge --ff-only {word}"
     assert (f"  [spec] spec: branch {spelled(raw)} moved back {ahead[:12]} "
             f"-> {pin[:12]}, the pin; nothing is lost, {spelled(held)} still "
             f"holds those commits, and `{command}` brings the branch "
@@ -251,9 +255,12 @@ def test_under_an_ascii_encoding_an_upstream_named_in_utf8_is_moved_back(
     assert b"Traceback" not in err, err.decode("utf-8")
     held = bootstrap_module.spelled(
         "origin/" + "日本".encode("utf-8").decode("ascii", "surrogateescape"))
+    # The bytes of 日本 are E6 97 A5 E6 9C AC; no shell here reads the
+    # spelled form back (#932), so the command prints them again.
+    word = r'''"$(printf -- 'origin/\346\227\245\346\234\254')"'''
     assert (f"  [spec] spec: branch main moved back {ahead[:12]} -> "
             f"{pin[:12]}, the pin; nothing is lost, {held} still holds those "
-            f"commits, and `git -C spec merge --ff-only '{held}'` brings the "
+            f"commits, and `git -C spec merge --ff-only {word}` brings the "
             "branch forward\n") in out, out
     assert rev(leg, MAIN) == pin
     assert head_ref(leg) == MAIN

@@ -30,6 +30,20 @@ WHAT IT DOES, in order:
       no url for, nor where it read nothing from `.gitmodules`, both below,
       since it fetched nothing then (#839).
 
+      Where every row's member is checked out and git's init in this
+      holder died all the same, at a gitlink this holder records with no
+      url or at a `.gitmodules` a merge left unmerged, git updated none of
+      them, so the run fails, saying where git stopped and what cures it,
+      as below, with no advice (#879). It said `family bootstrap ok`
+      there, beside git's exit 128, as a run with every member checked
+      out passes (#648), and gave the advice where git stopped at a
+      gitlink. This holder's records are the test, so an exit 128 they do
+      not show is read as before, the advice and `ok` where every member
+      is checked out: git stopped inside a member, at a gitlink in that
+      member's own index with no url, or at a gitlink of this holder's at
+      a commit no remote holds (`not our ref`) (lane 1's SHOULD 4 on
+      #889).
+
       "every member and leg fetched" is said only where git exited 0 AND
       every row's member is checked out (#648). A member left NOT CHECKED
       OUT where no credential would check it out is said here instead, with
@@ -66,8 +80,8 @@ WHAT IT DOES, in order:
       checks the member out whatever the clone chose. For the third and
       the last, `validate-family.py --no-members` names a path two
       sections give, or a gitlink in members/ that no row names; `git rm
-      --cached` takes out one outside members/, which the validator does
-      not read; and where the gitlink is a row's own, with one section,
+      --cached` takes out one outside members/, as every mode of the
+      validator says (#878); and where it is a row's own, with one section,
       the line says to write its section back. Where git read the index's
       or HEAD's file only up to a line it cannot parse, or up to a key it
       takes no value for (a bare `url` line, which `git config --list`
@@ -91,13 +105,22 @@ WHAT IT DOES, in order:
       the member's make runs another, the code is the innermost command's,
       as far as make's lines tell it (`MakeErrors` says where they do not);
       make's stderr reaches the terminal through this run, and `run_make`
-      says what that changes for a member (#884).
+      says what that changes for a member (#884). Under the holder's `make
+      -jN`, each member's make runs its jobs one at a time and says
+      nothing of it: the jobserver of the make above this run, and the
+      `-j` that comes with it, are taken out of the `MAKEFLAGS` it
+      inherits (`member_make_env`, #888).
 
   (c) EXITS 0 unless a member's own command failed, or (a) left a member not
       checked out that no credential would check out, or found a line or a
-      value in `.gitmodules` that git cannot read (#768). Any other member that
-      is not checked out is REPORTED and skipped, not a failure: it is the
-      state a missing credential leaves, and it is already reported in (a).
+      value in `.gitmodules` that git cannot read (#768), or found that,
+      with every member checked out, git's init in this holder died at a
+      gitlink this holder records with no url or at an unmerged
+      `.gitmodules` (#879); an exit 128 this holder's records do not show
+      is no failure here, as (a) says. Any
+      other member that is not checked out is REPORTED and skipped, not a
+      failure: it is the state a missing credential leaves, and it is
+      already reported in (a).
       Where (a) cannot start git, the run STOPS there, exit 2, refused
       `git-not-runnable` as `validate-family.py` refuses it (#694): each
       member's own bootstrap runs git too, so (b) would only say it again.
@@ -144,6 +167,10 @@ NO_SECTION = f"no section of {GITMODULES} gives that path"
 NO_URL = "git has no url for that path"
 EXITED_0 = "git exited 0 and checked nothing out there"
 STOPPED = "git stopped at {}, a gitlink it has no url for"
+#: What (a)'s line says where git updated no member, by whether `members:`
+#: names any row: under "0 member(s)" it said no member was updated (lane
+#: 1's NIT 5 on #889).
+NONE_UPDATED = {True: "NO MEMBER UPDATED", False: "NOTHING UPDATED"}
 #: The whys a `.gitmodules` git read only up to a line it cannot parse, or
 #: up to a key with no value it stops at, may be the cause of, since what
 #: it did not read is past that line (`Gitmodules.cut`, #856).
@@ -203,9 +230,13 @@ def fetch_members(root: Path, rows: list[dict]) -> list[str]:
     """(a) `git submodule update --init --recursive`, authenticated or not.
 
     Where every member is checked out and git died on a value in
-    `.gitmodules`, or on a work tree file it cannot parse, so it updated
-    none of them, the one failure line it returns is for `.gitmodules`
-    (#768).
+    `.gitmodules`, or on a work tree file it cannot parse, or its init
+    died at a `.gitmodules` a merge left unmerged, so it updated none of
+    them, the one failure line it returns is for `.gitmodules` (#768,
+    #879); where its init in this holder died at a gitlink this holder
+    records with no url, it is for that gitlink (`updated_none`, #879).
+    Its line says no member was updated, or, where `rows` names none,
+    nothing was (lane 1's NIT 5 on #889).
 
     Returns a failure line for each of `rows` whose member it leaves not
     checked out where no credential would check it out (`unfetchable`), for
@@ -241,16 +272,19 @@ def fetch_members(root: Path, rows: list[dict]) -> list[str]:
               + ", ".join(f"{spelled(path)} ({reason(why, stopper, modules)})"
                           for _, path, why in left)
               + ". " + cures(left, stopper, rows, modules), file=sys.stderr)
-    elif modules.refused or modules.unreadable:
-        why = REFUSED if modules.refused else UNREADABLE
-        print("  NO MEMBER UPDATED, and not for want of a credential: "
-              + reason(why, stopper, modules) + ". "
-              + cures(left, stopper, rows, modules), file=sys.stderr)
-        return [f"{GITMODULES} (git cannot read it)"]
-    elif proc.returncode == 0:
+        return [f"{spelled(row.get('project') or '?')} (not checked out)"
+                for row, _, _ in left]
+    whole = updated_none(stopper, modules)
+    if whole is not None:
+        print(f"  {NONE_UPDATED[bool(rows)]}, and not for want of a "
+              "credential: " + reason(whole, stopper, modules) + ". "
+              + cures(left, stopper, rows, modules, (whole,)),
+              file=sys.stderr)
+        return [f"{spelled(stopper)} (git stopped at it)" if whole == STOPPED
+                else f"{GITMODULES} (git cannot read it)"]
+    if proc.returncode == 0:
         print("  every member and leg fetched")
-    return [f"{spelled(row.get('project') or '?')} (not checked out)"
-            for row, _, _ in left]
+    return []
 
 
 def fetch_incomplete(proc: subprocess.CompletedProcess, source: str,
@@ -317,9 +351,12 @@ def git_not_started(exc: OSError) -> Refusal | None:
 
 
 def cures(left: list[tuple[dict, str, str]], stopper: str | None,
-          rows: list[dict], modules: Gitmodules) -> str:
+          rows: list[dict], modules: Gitmodules,
+          whole: tuple[str, ...] = ()) -> str:
     """What (a)'s line says cures the rows `left` names, one sentence for
-    each kind of cause among them (#648):
+    each kind of cause among them (#648), or, where it names none, what
+    cures `whole`, why git updated no member (`updated_none`, #879), one
+    reason or none:
 
     - A `.gitmodules` a merge left unmerged in the index, which git reads
       nothing from (`Gitmodules.unmerged`): the file resolved and added.
@@ -344,9 +381,9 @@ def cures(left: list[tuple[dict, str, str]], stopper: str | None,
       `member-uninitialized` for the first row where every row's gitlink
       is there, as with a stray or a hand mount, and `member-gitlink-absent`
       where a row's is only in another case, which the first sentence
-      names. A gitlink outside `members/`, which no mode of the validator
-      asks about, is taken out of the index: no row names it, and with no
-      url no clone can check it out.
+      names. A gitlink outside `members/` is taken out of the index, as
+      every mode of the validator says (#878): no row names it, and with
+      no url no clone can check it out.
     - A row git exited 0 over: the update that checks it out whatever the
       clone chose. `--init` with the path registers a member a subset
       clone left out, and `--checkout` overrides an `update = none`.
@@ -359,7 +396,7 @@ def cures(left: list[tuple[dict, str, str]], stopper: str | None,
       for those: a section written back where the work tree holds no file
       would be the only one in it, and `validate-family.py` reads HEAD's
       file alone, not the index's."""
-    whys = {why for _, _, why in left}
+    whys = {why for _, _, why in left} | set(whole)
     said = gitmodules_cures(whys, modules)
     if modules.cut:
         left = [entry for entry in left if entry[2] not in CUT_WHYS]
@@ -879,7 +916,10 @@ def unfetchable(root: Path, rows: list[dict], exited_0: bool
     checked out is the missing credential's, and stays the skip it always
     was. A path two rows give is said once. Where every row's member is
     checked out and git did not exit 0, `.gitmodules` is read all the
-    same, for `fetch_members` to ask `refused` of."""
+    same, and git's init asked where it stopped, for `fetch_members` to
+    ask why git updated none (`updated_none`): this returned before
+    `init_stop` there, so a run whose update git's init stopped said
+    `family bootstrap ok` (#879)."""
     left: dict[str, dict] = {}
     for row in rows:
         if not (member_path(root, row) / ".git").exists():
@@ -887,8 +927,6 @@ def unfetchable(root: Path, rows: list[dict], exited_0: bool
     if not left and exited_0:
         return [], None, Gitmodules(Counter(), {}, {})
     modules = gitmodules_sections(root)
-    if not left:
-        return [], None, modules
     config = submodule_config(root)
     stopper = None if exited_0 else init_stop(root, modules, config)
     found: list[tuple[dict, str, str]] = []
@@ -905,12 +943,9 @@ def row_reason(root: Path, path: str, modules: Gitmodules,
     """Why `unfetchable` says the member at `path`, not checked out, is
     none a credential would check out (#648, #768), in the order it asks,
     or None where it is the missing credential's."""
-    if modules.unmerged:
-        return UNMERGED
-    if modules.refused:
-        return REFUSED
-    if modules.unreadable:
-        return UNREADABLE
+    unread = file_reason(modules)
+    if unread is not None:
+        return unread
     if recorded_gitlink(root, path) is None:
         return NO_GITLINK
     if not modules.given[path]:
@@ -920,6 +955,30 @@ def row_reason(root: Path, path: str, modules: Gitmodules,
     if exited_0:
         return EXITED_0
     return None if stopper is None else STOPPED
+
+
+def file_reason(modules: Gitmodules) -> str | None:
+    """Why git read nothing from `.gitmodules` (#648, #768), as (a)'s line
+    says it, or None where it read the file: a merge left it unmerged, it
+    gives a value git dies on, or it is a work tree file git cannot
+    parse."""
+    if modules.unmerged:
+        return UNMERGED
+    if modules.refused:
+        return REFUSED
+    return UNREADABLE if modules.unreadable else None
+
+
+def updated_none(stopper: str | None, modules: Gitmodules) -> str | None:
+    """Why git updated no member, where every row's member is checked out
+    and git did not exit 0, or None: what `file_reason` says, or `STOPPED`
+    where git's init in this holder died at a gitlink this holder records
+    with no url (`stopper`, `init_stop`), before it updated any (#879).
+    None where it asked for a credential, as a leg's fetch does.
+    `fetch_members` asks it only where `unfetchable` left no row, whose
+    line says why of each, so it asks nothing of the rows (lane 1's NIT 4
+    on #889: a check of them here decided nothing)."""
+    return file_reason(modules) or (None if stopper is None else STOPPED)
 
 
 def members_of(root: Path) -> tuple[str, list[dict]]:
@@ -1009,12 +1068,12 @@ def run_member_target(root: Path, row: dict, target: str) -> str | None:
 #: make's does not carry, since make exits 2 for any command that fails
 #: (#839); `*** No rule to make target ...`, or `*** [Makefile:44:
 #: bootstrap] Killed`, where make fails on its own or a signal ends what it
-#: ran, with none; and `[Makefile:44: bootstrap] Error 2 (ignored)`, with no
-#: `***`, where a `-` before a command lets it fail with a make's code
-#: (#884).
+#: ran, with none; and `[Makefile:44: bootstrap] Error 1 (ignored)`, or
+#: `Killed (ignored)` where a signal ended it, with no `***`, where a `-`
+#: before a command lets it fail, whatever ended it (#884, #890).
 MAKE_FAILED_RE = re.compile(
     rb"(?:\[(\d+)\])?: (?:\*\*\* (?:\[[^\n]*\] Error (\d+)\s*$)?"
-    rb"|\[[^\n]*\] Error 2 \((ignored)\)\s*$)")
+    rb"|\[[^\n]*\] [^\n]* \((ignored)\)\s*$)")
 #: The bytes `MakeErrors` keeps of a line of make's stderr not yet ended:
 #: an `Error <code>` line ends there, so the end of a line is enough.
 LINE_KEPT = 4096
@@ -1035,15 +1094,23 @@ class MakeErrors:
     and is passed over: where the member's make runs another (`$(MAKE)
     inner`), the code is the innermost command's, and where the inner make
     failed on its own there is none, as for make's own failure. Where a
-    `-` let that make fail (`Error 2 (ignored)`), the depth is the
-    parent's again, so an `Error 2` of the parent's own after it is named.
+    `-` let a command fail (`Error 1 (ignored)`, or `Killed (ignored)`,
+    whatever ended it), the make that says so goes on, and would print a
+    `***` line of its own if it failed after, so no `Error 2` is passed
+    over again until a `***` line comes: a parent's own `Error 2` after a
+    make a `-` let fail is named, however far below it the `-` was.
 
     WHERE THE CODE IS NOT THE INNERMOST COMMAND'S, since make's lines do
     not tell it:
-    - a recipe that runs a make, lets its failure pass in the shell (`||
-      true`, or `;`), or with a `-` in a make run with `-s`, which then
-      prints no `(ignored)` line, and exits 2 itself: its `Error 2` is
-      read as that make's report, and the inner command's code is named;
+    - a recipe that runs a make and lets its failure pass in the shell
+      (`|| true`, or `;`), or with a `-` in a make run with `-s`, which
+      prints no `(ignored)` line, then exits 2 itself with no `(ignored)`
+      line between: its `Error 2` is read as that make's report, and the
+      inner command's code is named;
+    - under `-k`, a make a `-` lets fail after a command that failed (`a:
+      $(MAKE) innerA`, whose command exits 1, then `b: -$(MAKE) innerB`,
+      whose command exits 3): the last `Error` line is the command's in
+      the make the `-` let fail, and its code, 3, is named;
     - an inner make run with `env -u MAKELEVEL`, which prints its parent's
       depth: the parent's `Error 2` is named;
     - under `-j`, a job of the parent's that fails while the inner make is
@@ -1073,7 +1140,7 @@ class MakeErrors:
         depth_said, code, ignored = found[-1]
         depth = int(depth_said or 0)
         if ignored:
-            self.depth = min(self.depth, depth)
+            self.depth = -1
             return
         reports_a_make = code == b"2" and depth < self.depth
         self.depth = depth
@@ -1137,7 +1204,7 @@ def run_make(make: str, target: str, cwd: Path) -> tuple[int, int | None]:
     "Reaping losing child"), and the line would say `exited 2` for every
     failure again."""
     proc = subprocess.Popen([make, target], cwd=str(cwd),
-                            stderr=subprocess.PIPE)
+                            stderr=subprocess.PIPE, env=member_make_env())
     errors = MakeErrors()
     for chunk in iter(lambda: proc.stderr.read1(65536), b""):
         passed_on(chunk)
@@ -1161,6 +1228,66 @@ def passed_on(chunk: bytes) -> None:
         return
     sink.write(chunk)
     sink.flush()
+
+
+#: A word of `MAKEFLAGS` that names the jobserver of the make above this
+#: run (#888): `--jobserver-auth=3,4`, a pipe's two descriptors (GNU make
+#: 4.2 on), `--jobserver-auth=fifo:<path>`, a named pipe (4.4 on, where
+#: there is `mkfifo`), and `--jobserver-fds=3,4` (before 4.2, as macOS's
+#: make 3.81 writes it). `re.DOTALL` here and below, since a path may hold
+#: any character.
+JOBSERVER_WORD = re.compile(r"--jobserver-(?:auth|fds)=.*", re.DOTALL)
+#: The words `member_make_env` takes out where one names a jobserver: that
+#: word, and the jobs that come with it, `-j2`, or the bare `-j` a make
+#: before 4.2 writes beside `--jobserver-fds`.
+JOBS_WORD = re.compile(r"-j[0-9]*|--jobserver-(?:auth|fds)=.*", re.DOTALL)
+#: A word of `MAKEFLAGS` as make splits it: only at a space or a tab, and
+#: a backslash keeps the character after it in the word, a space or a tab
+#: included (`ARGS=a\ -j2` is one word). Any other character, a newline
+#: or a no-break space among them, is part of its word, as make reads it.
+MAKEFLAGS_WORD = re.compile(r"(?:\\.|[^ \t])+", re.DOTALL)
+
+
+def member_make_env() -> dict[str, str]:
+    """This run's environment for a member's make: `MAKEFLAGS` without the
+    jobserver of the make above this run, where it names one, and without
+    the `-j` that comes with it (`JOBS_WORD`, #888). Every other word is
+    kept, `-k`, `-s` and a variable given on the holder's command line
+    among them, each word as make splits it: only at a space or a tab,
+    a backslash keeping either in a value (`MAKEFLAGS_WORD`). A
+    `MAKEFLAGS` that names no jobserver is left as it is: `make -j` with
+    no number, which starts none, or a person's own `MAKEFLAGS=-j8` with
+    no make above this run.
+
+    WHY. Under the holder's `make -j2 bootstrap`, `validate`, `park` or
+    `resume`, a member's make found `-j2 --jobserver-auth=3,4` in the
+    `MAKEFLAGS` it inherits, and not the two descriptors: the holder's
+    rule runs this script with no `+`, so make closes them for it, and
+    `Popen` closes every descriptor past stderr. It printed `make[1]:
+    warning: jobserver unavailable: using -j1.  Add '+' to parent make
+    rule.`, of a rule the person does not own, and ran its jobs one at a
+    time (GNU Make 4.3, measured). It runs them one at a time now, and
+    says nothing.
+
+    WHY NOT HAND THE JOBSERVER ON, as a `+` on the holder's rules and the
+    descriptors passed to the member's make would, which then ran its
+    jobs together (measured):
+    - a `+` runs its line under `make -n` too: `make -n bootstrap`
+      fetched every member and leg (measured);
+    - a descriptor `MAKEFLAGS` names is a number, and no proof that it is
+      the jobserver's: with a file open there, a member's make read a
+      byte of it for a token and wrote a `+` into another (measured);
+    - the member's make is `$MAKE` or `make` on PATH, not the make that
+      ran the holder, which exports no `MAKE` (measured), and a make may
+      not read another's jobserver: GNU make 4.3 stops at 4.4's `fifo:`
+      (`invalid --jobserver-auth string`, measured).
+    Taken out, no make is asked to read a jobserver at all."""
+    env = dict(os.environ)
+    words = MAKEFLAGS_WORD.findall(env.get("MAKEFLAGS", ""))
+    if any(JOBSERVER_WORD.fullmatch(word) for word in words):
+        env["MAKEFLAGS"] = " ".join(
+            word for word in words if not JOBS_WORD.fullmatch(word))
+    return env
 
 
 def main(argv: list[str] | None = None) -> int:
