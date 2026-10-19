@@ -8469,11 +8469,17 @@ def _on_a_remote_branch(member: Path, commit: str) -> bool:
 #: namespace `_on_a_remote_branch` reads, forced as a remote-tracking ref is.
 _ORIGIN_BRANCHES = "+refs/heads/*:refs/remotes/origin/*"
 
+#: The names `_ORIGIN_BRANCHES` gives the branches of `origin` (#905): a
+#: refspec of the mount's own that gives another namespace these very names
+#: is not carried (`_origin_fetch_refspecs`).
+_ORIGIN_BRANCH_NAMES = _ORIGIN_BRANCHES.partition(":")[2]
+
 
 def _origin_fetch_refspecs(member: Path) -> list[str]:
     """The refspecs `bump`'s fetch of `origin` carries (#686): every branch of
     `origin`, then what the mount's own `remote.origin.fetch` keeps under
-    `refs/remotes/origin/`, and none of what it excludes.
+    `refs/remotes/origin/`, and none of what it excludes, nor a tag, nor
+    what gives another namespace the names the branches take there (#905).
 
     WHY THE MOUNT'S OWN ARE ADDED. `--prune` deletes every ref under
     `refs/remotes/origin/` that no refspec on the command line maps a ref of
@@ -8505,32 +8511,68 @@ def _origin_fetch_refspecs(member: Path) -> list[str]:
     A mount whose refspec git cannot satisfy, one that names a ref `origin`
     lacks or two that map to one destination, fails this fetch as it fails
     the person's own `git fetch origin`, and `bump` says so as it says any
-    failed fetch. One refspec of the mount's own can also clash with the
-    first, which that `git fetch origin` never meets: a mount whose only
-    refspec maps tags into `origin/` (`+refs/tags/*:refs/remotes/origin/*`),
-    and a remote with a branch and a tag of one name, fail this fetch with
-    128 ("Cannot fetch both refs/heads/feat and refs/tags/feat to
-    refs/remotes/origin/feat") where `git fetch origin` exits 0. That is
-    left for #459's checklist.
+    failed fetch.
 
-    READ BY A LISTING, `git config --list`, not `--get-all`: the dry run's
-    test holds every `git config` it runs to a listing, the one form that
-    cannot write, and a listing exits 0 whether or not the mount has a
+    ONE THAT GIVES ANOTHER NAMESPACE THE BRANCHES' NAMES IS LEFT OUT (#905,
+    #459's U183): a refspec of the mount's whose destination is the first
+    refspec's own, `refs/remotes/origin/*`, and whose source is not under
+    `refs/heads/`, as a mount that maps its tags into `origin/` has
+    (`+refs/tags/*:refs/remotes/origin/*`) or a mirror of every ref there
+    (`+refs/*:refs/remotes/origin/*`). Carried, it clashed with the first
+    wherever a tag and a branch of `origin` share a name: this fetch exited
+    128 ("Cannot fetch both refs/heads/feat and refs/tags/feat to
+    refs/remotes/origin/feat") where `git fetch origin` exits 0, and `bump`
+    said it could not fetch the member, then told the person to fix the
+    network or the credential. Where no name was shared, the tags it put
+    there answered for branches: `_on_a_remote_branch` reads every ref under
+    `refs/remotes/origin/`, so a commit only a tag of `origin` reaches was
+    pinned, against the rule (#613) that a tag is not a branch (measured on
+    git 2.43, each). Left out, the fetch works and a tag there answers for
+    nothing: the prune drops such a ref, as any ref under `origin/` no
+    refspec of this fetch maps, and the mount's own next `git fetch origin`
+    writes it back.
+
+    SO IS EVERY ONE WHOSE SOURCE IS UNDER `refs/tags/`, wherever under
+    `origin/` it writes (#905, RV946's S1): a tag is not a branch, and under
+    `origin/` it answers for one. A mount whose refspecs added
+    `+refs/tags/*:refs/remotes/origin/tags/*` to its branches had a commit
+    only a tag of `origin` reaches pinned, and its fetch failed where a
+    branch is named `tags/<a tag>` (measured, git 2.43). A refspec from
+    elsewhere whose destination is a folder of its own under `origin/`
+    (the pull requests above, `pr/*`) still rides along.
+
+    READ BY A LISTING, `git config --list -z`, not `--get-all`: the dry
+    run's test holds every `git config` it runs to a listing, the one form
+    that cannot write, and a listing exits 0 whether or not the mount has a
     refspec (an `origin` with a URL and nothing else has none, and gets the
-    first refspec alone). A config git cannot read fails it with 128, which is
-    the caller's fetch failure, as the fetch's own would be.
+    first refspec alone). A config git cannot read fails it with 128, which
+    is the caller's fetch failure, as the fetch's own would be. `-z` (#905,
+    #459's U184) ends each entry with a NUL and puts a newline between its
+    key and its value, so a value that holds a newline is one value: read
+    a line at a time, an alias whose value held the line
+    `remote.origin.fetch=+refs/heads/zz:refs/remotes/origin/zz` gave the
+    mount a refspec it does not have, which `git config --get-all
+    remote.origin.fetch` does not list, and its fetch of a branch `origin`
+    lacks failed.
     """
-    listed = run(["git", "config", "--list"], cwd=member)
-    configured = [value for key, _, value in
-                  (line.partition("=") for line in listed.splitlines())
-                  if key == "remote.origin.fetch"]
+    listed = _git_bytes(["config", "--list", "-z"], member)
+    configured = [value.decode("utf-8", "surrogateescape")
+                  for key, _, value in (record.partition(b"\n")
+                                        for record in listed.split(b"\0"))
+                  if key == b"remote.origin.fetch"]
     refspecs = [_ORIGIN_BRANCHES]
     for spec in (value.strip() for value in configured):
         if spec.startswith("^"):
             continue  # a narrowing refspec never decides reachability (p07)
         spec = spec if spec.startswith("+") else "+" + spec
-        if not spec.partition(":")[2].startswith("refs/remotes/origin/"):
+        source, _, destination = spec[1:].partition(":")
+        if not destination.startswith("refs/remotes/origin/"):
             continue
+        if source.startswith("refs/tags/"):
+            continue  # a tag is not a branch (RV946's S1)
+        if (destination == _ORIGIN_BRANCH_NAMES
+                and not source.startswith("refs/heads/")):
+            continue  # it gives other refs the branches' names (U183)
         if spec not in refspecs:
             refspecs.append(spec)
     return refspecs
@@ -8538,9 +8580,23 @@ def _origin_fetch_refspecs(member: Path) -> list[str]:
 
 def _has_origin(member: Path) -> bool:
     """Whether the member's mount has a remote named `origin`, the only one
-    `bump` fetches and asks (#686). Asked once its fetch has failed: a mount
-    whose `origin` was renamed (to `upstream`, say) or removed fails that
-    fetch with no network or credential at fault, and was told to fix one.
+    `bump` fetches and asks (#686). A mount whose `origin` was renamed (to
+    `upstream`, say) or removed has none to fetch from, with no network or
+    credential at fault, and was told to fix one.
+
+    ASKED BEFORE THE FETCH (#905, #459's U185), and the fetch is made only
+    where it answers yes: one `get-url` more in every bump. Where it answers
+    no, or the fetch fails, the refusal's words ask it again
+    (`_checked_on_a_remote_branch`, `_checked_to_names_a_commit`), as they
+    did before. Asked only after a fetch that failed, it let a mount with
+    no `origin` be fetched from a PATH: git reads a remote name it does
+    not have as a path, so a repository at `origin` inside the mount (a
+    leg mounted there, say) was fetched, the fetch wrote that
+    repository's branches under `refs/remotes/origin/`, in a dry run
+    too, and `bump` answered from them as from the member's. A remote
+    `origin` with a section and no `url` is one to git: `get-url` prints
+    its name, and the fetch reads that path, as the person's own `git fetch
+    origin` does (measured, git 2.43).
 
     `git remote get-url origin` exits 2 for "No such remote" and for nothing
     else, so that exit is the answer "none"; any other failure is git's,
@@ -8615,11 +8671,11 @@ def _checked_on_a_remote_branch(member: Path, path: str,
     (`_origin_tag_reaches`) is refused as one no branch reaches, which it
     is, with the way out, a push to a branch, and without "a pin the rest of
     the world cannot fetch", which a fresh clone disproves. A mount with NO
-    `origin` (`_has_origin`) failed its fetch with no network at fault: the
-    words say it has none, that whether a branch reaches the commit is
-    therefore not known, and to give the mount its `origin` back, since
-    `bump` asks no other remote, where they said the commit was on no branch
-    and to fix the network or the credential.
+    `origin` (`_has_origin`) is not fetched (#905), with no network at
+    fault: the words say it has none, that whether a branch reaches the
+    commit is therefore not known, and to give the mount its `origin` back,
+    since `bump` asks no other remote, where they said the commit was on no
+    branch and to fix the network or the credential.
     """
     if _on_a_remote_branch(member, commit):
         return commit
@@ -8712,8 +8768,8 @@ def _checked_to_names_a_commit(member: Path, path: str, row: dict,
     after the note that the fetch failed, and one they do not is refused with
     the sentence that says the answer came from stale refs. A mount with no
     `origin` at all is told that instead, in this refusal and in
-    `member-to-unknown`'s (#686): its fetch failed with no network or
-    credential at fault.
+    `member-to-unknown`'s (#686): it is not fetched (#905), and no network
+    or credential is at fault.
 
     A TAG WHOSE COMMIT IS ON NO BRANCH is refused too, and so is that
     commit, while `add --at` pins the same tag's id. Where the mount does
@@ -9083,13 +9139,27 @@ def cmd_bump(args) -> int:
     # named a deleted branch. `--no-prune-tags` keeps a `pruneTags` setting
     # from reaching the mount's tags. The prune touches no local branch or
     # tag.
-    fetched = True
-    try:
-        run(["git", "fetch", "-q", "--prune", "--no-prune-tags", "origin",
-             *_origin_fetch_refspecs(member)], cwd=member)
-    except CommandFailed:
-        fetched = False
-        why = (" from its origin" if _has_origin(member) else
+    # FROM `origin` ALONE, AND INTO `refs/remotes/origin/` ALONE (#905).
+    # `_has_origin` is asked first, and a mount with no remote `origin` is
+    # not fetched: git read the name as a path, and fetched a repository at
+    # `origin` inside the mount. `--refmap=` (empty) takes the mount's own
+    # `remote.origin.fetch` out of the fetch's map: with refspecs on the
+    # command line, git still moved whatever a configured refspec maps each
+    # fetched branch to, so in a mount set `+refs/heads/*:refs/heads/*`, or
+    # a mirror's `+refs/*:refs/*`, a local branch holding unpushed commits
+    # was forced to the remote's, by a dry run too (measured, git 2.43). The
+    # refspecs named here are the whole map.
+    origin = _has_origin(member)
+    fetched = origin
+    if origin:
+        try:
+            run(["git", "fetch", "-q", "--prune", "--no-prune-tags",
+                 "--refmap=", "origin", *_origin_fetch_refspecs(member)],
+                cwd=member)
+        except CommandFailed:
+            fetched = False
+    if not fetched:
+        why = (" from its origin" if origin else
                ": it has no remote named `origin`")
         print(f"  note: could not fetch {path}{why}; the commit must already "
               "be in its object store and on a branch of its remote as last "
