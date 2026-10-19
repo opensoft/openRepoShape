@@ -209,10 +209,10 @@ jobs:
       GIT_CONFIG_KEY_1: core.longpaths
       GIT_CONFIG_VALUE_1: 'true'
     steps:
-      # The SAME two commits the ubuntu job pins. `fetch-depth: 0` because
-      # the launcher's suite clones this checkout itself
-      # (`OPENREPOSHAPE_REPO` in `test_a_ref_the_doctor_would_check_out_is_
-      # validated`), and every Windows run of it has cloned a full one.
+      # The SAME two commits the ubuntu job pins. `fetch-depth: 0`, as the
+      # ubuntu job has it: no test in these three files has cloned this
+      # checkout since #942. A shallow checkout here is a change of its own,
+      # and wants a Windows run behind it.
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262  # v4
         with:
           fetch-depth: 0
