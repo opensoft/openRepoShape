@@ -2245,6 +2245,10 @@ STEP_FOUR_WORDS = {
     "three-links-no-source": ("", "openXdox,openYdox,openDox", None, False),
     "blank": (" ", "openXdox,openDox", None, False),
     "holds-an-equals": ("openXdox=layer", "openXdox,openDox", None, False),
+    "relative": ("./nowhere/", "openXdox,openDox", None, False),
+    "relative-to-the-parent": ("../nowhere", "openXdox,openDox", None, False),
+    "a-link-holding-an-equals": ("tree", "openXdox,open=y,openDox", "open=y",
+                                 False),
     "variable-first": ("tree", "openXdox,openDox", "openDox", True),
 }
 
@@ -2265,7 +2269,17 @@ def assert_step_four_speaks_in_the_plans_words(run, tmp_path: Path,
     `=` is not said to have been read as a PATH. On main step (4) offered
     `--link-source <link>=<path>` and labelled the source `(--link-source)`;
     typed as printed, the offer ended step (5) in `unrecognized
-    arguments`."""
+    arguments`.
+
+    AND IT NAMES THE `--pin-source` STEP (5) NAMES (#907, U171): the value
+    joined to the standard's checkout, this one, and resolved. Step (4)
+    named it as typed, `nowhere (--pin-source)` for `./nowhere/`, and step
+    (5) `<standard>/nowhere`; a blank value was a blank and `<standard>/ `.
+    `../nowhere` is named `<the standard's parent>/nowhere` in both, which
+    tells a resolved path from one only joined, `<standard>/../nowhere`:
+    pathlib folds `./nowhere/` to `<standard>/nowhere` either way (rv949 on
+    #949). A chain link holding `=` is offered step (5)'s words too (U170).
+    """
     clear_ambient_pin_sources(monkeypatch)
     source, chain, declares, variable = STEP_FOUR_WORDS[case]
     commit = "0123456789abcdef" * 2 + "01234567"
@@ -2309,15 +2323,31 @@ def assert_step_four_speaks_in_the_plans_words(run, tmp_path: Path,
                       f"{LATER_LINK_WORDS}). The recorded chain still "
                       "classifies."]
         assert "REFUSED pin-source-no-path:" in result.stderr
+    elif case == "a-link-holding-an-equals":
+        # U170 (#907): the naming check reads the link `open=y` whole, so it
+        # is offered step (5)'s words; split at its first `=` they were
+        # words for a link `open`, and `open=y` was offered the naming
+        # check's own `--link-source open=y=<path>`. Step (5) refuses the
+        # link, as it refuses any that is not a neutral product's name.
+        assert offered == [
+            "WARNING declared-unverified: open=y declaring a pin on openDox "
+            "is a fact in open=y's own tree, which is not reachable here "
+            "(SHAPE_PIN_SOURCE_OPEN_Y would let it be read). The recorded "
+            "chain still classifies."], step_four
+        assert "REFUSED chain-link-malformed:" in result.stderr, result.stderr
     elif case == "variable-first":
         assert "[verified]" in step_four, step_four
-        assert (f"NOTE --pin-source {source}: not used — each link whose own "
-                "declaration is read had a more specific source "
-                "(SHAPE_PIN_SOURCE_<PRODUCT>, or a checkout beside the "
-                "project).") in result.stderr, result.stderr
+        assert (f"NOTE --pin-source {Path(REPO, source).resolve()}: not used "
+                "— each link whose own declaration is read had a more "
+                "specific source (SHAPE_PIN_SOURCE_<PRODUCT>, or a checkout "
+                "beside the project).") in result.stderr, result.stderr
     else:
-        assert (f"WARNING link-source-unreadable: {source} (--pin-source) "
+        named = Path(REPO, source).resolve()
+        assert (f"WARNING link-source-unreadable: {named} (--pin-source) "
                 "could not answer for openXdox: no such file or directory"
+                ) in result.stderr, result.stderr
+        assert (f"REFUSED pin-source-unreadable: {named} could not answer for "
+                f"opensoft/openXdox @ {commit}: no such directory"
                 ) in result.stderr, result.stderr
         assert "read as a PATH" not in result.stderr, result.stderr
         assert offered, step_four
@@ -2433,7 +2463,7 @@ def refusal_detail(stderr: str, code: str) -> list[str]:
 #: name that ends in `.`. Each name is spelled with a letter or digit first
 #: and letters, digits, `.`, `_`, `/` and `-` after, the characters a copy
 #: takes, so what is asked is the shape and nothing else. The old line,
-#: `*..* | *.lock`, tested only the whole name: it took the first thirteen
+#: `*..* | *.lock`, tested only the whole name: it took the first fourteen
 #: names below, which git refuses.
 REF_PARTS = [pytest.param(name, takes, id=name) for name, takes in (
     # What the issue names: refused by git, and by no copy before #874.
@@ -2443,8 +2473,10 @@ REF_PARTS = [pytest.param(name, takes, id=name) for name, takes in (
     # rv873's two: a part that starts with `.`, deeper in the name.
     ("a/b/.c/d", False), ("x/.y/z/w", False),
     # The same kind, and taken by the old line too: a name that ends in `.`
-    # after a `/`, and a part that is a `.`.
-    ("a/b.", False), ("a/.", False),
+    # after a `/`, and a part that is a `.`. `a/.` is refused for ending in
+    # `.` as well; `a/./b` is refused for that part alone (rv947's NIT-3),
+    # so a copy that took a lone `.` part passes `a/.` and fails here.
+    ("a/b.", False), ("a/.", False), ("a/./b", False),
     # Refused before #874 as well, and refused still.
     ("topic.lock", False), ("a..b", False), ("a/..", False),
     ("a/b.lock", False), (".lock", False), ("/a", False),
