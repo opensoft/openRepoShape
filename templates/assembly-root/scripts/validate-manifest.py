@@ -235,7 +235,7 @@ def _run_products(pins, legs) -> list[str]:
     """Every product this run reads (#909): the declared pins, and every
     link of every chain a leg records, read as `_leg_findings` reads it
     (`_recorded_chain`). That counts the chain of a leg whose `repository:`
-    is bad or missing, which the naming gate's `_project_chain_links`
+    is missing, which the naming gate's `_project_chain_links`
     leaves out; such a leg is a finding in both gates, so the run fails
     either way."""
     products = sorted(pins)
