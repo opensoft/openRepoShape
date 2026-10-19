@@ -8237,10 +8237,11 @@ def _has_origin(member: Path) -> bool:
 
 
 def _origin_tag_reaches(member: Path, commit: str) -> bool:
-    """Whether a tag of the member's `origin` reaches `commit` (#686): a tag
-    the mount has whose commit contains it, which `origin` lists under the
-    same id. Asked only for the refusal's words, after a fetch that worked,
-    of a commit no branch of `origin` reaches; the rule stays branches.
+    """Whether a tag of the member's `origin` reaches `commit` (#686, #982):
+    a tag the mount has whose commit contains it, at a commit `origin` lists
+    a tag at too. Asked only for the refusal's words, after a fetch that
+    worked, of a commit no branch of `origin` reaches; the rule stays
+    branches.
 
     WHY IT IS ASKED. Such a commit was refused with "A pin the rest of the
     world cannot fetch", which is untrue of one a tag of the remote holds: a
@@ -8251,15 +8252,32 @@ def _origin_tag_reaches(member: Path, commit: str) -> bool:
     ever. Only when a tag of the mount contains the commit is the remote
     asked, so a commit made in the mount and never tagged asks nothing more.
     A listing that fails is no answer, and the words stay the plain ones.
+
+    THE COMMITS TAGS POINT TO ARE COMPARED, NOT THE TAG OBJECTS (#982). An
+    annotated tag's own id is the id of its tag object, which two tags at
+    one commit have apart when each was made on its own, and which a
+    lightweight tag does not have at all, so comparing them missed a
+    lightweight `v1` of the mount beside an annotated `v1` of `origin` at
+    the same commit, and two annotated `v1` made apart (measured, git
+    2.43). The mount's tags are read as `%(objectname) %(*objectname)`: for
+    an annotated tag the tag object and the commit it points to, for a
+    lightweight one the commit alone. `origin` is listed WITHOUT `--refs`,
+    so each annotated tag has its `<tag>^{}` line, the commit, beside its
+    own, and a lightweight tag has its own line, the commit. Every id on
+    either side is compared, so the tag object of a tag the two share still
+    matches as it did, a tag of a tag included. Git reads `*` one level, so
+    two tags of a tag made apart at one commit are still told apart
+    (measured, git 2.43). `bump-leg.py`'s `_remote_tag_reaches`, asked of a
+    leg, reads it the same way.
     """
-    held = set(run(["git", "for-each-ref", "--contains", commit,
-                    "--format=%(objectname)", "refs/tags/"],
-                   cwd=member).lower().split())
+    listing = run(["git", "for-each-ref", "--contains", commit,
+                   "--format=%(objectname) %(*objectname)", "refs/tags/"],
+                  cwd=member)
+    held = set(listing.lower().split())
     if not held:
         return False
     try:
-        listed = run(["git", "ls-remote", "--tags", "--refs", "origin"],
-                     cwd=member)
+        listed = run(["git", "ls-remote", "--tags", "origin"], cwd=member)
     except CommandFailed:
         return False
     return any(line.split("\t", 1)[0].lower() in held

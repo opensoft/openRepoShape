@@ -339,6 +339,68 @@ def test_a_tag_of_the_same_name_at_another_commit_keeps_the_plain_words(
     offline.assert_left_nothing()
 
 
+def tag_as(mount: Path, env: dict, kind: str, name: str, target: str,
+           whose: str) -> str:
+    """`name` on `target` in `mount`, `lightweight` or `annotated`; returns
+    what `git rev-parse name` prints, a commit for the first and the tag
+    object's own id for the second. `whose` is in an annotated tag's words,
+    so two made on one commit are two objects, never the one that two tags
+    of the same words made in one second would be."""
+    if kind == "annotated":
+        raw(mount, env, "tag", "-a", "-m", f"{whose} v1", name, target)
+    else:
+        raw(mount, env, "tag", name, target)
+    return raw(mount, env, "rev-parse", name).stdout.decode().strip()
+
+
+@pytest.mark.parametrize("kinds", [
+    ("lightweight", "annotated"), ("annotated", "annotated"),
+    ("annotated", "lightweight")],
+    ids=["mount-lightweight-origin-annotated", "both-annotated-made-apart",
+         "mount-annotated-origin-lightweight"])
+def test_a_tag_at_the_commit_reaches_it_whatever_its_object_is(
+        holder, offline, tmp_path, kinds):
+    """#982. THE COMMITS TAGS POINT TO ARE COMPARED, NOT THE TAG OBJECTS. A
+    commit on no branch of the member's remote, which a tag of the remote
+    reaches, under a `v1` the mount has too and made on its own: a
+    lightweight `v1` of the mount beside an annotated `v1` of the remote,
+    two annotated `v1` made apart, and the reverse of the first. The two
+    tags are two objects and name one commit, and the check compared the
+    objects, so each got the plain words, "a pin the rest of the world
+    cannot fetch" included, where a tag of the remote does reach the commit.
+    Both runs now tell the true reason, as for a tag the mount and the
+    remote share, with nothing moved and the mount's own `v1` as it was."""
+    mount_kind, remote_kind = kinds
+    env = isolated(offline, tmp_path)
+    mount = holder / PATH
+    made = made_in_the_mount(holder, env, "TAGGED.md")
+    remote_tag = tag_as(mount, env, remote_kind, "v1", made, "the remote's")
+    remote = private_origin(holder, env)
+    raw(mount, env, "push", "-q", "origin", "refs/tags/v1")
+    raw(mount, env, "tag", "-d", "v1")
+    mount_tag = tag_as(mount, env, mount_kind, "v1", made, "the mount's")
+    assert raw(remote, env, "rev-parse", "refs/tags/v1").stdout.decode(
+        ).strip() == remote_tag, (
+        "premise: the remote holds the tag the mount first made")
+    assert mount_tag != remote_tag, "premise: the two tags are two objects"
+    for repository in (mount, remote):
+        assert raw(repository, env, "rev-parse", "refs/tags/v1^{}"
+                   ).stdout.decode().strip() == made, (
+            "premise: both name the commit")
+    assert not contains(remote, env, made, "refs/heads/"), (
+        "premise: no branch of the member's remote reaches it")
+    assert not contains(mount, env, made, "refs/remotes/"), (
+        "premise: no remote-tracking ref of the mount does")
+
+    stderr = both_runs(holder, env, made)
+
+    assert refusal(stderr) == local_only(made, made, tagged=True)
+    assert "cannot fetch" not in stderr
+    assert raw(mount, env, "rev-parse", "v1").stdout.decode().strip() \
+        == mount_tag, "the mount's own tag is as it was"
+    offline.assert_left_nothing()
+
+
 def no_origin(to: str) -> tuple[str, str]:
     """The two lines `bump --to <to>`, a commit the mount holds, is refused
     with when the mount has no remote named `origin`."""
