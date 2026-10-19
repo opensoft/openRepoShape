@@ -12709,7 +12709,9 @@ def _checked_plan_values(plan: Plan) -> tuple[str, str, str, str]:
     that reach a `git` command line as arguments, which it returns:
     `(spec_path, code_path, branch, tracking)`.
 
-    Split out of `cmd_execute` for #138, in the order the refusals came in.
+    Split out of `cmd_execute` for #138, in the order the refusals came in
+    there, the leg paths first; #901 asks the organisation and the id
+    before them, as `check` does, so the two name one problem first.
     A branch name `checked_value` refuses is `check`'s finding too, in the
     same words (`_branch_name_refusal`, #520); one inside its alphabet that
     git will not create is refused with `check`'s other findings, by
