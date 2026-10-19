@@ -1235,12 +1235,14 @@ def on_a_branch_that_is_not_utf_8(repo: Path) -> dict:
     return held_by_git(repo)
 
 
-def windows_fsencode(text: str | bytes) -> bytes:
+def windows_fsencode(text: str | bytes | os.PathLike) -> bytes:
     """`os.fsencode` as Windows has it: UTF-8 with `surrogatepass`, so every
-    lone surrogate is the three bytes of a sequence that is not UTF-8. Bytes
-    go through as they are, as `os.fsencode` passes them on every system. For
+    lone surrogate is the three bytes of a sequence that is not UTF-8. A path
+    is taken as the real `os.fsencode` takes it (`os.fspath` first), and
+    bytes go through as they are, as it passes them on every system. For
     `monkeypatch.setattr(os, "fsencode", windows_fsencode)`, which puts the
     guard above in front of a test that Linux would let through."""
+    text = os.fspath(text)
     if isinstance(text, bytes):
         return text
     return text.encode("utf-8", "surrogatepass")
@@ -1257,6 +1259,25 @@ def skip_message(call, *args) -> str | None:
     except pytest.skip.Exception as skipped:
         return skipped.msg
     return None
+
+
+def skip_where_the_environment_cannot_carry(value: str) -> None:
+    """Skip where this system's file name encoding cannot encode `value`, as
+    under `LC_ALL=C PYTHONUTF8=0 PYTHONCOERCECLOCALE=0` (ASCII). It is asked of
+    a file name (`make_file` cannot write `caf\\u00e9.yml`, and `mkdir` cannot
+    make `\\u202ecaf`), of an environment value and of a command-line
+    argument: `subprocess` puts each one through `os.fsencode` before it
+    starts the child, so a `user.name` of `Jos\\u00e9` or a branch
+    `main\\u00a0` raises `UnicodeEncodeError` in the test and not in the tool
+    (#757, #853, #854). Text that is ASCII, or a lone surrogate that
+    `os.fsencode` gives back as its byte, is carried. Asked through the `os`
+    module at call time, so a test emulates ASCII with
+    `monkeypatch.setattr(os, "fsencode", ...)`."""
+    try:
+        os.fsencode(value)
+    except UnicodeEncodeError:
+        pytest.skip(f"this system's file name encoding "
+                    f"({sys.getfilesystemencoding()}) cannot spell {value!r}")
 
 
 # --- the `gh` guard (#296) ---------------------------------------------------
@@ -2412,7 +2433,7 @@ def refusal_detail(stderr: str, code: str) -> list[str]:
 #: name that ends in `.`. Each name is spelled with a letter or digit first
 #: and letters, digits, `.`, `_`, `/` and `-` after, the characters a copy
 #: takes, so what is asked is the shape and nothing else. The old line,
-#: `*..* | *.lock`, tested only the whole name: it took the first thirteen
+#: `*..* | *.lock`, tested only the whole name: it took the first fourteen
 #: names below, which git refuses.
 REF_PARTS = [pytest.param(name, takes, id=name) for name, takes in (
     # What the issue names: refused by git, and by no copy before #874.
@@ -2422,8 +2443,10 @@ REF_PARTS = [pytest.param(name, takes, id=name) for name, takes in (
     # rv873's two: a part that starts with `.`, deeper in the name.
     ("a/b/.c/d", False), ("x/.y/z/w", False),
     # The same kind, and taken by the old line too: a name that ends in `.`
-    # after a `/`, and a part that is a `.`.
-    ("a/b.", False), ("a/.", False),
+    # after a `/`, and a part that is a `.`. `a/.` is refused for ending in
+    # `.` as well; `a/./b` is refused for that part alone (rv947's NIT-3),
+    # so a copy that took a lone `.` part passes `a/.` and fails here.
+    ("a/b.", False), ("a/.", False), ("a/./b", False),
     # Refused before #874 as well, and refused still.
     ("topic.lock", False), ("a..b", False), ("a/..", False),
     ("a/b.lock", False), (".lock", False), ("/a", False),

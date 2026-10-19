@@ -41,7 +41,11 @@ WHAT IT REFUSES, and why each is a refusal rather than a warning:
     under `--dry-run` as well (#832). That validator refuses either, so a
     bump over one could never land.
   * a commit the leg's REMOTE does not have. A pin nobody else can fetch is a
-    root nobody else can bootstrap.
+    root nobody else can bootstrap. The fetch that asks prunes, so a branch
+    the remote has deleted no longer counts, and moves no local branch of
+    the leg (#898). Where a TAG of the remote reaches a commit the leg holds
+    and no branch does, or the leg has no remote named `origin`, the refusal
+    says so instead of "never pushed" or "fix the network".
   * a dirty root. The commit is made with explicit pathspecs, so unrelated
     edits would not be swept in — but a lockstep commit that cannot be read as
     exactly one change is the thing the rule exists to keep readable.
@@ -81,6 +85,20 @@ WHAT IT REFUSES, and why each is a refusal rather than a warning:
     `--dry-run` as well, whether or not the file names the leg, and a line
     for a file git does not track is marked as it is for a file that is not
     UTF-8.
+  * a path this user cannot SEARCH or read, which is not an absent one
+    (#430). Python 3.14's `Path.is_file()` and `exists()` answer False to
+    a `stat` the operating system refused, where 3.9 to 3.13 raised it, so
+    each is asked by `stat` itself: a root (or a directory above it) this
+    user cannot search is `bump-leg-manifest-unreadable`, never
+    `bump-leg-root-not-a-project`; a leg's checkout this user cannot search
+    is `bump-leg-submodule-unreadable`, naming its `.git`, never
+    `bump-leg-uninitialized`; and one of the project's own validators that
+    is there and cannot be read, or whose `scripts/` cannot be searched, is
+    `bump-leg-validator-unreadable`, naming each, under `--dry-run` as well
+    and before anything is written. That last one was the worst: on 3.14
+    the bump said `<script> is absent; SKIPPED` of both and COMMITTED, exit
+    0, with neither check run. A validator that is not there at all is
+    still SKIPPED, as it always was.
   * a pin file whose layout the rewrite cannot carry, though the validators
     read it (`digests: {tree_sha256: ...}`, a value on the line below its
     key): `bump-leg-pin-unrecognised`. The rewrite is computed once, before
@@ -148,6 +166,8 @@ MANIFEST = "project.yaml"
 #: takes no `--pin-source`), `validate-pins.py` asks `gh api` for the pinned
 #: tree with the operator's `gh` credentials. Without `gh`, a login or a
 #: network that is its `skip` line, exit 0, and the bump goes on.
+#: One that is not there is SKIPPED; one that is there and this user cannot
+#: read is refused before anything is written (`_validators_readable`, #430).
 VALIDATORS = ("scripts/validate-pins.py", "scripts/validate-manifest.py")
 
 #: A local-path remote is a `file://` fetch, which git has refused for
@@ -185,7 +205,13 @@ class Project:
     def open(cls, root_spec) -> "Project":
         root = Path(root_spec).expanduser().resolve()
         path = root / MANIFEST
-        if not path.is_file():
+        try:
+            present = _is_a(path, stat.S_ISREG)
+        except OSError as exc:
+            # the root, or a directory above it, this user cannot search:
+            # the `stat` is refused, which is not an absent manifest (#430)
+            raise _manifest_unopened_refusal(path, exc) from exc
+        if not present:
             raise Refusal(
                 "bump-leg-root-not-a-project",
                 f"{path} does not exist, so this is not an assembly root of a "
@@ -457,7 +483,9 @@ def _cannot_open(root: Path, path: Path, exc: OSError, *,
             f"{_os_reason(exc)}")
 
 
-def _cannot_open_advice(errors: list[OSError]) -> str:
+def _cannot_open_advice(errors: list[OSError], *,
+                        above: str = " inside the root",
+                        other: str = "") -> str:
     """What to do about a file or a directory the operating system refused,
     for each cause present in `errors`, ending in a space so it joins the
     sentence after it (#383).
@@ -468,19 +496,36 @@ def _cannot_open_advice(errors: list[OSError]) -> str:
     right by the mode or the owner; any other `OSError` (a file removed or
     replaced while this ran, an I/O error, a path that stopped being a file)
     is not a permission and is not told to `chmod`.
+
+    THE DEFAULTS ARE THE WORDS `validate-pins.py` AND THE DOCTOR GIVE, word
+    for word (#712; `tests/test_doctor_unreadable_pin.py` compares them). Each
+    of two keywords serves ONE refusal of this tool, which has its own reason
+    to change them (#430): `above`, the manifest's, is what bounds "every
+    directory above it" (a root's `project.yaml` is refused by a directory
+    above the root as well, so that refusal takes none), and `other`, the
+    validators', is the sentence for a cause that is not a permission, where
+    "take away one nobody wants" would be wrong (a validator taken away is
+    SKIPPED).
     """
     advice = ""
     if any(isinstance(error, PermissionError) for error in errors):
         advice += ("Make what this user may not open readable by this "
                    "user: `chmod u+r` on a file, `chmod u+rx` on a directory "
-                   "(and on every directory above it inside the root), or "
+                   f"(and on every directory above it{above}), or "
                    "fix who owns it. ")
     if any(not isinstance(error, PermissionError) for error in errors):
-        advice += ("Where the operating system gave another reason, put a "
-                   "regular file this user can open back in its place, or "
-                   "take away one nobody wants, and make sure nothing is "
-                   "changing the directory while this runs. ")
+        advice += other or (
+            "Where the operating system gave another reason, put a "
+            "regular file this user can open back in its place, or "
+            "take away one nobody wants, and make sure nothing is "
+            "changing the directory while this runs. ")
     return advice
+
+
+#: What a refusal that has changed nothing says last (#383, #430), once for
+#: each of the refusals that give it.
+UNCHANGED = ("Then run the same command again. Nothing in the working "
+             "tree, the index or the leg's checkout was changed.")
 
 
 def _pin_unopened_refusal(root: Path, pin_path: Path,
@@ -494,8 +539,33 @@ def _pin_unopened_refusal(root: Path, pin_path: Path,
         "`commit:` and `digests.tree_sha256` in it, and "
         "`scripts/validate-pins.py` reads it too. "
         + _cannot_open_advice([exc])
-        + "Then run the same command again. Nothing in the working "
-        "tree, the index or the leg's checkout was changed.")
+        + UNCHANGED)
+
+
+def _manifest_unopened_refusal(path: Path, exc: OSError) -> Refusal:
+    """`bump-leg-manifest-unreadable` for a `project.yaml` whose `stat` the
+    operating system refused (#430): the root, or a directory above it, that
+    this user cannot search.
+
+    NOT `bump-leg-root-not-a-project`, which Python 3.14's `Path.is_file()`
+    gave it, answering False to the refused `stat`: its remedy points at a
+    different directory, and the file is there. Up to 3.13 the same `stat`
+    raised `PermissionError` out of the run, a traceback, exit 1. Named by its
+    whole path, as this id's other refusal names it: relative to a root that
+    cannot be searched, `project.yaml` would not say which root."""
+    above = ("A `stat` of a file is refused only where a directory on the "
+             "way to it cannot be searched: here that is the root itself or "
+             "a directory above it. "
+             if isinstance(exc, PermissionError) else "")
+    return Refusal(
+        "bump-leg-manifest-unreadable",
+        f"{shown_path(path)}: cannot be read: {_os_reason(exc)}",
+        "Remediation: --root names the assembly root, and this tool reads "
+        f"its {MANIFEST} before anything else. " + above
+        # no "inside the root": the directory at fault may be above the root
+        + _cannot_open_advice([exc], above="")
+        + "Then run the same command again. Nothing was fetched, written "
+        "or committed.")
 
 
 def _leg_pin_text(root: Path, pin_path: Path) -> str:
@@ -570,8 +640,7 @@ def _workflows_dir_refusal(root: Path, workflows: Path,
         "`scripts/validate-pins.py` reads them too, so a directory it cannot "
         "list is one it cannot bump. "
         + _cannot_open_advice([exc])
-        + "Then run the same command again. Nothing in the working tree, "
-        "the index or the leg's checkout was changed.")
+        + UNCHANGED)
 
 
 def _workflow_texts(root: Path, workflows: Path, tracked: set[str],
@@ -680,9 +749,7 @@ def _workflow_texts(root: Path, workflows: Path, tracked: set[str],
                            ".github/workflows/ until the bump has landed. ")
         raise Refusal(
             "bump-leg-workflow-unreadable", "\n".join(detail),
-            "Remediation: " + advice
-            + "Then run the same command again. Nothing in the working "
-            "tree, the index or the leg's checkout was changed.")
+            "Remediation: " + advice + UNCHANGED)
     return texts
 
 
@@ -945,13 +1012,205 @@ def peeled_target(submodule: Path, repository: str, target: str) -> str:
 
 
 def on_a_remote_branch(submodule: Path, commit: str) -> bool:
-    """Is `commit` reachable from one of this leg's `origin/*` branches?"""
+    """Is `commit` reachable from one of this leg's `origin/*` branches?
+
+    The refs `fetch_leg` has just brought, every branch of the remote and
+    none it has deleted since (#898), or, when that fetch failed, the ones
+    the leg already had."""
     proc = subprocess.run(
         ["git", "for-each-ref", "--contains", commit, "--format=%(refname)",
          "refs/remotes/origin/"],
         cwd=str(submodule), capture_output=True, text=True,
         encoding="utf-8", errors="replace", check=False)
     return proc.returncode == 0 and bool(proc.stdout.strip())
+
+
+#: What the leg's fetch always asks of its remote: every branch, into the
+#: namespace `on_a_remote_branch` reads, forced as a remote-tracking ref is.
+LEG_BRANCHES = "+refs/heads/*:refs/remotes/origin/*"
+
+
+def _leg_fetch_refspecs(submodule: Path) -> list[str]:
+    """The refspecs the leg's fetch carries (#898): every branch of the
+    remote, then what the leg's own `remote.origin.fetch` keeps under
+    `refs/remotes/origin/`, and none of what it excludes. `family.py`'s
+    `_origin_fetch_refspecs` (#686), asked of a leg.
+
+    WHY THE LEG'S OWN ARE ADDED. The fetch prunes, and `--prune` deletes
+    every ref under `refs/remotes/origin/` that no refspec on the command
+    line maps a ref of the remote to, while a refspec on the command line
+    replaces the configured ones. A leg that keeps pull requests there
+    (`+refs/pull/*/head:refs/remotes/origin/pr/*`) would lose them to a
+    prune made for a deleted branch, in a dry run too. So each positive
+    refspec of the leg whose destination is under `refs/remotes/origin/`
+    goes on the command line as well, forced as the first is, and is pruned
+    only against itself. One whose destination is outside it, a mirror's
+    `+refs/*:refs/*` or `+refs/heads/*:refs/heads/*`, is never added, so no
+    refspec this fetch names writes outside `refs/remotes/origin/`. A ref
+    put under `origin/` by hand, which no refspec maps, is pruned.
+
+    A NEGATIVE REFSPEC (`^refs/heads/wip`) IS SKIPPED. A narrowing refspec
+    never decides reachability: a positive one that leaves a branch out is
+    overridden by the first refspec, and git applies a configured negative
+    one only to a fetch with no refspec of its own (measured, git 2.43), so
+    the excluded branch is fetched and counts like any other.
+
+    WHERE GIT CANNOT SATISFY A REFSPEC OF THE LEG'S OWN, THE FETCH FAILS,
+    where the fetch of every branch alone worked: one naming a ref the
+    remote no longer has (`couldn't find remote ref`, as the person's own
+    `git fetch origin` fails), or a tags-into-`origin/` refspec where the
+    remote has a branch and a tag of one name (`Cannot fetch both ...`,
+    where `git fetch origin` exits 0). Both exit 128, so the note follows,
+    the stale-refs sentence after it where the refusal has one, and nothing
+    is pruned (measured, git 2.43). `family.py` shares both; #905 holds
+    them.
+
+    READ BY A LISTING, `git config --list`, which exits 0 whether or not the
+    leg has a refspec (an `origin` with a URL and nothing else has none, and
+    gets the first refspec alone). Read before the fetch, not inside its
+    `try`: a config git cannot read is git's own failure, quoted, exit 2,
+    and never a fetch said to have failed for the network.
+    """
+    listed = run(["git", "config", "--list"], cwd=submodule)
+    configured = [value for key, _, value in
+                  (line.partition("=") for line in listed.splitlines())
+                  if key == "remote.origin.fetch"]
+    refspecs = [LEG_BRANCHES]
+    for spec in (value.strip() for value in configured):
+        if spec.startswith("^"):
+            continue  # a narrowing refspec never decides reachability
+        spec = spec if spec.startswith("+") else "+" + spec
+        if not spec.partition(":")[2].startswith("refs/remotes/origin/"):
+            continue
+        if spec not in refspecs:
+            refspecs.append(spec)
+    return refspecs
+
+
+def _has_origin(submodule: Path) -> bool:
+    """Whether the leg has a remote named `origin`, the only one its fetch
+    asks without `--local-remote-dir` (#898). Asked once that fetch has
+    failed: a leg whose `origin` was renamed (`git remote rename origin
+    upstream`) or removed fails it with no network or credential at fault,
+    and was told to fix one.
+
+    `git remote get-url origin` exits 2 for "No such remote" and for nothing
+    else, so that exit is the answer "none"; any other failure is git's,
+    raised as `CommandFailed` and quoted by `main()`, exit 2, before
+    anything is written. `family.py`'s `_has_origin` (#686), asked of a leg.
+    """
+    try:
+        run(["git", "remote", "get-url", "origin"], cwd=submodule)
+    except CommandFailed as exc:
+        if exc.code == 2:
+            return False
+        raise
+    return True
+
+
+def _remote_tag_reaches(submodule: Path, remote: str, protocol: list[str],
+                        commit: str) -> bool:
+    """Whether a tag of the leg's remote reaches `commit` (#898): a tag the
+    leg has whose commit contains it, which the remote lists under the same
+    id. Asked only for the refusal's words, after a fetch that worked, of a
+    commit the leg holds and no branch of the remote reaches; the rule stays
+    branches. `family.py`'s `_origin_tag_reaches` (#686), asked of a leg.
+
+    WHY IT IS ASKED. Such a commit was refused with "somebody committed
+    inside the leg's mount and never pushed it", which is untrue of one a tag
+    of the remote holds: the tag was pushed, and a fresh clone holds the
+    commit. The leg's own tags cannot say it alone, since a tag made inside
+    the leg is one only the leg has, so `git ls-remote --tags --refs` asks
+    the remote the fetch asked which of them it has, by object id. Only when
+    a tag of the leg contains the commit is the remote asked. A listing that
+    fails is no answer, and the words stay the plain ones. `ls-remote`
+    writes nothing: no ref the person's leg did not have is made.
+    """
+    held = set(run(["git", "for-each-ref", "--contains", commit,
+                    "--format=%(objectname)", "refs/tags/"],
+                   cwd=submodule).lower().split())
+    if not held:
+        return False
+    try:
+        listed = run(["git", *protocol, "ls-remote", "--tags", "--refs",
+                      remote], cwd=submodule)
+    except CommandFailed:
+        return False
+    return any(line.split("\t", 1)[0].lower() in held
+               for line in listed.splitlines())
+
+
+def _origin_back(submodule: Path, repository: str) -> str:
+    """What a leg with no `origin` is told to do (#898): give it back, and
+    why nothing else will do."""
+    return (f"give {shown_path(submodule)} back a remote named `origin`, for "
+            f"{repository}, and re-run: this tool fetches the leg's branches "
+            "from `origin` and asks no other remote")
+
+
+def _unreachable_refusal(submodule: Path, repository: str, commit: str,
+                         remote: str, protocol: list[str], *, fetched: bool,
+                         has_origin: bool) -> Refusal:
+    """The refusal for `commit`, which no branch of the leg's remote
+    reaches: `bump-leg-commit-local-only` when the leg holds it,
+    `bump-leg-commit-not-on-remote` when it does not, each in the words
+    true of the leg (#898). `fetch_leg` says when each is given; split from
+    it so the fetch and the verdict read apart.
+
+    A leg with NO `origin` is told that, and that whether a branch reaches
+    the commit is not known; never the stale-refs sentence, since no
+    network or credential failed. A held commit a TAG of the remote reaches
+    is told that, after a fetch that worked. Every other case keeps its
+    words, with the stale-refs sentence after a fetch that failed.
+    """
+    stale = ("" if fetched else
+             " The fetch above FAILED, so this was answered from stale "
+             "remote-tracking refs; fix the network or the credential and "
+             "re-run before believing it.")
+    mount = shown_path(submodule)
+    if object_present(submodule, commit):
+        if not has_origin:
+            return Refusal(
+                "bump-leg-commit-local-only",
+                f"{commit} is in the leg's own object store, but the leg's "
+                f"mount, {mount}, has no remote named `origin`, so whether a "
+                f"branch of {repository} reaches it is not known",
+                f"Remediation: {_origin_back(submodule, repository)}. If the "
+                "commit is not pushed yet, push it to a branch of the leg "
+                "first.")
+        if fetched and _remote_tag_reaches(submodule, remote, protocol,
+                                           commit):
+            return Refusal(
+                "bump-leg-commit-local-only",
+                f"{commit} is in the leg's own object store, and a tag of "
+                f"{repository} reaches it, but no branch of {repository} "
+                "does",
+                "Remediation: push it to a branch of the leg and re-run — a "
+                "bump pins only a commit a branch of the leg's remote "
+                "reaches, and a tag is not a branch.")
+        return Refusal(
+            "bump-leg-commit-local-only",
+            f"{commit} is in the leg's own object store but is reachable "
+            f"from no branch of {repository}",
+            "Remediation: push it to a branch of the leg and re-run; the "
+            "commonest such commit was made inside the leg's mount and never "
+            "pushed. A pin the rest of the world cannot fetch is a root the "
+            "rest of the world cannot bootstrap." + stale)
+    if not has_origin:
+        return Refusal(
+            "bump-leg-commit-not-on-remote",
+            f"{commit} is not in the leg's own object store, and the leg's "
+            f"mount, {mount}, has no remote named `origin` to fetch it from, "
+            f"so whether a branch of {repository} reaches it is not known",
+            "Remediation: check the commit — it belongs to the LEG, not to "
+            "the assembly root — and push it to a branch of the leg first if "
+            f"it is not pushed yet; {_origin_back(submodule, repository)}.")
+    return Refusal(
+        "bump-leg-commit-not-on-remote",
+        f"{repository} has no branch containing {commit}",
+        "Remediation: check the commit — it belongs to the LEG, not to the "
+        f"assembly root — and that it has been pushed. `git ls-remote "
+        f"{repository}` lists what the remote actually has." + stale)
 
 
 def fetch_leg(submodule: Path, repository: str, commit: str,
@@ -993,6 +1252,43 @@ def fetch_leg(submodule: Path, repository: str, commit: str,
     The fetch itself is BEST EFFORT: a machine that cannot reach the remote
     may still be able to answer from the remote-tracking refs it already has,
     and a refusal below says so rather than blaming the network.
+
+    THE FETCH PRUNES (#898), as `family.py bump` fetches a member since #686.
+    A branch the remote deleted after the leg last fetched kept its
+    remote-tracking ref, which passed this check for a commit no ref of the
+    remote keeps, so it was pinned. `--prune` drops every ref under
+    `refs/remotes/origin/` that no refspec of the fetch maps a ref of the
+    remote to; the leg's own refspecs that write there ride along
+    (`_leg_fetch_refspecs`), so what its configuration keeps there stays.
+    `--no-prune-tags` is belt and braces: git 2.43 applies no `pruneTags`
+    setting to a fetch with refspecs on its command line (measured).
+    `origin/HEAD` stays. Offline nothing is pruned. Under
+    `--local-remote-dir` the prune deletes the `origin/*` tracking refs the
+    stand-in directory lacks, a branch the leg's real `origin` still has
+    included; that is deliberate, as the fetch has always written that
+    directory's branches into `origin/*`.
+
+    `--refmap=` (EMPTY) TURNS OFF GIT'S OPPORTUNISTIC UPDATE (#898). For a
+    fetch of a named remote with refspecs on the command line, git also
+    writes each ref it brings wherever the remote's CONFIGURED refspecs map
+    it. A leg configured with `+refs/heads/*:refs/heads/*` (or a mirror's
+    `+refs/*:refs/*`) had its own local branches force-moved to the remote's
+    by this fetch, under `--dry-run` too (measured, git 2.43: a local `main`
+    holding a commit never pushed was moved off it), and a leg standing on
+    such a branch failed the fetch with "refusing to fetch into branch". The
+    configured refspecs that write under `origin/` are on the command line
+    already, so nothing else is lost, and the fetch writes nothing outside
+    `refs/remotes/origin/` and the tags git follows.
+
+    WHERE IT CANNOT ANSWER, THE REFUSAL SAYS WHY (#898), in the code it had.
+    A leg with no remote named `origin` (`_has_origin`, asked only of a
+    failed fetch of `origin`) is told so and to give it back, not to fix the
+    network or the credential. A commit the leg holds that a TAG of the
+    remote reaches (`_remote_tag_reaches`) is refused as one no branch
+    reaches, which it is, without "never pushed", which the pushed tag
+    disproves. A commit no ref of the remote reaches is told that the
+    commonest such commit was made in the leg and never pushed, which is not
+    true of one pushed to a branch since deleted.
     """
     if local_remote_dir is None:
         remote, protocol = "origin", []
@@ -1008,14 +1304,21 @@ def fetch_leg(submodule: Path, repository: str, commit: str,
                 / f"{repo_basename(repository)}.git"),
             SAFE_PATH_RE)
         protocol = FILE_PROTOCOL
+    refspecs = _leg_fetch_refspecs(submodule)
     fetched = True
+    has_origin = True
     try:
-        run(["git", *protocol, "fetch", "-q", remote,
-             "+refs/heads/*:refs/remotes/origin/*"], cwd=submodule)
+        run(["git", *protocol, "fetch", "-q", "--prune", "--no-prune-tags",
+             "--refmap=", remote, *refspecs], cwd=submodule)
     except CommandFailed as exc:
         fetched = False
+        # `--local-remote-dir` fetches from a path, which no remote of the
+        # leg names, so whether it has an `origin` is not the question there.
+        has_origin = local_remote_dir is not None or _has_origin(submodule)
+        why = ("" if has_origin else
+               f": {submodule.name} has no remote named `origin`")
         print(f"  note: `git fetch {remote}` in {submodule.name} exited "
-              f"{exc.code}; answering from the remote-tracking refs this "
+              f"{exc.code}{why}; answering from the remote-tracking refs this "
               "checkout already has", file=sys.stderr)
     named = commit
     commit = peeled_target(submodule, repository, named)
@@ -1024,25 +1327,9 @@ def fetch_leg(submodule: Path, repository: str, commit: str,
               f"{commit[:12]}, which is what would be pinned")
     if on_a_remote_branch(submodule, commit):
         return commit
-    stale = ("" if fetched else
-             " The fetch above FAILED, so this was answered from stale "
-             "remote-tracking refs; fix the network or the credential and "
-             "re-run before believing it.")
-    if object_present(submodule, commit):
-        raise Refusal(
-            "bump-leg-commit-local-only",
-            f"{commit} is in the leg's own object store but is reachable "
-            f"from no branch of {repository}",
-            "Remediation: somebody committed inside the leg's mount and "
-            "never pushed it. Push it to a branch of the leg and re-run — a "
-            "pin the rest of the world cannot fetch is a root the rest of "
-            "the world cannot bootstrap." + stale)
-    raise Refusal(
-        "bump-leg-commit-not-on-remote",
-        f"{repository} has no branch containing {commit}",
-        "Remediation: check the commit — it belongs to the LEG, not to the "
-        f"assembly root — and that it has been pushed. `git ls-remote "
-        f"{repository}` lists what the remote actually has." + stale)
+    raise _unreachable_refusal(submodule, repository, commit, remote,
+                               protocol, fetched=fetched,
+                               has_origin=has_origin)
 
 
 # ---------------------------------------------------------------------------
@@ -1050,9 +1337,102 @@ def fetch_leg(submodule: Path, repository: str, commit: str,
 # ---------------------------------------------------------------------------
 
 
+def _validators_readable(root: Path) -> None:
+    """Refuse `bump-leg-validator-unreadable`, naming each, where one of the
+    root's own `VALIDATORS` is there and this user cannot read it, or cannot
+    `stat` it because `scripts/` cannot be searched (#430).
+
+    ASKED BEFORE ANYTHING IS WRITTEN, UNDER `--dry-run` AS WELL, because the
+    question used to be asked only by `run_validator`, after the leg had
+    moved and the pin had been written, and through `Path.is_file()`. On
+    Python 3.14 that answers False to a refused `stat`, so a `scripts/` this
+    user can list but not search, or not list at all, gave `<script> is
+    absent; SKIPPED` for both validators, and the bump COMMITTED, exit 0,
+    with neither check run. Up to 3.13 the same `is_file()` raised, and the
+    run ended `bump-leg-rewrite-failed`, rolled back, after the leg had
+    moved; and a validator at mode 000 in a searchable `scripts/` reached
+    the child, which could not open it, and was `bump-leg-validators-red`,
+    rolled back: that holds where git is told to assume the file unchanged
+    (`--assume-unchanged`), since on a real root plain `git status` shows
+    the file modified and the run stops at `bump-leg-root-dirty`, before and
+    after this change. A dry run said none of it. The file is opened as well
+    as `stat`ed, since the child has to read it, and closed unread.
+
+    A VALIDATOR THAT IS NOT THERE IS NOT ASKED ABOUT (`_is_a` answers False
+    only where no regular file is at the name: an `_ABSENT_ERRNOS` answer
+    such as `ENOENT` or `ENOTDIR`, a name the operating system cannot take,
+    or something that is not a regular file, which `run_validator` has always
+    called absent): `run_validator` still SKIPS it, as it always has. Asked
+    after `nothing to do`, since a run with nothing to write runs no
+    validator, and named all at once, as `_workflow_texts` names every file
+    it cannot open.
+
+    A CAUSE THAT IS NOT A PERMISSION (an I/O error) IS NOT TOLD TO TAKE THE
+    FILE AWAY, as the generic words for one are: a validator taken away is
+    SKIPPED, which is the very thing this refuses. It is told to restore the
+    file from the project's history, and that nothing may be changing
+    `scripts/` while this runs, by a `git -C <root> checkout --` line through
+    `shlex.join` as this tool's other git lines are (#532): this tool is run
+    from a checkout of the standard with `--root` naming the project, whose
+    own `scripts/` that checkout does not track. A `stat` the operating
+    system refused is told which directory was at fault, since a person who
+    `chmod`s the file is refused again."""
+    lines: list[str] = []
+    errors: list[OSError] = []
+    # each validator refused for a cause that is not a permission
+    restore: list[str] = []
+    # a `stat` was refused, so the directory on the way to the file is at fault
+    unsearched = False
+    for script in VALIDATORS:
+        path = root / script
+        statted = False
+        try:
+            if not _is_a(path, stat.S_ISREG):
+                continue
+            statted = True
+            path.open("rb").close()
+        except OSError as exc:
+            lines.append(_cannot_open(root, path, exc))
+            errors.append(exc)
+            if not isinstance(exc, PermissionError):
+                restore.append(script)
+            elif not statted:
+                unsearched = True
+    if errors:
+        raise Refusal(
+            "bump-leg-validator-unreadable",
+            f"{len(lines)} of the project's own validator(s) cannot be "
+            "opened:\n" + "\n".join(f"    {line}" for line in lines),
+            "Remediation: this tool runs the project's own "
+            + " and ".join(f"`{script}`" for script in VALIDATORS)
+            + " after the rewrite and before the commit, and one it cannot "
+            "read is a check it cannot run, never one to skip: a bump "
+            "committed without it is one the project's pull request may "
+            "still refuse. "
+            + ("A `stat` of a file is refused only where a directory on the "
+               "way to it cannot be searched: here that is `scripts/` or a "
+               "directory above it. " if unsearched else "")
+            + _cannot_open_advice(errors, other=(
+                "Where the operating system gave another reason, restore "
+                + " and ".join(f"`{script}`" for script in restore)
+                + " from the project's history (`"
+                + shlex.join(["git", "-C", str(root), "checkout", "--",
+                              *restore])
+                + "`) and make sure nothing is changing `scripts/` while "
+                "this runs. "))
+            + UNCHANGED)
+
+
 def run_validator(root: Path, script: str) -> tuple[int, str]:
-    """The ROOT's own copy of a validator, its output captured for a refusal."""
-    if not (root / script).is_file():
+    """The ROOT's own copy of a validator, its output captured for a refusal.
+
+    One that is not there is SKIPPED. Asked as `_is_a` asks it, not through
+    `Path.is_file()` (#430): `_validators_readable` has refused one this
+    user cannot read before anything was written, and a `stat` refused here
+    after all (a mode changed while this ran) raises its `OSError`, which
+    `_apply_rewrite` rolls back and reports, on every Python; Python 3.14's
+    `is_file()` would have answered False and SKIPPED it."""
+    if not _is_a(root / script, stat.S_ISREG):
         return 0, f"  {script} is absent; SKIPPED\n"
     # THE CHILD IS TOLD WHAT TO WRITE AND IS READ BACK AS THAT (#254). A child
     # takes its stdout configuration from its environment, and this process's
@@ -1333,9 +1713,31 @@ def _initialized_submodule(root: Path, path: str) -> Path:
     --init`ed.
 
     Split from `cmd_bump` for #136.
+
+    A CHECKOUT THIS USER CANNOT SEARCH IS REFUSED BY NAME (#430),
+    `bump-leg-submodule-unreadable`, naming its `.git` as `validate-pins.py`
+    names it (`pin-submodule-unreadable`): asked through `Path.exists()`, a
+    refused `stat` raised `PermissionError` out of the run up to Python 3.13,
+    a traceback, exit 1, and from 3.14 read as an uninitialized leg, whose
+    remedy initializes a checkout that is there. Named by the manifest's own
+    `path`, as `bump-leg-uninitialized` names it.
     """
     submodule = root / path
-    if not (submodule / ".git").exists():
+    try:
+        initialized = _is_a(submodule / ".git", lambda _mode: True)
+    except OSError as exc:
+        raise Refusal(
+            "bump-leg-submodule-unreadable",
+            f"{(Path(path) / '.git').as_posix()}: cannot be read: "
+            f"{_os_reason(exc)}",
+            "Remediation: this tool resolves and digests the new commit in "
+            "the leg's own checkout and checks it out there, so a checkout "
+            "this user cannot enter is one it cannot bump. It is not an "
+            "uninitialized one, and `git submodule update --init` would not "
+            "change it. " + _cannot_open_advice([exc])
+            + "Then run the same command again. Nothing was fetched, "
+            "written or committed.") from exc
+    if not initialized:
         raise Refusal(
             "bump-leg-uninitialized",
             f"{path} is not an initialized submodule checkout, so the new "
@@ -1804,8 +2206,9 @@ def cmd_bump(args) -> int:
        whether the remote has it — `fetch_leg`;
     3. the digest, recomputed from the leg's own objects;
     4. the pin as it stands, the workflow plan and the report;
-    5. the pin's new text (`rewrite_pin`, once), `nothing to do` (exit 1)
-       and the trailers;
+    5. the pin's new text (`rewrite_pin`, once), `nothing to do` (exit 1),
+       the project's own validators readable where they are there
+       (`_validators_readable`, #430) and the trailers;
     6. `--dry-run` returns here, exit 0;
     7. only the real run checks the leg out, writes, validates and commits,
        in `_apply_rewrite`, which writes the text computed in step 5.
@@ -1869,6 +2272,11 @@ def cmd_bump(args) -> int:
         print(f"\nnothing to do: {repository} is already pinned at "
               f"{commit[:12]} and every fact agrees.")
         return 1
+
+    # BEFORE THE DRY-RUN RETURN AND BEFORE ANYTHING IS WRITTEN (#430): the
+    # real run's `run_validator` asked only after the leg had moved, and on
+    # Python 3.14 skipped a validator it could not `stat` and committed.
+    _validators_readable(root)
 
     _print_trailers(args.trailer)
 
