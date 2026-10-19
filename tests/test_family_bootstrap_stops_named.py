@@ -652,7 +652,10 @@ def test_a_leg_this_user_cannot_search_is_untold(family, holder, offline,
     000, and B4 at IRSS. The walk's `stat` of the leg's `.git` is refused,
     which ended the run in a `PermissionError` traceback; that leg is
     untold now, nothing past it asked, and the run says what it said before
-    #954, the advice and ok, while git's update exits 128."""
+    #954, the advice and ok. Git 2.43.0 passes the leg it cannot clone into
+    and dies at IRSS's B4 (exit 128), so the walk meets the leg; git 2.55.0
+    (CI) ends its update at the leg, `Failed to clone 'code' a second time,
+    aborting` (exit 1), so the walk, which runs on 128 only, does not."""
     env = cloning(offline, tmp_path, family)
     b4(holder, env, family, tmp_path)
 
@@ -663,7 +666,7 @@ def test_a_leg_this_user_cannot_search_is_untold(family, holder, offline,
     assert result.returncode == 0, result.stdout + result.stderr
     assert "Traceback" not in result.stderr
     assert said_after_the_fetch(result) == [ALONE]
-    assert update.returncode == 128
+    assert update.returncode in (1, 128)
 
 
 def test_a_fetch_that_reached_another_member_s_remote_tells_nothing(
