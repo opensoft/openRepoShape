@@ -444,9 +444,30 @@ def _pin_products(rows) -> list[str]:
     return products
 
 
-def _pin_row_problem(row: dict) -> tuple[str, str] | None:
-    """`(code, why)` for a `pins:` mapping `execute` cannot write a pin file
-    from, or None. `why` finishes a sentence about the entry.
+#: What a finding about a `pins:` mapping says `execute` writes the pin
+#: file from, and nothing else; and what one says that names the entry's
+#: `digest_source:`, which the pin file says too, as `local-clone` or
+#: `gh-api-tree-recursive` (`_digest_source_written`, #901).
+PIN_WRITTEN_FROM = "the commit and the digest `plan` records"
+PIN_WRITTEN_FROM_AND_HOW = f"{PIN_WRITTEN_FROM}, and how it was read"
+
+
+def _pin_written_from(keys) -> str:
+    """What a finding about the `pins:` keys `keys` says `execute` writes
+    the pin file from: `PIN_WRITTEN_FROM_AND_HOW` where one of them is
+    `digest_source:`, and `PIN_WRITTEN_FROM` otherwise. A finding about
+    the digest's source ended "from the commit and the digest `plan`
+    records, and nothing else", though `execute` writes the field it is
+    about into the pin file as well (#901)."""
+    return (PIN_WRITTEN_FROM_AND_HOW if "digest_source" in keys
+            else PIN_WRITTEN_FROM)
+
+
+def _pin_row_problem(row: dict) -> tuple[str, str, str] | None:
+    """`(code, why, written_from)` for a `pins:` mapping `execute` cannot
+    write a pin file from, or None. `why` finishes a sentence about the
+    entry, and `written_from` says what `execute` writes the pin file from
+    (`_pin_written_from`), for the sentence after it.
 
     Each value is held to what `plan` writes there: the commit to
     `COMMIT_RE`, the repository and the commit together to the scaffold's own
@@ -468,35 +489,41 @@ def _pin_row_problem(row: dict) -> tuple[str, str] | None:
     missing = [key for key, _ in PIN_FIELDS if row.get(key) in (None, "")]
     unrecorded = [key for key in PIN_RECORDED if key in missing]
     if unrecorded or missing:
+        named = unrecorded or missing
         return ((PIN_UNRECORDED if unrecorded else PIN_MALFORMED),
-                "records no " + " and no ".join(
-                    f"`{key}:`" for key in (unrecorded or missing)))
+                "records no " + " and no ".join(f"`{key}:`" for key in named),
+                _pin_written_from(named))
     not_text = [key for key, _ in PIN_FIELDS
                 if not isinstance(row.get(key), str)]
     if not_text:
-        return PIN_MALFORMED, "records " + ", ".join(
+        why = "records " + ", ".join(
             f"`{key}: {row[key]!r}`" for key in not_text) + ", which " + (
             "is" if len(not_text) == 1 else "are") + " not text"
+        return PIN_MALFORMED, why, _pin_written_from(not_text)
     product, repository, commit, digest, how = (
         row[key] for key, _ in PIN_FIELDS)
     if not COMMIT_RE.match(commit):
         return PIN_MALFORMED, (
             f"records `commit: {commit!r}`, which is not 40 hex: a tag, a "
-            "branch or an abbreviated oid can be moved, and a commit cannot")
+            "branch or an abbreviated oid can be moved, and a commit cannot"
+        ), PIN_WRITTEN_FROM
     if not (PIN_ARG_RE.match(f"{repository}@{commit}") and "/" in repository
             and repo_basename(repository) == product):
         return PIN_MALFORMED, (
             f"records `product: {product!r}` and `repository: "
             f"{repository!r}`, and `plan` records the repository as "
-            "`<owner>/<openProduct>`, its name the product's")
+            "`<owner>/<openProduct>`, its name the product's"
+        ), PIN_WRITTEN_FROM
     if not SHA256_RE.match(digest):
-        return PIN_MALFORMED, (f"records `tree_sha256: {digest!r}`, which is "
-                               "not 64 hex")
+        return PIN_MALFORMED, (
+            f"records `tree_sha256: {digest!r}`, which is not 64 hex"
+        ), PIN_WRITTEN_FROM
     if not _a_digest_source(how):
         return PIN_MALFORMED, (
             f"records `digest_source: {how!r}`, and `plan` records "
             f"`{DIGEST_FROM_GH}`, or `{DIGEST_FROM_CLONE} (<the clone's "
-            "path>)` on one printable line, and nothing else")
+            "path>)` on one printable line, and nothing else"
+        ), PIN_WRITTEN_FROM_AND_HOW
     return None
 
 
@@ -546,13 +573,16 @@ def _read_pins(plan: "Plan") -> tuple[list, list[str]]:
     `findings` is one FINDING for each entry it cannot: a name alone (an old
     plan's, or an edit's) or a mapping missing its commit or digest is
     `plan-pin-unrecorded`, and anything else `plan` never writes there is
-    `plan-pin-malformed`."""
+    `plan-pin-malformed`. A `pins:` that is no list is said as `_read_as`
+    says what the plan's reader read, as each other key a plan is opened by
+    is (`_plan_key_findings`, #901): `pins: true` is the boolean true, and
+    not Python's `True`."""
     rows = plan.get("pins")
     if rows is None:
         return [], []
     if not isinstance(rows, list):
-        return [], [f"FINDING {PIN_MALFORMED}: `pins:` is {rows!r}, not a "
-                    f"list of pins: {_pin_fix()}."]
+        return [], [f"FINDING {PIN_MALFORMED}: `pins:` is {_read_as(rows)}, "
+                    f"not a list of pins: {_pin_fix()}."]
     pins, findings = [], []
     for number, row in enumerate(rows, 1):
         if isinstance(row, str):
@@ -579,11 +609,11 @@ def _read_pins(plan: "Plan") -> tuple[list, list[str]]:
             f" ({product!r})" if isinstance(product, str) and product else "")
         problem = _pin_row_problem(row)
         if problem:
-            code, why = problem
+            code, why, written_from = problem
             findings.append(
                 f"FINDING {code}: {said} {why}. `execute` writes the pin file "
-                "from the commit and the digest `plan` records, and nothing "
-                f"else: {_pin_fix(row.get('repository') or product)}.")
+                f"from {written_from}, and nothing else: "
+                f"{_pin_fix(row.get('repository') or product)}.")
             continue
         pins.append((said, product, {
             placeholder: (row[key].lower() if key in PIN_RECORDED

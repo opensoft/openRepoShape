@@ -21,6 +21,14 @@ remotes, as the issue measured at 5017830:
   `pins:` entry `_read_pins` names is now that finding alone: #255 asks only
   the pins `execute` writes, and the validator's word on such an entry is
   left out.
+- `pins: true` was "`pins:` is True", Python's spelling, where each other
+  key a plan is opened by is said as `_read_as` says what the plan's reader
+  read: "the boolean true".
+- A finding about a pin's `digest_source:` ended "`execute` writes the pin
+  file from the commit and the digest `plan` records, and nothing else",
+  though the pin file `execute` writes says how the digest was read too
+  (`_digest_source_written`). It ends "..., and how it was read, and
+  nothing else" now.
 
 Each test runs `check` and then `execute --yes`, both with the same
 `--local-remote-dir`, on one hand-edited plan, as the issue measured, and
@@ -232,3 +240,84 @@ def test_a_pin_its_own_rule_names_is_one_finding(answered, tmp_path, case):
     assert executed.returncode == 2, executed.stdout + executed.stderr
     code = refused_with(executed, tmp_path / PLAN_FILE, found)
     assert code == said.split()[1].rstrip(":")
+
+
+# --- a `pins:` that is no list, said as the plan's reader read it -----------
+
+#: `(the plan's `pins:` line, what was read, as `_read_as` says it)`.
+NOT_A_LIST = {
+    "text": ("pins: openGlass", "the text 'openGlass'"),
+    "number": ("pins: 5", "the number 5"),
+    "boolean": ("pins: true", "the boolean true"),
+    "mapping": ("pins: {product: openGlass}", "a mapping of 1 key(s)"),
+}
+
+
+@needs_filter_repo
+@pytest.mark.parametrize("case", sorted(NOT_A_LIST))
+def test_a_pins_that_is_no_list_is_said_as_its_reader_read_it(
+        answered, tmp_path, case):
+    """`_read_pins` spelled a `pins:` that is no list as Python spells it,
+    `True` or `{'product': 'openGlass'}`, where each other key a plan is
+    opened by is said as `_read_as` says what the plan's reader read
+    (#386): `check` finds it in those words, and `execute` refuses it in
+    them, before the source is opened."""
+    line, read = NOT_A_LIST[case]
+    checked, executed = both_on(
+        edited(answered, ("\npins: []\n", f"\n{line}\n")), tmp_path)
+    found = findings_of(checked)
+    assert checked.returncode == 1, checked.stdout + checked.stderr
+    assert len(found) == 1, checked.stderr
+    assert found[0].startswith(
+        f"FINDING plan-pin-malformed: `pins:` is {read}, not a list of pins: "
+        "re-run `plan` with `--pin <openProduct>@<40 hex commit>`"), found[0]
+    assert executed.returncode == 2, executed.stdout + executed.stderr
+    assert refused_with(executed, tmp_path / PLAN_FILE,
+                        found) == "plan-pin-malformed"
+
+
+# --- a `digest_source:` finding says `execute` writes how it was read -------
+
+#: The rest of a finding about a pin's `digest_source:`, after its `why`:
+#: the pin file `execute` writes says how the digest was read too (#901).
+WRITTEN_FROM_AND_HOW = (
+    "`execute` writes the pin file from the commit and the digest `plan` "
+    "records, and how it was read, and nothing else: re-run `plan` with "
+    "`--pin opensoft/openGlass@<40 hex commit>`")
+#: A whole pin on `openGlass`, as `plan` records it, but its source.
+NO_SOURCE = pin_entry(commit=COMMIT, digest=DIGEST, omit=("digest_source",))
+
+#: `(the plan's one `pins:` entry, what its finding says of it)`, by test id.
+SOURCE_FINDINGS = {
+    "not-a-spelling": (pin_entry(commit=COMMIT, digest=DIGEST,
+                                 source="read by hand"),
+                       "records `digest_source: 'read by hand'`, and `plan` "
+                       "records `gh-api-tree-recursive`, or `local-clone "
+                       "(<the clone's path>)` on one printable line, and "
+                       "nothing else"),
+    "absent": (NO_SOURCE, "records no `digest_source:`"),
+    "not-text": (NO_SOURCE + "    digest_source: 7\n",
+                 "records `digest_source: 7`, which is not text"),
+}
+
+
+@needs_filter_repo
+@pytest.mark.parametrize("case", sorted(SOURCE_FINDINGS))
+def test_a_digest_source_finding_says_execute_writes_how_it_was_read(
+        answered, tmp_path, case):
+    """The pin file `execute` writes says how the digest was read
+    (`_digest_source_written`), so a finding about an entry's
+    `digest_source:` no longer says `execute` writes the file from the
+    commit and the digest and nothing else: `check` says what it does
+    write, and `execute` refuses the plan in the same words."""
+    entry, why = SOURCE_FINDINGS[case]
+    checked, executed = both_on(pinned(answered, entry), tmp_path)
+    found = findings_of(checked)
+    assert checked.returncode == 1, checked.stdout + checked.stderr
+    assert len(found) == 1, checked.stderr
+    assert found[0].startswith(
+        "FINDING plan-pin-malformed: `pins:` entry 1 ('openGlass') "
+        f"{why}. {WRITTEN_FROM_AND_HOW}"), found[0]
+    assert executed.returncode == 2, executed.stdout + executed.stderr
+    assert refused_with(executed, tmp_path / PLAN_FILE,
+                        found) == "plan-pin-malformed"
