@@ -19,13 +19,16 @@ each measured on git 2.43 at the v1.1.1 release commit `5017830`:
   of one name failed the fetch, 128, "Cannot fetch both", where `git fetch
   origin` exits 0, and `bump` told the person to fix the network. Where no
   name was shared, the tag it put there answered for a branch, and a commit
-  only a tag reaches was pinned. A refspec of the mount's whose source is
-  under `refs/tags/`, wherever under `origin/` it writes, and one that gives
-  another namespace the branches' names (a mirror into `origin/`), are now
-  left out: the fetch works, and a tag is not a branch. #946's first head
-  left out a tag or mirror refspec only where it wrote the branches' own
-  names, so a tag refspec in a folder is left out now (RV946's S1); the
-  mirror already was, and now has rows (S2).
+  only a tag reaches was pinned. A refspec of the mount's whose source can
+  name a tag, wherever under `origin/` it writes, and one that gives
+  another namespace the branches' names, are now left out: the fetch
+  works, and a tag is not a branch. #946's first head left out a tag or
+  mirror refspec only where its destination was the branches' own glob,
+  `refs/remotes/origin/*`, so a tag refspec in a folder is left out since
+  its last head (RV946's S1); the mirror into `origin/` already was, and
+  now has rows (S2). #946 left out a source under `refs/tags/`, not the
+  pattern `refs/*`, so a mirror in a folder,
+  `+refs/*:refs/remotes/origin/all/*`, was carried until #1009.
 - A CONFIG VALUE THAT HOLDS A NEWLINE (U184). `git config --list` was read a
   line at a time, so an alias whose value held the line
   `remote.origin.fetch=+refs/heads/zz:refs/remotes/origin/zz` gave the mount
@@ -43,7 +46,10 @@ and after each: no ref of the mount moves under either run. To make that a
 statement about `bump`'s fetch alone, each state is built with the mount's
 remote-tracking refs as `bump`'s own fetch leaves them (`fetched_as_bump`),
 so the fetch has nothing to bring; the control row is the one that brings a
-branch, and asks that nothing else moved.
+branch, and asks that nothing else moved. The one table that runs no `bump`
+is `WHICH_CLAUSE`'s (#1009): it asks `_origin_fetch_refspecs` alone which
+of its clauses leaves each refspec out, refspecs the rows above run and
+others no row does.
 
 The family, the holder, the offline environment and the refusals' words are
 the modules' that own them, imported, and #686's own helpers are
@@ -58,6 +64,9 @@ from pathlib import Path
 
 import pytest
 
+#: The checkout's root, and `family.py` loaded from it with no bytecode
+#: written, for `WHICH_CLAUSE`'s in-process rows.
+from conftest import REPO, load_without_bytecode
 #: The family fixture and the holder copied from it.
 from test_family import family, holder  # noqa: F401
 #: The offline environment, and a refusal's two lines.
@@ -86,13 +95,20 @@ BRANCHES = "+refs/heads/*:refs/remotes/origin/*"
 TAGS = "+refs/tags/*:refs/remotes/origin/*"
 
 #: Each refspec of a mount's that puts the tags of `origin` under `origin/`,
-#: where `bump` reads branches: onto the branches' names, in a folder of their
-#: own (RV946's S1), and in a mirror of every ref of `origin` (S2), which puts
-#: the tags in `origin/tags/` and the branches in `origin/heads/`.
+#: where `bump` reads branches, and each left out by the clause of
+#: `_origin_fetch_refspecs` for A SOURCE THAT CAN NAME A TAG: onto the
+#: branches' names and in a folder of their own (RV946's S1), each by its
+#: source under `refs/tags/`; and a mirror of every ref of `origin`, into
+#: `origin/` (S2), which puts the tags in `origin/tags/` and the branches in
+#: `origin/heads/`, and into a folder there, `origin/all/` (#1009), each by
+#: its pattern `refs/*`, which takes the tags too. THE BRANCHES' GLOB, the
+#: clause after it, also meets the rows onto the branches' names and into
+#: `origin/`, and no longer decides either (`WHICH_CLAUSE` holds it alone).
 TAGS_UNDER_ORIGIN = pytest.mark.parametrize("refspec", [
     TAGS, "+refs/tags/*:refs/remotes/origin/tags/*",
-    "+refs/*:refs/remotes/origin/*"],
-    ids=["tags-onto-branches", "tags-in-a-folder", "mirror-into-origin"])
+    "+refs/*:refs/remotes/origin/*", "+refs/*:refs/remotes/origin/all/*"],
+    ids=["tags-onto-branches", "tags-in-a-folder", "mirror-into-origin",
+         "mirror-in-a-folder"])
 
 #: `caf<e9>`: Latin-1 e-acute is the one byte 0xE9, which is not UTF-8. It is
 #: the lone surrogate `os.fsdecode` keeps that byte as, so a byte command line
@@ -171,7 +187,9 @@ def test_a_mount_refspec_onto_its_own_branches_moves_none_of_them(
     local `main` to the remote's `main`), by a dry run too, so the unpushed
     commit was left on no branch. With `--refmap=` the fetch maps only by
     the refspecs it names, so both runs pin the commit and neither moves a
-    local branch, and the mount's refspec is as the person set it."""
+    local branch, and the mount's refspec is as the person set it: it writes
+    outside `origin/`, so the clause OUTSIDE `origin/` of
+    `_origin_fetch_refspecs` leaves it out of the fetch."""
     env = isolated(offline, tmp_path)
     mount = holder / PATH
     made = commit_in_mount(
@@ -203,12 +221,14 @@ def test_tags_mapped_into_origin_fetch_a_branch_and_a_tag_of_one_name(
     """U183. The mount's only refspec puts the tags of `origin` under
     `origin/`, and the member's remote has a tag, at the pin, and a branch
     named where that refspec puts the tag, holding `--to`: `v-shared` onto
-    the branches' names, `tags/v-shared` in a folder or a mirror. The
-    person's own `git fetch origin` exits 0, and a fetch carrying that
-    refspec beside `bump`'s own exits 128, "Cannot fetch both", so both runs
-    said they could not fetch the member from its origin. Leaving the
-    mount's refspec out, both runs fetch, print no note and pin the commit,
-    and no ref of the mount moves."""
+    the branches' names, `tags/v-shared` in a folder or a mirror into
+    `origin/`, `all/tags/v-shared` in a mirror in a folder. The person's own
+    `git fetch origin` exits 0, and a fetch carrying that refspec beside
+    `bump`'s own exits 128, "Cannot fetch both", so both runs said they
+    could not fetch the member from its origin, the mirror in a folder's
+    until #1009. Leaving the mount's refspec out, as a source that can name
+    a tag (`TAGS_UNDER_ORIGIN` says by which way), both runs fetch, print no
+    note and pin the commit, and no ref of the mount moves."""
     env = isolated(offline, tmp_path)
     mount = holder / PATH
     made = commit_in_mount(
@@ -242,11 +262,13 @@ def test_a_tag_a_mount_maps_into_origin_does_not_answer_for_a_branch(
     with its tag alone, in a mount whose refspec puts that tag under
     `origin/` and shares no name between a tag and a branch. Carried, the
     refspec put the tag under `origin/`, where `bump` reads branches, and
-    both runs pinned the commit: onto the branches' names on main, and in a
-    folder (`origin/tags/v-release`) on #946's first head too (RV946's S1);
-    the mirror (S2) had no test. Left out, both refuse it in #686's words for
-    a commit only a tag of the remote reaches, with nothing in the holder
-    moved, and no ref of the mount moves."""
+    both runs pinned the commit: onto the branches' names before #946, in a
+    folder (`origin/tags/v-release`) on #946's first head too (RV946's S1),
+    and in a mirror in a folder (`origin/all/tags/v-release`) until #1009;
+    the mirror into `origin/` (S2) had no test. Left out, as a source that
+    can name a tag, both refuse it in #686's words for a commit only a tag
+    of the remote reaches, with nothing in the holder moved, and no ref of
+    the mount moves."""
     env = isolated(offline, tmp_path)
     mount = holder / PATH
     made = made_in_the_mount(holder, env, "TAGGED.md")
@@ -279,8 +301,10 @@ def test_a_config_value_holding_a_refspec_line_is_not_read_as_one(
     time, it went on the fetch's command line, the fetch failed, and both
     runs said they could not fetch the member from its origin. Read with
     `-z`, both runs fetch, print no note and pin the commit. The mount's own
-    pull-request refspec is still read, so `origin/pr/7`, which the remote
-    has, is kept, and no ref of the mount moves."""
+    pull-request refspec is still read, and no clause of
+    `_origin_fetch_refspecs` leaves it out, its source naming no tag and its
+    destination a folder of its own, so `origin/pr/7`, which the remote has,
+    is kept, and no ref of the mount moves."""
     env = isolated(offline, tmp_path)
     mount = holder / PATH
     made = commit_in_mount(
@@ -312,13 +336,14 @@ def test_a_refspec_whose_bytes_are_not_utf8_reaches_the_fetch_as_they_are(
         holder, offline, tmp_path):
     """U184, its bytes (RV946's N1). The mount keeps, by a refspec of its
     own, a ref of `origin` whose name holds the byte 0xE9 (`caf<e9>`, in
-    Latin-1) under `origin/review/`. The listing is read as bytes and
-    decoded with `surrogateescape`, so the refspec reaches the fetch byte for
-    byte: both runs fetch, print no note and pin, and no ref of the mount
-    moves, `origin/review/cafe` kept. Decoded with `replace`, as `run`
-    decoded the listing on main, the byte became U+FFFD, the fetch asked
-    `origin` for a ref it does not have and failed, and both runs said they
-    could not fetch the member from its origin."""
+    Latin-1) under `origin/review/`; no clause of `_origin_fetch_refspecs`
+    leaves that refspec out, as its source names no tag. The listing is read
+    as bytes and decoded with `surrogateescape`, so the refspec reaches the
+    fetch byte for byte: both runs fetch, print no note and pin, and no ref
+    of the mount moves, `origin/review/cafe` kept. Decoded with `replace`,
+    as `run` decoded the listing on main, the byte became U+FFFD, the fetch
+    asked `origin` for a ref it does not have and failed, and both runs said
+    they could not fetch the member from its origin."""
     env = isolated(offline, tmp_path)
     mount = holder / PATH
     made = commit_in_mount(
@@ -417,4 +442,78 @@ def test_an_ordinary_mount_fetches_the_branch_and_moves_nothing_else(
     pins(holder, env, made, real)
     assert real.stderr == ""
     assert refs(mount, env) == fetched, "the real run moved no ref"
+    offline.assert_left_nothing()
+
+
+#: Each refspec a mount may keep, and whether `bump`'s fetch carries it. The
+#: id names the clause of `_origin_fetch_refspecs` that leaves it out, the
+#: first that matches in its order: OUTSIDE `origin/`; A SOURCE THAT CAN NAME
+#: A TAG, by one of its three ways (`tag-source` under `refs/tags/`,
+#: `tag-pattern` a pattern that takes the tags too, `tag-short-name` a name
+#: git completes, as a tag first); THE BRANCHES' GLOB; `carried` where none
+#: does.
+WHICH_CLAUSE = pytest.mark.parametrize("refspec, carried", [
+    pytest.param("+refs/heads/*:refs/heads/*", False, id="outside-heads"),
+    pytest.param("+refs/*:refs/*", False, id="outside-mirror"),
+    pytest.param(TAGS, False, id="tag-source-onto-branches"),
+    pytest.param("+refs/tags/*:refs/remotes/origin/tags/*", False,
+                 id="tag-source-in-a-folder"),
+    pytest.param("refs/tags/v1:refs/remotes/origin/v1", False,
+                 id="tag-source-one-tag"),
+    pytest.param("+refs/*:refs/remotes/origin/*", False,
+                 id="tag-pattern-mirror-into-origin"),
+    pytest.param("+refs/*:refs/remotes/origin/all/*", False,
+                 id="tag-pattern-mirror-in-a-folder"),
+    pytest.param("+refs/t*:refs/remotes/origin/t/*", False,
+                 id="tag-pattern-refs-t"),
+    pytest.param("+*:refs/remotes/origin/all/*", False,
+                 id="tag-pattern-every-ref"),
+    pytest.param("+v1:refs/remotes/origin/v1", False, id="tag-short-name"),
+    pytest.param("+tags/v1:refs/remotes/origin/tags/v1", False,
+                 id="tag-short-name-in-tags"),
+    pytest.param("+refs/pull/*/head:refs/remotes/origin/*", False,
+                 id="branches-glob-pull-requests"),
+    pytest.param(PULLS, True, id="carried-pull-requests-in-a-folder"),
+    pytest.param("+refs/heads/main:refs/remotes/origin/main", True,
+                 id="carried-one-branch"),
+    pytest.param("refs/heads/*:refs/remotes/origin/all/*", True,
+                 id="carried-branches-in-a-folder"),
+    pytest.param("+refs/tagsx/*:refs/remotes/origin/tagsx/*", True,
+                 id="carried-not-refs-tags"),
+])
+
+
+@pytest.fixture(scope="module")
+def family_py():
+    """`scripts/family.py`, loaded once for `WHICH_CLAUSE`'s rows."""
+    return load_without_bytecode(REPO / "scripts" / "family.py",
+                                 "family_bump_fetch_refspecs")
+
+
+@WHICH_CLAUSE
+def test_which_clause_leaves_each_refspec_out(
+        family_py, offline, tmp_path, monkeypatch, refspec, carried):
+    """#1009. A repository whose `origin` has `refspec` as its one fetch
+    refspec, asked of `_origin_fetch_refspecs` in process: `bump`'s fetch
+    carries every branch of `origin` and, where no clause leaves it out,
+    `refspec`, forced. A row no later clause meets holds its own:
+    `tag-source-one-tag` the source under `refs/tags/` (the pattern
+    `refs/tags/*` is the next way's too), `tag-pattern-mirror-in-a-folder` and
+    `tag-pattern-refs-t` the pattern, the `tag-short-name` rows the short
+    name, and `branches-glob-pull-requests` THE BRANCHES' GLOB, which alone
+    leaves out a source that can name no tag. A `carried` row fails a clause
+    that takes too much: the pull requests in a folder and a branch, which
+    #946 carries, and `refs/tagsx/`, which no tag is under."""
+    env = isolated(offline, tmp_path)
+    for key, value in env.items():
+        monkeypatch.setenv(key, value)
+    mount = tmp_path / "mount"
+    raw(tmp_path, env, "init", "-q", str(mount))
+    raw(mount, env, "remote", "add", "origin", str(tmp_path / "origin.git"))
+    refspecs_only(mount, env, refspec)
+    expected = ([BRANCHES, "+" + refspec.lstrip("+")] if carried
+                else [BRANCHES])
+
+    assert family_py._origin_fetch_refspecs(mount) == expected
+
     offline.assert_left_nothing()
