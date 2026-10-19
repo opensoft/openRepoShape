@@ -886,7 +886,7 @@ def raw_source(base: Path, gitlink: bytes, beside: bytes | None) -> Path:
      "an entry for each of `src/a\\nb.py`, `src/app/`, `src/vendored`,"),
     # A backtick, and a backslash, would break the backticks around a name.
     (b"src/ven`d\\or", None, "src/",
-     "an entry for each of `src/app/`, `src/ven\\`d\\\\or`,"),
+     "an entry for each of `src/app/`, `src/ven\\x60d\\\\or`,"),
 ], ids=["non-utf8-submodule", "non-utf8-file-beside", "newline-beside",
         "backtick-and-backslash"])
 def test_a_name_no_plan_line_can_hold_is_spelled_in_the_question(

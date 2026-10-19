@@ -113,8 +113,11 @@ def test_a_character_is_spelled_as_the_plan_writes_it(adopter):
             f"U+{code:04X}")
 
 
-def test_a_backslash_and_a_backtick_are_escaped_as_before(adopter):
-    assert adopter._spelled("a\\b`c") == "`a\\\\b\\`c`"
+def test_a_backslash_and_a_backtick_are_escaped(adopter):
+    """A backslash as before, and a backtick as `\\x60`, the plan's code
+    point for one, which holds no backtick (#900): the backslash that went
+    before it was no escape the plan's reader resolves."""
+    assert adopter._spelled("a\\b`c") == "`a\\\\b\\x60c`"
 
 
 def test_a_spelled_name_is_the_entry_the_plan_holds(adopter):
@@ -187,11 +190,12 @@ def test_a_clone_url_that_is_not_text_is_named_as_the_plan_spells_it(adopter):
 def test_python_repr_and_a_spelled_name_agree_on_every_character(adopter):
     """Why the two messages above need no table of their own: `repr` and
     `_spelled` escape every character alike, a backslash included. Only the
-    backtick differs, which `_spelled` escapes because backticks delimit the
-    name and `repr` does not."""
+    backtick and the double quote differ, which `_spelled` escapes because
+    backticks delimit the name and double quotes the plan's entry (#900),
+    and `repr` does not."""
     for code in [*range(0x10000), 0x10000, 0x1F600, 0xE0001, 0x10FFFF]:
         char = chr(code)
-        if char == "`":
+        if char in '`"':
             continue
         assert repr(char)[1:-1] == adopter._spelled(char)[1:-1], (
             f"U+{code:04X}")
