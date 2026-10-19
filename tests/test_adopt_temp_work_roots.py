@@ -274,7 +274,7 @@ def test_a_refused_clone_leaves_no_work_directory(adopter, monkeypatch,
     gh_clones(adopter, monkeypatch, tmp_path / "nowhere")
     temporary = in_a_fresh_temp_folder(monkeypatch, tmp_path / TEMPORARY)
     code = adopter.main([PLAN_VERB, SOURCE_FLAG, f"{ORG}/Elsewhere", *PLANNED,
-                         OUT, str(tmp_path / PLAN)])
+                         "--project", "Elsewhere", OUT, str(tmp_path / PLAN)])
     assert code == 2
     assert "REFUSED source-unclonable: " in capsys.readouterr().err
     assert left_in(temporary) == []

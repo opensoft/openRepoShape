@@ -1245,6 +1245,15 @@ def tree_digest(repo: Path, rev: str) -> str:
     return digest.hexdigest()
 
 
+def _child_text(data: bytes, errors: str) -> str:
+    """A child's bytes as text mode reads them (#968): UTF-8 with `errors`,
+    and each carriage return, alone or before a line feed, a line feed, as
+    `subprocess` translates them. `tree_digest_from_gh` reads gh's two
+    streams as bytes so that each takes its own `errors`."""
+    return (data.decode("utf-8", errors)
+            .replace("\r\n", "\n").replace("\r", "\n"))
+
+
 def tree_digest_from_gh(repository: str, commit: str) -> str:
     """The same `sorted-ls-tree-r-v1` digest, read from the forge's own
     recursive tree listing — no clone, no working tree, just `gh api`.
@@ -1275,40 +1284,63 @@ def tree_digest_from_gh(repository: str, commit: str) -> str:
     control it is and each line break began a line of the skip that the
     validator never printed. `gh`'s not-logged-in help is two lines (four
     under `GITHUB_ACTIONS`), and the break between them is an escape here,
-    as a break git prints is in `git_out`. The stderr is read in text mode,
-    so a carriage return is a line break by then. Printable text, UTF-8
-    included, is unchanged.
+    as a break git prints is in `git_out`. A carriage return is a line break
+    by then, as text mode reads one. Printable text, UTF-8 included, is
+    unchanged. The repository is named the same way in `gh-response-
+    unreadable` and `gh-tree-truncated` (#968), which end in that line too.
+
+    THE TWO STREAMS ARE DECODED APART (#968), by `_child_text`, because they
+    are read for two purposes. Read together in text mode, both strictly, a
+    byte of gh's stderr that is not UTF-8 ended the validator in a
+    `UnicodeDecodeError` traceback, exit 1, where a skip belongs. gh's
+    stderr is words for a person, so a byte that is not UTF-8 is replaced
+    (U+FFFD), as `git_out` reads git's. The JSON on stdout stays strict, and
+    a byte that is not UTF-8 there is `gh-response-unreadable`, a refusal.
+    So is JSON that is not the listing's object, where `.get` on a list or
+    a missing column ended the run in a traceback too.
     """
     try:
         proc = subprocess.run(
             ["gh", "api", GH_TREE_API.format(repo=repository, commit=commit)],
-            # UTF-8 and STRICT, not `errors="replace"`: this JSON becomes a
-            # digest, and a replaced byte would be a wrong digest with a
-            # confident tone (#217).
-            capture_output=True, text=True, encoding="utf-8", check=False)
+            capture_output=True, check=False)
     except FileNotFoundError as exc:
         raise Refusal("gh-not-found",
                       f"the `gh` CLI is not on PATH: {exc}") from exc
+    named = shown_path(repository)
     if proc.returncode != 0:
         raise Refusal(
             "gh-unreadable",
-            f"`gh api` could not read {shown_path(repository)} @ {commit}: "
-            f"{spelled(proc.stderr.strip())}",
+            f"`gh api` could not read {named} @ {commit}: "
+            f"{spelled(_child_text(proc.stderr, 'replace').strip())}",
         )
     try:
-        payload = json.loads(proc.stdout)
-    except json.JSONDecodeError as exc:
+        # UTF-8 and STRICT, not `errors="replace"`: this JSON becomes a
+        # digest, and a replaced byte would be a wrong digest with a
+        # confident tone (#217).
+        payload = json.loads(_child_text(proc.stdout, "strict"))
+    except (UnicodeDecodeError, json.JSONDecodeError) as exc:
         raise Refusal("gh-response-unreadable",
-                      f"{repository} @ {commit}: {exc}") from exc
-    if payload.get("truncated"):
+                      f"{named} @ {commit}: {exc}") from exc
+    try:
+        if payload.get("truncated"):
+            raise Refusal(
+                "gh-tree-truncated",
+                f"the forge truncated its tree listing for {named} @ "
+                f"{commit}, so the digest would be computed over a PARTIAL "
+                "tree",
+            )
+        records = sorted(
+            f"{row['mode']} {row['type']} {row['sha']}\t{row['path']}"
+            .encode()
+            for row in payload.get("tree") or [] if row.get("type") != "tree")
+    except (AttributeError, KeyError, TypeError, UnicodeEncodeError) as exc:
+        # JSON that is not the listing's object (a list, a row that is no
+        # mapping or lacks a column, a column holding a lone surrogate) is
+        # what gh said, and no traceback (#968).
         raise Refusal(
-            "gh-tree-truncated",
-            f"the forge truncated its tree listing for {repository} @ "
-            f"{commit}, so the digest would be computed over a PARTIAL tree",
-        )
-    records = sorted(
-        f"{row['mode']} {row['type']} {row['sha']}\t{row['path']}".encode()
-        for row in payload.get("tree") or [] if row.get("type") != "tree")
+            "gh-response-unreadable",
+            f"{named} @ {commit}: the answer is not a tree listing "
+            f"({type(exc).__name__}: {exc})") from exc
     digest = hashlib.sha256()
     for record in records:
         digest.update(record)
@@ -1512,7 +1544,10 @@ CHAIN_UNVERIFIED = "declared-unverified"
 #: files. Every existing name is kept, because an operator may have set it and
 #: the docs name it. What is done instead (`pin_source_env_collisions`): a
 #: variable two declared products share answers for NEITHER, wherever it is
-#: read; `scaffold-project.py --pin` refuses to create such a pair; and
+#: read, and a chain reader asks that over every product its run reads, the
+#: declared pins and every chain's links (#909, `link_pins_from_trees`'
+#: `run_products`); `scaffold-project.py --pin` refuses to create such a
+#: pair; and
 #: `validate-pins.py` NOTES a pair a project already declares, and never fails
 #: it, because the project did nothing wrong that an update could undo.
 PIN_SOURCE_ENV_PREFIX = "SHAPE_PIN_SOURCE_"
@@ -1762,15 +1797,25 @@ def _chain_link_findings(chain, link_pins) -> tuple:
     (#444): a tree declaring `openss` does not declare `openß`, whose pin
     file is another. A holder's `remedies` entry is found by it too, so in a
     chain naming both, each is offered its own sources and not the other's.
+
+    THE VARIABLE IS OFFERED AS IT WAS READ (#909). A `LinkPins` carries
+    `env_shared`, the links whose variable was not read because another
+    product of the RUN shares it: a declared pin, or a link of this chain or
+    of another one the same run reads (`link_pins_from_trees`'
+    `run_products`). Asked over this chain alone, two legs whose chains
+    begin at `openß` and `openss` were each offered
+    `SHAPE_PIN_SOURCE_OPENSS`, which would have answered for both.
     """
     available = _link_declarations(link_pins)
     unreadable = getattr(link_pins, "unreadable", None) or {}
     remedies = getattr(link_pins, "remedies", None) or {}
     warnings: list[str] = []
     unverified: list[str] = []
-    # A link whose variable another link of the chain shares is never offered
-    # that variable: it would be read for both (#275).
-    shared = pin_source_env_shared(chain)
+    # A link whose variable another link of the chain, or another product of
+    # the run, shares is never offered that variable: it would be read for
+    # both (#275, #909).
+    shared = (pin_source_env_shared(chain)
+              | set(getattr(link_pins, "env_shared", None) or ()))
     for holder, held in zip(chain, chain[1:]):
         declared = available.get(pin_product_key(holder))
         why = unreadable.get(pin_product_key(holder))
@@ -3220,13 +3265,20 @@ class LinkPins(dict):
     and has no `--link-source`, so it names its own here. A link with no
     entry, and every link for a caller that gives none, gets the naming
     validator's words, as ever.
+
+    `env_shared`, a set of `pin_product_key(link)`, is the links whose
+    `SHAPE_PIN_SOURCE_<PRODUCT>` was not read because another product the
+    run reads shares it (#275, #909), so that `_chain_link_findings` offers
+    that variable to none of them.
     """
 
     def __init__(self, found=(), unreadable: dict | None = None,
-                 remedies: dict | None = None) -> None:
+                 remedies: dict | None = None,
+                 env_shared=None) -> None:
         super().__init__(found)
         self.unreadable: dict[str, str] = dict(unreadable or {})
         self.remedies: dict[str, str] = dict(remedies or {})
+        self.env_shared: set[str] = set(env_shared or ())
 
 
 def link_pins_from_trees(links, root: Path | None = None,
@@ -3235,7 +3287,8 @@ def link_pins_from_trees(links, root: Path | None = None,
                          key: str = CHAIN_LINK_DECLARED_BY, *,
                          tried: dict | None = None,
                          with_reasons: bool = False,
-                         remedies: dict | None = None) -> dict[str, set]:
+                         remedies: dict | None = None,
+                         run_products=None) -> dict[str, set]:
     """`{link: the pins ITS manifest declares}` for the links that answered.
 
     A link whose tree is not on the disk is simply ABSENT from the mapping,
@@ -3265,6 +3318,19 @@ def link_pins_from_trees(links, root: Path | None = None,
     `scaffold-project.py` takes every link but the first from the naming
     policy's `open<Product>` form, which has no `-`, `.` or `_` to fold.
 
+    ONE VARIABLE, ONE PRODUCT OF THE RUN (#909). `run_products` is every
+    product the caller's run reads: the project's declared pins, and every
+    link of every chain it reads. The variable guard is asked over them as
+    well as over `links`, so it gives every chain of the run the same
+    answer, and a variable two declared pins share is read for no link
+    (#275's rule). A caller that reads several chains calls this once per
+    chain, and the guard was asked over that chain alone: in a project whose
+    two legs' chains begin at `openß` and `openss`,
+    `SHAPE_PIN_SOURCE_OPENSS` was read for both, so one tree answered for two
+    products and broke the chain of the one it is not. Given, it returns a
+    `LinkPins` whose `env_shared` says which variables were not read, so the
+    warning does not offer them.
+
     `default_source` IS THE FIRST LINK'S TREE AND NO OTHER'S (#441). It is
     one tree — the naming validator's bare `--link-source`, the scaffold's
     `--pin-source` — and the first link is the pin this project holds, the
@@ -3284,7 +3350,8 @@ def link_pins_from_trees(links, root: Path | None = None,
     found: dict[str, set] = {}
     unreadable: dict[str, str] = {}
     links = list(links)
-    shared = pin_source_env_shared(repo_basename(str(link)) for link in links)
+    shared = pin_source_env_shared(repo_basename(str(link)) for link in
+                                   [*links, *(run_products or ())])
     for index, link in enumerate(links):
         name = repo_basename(str(link))
         asked: list = []
@@ -3303,9 +3370,10 @@ def link_pins_from_trees(links, root: Path | None = None,
             unreadable[pin_product_key(name)] = why
             continue
         found[pin_product_key(name)] = pins
-    if not (with_reasons or remedies):
+    if not (with_reasons or remedies or run_products is not None):
         return found
-    return LinkPins(found, unreadable if with_reasons else None, remedies)
+    return LinkPins(found, unreadable if with_reasons else None, remedies,
+                    shared)
 
 
 def find_repo_root(start: Path) -> Path:

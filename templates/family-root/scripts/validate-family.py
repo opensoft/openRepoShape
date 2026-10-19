@@ -543,12 +543,15 @@ def _anything_at(where: Path, named: str) -> bool:
 
     `os.path.lexists` answered False to ANY `OSError`, on every Python, so
     a gitlink path in a folder this user cannot search was "nothing on
-    disk" (#430). The `stat` comes first, through `_asked`; only where it
-    finds nothing is `os.path.islink` asked, to tell a link that leads
-    nowhere from no name at all, and its `lstat` needs no more access than
-    that `stat` had."""
-    return (_asked(where, _any_kind, MEMBER_UNREADABLE, named)
-            or os.path.islink(where))
+    disk" (#430). A symbolic link there is on disk, asked by its own
+    `lstat` first (`os.path.islink`), as `lexists` asks it: where it leads
+    is not asked, so a link that leads nowhere, or into a folder this user
+    cannot search, is something on disk and no refusal (r956's trial on
+    #956). Anything else is asked by its `stat`, through `_asked`; where
+    the `lstat` was refused, so is that `stat`, and the path is refused by
+    name."""
+    return (os.path.islink(where)
+            or _asked(where, _any_kind, MEMBER_UNREADABLE, named))
 
 
 def _check_schema_kind_and_id(manifest: dict, report: Report) -> None:
@@ -1085,11 +1088,17 @@ def _forced(root: Path, path: str, commit: str) -> str | None:
     that holds files and no `.git`, a file or a symbolic link, and takes it
     over an empty directory or nothing (git 2.43, rv882's NIT 2 on #882).
     A gitlink HEAD alone records, at a staged removal or a conflict, is
-    read at HEAD's commit and takes none."""
-    if not _on_disk(root, path):
-        return None
+    read at HEAD's commit and takes none.
+
+    GIT IS ASKED FIRST, AND THE DISK ONLY WHERE THE ANSWER TURNS ON IT
+    (#430, r956's SHOULD 1 on #956): where HEAD records the gitlink at the
+    index's own commit, no `-f` is printed whatever is on disk, so a path
+    in a folder this user cannot search is not asked there, and the
+    finding is said as it always was, not refused `member-unreadable`."""
     head = _head_records(root, path)
-    return None if head == commit else head
+    if head == commit or not _on_disk(root, path):
+        return None
+    return head
 
 
 def _head_records(root: Path, path: str) -> str:
@@ -1118,11 +1127,14 @@ def _staged_over(root: Path, path: str, commit: str) -> bool:
     where it differs too, a commit or an untracked file in the checkout
     `git mv` moved, a directory holding a file, or a file (lane 1's SHOULD
     on #889, round 2, and its NITs 1 and 2, round 3)."""
-    # A path whose `stat` is refused, in a folder this user cannot search,
-    # is `member-unreadable` (`_anything_at`, #430): `os.path.lexists`
-    # read it as nothing there, and the refusal went unsaid.
-    return (_anything_at(root / path, path)
-            and _head_records(root, path) != commit)
+    # Git first (r956's SHOULD 1 on #956): where HEAD records the gitlink
+    # at the index's own commit, nothing is said of the disk, so it is not
+    # asked. Where the answer turns on it, a path whose `stat` is refused,
+    # in a folder this user cannot search, is `member-unreadable`
+    # (`_anything_at`, #430): `os.path.lexists` read it as nothing there,
+    # and the refusal went unsaid.
+    return (_head_records(root, path) != commit
+            and _anything_at(root / path, path))
 
 
 def _on_disk(root: Path, path: str) -> bool:
@@ -1515,10 +1527,11 @@ def _check_member_checkout(root: Path, asked: Gitlinked, report: Report,
         return
     _check_member_tree(member, asked.pin, asked.path, asked.commit,
                        asked.project, report, asked.rule, stop)
-    _check_member_identity(member, asked.row, asked.project, report)
+    _check_member_identity(member, asked.row, asked.project, asked.path,
+                           report)
 
 
-def _check_member_identity(member: Path, row: dict, project: str,
+def _check_member_identity(member: Path, row: dict, project: str, path: str,
                            report: Report) -> None:
     """The mounted tree is the PROJECT this row claims, not just a commit.
 
@@ -1530,10 +1543,16 @@ def _check_member_identity(member: Path, row: dict, project: str,
     A `project.yaml` WHOSE `stat` IS REFUSED is `member-manifest-unreadable`,
     the finding one that cannot be opened already is, naming it and the
     cure (#430): on Python 3.14 it was `member-not-a-project`, "a family
-    pins assembly roots, never legs", of a project that is one.
+    pins assembly roots, never legs", of a project that is one. ONE CODE,
+    ONE TEXT: one that cannot be OPENED says the same, `<path>: cannot be
+    read (<reason>)` and the cure for that cause (r956's SHOULD 2 on #956),
+    where it named the file twice, relative and then absolute
+    (`load_yaml`'s `yaml-unreadable` line), and gave no cure. `path` is the
+    row's path as `_check_member_repository_and_path` resolved it, so a
+    row that gives none is named at `members/<P>`, not `None` (r956's NIT 1).
     """
     manifest_path = member / "project.yaml"
-    named = f"{row.get('path')}/project.yaml"
+    named = f"{path}/project.yaml"
     try:
         is_file = _is_a(manifest_path, stat.S_ISREG)
     except OSError as exc:
@@ -1544,19 +1563,21 @@ def _check_member_identity(member: Path, row: dict, project: str,
     if not is_file:
         report.finding(
             "member-not-a-project",
-            f"{row.get('path')}: no project.yaml in the mounted tree. A member "
+            f"{path}: no project.yaml in the mounted tree. A member "
             "is a project's ASSEMBLY ROOT — the repository an engineer clones "
             "— and a family pins assembly roots, never legs.")
         return
     try:
         manifest = load_yaml(manifest_path)
     except Refusal as exc:
-        report.finding("member-manifest-unreadable",
-                       f"{row.get('path')}/project.yaml: {exc.detail}")
+        cause = exc.__cause__
+        said = (f"{_cannot_read(named, cause)}. {_advice(cause)}{RUN_AGAIN}"
+                if isinstance(cause, OSError) else f"{named}: {exc.detail}")
+        report.finding("member-manifest-unreadable", said)
         return
     if not isinstance(manifest, dict):
         report.finding("member-manifest-unreadable",
-                       f"{row.get('path')}/project.yaml: not a mapping")
+                       f"{named}: not a mapping")
         return
     recorded_id = row.get("id")
     actual_id = manifest.get("id")
@@ -1568,11 +1589,11 @@ def _check_member_identity(member: Path, row: dict, project: str,
     elif str(recorded_id) != str(actual_id):
         report.finding(
             "member-id-mismatch",
-            f"{row.get('path')}: project.yaml declares id {actual_id!r} but "
+            f"{path}: project.yaml declares id {actual_id!r} but "
             f"{MANIFEST} records {recorded_id!r} for {project}. The project's "
             "own manifest is the source; this row is a pin of it.")
     else:
-        report.note(f"{row.get('path')}: project.yaml id {actual_id}")
+        report.note(f"{path}: project.yaml id {actual_id}")
 
 
 def _load_shape_pin(root: Path) -> tuple[dict, str]:
