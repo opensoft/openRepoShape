@@ -53,11 +53,17 @@ WHAT IT DOES, in order:
         exit code (`fetched_in`): its `not our ref` said `ok` too. A
         fetch git could not make, as for want of a credential, leaves
         the store as short, so the store alone tells nothing.
-      A leg in a member is asked as a member is. Where neither tells, an
-      exit 128 is read as before, the advice and `ok` where every member
-      is checked out, and the run names only where git's init in this
-      holder stopped. A run with a credential in use is never traced, so
-      the second is told only where none is (lane 1's SHOULD 4 on #889).
+      A leg in a member is asked as a member is, and a gitlink git's
+      update passes without a look, its `update` `none` or the gitlink
+      inactive, is passed (lane 5's SHOULD 1 on #954). Where neither
+      tells, an exit 128 is read as before, the advice and `ok` where no
+      row is left not checked out but for want of a credential, and the
+      run names only where git's init in this holder stopped. A run with
+      `SHAPE_LEGS_TOKEN` or `SHAPE_LEGS_APP_TOKEN` set is never traced,
+      since the trace would write that token, so the second is told only
+      where neither is set; with one set, B4 still gives the advice to
+      set the token that is set, and `ok` (lane 1's SHOULD 4 on #889,
+      lane 5's SHOULD 4 on #954, a known limit).
 
       "every member and leg fetched" is said only where git exited 0 AND
       every row's member is checked out (#648). A member left NOT CHECKED
@@ -141,6 +147,7 @@ delegates, and it says what it could not reach.
 from __future__ import annotations
 
 import argparse
+import errno
 import json
 import os
 import re
@@ -322,15 +329,19 @@ def run_update(args: list[str], root: Path, traced: bool
     work trees in which a fetch it made reached its remote (`fetched_in`,
     #892), or None where the run was not traced.
 
-    TRACED ONLY WHERE `traced` SAYS, which `fetch_members` says where no
-    credential is in use: trace2 writes each command's arguments, and a
-    credential's rewrite is one, as is the url a remote helper is given
-    with it, which git 2.43 writes unredacted; `fetch_members` keeps a
-    credential out of every file. The trace is a directory of the run's
-    own, made with `tempfile.mkdtemp` (readable by its owner alone) and
-    removed whatever the run does; one that cannot be made leaves the run
-    untraced. Raises the `git-not-runnable` refusal where git cannot be
-    started (#694)."""
+    TRACED ONLY WHERE `traced` SAYS, which `fetch_members` says where
+    neither `SHAPE_LEGS_TOKEN` nor `SHAPE_LEGS_APP_TOKEN` is set
+    (`CREDENTIAL_ENV`): trace2 writes each command's arguments, and the
+    rewrite that carries that token is one, as is the url a remote helper
+    is given with it, which git 2.43 writes unredacted (2.47.1 redacts the
+    url, not the argument). A credential the person's own git config gives,
+    a url rewrite in a config file or in `GIT_CONFIG_COUNT`, is read by the
+    gits the update starts and can reach the trace files too (lane 5's
+    NIT 1 on #954). The trace is a directory of the run's own, made with
+    `tempfile.mkdtemp`, readable by its owner alone, and removed whatever
+    the run does, so only a run killed before it ends leaves it behind;
+    one that cannot be made leaves the run untraced. Raises the
+    `git-not-runnable` refusal where git cannot be started (#694)."""
     trace = None
     if traced:
         try:
@@ -673,7 +684,9 @@ class Gitmodules(NamedTuple):
     file, or nothing. `cut_key` is the `submodule.<name>.<key>` with no
     value that cut it, where that is what git stopped at
     (`ends_blob_reading`), a line `git config --list` takes, and empty
-    where a line it cannot parse did."""
+    where a line it cannot parse did. `updates` is `{name: update}`, the
+    `update` git takes from each section, where any gives one, for the walk
+    past this holder's records (`updated_there`, #892)."""
 
     given: Counter
     read: dict[str, str]
@@ -683,6 +696,7 @@ class Gitmodules(NamedTuple):
     unreadable: bool = False
     cut: str = ""
     cut_key: str = ""
+    updates: dict[str, str] | None = None
 
 
 def gitmodules_sections(root: Path) -> Gitmodules:
@@ -852,11 +866,13 @@ def read_sections(entries: list[tuple[str, str, str | None, bool]]
     option`); where two sections give one path, the later in the file
     decides, as a later value in one section replaces an earlier, and a
     section that gives a path again lets go of the one it gave, even where
-    a later section gave that one too: git then reads no section there."""
+    a later section gave that one too: git then reads no section there.
+    `updates` keeps each section's last `update`, as git keeps it (#892)."""
     sections: dict[str, dict[str, str]] = {}
     read: dict[str, str] = {}
     held: dict[str, str] = {}
     urls: dict[str, str] = {}
+    updates: dict[str, str] = {}
     for name, key, value, ignored in entries:
         sections.setdefault(name, {})[key] = "" if value is None else value
         if ignored or value is None or value.startswith("-"):
@@ -868,8 +884,10 @@ def read_sections(entries: list[tuple[str, str, str | None, bool]]
             read[value] = name
         elif key == "url":
             urls[name] = value
+        elif key == "update":
+            updates[name] = value
     return Gitmodules(Counter(keys["path"] for keys in sections.values()
-                              if "path" in keys), read, urls)
+                              if "path" in keys), read, urls, updates=updates)
 
 
 def refused_value(root: Path, key: str, value: str | None) -> bool:
@@ -1159,9 +1177,9 @@ UNTOLD = Below("", ())
 
 def stopped_below(root: Path, fetched: frozenset[str] | None
                   ) -> Below | None:
-    """Where git's update, which died (`GIT_DIED`) with every row's
-    member checked out and nothing in this holder's own records to stop
-    it, died past them (#892), or None where that is not told.
+    """Where git's update, which died (`GIT_DIED`) where `unfetchable`
+    left no row and nothing in this holder's own records stopped it, died
+    past them (#892), or None where that is not told.
 
     ASKED AS GIT 2.43 WALKS IT, never of git's words. Git updates the
     gitlinks its init asks about in index order, each in turn, and in
@@ -1169,27 +1187,39 @@ def stopped_below(root: Path, fetched: frozenset[str] | None
     update, whose init asks every gitlink of that checkout's own index
     first; it dies at the first gitlink it has no url for, or at the
     first commit a fetch did not bring, and that ends every update above
-    it (`Failed to recurse`, exit 128). So
-    each gitlink is asked in that order (`walked`): one not checked out is
-    passed, as git passes a clone that failed; one whose recorded commit
-    no ref of its store reaches (`tip_reachable`) is the stop where a
-    fetch git made there reached the remote (`fetched` holds its work
-    tree, `fetched_in`), and untold where none did, as for want of a
-    credential, or where the run was not traced (`fetched` None); one at
-    another commit than the one recorded is passed and nothing in it
-    asked, since git did not enter it: its checkout there refused (`git
-    checkout`'s own exit 1, which git's update passes, measured, git
-    2.43.0), or its `update` is `none`; and one checked out at it is
-    asked as this holder is, its own `.gitmodules` and config read as
-    `gitmodules_sections` and `submodule_config` read this holder's, and
-    `init_stop` asked of its index, then each of its gitlinks. Where git
-    reads that `.gitmodules` other than whole, a merge leaving it
-    unmerged, a value git dies on, a line it cannot parse, it is untold:
-    git stops there other than at a gitlink with no url. A rebase or a
-    merge that fails where `update` says to make one ends git's update
-    there (exit 128) with the checkout at another commit, so a stop past
-    it is said where git never came to it; a family's own `family.py add`
-    writes no `update`."""
+    it (`Failed to recurse`, exit 128). So each gitlink is asked in that
+    order (`walked`):
+    - one git's update passes without a look (`updated_there`), its
+      update strategy `none` or the gitlink inactive, is passed, and
+      nothing in it asked: git prints `Skipping submodule` and goes on
+      (lane 5's SHOULD 1 on #954);
+    - one not checked out is passed, as git passes a clone that failed;
+    - one whose `.git` the operating system will not `stat`, or that git
+      cannot be run in, is untold (`checkout_stop`, lane 5's SHOULD 2);
+    - one whose store lacks its recorded commit (`commit_held`) is the
+      stop where a fetch git made there reached the remote (`fetched`
+      holds its work tree, `fetched_in`), and untold where none did, as
+      for want of a credential, or where the run was not traced
+      (`fetched` None). Git asks whether a ref reaches the commit
+      (`is_tip_reachable`) before it fetches, but it dies there only
+      where its fetch of the commit fails, and a fetch of a commit the
+      store holds is answered from the store (measured, git 2.43.0: exit
+      0), so a commit held and reached by no ref is never the stop;
+    - one at another commit than the one recorded, which git did not check
+      out there, is untold, nothing in it asked: its `git checkout` there
+      refused to overwrite a change, exit 1, which git's update passes, or
+      died, exit 128, as on an `index.lock` left in its store, which ends
+      git's update there, or a rebase or a merge `update` asks for failed,
+      and which it was is not told, so no stop past it is said where git
+      may never have come to it (measured, git 2.43.0: where it was
+      passed, an `index.lock` in IRRS named B5's stray in IRSS);
+    - and one checked out at it is asked as this holder is, its own
+      `.gitmodules` and config read as `gitmodules_sections` and
+      `submodule_config` read this holder's, and `init_stop` asked of its
+      index, then each of its gitlinks. Where git reads that `.gitmodules`
+      other than whole, a merge leaving it unmerged, a value git dies on,
+      a line it cannot parse, it is untold: git stops there other than at
+      a gitlink with no url."""
     found = walked(root, fetched, ())
     return found if found is not None and found.path else None
 
@@ -1210,6 +1240,8 @@ def walked(root: Path, fetched: frozenset[str] | None,
             return Below(f"{owners[-1]}/{stop}", owners)
     prefix = f"{owners[-1]}/" if owners else ""
     for path, commit in init_asks(root, modules, config):
+        if not updated_there(root, modules, config, path):
+            continue
         found = checkout_stop(root / path, prefix + path, commit, owners,
                               fetched)
         if found is not None:
@@ -1217,32 +1249,88 @@ def walked(root: Path, fetched: frozenset[str] | None,
     return None
 
 
+def updated_there(root: Path, modules: Gitmodules,
+                  config: dict[str, list[str | None]], path: str) -> bool:
+    """Whether git's update, its init done, goes on to the gitlink at
+    `path`, as `prepare_to_clone_next_submodule` in git 2.43's
+    submodule--helper.c asks before it clones, fetches or enters it
+    (`walked`, lane 5's SHOULD 1 on #954). Not where no section git reads
+    gives that path. Not where its update strategy is `none`: the last
+    `submodule.<name>.update` this repository's config gives, else the
+    section's own `update` (`Gitmodules.updates`), which git's init copies
+    into the config where it holds none. And not where git counts it
+    inactive (`is_submodule_active`): where the config sets
+    `submodule.active`, `init_asks` asked `active` already; else its own
+    `submodule.<name>.active`, where a config scope above the one git's
+    init writes `true` in keeps it false (`git_bool`)."""
+    name = modules.read.get(path)
+    if name is None:
+        return False
+    values = config.get(f"submodule.{name}.update")
+    update = (values[-1] if values and values[-1] is not None
+              else (modules.updates or {}).get(name))
+    if update == "none":
+        return False
+    own = config.get(f"submodule.{name}.active")
+    return not own or git_bool(root, own[-1]) is not False
+
+
+#: What a `stat` answers where nothing is at a path, not where the
+#: operating system refused to look: no such file, a part of the path that
+#: is not a directory, a bad descriptor, a symlink loop, as `bump-leg.py`'s
+#: `_ABSENT_ERRNOS` reads them (#430). The walk's own copy (#892).
+WALK_ABSENT_ERRNOS = frozenset({errno.ENOENT, errno.ENOTDIR, errno.EBADF,
+                                errno.ELOOP})
+
+
 def checkout_stop(checkout: Path, where: str, commit: str,
                   owners: tuple[str, ...],
                   fetched: frozenset[str] | None) -> Below | None:
     """`walked`'s answer for the gitlink at `where`, recorded at `commit`
     by the last of `owners` (this holder where there is none), whose
-    checkout is `checkout`."""
-    if not (checkout / ".git").exists():
-        return None
-    if not tip_reachable(checkout, commit):
+    checkout is `checkout`: None where its `.git` is not there, as a
+    `stat` says (`WALK_ABSENT_ERRNOS`); `UNTOLD` where the operating
+    system refused that `stat`, or refused a git run in it or below it
+    (lane 5's SHOULD 2 on #954: `Path.exists` raised that refusal, a
+    traceback, before Python 3.14, and from 3.14 reads it as no checkout);
+    else `entered`'s answer."""
+    try:
+        os.stat(checkout / ".git")
+    except OSError as exc:
+        return None if exc.errno in WALK_ABSENT_ERRNOS else UNTOLD
+    try:
+        return entered(checkout, where, commit, owners, fetched)
+    except OSError:
+        return UNTOLD
+
+
+def entered(checkout: Path, where: str, commit: str,
+            owners: tuple[str, ...],
+            fetched: frozenset[str] | None) -> Below | None:
+    """`checkout_stop`'s answer for a checkout whose `.git` is there: B4
+    where its store lacks `commit` and a fetch git made in it reached the
+    remote, `UNTOLD` where none did or where it is at another commit, and
+    else what `walked` finds in it."""
+    if not commit_held(checkout, commit):
         if fetched is not None and same_place(checkout) in fetched:
             return Below(where, owners, commit)
         return UNTOLD
     if head_commit(checkout) != commit:
-        return None
+        return UNTOLD
     return walked(checkout, fetched, (*owners, where))
 
 
-def tip_reachable(checkout: Path, commit: str) -> bool:
-    """Whether a ref of the store `checkout` reads reaches `commit`, as
-    git's update asks it before it fetches (`is_tip_reachable` in git
-    2.43's submodule--helper.c): `git rev-list -n 1 <commit> --not --all`
-    exits 0 and lists nothing. A commit the store lacks is not."""
-    proc = subprocess.run(["git", "rev-list", "-n", "1", commit, "--not",
-                           "--all"], cwd=str(checkout), capture_output=True,
+def commit_held(checkout: Path, commit: str) -> bool:
+    """Whether the store `checkout` reads holds `commit`: `git cat-file -e
+    <commit>^{commit}` exits 0. Not whether a ref reaches it, as git's
+    update asks before it fetches (`is_tip_reachable`): git's fetch of a
+    commit its store holds is answered from the store, so its update does
+    not die for want of one (measured, git 2.43.0), and a held commit no
+    ref reaches, whose checkout died, was named B4 (#954's round 1)."""
+    proc = subprocess.run(["git", "cat-file", "-e", f"{commit}^{{commit}}"],
+                          cwd=str(checkout), capture_output=True,
                           check=False)
-    return proc.returncode == 0 and not proc.stdout.strip()
+    return proc.returncode == 0
 
 
 def head_commit(checkout: Path) -> str | None:
