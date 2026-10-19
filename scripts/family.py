@@ -186,7 +186,7 @@ from repo_shape import (  # noqa: E402
 from shape_materialize import (  # noqa: E402
     FAMILY_RULESET_HINT, SHAPE_REPOSITORY, CommandFailed, check_program,
     commit_trailers, env_commit, escape_what_stdout_cannot_encode,
-    force_stage, inherited_child_environment, make_folder,
+    folder_flag_path, force_stage, inherited_child_environment, make_folder,
     materialize_family_root, refuse_bad_branch, refuse_unless_not_found,
     refuse_unmakeable_folder, run, shown_source, stage_written,
     target_in_the_way, target_remediation, trailer_line, write_lf,
@@ -417,19 +417,22 @@ class Family:
         refuse a `family.yaml` holding a change HEAD does not
         (`_checked_manifest_committed`), and this refusal is only reached
         once the shape it names is committed.
+
+        THE `members:` LINE is `members:`, `members: []`, or `members:` and
+        one word the holder's reader reads as null (`_opens_members`, #920),
+        so `members: null` is found as `members:` is.
+
+        EVERY SUCH LINE IS COUNTED FIRST, and anything but one is refused
+        (#920, lane 5's review of #957, SHOULD 1). The rewrite stopped at the
+        first and never counted a second, so a `members: []` above `name:`,
+        with the real block still at the end, which the reader takes as the
+        last of two keys and the holder's gate passes, was cut off there with
+        exit 0: every key below it went, and the gate then failed the
+        commit. With the null words found, `members: null` did the same.
         """
         text = self.path.read_text(encoding="utf-8")
         lines = text.splitlines()
-        out: list[str] = []
-        seen = 0
-        for line in lines:
-            if line.rstrip() in ("members:", "members: []"):
-                seen += 1
-                out.append("members: []" if not rows else "members:")
-                for row in rows:
-                    out.extend(_member_lines(row))
-                break
-            out.append(line)
+        seen = sum(1 for line in lines if _opens_members(line))
         if seen != 1:
             raise Refusal(
                 "family-members-unrecognised",
@@ -440,7 +443,49 @@ class Family:
                 "file and everything below it belongs to this tool; fix it by "
                 "hand this once and commit that (`git commit -- "
                 f"{MANIFEST}`), then run the same command again.")
+        out: list[str] = []
+        for line in lines:
+            if _opens_members(line):
+                out.append("members: []" if not rows else "members:")
+                for row in rows:
+                    out.extend(_member_lines(row))
+                break
+            out.append(line)
         return "\n".join(out) + "\n"
+
+
+def _opens_members(line: str) -> bool:
+    """Whether `line` is the `members:` line `Family.rewritten` rewrites
+    from: `members:`, `members: []`, or `members: <word>` where the word is
+    one the holder's own reader reads as null (#920).
+
+    THE READER IS ASKED OF THE WORD, NOT A LIST OF SPELLINGS, as `_member_id`
+    asks it. The finder took only `members:` and `members: []`, while the
+    reader reads the words `null`, `Null` and `NULL`, and `~`, as the null a
+    bare `members:` is, and `Family.open` and the holder's own
+    `validate-family.py` both read that null as no members. So a holder
+    whose `family.yaml` said `members: null` passed its own gate, and `add`
+    refused it as having no `members:` line at all
+    (`family-members-unrecognised`) and wrote nothing.
+
+    ONE WORD, AS THE TWO SPELLINGS ARE: the line is taken as strictly as
+    `members:` always was, at the margin, with one space before the word
+    and nothing after it but blanks. A comment after it is still a hand edit
+    this tool does not rewrite, which would drop it
+    (`test_a_manifest_this_tool_will_not_rewrite_is_refused_before_the_mount`
+    holds `members:  # edited by hand` to that), and an indented
+    `  members: null` is a key of another mapping.
+    """
+    text = line.rstrip()
+    if text in ("members:", "members: []"):
+        return True
+    word = text[len("members: "):]
+    if not text.startswith("members: ") or word.split() != [word]:
+        return False
+    try:
+        return parse_yaml(f"members: {word}\n") == {"members": None}
+    except YamlError:
+        return False
 
 
 #: What `add`, `bump` and `remove` say under `family-members-unreadable`.
@@ -686,8 +731,15 @@ def _member_url(repository: str, local_remote_dir: Path | None) -> str:
 #: (`_classify_family_name`). `family-bad-id`'s derived remedy names it in
 #: the same words, so the person who follows it is not sent from one
 #: refusal to the other (#659).
+#:
+#: AND NOT ONE OF THE TWO FORMS NO HOLDER IS (#911), in
+#: `naming-not-a-family`'s words. `--family open_glass` was told to change
+#: `--family` to one CamelCase token, and `openGlass`, which is one, was
+#: then refused as `naming-not-a-family`: an `open<Product>` name classifies
+#: as a neutral product whatever is declared.
 FAMILY_NAME_RULE = ("one CamelCase token with no hyphen, underscore, dot "
-                    "or space")
+                    "or space, and not an `open<Product>` or `<X>-Install` "
+                    "name")
 
 
 def _classify_family_name(policy: NamingPolicy, name: str) -> None:
@@ -703,9 +755,10 @@ def _classify_family_name(policy: NamingPolicy, name: str) -> None:
         raise Refusal(
             "naming-unclassified",
             f"{name!r} matches no family in the naming policy",
-            f"Remediation: --family takes {FAMILY_NAME_RULE} — the same rule "
-            "an assembly root's name follows, because a holder is spelled "
-            "like one.")
+            f"Remediation: --family takes {FAMILY_NAME_RULE}. A holder is "
+            "spelled like an assembly root, but those two forms are "
+            "unambiguous by construction and cannot be declared into a "
+            "holder.")
     if found.family != "family":
         raise Refusal(
             "naming-not-a-family",
@@ -2032,6 +2085,33 @@ def _refuse_landing_in_standard(into: Path, holder: Path,
         "override (`<dir>/<Family>`, no family folder). There is no --force.")
 
 
+def _folder_flags(args) -> None:
+    """`init`'s three folder flags as the `Path`s every later step reads,
+    each refused by name when passed empty (#972's review, S2), first, before
+    anything reads one: `--into ''` as `into-no-path`, `--work-dir ''` as
+    `work-dir-no-path` and `--local-remote-dir ''` as
+    `local-remote-dir-no-path`, as the scaffold refuses its own two.
+
+    As a `Path`, `''` is `.`, the directory `init` runs in, so each was taken
+    without a word: from the root of a checkout of openRepoShape, `--into
+    ''` planned the holder inside it, where no `--into` is refused as
+    `family-landing-in-standard`. A flag not given is None, as it was."""
+    args.into = folder_flag_path(
+        args.into, "--into", "into-no-path",
+        names="the parent folder the family folder is made in",
+        absent="it is made in the directory you stand in, which is refused "
+               "inside a checkout of openRepoShape")
+    args.work_dir = folder_flag_path(
+        args.work_dir, "--work-dir", "work-dir-no-path",
+        names="the folder the holder is made in",
+        absent="the holder lands in a family folder, by --into")
+    args.local_remote_dir = folder_flag_path(
+        args.local_remote_dir, "--local-remote-dir",
+        "local-remote-dir-no-path",
+        names="the folder the holder's bare repository is made in",
+        absent="it is created on GitHub")
+
+
 def _landing(args, family: str) -> tuple[Path | None, Path]:
     """`(the family folder, the holder)` — WHERE `init` PUTS THINGS.
 
@@ -2096,7 +2176,12 @@ FAMILY_ID_DERIVED_FROM = "--family lowercased"
 #: forms take only ASCII letters, digits and hyphens, so "pass an explicit
 #: lowercase --id" led straight to `naming-unclassified`, and so would
 #: "change --family" to `North-Wind`. The derived remedy names the rule.
-PASSED_FAMILY_ID_REMEDIATION = "Remediation: pass an explicit lowercase --id."
+#: A passed one is told what an id may hold (#911), in the scaffold's words
+#: for `scaffold-bad-id`: "an explicit lowercase --id" was said to `--id
+#: foo_bar`, which is both.
+PASSED_FAMILY_ID_REMEDIATION = ("Remediation: pass an --id of lowercase "
+                                "letters, digits and hyphens, starting with "
+                                "a letter or digit.")
 DERIVED_FAMILY_ID_REMEDIATION = (
     f"Remediation: change --family to {FAMILY_NAME_RULE}. The id is "
     f"{FAMILY_ID_DERIVED_FROM}, and an explicit --id would not change "
@@ -2104,27 +2189,45 @@ DERIVED_FAMILY_ID_REMEDIATION = (
     "its family folder.")
 
 
-def _refuse_bad_family_id(family_id: str, given: str | None) -> None:
+def _refuse_bad_family_id(family_id: str, args, policy: NamingPolicy,
+                          family: str) -> None:
     """`family-bad-id`: an id `validate-family.py` would not take
     (`PROJECT_ID_RE`), named by where it came from (#659), as the scaffold
     names `scaffold-bad-id`.
 
-    `given` is `--id` as parsed. One the person passed is named as the flag
-    they typed, value as typed, and keeps its remedy. With none, or an empty
-    one, the id is `--family` lowercased (`args.id or family.lower()`), and
-    `--id 'north_wind' must match` named a value nobody had typed: the flag
-    is named as `_manifest_flags` names one, by where its value came from,
-    and an empty `--id ''` as empty, because it was passed."""
+    `args.id` is `--id` as parsed. One the person passed, `''` among them
+    (#911), is named as the flag they typed, value as typed, and is told
+    what an id may hold (`PASSED_FAMILY_ID_REMEDIATION`). With none, the id
+    is `--family` lowercased, and `--id 'north_wind' must match` named a
+    value nobody had typed: the flag is named as `_manifest_flags` names
+    one, by where its value came from.
+
+    A REFUSED NAME SPEAKS FIRST (#911). `--family North_Wind --id
+    north_wind` was refused for its id, and the remedy's retype then met
+    `naming-unclassified`, which no `--id` mends. So a passed id is refused
+    only once `--family` is a name a holder can have: one the policy holds
+    as a holder (`_classify_family_name`), one a Windows disk can make a
+    folder of (`_refuse_an_unholdable_holder_name`), and, where GitHub is
+    asked, one GitHub keeps a repository's name to
+    (`_refuse_a_holder_name_github_cannot_hold`). `_checked_family_identity`
+    asks each of them next anyway, in this order, and none reads anything
+    but the name, the policy and whether `--local-remote-dir` was given, so
+    none starts a process: `--family NUL --id foo_bar` and a
+    `--family` of 105 characters with a bad id were told to retype the id
+    first (#972's review, S1). A derived id keeps its own refusal: its
+    remedy is already the naming rule."""
     if PROJECT_ID_RE.match(family_id):
         return
     pattern = PROJECT_ID_RE.pattern
-    if given:
+    if args.id is not None:
+        _classify_family_name(policy, family)
+        _refuse_an_unholdable_holder_name(family)
+        _refuse_a_holder_name_github_cannot_hold(args, family)
         raise Refusal("family-bad-id",
                       f"--id {family_id!r} must match {pattern}",
                       PASSED_FAMILY_ID_REMEDIATION)
-    unset = "not given" if given is None else "empty"
     raise Refusal("family-bad-id",
-                  f"--id ({unset}, so {FAMILY_ID_DERIVED_FROM}) is "
+                  f"--id (not given, so {FAMILY_ID_DERIVED_FROM}) is "
                   f"{family_id!r}, which must match {pattern}",
                   DERIVED_FAMILY_ID_REMEDIATION)
 
@@ -2162,6 +2265,23 @@ ORG_SPELLING_REMEDIATION = (
     "`<org>` of `https://github.com/<org>`.")
 
 
+def _refuse_a_holder_name_github_cannot_hold(args, family: str) -> None:
+    """`family-name-too-long`: a `--family` over GitHub's 100 for the
+    holder's repository, `<org>/<Family>` (#863). Asked first by
+    `_refuse_what_github_cannot_hold`, and before a passed id that is no id
+    (`_refuse_bad_family_id`, #972's review, S1). Not asked under
+    `--local-remote-dir`, where a bare repository's name is the disk's."""
+    if args.local_remote_dir is not None:
+        return
+    if len(family) > GITHUB_NAME_MAX:
+        raise Refusal(
+            "family-name-too-long",
+            f"--family is {_both_ends(family)}, {len(family)} characters, and "
+            "GitHub keeps a repository's name, the holder's "
+            f"`<org>/<Family>`, to at most {GITHUB_NAME_MAX}",
+            HOLDER_TOO_LONG_REMEDIATION)
+
+
 def _refuse_what_github_cannot_hold(args, family: str, family_id: str,
                                     topic: str) -> None:
     """What GitHub will not take of the holder, refused where GitHub is
@@ -2182,25 +2302,19 @@ def _refuse_what_github_cannot_hold(args, family: str, family_id: str,
     failed at `gh repo create`. Under `--local-remote-dir` none is asked: a
     bare repository on disk has no topic and no owner, and its name is the
     disk's. The id is named as `_refuse_bad_family_id` names it, by where it
-    came from."""
+    came from; a `--id ''` was refused there (#911), so a derived id is one
+    not given."""
     if args.local_remote_dir is not None:
         return
-    if len(family) > GITHUB_NAME_MAX:
-        raise Refusal(
-            "family-name-too-long",
-            f"--family is {_both_ends(family)}, {len(family)} characters, and "
-            "GitHub keeps a repository's name, the holder's "
-            f"`<org>/<Family>`, to at most {GITHUB_NAME_MAX}",
-            HOLDER_TOO_LONG_REMEDIATION)
+    _refuse_a_holder_name_github_cannot_hold(args, family)
     refuse_an_owner_github_cannot_have("family-org-too-long", args.org,
                                        "--org", ORG_REMEDIATION)
     refuse_an_owner_github_cannot_spell("family-bad-org", args.org, "--org",
                                         ORG_SPELLING_REMEDIATION)
-    if args.id:
+    if args.id is not None:
         named, remediation = "--id", PASSED_TOPIC_REMEDIATION
     else:
-        unset = "not given" if args.id is None else "empty"
-        named = f"--id ({unset}, so {FAMILY_ID_DERIVED_FROM})"
+        named = f"--id (not given, so {FAMILY_ID_DERIVED_FROM})"
         remediation = DERIVED_TOPIC_REMEDIATION
     refuse_a_topic_github_cannot_set("family-topic-too-long", topic,
                                      family_id, named, remediation)
@@ -2226,9 +2340,16 @@ def _checked_family_identity(args) -> tuple[str, str, str]:
     # too, before anything is created.
     refuse_bad_branch("family-bad-tracking-branch", "--tracking-branch",
                       args.tracking_branch)
-    family_id = checked_value("--id", args.id or family.lower())
-    _refuse_bad_family_id(family_id, args.id)
+    # A `--id ''` IS A VALUE, NOT A FLAG NOT GIVEN (#911): read by its truth,
+    # it planned `--family` lowercased without a word. Read by `is not None`,
+    # it is refused as `family-bad-id`, by name, before `checked_value` holds
+    # the id to a command line's alphabet, which would call it `unsafe-value`
+    # and which still refuses what `PROJECT_ID_RE.match` lets through, a
+    # trailing line break.
+    family_id = args.id if args.id is not None else family.lower()
     policy = NamingPolicy.load(NAMING_POLICY)
+    _refuse_bad_family_id(family_id, args, policy, family)
+    family_id = checked_value("--id", family_id)
     _classify_family_name(policy, family)
     _refuse_an_unholdable_holder_name(family)
     topic = policy.topic_for(family_id)
@@ -2423,37 +2544,44 @@ def _creator_name(args) -> str:
     set but blank and nothing else names a creator, the refusal says that
     variable is there and is the cause, instead of "no GIT_AUTHOR_NAME", and
     tells the person to unset it AND pass `--created-by`.
+
+    A `--created-by ''` IS THE FLAG'S ANSWER (#911). It was read by its
+    truth, so an empty one fell back to GIT_AUTHOR_NAME or `git config
+    user.name` without a word, and with neither `family-no-creator` said "no
+    --created-by" of a flag that was passed. It is a value now, and the
+    holder's own validator refuses it by name (`refuse_unholdable_manifest`),
+    as it refuses `--created-by ' '`; the fallbacks, and both refusals that
+    no creator was found, answer only where the flag is not given.
     """
     created_by, source = args.created_by, "--created-by"
-    blank_variable = False
-    if not created_by:
+    if created_by is None:
         named = os.environ.get("GIT_AUTHOR_NAME") or ""
         created_by, source = named.strip(), "GIT_AUTHOR_NAME"
         blank_variable = bool(named) and not created_by
-    if not created_by:
-        source = "`git config user.name`"
-        try:
-            created_by = git_out(["config", "user.name"], cwd=SHAPE_ROOT,
-                                 binary=True).decode(
-                                     "utf-8", "surrogateescape").strip()
-        except Refusal:
-            created_by = ""
-    if not created_by and blank_variable:
-        raise Refusal(
-            "family-no-creator",
-            "no --created-by, a GIT_AUTHOR_NAME of whitespace alone, and no "
-            "`git config user.name`. Creating a family is a human's act and "
-            "the manifest records whose.",
-            "Remediation: unset GIT_AUTHOR_NAME, which git would make the "
-            "holder's first commit as and refuses, and re-run with "
-            "--created-by 'Your Name'.")
-    if not created_by:
-        raise Refusal(
-            "family-no-creator",
-            "no --created-by, no GIT_AUTHOR_NAME and no `git config "
-            "user.name`. Creating a family is a human's act and the manifest "
-            "records whose.",
-            "Remediation: re-run with --created-by 'Your Name'.")
+        if not created_by:
+            source = "`git config user.name`"
+            try:
+                created_by = git_out(["config", "user.name"], cwd=SHAPE_ROOT,
+                                     binary=True).decode(
+                                         "utf-8", "surrogateescape").strip()
+            except Refusal:
+                created_by = ""
+        if not created_by and blank_variable:
+            raise Refusal(
+                "family-no-creator",
+                "no --created-by, a GIT_AUTHOR_NAME of whitespace alone, and "
+                "no `git config user.name`. Creating a family is a human's "
+                "act and the manifest records whose.",
+                "Remediation: unset GIT_AUTHOR_NAME, which git would make the "
+                "holder's first commit as and refuses, and re-run with "
+                "--created-by 'Your Name'.")
+        if not created_by:
+            raise Refusal(
+                "family-no-creator",
+                "no --created-by, no GIT_AUTHOR_NAME and no `git config "
+                "user.name`. Creating a family is a human's act and the "
+                "manifest records whose.",
+                "Remediation: re-run with --created-by 'Your Name'.")
     reason = unwritable_reason(created_by)
     if reason:
         raise Refusal(
@@ -2658,17 +2786,23 @@ def _template_values(args, family: str, family_id: str, repository: str,
     Windows path, spelled with `\\`, is quoted). Only this value is quoted:
     the block's other placeholder, `{{FAMILY}}` in `cd {{FAMILY}}`, is a
     name the naming policy spells in letters and digits.
+
+    A `--name ''` OR `--created-on ''` IS A VALUE (#911), read by `is not
+    None` as `--id` and `--created-by` are, so the holder's own validator
+    refuses it by name (`refuse_unholdable_manifest`) where its truth made
+    it the default without a word.
     """
     return {
         "FAMILY": family,
-        "FAMILY_NAME": args.name or family,
+        "FAMILY_NAME": args.name if args.name is not None else family,
         "FAMILY_ID": family_id,
         "FAMILY_REPOSITORY": repository,
         "ORG": args.org,
         "VISIBILITY": args.visibility,
         "TRACKING_BRANCH": args.tracking_branch,
         "CREATED_BY": created_by,
-        "CREATED_ON": args.created_on or _dt.date.today().isoformat(),
+        "CREATED_ON": (args.created_on if args.created_on is not None
+                       else _dt.date.today().isoformat()),
         "CLONE_URL": shell_quoted(url, "posix"),
         "SHAPE_REPOSITORY": SHAPE_REPOSITORY,
         "SHAPE_COMMIT": shape_commit,
@@ -2775,7 +2909,9 @@ def _refuse_a_taken_holder(folder: Path | None, holder: Path) -> None:
     `iterdir()` met with a `NotADirectoryError` traceback, or an empty folder
     this user cannot write in (L2-60), whose remediation names the flag the
     person landed by: `--work-dir` where there is no family folder, `--into`
-    otherwise."""
+    otherwise. A folder this user cannot list (#930) is told the same flag,
+    with the permission that would let `init` see whether it holds a tree,
+    and not this sentence about a holder that is already there."""
     why = target_in_the_way(holder)
     if why:
         raise Refusal(
@@ -3363,7 +3499,9 @@ MANIFEST_INVALID_REMEDIATION = (
 
 def _manifest_flags(args) -> dict:
     """`MANIFEST_FLAGS`, with a value no flag supplied named by where it came
-    from, so that a refusal does not point at a flag nobody typed."""
+    from, so that a refusal does not point at a flag nobody typed. A flag
+    passed empty supplied its value, `''`, and is named as the flag (#911),
+    as `_template_values` and `_creator_name` read it."""
     flags = dict(MANIFEST_FLAGS)
     for key, flag, given, source in (
             ("FAMILY_ID", "--id", args.id, FAMILY_ID_DERIVED_FROM),
@@ -3371,7 +3509,7 @@ def _manifest_flags(args) -> dict:
             ("CREATED_BY", "--created-by", args.created_by,
              "GIT_AUTHOR_NAME or `git config user.name`"),
             ("CREATED_ON", "--created-on", args.created_on, "today")):
-        if not given:
+        if given is None:
             flags[key] = f"{flag} (not given, so {source})"
     return flags
 
@@ -3404,6 +3542,7 @@ def refuse_unholdable_manifest(args, values: dict,
 
 
 def cmd_init(args) -> int:
+    _folder_flags(args)
     family, family_id, topic = _checked_family_identity(args)
     created_by = _creator_name(args)
     local, repository, url = _holder_remote(args, family)
@@ -6521,7 +6660,9 @@ class MountRollback:
     NEVER OVER A COMMIT THAT LANDED. HEAD is recorded too, and if it has
     moved the one commit happened: undoing the tree under it would leave a
     working copy that contradicts its own history, so nothing is undone and
-    the sentence says so.
+    the sentence says so. The one commit `add` takes back itself, one whose
+    gitlink git recorded somewhere other than the mount path (#920), is
+    taken back by `take_back` first, so `undo` finds HEAD where it was.
 
     "EXACTLY AS IT WAS" ONLY FOR WHAT WAS COMPARED (#302). Each step puts
     back what it recorded, by its exact name. git can stage under a name no
@@ -6686,6 +6827,43 @@ class MountRollback:
                 parts.append(f"{said}: {shown}{more}")
         return "; ".join(parts)
 
+    def take_back(self, made: str) -> tuple[bool, str]:
+        """Take `made`, the commit this command made, back off the branch.
+        Returns `(whether it was, the sentence that says so, or why not)`
+        (#920).
+
+        ONLY THIS COMMAND'S ONE COMMIT. The branch moves back to the commit
+        HEAD named before the mount, or is left with no commit, as it was,
+        only where `made` is one commit on that one (a root commit where
+        there was none), and only while the branch still names `made`: `git
+        update-ref` is given `made` as the value it must find there, so a
+        commit anything else put on the branch is never lost. Nothing else
+        moves. The index and the work tree keep what the commit took, which
+        is what `undo` was recorded to put back.
+        """
+        before = [self.head] if self.head is not None else []
+        try:
+            parents = git_out(["rev-list", "--parents", "--no-walk", made],
+                              cwd=self.root).split()[1:]
+            if parents != before:
+                on = (f"one commit on {self.head[:12]}, where this command "
+                      "found the branch" if self.head is not None else
+                      "a first commit, on a branch that had none")
+                return False, (f" It was NOT taken back: {made[:12]} is not "
+                               f"{on}, and this tool takes back no commit it "
+                               "did not make.")
+            moved = ["update-ref", "-m",
+                     f"family.py add: {made[:12]} taken back"]
+            git_out([*moved, "HEAD", self.head, made] if self.head is not None
+                    else [*moved, "-d", "HEAD", made], cwd=self.root)
+        except Refusal as exc:
+            return False, f" It was NOT taken back: {_reason(exc)}."
+        if self.head is None:
+            return True, (" It has been taken back: the branch has no commit "
+                          "again.")
+        return True, (" It has been taken back: the branch names "
+                      f"{self.head[:12]} again.")
+
     def undo(self) -> str:
         """Put the holder back. Returns the sentence a refusal ends with:
         what was put back, or — if any of it could not be — what is left,
@@ -6789,6 +6967,84 @@ def _rewrite_members(family: Family, rows: list[dict], what: str) -> None:
             "room, then run the same command again.") from exc
 
 
+#: What `member-gitlink-misplaced` tells the human to do (#920), then how it
+#: ends: where the branch is back where `add` found it, so `undo` has put the
+#: holder back, and where it is not.
+GITLINK_MISPLACED_REMEDIATION = (
+    "Remediation: `add` asks git for the gitlink at `members/<Project>` and "
+    "nowhere else, and every cause known to record it elsewhere, another "
+    "spelling of `members/` in the index, in HEAD or on disk, is refused "
+    "before the mount, so this cause is not one of them. Find what moved it, "
+    "such as a hook or a setting like `core.ignorecase`, and mend that")
+GITLINK_TAKEN_BACK = ", then run the same command again."
+GITLINK_NOT_TAKEN_BACK = (
+    ". The commit and the mount are still there, for the reason above: `git "
+    "log` shows what the branch holds, and taking them out is yours to do "
+    "before you run the same command again.")
+
+
+def _gitlinks_at(root: Path, commit: str | None) -> dict[str, str]:
+    """`{path: the commit it records}` of every gitlink `commit` holds, by
+    `_tree_entries` with no pathspec; none for no commit."""
+    if commit is None:
+        return {}
+    return {name: oid for name, kind, oid in _tree_entries(root, commit, True)
+            if kind == INDEX_ENTRY_KINDS[0o160000]}
+
+
+def _checked_gitlink_committed(root: Path, project: str, path: str,
+                               commit: str, head: str,
+                               rollback: MountRollback) -> None:
+    """Refuse `member-gitlink-misplaced` unless `head`, the commit `add` has
+    just made, records a gitlink at exactly `path`, after taking that commit
+    back (`MountRollback.take_back`) for the caller's `undo` (#920).
+    `commit` is the member's, the one the pin records.
+
+    THE COMMIT ITSELF IS ASKED, AFTER THE FACT. `.gitmodules` and
+    `family.yaml` name `members/<Project>`, but git records the gitlink where
+    it chooses: with `core.ignorecase` set and HEAD holding
+    `Members/README.md` that the index no longer held, `add` committed it as
+    `Members/<Project>` with exit 0, and a fresh clone left the member empty
+    (#363). #574 refuses each such case variant before the mount, and this
+    is option 2 of #363, which PR #574 left out: whatever the cause, a
+    commit that records no gitlink at the path is never left on the branch.
+    It reads the whole tree of the commit, and of the one the branch named
+    before the mount (`rollback.head`), with no pathspec (`git ls-tree -r`),
+    so no pathspec setting can narrow either. The path git chose is each
+    gitlink the commit holds at a path the earlier one does not, or that
+    records `commit`, so another member's gitlink, moved by the same cause,
+    is never named as this one's (lane 5's review of #957, NIT 2).
+
+    A BRANCH BACK WHERE `add` FOUND IT holds no commit of this command's: a
+    `post-commit` hook took it off. That is said as it is, and `undo` puts
+    the holder back as for any refusal before the commit (NIT 1).
+    """
+    if head == rollback.head:
+        raise Refusal(
+            "member-gitlink-misplaced",
+            f"the branch names {head[:12]} again, where this command found "
+            "it: the commit this command made is not on it, so no gitlink at "
+            f"`{path}` is either, while {GITMODULES} and {MANIFEST} name "
+            f"`{path}`.", GITLINK_MISPLACED_REMEDIATION + GITLINK_TAKEN_BACK)
+    made = _gitlinks_at(root, head)
+    if path in made:
+        return
+    before = _gitlinks_at(root, rollback.head)
+    chosen = [name for name, oid in made.items()
+              if name not in before or oid == commit]
+    where = (f"{project}'s gitlink at "
+             + " and ".join(f"`{shown_path(name)}`" for name in chosen)
+             + f", not at `{path}`" if chosen else
+             f"no new gitlink, at `{path}` or anywhere else")
+    taken, said = rollback.take_back(head)
+    raise Refusal(
+        "member-gitlink-misplaced",
+        f"the commit {head[:12]} records {where}, while {GITMODULES} and "
+        f"{MANIFEST} name `{path}`, so a fresh clone would leave the member "
+        "empty." + said, GITLINK_MISPLACED_REMEDIATION
+        + (GITLINK_TAKEN_BACK if taken else GITLINK_NOT_TAKEN_BACK))
+
+
 def _mount_and_pin(family: Family, repository: str, project: str, path: str,
                    url: str, protocol: list[str], at: str | None,
                    rollback: MountRollback,
@@ -6859,6 +7115,8 @@ def _mount_and_pin(family: Family, repository: str, project: str, path: str,
         "project: its own assembly root, its own legs, its own gate. "
         "Membership confers nothing.\n",
         [GITMODULES, path, MANIFEST], trailers=trailers)
+    _checked_gitlink_committed(family.root, project, path, commit, head,
+                               rollback)
     return commit, digest, project_id, head
 
 
@@ -7015,7 +7273,9 @@ def cmd_add(args) -> int:
     (`_probe_member`, of a throwaway clone), then the member's id against the
     rows (`_checked_member_id`, #330), and only then the mount, the pin and the
     commit (`_mount_and_pin`), inside a `MountRollback` that puts the holder
-    back if anything still fails and says what it put back.
+    back if anything still fails and says what it put back, the commit
+    included where it records the gitlink anywhere but the mount path
+    (`_checked_gitlink_committed`, #920).
 
     WHEN TWO APPLY, THE EARLIER ONE IS SAID. The holder's refusals need
     nothing cloned, so they come first: a section under another name that
@@ -9660,17 +9920,20 @@ def build_parser() -> argparse.ArgumentParser:
                            "commits, use it as the holder instead of "
                            "refusing. A repository with commits is still "
                            "refused: that is live, not a slot.")
-    init.add_argument("--local-remote-dir", type=Path, default=None,
+    # THE THREE FOLDER FLAGS ARE TEXT, not `type=Path`: `Path("")` is `.`,
+    # so an empty value could not be told from a typed `.` once parsed.
+    # `_folder_flags` makes each a `Path`, refusing an empty one first.
+    init.add_argument("--local-remote-dir", default=None,
                       help="create a bare repository here instead of calling "
                            "`gh repo create` (the TEST path; no network)")
-    init.add_argument("--into", type=Path, default=None, metavar="DIR",
+    init.add_argument("--into", default=None, metavar="DIR",
                       help="the PARENT directory the family folder is made "
                            "in (default: the directory you are standing in, "
                            "which is refused inside a checkout of "
                            "openRepoShape: from its root, pass `--into ..`). "
                            "The holder lands at <into>/<Family>/<Family>, "
                            "beside where `make siblings` clones the members.")
-    init.add_argument("--work-dir", type=Path, default=None,
+    init.add_argument("--work-dir", default=None,
                       help="THE OVERRIDE: land the holder at "
                            "<work-dir>/<Family> and make no family folder at "
                            "all. Mutually exclusive with --into.")
