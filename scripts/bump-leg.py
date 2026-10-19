@@ -283,7 +283,8 @@ class Project:
                 "Remediation: --leg takes `spec` or `code`. The assembly "
                 "root advances by its own commits; if you meant to move the "
                 "project's pin inside a FAMILY, that is `scripts/family.py "
-                "bump --member <Project> --to <sha>`.")
+                "bump --family-root <holder> --member <Project> --to "
+                "<sha>`.")
         for row in self.legs:
             if str(row.get("role")) == role:
                 return row

@@ -39,6 +39,7 @@ from pathlib import Path
 import pytest
 
 from conftest import cloned_just_pushed, git, run_script
+from repo_shape import shell_quoted
 #: The family fixture, its names and the offline environment, imported from
 #: the modules that own them rather than rebuilt: a holder made any other way
 #: would test a different holder.
@@ -69,10 +70,18 @@ DUPLICATE_ID_REMEDIATION = (
     f"Remediation: a family pins each project once. If {ORG}/{{who}} is "
     f"{ORG}/{PINNED} renamed at the forge, `family.py remove --member "
     f"{PINNED}` takes the old row out and this `add` then pins it under the "
-    f"new name; `family.py bump --member {PINNED} --to <commit>` moves the "
-    "row that is there instead. Two projects that record one id are a fault "
-    "in one of their `project.yaml` files, mended in that project, not in "
-    "the family.")
+    "new name; `family.py bump --family-root {holder} --member "
+    f"{PINNED} --to <commit>` moves the row that is there instead. Two "
+    "projects that record one id are a fault in one of their "
+    "`project.yaml` files, mended in that project, not in the family.")
+
+
+def duplicate_id_remediation(who: str, holder: Path) -> str:
+    """What `add` tells the human to do about `member-duplicate-id`: the
+    `bump` it names carries `--family-root` and the holder, as `bump`
+    requires (#927)."""
+    return DUPLICATE_ID_REMEDIATION.format(
+        who=who, holder=shell_quoted(holder.resolve()))
 
 
 def renamed_copy(family, tmp_path: Path) -> Path:
@@ -101,7 +110,7 @@ def test_a_renamed_repository_is_refused_before_anything_is_mounted(
     assert result.stdout == f"checking {ORG}/{RENAMED} before mounting it\n"
     assert refusal(result.stderr) == (
         DUPLICATE_ID.format(who=RENAMED, after=""),
-        DUPLICATE_ID_REMEDIATION.format(who=RENAMED))
+        duplicate_id_remediation(RENAMED, holder))
     assert_unchanged(holder, before, RENAMED)
     assert validate(holder).returncode == 0
     offline.assert_left_nothing()
@@ -141,7 +150,7 @@ def test_a_section_already_at_the_mount_path_is_refused_first_then_the_id(
     assert second.stdout == f"checking {ORG}/{RENAMED} before mounting it\n"
     assert refusal(second.stderr) == (
         DUPLICATE_ID.format(who=RENAMED, after=""),
-        DUPLICATE_ID_REMEDIATION.format(who=RENAMED))
+        duplicate_id_remediation(RENAMED, holder))
     assert snapshot(holder) == cleared
     assert not (holder / "members" / RENAMED).exists()
     assert not (holder / ".git" / "modules" / "members" / RENAMED).exists()
@@ -152,11 +161,12 @@ def test_a_section_already_at_the_mount_path_is_refused_first_then_the_id(
 @pytest.mark.parametrize("verb", ["remove", "bump"])
 def test_each_command_the_refusal_names_runs_on_the_row_it_names(
         family, holder, offline, tmp_path, verb):
-    """The remediation is the repair. Typed as printed — with the
-    `--family-root` every verb takes, and a real commit for `<commit>` —
-    `remove` takes the old row out and the refused `add` then pins the
-    project under its new name, and `bump` moves the row that is there; the
-    gate is green after either, with one row recording id `irrs`."""
+    """The remediation is the repair. Typed as printed, with a real commit
+    for `<commit>`, `remove` takes the old row out and the refused `add` then
+    pins the project under its new name, and `bump` moves the row that is
+    there; the gate is green after either, with one row recording id `irrs`.
+    `bump` is run exactly as printed, its own `--family-root` and all
+    (#927); `remove` is still given the `--family-root` it does not name."""
     remotes = renamed_copy(family, tmp_path)
     refused = offline.add(holder, RENAMED, remotes=remotes)
     assert refused.returncode == 2, refused.stdout + refused.stderr
@@ -166,8 +176,8 @@ def test_each_command_the_refusal_names_runs_on_the_row_it_names(
                 cwd=family["remotes"] / f"{PINNED}.git").stdout.strip()
     argv = commands[0].replace("<commit>", older).split()
     assert argv[argv.index("--member") + 1] == PINNED
-    done = run_script(FAMILY, *argv, "--family-root", str(holder),
-                      env=offline.env)
+    unnamed = [] if verb == "bump" else ["--family-root", str(holder)]
+    done = run_script(FAMILY, *argv, *unnamed, env=offline.env)
     assert done.returncode == 0, done.stdout + done.stderr
     if verb == "remove":
         added = offline.add(holder, RENAMED, remotes=remotes)
@@ -222,7 +232,7 @@ def test_a_linked_manifest_with_a_pinned_id_is_refused_by_the_mount_unwound(
     assert refusal(result.stderr) == (
         DUPLICATE_ID.format(who="IRLN",
                             after=". " + mount_undone("IRLN")),
-        DUPLICATE_ID_REMEDIATION.format(who="IRLN"))
+        duplicate_id_remediation("IRLN", holder))
     assert_unchanged(holder, before, "IRLN")
     assert validate(holder).returncode == 0
     offline.assert_left_nothing()
@@ -271,7 +281,7 @@ def test_a_member_whose_id_changes_between_the_probe_and_the_mount_is_unwound(
                    f"mounting {ORG}/{SPARE} at members/{SPARE}\n")
     assert refusal(err) == (
         DUPLICATE_ID.format(who=SPARE, after=". " + mount_undone(SPARE)),
-        DUPLICATE_ID_REMEDIATION.format(who=SPARE))
+        duplicate_id_remediation(SPARE, holder))
     assert_unchanged(holder, before, SPARE)
     offline.assert_left_nothing()
 

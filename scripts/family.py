@@ -6173,9 +6173,10 @@ def _checked_add_target(family: Family, repository: str, project: str,
             "member-already-present",
             f"{project} is already a member of {family.data.get('name')}: "
             f"the row {held.get('project')} pins {held.get('repository')}",
-            "Remediation: `family.py bump --member "
-            f"{held.get('project')} --to <commit>` moves an existing member; "
-            "`remove` takes it out. Adding it twice is not a way to move it.")
+            "Remediation: `family.py bump --family-root "
+            f"{shell_quoted(family.root)} --member {held.get('project')} "
+            "--to <commit>` moves an existing member; `remove` takes it "
+            "out. Adding it twice is not a way to move it.")
     # Everything the mount's `--force` would otherwise let past git, but the
     # cached store, which is asked below (#242).
     _checked_mount_path(family.root, project, path,
@@ -6290,9 +6291,10 @@ def _checked_member_id(family: Family, repository: str, project: str,
             f"{repository} is {row.get('repository')} renamed at the forge, "
             f"`family.py remove --member {name}` takes the old row out and "
             "this `add` then pins it under the new name; `family.py bump "
-            f"--member {name} --to <commit>` moves the row that is there "
-            "instead. Two projects that record one id are a fault in one of "
-            "their `project.yaml` files, mended in that project, not in the "
+            f"--family-root {shell_quoted(family.root)} --member {name} "
+            "--to <commit>` moves the row that is there instead. Two "
+            "projects that record one id are a fault in one of their "
+            "`project.yaml` files, mended in that project, not in the "
             "family.")
 
 
