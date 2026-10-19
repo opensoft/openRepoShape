@@ -10739,9 +10739,15 @@ class _SplitRehearsal:
                                "--git-path", "objects"],
                               cwd=self._source.path, binary=True,
                               env=self._env).strip()
+            # The source's own object format, whatever `GIT_DEFAULT_HASH`
+            # says: a SHA-256 source's objects are none to a SHA-1
+            # repository, and the reverse (#910).
+            object_format = git_out(["rev-parse", "--show-object-format"],
+                                    cwd=self._source.path, env=self._env)
             empty = self._scratch / "no-template"
             empty.mkdir()
-            git_out(["init", "-q", f"--template={empty}", str(self.work)],
+            git_out(["init", "-q", f"--template={empty}",
+                     f"--object-format={object_format}", str(self.work)],
                     cwd=self._scratch, env=self._env)
             info = self.work / ".git" / "objects" / "info"
             info.mkdir(parents=True, exist_ok=True)
