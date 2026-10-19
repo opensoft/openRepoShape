@@ -287,6 +287,26 @@ def test_a_source_whose_stat_is_refused_is_refused_on_every_python(
                                                  PROJECT))
 
 
+def test_a_stat_refused_for_another_reason_is_not_told_to_chmod(
+        adopter, monkeypatch, tmp_path):
+    """A `stat` refused for another reason than permission (an I/O error)
+    is `source-unreadable` too, told to put right what it names: no `chmod`
+    puts that right."""
+    def refusing(self, *args, **kwargs):
+        raise OSError(errno.EIO, os.strerror(errno.EIO), str(self))
+
+    monkeypatch.setattr(Path, "stat", refusing)
+    with pytest.raises(adopter.Refusal) as raised:
+        adopter._source_spec(str(tmp_path / PROJECT))
+
+    refusal = raised.value
+    assert refusal.code == "source-unreadable"
+    assert f"cannot be read ({os.strerror(errno.EIO)})" in refusal.detail
+    assert ("which no `chmod` puts right: put right what it names"
+            in refusal.remediation)
+    assert "chmod u+rx" not in refusal.remediation
+
+
 # --- an `org/repo`-shaped directory here that cannot be searched -------------
 
 @needs_a_mode
@@ -382,6 +402,8 @@ def test_a_recorded_source_under_an_unsearchable_parent_is_refused_by_name(
             f"{spelled(local_path)}: {DENIED}, so {untold} cannot be told"
             ) in proc.stderr
     assert CURE in proc.stderr
+    assert ("or pass the source again with --source, which is held to the "
+            "plan's `commit:`.") in proc.stderr
     assert "plan-source-gone" not in said(proc)
     assert_no_false_answer(said(proc))
     assert log.read_bytes() == b""
@@ -430,11 +452,12 @@ def _branch_in_the_split_branchs_way(adopter, source, urls) -> None:
         "w430h-in-the-way/split", True, False)
 
 
-@pytest.mark.parametrize("ask", [_split_branch_left_behind,
-                                 _branch_in_the_split_branchs_way],
-                         ids=["left-behind", "in-the-way"])
+@pytest.mark.parametrize(("ask", "code"), [
+    (_split_branch_left_behind, "adopt-branch-exists"),
+    (_branch_in_the_split_branchs_way, "plan-split-branch-taken"),
+], ids=["left-behind", "in-the-way"])
 def test_a_leg_whose_stat_is_refused_defers_the_split_branch_questions(
-        adopter, monkeypatch, tmp_path, ask):
+        adopter, monkeypatch, tmp_path, ask, code):
     """Each split-branch question defers to the leg question where a leg is
     on disk under `--local-remote-dir`; where the leg's `stat` is refused it
     may be, and it defers too. The source holds what each would refuse: a
@@ -457,9 +480,10 @@ def test_a_leg_whose_stat_is_refused_defers_the_split_branch_questions(
     urls = {"assembly": str(source.path),
             "spec": str(remotes / f"{PROJECT}-spec.git"),
             "code": str(remotes / f"{PROJECT}-code.git")}
-    with pytest.raises(adopter.Refusal):
+    with pytest.raises(adopter.Refusal) as control:
         # The control: with nothing refused, each question refuses.
         ask(adopter, source, urls)
+    assert control.value.code == code
     refused_stat(monkeypatch, f"{PROJECT}-spec.git", f"{PROJECT}-code.git")
 
     assert ask(adopter, source, urls) is None
@@ -541,3 +565,29 @@ def test_a_symlink_to_a_place_whose_stat_is_refused_is_named(
             "cannot be told until this user can search every directory above "
             "it (`chmod u+rx`). Send `AGENTS.md` to a leg or `drop` it") in err
     assert "nothing is there" not in out + err
+
+
+@needs_a_symlink
+def test_a_symlink_place_refused_for_another_reason_is_not_told_to_chmod(
+        adopter, monkeypatch, capsys, tmp_path):
+    """The same, in-process, with the `stat` of the link's destination
+    refused for another reason than permission (an I/O error): the finding
+    names that reason and stops there, since no `chmod` puts it right.
+    `(chmod u+rx)` is said of a permission only."""
+    target, plan = linked_out(tmp_path)
+    real = os.stat
+
+    def refusing(path, *args, **kwargs):
+        if os.fspath(path) == str(target):
+            raise OSError(errno.EIO, os.strerror(errno.EIO), os.fspath(path))
+        return real(path, *args, **kwargs)
+
+    monkeypatch.setattr(os, "stat", refusing)
+    code, out, err = run(adopter, capsys, "check", "--plan", str(plan),
+                         "--work-dir", str(tmp_path / "check-work"),
+                         "--local-remote-dir", str(tmp_path / "remotes"))
+
+    assert code == 1, out + err
+    assert (f"and {spelled(target)}: cannot be read "
+            f"({os.strerror(errno.EIO)}), so whether anything is there "
+            "cannot be told. Send `AGENTS.md`") in err
