@@ -1791,8 +1791,9 @@ ROOT_VISIBILITY_UNREAD = (
     "`validate` workflow and must be set as REPOSITORY secrets on {root} "
     "instead. `gh repo view {root} --json visibility` says which it is.")
 
-#: The same where the repository is private or internal and GitHub would not
-#: name its organisation's plan (#660). `{visibility}` is the repository's.
+#: The same where the repository is private and GitHub would not name its
+#: organisation's plan (#660); an internal one is told
+#: `FREE_PLAN_UNREAD_INTERNAL` (#913). `{visibility}` is the repository's.
 #: The last sentence rests on GitHub's REST page for `GET /orgs/{org}`: an
 #: organisation's full details are shown to its owners.
 FREE_PLAN_UNREAD = (
@@ -1804,6 +1805,39 @@ FREE_PLAN_UNREAD = (
     "and must be set as REPOSITORY secrets on {root} instead. `gh api "
     "orgs/{org} --jq .plan.name`, run with an owner's login, says which plan "
     "it is on.")
+
+#: `FREE_PLAN_UNREAD` for an INTERNAL repository (#913, L2-93). GitHub gives
+#: internal visibility only to a repository of an organisation an enterprise
+#: account owns ("About repositories", GitHub's documentation), and such an
+#: organisation is not on the Free plan, so `FREE_PLAN_UNREAD`'s "it applies
+#: when {org} is on the GitHub Free plan" named a condition that cannot hold
+#: of it. The NOTE is printed where it always was; only its words say that
+#: the plan is not what the hint hangs on.
+FREE_PLAN_UNREAD_INTERNAL = (
+    "NOTE this run could not read {org}'s plan from GitHub, but the "
+    "Free-plan secrets hint does not hang on it: {root} is internal, which "
+    "GitHub gives only to a repository of an organisation an enterprise "
+    "account owns, and that organisation is not on the GitHub Free plan. "
+    "Org-level SHAPE_LEGS_APP_ID / SHAPE_LEGS_APP_PRIVATE_KEY reach {root}'s "
+    "`validate` workflow where each secret's repository access includes "
+    "{root}.")
+
+#: What a creating tool's plan says under its `gh repo create` row (#913,
+#: L2-61). Only gh's not-found answer reads as absent (#609), and GitHub
+#: gives that answer for a private repository the token cannot see too, so
+#: the two cannot be told apart from gh's answer: the plan says that "not
+#: found" is what this token can see, and what the real run then meets. The
+#: two lines follow a row that ends "gh does not find" and its object.
+NOT_FOUND_WITH_THIS_TOKEN = (
+    "with this token: a private repository it cannot see is not found",
+    "either, and `gh repo create` then fails for it")
+
+#: What `repository_visibility_answer` answers where gh says GitHub has no
+#: such repository (#913): exit 1 with `GH_NOT_FOUND_WORDS` on stderr, the
+#: reading `refuse_unless_not_found` gives `gh repo view` (#609). GitHub
+#: gives a private repository this token cannot see the same answer
+#: (`NOT_FOUND_WITH_THIS_TOKEN`).
+REPOSITORY_NOT_FOUND = "not-found"
 
 
 def visibility_in(answer: str) -> str | None:
@@ -1821,26 +1855,50 @@ def visibility_in(answer: str) -> str | None:
     return seen if seen in VISIBILITY_CHOICES else None
 
 
-def repository_visibility(repository: str) -> str | None:
-    """`repository`'s visibility on GitHub, one of `VISIBILITY_CHOICES`, or
-    None when it cannot be read: `gh repo view` failed (a repository the
-    token cannot see, a rate limit, an outage such as an `HTTP 502`) or
-    answered anything `visibility_in` does not read as one of the three.
+def repository_visibility_answer(repository: str) -> str | None:
+    """`repository`'s visibility on GitHub, one of `VISIBILITY_CHOICES`;
+    `REPOSITORY_NOT_FOUND` where gh's own answer is that this token finds no
+    such repository (`gh_said_not_found`); or None when it cannot be read:
+    `gh repo view` failed otherwise (a rate limit, a token an organisation's
+    SAML enforcement refuses, an outage such as an `HTTP 502`) or answered
+    anything `visibility_in` does not read as one of the three.
 
     THE ONE READER of the scaffold and `family.py` (#660), on the model of
-    `adopt-project.py`'s `_root_visibility` (#602). A `gh` that cannot be
-    started is NOT answered here: its `OSError` reaches the caller, because
-    the scaffold refuses a missing `gh` as `gh-not-found` before it creates
-    anything (#537), and `family.py`, which asks only after `gh` has made or
-    edited the holder, takes it as unread. Never asked of a
-    `--local-remote-dir` repository, which has no visibility.
+    `adopt-project.py`'s `_root_visibility` (#602); `repository_visibility`
+    is this reading with not-found taken as unread. NOT-FOUND IS TOLD APART
+    (#913) for the scaffold's root under `--reuse-empty-repo`, whose
+    visibility the legs it creates inherit: a root not there yet is the
+    ordinary run, which creates it, and a root whose read failed is one
+    whose visibility nobody knows, which the scaffold says before its plan.
+    The command is run here rather than by `run`, as `organisation_plan`'s
+    is, because gh's answer is read from its own stderr.
+
+    A `gh` that cannot be started is NOT answered here: its `OSError`
+    reaches the caller, because the scaffold refuses a missing `gh` as
+    `gh-not-found` before it creates anything (#537), and `family.py`, which
+    asks only after `gh` has made or edited the holder, takes it as unread.
+    Never asked of a `--local-remote-dir` repository, which has no
+    visibility.
     """
-    try:
-        answer = run(["gh", "repo", "view", repository, "--json",
-                      "visibility"])
-    except CommandFailed:
-        return None
-    return visibility_in(answer)
+    probe = subprocess.run(
+        ["gh", "repo", "view", repository, "--json", "visibility"],
+        capture_output=True, text=True, encoding="utf-8", errors="replace",
+        check=False)
+    if probe.returncode != 0:
+        return REPOSITORY_NOT_FOUND if gh_said_not_found(probe) else None
+    return visibility_in(probe.stdout or "")
+
+
+def repository_visibility(repository: str) -> str | None:
+    """`repository`'s visibility on GitHub, one of `VISIBILITY_CHOICES`, or
+    None when it cannot be read: `repository_visibility_answer`, with gh's
+    not-found answer taken as unread too. Its callers ask it of a repository
+    they have just found, or made, so not finding it is not "absent": it is
+    a repository the token cannot see, or a read that went wrong (#660).
+    A `gh` that cannot be started raises, as there.
+    """
+    seen = repository_visibility_answer(repository)
+    return None if seen == REPOSITORY_NOT_FOUND else seen
 
 
 def organisation_plan(org: str) -> str | None:
@@ -1897,8 +1955,10 @@ def free_plan_secrets_note(org: str, root: str,
     - Private or internal: the plan is asked. On `free` it is
       `FREE_PLAN_HINT`, with `root` alone as the repository that is private,
       as the scaffold and adopt name it since #602 and `family.py init` since
-      #660; where the plan is unread, `FREE_PLAN_UNREAD`; on any other
-      plan, and where the owner is not an organisation, None.
+      #660; where the plan is unread, `FREE_PLAN_UNREAD`, or for an internal
+      root `FREE_PLAN_UNREAD_INTERNAL`, which says the plan cannot be what
+      makes the hint apply to it (#913); on any other plan, and where the
+      owner is not an organisation, None.
 
     The scaffold passes the run's visibility for a root it created and
     GitHub's for one it reused, adopt GitHub's for the root it adopted, and
@@ -1912,6 +1972,8 @@ def free_plan_secrets_note(org: str, root: str,
     plan = organisation_plan(org)
     if plan == "free":
         return FREE_PLAN_HINT.format(org=org, repo=root, what=f"{root} is")
+    if plan is None and visibility == "internal":
+        return FREE_PLAN_UNREAD_INTERNAL.format(org=org, root=root)
     if plan is None:
         return FREE_PLAN_UNREAD.format(org=org, root=root,
                                        visibility=visibility)
