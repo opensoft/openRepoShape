@@ -417,19 +417,22 @@ class Family:
         refuse a `family.yaml` holding a change HEAD does not
         (`_checked_manifest_committed`), and this refusal is only reached
         once the shape it names is committed.
+
+        THE `members:` LINE is `members:`, `members: []`, or `members:` and
+        one word the holder's reader reads as null (`_opens_members`, #920),
+        so `members: null` is found as `members:` is.
+
+        EVERY SUCH LINE IS COUNTED FIRST, and anything but one is refused
+        (#920, lane 5's review of #957, SHOULD 1). The rewrite stopped at the
+        first and never counted a second, so a `members: []` above `name:`,
+        with the real block still at the end, which the reader takes as the
+        last of two keys and the holder's gate passes, was cut off there with
+        exit 0: every key below it went, and the gate then failed the
+        commit. With the null words found, `members: null` did the same.
         """
         text = self.path.read_text(encoding="utf-8")
         lines = text.splitlines()
-        out: list[str] = []
-        seen = 0
-        for line in lines:
-            if line.rstrip() in ("members:", "members: []"):
-                seen += 1
-                out.append("members: []" if not rows else "members:")
-                for row in rows:
-                    out.extend(_member_lines(row))
-                break
-            out.append(line)
+        seen = sum(1 for line in lines if _opens_members(line))
         if seen != 1:
             raise Refusal(
                 "family-members-unrecognised",
@@ -440,7 +443,49 @@ class Family:
                 "file and everything below it belongs to this tool; fix it by "
                 "hand this once and commit that (`git commit -- "
                 f"{MANIFEST}`), then run the same command again.")
+        out: list[str] = []
+        for line in lines:
+            if _opens_members(line):
+                out.append("members: []" if not rows else "members:")
+                for row in rows:
+                    out.extend(_member_lines(row))
+                break
+            out.append(line)
         return "\n".join(out) + "\n"
+
+
+def _opens_members(line: str) -> bool:
+    """Whether `line` is the `members:` line `Family.rewritten` rewrites
+    from: `members:`, `members: []`, or `members: <word>` where the word is
+    one the holder's own reader reads as null (#920).
+
+    THE READER IS ASKED OF THE WORD, NOT A LIST OF SPELLINGS, as `_member_id`
+    asks it. The finder took only `members:` and `members: []`, while the
+    reader reads the words `null`, `Null` and `NULL`, and `~`, as the null a
+    bare `members:` is, and `Family.open` and the holder's own
+    `validate-family.py` both read that null as no members. So a holder
+    whose `family.yaml` said `members: null` passed its own gate, and `add`
+    refused it as having no `members:` line at all
+    (`family-members-unrecognised`) and wrote nothing.
+
+    ONE WORD, AS THE TWO SPELLINGS ARE: the line is taken as strictly as
+    `members:` always was, at the margin, with one space before the word
+    and nothing after it but blanks. A comment after it is still a hand edit
+    this tool does not rewrite, which would drop it
+    (`test_a_manifest_this_tool_will_not_rewrite_is_refused_before_the_mount`
+    holds `members:  # edited by hand` to that), and an indented
+    `  members: null` is a key of another mapping.
+    """
+    text = line.rstrip()
+    if text in ("members:", "members: []"):
+        return True
+    word = text[len("members: "):]
+    if not text.startswith("members: ") or word.split() != [word]:
+        return False
+    try:
+        return parse_yaml(f"members: {word}\n") == {"members": None}
+    except YamlError:
+        return False
 
 
 #: What `add`, `bump` and `remove` say under `family-members-unreadable`.
@@ -6615,7 +6660,9 @@ class MountRollback:
     NEVER OVER A COMMIT THAT LANDED. HEAD is recorded too, and if it has
     moved the one commit happened: undoing the tree under it would leave a
     working copy that contradicts its own history, so nothing is undone and
-    the sentence says so.
+    the sentence says so. The one commit `add` takes back itself, one whose
+    gitlink git recorded somewhere other than the mount path (#920), is
+    taken back by `take_back` first, so `undo` finds HEAD where it was.
 
     "EXACTLY AS IT WAS" ONLY FOR WHAT WAS COMPARED (#302). Each step puts
     back what it recorded, by its exact name. git can stage under a name no
@@ -6780,6 +6827,43 @@ class MountRollback:
                 parts.append(f"{said}: {shown}{more}")
         return "; ".join(parts)
 
+    def take_back(self, made: str) -> tuple[bool, str]:
+        """Take `made`, the commit this command made, back off the branch.
+        Returns `(whether it was, the sentence that says so, or why not)`
+        (#920).
+
+        ONLY THIS COMMAND'S ONE COMMIT. The branch moves back to the commit
+        HEAD named before the mount, or is left with no commit, as it was,
+        only where `made` is one commit on that one (a root commit where
+        there was none), and only while the branch still names `made`: `git
+        update-ref` is given `made` as the value it must find there, so a
+        commit anything else put on the branch is never lost. Nothing else
+        moves. The index and the work tree keep what the commit took, which
+        is what `undo` was recorded to put back.
+        """
+        before = [self.head] if self.head is not None else []
+        try:
+            parents = git_out(["rev-list", "--parents", "--no-walk", made],
+                              cwd=self.root).split()[1:]
+            if parents != before:
+                on = (f"one commit on {self.head[:12]}, where this command "
+                      "found the branch" if self.head is not None else
+                      "a first commit, on a branch that had none")
+                return False, (f" It was NOT taken back: {made[:12]} is not "
+                               f"{on}, and this tool takes back no commit it "
+                               "did not make.")
+            moved = ["update-ref", "-m",
+                     f"family.py add: {made[:12]} taken back"]
+            git_out([*moved, "HEAD", self.head, made] if self.head is not None
+                    else [*moved, "-d", "HEAD", made], cwd=self.root)
+        except Refusal as exc:
+            return False, f" It was NOT taken back: {_reason(exc)}."
+        if self.head is None:
+            return True, (" It has been taken back: the branch has no commit "
+                          "again.")
+        return True, (" It has been taken back: the branch names "
+                      f"{self.head[:12]} again.")
+
     def undo(self) -> str:
         """Put the holder back. Returns the sentence a refusal ends with:
         what was put back, or — if any of it could not be — what is left,
@@ -6883,6 +6967,84 @@ def _rewrite_members(family: Family, rows: list[dict], what: str) -> None:
             "room, then run the same command again.") from exc
 
 
+#: What `member-gitlink-misplaced` tells the human to do (#920), then how it
+#: ends: where the branch is back where `add` found it, so `undo` has put the
+#: holder back, and where it is not.
+GITLINK_MISPLACED_REMEDIATION = (
+    "Remediation: `add` asks git for the gitlink at `members/<Project>` and "
+    "nowhere else, and every cause known to record it elsewhere, another "
+    "spelling of `members/` in the index, in HEAD or on disk, is refused "
+    "before the mount, so this cause is not one of them. Find what moved it, "
+    "such as a hook or a setting like `core.ignorecase`, and mend that")
+GITLINK_TAKEN_BACK = ", then run the same command again."
+GITLINK_NOT_TAKEN_BACK = (
+    ". The commit and the mount are still there, for the reason above: `git "
+    "log` shows what the branch holds, and taking them out is yours to do "
+    "before you run the same command again.")
+
+
+def _gitlinks_at(root: Path, commit: str | None) -> dict[str, str]:
+    """`{path: the commit it records}` of every gitlink `commit` holds, by
+    `_tree_entries` with no pathspec; none for no commit."""
+    if commit is None:
+        return {}
+    return {name: oid for name, kind, oid in _tree_entries(root, commit, True)
+            if kind == INDEX_ENTRY_KINDS[0o160000]}
+
+
+def _checked_gitlink_committed(root: Path, project: str, path: str,
+                               commit: str, head: str,
+                               rollback: MountRollback) -> None:
+    """Refuse `member-gitlink-misplaced` unless `head`, the commit `add` has
+    just made, records a gitlink at exactly `path`, after taking that commit
+    back (`MountRollback.take_back`) for the caller's `undo` (#920).
+    `commit` is the member's, the one the pin records.
+
+    THE COMMIT ITSELF IS ASKED, AFTER THE FACT. `.gitmodules` and
+    `family.yaml` name `members/<Project>`, but git records the gitlink where
+    it chooses: with `core.ignorecase` set and HEAD holding
+    `Members/README.md` that the index no longer held, `add` committed it as
+    `Members/<Project>` with exit 0, and a fresh clone left the member empty
+    (#363). #574 refuses each such case variant before the mount, and this
+    is option 2 of #363, which PR #574 left out: whatever the cause, a
+    commit that records no gitlink at the path is never left on the branch.
+    It reads the whole tree of the commit, and of the one the branch named
+    before the mount (`rollback.head`), with no pathspec (`git ls-tree -r`),
+    so no pathspec setting can narrow either. The path git chose is each
+    gitlink the commit holds at a path the earlier one does not, or that
+    records `commit`, so another member's gitlink, moved by the same cause,
+    is never named as this one's (lane 5's review of #957, NIT 2).
+
+    A BRANCH BACK WHERE `add` FOUND IT holds no commit of this command's: a
+    `post-commit` hook took it off. That is said as it is, and `undo` puts
+    the holder back as for any refusal before the commit (NIT 1).
+    """
+    if head == rollback.head:
+        raise Refusal(
+            "member-gitlink-misplaced",
+            f"the branch names {head[:12]} again, where this command found "
+            "it: the commit this command made is not on it, so no gitlink at "
+            f"`{path}` is either, while {GITMODULES} and {MANIFEST} name "
+            f"`{path}`.", GITLINK_MISPLACED_REMEDIATION + GITLINK_TAKEN_BACK)
+    made = _gitlinks_at(root, head)
+    if path in made:
+        return
+    before = _gitlinks_at(root, rollback.head)
+    chosen = [name for name, oid in made.items()
+              if name not in before or oid == commit]
+    where = (f"{project}'s gitlink at "
+             + " and ".join(f"`{shown_path(name)}`" for name in chosen)
+             + f", not at `{path}`" if chosen else
+             f"no new gitlink, at `{path}` or anywhere else")
+    taken, said = rollback.take_back(head)
+    raise Refusal(
+        "member-gitlink-misplaced",
+        f"the commit {head[:12]} records {where}, while {GITMODULES} and "
+        f"{MANIFEST} name `{path}`, so a fresh clone would leave the member "
+        "empty." + said, GITLINK_MISPLACED_REMEDIATION
+        + (GITLINK_TAKEN_BACK if taken else GITLINK_NOT_TAKEN_BACK))
+
+
 def _mount_and_pin(family: Family, repository: str, project: str, path: str,
                    url: str, protocol: list[str], at: str | None,
                    rollback: MountRollback,
@@ -6953,6 +7115,8 @@ def _mount_and_pin(family: Family, repository: str, project: str, path: str,
         "project: its own assembly root, its own legs, its own gate. "
         "Membership confers nothing.\n",
         [GITMODULES, path, MANIFEST], trailers=trailers)
+    _checked_gitlink_committed(family.root, project, path, commit, head,
+                               rollback)
     return commit, digest, project_id, head
 
 
@@ -7109,7 +7273,9 @@ def cmd_add(args) -> int:
     (`_probe_member`, of a throwaway clone), then the member's id against the
     rows (`_checked_member_id`, #330), and only then the mount, the pin and the
     commit (`_mount_and_pin`), inside a `MountRollback` that puts the holder
-    back if anything still fails and says what it put back.
+    back if anything still fails and says what it put back, the commit
+    included where it records the gitlink anywhere but the mount path
+    (`_checked_gitlink_committed`, #920).
 
     WHEN TWO APPLY, THE EARLIER ONE IS SAID. The holder's refusals need
     nothing cloned, so they come first: a section under another name that
