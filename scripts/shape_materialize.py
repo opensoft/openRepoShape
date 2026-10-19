@@ -5172,10 +5172,18 @@ CARRIED_BY = {"ASSEMBLY_REPOSITORY": "ORG", "SPEC_REPOSITORY": "ORG",
 
 
 def _unread_sentences(values: dict, what: dict, template_dir: Path,
-                      refusal: YamlError) -> list[str]:
+                      refusal: YamlError, manifest: str = MANIFEST_TEMPLATE,
+                      carried_by: dict | None = None,
+                      reader: str = "the project's own YAML reader"
+                      ) -> list[str]:
     """A sentence for each value of `what` that a line of the manifest the
     project's own reader refuses carries, in the reader's words, and the
     reader's `refusal` of the whole file where no such line is found.
+
+    `manifest`, `carried_by` (`CARRIED_BY` when None) and `reader`, the
+    words that name the reader, are the project's unless the caller gives
+    its own: `family.py init` asks it of the holder's `family.yaml`, whose
+    `repository:` carries `--org` (#929).
 
     THE VALUE IS NAMED AGAIN (#708). Until #392 and #393 the reader took
     `repository: @x/Atlas` for text, so `--org @x` reached the validator,
@@ -5188,24 +5196,23 @@ def _unread_sentences(values: dict, what: dict, template_dir: Path,
     `_misread_rows` reads one, and a value is named where the reader
     refuses one of its lines.
     """
+    carried_by = CARRIED_BY if carried_by is None else carried_by
     said: dict[str, list[str]] = {}
-    template = (Path(template_dir) / MANIFEST_TEMPLATE).read_text(
-        encoding="utf-8")
+    template = (Path(template_dir) / manifest).read_text(encoding="utf-8")
     for line in template.splitlines():
-        carried = {CARRIED_BY.get(key, key) for key in _placeholders_of(line)}
+        carried = {carried_by.get(key, key) for key in _placeholders_of(line)}
         named = [key for key in what if key in carried and key in values]
         if not named or line.lstrip().startswith("#"):
             continue
-        reading = _reading_of(render(line, values, MANIFEST_TEMPLATE))
+        reading = _reading_of(render(line, values, manifest))
         if isinstance(reading, YamlError):
             for key in named:
                 said.setdefault(key, []).append(f"{reading}.")
     if not said:
-        return ["the manifest this run would write is a file the project's "
-                f"own YAML reader refuses: {refusal}."]
-    return [f"{what[key]} is {str(values[key])!r}, which the project's own "
-            f"YAML reader refuses: {' '.join(words)}"
-            for key, words in said.items()]
+        return ["the manifest this run would write is a file "
+                f"{reader} refuses: {refusal}."]
+    return [f"{what[key]} is {str(values[key])!r}, which {reader} refuses: "
+            f"{' '.join(words)}" for key, words in said.items()]
 
 
 def _validator_notes(values: dict, policy: NamingPolicy, template_dir: Path,
@@ -5286,13 +5293,17 @@ MANIFEST_INVALID_REMEDIATION = (
 #: Where the project's own YAML reader refuses the manifest before its
 #: validator can be asked (#708), the words are the reader's, and a sentence
 #: may name no value (`_unread_sentences`), so the remedy says neither that
-#: they are the validator's nor that a value is always named.
-MANIFEST_UNREADABLE_REMEDIATION = (
+#: they are the validator's nor that a value is always named. Its first
+#: sentence is `UNREADABLE_CHOICE`, which `family.py init`'s remedy for the
+#: holder's reader opens with too (#929).
+UNREADABLE_CHOICE = (
     "Remediation: choose another value for each one named; where none is "
-    "named, the text the reader's words quote holds it. The words are the "
-    "project's own YAML reader's, which refuses the manifest this run would "
-    "write before its validate-manifest.py can be asked, and a project "
-    "whose manifest it refuses is one whose first bootstrap would fail.")
+    "named, the text the reader's words quote holds it.")
+MANIFEST_UNREADABLE_REMEDIATION = (
+    f"{UNREADABLE_CHOICE} The words are the project's own YAML reader's, "
+    "which refuses the manifest this run would write before its "
+    "validate-manifest.py can be asked, and a project whose manifest it "
+    "refuses is one whose first bootstrap would fail.")
 #: The remedy for each kind of problem, so a refusal names it by its kind
 #: (#708), with no conditional nested in another.
 KIND_REMEDIATIONS = {KIND_MISREAD: MANIFEST_MISREAD_REMEDIATION,
