@@ -143,9 +143,12 @@ from shape_materialize import (  # noqa: E402
 from shape_materialize import (  # noqa: E402
     assembly_root_paths, neutral_pin_path, shape_path_collisions,
 )
-# The project's own reader, and the writer of the double-quoted scalars it
-# reads back, asked of each `neutral_product_pins:` entry (#516).
-from repo_shape import YamlError, double_quoted, parse_yaml  # noqa: E402
+# The one spelling of a `neutral_product_pins:` entry (#516), which
+# `adopt-project.py execute` calls too, so the same `--pin` writes the same
+# line whichever tool made the root (#924).
+from shape_materialize import (  # noqa: E402
+    neutral_pin_entry as _neutral_pin_entry,
+)
 # What both runs ask before the first write, as `family.py init` asks it
 # (#609): each folder this run makes, each working tree it writes, and gh's
 # not-found answer as the one failure of `gh repo view` that means absent.
@@ -2139,34 +2142,16 @@ def _neutral_product_pins(products) -> str:
     first CI run was red. `adopt-project.py execute` wrote the same line
     (#514). The list is a block placeholder, so `render` writes it as it
     stands, and nothing else quotes it.
+
+    EACH ENTRY IS `shape_materialize.neutral_pin_entry`'s, the one function
+    `adopt-project.py execute` calls too (#924). The scaffold spelled its
+    own, bare wherever the reader read it back, so `0x1F`, `1_000`, `1e3`,
+    `3dGlass` and `-x` were bare here and double-quoted in an adopted root.
     """
     if not products:
         return "[]"
     return "\n" + "\n".join(f"  - {_neutral_pin_entry(product)}"
                             for product in products)
-
-
-def _neutral_pin_entry(product: str) -> str:
-    """One `neutral_product_pins:` entry: `product` bare where the project's
-    reader reads that entry back as `product`, and `double_quoted` (#284)
-    where it does not.
-
-    THE READER IS ASKED, as `family.py` asks it of a member's id (#259),
-    rather than a list of the words it takes for something else, and it is
-    asked of the LIST ENTRY: `  - - a` is a list of its own, where `id: - a`
-    is the text (#715; `id: -` is refused since #393). A name it reads back
-    bare, `openGlass` and every other plain name, is the line it always was;
-    `007`, `2026`, `1.5`, `true` and `null` are double-quoted, and a
-    double-quoted name always reads back.
-    """
-    try:
-        if parse_yaml(f"neutral_product_pins:\n  - {product}\n") \
-                == {"neutral_product_pins": [product]}:
-            return product
-    except YamlError:
-        # A spelling the reader refuses is not read back as anything.
-        pass
-    return double_quoted(product)
 
 
 def _scaffold(args) -> int:
