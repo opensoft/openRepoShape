@@ -106,6 +106,9 @@ from shape_materialize import (  # noqa: E402
 )
 # The leg-path rule `adopt-project.py` asks of its own paths (#179).
 from shape_materialize import refuse_bad_leg_paths  # noqa: E402
+# And its question of one segment, asked of `--project`: the one function
+# `family.py init` asks of `--family` (#688, #989).
+from shape_materialize import refuse_an_unholdable_name  # noqa: E402
 # The root's visibility and the Free-plan secrets note, asked as `family.py`
 # asks them of its holder (#660).
 from shape_materialize import (  # noqa: E402
@@ -377,7 +380,10 @@ def main(argv: list[str] | None = None) -> int:
     # parsed (`folder_flag_path`).
     parser.add_argument("--local-remote-dir", default=None,
                         help="create bare repositories here instead of calling "
-                             "`gh repo create` (the TEST path; no network)")
+                             "`gh repo create` (the TEST path; no network). "
+                             "An empty value is refused as "
+                             "`local-remote-dir-no-path`, and `.` means the "
+                             "directory the run stands in.")
     parser.add_argument("--no-push", action="store_true")
     parser.add_argument("--reuse-empty-repo", action="store_true",
                         help="if <org>/<Project>, <Project>-spec or "
@@ -430,7 +436,9 @@ def main(argv: list[str] | None = None) -> int:
                              "`pin-source-not-a-clone`.")
     parser.add_argument("--work-dir", default=None,
                         help="where the working trees are built "
-                             "(default: a temporary directory)")
+                             "(default: a temporary directory). An empty "
+                             "value is refused as `work-dir-no-path`, and `.` "
+                             "means the directory the run stands in.")
     parser.add_argument("--no-next-steps", action="store_true",
                         help="leave out the closing NEXT STEPS (the clone, "
                              "the cd and `make bootstrap`): setup-project.py "
@@ -972,31 +980,17 @@ def _refuse_bad_id(project_id: str, given: str | None, policy,
     north_wind` was refused for its id, and the remedy's retype then met
     `naming-unclassified`, which no `--id` mends. So a passed id is refused
     only once `--project` is a name the naming policy holds as an assembly
-    root; one it does not is refused here as `_check_one_name` refuses the
-    assembly root's name, which `_check_declared_names` asks later, after
-    `_declaration`. The question is the policy's answer for the name in the
-    `assembly` role with nothing declared, and NOTHING DECLARED TURNS ITS NO
-    INTO A YES (#972's review, M1): `classify` answers None only when
-    `matches` finds no pattern; a form decided by its characters alone
-    (`UNAMBIGUOUS_FORMS`) carries the same role whatever is pinned; and a
-    pin makes a descendant form the assembly root only where the name also
-    satisfies the `project-leg/assembly` form, which it answers with no pin
-    too. So `Foo-Install` is refused here, and so are `Atlas-spec` and
-    `Atlas-code`, a leg's form with a pin or without: `--project Atlas-spec
-    --id foo_bar` was told to retype the id, and `--id foo-bar` then met
-    `naming-role-mismatch`. A name a pin can make the root, `MedxGlass`,
-    passes here, and every answer is asked with no process started. A
-    derived id keeps its own refusal: its remedy is already the naming
-    rule."""
+    root (`_refuse_a_name_no_root_can_have`), and then one a Windows disk
+    can make a folder of (`_refuse_an_unholdable_project_name`, #989):
+    `--project NUL --id foo_bar` is told the name, which no `--id` mends
+    either. A derived id keeps its own refusal: its remedy is already the
+    naming rule."""
     if PROJECT_ID_RE.match(project_id):
         return
     pattern = PROJECT_ID_RE.pattern
     if given is not None:
-        found = policy.classify(project, "assembly")
-        if found is None:
-            raise _unclassified(project)
-        if not accepts_role(found, "assembly"):
-            raise _role_mismatch(project, found, "assembly")
+        _refuse_a_name_no_root_can_have(policy, project)
+        _refuse_an_unholdable_project_name(policy, project)
         raise Refusal("scaffold-bad-id",
                       f"--id {project_id!r} must match {pattern}",
                       PASSED_ID_REMEDIATION)
@@ -1004,6 +998,77 @@ def _refuse_bad_id(project_id: str, given: str | None, policy,
                   f"--id (not given, so {ID_DERIVED_FROM}) is "
                   f"{project_id!r}, which must match {pattern}",
                   DERIVED_ID_REMEDIATION)
+
+
+def _refuse_a_name_no_root_can_have(policy, project: str) -> None:
+    """`--project` is a name the naming policy holds as an assembly root, or
+    this refuses it as `_check_one_name` refuses the assembly root's name,
+    which `_check_declared_names` asks later, after `_declaration`. Asked
+    early only where another refusal would speak first otherwise: a passed
+    id that is no id (`_refuse_bad_id`, #911), or a name no Windows disk can
+    make a folder of (`_refuse_an_unholdable_project_name`, #989).
+
+    The question is the policy's answer for the name in the `assembly` role
+    with nothing declared, and NOTHING DECLARED TURNS ITS NO INTO A YES
+    (#972's review, M1): `classify` answers None only when `matches` finds
+    no pattern; a form decided by its characters alone (`UNAMBIGUOUS_FORMS`)
+    carries the same role whatever is pinned; and a pin makes a descendant
+    form the assembly root only where the name also satisfies the
+    `project-leg/assembly` form, which it answers with no pin too. So
+    `Foo-Install` is refused here, and so are `Atlas-spec` and `Atlas-code`,
+    a leg's form with a pin or without: `--project Atlas-spec --id foo_bar`
+    was told to retype the id, and `--id foo-bar` then met
+    `naming-role-mismatch`. A name a pin can make the root, `MedxGlass`,
+    passes here, and every answer is asked with no process started."""
+    found = policy.classify(project, "assembly")
+    if found is None:
+        raise _unclassified(project)
+    if not accepts_role(found, "assembly"):
+        raise _role_mismatch(project, found, "assembly")
+
+
+#: What `scaffold-bad-project-name` is told to do (#989), in the words
+#: `family.py init` gives `family-bad-holder-name` (#688), of what
+#: `--project` names.
+PROJECT_NAME_REMEDIATION = (
+    "Remediation: nothing was created, and `--dry-run` refuses the same. "
+    "Choose another --project. It names the assembly root: its repository, "
+    "the folder it is cloned into, its working tree and, under "
+    "--local-remote-dir, its bare repository `<Project>.git`; and a "
+    "root is cloned on Windows too, where no file or folder can be called a "
+    "device name (`CON`, `PRN`, `AUX`, `NUL`, `COM1`-`COM9`, `LPT1`-`LPT9`, "
+    "in any case, with or without an extension), and a name ending in a dot "
+    "or a space is made under another name. There is no --force.")
+
+
+def _refuse_an_unholdable_project_name(policy, project: str) -> None:
+    """`scaffold-bad-project-name`: a `--project` no Windows disk can make a
+    folder of (#989), before `_declaration`, the first place a `--pin` can
+    reach `gh`, so before anything exists and under `--dry-run` alike.
+
+    `--project NUL` and `Con`, each one CamelCase token, which is all the
+    naming policy asks, made the three repositories, the working trees and,
+    under `--local-remote-dir`, the bare `NUL.git`: a root no Windows disk
+    can clone, into a folder of its name. `family.py init` refused the same
+    `--family` as `family-bad-holder-name` (#688); the question is the one
+    function both ask (`shape_materialize.refuse_an_unholdable_name`). The
+    legs' names are not asked: a device name is the whole name, and
+    `NUL-spec` is a folder Windows makes.
+
+    THE NAMING REFUSAL SPEAKS FIRST, as `init` asks `_classify_family_name`
+    before its own: a name this refuses that the policy refuses too
+    (`NUL.git`, `Nul.`) is refused as the policy refuses it, whatever the
+    id, and only a name the policy holds as an assembly root is told it is
+    a device name."""
+    try:
+        refuse_an_unholdable_name(
+            "scaffold-bad-project-name", "--project", project,
+            names="the assembly root and the folders the scaffold makes "
+                  "for it",
+            remediation=PROJECT_NAME_REMEDIATION)
+    except Refusal:
+        _refuse_a_name_no_root_can_have(policy, project)
+        raise
 
 
 #: How `scaffold-topic-too-long` and `scaffold-org-too-long` are told to go
@@ -2248,6 +2313,10 @@ def _scaffold(args) -> int:
     _refuse_an_unwritable_clone_url(local, urls["assembly"])
     policy = NamingPolicy.load(SHAPE_ROOT / "contracts" / "repository-naming.yaml")
     _refuse_bad_id(project_id, args.id, policy, project)
+    # A NAME NO WINDOWS DISK CAN MAKE A FOLDER OF (#989), as `init` asks it
+    # of `--family`: before `_declaration` and before a passed id's alphabet,
+    # so the name speaks before the id, as it does in `_refuse_bad_id`.
+    _refuse_an_unholdable_project_name(policy, project)
     # AND THE ALPHABET A COMMAND LINE'S VALUE IS HELD TO, after the id's own
     # rule (#911), so `--id ''` is named for the id it is not; this still
     # refuses what `PROJECT_ID_RE.match` lets through, a trailing line break.
