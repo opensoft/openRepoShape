@@ -217,7 +217,7 @@ import subprocess
 import sys
 import tempfile
 from pathlib import Path, PurePosixPath
-from typing import NamedTuple
+from typing import Callable, NamedTuple
 
 SHAPE_ROOT = Path(__file__).resolve().parent
 sys.path.insert(0, str(SHAPE_ROOT / "scripts"))
@@ -368,6 +368,12 @@ from repo_shape import SHA256_RE, repo_basename  # noqa: E402
 from shape_materialize import pin_source_not_top_level  # noqa: E402
 # One reading of an `origin`, shared with `shape-doctor.py` (#521).
 from repo_shape import origin_is_a_path, url_repository  # noqa: E402
+# The one spelling of a `neutral_product_pins:` entry, which
+# `scaffold-project.py` calls too, and the plain scalar it and `y` write a
+# text bare by (#924).
+from shape_materialize import (  # noqa: E402
+    PLAIN_SCALAR_RE, neutral_pin_entry as _neutral_pin_entry,
+)
 
 #: The keys `plan` records for each pin, in the order it writes them, and the
 #: value of `contracts/neutral-product-pin.yaml` each one fills.
@@ -1021,9 +1027,11 @@ FILTER_REPO_HINT = (
 # `tests/test_adopt_plan.py` round-trips a plan through both, which is what
 # keeps the writer and the reader honest about each other.
 
-#: Ends at `\Z`, not `$`: `$` also matches before a FINAL newline, and wrote a
-#: file named `Icon\n` bare, over two lines of the plan (#199).
-_PLAIN_RE = re.compile(r"^[A-Za-z_.][A-Za-z0-9_./@:+-]*\Z")
+#: `shape_materialize`'s plain scalar since #924, the rule `neutral_pin_entry`
+#: writes a pin's product bare by, so the manifest's `neutral_product_pins:`
+#: entry is bare only where `y` writes the plan's `product:` bare. It ends
+#: at `\Z`, not `$` (#199).
+_PLAIN_RE = PLAIN_SCALAR_RE
 
 
 def loader_reading(line: str):
@@ -1646,6 +1654,71 @@ def _read_for_the_history(source: "Source", tree: list,
 
 
 # ---------------------------------------------------------------------------
+# Whether something is at a path, or the system would not say (#430)
+# ---------------------------------------------------------------------------
+
+#: The `OSError`s that `Path.is_file()` and `Path.is_dir()` answered False to
+#: on Python 3.9 to 3.13 (pathlib's `_ignore_error`), because each means there
+#: is nothing at the name to open: no such file, a part of the path that is
+#: not a directory, a bad descriptor, a symlink loop, and Windows' "not
+#: ready", "invalid name" and "cannot resolve". Every other one was raised.
+#: `scripts/bump-leg.py`'s set (#383), and the one every copy is held to.
+_ABSENT_ERRNOS = (errno.ENOENT, errno.ENOTDIR, errno.EBADF, errno.ELOOP)
+_ABSENT_WINERRORS = (21, 123, 1921)
+
+
+def _absent(exc: OSError) -> bool:
+    """Whether `exc`, from a `stat`, means nothing is at the name
+    (`_ABSENT_ERRNOS`, `_ABSENT_WINERRORS`), and not that the operating
+    system would not say (#430)."""
+    return (exc.errno in _ABSENT_ERRNOS
+            or getattr(exc, "winerror", None) in _ABSENT_WINERRORS)
+
+
+def _is_a(path: Path, kind: Callable[[int], bool]) -> bool:
+    """Whether `path` is there and of `kind` (`stat.S_ISREG`, `stat.S_ISDIR`),
+    raising the `OSError` of a `stat` the operating system REFUSED (#430),
+    as `scripts/bump-leg.py`'s `_is_a` asks it (#383).
+
+    NOT `Path.exists()`, `is_file()` OR `is_dir()`, whose answer depends on
+    the Python. Up to 3.13 they raised a refused `stat` (`PermissionError`)
+    and answered False only when nothing was there; from 3.14 they call
+    `os.path.exists` and the like, which answer False to ANY `OSError`. So a
+    `--source` under a directory this user cannot search ended `plan` in a
+    traceback on 3.12, and on 3.14 was "neither a path that exists nor an
+    `org/repo`", or, spelled `org/repo`, was cloned from GitHub; and a plan's
+    recorded clone there "no longer exists" and was cloned again. Asked
+    here, every Python answers as 3.9 to 3.13 did, and the caller names a
+    refused `stat`. A name the operating system cannot take at all (a NUL
+    in it) is nothing there, as `exists()` answered it.
+    """
+    try:
+        mode = path.stat().st_mode
+    except OSError as exc:
+        if _absent(exc):
+            return False
+        raise
+    except ValueError:
+        # a name the operating system cannot take at all (a NUL in it)
+        return False
+    return kind(mode)
+
+
+def _is_there(path: Path) -> bool:
+    """Whether anything is at `path`, following a symlink as `Path.exists()`
+    does, asked as `_is_a` asks it: the `OSError` of a refused `stat` is
+    raised, never read as nothing there (#430)."""
+    return _is_a(path, lambda _mode: True)
+
+
+def _os_reason(exc: OSError) -> str:
+    """The operating system's own words for `exc` (`Permission denied`), or
+    the exception's name where it gave none, as `validate-pins.py`'s
+    `_cannot_read` words them."""
+    return exc.strerror or type(exc).__name__
+
+
+# ---------------------------------------------------------------------------
 # What a `--source` names, and where its clone goes (#652)
 # ---------------------------------------------------------------------------
 
@@ -1668,6 +1741,20 @@ SOURCE_UNRESOLVABLE = "source-unresolvable"
 #: The refusal of a local source that is no repository's top-level
 #: directory: a file, or a directory inside a repository (#796).
 SOURCE_NOT_TOP_LEVEL = "source-not-top-level"
+#: The refusal of a `--source`, or a plan's `source.local_path`, whose path
+#: this user cannot reach: its `stat` refused for another reason than that
+#: nothing is there (#430). Never read as a path that is not there.
+SOURCE_UNREADABLE = "source-unreadable"
+#: What `source-unreadable` says to do, by the cause: a permission is put
+#: right by the mode or the owner, in `validate-pins.py`'s words for a
+#: directory (`_unreadable_file`), and no `chmod` puts right any other
+#: reason the operating system gave (an I/O error, a name too long).
+SOURCE_UNREADABLE_PERMISSION = (
+    "Make it readable by this user: `chmod u+rx` on the directory and on "
+    "every directory above it, or fix who owns them. ")
+SOURCE_UNREADABLE_OTHER = (
+    "The operating system gave another reason than permission, which no "
+    "`chmod` puts right: put right what it names. ")
 #: What `source-not-top-level` says a source is, and its way out, for a
 #: `--source` and a plan's `source.local_path` alike.
 TOP_LEVEL_ONLY = "a source is the top-level directory of a repository"
@@ -1741,6 +1828,56 @@ def _ambiguous(spec: str, name: str) -> Refusal:
         "clone the repository from GitHub.")
 
 
+def _source_unreadable(named: str, exc: OSError, untold: str,
+                       instead: str = "") -> Refusal:
+    """`source-unreadable` (#430): `named` (`--source '<it>'`, or the plan's
+    `source.local_path`) is a path whose `stat` the operating system refused
+    for another reason than that nothing is there, `<named>: cannot be read
+    (<reason>)`, as `validate-pins.py`'s `_cannot_read` words it; `untold` is
+    what that leaves unknown, which is not guessed. The way out follows the
+    cause (`SOURCE_UNREADABLE_PERMISSION`, `SOURCE_UNREADABLE_OTHER`), and
+    `instead`, another way to name the source, ends it."""
+    advice = (SOURCE_UNREADABLE_PERMISSION if isinstance(exc, PermissionError)
+              else SOURCE_UNREADABLE_OTHER)
+    return Refusal(
+        SOURCE_UNREADABLE,
+        f"{named}: cannot be read ({_os_reason(exc)}), so {untold} cannot be "
+        "told",
+        "Remediation: a path this user cannot reach is never read as one "
+        "that is not there, and nothing was cloned. " + advice
+        + "Then run the same command again"
+        + (f"; or {instead}." if instead else "."))
+
+
+def _source_there(spec: str, candidate: Path, name: str | None) -> bool:
+    """Whether anything is at `candidate`, the path `--source spec` names
+    here, asked as `_is_a` asks it; `name` is the GitHub repository the
+    same spelling names, or None (#430).
+
+    A REFUSED `stat` IS `source-unreadable`, NEVER "NOT THERE". On Python
+    3.9 to 3.13 `Path.exists()` raised it out of `plan`, `check` and
+    `execute`, a `PermissionError` traceback; on 3.14 it answered False, so
+    a path under a directory this user cannot search was "neither a path
+    that exists nor an `org/repo`", and a spelling that is also a name
+    (`acme/Atlas` beside an unsearchable `./acme`) was cloned from GitHub,
+    where `source-ambiguous` refuses it once the path can be seen. Which of
+    the two it names cannot be told, so neither is read, and the url is
+    offered for the repository, as `source-ambiguous` offers it."""
+    try:
+        return _is_there(candidate)
+    except OSError as exc:
+        if name is None:
+            raise _source_unreadable(f"--source {spec!r}", exc,
+                                     "whether a repository is there") from exc
+        here = _spelled("./" + spec.rstrip("/"))
+        raise _source_unreadable(
+            f"--source {spec!r}", exc,
+            f"whether it names the path {here} here, or only the GitHub "
+            f"repository `{name}`,",
+            f"pass `https://{GITHUB_HOST}/{name}` to clone the repository "
+            "from GitHub") from exc
+
+
 def _repository_in_url(spec: str, url: re.Match, candidate: Path) -> str:
     """The `owner/repo` a url `--source` names (`SOURCE_URL_RE`'s `url`):
     refused where its host is not GitHub's, where it names no `owner/repo`,
@@ -1762,7 +1899,7 @@ def _repository_in_url(spec: str, url: re.Match, candidate: Path) -> str:
             SOURCE_UNRESOLVABLE,
             f"--source {spec!r} names no `owner/repo` on {GITHUB_HOST}",
             "Remediation: pass a local clone's path, or `org/repo`.")
-    if url["bare"] and candidate.exists():
+    if url["bare"] and _source_there(spec, candidate, name):
         raise _ambiguous(spec, name)
     return name
 
@@ -1784,6 +1921,11 @@ def _source_spec(spec: str) -> tuple[Path | None, str | None]:
       ALSO a path here, which is refused as `source-ambiguous`, naming both
       spellings: guessing either reads a repository nobody named;
     - anything else is a path, read in place where it exists.
+    Whether a path is there is asked of the disk by `_source_there`, which
+    refuses a `stat` the operating system refused for another reason than
+    that nothing is there as `source-unreadable` (#430): a path this user
+    cannot reach is neither "a path that does not exist" nor proof that a
+    name is only GitHub's.
 
     A DRIVE-LETTER PATH IS A PATH THAT IS NOT THERE, never an `org/repo`.
     `D:/work/Thing` carries a `/` and would otherwise be handed to `gh repo
@@ -1823,7 +1965,7 @@ def _source_spec(spec: str) -> tuple[Path | None, str | None]:
         return None, _repository_in_url(spec, url, candidate)
     name = (None if written_as_a_path or "\\" in spec
             else _github_name(spec))
-    if candidate.exists():
+    if _source_there(spec, candidate, name):
         if name is not None:
             raise _ambiguous(spec, name)
         return _top_level(candidate, f"--source {spec!r}"), None
@@ -5908,9 +6050,28 @@ class Plan:
         ended `check` and `execute` in a traceback, and a directory inside a
         repository was read as the source. A `~user` this machine has not is
         a path that is not there (`os.path.expanduser`): `Path.expanduser`
-        raised `RuntimeError` for it."""
+        raised `RuntimeError` for it.
+
+        A PATH THIS USER CANNOT REACH IS NEITHER GONE NOR CLONED AGAIN (#430).
+        Whether it is there is asked as `_is_a` asks it, and a `stat` the
+        operating system refused for another reason than that nothing is
+        there (a directory above it this user cannot search) is
+        `source-unreadable`, naming it. On Python 3.9 to 3.13 `Path.exists()`
+        raised it, a `PermissionError` traceback; on 3.14 it answered False,
+        so the path was `plan-source-gone`, "names nothing that exists", or,
+        a clone `plan` made, "no longer exists" and was cloned again from
+        GitHub beside the one still there."""
         path = Path(os.path.expanduser(local_path))
-        there = path.exists()
+        try:
+            there = _is_there(path)
+        except OSError as exc:
+            raise _source_unreadable(
+                f"the plan's `source.local_path`, {_spelled(local_path)}", exc,
+                ("whether `plan`'s clone is still there, to be read, or gone, "
+                 "to be cloned again," if self.source.get("cloned") is True
+                 else "whether the source is still there"),
+                "pass the source again with --source, which is held to the "
+                "plan's `commit:`") from exc
         if self.source.get("cloned") is not True:
             if there:
                 return Source.in_place(_top_level(
@@ -9011,6 +9172,29 @@ def _check_split_branch(plan: Plan, source: Source
     return found, [SPLIT_BRANCH_REMEDIATION] if found else []
 
 
+def _a_leg_may_be_on_disk(urls: dict) -> bool:
+    """Whether, under `--local-remote-dir`, a leg's bare repository is at
+    its url, or may be: its `stat` refused for another reason than that
+    nothing is there (a `--local-remote-dir` this user cannot search), asked
+    as `_is_a` asks it (#430).
+
+    Either way the split branch's two refusals, which defer to a leg still
+    on disk, defer: `_refuse_what_stands_in_the_legs_way` names both, before
+    either leg is made, a leg already there as `leg-remote-exists` and a
+    directory this user cannot search or write in as
+    `adopt-folder-cannot-be-made`. `Path.exists()` raised the refused `stat`
+    out of `execute` on Python 3.9 to 3.13, a `PermissionError` traceback
+    before either question was asked, and on 3.14 answered False, and the
+    split branch was asked about first."""
+    for role in EXTRACTED_LEGS:
+        try:
+            if _is_there(Path(urls[role])):
+                return True
+        except OSError:
+            return True
+    return False
+
+
 def _refuse_a_branch_in_the_split_branchs_way(
         plan: Plan, source: Source, repositories: dict, urls: dict,
         branch: str, local: bool, extracting: bool) -> None:
@@ -9036,7 +9220,7 @@ def _refuse_a_branch_in_the_split_branchs_way(
     meet it, which `check` reads as the source's `origin` last fetched it,
     if at all.
     """
-    if local and any(Path(urls[role]).exists() for role in EXTRACTED_LEGS):
+    if local and _a_leg_may_be_on_disk(urls):
         return
     the_source = f"the source {_shown(str(source.path))}"
     if local:
@@ -9532,7 +9716,7 @@ class _PlannedRoot:
             leads = (f"the symlink {_spelled(at)} leads to "
                      f"{_spelled(target)}, {ON_THIS_MACHINE}")
             if last:
-                self._outside(walk, target, f"{leads}, and nothing is there")
+                self._outside(walk, target, leads, ", and nothing is there")
             else:
                 walk.problem = leads
             return []
@@ -9541,15 +9725,37 @@ class _PlannedRoot:
                 + [(parts[-1], at, last, ((at, target), *ends))] + queue)
 
     @staticmethod
-    def _outside(walk: _Walk, place: str, missing: str) -> None:
+    def _outside(walk: _Walk, place: str, lead: str, nothing: str) -> None:
         """`walk` leaves the assembly for `place` on this machine's disk:
-        taken where something is there, else `missing` is what stops it.
-        Windows may spell a place with backslashes; it is named with
-        slashes, as every other path is."""
+        taken where something is there, else `lead` and `nothing`, which
+        says nothing is there, are what stops it. Windows may spell a place
+        with backslashes; it is named with slashes, as every other path is.
+
+        A `stat` THE OPERATING SYSTEM REFUSED for another reason than that
+        nothing is there (a directory above `place` this user cannot
+        search) stops it too, `<place>: cannot be read (<reason>)` after
+        `lead` (#430): `os.path.exists` answered False to it on every
+        Python, and the finding said "nothing is there" of a place that
+        holds something. `place` is asked as the text it is, as
+        `os.path.exists` asked it: a `Path` drops a trailing `/`, which a
+        `stat` takes only from a directory."""
         walk.outside, walk.landed = True, Path(place).as_posix()
-        walk.taken = os.path.exists(place)
-        if not walk.taken:
-            walk.problem = missing
+        walk.taken = False
+        try:
+            os.stat(place)
+        except OSError as exc:
+            walk.problem = lead + (nothing if _absent(exc) else (
+                f", and {_spelled(walk.landed)}: cannot be read "
+                f"({_os_reason(exc)}), so whether anything is there cannot "
+                "be told"
+                + (" until this user can search every directory above it "
+                   "(`chmod u+rx`)" if isinstance(exc, PermissionError)
+                   else "")))
+        except ValueError:
+            # a name the operating system cannot take at all (a NUL in it)
+            walk.problem = lead + nothing
+        else:
+            walk.taken = True
 
     def _above(self, walk: _Walk, origin: str, last: bool,
                queue: list) -> list:
@@ -9580,8 +9786,9 @@ class _PlannedRoot:
         # Joined as text, not as a `Path`: a `Path` drops a trailing `/`,
         # which `open()` takes only from a directory.
         place = os.path.join(str(work), *names)
-        self._outside(walk, place, f"{climbs}, to "
-                      f"{_spelled(Path(place).as_posix())}, where nothing is")
+        self._outside(walk, place,
+                      f"{climbs}, to {_spelled(Path(place).as_posix())}",
+                      ", where nothing is")
         return []
 
     def _named(self, name: str, made: str) -> bool:
@@ -11805,7 +12012,7 @@ def _refuse_a_split_branch_left_behind(source: Source, urls: dict,
     The assembly and the branch are `_spelled`, as the notice's split line
     names them (#212); the deletion is a command, quoted for `sh`.
     """
-    if local and any(Path(urls[role]).exists() for role in EXTRACTED_LEGS):
+    if local and _a_leg_may_be_on_disk(urls):
         return
     # Under `--local-remote-dir` the push goes into the source, and meets its
     # own refs, a branch it hides from `git ls-remote` too (#520).
@@ -13963,38 +14170,25 @@ def _neutral_product_pins(pins) -> str:
     `1.5` for numbers, and its `validate-pins.py` refused the entry as
     `neutral-pin-entry-malformed`, so the project's first CI run was red.
 
-    EACH ENTRY IS SPELLED AS `y` SPELLS THE PLAN'S `product:`. Of the names
-    `--pin` takes, `y` writes bare only one that begins with a letter, `_`
-    or `.` and that the reader reads back as the same text, after `key: `
-    and as a `- ` item alike (#181), so `openGlass` is the line it always
-    was, `007` is `"007"`, and `true` and `null` are `"true"` and `"null"`.
-    The reader is asked once more of the entry as this list holds it, as
-    `family.py` asks it of a member's id (#259), rather than a list of its
-    words, and an entry it would not read back as the same text is
-    double-quoted all the same. Such a name reaches here from `plan` as
-    well as from a plan edited by hand: `plan` records it quoted, and
-    `check` passes it. The list is a block placeholder, so `render` writes
-    it as it stands, and nothing else quotes it.
+    EACH ENTRY IS SPELLED AS `y` SPELLS THE PLAN'S `product:`, by
+    `shape_materialize.neutral_pin_entry`, the one function
+    `scaffold-project.py` calls too (#924). Of the names `--pin` takes, it
+    writes bare only one that begins with a letter, `_` or `.` (`y`'s
+    `_PLAIN_RE`, the same rule) and that the reader reads back as the same
+    text, after `key: ` and as a `- ` item alike (#181), so `openGlass` is
+    the line it always was, `007` is `"007"`, and `true` and `null` are
+    `"true"` and `"null"`. The reader is asked once more of the entry as
+    this list holds it, as `family.py` asks it of a member's id (#259),
+    rather than a list of its words, and an entry it would not read back as
+    the same text is double-quoted all the same. Such a name reaches here
+    from `plan` as well as from a plan edited by hand: `plan` records it
+    quoted, and `check` passes it. The list is a block placeholder, so
+    `render` writes it as it stands, and nothing else quotes it.
     """
     if not pins:
         return "[]"
     return "\n" + "\n".join(f"  - {_neutral_pin_entry(product)}"
                             for product in sorted(pins))
-
-
-def _neutral_pin_entry(product: str) -> str:
-    """One `neutral_product_pins:` entry: `y`'s spelling of `product` where
-    the project's reader reads it back as `product`, and `product`
-    double-quoted where it does not."""
-    spelled = y(product)
-    try:
-        if parse_yaml(f"neutral_product_pins:\n  - {spelled}\n") \
-                == {"neutral_product_pins": [product]}:
-            return spelled
-    except YamlError:
-        # A spelling the reader refuses is not read back as anything.
-        pass
-    return double_quoted(product)
 
 
 def _template_values(plan: Plan, names, repositories, urls, spec_path,
@@ -15695,7 +15889,7 @@ CLONE_TARGET_HELD = ("Where a source is cloned, one whose `source-readonly` "
                      "is a file or a symlink, or holds `<repo>` already, even "
                      "empty, is refused as `adopt-work-dir-occupied`.")
 #: `--source`'s help on `check` and `execute`: how the source is read with
-#: it and without it (#652), and a recorded path refused (#796).
+#: it and without it (#652), and a recorded path refused (#796, #430).
 SOURCE_OVERRIDE_HELP = (
     "override the source the plan names, read as `plan --source` reads it. "
     "Without it, the plan's `source.local_path` is read; where that is a "
@@ -15703,7 +15897,8 @@ SOURCE_OVERRIDE_HELP = (
     "whole, its `source.repository` is cloned again, and any other "
     "`local_path` that is gone is refused as `plan-source-gone`; one that "
     "is a file, or a directory inside a repository, as "
-    "`source-not-top-level`.")
+    "`source-not-top-level`; and one this user cannot reach, a clone "
+    "`plan` made included, as `source-unreadable`, never cloned again.")
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -15729,7 +15924,10 @@ def main(argv: list[str] | None = None) -> int:
                            "directory inside a repository. "
                            "`source-unresolvable` refuses an empty value, "
                            "and one that is neither a path that exists nor "
-                           "an `org/repo`.")
+                           "an `org/repo`; `source-unreadable`, a path this "
+                           "user cannot reach (under a directory it may not "
+                           "search), which is never read as one that is not "
+                           "there, nor cloned as an `org/repo`.")
     plan.add_argument("--project", required=True,
                       help="the assembly-root name; for an in-place adoption "
                            "it is the source repository's own name. "
