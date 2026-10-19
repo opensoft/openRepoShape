@@ -35,6 +35,13 @@ be is refused, never "none there"), `_names_store`, `_on_disk` and
 `_staged_over` (#889's round 2), which decides whether a hand mount's `git
 rm` is said to refuse a staged gitlink.
 
+WHAT IS ON DISK IS ASKED ONLY WHERE IT IS SAID (round 2, r956's SHOULD 1
+on #956): `_forced` and `_staged_over` ask git first, and where HEAD
+records a gitlink at the index's own commit, the disk under it is never
+asked, so a folder this user cannot search there changes nothing. And ONE
+CODE HAS ONE TEXT (r956's SHOULD 2): a member's `project.yaml` that cannot
+be opened says what one whose `stat` is refused says.
+
 A refused `stat` of `.git` refuses the holder's own `.git` too, which the
 pinned `repo_shape.find_repo_root` asks; #430's plan leaves that function
 out, so the gate run in-process is given the holder as its root (`gate`).
@@ -44,6 +51,7 @@ from __future__ import annotations
 
 import contextlib
 import errno
+import re
 import shutil
 import sys
 from pathlib import Path
@@ -177,6 +185,30 @@ def hand_mount_staged(holder: Path, request) -> tuple[str, ...]:
     return ("--no-members",)
 
 
+def hand_mount_committed(holder: Path, request) -> tuple[str, ...]:
+    """The hand mount committed: HEAD records SPARE's gitlink at the
+    index's own commit, so a plain `git rm` takes it, no `-f` is said and
+    no staged clause, whatever is on disk (r956's C19 on #956)."""
+    extra = hand_mount_staged(holder, request)
+    git("commit", "-qm", "A hand mount", cwd=holder)
+    return extra
+
+
+def variant_committed(holder: Path, request) -> tuple[str, ...]:
+    """A second path to IRRS, `Members/IRRS`, committed at IRRS's commit
+    over a directory holding a file: its `git rm --cached` takes no `-f`,
+    so what is on disk there is never said (r956's C20 on #956)."""
+    request.getfixturevalue("case_sensitive_disk")
+    commit = git("rev-parse", f"HEAD:{ROW}", cwd=holder).stdout.strip()
+    git("update-index", "--add", "--cacheinfo",
+        f"160000,{commit},{VARIANT_PATH}", cwd=holder)
+    git("commit", "-qm", "A second path to IRRS", cwd=holder)
+    (holder / VARIANT_PATH).mkdir(parents=True)
+    (holder / VARIANT_PATH / "kept.txt").write_text("kept\n",
+                                                    encoding="utf-8")
+    return ("--no-members",)
+
+
 def policy_elsewhere(holder: Path, request) -> tuple[str, ...]:
     """The naming policy read from a copy outside the holder, so a
     `contracts/` this user cannot search reaches the shape pin."""
@@ -281,6 +313,58 @@ def test_a_project_yaml_whose_stat_is_refused_is_named_not_a_leg(
         f"FINDING member-manifest-unreadable: {ROW}/project.yaml: cannot be "
         "read (Permission denied). Make what this user may not open "
         "readable by this user: `chmod u+r` on a file"), result.stderr
+
+
+@pytest.mark.parametrize("kind,number,reason,cure", [
+    pytest.param(PermissionError, errno.EACCES, "Permission denied",
+                 "Make what this user may not open readable by this user: "
+                 "`chmod u+r` on a file", id="permission"),
+    pytest.param(OSError, errno.EIO, "Input/output error", OTHER_REASON_SAID,
+                 id="io-error"),
+])
+def test_a_project_yaml_that_cannot_be_opened_says_what_its_stat_says(
+        holder, monkeypatch, capsys, kind, number, reason, cure):
+    """ONE CODE, ONE TEXT (r956's SHOULD 2 on #956): a `project.yaml` whose
+    open fails is `<path>: cannot be read (<reason>)` with the cure for
+    that cause, as one whose `stat` is refused. It named the file twice,
+    relative and then absolute, as `load_yaml`'s `yaml-unreadable` line
+    has it, and gave no cure."""
+    module = gate(holder, monkeypatch)
+    real = Path.read_text
+
+    def failing(self, *args, **kwargs):
+        if self.name == "project.yaml":
+            raise kind(number, reason, str(self))
+        return real(self, *args, **kwargs)
+
+    monkeypatch.setattr(Path, "read_text", failing)
+    code = module.main(["--root", str(holder)])
+    result = SimpleNamespace(stderr=capsys.readouterr().err)
+    assert code == 1, result.stderr
+    assert findings(result)[0].startswith(
+        f"FINDING member-manifest-unreadable: {ROW}/project.yaml: cannot be "
+        f"read ({reason}). {cure}"), result.stderr
+    assert str(holder) not in result.stderr
+
+
+def test_a_row_that_gives_no_path_is_named_at_its_own(
+        holder, monkeypatch, capsys):
+    """A ROW THAT GIVES NO `path:` is read at `members/<P>`, as
+    `_check_member_repository_and_path` resolves it, and named there: its
+    `project.yaml` was `None/project.yaml` (r956's NIT 1 on #956)."""
+    manifest = holder / "family.yaml"
+    text = manifest.read_text(encoding="utf-8")
+    line = re.compile(rf"^ *path: {re.escape(ROW)}\n", re.MULTILINE)
+    assert len(line.findall(text)) == 1, text
+    manifest.write_text(line.sub("", text), encoding="utf-8")
+    module = gate(holder, monkeypatch)
+    refused_stat(monkeypatch, "project.yaml")
+    code = module.main(["--root", str(holder)])
+    result = SimpleNamespace(stderr=capsys.readouterr().err)
+    assert code == 1, result.stderr
+    assert findings(result)[0].startswith(
+        f"FINDING member-manifest-unreadable: {ROW}/project.yaml: cannot be "
+        "read (Permission denied)"), result.stderr
 
 
 def test_a_shape_copy_that_fails_for_another_reason_is_refused_sans_chmod(
@@ -406,22 +490,78 @@ def test_a_stray_whose_rm_takes_no_f_asks_nothing_of_its_git(
     taken out with no `-f`, so the sentence that names what `-f` goes over
     is not printed, and a `.git` whose `stat` would be refused is never
     asked: the finding, not a refusal."""
-    request.getfixturevalue("case_sensitive_disk")
-    commit = git("rev-parse", f"HEAD:{ROW}", cwd=holder).stdout.strip()
-    git("update-index", "--add", "--cacheinfo", f"160000,{commit},"
-        f"{VARIANT_PATH}", cwd=holder)
-    git("commit", "-qm", "A second path to IRRS", cwd=holder)
-    (holder / VARIANT_PATH).mkdir(parents=True)
-    (holder / VARIANT_PATH / "kept.txt").write_text("kept\n",
-                                                    encoding="utf-8")
+    extra = variant_committed(holder, request)
     module = gate(holder, monkeypatch)
     refused_stat(monkeypatch, ".git")
-    code = module.main(["--root", str(holder), "--no-members"])
+    code = module.main(["--root", str(holder), *extra])
     result = SimpleNamespace(stderr=capsys.readouterr().err)
     assert code == 1, result.stderr
     assert codes(result) == ["member-gitlink-unnamed"]
     assert commands(findings(result)[0]) == [
         f"git rm --cached -- {VARIANT_PATH}"]
+
+
+def said(module, holder: Path, capsys, extra: tuple[str, ...]) -> tuple:
+    """`(exit code, stderr)` of the gate run in-process over `holder`."""
+    code = module.main(["--root", str(holder), *extra])
+    return code, capsys.readouterr().err
+
+
+@pytest.mark.parametrize("made,names", [
+    pytest.param(hand_mount_committed, (SPARE,), id="hand-mount-committed"),
+    pytest.param(variant_committed, ("IRRS",), id="variant-committed"),
+])
+def test_a_gitlink_head_records_as_staged_asks_nothing_of_the_disk(
+        holder, request, monkeypatch, capsys, made, names):
+    """GIT FIRST (r956's SHOULD 1 on #956): where HEAD records a gitlink at
+    the index's own commit, a plain `git rm --cached` takes it, so neither
+    the `-f` (`_forced`) nor the staged clause (`_staged_over`) is said,
+    whatever is on disk, and a path whose `stat` would be refused is never
+    asked. The finding is the control's, word for word, on every Python:
+    asked first, the disk refused it `member-unreadable`, exit 2."""
+    extra = made(holder, request)
+    module = gate(holder, monkeypatch)
+    control = said(module, holder, capsys, extra)
+    assert control[0] == 1, control[1]
+    refused_stat(monkeypatch, *names)
+    assert said(module, holder, capsys, extra) == control
+
+
+@pytest.mark.skipif(sys.platform == "win32",
+                    reason="a symbolic link needs a privilege on Windows")
+def test_a_link_at_a_gitlink_path_is_on_disk_wherever_it_leads(
+        tmp_path, holder, monkeypatch):
+    """`_anything_at` asks a link's own `lstat` first, as `os.path.lexists`
+    asked it: a link that leads nowhere is something on disk, and so is one
+    whose target this user cannot reach, which its `stat` would refuse
+    (r956's NIT 2 on #956). A name whose own `stat` is refused is refused
+    by name."""
+    module = gate(holder, monkeypatch)
+    nowhere = tmp_path / "nowhere"
+    nowhere.symlink_to(tmp_path / "missing")
+    beyond = tmp_path / "beyond"
+    beyond.symlink_to(tmp_path)
+    plain = tmp_path / "plain"
+    plain.mkdir()
+    refused_stat(monkeypatch, "beyond", "plain")
+    assert module._anything_at(nowhere, "nowhere")
+    assert module._anything_at(beyond, "beyond")
+    refusal = refusal_of(module, module._anything_at, plain, "plain")
+    assert refusal.detail == "plain: cannot be read (Permission denied)"
+
+
+def test_a_name_that_needs_spelling_is_spelled_where_it_cannot_be_read(
+        holder, monkeypatch):
+    """`_cannot_read` prints the name `spelled`, as `validate-pins.py`'s
+    line does (#610): a control character in a path is never printed raw
+    (r956's NIT 2 on #956)."""
+    module = gate(holder, monkeypatch)
+    named = f"members/A{chr(27)}[31mB/.git"
+    line = module._cannot_read(named, PermissionError(errno.EACCES,
+                                                      "Permission denied"))
+    assert line == (f"{module.spelled(named)}: cannot be read "
+                    "(Permission denied)")
+    assert chr(27) not in line
 
 
 # --- mode 000 and 444 (POSIX, not as root) ----------------------------------
@@ -478,6 +618,41 @@ def test_a_folder_this_user_cannot_search_is_refused_by_name(
     again = validate(holder, *extra)
     assert codes(again) == after
     assert again.returncode == (1 if after else 0), again.stderr
+
+
+@needs_a_mode
+@pytest.mark.parametrize("made,folder", [
+    pytest.param(hand_mount_committed, "members", id="hand-mount-committed"),
+    pytest.param(variant_committed, "Members", id="variant-committed"),
+])
+def test_a_folder_under_a_gitlink_git_takes_is_never_asked(
+        holder, request, made, folder):
+    """r956's C19 and C20 on #956, on this Python: with the folder at mode
+    000, the gate says what it says with the folder open, word for word,
+    since nothing it says turns on what is in that folder."""
+    extra = made(holder, request)
+    control = validate(holder, *extra)
+    with made_unopenable(holder, folder):
+        result = validate(holder, *extra)
+    assert (result.returncode, result.stderr) == (control.returncode,
+                                                  control.stderr)
+
+
+@needs_a_mode
+def test_a_project_yaml_at_mode_000_is_named_once_with_its_cure(holder):
+    """The file itself at mode 000, the common case of r956's SHOULD 2 on
+    #956: one name, the reason and the cure, where it was named twice."""
+    manifest = holder / ROW / "project.yaml"
+    manifest.chmod(0)
+    try:
+        result = validate(holder)
+    finally:
+        manifest.chmod(0o644)
+    assert findings(result)[0].startswith(
+        f"FINDING member-manifest-unreadable: {ROW}/project.yaml: cannot be "
+        "read (Permission denied). Make what this user may not open "
+        "readable"), result.stderr
+    assert validate(holder).returncode == 0
 
 
 @contextlib.contextmanager
