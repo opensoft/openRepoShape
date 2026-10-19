@@ -104,8 +104,13 @@ THREE SUBCOMMANDS, BECAUSE THE MIDDLE ONE IS A HUMAN.
            `org:` or a topic GitHub will not take, each a finding under
            `execute`'s code; after a name or an `org:` found there, whose
            fix renames both legs, the legs are not asked about, and after
-           a topic they are. It prints what will happen and changes
-           nothing.
+           a topic they are. A path of the source commit git refuses as a
+           path, `..` or `.Git/x`, is `plan-path-git-refuses`. Its
+           questions to git are asked in throwaway repositories in the work
+           directory, with the source's object format and no hook of this
+           machine's, and one that cannot be made or asked there is
+           `adopt-git-unasked`, which says why (#910). It prints what will
+           happen and changes nothing.
   execute  asks about both legs before it makes either (#798), then
            creates the two legs, extracts them with `git filter-repo`, makes
            the one split commit on a branch of the source, sets the
@@ -8547,7 +8552,15 @@ def _entry_findings(plan: Plan, source: Source,
     same goes for each symlink whose target holds a NUL byte after its
     first, or is longer than Linux takes (#908), as
     `plan-bad-symlink-target`: git makes another link or none, which no
-    answer changes either.
+    answer changes either; and for each path of the source commit git
+    refuses as a path, `..` or `.Git/x` (#910), as `plan-path-git-refuses`,
+    asked of git first, in a throwaway repository of its own.
+
+    `check`'S THROWAWAY REPOSITORIES (#910) are made in the work directory,
+    with the source's object format and no hook of this machine's. Where
+    one cannot be made or asked, `adopt-git-unasked` says why, once, in the
+    place of the questions asked in them, which are not asked; never
+    `git-failed`.
 
     A VALUE NO FILE CAN HOLD IS SAID BEFORE THE VALIDATOR'S WORD ON IT (#255
     before #261). A lone surrogate, a line break or a bidi control in
@@ -10165,8 +10178,15 @@ def _throwaway_made(scratch: Path, repository: Path, source: Source | None,
     hooks_off = ["-c", f"core.hooksPath={empty}"]
     with _asked_there(scratch.parent):
         empty.mkdir()
-        git_out([*hooks_off, "init", "-q", f"--template={empty}", *formats,
-                 str(repository)], cwd=scratch, env=env)
+        made = subprocess.run(["git", *hooks_off, "init", "-q",
+                               f"--template={empty}", *formats,
+                               str(repository)], cwd=str(scratch), env=env,
+                              capture_output=True, check=False)
+    if made.returncode:
+        raise _Unasked(scratch.parent, (
+            f"`git init` there exited {made.returncode}: "
+            + spelled_as_git_out(made.stderr.decode("utf-8", "replace")
+                                 .strip())))
     return hooks_off
 
 
