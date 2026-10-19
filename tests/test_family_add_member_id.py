@@ -51,6 +51,9 @@ from test_family_add_refusals import (  # noqa: F401
     gitmodules_with, holder, mount_undone, offline, refusal, snapshot,
     take_out_as_printed,
 )
+#: The shell's reading of a printed line on this host: the holder `bump`
+#: names is one quoted word of it, whatever its path holds (#927).
+from test_family_printed_quoting import host_words
 
 #: The project the renamed copy is of, and the name it is added under.
 PINNED = "IRRS"
@@ -174,7 +177,7 @@ def test_each_command_the_refusal_names_runs_on_the_row_it_names(
     assert len(commands) == 1, refused.stderr
     older = git("rev-parse", "main~1",
                 cwd=family["remotes"] / f"{PINNED}.git").stdout.strip()
-    argv = commands[0].replace("<commit>", older).split()
+    argv = host_words(commands[0].replace("<commit>", older))
     assert argv[argv.index("--member") + 1] == PINNED
     unnamed = [] if verb == "bump" else ["--family-root", str(holder)]
     done = run_script(FAMILY, *argv, *unnamed, env=offline.env)

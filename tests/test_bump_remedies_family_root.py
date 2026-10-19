@@ -2,9 +2,12 @@
 """A remedy that names `family.py bump` names `--family-root`, so the line
 runs as printed (#927).
 
-`bump` requires `--family-root` (its usage line, `family.py`'s head). Three
-remedies named the verb without it, and typed as printed each ended in
-`family.py bump: error: the following arguments are required: --family-root`:
+`bump` requires `--family-root` (its usage line, `family.py`'s head). Five
+remedies named the verb without it. Typed as printed, the three that named
+`--member` and `--to` ended in
+`family.py bump: error: the following arguments are required: --family-root`,
+and the two that named a bare `scripts/family.py bump` in
+`...: --family-root, --member, --to`:
 
 * `member-already-present`, which `add` says of a member the holder already
   pins, and `member-duplicate-id`, which `add` says of a member that records
@@ -15,12 +18,12 @@ remedies named the verb without it, and typed as printed each ended in
   `family.py bump`. `bump-leg.py` has no holder to name, so each says
   `<holder>`, the way it says `<Project>` and `<sha>`.
 
-Each family case is measured three ways, in a holder under a plain folder and
-under two with a space and an apostrophe in their names (the paths a shell
-would tear in half): the line names the holder as ONE word that comes back as
-the holder, `family.py`'s own parser accepts it, and it is RUN as printed and
-moves the pin. Each `bump-leg.py` line is read the same way once its three
-placeholders are filled in.
+Each family case is measured three ways, in a holder under a plain folder
+and under two with a space in their names, one of them with an apostrophe
+too (the paths a shell would tear in half): the line names the holder as
+ONE word that comes back as the holder, `family.py`'s own parser accepts it,
+and it is RUN as printed and moves the pin. Each `bump-leg.py` line is read
+the same way once its three placeholders are filled in.
 
 The fixtures are the ones the tests of these codes already use:
 `tests/test_family.py`'s family, `tests/test_family_add_member_id.py`'s
@@ -217,7 +220,9 @@ def test_a_bump_leg_remedy_that_names_family_bump_names_the_holder(
     assert f"REFUSED {code}: " in result.stderr
     line = the_bump_line(result.stderr, "scripts/")
     assert line == "bump --family-root <holder> --member <Project> --to <sha>"
-    filled = (line.replace("<holder>", str(project.parent))
+    # The holder as a shell is handed it: quoted, so that a basetemp whose
+    # path holds a space (`--basetemp="my work/bt"`) is still one word.
+    filled = (line.replace("<holder>", shell_quoted(project.parent))
               .replace("<Project>", PINNED).replace("<sha>", COMMIT))
     capsys.readouterr()
     args = parsed(family_module, host_words(filled), capsys)
