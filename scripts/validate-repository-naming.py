@@ -76,10 +76,13 @@ where the chains begin at more than one link, keep this script's own flag.
 caller's sources, offered in place of this script's own for a link that is
 declared-unverified. LINK is the longest text before an `=` that names a
 link of a chain this run reads and leaves words after it (#907), so a link
-holding `=` keeps it, and the words are stripped. A `--link-source` key is
-not read so: it is the text before the value's first `=`, so a link holding
-`=` is never one. A `--link-remedy` no holder used is a NOTE saying why,
-except where the caller gave a label: its words are its own, not the
+holding `=` keeps it, and the words are stripped. Its owner, the text
+before its last `/`, holds no `=` (#991): no owner is spelled with one, so
+`openXdox=a/openYdox=b` gives `openXdox` the words `a/openYdox=b`, and
+`opensoft/open=y=TEXT` still gives `open=y` the words. A `--link-source`
+key is not read so: it is the text before the value's first `=`, so a link
+holding `=` is never one. A `--link-remedy` no holder used is a NOTE saying
+why, except where the caller gave a label: its words are its own, not the
 person's. A project's own runs pass neither.
 Every `--link-source` and `--link-remedy` value and path this prints, and
 the path of a `SHAPE_PIN_SOURCE_<PRODUCT>` or of a checkout beside the
@@ -188,8 +191,9 @@ def _link_remedy(value: str) -> str:
     link before its first `=` or no words after it is refused, exit 2.
     WHICH `=` ENDS THE LINK is decided once the chains this run reads are
     known (`LinkSources._read_remedy`, #907): the last one that leaves a
-    link of theirs before it and words after it. A `--link-source` key
-    ends at the value's first `=`, whatever the chains name."""
+    link of theirs before it, with no `=` in its owner (#991), and words
+    after it. A `--link-source` key ends at the value's first `=`, whatever
+    the chains name."""
     link, sep, text = value.partition("=")
     if not (sep and repo_basename(link.strip()) and text.strip()):
         raise argparse.ArgumentTypeError(
@@ -326,17 +330,7 @@ class LinkSources:
         self.remedy_reading: dict[str, str] = {}
         #: `{typed: the later value for its link that took its place}`.
         self.remedy_replaced: dict[str, str] = {}
-        last: dict[str, str] = {}
-        for typed in remedies:
-            link, words = self._read_remedy(typed)
-            key = pin_product_key(link)
-            self.remedy_reading[typed] = link
-            self.remedies[key] = words
-            earlier = last.get(key)
-            last[key] = typed
-            self.remedy_replaced.pop(typed, None)
-            if earlier is not None and earlier != typed:
-                self.remedy_replaced[earlier] = typed
+        self._read_remedies(remedies)
         #: `{pin_product_key: first spelling}` of the first link of every
         #: chain a name here reads (#441). `link_pins` adds a chain's first
         #: link as it reads it, which matters only for names read from stdin:
@@ -403,16 +397,46 @@ class LinkSources:
         says so. A `--link-source` key is not read so: it is the text before
         its first `=` alone (`__init__`). The link is spelled as the chain
         spells it, and the words are stripped: `openXdox= padded` offered
-        ` padded`."""
+        ` padded`.
+
+        AN `=` WHOSE OWNER HOLDS ONE DOES NOT END THE LINK (#991). The link
+        is `repo_basename` of the text before the `=`, what follows its last
+        `/`, so in `openXdox=a/openYdox=b` the last `=` left `openYdox`
+        before it, and `openYdox` was given `b` where the person typed words
+        for `openXdox`. The text before that `/` is the link's owner, and
+        no owner is spelled with an `=`, so such an `=` is passed over:
+        `openXdox` is given `a/openYdox=b`, and `opensoft/open=y=<words>`,
+        whose owner is `opensoft`, still gives `open=y` its words."""
         at = typed.rfind("=")
         while at >= 0:
             link = repo_basename(typed[:at].strip())
             words = typed[at + 1:].strip()
-            if words and pin_product_key(link) in self.names:
+            owner = typed[:at].rpartition("/")[0]
+            if words and "=" not in owner and \
+                    pin_product_key(link) in self.names:
                 return self.names[pin_product_key(link)], words
             at = typed.rfind("=", 0, at)
         link, _sep, words = typed.partition("=")
         return repo_basename(link.strip()), words.strip()
+
+    def _read_remedies(self, remedies) -> None:
+        """Fill `remedies`, `remedy_reading` and `remedy_replaced` from the
+        `--link-remedy` values in the order given (NIT-8 on #949, #991),
+        each read by `_read_remedy` against the chain links `__init__` has
+        already named. The last value for a link wins, by `pin_product_key`;
+        a value typed again is the one that wins, and is never said to have
+        been replaced, by another value or by itself."""
+        last: dict[str, str] = {}
+        for typed in remedies:
+            link, words = self._read_remedy(typed)
+            key = pin_product_key(link)
+            self.remedy_reading[typed] = link
+            self.remedies[key] = words
+            earlier = last.get(key)
+            last[key] = typed
+            self.remedy_replaced.pop(typed, None)
+            if earlier is not None and earlier != typed:
+                self.remedy_replaced[earlier] = typed
 
     def link_pins(self, policy: NamingPolicy, target: Target) -> dict:
         """What the chain's links declare, for the links whose trees answer,
