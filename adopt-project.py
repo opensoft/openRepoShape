@@ -12981,7 +12981,11 @@ def _checked_plan_values(plan: Plan) -> tuple[str, str, str, str]:
 
     Split out of `cmd_execute` for #138, in the order the refusals came in.
     A branch name `checked_value` refuses is `check`'s finding too, in the
-    same words (`_branch_name_refusal`, #520); one inside its alphabet that
+    same words (`_branch_name_refusal`, #520), and so is a branch the plan's
+    reader read as a number or a boolean, which is asked first
+    (`_checked_branch_value`, #902), so that `tracking_branch: -007` is
+    `plan-bad-tracking-branch` in `check` and in `execute`, and not
+    `unsafe-value` of the `-7` nobody typed; one inside its alphabet that
     git will not create is refused with `check`'s other findings, by
     `_refuse_what_check_finds`, and before any leg exists as well.
     """
@@ -12991,10 +12995,26 @@ def _checked_plan_values(plan: Plan) -> tuple[str, str, str, str]:
     _refuse_bad_leg_paths("plan-bad-leg-path", spec_leg, code_leg)
     spec_path = checked_value(*spec_leg)
     code_path = checked_value(*code_leg)
-    branch = checked_value("adopt_branch", plan.get("adopt_branch",
-                                                    ADOPT_BRANCH))
-    tracking = checked_value(TRACKING_KEY, plan.get(TRACKING_KEY, "main"))
+    # Each branch asks the number-or-boolean question before `checked_value`,
+    # as `check` does (`_branch_name_refusal`, #902), in `BRANCH_KEYS`' order:
+    # a `tracking_branch: -007` is `plan-bad-tracking-branch` in both, not
+    # `unsafe-value` of the `-7` nobody typed.
+    branch, tracking = [_checked_branch_value(plan, *key)
+                        for key in BRANCH_KEYS]
     return spec_path, code_path, branch, tracking
+
+
+def _checked_branch_value(plan: Plan, key: str, default: str,
+                          code: str) -> str:
+    """The plan's branch `key:` as `execute` hands it to git, or the refusal
+    `check` finds it under (`_branch_name_refusal`, #520): a number or a
+    boolean is refused under `code`, saying what was read, and any other
+    value is `checked_value`'s. `default` is what `execute` reads where the
+    key is absent."""
+    value = plan.get(key, default)
+    if _a_number_or_boolean(value):
+        raise Refusal(code, _not_text(key, value), NOT_TEXT_REMEDIATION)
+    return checked_value(key, value)
 
 
 def _plan_org(plan: Plan) -> str:

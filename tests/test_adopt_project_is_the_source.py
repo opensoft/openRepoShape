@@ -222,6 +222,32 @@ def test_the_sources_own_name_the_policy_refuses_is_renamed_first(
     assert not (tmp_path / PLAN).exists()
 
 
+def test_not_the_source_gives_the_rule_of_the_names_own_refusal(tmp_path):
+    """#902, L2-89: `--project ToolsInstall` over a source `acme/Tools-Install`
+    is not the source, and the source's own name is refused by
+    `naming-role-mismatch`, an install and no project leg, not by
+    `naming-unclassified`. The rule it gives the new name is that code's, the
+    one `plan` gives `--project` for it (`NAME_RULES`), and not `no hyphen,
+    underscore, dot or space`, which `Tools-Install` as an install form
+    would be told wrongly."""
+    source = source_of(tmp_path, "acme/Tools-Install")
+
+    refused = plan(tmp_path, source, "--project", "ToolsInstall")
+
+    assert refused.returncode == 2, refused.stdout + refused.stderr
+    detail, remediation = refused.stderr.splitlines()[:2]
+    assert detail.startswith(
+        f"REFUSED {NOT_THE_SOURCE}: --project ToolsInstall, {OF_ORIGIN}, "
+        "names acme/ToolsInstall, and the source is acme/Tools-Install: "), \
+        detail
+    rule = OWN_NAME_SAID["naming-role-mismatch"].split("which must be ", 1)[1]
+    assert remediation.endswith(
+        f"The name must be {rule} acme/Tools-Install {RENAME_FIRST}"), \
+        remediation
+    assert f"The name must be {NAME_RULE}" not in remediation
+    assert not (tmp_path / PLAN).exists()
+
+
 def test_a_name_in_another_case_is_the_source(tmp_path):
     """GitHub resolves `acme/atlas` and `ACME/Atlas` to one repository, so
     they are the source, and `plan` and `check` pass."""

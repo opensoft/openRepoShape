@@ -10,7 +10,10 @@ again on main before this change:
   `adoption verified`, and `project.yaml` said `id: "7"`, or both legs and the
   split were on the branch `True`. `check` now refuses an `id:` read so, as
   `plan-bad-id`, and finds a branch read so under the key's own code, saying
-  what was read; `execute` refuses both before any leg exists.
+  what was read; `execute` refuses both before any leg exists, in the same
+  words (`tracking_branch: -007` too: `execute` asked `checked_value` first,
+  so it said `unsafe-value` of the `-7` nobody typed where `check` said
+  `plan-bad-tracking-branch`).
 - L2-86 and L2-87. `--org ''`, `--elected-on ''` and `--reference ''` were read
   as not passed: the organisation of the source's `origin` was planned and
   named once as `--org is '~x'`, today's date was recorded, and the default
@@ -215,6 +218,35 @@ def test_execute_refuses_each_before_any_leg_exists(tmp_path, key, typed,
     branches = git("branch", "--list", cwd=tmp_path / "Thing").stdout
     assert "adopt/three-repo-shape" not in branches
     assert not re.search(r"^\s*7$", branches, re.M), branches
+
+
+@needs_filter_repo
+@pytest.mark.parametrize("key, code", [
+    ("tracking_branch", "plan-bad-tracking-branch"),
+    ("adopt_branch", "plan-bad-adopt-branch"),
+], ids=["tracking-branch", "split-branch"])
+def test_execute_refuses_a_negative_number_in_checks_words(tmp_path, key,
+                                                           code):
+    """L1-K3: `tracking_branch: -007` is the number -7, and `-7` is a value
+    `checked_value` refuses, so `execute`, which asked it first, said
+    `unsafe-value` of a `-7` nobody typed while `check` said what was read
+    (#520: the two refuse a branch name in the same words). It asks the
+    number-or-boolean question first, as `check` does, and refuses under the
+    key's own code with `check`'s sentence and remedy, before any leg
+    exists."""
+    plan = planned(tmp_path)
+    set_line(plan, key, "-007")
+    sentence = not_text(key, "the number -7", "-7")
+
+    checked = check(plan)
+    done = execute(plan, tmp_path)
+
+    assert checked.returncode == 1, checked.stdout + checked.stderr
+    assert findings(checked.stderr) == [f"FINDING {code}: {sentence}"], \
+        checked.stderr
+    assert first_two(done) == [f"REFUSED {code}: {sentence}", QUOTE_IT]
+    assert "unsafe-value" not in done.stderr
+    assert not any((tmp_path / "remotes").glob("*.git"))
 
 
 # --- L2-86 and L2-87: a flag passed empty is a value ------------------------
