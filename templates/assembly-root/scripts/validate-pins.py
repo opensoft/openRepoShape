@@ -418,54 +418,123 @@ def _gitfile_opens(path: Path) -> bool:
     return True
 
 
-#: What a `stat` mode that is no regular file names (#919), as the line
-#: about the file whose place it takes says it. A device is either kind.
-_NOT_A_FILE_KINDS = (
-    (stat.S_ISDIR, "a directory"), (stat.S_ISFIFO, "a FIFO"),
-    (stat.S_ISSOCK, "a socket"), (stat.S_ISCHR, "a device"),
-    (stat.S_ISBLK, "a device"))
+#: What a leg's checkout is read for, as `_unreadable_file`'s remedy names
+#: it (#712, #968).
+CHECKOUT_READ = ("each leg's checkout, to recompute its pinned tree digest "
+                 "from the leg's own objects")
 
 
-def _named_kind(mode: int, link: str = "") -> str | None:
-    """`is <link><kind>, not a file` for a `mode` that is no regular file,
-    `is not a file` where `_NOT_A_FILE_KINDS` has no name for it, and None
-    for a regular file, which stands in no file's place."""
-    if stat.S_ISREG(mode):
+def _leg_git_dir(dotgit: Path) -> Path | None:
+    """The git directory of a leg whose `.git` is `dotgit` (#968): `dotgit`
+    itself where it is no regular file (a checkout's own directory); the
+    directory a gitfile's `gitdir: ` line names, joined to the gitfile's own
+    directory as git joins it, its `..` left for the system to follow; and
+    None where the gitfile names none, which git refuses as it always did.
+    Raises the `OSError` of a `stat` or a read the operating system
+    refused."""
+    if not _is_a(dotgit, stat.S_ISREG):
+        return dotgit
+    data = dotgit.read_bytes()
+    if not data.startswith(b"gitdir: "):
         return None
-    kind = next((name for test, name in _NOT_A_FILE_KINDS if test(mode)),
-                None)
-    return f"is {link}{kind}, not a file" if kind else "is not a file"
+    return dotgit.parent / os.fsdecode(data[len(b"gitdir: "):].rstrip(b"\r\n"))
+
+
+def _refuse_an_unreadable_git_dir(root: Path, dotgit: Path) -> None:
+    """`pin-submodule-unreadable`, by name, for a leg whose git directory
+    this user cannot search (#968), asked as `_is_there` asks: the `stat`
+    of its `HEAD`, which a git directory at mode 000 or r-- refuses.
+
+    TWO STATES REACHED GIT, AND GIT SAID THE WRONG THING. A `.git` that is a
+    directory at mode 000 is passed over by git, which walks up to the
+    root's own repository, so the run ended `pin-commit-unresolvable` with
+    an empty reason; and the directory a readable gitfile names, under
+    `.git/modules/`, at mode 000, ended in `fatal: not a git repository`.
+    Both were under THE LOCKSTEP RULE, which says the pinned commit is
+    missing. Each is named, `spec/.git` or `.git/modules/spec`, with the
+    leg checkout's remedy that #712 gives a checkout this user cannot
+    search. A git directory with no `HEAD`, or a gitfile that names none,
+    is left to git, which answers for it as it always did."""
+    named = dotgit
+    try:
+        gitdir = _leg_git_dir(dotgit)
+        if gitdir is not None:
+            named = Path(os.path.normpath(gitdir))
+            _is_there(gitdir / "HEAD")
+    except OSError as exc:
+        raise _unreadable_file("pin-submodule-unreadable", _named(root, named),
+                               exc, CHECKOUT_READ) from exc
+
+
+#: What a `stat` mode names (#919, #968), as the line about the file or the
+#: directory whose place it takes says it. A device is either kind.
+_KINDS = (
+    (stat.S_ISDIR, "a directory"), (stat.S_ISREG, "a file"),
+    (stat.S_ISFIFO, "a FIFO"), (stat.S_ISSOCK, "a socket"),
+    (stat.S_ISCHR, "a device"), (stat.S_ISBLK, "a device"))
+
+
+def _what_stands(path: Path, wanted: Callable[[int], bool]) -> str | None:
+    """What stands at `path` where it is not what `wanted` asks of a `stat`
+    mode (#919, #968): `a directory`, `a file`, `a FIFO`, `a socket` or `a
+    device`, each also as `a symlink to` one; `a symlink to nothing`; `a
+    symlink loop`; and `""` for a kind `_KINDS` has no name for. None where
+    NOTHING is there (`lstat` finds no entry at the name, or the system
+    cannot take the name at all), and where what is there is `wanted`.
+
+    `lstat` asks about the name itself. It runs only after `stat` answered,
+    inside the guard, and opens nothing."""
+    try:
+        mode = path.lstat().st_mode
+    except (OSError, ValueError):
+        return None
+    link = ""
+    if stat.S_ISLNK(mode):
+        try:
+            mode = path.stat().st_mode
+        except OSError as exc:
+            loop = (exc.errno == errno.ELOOP
+                    or getattr(exc, "winerror", None) == 1921)
+            return "a symlink loop" if loop else "a symlink to nothing"
+        link = "a symlink to "
+    if wanted(mode):
+        return None
+    kind = next((name for test, name in _KINDS if test(mode)), None)
+    return link + kind if kind else ""
 
 
 def _not_a_file(path: Path) -> str | None:
     """What stands at `path` where `_is_file` found no regular file there,
     as the words after its name (#919): `is a directory, not a file`, `is a
     FIFO, not a file`, `is a symlink to nothing, not a file`, `is a symlink
-    loop, not a file`, `is a symlink to a directory, not a file`, and the
-    same for a socket or a device. None where NOTHING is there (`lstat`
-    finds no entry at the name, or the system cannot take the name at all),
-    whose refusal keeps the words it always had.
+    loop, not a file`, `is a symlink to a directory, not a file`, the same
+    for a socket or a device, and `is not a file` for a kind with no name.
+    None where NOTHING is there, whose refusal keeps the words it always
+    had: see `_what_stands`.
 
     WHAT IS THERE WAS CALLED ABSENT: `_is_file` asks `stat`, which answers
     "not a regular file" for a directory or a FIFO and "nothing there" for a
     symlink that leads nowhere or to itself, so each was refused under "does
     not exist" and given a remedy that moves a pin, and a shape copy so
-    replaced was "pinned but absent". `lstat` asks about the name itself.
-    It runs only after `stat` answered, inside the guard, and opens nothing.
+    replaced was "pinned but absent".
     """
-    try:
-        mode = path.lstat().st_mode
-    except (OSError, ValueError):
+    what = _what_stands(path, stat.S_ISREG)
+    if what is None:
         return None
-    if not stat.S_ISLNK(mode):
-        return _named_kind(mode)
-    try:
-        return _named_kind(path.stat().st_mode, "a symlink to ")
-    except OSError as exc:
-        loop = (exc.errno == errno.ELOOP
-                or getattr(exc, "winerror", None) == 1921)
-        return ("is a symlink loop, not a file" if loop
-                else "is a symlink to nothing, not a file")
+    return f"is {what}, not a file" if what else "is not a file"
+
+
+def _not_a_directory(path: Path) -> str | None:
+    """What stands at `path`, the directory a file should be in, where it is
+    no directory (#968): `which is a file, not a directory`, `which is a
+    FIFO, not a directory`, `which is a symlink to nothing, not a
+    directory`, and so on, as `_what_stands` names it. None where it is a
+    directory, or a symlink to one, and where nothing is there."""
+    what = _what_stands(path, stat.S_ISDIR)
+    if what is None:
+        return None
+    return (f"which is {what}, not a directory" if what
+            else "which is not a directory")
 
 
 #: What a pin, the shape pin, a neutral-product pin or the manifest is told
@@ -486,7 +555,15 @@ COPY_NOT_A_FILE = (
     "the project's history.")
 
 
-def _no_file(code: str, path: Path, said: str, absent: str,
+#: What the same files are told where the directory that holds one is not a
+#: directory (#968): `contracts` replaced by a file, a FIFO or a symlink.
+NOT_A_DIRECTORY = (
+    "Something that is not a directory stands where the directory that "
+    "holds it should be: move it aside, or take it away if nobody wants it, "
+    "and restore the directory from the project's history. ")
+
+
+def _no_file(code: str, root: Path, path: Path, said: str, absent: str,
              *remediation: str) -> Refusal:
     """`code`'s refusal where `_is_file` found no regular file at `path`
     (#919). `said` names the file. Where nothing is there it goes on with
@@ -494,14 +571,25 @@ def _no_file(code: str, path: Path, said: str, absent: str,
     words it always had, byte for byte. Where something that is not a file
     stands there, `_not_a_file` says what, and the remedy is `NOT_A_FILE`'s.
 
+    WHERE THE DIRECTORY THAT HOLDS IT IS NO DIRECTORY (#968), `contracts`
+    replaced by a regular file, a FIFO or a symlink that leads to none,
+    nothing can be at the name, and every pin read "does not exist" under
+    the lockstep remedy. `_not_a_directory` names what stands there, and
+    the remedy is `NOT_A_DIRECTORY`'s. Only the directory the file is in is
+    asked: a pin's is `contracts`, and the manifest's is the root.
+
     A refusal that had no remedy of its own is built with none, as it
     always was, and not with an empty one: beside a `repo_shape.py` older
     than #370, `Refusal`'s own default is the lockstep remedy, and an empty
     one would print a blank line where it stood (#370, #610)."""
     what = _not_a_file(path)
-    if what is None:
-        return Refusal(code, said + absent, *remediation)
-    return Refusal(code, f"{said} {what}", _remedy(NOT_A_FILE))
+    if what is not None:
+        return Refusal(code, f"{said} {what}", _remedy(NOT_A_FILE))
+    holder = _not_a_directory(path.parent)
+    if holder is not None:
+        return Refusal(code, f"{said} is under {_named(root, path.parent)}, "
+                       f"{holder}", _remedy(NOT_A_DIRECTORY))
+    return Refusal(code, said + absent, *remediation)
 
 
 def _load(root: Path, path: Path):
@@ -646,7 +734,7 @@ def _load_leg_pin(root: Path, role, path: str, repository: str,
     rel = _named(root, pin_path)
     if not _is_file(root, pin_path):
         raise _no_file(
-            "pin-missing", pin_path,
+            "pin-missing", root, pin_path,
             f"leg {role!r} declares {_shown(repository)} at {path!r} but "
             f"{rel}", " does not exist")
     pin = _load(root, pin_path)
@@ -1127,7 +1215,9 @@ def _check_pin_digest(root: Path, path: str, commit: str, pin: dict, rel: str,
     RV827's S1), `pin-submodule-unreadable`, naming its `.git`: the digest
     cannot be recomputed, and the leg is not uninitialized, which is what
     Python 3.14's `exists()` would have said of it. So is a `.git` gitfile
-    this user cannot open (#919): see `_gitfile_opens`.
+    this user cannot open (#919): see `_gitfile_opens`; and a git directory
+    this user cannot search, the `.git` itself or the one a gitfile names
+    (#968): see `_refuse_an_unreadable_git_dir`.
     """
     submodule = root / path
     named = _shown(path)
@@ -1137,8 +1227,7 @@ def _check_pin_digest(root: Path, path: str, commit: str, pin: dict, rel: str,
     except OSError as exc:
         raise _unreadable_file(
             "pin-submodule-unreadable", _named(root, dotgit), exc,
-            "each leg's checkout, to recompute its pinned tree digest from "
-            "the leg's own objects") from exc
+            CHECKOUT_READ) from exc
     if not initialized:
         raise Refusal(
             "pin-submodule-uninitialized",
@@ -1146,6 +1235,7 @@ def _check_pin_digest(root: Path, path: str, commit: str, pin: dict, rel: str,
             "digest cannot be recomputed. Presence is not identity and an "
             "unreadable surface must fail rather than degrade.",
         )
+    _refuse_an_unreadable_git_dir(root, dotgit)
     # `_git_runs` OUTSIDE the `try`: the refusal it raises is a `Refusal`, and
     # inside, the `except Refusal` below would turn "no git to run" into
     # `pin-commit-unresolvable`, which says the commit is missing.
@@ -1254,7 +1344,8 @@ def _check_shape_pin_header(root: Path, manifest: dict, report: Report
     pin_path = root / "contracts" / "shape-pin.yaml"
     rel = _named(root, pin_path)
     if not _is_file(root, pin_path):
-        raise _no_file("shape-pin-missing", pin_path, rel, " does not exist")
+        raise _no_file("shape-pin-missing", root, pin_path, rel,
+                       " does not exist")
     pin = _load(root, pin_path)
     if not isinstance(pin, dict):
         raise Refusal("shape-pin-unreadable", f"{rel}: not a mapping")
@@ -1590,7 +1681,7 @@ def _check_neutral_pin_entry_and_load(root: Path, product, report: Report
     rel = _named(root, pin_path)
     if not _is_file(root, pin_path):
         raise _no_file(
-            "neutral-pin-missing", pin_path,
+            "neutral-pin-missing", root, pin_path,
             f"project.yaml declares a pin on {product!r} but {rel}",
             " does not exist",
             "Remediation: `scaffold-project.py --pin "
@@ -1919,7 +2010,7 @@ def _load_legs_to_check(root: Path, report: Report
     manifest_path = root / "project.yaml"
     if not _is_file(root, manifest_path):
         raise _no_file(
-            "manifest-missing", manifest_path, "project.yaml",
+            "manifest-missing", root, manifest_path, "project.yaml",
             " does not exist, so there is no declaration of which legs to "
             "check. A one-repository project has no legs and does not run "
             "this validator.")

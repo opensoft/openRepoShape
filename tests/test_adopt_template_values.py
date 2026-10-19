@@ -625,7 +625,7 @@ def test_the_gh_stub_records_an_org_repo_source(tmp_path):
     `gh repo clone`, and the stub records the call it refuses. A stub that
     recorded nothing would let them pass without asking anything."""
     stub, log = gh_stub(tmp_path)
-    refused = adopted("plan", "--source=testorg/Thing", "--project", PROJECT,
+    refused = adopted("plan", "--source=testorg/Thing", "--project", "Thing",
                       "--org", "testorg", "--elected-by", "Test Human",
                       "--elected-on", "2026-09-02", "--out",
                       str(tmp_path / PLAN_FILE), "--work-dir",

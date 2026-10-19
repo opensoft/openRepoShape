@@ -351,7 +351,7 @@ def child_environment(capture: bool = False) -> dict:
 
 
 def run(argv, cwd=None, capture: bool = False,
-        stdin=None) -> subprocess.CompletedProcess:
+        stdin=None, env=None) -> subprocess.CompletedProcess:
     """One spelling of "run a program", with the output decoding pinned.
 
     `encoding="utf-8", errors="replace"`: a child's bytes are its own business
@@ -368,6 +368,9 @@ def run(argv, cwd=None, capture: bool = False,
     (`plan_and_confirm`) and the plan run again, captured
     (`why_the_plan_did_not_go_through`), the scaffold (`scaffold`) and
     `scripts/bootstrap.py` (`clone_and_bootstrap`) - and the next one too.
+    A caller that hands `env` hands one built from it: the naming check's,
+    whose `SHAPE_PIN_SOURCE_<LINK>` paths are joined to the standard's
+    checkout because it runs elsewhere (`pin_sources_joined`, #907).
 
     EVERY ARGV THAT CARRIES A VALUE FROM THE COMMAND LINE WAS CHECKED AT PARSE
     TIME. `argv` is a list and `shell=False`, so there is no shell to inject
@@ -380,7 +383,9 @@ def run(argv, cwd=None, capture: bool = False,
         return subprocess.run(argv, cwd=str(cwd) if cwd is not None else None,
                               capture_output=capture, text=True,
                               encoding="utf-8", errors="replace", check=False,
-                              stdin=stdin, env=child_environment(capture))
+                              stdin=stdin,
+                              env=(child_environment(capture) if env is None
+                                   else env))
     except OSError:
         # A PROGRAM THAT IS NOT THERE IS A FAILED RUN, not a traceback.
         # `is_shape_checkout()` asks git a question before the preflight has
@@ -2394,30 +2399,61 @@ def passes_a_dry_run(passthrough: list) -> bool:
                for word in scaffold_words(passthrough))
 
 
-def as_a_bare_link_source(path: str) -> str:
-    """`path` as the naming validator reads a `--link-source` that names no
-    product: it takes the text before the first `=` for a product when that
-    is a link of the chain, so `openXdox=layer`, which the scaffold reads as
-    the one path it is, would be read as `layer` for `openXdox`. A path that
-    starts `<word>=` is spelled `./<word>=`; one with a separator or a drive
-    before its first `=` cannot be a link's name, and stays as it is.
+def as_the_plan_reads_it(shape_root: Path, path: str) -> str:
+    """A `--pin-source` `path` as step (5) reads and names it: joined to the
+    standard's checkout, the folder the scaffold runs in, and made absolute
+    by `Path.resolve()`, as the scaffold's `_resolved_pin_source` makes it.
+    Where `resolve()` fails (a symlink loop, before Python 3.13) the
+    scaffold names the value as typed, and this leaves it joined and
+    unresolved: a spelling the two still differ in, because a path the
+    naming check is given has to be absolute. Python 3.9 for Windows may
+    give another (the comment below).
+
+    ONE VALUE, ONE NAME (#907, U171). Step (4) gave the naming check the
+    value as typed, and the plan names the path it resolved, so
+    `--pin-source ./nowhere/` was `nowhere (--pin-source)` in step (4) and
+    `<standard>/nowhere` in step (5), and a blank one was a blank and
+    `<standard>/ `. Step (4) now names the path step (5) names. It has to be
+    absolute anyway: the naming check runs from an empty folder
+    (`check_names`), not from the checkout a relative path is read from.
+
+    AND THE NAMING CHECK CANNOT READ IT AS `LINK=PATH`. It takes the text
+    before a `--link-source`'s first `=` for a product when that is a link
+    of the chain, so `openXdox=layer`, which the scaffold reads as the one
+    path it is, would be read as `layer` for `openXdox`. An absolute path
+    has a separator or a drive before its first `=`, which no link's name
+    holds (a link is read at its last `/`), so it is one path to the naming
+    check too, as `./openXdox=layer` was.
 
     AN EMPTY PATH IS NEVER GIVEN TO IT. Since #570 the scaffold takes
     `--pin-source` as text and refuses an exactly empty value as
     `pin-source-no-path`, before anything exists (`pin_source_path`), so it
-    no longer reads `''` as the directory it runs in: `.` would be a folder
-    the plan never reads, and `--link-source=` is refused by the validator as
-    `link-source-no-path` (#576). Either would end step (4) naming a flag the
-    person never typed, where the plan refuses the value by name.
-    `naming_declarations` leaves an empty source out. A BLANK path is a path:
-    the scaffold reads `Path(' ')`, so it goes as it is."""
-    return "./" + path if re.match(r"[^/\\:=]+=", path) else path
+    no longer reads `''` as the directory it runs in: the standard's
+    checkout would be a folder the plan never reads, and `--link-source=` is
+    refused by the validator as `link-source-no-path` (#576). Either would
+    end step (4) naming a flag the person never typed, where the plan
+    refuses the value by name. `naming_declarations` leaves an empty source
+    out. A BLANK path is a path: the scaffold reads `Path(' ')`, which is
+    `<standard>/ ` once resolved, and so is this."""
+    joined = Path(shape_root, path)
+    try:
+        # ON PYTHON 3.9 FOR WINDOWS `resolve()` MAY RETURN A RELATIVE PATH
+        # UNCHANGED where its first part does not exist (bpo-38671, fixed in
+        # 3.10), so the scaffold, which resolves the value as typed, may name
+        # `nowhere` there where this, resolving it joined, names
+        # `<standard>\nowhere`. Joined is what the naming check can read
+        # from the folder it runs in, so it stays joined.
+        return str(joined.resolve())
+    except (OSError, RuntimeError):
+        return str(joined)
 
 
-def naming_declarations(passthrough: list, link_remedies=None) -> list:
+def naming_declarations(passthrough: list, shape_root: Path,
+                        link_remedies=None) -> list:
     """The naming validator's arguments for what the passthrough declares
     about the project (#538): the products of its `--pin`s, and its
-    `--referent-chain`, with the tree its links are read from (#608).
+    `--referent-chain`, with the tree its links are read from (#608), named
+    as step (5) names it (`as_the_plan_reads_it`, from `shape_root`).
 
     A `<Domainx><Product>` name is a descendant only when the project pins
     its referent, and the scaffold judges the names with the pins it is
@@ -2463,7 +2499,12 @@ def naming_declarations(passthrough: list, link_remedies=None) -> list:
     `--link-remedy=<link>=<words>`: what step (5) reads, said as step (5)
     says it. The chain is read as the scaffold reads it
     (`referent_chain_links`: split on commas, each stripped, an empty one
-    dropped).
+    dropped). A link holding `=` (`openXdox,open=y,openDox`, which step (5)
+    refuses as `chain-link-malformed`) is read whole by the naming check,
+    which ends a remedy's link at the last `=` that leaves a link of the
+    chain before it, the longest link first (#907, U170), so `open=y` is
+    offered step (5)'s words too, and not the naming check's `--link-source
+    open=y=<path>`.
     """
     products = [name for name in (
         pin.strip().split("@", 1)[0].rsplit("/", 1)[-1]
@@ -2477,7 +2518,8 @@ def naming_declarations(passthrough: list, link_remedies=None) -> list:
     spoken = link_remedies(chain) if has_links and link_remedies else None
     return ((["--pins=" + ",".join(products)] if products else [])
             + (["--referent-chain=" + chains[-1]] if chains else [])
-            + (["--link-source=" + as_a_bare_link_source(sources[-1])]
+            + (["--link-source=" + as_the_plan_reads_it(shape_root,
+                                                        sources[-1])]
                if has_links and names_a_source else [])
             + (["--link-source-label=--pin-source"]
                + ["--link-remedy=%s=%s" % pair for pair in spoken.items()]
@@ -2488,17 +2530,126 @@ def naming_declarations(passthrough: list, link_remedies=None) -> list:
 # 4. the names, before anything exists
 # ---------------------------------------------------------------------------
 
+#: What step (4) says when it cannot make the empty folder the naming check
+#: runs from (`check_names`): before anything exists, and with the way on.
+NO_EMPTY_FOLDER = ("the naming check runs from an empty folder, and none "
+                   "could be made in the temporary folder (%s), so nothing "
+                   "was created. Point TMPDIR (TEMP on Windows) at a folder "
+                   "you can write in, then run this again.")
+
+#: What step (4) says when the folder it made for the naming check cannot be
+#: taken away again (`take_away_the_naming_folder`): a `[??]`, as the write
+#: probe's is (`refuse_a_parent_nobody_can_write_in`), and the run goes on.
+NAMING_FOLDER_LEFT = ("%s, the folder made in the temporary folder for the "
+                      "naming check to run from, could not be taken away "
+                      "again (%s); setup put nothing in it but an empty "
+                      "folder, and it is yours to delete.")
+
+#: The variables a chain link's tree is read from, `SHAPE_PIN_SOURCE_<LINK>`:
+#: `scripts/repo_shape.py`'s `PIN_SOURCE_ENV_PREFIX`, which this file cannot
+#: import (`child_environment` says why).
+PIN_SOURCE_ENV_PREFIX = "SHAPE_PIN_SOURCE_"
+
+
+def pin_sources_joined(shape_root: Path, env: dict) -> dict:
+    """`env` with each `SHAPE_PIN_SOURCE_<LINK>` that names a path joined to
+    the standard's checkout (#907), for the naming check, which
+    `check_names` runs from an empty folder elsewhere.
+
+    STEP (5) READS A RELATIVE ONE FROM THE STANDARD'S CHECKOUT, the folder
+    the scaffold runs in, and the naming check read it from the folder it
+    runs in. So `SHAPE_PIN_SOURCE_OPENYDOX=../yy`, a tree beside the
+    standard, verified `openYdox` in step (5) and was "no such file or
+    directory" in step (4), which offered the very variable that was set;
+    and where `yy` broke the chain, step (4) passed a name that step (5)
+    then refused as `chain-not-declared`. Joined, the two read one tree.
+
+    `os.path.join` leaves an absolute path as it is, and gives a Windows
+    path that names no drive the drive of the standard's checkout, as the
+    scaffold's folder does. AN EMPTY VARIABLE STAYS EMPTY: neither step
+    reads one, and joined it would name the checkout itself. Every other
+    variable is handed on as it is."""
+    return {name: (os.path.join(str(shape_root), value)
+                   if name.startswith(PIN_SOURCE_ENV_PREFIX) and value
+                   else value)
+            for name, value in env.items()}
+
+
+def take_away_the_naming_folder(aside: str) -> None:
+    """`aside`, the folder `check_names` made in the temporary folder, and
+    the empty `here` it made in it for the naming check to run from, taken
+    away again BEST-EFFORT (#907, rv949 on #949).
+
+    A FOLDER THAT CANNOT BE TAKEN AWAY IS A `[??]`, NEVER A TRACEBACK. On
+    Windows an indexer or an antivirus can hold a handle on a new folder for
+    a moment, as the write probe says (`refuse_a_parent_nobody_can_write_in`),
+    and `TemporaryDirectory`'s own clean-up raises `PermissionError` then,
+    out of step (4) and past `main`, which catches a `Refusal`. Its
+    `ignore_cleanup_errors=` is Python 3.10's, and this file runs on 3.9,
+    so the folder is made by `mkdtemp` and taken away here. A folder left
+    is named, and the run goes on: the names were judged, and the folder
+    is the person's to delete. A `here` that was never made (`os.mkdir`
+    refused it, and `check_names` says so) is not looked for. `rmdir`, not
+    `rmtree`: setup put nothing in either, and takes away nothing else."""
+    here = os.path.join(aside, "here")
+    try:
+        if os.path.isdir(here):
+            os.rmdir(here)
+        os.rmdir(aside)
+    except OSError as exc:
+        warn(NAMING_FOLDER_LEFT
+             % (aside, exc.strerror or exc.__class__.__name__))
+
+
 def check_names(shape_root: Path, project: str, family: str = "",
                 declared=()) -> None:
     """The three names against the naming policy, with what the project
     declares about itself (`naming_declarations`) as the scaffold will
-    judge them."""
+    judge them.
+
+    FROM AN EMPTY FOLDER, NEVER FROM THE STANDARD'S CHECKOUT (#907, U061,
+    U169). For names on its command line the naming check takes the folder
+    it runs in as the project's root, and reads `<root>/../<link>` as a
+    chain link's tree before a bare `--link-source`. Run from the checkout,
+    a checkout of a link sitting beside the standard - or beside the
+    temporary clone self-bootstrap makes - answered for that link in step
+    (4) and never in step (5): the scaffold reads no checkout beside
+    anything. With `openXdox/` declaring `openDox` there, and `--pin-source`
+    a tree declaring `openYdox`, step (4) called the `--pin-source` tree not
+    used and the chain `openXdox -> openYdox -> openDox` broken, and step
+    (5) read that tree and called the name a descendant through it. So the
+    check runs in a folder made empty inside a temporary folder made for
+    it, which holds nothing else: an empty folder straight inside the
+    system's temporary folder would have that folder's other entries
+    beside it. Both are taken away again, best-effort, whatever happens
+    (`take_away_the_naming_folder`).
+
+    SO NOTHING IT READS MAY DEPEND ON THAT FOLDER. Every path it is given is
+    absolute (`as_the_plan_reads_it`), every `SHAPE_PIN_SOURCE_<LINK>` it
+    reads is joined to the standard's checkout, where step (5) reads it
+    (`pin_sources_joined`), and it finds its policy and its library beside
+    itself. It is given names, so it reads no stdin and no `--project`, and
+    it runs no git."""
     say("")
     say("(4) naming policy")
-    proc = run([PYTHON,
-                str(shape_root / "scripts" / NAMING_VALIDATOR), *declared,
-                "--explain", project, project + "-spec", project + "-code"],
-               cwd=shape_root)
+    aside = None
+    try:
+        aside = tempfile.mkdtemp(prefix="openreposhape-naming-")
+        here = os.path.join(aside, "here")
+        os.mkdir(here)
+    except OSError as exc:
+        if aside is not None:
+            take_away_the_naming_folder(aside)
+        die(NO_EMPTY_FOLDER % (exc.strerror or exc.__class__.__name__))
+    try:
+        proc = run([PYTHON,
+                    str(shape_root / "scripts" / NAMING_VALIDATOR),
+                    *declared, "--explain", project, project + "-spec",
+                    project + "-code"],
+                   cwd=here,
+                   env=pin_sources_joined(shape_root, child_environment()))
+    finally:
+        take_away_the_naming_folder(aside)
     if proc.returncode != 0:
         die("the names do not satisfy the naming policy (see above). A naming "
             "mistake caught here costs a message; caught later it costs three "
@@ -2754,8 +2905,22 @@ def finish_by_hand(parent: str, assembly: str, project: str,
     passes: the legs are cloned from the plain paths `.gitmodules` records,
     the file transport, which git refuses a submodule without it. The project
     name is a word already: step (4) held it to the naming policy.
+
+    ON WINDOWS IT CARRIES `-c core.autocrlf=false` TOO (#926, U041), as
+    setup's own clone does there, so a clone finished by hand checks the
+    pinned copies out as that one does, LF whatever Git for Windows'
+    `core.autocrlf=true` default says: `contracts/shape-pin.yaml` records
+    digests of LF bytes. The project's own `.gitattributes` (#51) asks for
+    LF as well, and neither clone leans on it. Asked of `os.name` when the
+    lines are made, as the clone asks it, and not of the shell they are
+    pasted into: Git Bash runs the same git.
     """
-    clone = "git -c protocol.file.allow=always clone" if local else "git clone"
+    clone = "git"
+    if local:
+        clone += " -c protocol.file.allow=always"
+    if os.name == "nt":
+        clone += " -c core.autocrlf=false"
+    clone += " clone"
     return ("    cd %s\n"
             "    %s --recurse-submodules %s\n"
             "    cd %s && %s %s"
@@ -3093,7 +3258,7 @@ def _main(argv, invocation_dir: str) -> int:
     clone = landing.clone_path(opts.project)
     refuse_a_taken_clone_path(clone, opts.project)
     check_names(shape_root, opts.project, opts.family,
-                naming_declarations(opts.passthrough,
+                naming_declarations(opts.passthrough, shape_root,
                                     scaffold_link_remedies(shape_root)))
     args = scaffold_args(opts, org)
     if not plan_and_confirm(opts, shape_root, org, args, clone):
