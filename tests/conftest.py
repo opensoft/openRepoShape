@@ -10,9 +10,11 @@ AND THAT IS ENFORCED, NOT HOPED FOR (#296). A session fixture at the end of
 this file puts a GUARD `gh` (`tests/gh_guard.py`) first on PATH for every
 child of every test: it answers the two questions the doctor's `machine` row
 and the installed command's machine report ask -- `gh --version` and `gh
-auth status` -- as an installed `gh` with no login, and refuses and logs
-anything else, and a check after each test fails that test by name if the
-guard refused one of its calls. A test that means to run `gh` puts a stub
+auth status` -- as an installed `gh` with no login, and one more, which
+`adopt-project.py check` asks of each leg repository (#798), `gh repo view
+<owner>/<name> --json nameWithOwner`, as a `gh` with no login does; it refuses
+and logs anything else, and a check after each test fails that test by name if
+the guard refused one of its calls. A test that means to run `gh` puts a stub
 of its own ahead of the guard, as the existing ones do.
 
 The scaffold and the recursive clone happen ONCE per session because they are
