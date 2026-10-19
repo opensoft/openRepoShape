@@ -57,7 +57,12 @@ DROP = "drop"
 CRLF = b"one\r\ntwo\r\n"
 TEXT_EOL_LF = b"* text eol=lf\n"
 TXT_ENCODING = b"*.txt working-tree-encoding=UTF-16LE\n"
-PY_UTF16_BOM = b"*.py working-tree-encoding=UTF-16LE-BOM\n"
+#: An encoding git refuses for every pinned copy, whatever its size: `UTF-16`
+#: with no byte order needs a BOM, and no copy has one. `UTF-16LE-BOM`, the
+#: rule #530 measured, refuses only a file of an odd byte count and stores
+#: an even one as other bytes, so which finding the copies drew turned on
+#: their sizes: all five even (#958) made it `COPIES_GROUP`'s.
+PY_UTF16 = b"*.py working-tree-encoding=UTF-16\n"
 NOT_UTF8 = b"caf\xe9\n"
 EXPANDED_ID = b"$Id: deadbeef $\n"
 #: A filter this machine defines: its clean step uppercases.
@@ -157,8 +162,10 @@ FOUND = [
     pytest.param({ROOT_ATTRIBUTES: f"/scripts/*.py filter={UPPER}\n".encode()},
                  {}, UPPER_CLEAN, [(COPIES_GROUP, "5 pinned shape copies")],
                  id="copies-alone-under-a-filter"),
-    pytest.param({ROOT_ATTRIBUTES: PY_UTF16_BOM}, {}, (),
-                 [(REFUSED_GROUP, "from UTF-16LE-BOM to UTF-8`)")],
+    pytest.param({ROOT_ATTRIBUTES: PY_UTF16}, {}, (),
+                 [(REFUSED_GROUP, "pinned shape copies the split writes "
+                                  "(git said `fatal: BOM is required in "
+                                  "'scripts/")],
                  id="copies-refused-by-an-encoding"),
     pytest.param({ROOT_ATTRIBUTES: b"* working-tree-encoding=UTF-16LE\n"
                                    b".gitattributes -working-tree-encoding\n"},
@@ -339,8 +346,11 @@ def test_a_refusal_says_where_execute_stops_and_the_way_out(monkeypatch,
         "this machine's git refuses to store again what the plan keeps in "
         "the assembly root, as the split's `git add -A` does (git said "
         "`fatal: CRLF would be replaced by LF in notes.txt`), so `execute` "
-        "would stop there, after the leg repositories exist. Commit the file "
-        "git names in the source as git stores it, or change the rule or the "
+        "would stop after the leg repositories exist, no later than "
+        "committing the split, and sooner where a step before it meets the "
+        "same rule: extracting or seeding a leg, or mounting the legs, where "
+        "the rule reaches the `.gitmodules` it writes. Commit the file git "
+        "names in the source as git stores it, or change the rule or the "
         "setting that refuses it, and re-run `plan`.")]
 
 

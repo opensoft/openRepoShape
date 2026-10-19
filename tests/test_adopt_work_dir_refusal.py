@@ -97,6 +97,15 @@ def refused(command: str, detail: str) -> str:
             f"Remediation: {done}{FIX}\n")
 
 
+def plan_cannot_write(work: Path, repository: str) -> str:
+    """Why `plan` refuses `--work-dir work` for the `org/repo` source
+    `repository`: as `check` and `execute` say it, up to what the command
+    does there. `plan` clones, and says that (#903); `execute` builds."""
+    why, _, _ = cannot_write(work).partition(", and `execute` builds")
+    return (f"{why}, and `plan` clones {repository} into "
+            f"`source-readonly/{repository.split('/')[1]}` there")
+
+
 def mkdir_says(work: Path) -> str:
     """Why this machine cannot make `work` as `_work_root` makes it, in the
     words of its own error: `File exists` on Linux, for a file."""
@@ -180,10 +189,12 @@ def test_plan_refuses_to_clone_into_a_work_dir_it_cannot_write_in(
     `source-readonly`. A local source is read in place, and nothing is
     written there, so `plan` of one still writes its plan."""
     planned(tmp_path, {}, {}, {})
-    cloned = run_in(PLAN_VERB, tmp_path, unwritable_work, "acme/Atlas")
+    cloned = run_in(PLAN_VERB, tmp_path, unwritable_work,
+                    f"testorg/{PROJECT}")
     assert cloned.returncode == 2, cloned.stderr + cloned.stdout
     assert cloned.stdout == ""
-    assert cloned.stderr == refused(PLAN_VERB, cannot_write(unwritable_work))
+    assert cloned.stderr == refused(PLAN_VERB, plan_cannot_write(
+        unwritable_work, f"testorg/{PROJECT}"))
     assert not (tmp_path / AGAIN).exists()
     read = run_in(PLAN_VERB, tmp_path, unwritable_work)
     assert read.returncode == 0, read.stderr + read.stdout

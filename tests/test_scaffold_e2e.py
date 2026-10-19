@@ -245,11 +245,14 @@ def test_the_scaffold_refuses_with_no_elector(tmp_path):
     # run_script, and the fixtures set GIT_AUTHOR_NAME there; the scaffold
     # takes that per-invocation identity as an elector before the config, so
     # the no-elector path is reachable only with BOTH blanked (empty string
-    # falls through to the config, which is /dev/null here).
+    # falls through to the config, which is /dev/null here). And with NO
+    # `--elected-by`: a `--elected-by ''` is the flag's own answer since #911,
+    # refused by name (`test_scaffold_init_empty_values.py`), and the
+    # no-elector refusal is about a flag that was not passed.
     env = {"GIT_CONFIG_GLOBAL": os.devnull, "GIT_CONFIG_SYSTEM": os.devnull,
            "GIT_AUTHOR_NAME": "", "GIT_COMMITTER_NAME": ""}
     result = run_script(SCAFFOLD, "--org", ORG, "--project", "Northwind",
-                        "--elected-by", "", "--dry-run",
+                        "--dry-run",
                         "--local-remote-dir", str(remotes),
                         "--work-dir", str(tmp_path / "work"), env=env)
     assert result.returncode == 2, result.stdout

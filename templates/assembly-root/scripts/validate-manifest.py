@@ -84,14 +84,19 @@ WHAT IS CHECKED
     names a file, is the doctor's to say (#655).
 
 EXIT CODES: 0 valid · 1 findings · 2 refusal (the file is missing or unreadable)
+            -- and a declared referent's pin file this user cannot reach is
+            a refusal too, never a finding that it is missing (#430)
 """
 
 from __future__ import annotations
 
 import argparse
+import errno
 import inspect
 import re
+import stat
 import sys
+from collections.abc import Callable
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
@@ -106,6 +111,112 @@ from repo_shape import (  # noqa: E402
 DATE_RE = re.compile(r"^\d{4}-\d{2}-\d{2}$")
 QUALIFIED_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_.-]*/[A-Za-z0-9][A-Za-z0-9_.-]*$")
 REQUIRED_ROLES = {"assembly", "spec", "code"}
+
+#: The `OSError`s that `Path.is_file()` answered False to on Python 3.9 to
+#: 3.13 (pathlib's `_ignore_error`), because each means there is nothing at
+#: the name to open: no such file, a part of the path that is not a
+#: directory, a bad descriptor, a symlink loop, and Windows' "not ready",
+#: "invalid name" and "cannot resolve". Every other one was raised, and is
+#: refused here by name (#430), as `validate-pins.py` refuses it.
+_ABSENT_ERRNOS = (errno.ENOENT, errno.ENOTDIR, errno.EBADF, errno.ELOOP)
+_ABSENT_WINERRORS = (21, 123, 1921)
+
+#: What a file the operating system refused for ANOTHER reason than
+#: permission is told (#430): an I/O error, a name longer than the
+#: filesystem takes, a file replaced while this ran. No `chmod` puts one
+#: right. `validate-pins.py`'s `OTHER_REASON`, word for word.
+OTHER_REASON = (
+    "Where the operating system gave another reason, put a regular file this "
+    "user can open back in its place, or take away one nobody wants, and make "
+    "sure nothing is changing the directory while this runs. ")
+
+
+def _is_a(path: Path, kind: Callable[[int], bool]) -> bool:
+    """Whether `path` is there and of `kind` (`stat.S_ISREG`), raising the
+    `OSError` of a `stat` the operating system REFUSED (#430).
+
+    `validate-pins.py`'s `_is_a`, as a copy: this file imports nothing new
+    from `repo_shape.py`, which may be older than it (#370, #610). NOT
+    `Path.is_file()`, whose answer depends on the Python. Up to 3.13 it
+    raised a refused `stat` (`PermissionError`) out of the run, a traceback
+    and exit 1, which is a finding's code; from 3.14 it answers False to ANY
+    `OSError`, so a `project.yaml` this user cannot reach was refused
+    `manifest-missing`, and a declared referent's pin file in a `contracts/`
+    it cannot search was the finding `naming-referent-missing`: a file that
+    is there, said not to be. A name the operating system cannot take at all
+    (a NUL in it) is no file, as `is_file()` answered it.
+    """
+    try:
+        mode = path.stat().st_mode
+    except OSError as exc:
+        if (exc.errno in _ABSENT_ERRNOS
+                or getattr(exc, "winerror", None) in _ABSENT_WINERRORS):
+            return False
+        raise
+    except ValueError:
+        return False
+    return kind(mode)
+
+
+def _unreadable_file(root: Path, path: Path, exc: OSError) -> Refusal:
+    """`yaml-unreadable` for a file this validator must read or find and the
+    operating system will not let it (#430): its `stat` refused, or its
+    open. `validate-pins.py`'s `_unreadable_file`, in its words.
+
+    NAMED ONCE, RELATIVE TO THE ROOT, POSIX on every platform, or whole
+    where it is not under the root (a `--policy` given elsewhere), and
+    spelled (`_shown`). THE ADVICE FOLLOWS THE CAUSE: a permission
+    (`PermissionError`, which is `EACCES` and `EPERM`) is put right by the
+    mode or the owner, and any other cause is `OTHER_REASON`, which is not
+    told to `chmod`.
+    """
+    try:
+        named = _shown(path.relative_to(root).as_posix())
+    except ValueError:
+        named = _shown(str(path))
+    advice = (
+        "Make what this user may not open readable by this user: `chmod u+r` "
+        "on a file, `chmod u+rx` on a directory (and on every directory above "
+        "it inside the root), or fix who owns it. "
+        if isinstance(exc, PermissionError) else OTHER_REASON)
+    return Refusal(
+        "yaml-unreadable",
+        f"{named}: cannot be read ({exc.strerror or type(exc).__name__})",
+        "Remediation: this validator reads project.yaml, the naming policy "
+        "and the pin file each declared referent needs, and one it cannot "
+        "read is a question it cannot answer, never a pass. " + advice
+        + "Then run the same command again.")
+
+
+def _is_file(root: Path, path: Path) -> bool:
+    """Whether `path` is a file, asked as `_is_a` asks it, or the refusal
+    naming it (`_unreadable_file`) where its `stat` was refused (#430)."""
+    try:
+        return _is_a(path, stat.S_ISREG)
+    except OSError as exc:
+        raise _unreadable_file(root, path, exc) from exc
+
+
+def _load(root: Path, path: Path, read: Callable = load_yaml):
+    """`read(path)`, `load_yaml` or `NamingPolicy.load`, with a file this
+    user cannot OPEN named as one whose `stat` was refused is
+    (`_unreadable_file`, #430), so `project.yaml` at mode 000 and one in a
+    folder nobody may search say one line, and so does the naming policy
+    in a `contracts/` this user cannot search, which was named whole, with
+    nothing to put it right.
+
+    Read off the refusal's cause, as `validate-pins.py`'s `_load` reads it:
+    `load_yaml` has raised its refusal `from` the `OSError` since it was
+    written, so a `repo_shape.py` older than this file is read the same way.
+    Any other refusal (a file that is not UTF-8, or does not parse, or a
+    policy of the wrong kind) keeps its words."""
+    try:
+        return read(path)
+    except Refusal as exc:
+        if isinstance(exc.__cause__, OSError):
+            raise _unreadable_file(root, path,
+                                   exc.__cause__) from exc.__cause__
+        raise
 
 
 def _declared_pins(manifest: dict) -> set[str]:
@@ -175,7 +286,8 @@ def _recorded_chain(naming: dict) -> tuple:
     return tuple(recorded)
 
 
-def _chain_and_links(naming, root: Path | None) -> tuple[tuple, dict]:
+def _chain_and_links(naming, root: Path | None,
+                     run_products=()) -> tuple[tuple, dict]:
     """The chain a leg RECORDS, and what its READABLE links declare.
 
     Read ONCE and handed to both the leg's own classification and the check of
@@ -190,16 +302,93 @@ def _chain_and_links(naming, root: Path | None) -> tuple[tuple, dict]:
     THE WARNING OFFERS WHAT THIS READS (#661): `_link_remedies`,
     handed over only where `link_pins_from_trees` takes `remedies=`
     (`_library_takes_remedies`).
+
+    AND SAYS WHAT A SOURCE THAT IS THERE IS (#909). The lookup is asked what
+    it tried (`tried=`) and why a tree it reached could not be read
+    (`with_reasons=`), as the naming gate asks, behind the same guard: every
+    library that takes `remedies=` takes both. Without them, a checkout of
+    openXdox beside this root holding no `project.yaml`, or a
+    `SHAPE_PIN_SOURCE_OPENXDOX` naming no folder, was offered as what would
+    let the tree be read while it was there, in the words said when nothing
+    was, and a manifest beside the root that is not a declaration was "not
+    reachable here". The offer is made once the lookup has said what it
+    tried, so it is filled in on the answer's `remedies`.
+
+    `run_products` is every product this run reads (`_run_products`). A
+    variable two of them share answers for none of them, wherever they are,
+    where the library takes `run_products=` (#909), and it is offered to
+    none of them.
     """
     chain = _recorded_chain(naming) if isinstance(naming, dict) else ()
     if not chain:
         return chain, {}
-    offered = ({"remedies": _link_remedies(chain)}
-               if _library_takes_remedies() else {})
-    return chain, link_pins_from_trees(chain, root, **offered)
+    if not _library_takes_remedies():
+        return chain, link_pins_from_trees(chain, root)
+    tried: dict = {}
+    run = ({"run_products": run_products}
+           if _library_takes("run_products") else {})
+    found = link_pins_from_trees(chain, root, tried=tried, with_reasons=True,
+                                 **run)
+    found.remedies.update(_link_remedies(chain, tried, run_products))
+    return chain, found
 
 
-def _link_remedies(chain) -> dict[str, str]:
+def _run_products(pins, legs) -> list[str]:
+    """Every product this run reads (#909): the declared pins, and every
+    link of every chain a leg records, read as `_leg_findings` reads it
+    (`_recorded_chain`). That counts the chain of a leg whose `repository:`
+    is bad or missing, which the naming gate's `_project_chain_links`
+    leaves out; such a leg is a finding in both gates, so the run fails
+    either way."""
+    products = sorted(pins)
+    for leg in legs:
+        naming = leg.get("naming") if isinstance(leg, dict) else None
+        if isinstance(naming, dict):
+            products.extend(str(link) for link in _recorded_chain(naming))
+    return products
+
+
+#: Why the lookup passed over a source with nothing at its path:
+#: `repo_shape.LINK_SOURCE_ABSENT`, word for word. Every tagged library has
+#: it (cac6bb20, before v1.0.0), and the naming gate imports it; this copy
+#: keeps this file's import block clear of #958, which edits it.
+#: `tests/test_chain_pin_sources.py` holds the two equal.
+SOURCE_ABSENT = "no such file or directory"
+
+
+def _shown(path) -> str:
+    """A path as it is, or as Python's `repr` spells it where a character in
+    it is not printable: `repo_shape.shown_path`, which a root's library
+    may predate (#610), as `validate-pins.py` and the naming gate spell it
+    for themselves."""
+    text = str(path)
+    return text if text.isprintable() else repr(text)
+
+
+def _sources_there(link: str, asked) -> tuple[list[str], set[str]]:
+    """The sources the lookup found THERE for `link` and could not read,
+    each said with why, and which of the two rules they were: `env` and
+    `sibling` (#909). `asked` is the lookup's `(rule, how, path, why)` rows
+    for the link (`link_pins_from_trees(..., tried=)`).
+
+    A variable that is set is there, whatever it names. A checkout beside
+    this root is there unless nothing is at its path (`SOURCE_ABSENT`). A
+    source that answered is not said: its tree was read, or was reached and
+    is said as the library says it. A path is spelled (`_shown`), so an ESC
+    in a variable's value is not printed raw."""
+    said: list[str] = []
+    there: set[str] = set()
+    for rule, _how, path, why in asked:
+        if why is None or (rule == "sibling" and why == SOURCE_ABSENT):
+            continue
+        source = (pin_source_env_name(link) if rule == "env"
+                  else f"the {link} beside this root")
+        said.append(f"{source}, {_shown(path)}, could not answer: {why}")
+        there.add(rule)
+    return said, there
+
+
+def _link_remedies(chain, tried=None, run_products=()) -> dict[str, str]:
     """What would let each chain link's own tree be read, in THIS
     validator's sources: `{pin_product_key(link): the words}`, for the
     `declared-unverified` WARNING about a tree that is not reachable
@@ -218,19 +407,45 @@ def _link_remedies(chain) -> dict[str, str]:
     Keyed by `pin_product_key`, the key `_chain_link_findings` looks a
     holder's entry up by (#444), and the links are read as that function
     reads them: by `repo_basename`, a blank entry dropped.
+
+    WHAT IS THERE IS SAID, AND NOT OFFERED (#909). Given `tried`, the
+    lookup's own record, a variable that is set and a checkout beside this
+    root that is there are each named with why they could not answer
+    (`_sources_there`), and only a source that is not there is offered:
+    "SHAPE_PIN_SOURCE_OPENXDOX, /x/openXdox, could not answer: no such file
+    or directory; a checkout of openXdox beside this root would let it be
+    read". A variable another product of the RUN shares (`run_products`) is
+    not read, and is not offered either.
     """
     links = [repo_basename(str(link)) for link in chain if str(link).strip()]
-    shared = pin_source_env_shared(links)
+    shared = pin_source_env_shared(
+        [*links, *(repo_basename(str(link)) for link in run_products)])
     remedies: dict[str, str] = {}
     for link in links[:-1]:
-        beside = f"a checkout of {link} beside this root"
-        if pin_product_key(link) in shared:
-            words = f"{beside} would let it be read"
-        else:
-            words = (f"{pin_source_env_name(link)}, or {beside}, would let "
-                     "it be read")
-        remedies[pin_product_key(link)] = words
+        said, there = _sources_there(link, (tried or {}).get(link, ()))
+        offers = []
+        if pin_product_key(link) not in shared and "env" not in there:
+            offers.append(pin_source_env_name(link))
+        if "sibling" not in there:
+            offers.append(f"a checkout of {link} beside this root")
+        if len(offers) == 2:
+            said.append(f"{offers[0]}, or {offers[1]}, would let it be read")
+        elif offers:
+            said.append(f"{offers[0]} would let it be read")
+        remedies[pin_product_key(link)] = "; ".join(said)
     return remedies
+
+
+def _library_takes(keyword: str) -> bool:
+    """Does this root's `link_pins_from_trees` take `keyword`? The skew rule
+    `_library_takes_remedies` states, for any keyword: `run_products=` is new
+    with #909, and a library older than that ends a call passing it in a
+    `TypeError`."""
+    try:
+        return keyword in inspect.signature(
+            link_pins_from_trees).parameters
+    except (TypeError, ValueError):
+        return False
 
 
 def _library_takes_remedies() -> bool:
@@ -241,13 +456,9 @@ def _library_takes_remedies() -> bool:
     update, `update-shape.py apply --accept-local`). Before #610 the library
     had no `remedies=`, and passing it ended this validator in a `TypeError`
     before it checked a leg. So it is passed only where the function's own
-    signature names it, and an older library's warning keeps that library's
-    words."""
-    try:
-        return "remedies" in inspect.signature(
-            link_pins_from_trees).parameters
-    except (TypeError, ValueError):
-        return False
+    signature names it (`_library_takes`), and an older library's warning
+    keeps that library's words."""
+    return _library_takes("remedies")
 
 
 def _naming_chain_field_finding(leg_role, naming: dict) -> list[str]:
@@ -394,6 +605,12 @@ def _naming_referent_missing_pin_finding(leg_role, naming: dict, found,
     Split from `_naming_referent_declared_findings` for #132. A direct pin
     is the referent's own pin file; a chain's is the FIRST LINK's, because
     that is the pin this project actually holds.
+
+    A PIN FILE THIS USER CANNOT REACH IS NOT MISSING (#430): `_is_file`
+    raises `yaml-unreadable` naming it, which `main` refuses, exit 2, as
+    `validate-pins.py` refuses the same file. `Path.is_file()` raised that
+    `stat` out of the run up to Python 3.13, and from 3.14 answered False,
+    and this finding said a file that is there does not exist.
     """
     resolution = found.referent
     satisfied = resolution.referent if resolution.reached else None
@@ -403,7 +620,7 @@ def _naming_referent_missing_pin_finding(leg_role, naming: dict, found,
     if not (declared is True and held and root is not None):
         return []
     pin_path = root / "contracts" / f"{held.lower()}-pin.yaml"
-    if pin_path.is_file():
+    if _is_file(root, pin_path):
         return []
     return [
         f"FINDING naming-referent-missing: leg {leg_role!r}: "
@@ -830,7 +1047,8 @@ def _leg_path_findings(role, path, paths: dict[str, str]) -> list[str]:
 
 
 def _leg_findings(leg, policy: NamingPolicy, pins: set[str], root,
-                  owners: set[str], paths: dict[str, str]) -> list[str]:
+                  owners: set[str], paths: dict[str, str],
+                  run_products=()) -> list[str]:
     """One `legs:` entry, start to finish: its repository name against the
     naming policy, its optional `naming:` record, and its path.
 
@@ -838,7 +1056,8 @@ def _leg_findings(leg, policy: NamingPolicy, pins: set[str], root,
     call per entry. Mutates `owners` and `paths` exactly as the original
     loop body did, so the path-collision check and the owners-span check
     after the loop see the same accumulated state; every `continue` in the
-    original loop is a `return` here.
+    original loop is a `return` here. `run_products` is every product the
+    run reads (`_run_products`, #909).
     """
     if not isinstance(leg, dict):
         return [_finding("manifest-leg", f"a leg is not a mapping: {leg!r}")]
@@ -858,7 +1077,7 @@ def _leg_findings(leg, policy: NamingPolicy, pins: set[str], root,
     # declaring `assembly` over `<Project>-spec` still lands in
     # naming-role-mismatch below.
     naming = leg.get("naming")
-    chain, link_pins = _chain_and_links(naming, root)
+    chain, link_pins = _chain_and_links(naming, root, run_products)
     found = policy.classify(name, str(role) if role else None, pins,
                             chain, link_pins)
     out = list(_leg_role_classification_finding(role, name, found))
@@ -1066,8 +1285,10 @@ def _findings(manifest: dict, policy: NamingPolicy, root=None) -> list[str]:
 
     owners: set[str] = set()
     paths: dict[str, str] = {}
+    run_products = _run_products(pins, legs)
     for leg in legs:
-        out.extend(_leg_findings(leg, policy, pins, root, owners, paths))
+        out.extend(_leg_findings(leg, policy, pins, root, owners, paths,
+                                 run_products))
     out.extend(_owners_span_finding(owners))
     return out
 
@@ -1082,23 +1303,28 @@ def main(argv: list[str] | None = None) -> int:
     try:
         root = find_repo_root(args.root or Path(__file__).resolve().parents[1])
         manifest_path = root / "project.yaml"
-        if not manifest_path.is_file():
+        # A `project.yaml` this user cannot reach or open is refused by name,
+        # `yaml-unreadable`, never `manifest-missing` (#430).
+        if not _is_file(root, manifest_path):
             raise Refusal(
                 "manifest-missing",
                 f"{manifest_path} does not exist. A project that has elected "
                 "this schema declares it in `project.yaml`; a project that has "
                 "not, does not run this validator.",
             )
-        manifest = load_yaml(manifest_path)
+        manifest = _load(root, manifest_path)
         if not isinstance(manifest, dict):
             raise Refusal("manifest-unreadable", f"{manifest_path}: not a mapping")
         policy_path = args.policy or (root / "contracts" / "repository-naming.yaml")
-        policy = NamingPolicy.load(policy_path)
+        policy = _load(root, policy_path, NamingPolicy.load)
+        # Inside the `try`: a declared referent's pin file this user cannot
+        # reach is a check that cannot run, so it is refused, exit 2, and no
+        # finding is said over it (#430).
+        notes = _findings(manifest, policy, root)
     except Refusal as exc:
         print(str(exc), file=sys.stderr)
         return 2
 
-    notes = _findings(manifest, policy, root)
     # A WARNING is a note about what could not be CHECKED here (a chain link
     # whose tree is not on this disk), never about what is wrong. It is
     # printed and then forgotten by the exit code, deliberately.
