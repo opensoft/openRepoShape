@@ -500,16 +500,23 @@ def test_check_removes_the_clone_it_made(adopter, monkeypatch, capsys,
 def test_a_plan_refused_after_its_clone_removes_it(adopter, monkeypatch,
                                                    capsys, tmp_path, given):
     """No plan records it: on main it stayed, in the temp folder or in the
-    `--work-dir`, where the next `plan` given it was refused at the clone."""
+    `--work-dir`, where the next `plan` given it was refused at the clone.
+    The refusal is the write's own, a plan that cannot be written after the
+    whole plan is built: `--project Wrong` stood here, and is
+    `adopt-not-the-source` before the clone since #903."""
     calls = on_github(adopter, monkeypatch, tmp_path)
     temporary = in_a_fresh_temp_folder(monkeypatch, tmp_path / "plan-temp")
     work = tmp_path / WORK
+
+    def cannot_write(_path, _text):
+        raise OSError(errno.ENAMETOOLONG, os.strerror(errno.ENAMETOOLONG))
+
+    monkeypatch.setattr(adopter, "write_lf", cannot_write)
     code, _, err = run(adopter, capsys, PLAN_VERB, SOURCE_FLAG, REPOSITORY,
-                       "--project", "Wrong", *PLANNED[2:], OUT,
-                       str(tmp_path / PLAN),
+                       *PLANNED, OUT, str(tmp_path / PLAN),
                        *((WORK_FLAG, str(work)) if given else ()))
     assert code == 2
-    assert "REFUSED adopt-not-the-source: " in err
+    assert "REFUSED adopt-out-unwritable: " in err
     assert len(calls) == 1
     assert left_in(temporary) == []
     assert not os.path.lexists(work / SOURCE_READONLY)

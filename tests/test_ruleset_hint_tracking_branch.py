@@ -33,8 +33,9 @@ WHAT IS PINNED HERE
     the tracking branch was really refused;
   * THE EXIT IT OFFERS IS TAKEN, with the ruleset off standing in for the
     operator's bypass, and it FINISHES: the scaffold re-run pushes all three
-    repositories, a leg the first run had pushed kept at its commit; the
-    holder is pushed; the adoption verifies.
+    repositories, a leg the first run had pushed kept at its commit (the
+    re-run is dated later, so a seed it made again is another commit: #922);
+    the holder is pushed; the adoption verifies.
 
 THE RULESET IS A `pre-receive` HOOK in each bare remote the tool makes, put
 there by `GIT_TEMPLATE_DIR`, which every `git init` the tool runs honours. The
@@ -320,6 +321,15 @@ CASES = {
 NEEDS_FILTER_REPO = ("adopt-extracted", "adopt-seeded")
 SCAFFOLDED = (f"{PROJECT}.git", f"{PROJECT}-spec.git", f"{PROJECT}-code.git")
 
+#: THE RE-RUN COMMITS LATER THAN THE FIRST RUN DID (#922). A commit made in the
+#: same second as another, by the same identity, with the same message and
+#: tree, IS that commit. So without a later date, a re-run that made a new seed
+#: for a leg it should have kept, however fast, would push the object the leg
+#: holds, and `tip(...) == before[repo]` below would pass by the clock. The
+#: committer date is part of a commit's id, so it alone gives the new commit
+#: another one; the author date need not move.
+LATER = {"GIT_COMMITTER_DATE": "2031-01-01T00:00:00+0000"}
+
 
 def run_the_tool(case: str, tracking: str, tmp_path, env: dict, work: Path,
                  *extra: str):
@@ -399,8 +409,8 @@ def test_the_hint_names_one_exit_and_taking_it_finishes_the_run(
         before = {repo: tip(remotes / repo, tracking) for repo in SCAFFOLDED}
 
     # THE EXIT, TAKEN: the ruleset off is the operator holding the bypass
-    # right, and the run is made again as the hint says.
-    operator = refusing(template)
+    # right, and the run is made again as the hint says, dated later (`LATER`).
+    operator = {**refusing(template), **LATER}
     if case.startswith("scaffold") or case == "family":
         again = run_the_tool(case, tracking, tmp_path, operator,
                              tmp_path / "again", "--reuse-empty-repo")
@@ -423,7 +433,8 @@ def test_the_hint_names_one_exit_and_taking_it_finishes_the_run(
         assert "adoption verified" in again.stdout
         return
     # Every repository is pushed, each holds ONE commit, and a leg the first
-    # run had pushed is where that run left it: reused, never rewritten.
+    # run had pushed is where that run left it: reused, never rewritten. The
+    # re-run's date is later, so a seed it made again would be another id.
     for repo in SCAFFOLDED:
         assert tip(remotes / repo, tracking), repo
         assert git("rev-list", "--count", "--all",

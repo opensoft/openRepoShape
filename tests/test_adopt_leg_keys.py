@@ -263,10 +263,18 @@ ACROSS_ROWS = [
 EDITED_ROWS = [pytest.param(*row.values[1:], id=row.id) for row in ACROSS_ROWS]
 
 
-def clause(across: str) -> str:
-    """What the two sentences that print the mounts end with."""
-    return (", so from the code leg the spec leg's `contracts/` is "
-            f"`{across}`")
+def clause(across: str, reads_across: bool = True) -> str:
+    """What the two sentences that print the mounts end with. Where the plan
+    holds the read-across follow-up, as every plan here does, it is the spec
+    leg's own path first and then the path to its `contracts/` (#906); a
+    split message rendered with no follow-ups has the `contracts/` path
+    alone."""
+    contracts = f"the spec leg's `contracts/` is `{across}`"
+    if not reads_across:
+        return f", so from the code leg {contracts}"
+    spec_leg = across.removesuffix("contracts/")
+    return (f", so from the code leg the spec leg is `{spec_leg}` and "
+            f"{contracts}")
 
 
 def split_line(output: str) -> str:
@@ -359,7 +367,8 @@ def test_the_split_message_prints_the_path_to_the_contracts_beside_the_mounts(
     which are the ones `execute` made (the pull request's body is this text)."""
     message = split_message_at(adopter, *edited)
     assert (f"mounted back here at {edited[0]}/ and {edited[1]}/"
-            f"{clause(across)}.") in message.splitlines()[2]
+            f"{clause(across, reads_across=False)}.") \
+        in message.splitlines()[2]
     assert posixpath.normpath(posixpath.join(edited[1], across)) == \
         f"{edited[0]}/contracts"
 
