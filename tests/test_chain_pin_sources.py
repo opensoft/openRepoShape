@@ -57,8 +57,10 @@ from test_manifest_validator import as_a_descendant_by_chain
 
 sys.path.insert(0, str(REPO / "scripts"))
 from repo_shape import (  # noqa: E402
-    LINK_SOURCE_ABSENT, LinkPins, link_pins_from_trees, load_yaml, shown_path,
+    LINK_SOURCE_ABSENT, LinkPins, NamingPolicy, link_pins_from_trees,
+    load_yaml, shown_path,
 )
+import shape_materialize  # noqa: E402
 
 TEMPLATE_MANIFEST = (REPO / "templates" / "assembly-root" / "scripts" /
                      "validate-manifest.py")
@@ -308,25 +310,41 @@ def sharp_tree(tmp_path: Path, declares: str) -> dict:
         tree(tmp_path / "trees" / "sharp", declares))}
 
 
-@pytest.mark.parametrize("variable", [True, False], ids=["set", "unset"])
+#: How a row hands `SHAPE_PIN_SOURCE_OPENSS` to the child: set to `openß`'s
+#: tree, set to nothing, or not handed at all. An empty variable is read
+#: for no product (`resolve_link_source` asks only a value), so it is no
+#: more said than an unset one (#990, RV1011's NIT-1): the conftest's
+#: `blank_unnamed_pin_sources` hands children `""`, and so does a person
+#: who exported the variable empty.
+HANDED = ["set", "empty", "unset"]
+
+
+def handed(tmp_path: Path, how: str, declares: str) -> dict:
+    """The child's `SHAPE_PIN_SOURCE_OPENSS`, as `HANDED` names `how`."""
+    if how == "set":
+        return sharp_tree(tmp_path, declares)
+    return {"SHAPE_PIN_SOURCE_OPENSS": ""} if how == "empty" else {}
+
+
+@pytest.mark.parametrize("variable", HANDED)
 def test_the_gate_reads_a_shared_variable_for_no_chain(tmp_path, variable):
     """R444. Set to `openß`'s tree, the variable was read for both chains,
     and the gate said "FINDING codexQuill: the declared chain openss ->
     openQuill is broken (openss declares openInk, not openQuill)", exit 1;
     unset, each leg was offered it. It is read for neither now, and offered
     to neither, and both chains are declared-unverified, exit 0. Set, one
-    NOTE names it and both products (#990); unset, nothing does."""
+    NOTE names it and both products (#990); empty or unset, nothing
+    does."""
     root = two_firsts(tmp_path / "ws" / "codexSoft")
-    env = sharp_tree(tmp_path, "openInk") if variable else {}
     result = run_script(VALIDATOR, "--project", "project.yaml", cwd=root,
-                        env=env)
+                        env=handed(tmp_path, variable, "openInk"))
     assert result.returncode == 0, result.stderr
     assert result.stderr == (
         GATE_UNREACHED.format(name="codexInk", holder=SHARP, held="openInk")
         + GATE_UNREACHED.format(name="codexQuill", holder=SS,
                                 held="openQuill")
         + (said_shared(GATE_SHARED, "SHAPE_PIN_SOURCE_OPENSS", SHARP, SS)
-           + "\n" if variable else ""))
+           + "\n" if variable == "set" else ""))
 
 
 def test_a_variable_two_declared_pins_share_is_read_for_no_chain(tmp_path):
@@ -408,7 +426,7 @@ def a_root_sharing_one_variable(project: Path, where: str) -> Path:
     return project
 
 
-@pytest.mark.parametrize("variable", [True, False], ids=["set", "unset"])
+@pytest.mark.parametrize("variable", HANDED)
 @pytest.mark.parametrize("where", ["chain", "qualified-chain", "pin"])
 def test_the_manifest_gate_reads_a_shared_variable_for_no_chain(
         project, monkeypatch, tmp_path, where, variable):
@@ -420,11 +438,10 @@ def test_the_manifest_gate_reads_a_shared_variable_for_no_chain(
     validator hands them over as its manifest spells them, and read whole,
     the owner-qualified link names `SHAPE_PIN_SOURCE_OPENSOFT_OPENSS` and
     shares nothing. Set, one note names it and both products, and fails
-    nothing (#990); unset, nothing does."""
+    nothing (#990); empty or unset, nothing does."""
     clear_ambient_pin_sources(monkeypatch)
     root = a_root_sharing_one_variable(project, where)
-    result = validate(root, sharp_tree(tmp_path, "openQuill")
-                      if variable else {})
+    result = validate(root, handed(tmp_path, variable, "openQuill"))
     assert result.returncode == 0, result.stderr
     assert "manifest ok" in result.stdout
     assert manifest_warnings(result) == [UNREACHED.format(
@@ -432,7 +449,7 @@ def test_the_manifest_gate_reads_a_shared_variable_for_no_chain(
         offer=f"a checkout of {SS} beside this root would let it be read")]
     assert collision_lines(result) == ([said_shared(
         ROOT_SHARED, "SHAPE_PIN_SOURCE_OPENSS", SS, SHARP)]
-        if variable else []), result.stderr
+        if variable == "set" else []), result.stderr
 
 
 # --- #990: a set variable the guard passes over is said, once ----------------
@@ -593,6 +610,33 @@ def test_the_doctor_reads_the_roots_note_as_a_note(project, monkeypatch,
     assert [key for key, _text in said] == ["warnings", "notes"], said
     assert said[1][1].startswith(
         "link-source-collides: SHAPE_PIN_SOURCE_OPENSS is set, but "), said
+
+
+@pytest.mark.parametrize("where", ["chain", "pin"])
+def test_the_standard_reads_the_roots_note_as_no_finding(project, monkeypatch,
+                                                        tmp_path, where):
+    """RV1011's SHOULD-1 on #990. The standard asks the root's validator
+    in process (`shape_materialize._validator_notes`, behind the
+    scaffold's `manifest_invalid` and adopt's `manifest_judged`), and it
+    dropped only the WARNINGs `_findings` returns. So the root's
+    `link-source-collides` note read as a finding: `manifest_invalid`
+    gave it as a refusal and `manifest_judged` said None, where the
+    root's own `main` counts it as none. The root here is its own
+    template: its `project.yaml` holds no placeholder."""
+    clear_ambient_pin_sources(monkeypatch)
+    root = a_root_sharing_one_variable(project, where)
+    for variable, path in sharp_tree(tmp_path, "openQuill").items():
+        monkeypatch.setenv(variable, path)
+    policy = NamingPolicy.load(REPO / "contracts" / "repository-naming.yaml")
+    manifest = shape_materialize.parse_yaml(
+        (root / "project.yaml").read_text(encoding="utf-8"))
+    said = shape_materialize.manifest_validator(root)._findings(
+        manifest, policy, None)
+    assert [note for note in said if "link-source-collides" in note] == [
+        said_shared(ROOT_SHARED, "SHAPE_PIN_SOURCE_OPENSS", SS, SHARP)], said
+    assert shape_materialize._validator_notes({}, policy, root, ()) == []
+    assert shape_materialize.manifest_invalid({}, policy, {}, root) == []
+    assert shape_materialize.manifest_judged({}, policy, root) == frozenset()
 
 
 def test_the_library_asks_the_guard_over_the_run(tmp_path, monkeypatch):

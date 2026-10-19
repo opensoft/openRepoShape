@@ -5187,10 +5187,11 @@ def manifest_invalid(values: dict, policy: NamingPolicy, what: dict,
     asked as the project asks it. `values` must be the complete table;
     `policy` is the naming policy the project carries a copy of. A WARNING of
     the validator (a chain link it cannot check offline) is a note and never
-    a refusal, exactly as the project's own exit code treats it. Where the
-    project's own YAML reader refuses the file before the validator can be
-    asked, each sentence is the reader's, naming the value on the line it
-    refuses (`_unread_sentences`, #708).
+    a refusal, exactly as the project's own exit code treats it, and so is
+    its `  note` (a `SHAPE_PIN_SOURCE_<LINK>` the run guard passed over,
+    #990). Where the project's own YAML reader refuses the file before the
+    validator can be asked, each sentence is the reader's, naming the value
+    on the line it refuses (`_unread_sentences`, #708).
     """
     return [sentence for _, sentence in _invalid_problems(
         values, policy, what, template_dir, ignore, not_text)]
@@ -5277,8 +5278,12 @@ def _unread_sentences(values: dict, what: dict, template_dir: Path,
 def _validator_notes(values: dict, policy: NamingPolicy, template_dir: Path,
                      ignore: tuple) -> list[str] | YamlError:
     """The FINDINGs the project's own validator makes of the `project.yaml`
-    these `values` render, less its WARNINGs and the codes in `ignore`; or
-    the `YamlError` its reader raised, where it cannot read that file."""
+    these `values` render, less its WARNINGs, its `  note`s and the codes
+    in `ignore`; or the `YamlError` its reader raised, where it cannot read
+    that file. A `  note` is no finding, as the validator's own `main`
+    counts it (#990): `_findings` returns its `link-source-collides` note
+    beside the findings, and read as one, `manifest_invalid` gave it as a
+    refusal and `manifest_judged` said None (RV1011's SHOULD-1)."""
     template = (Path(template_dir) / MANIFEST_TEMPLATE).read_text(
         encoding="utf-8")
     try:
@@ -5292,7 +5297,8 @@ def _validator_notes(values: dict, policy: NamingPolicy, template_dir: Path,
         raise _validator_unusable(
             "raised when it was asked", f"{type(exc).__name__}: {exc}"
         ) from exc
-    return [note for note in notes if not note.startswith("WARNING")
+    return [note for note in notes
+            if not note.startswith(("WARNING", "  note "))
             and _code_of(note) not in ignore]
 
 
