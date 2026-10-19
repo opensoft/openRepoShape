@@ -10520,18 +10520,25 @@ def build_parser() -> argparse.ArgumentParser:
     # `_folder_flags` makes each a `Path`, refusing an empty one first.
     init.add_argument("--local-remote-dir", default=None,
                       help="create a bare repository here instead of calling "
-                           "`gh repo create` (the TEST path; no network)")
+                           "`gh repo create` (the TEST path; no network). An "
+                           "empty value is refused as "
+                           "`local-remote-dir-no-path`, and `.` means the "
+                           "directory the run stands in.")
     init.add_argument("--into", default=None, metavar="DIR",
                       help="the PARENT directory the family folder is made "
                            "in (default: the directory you are standing in, "
                            "which is refused inside a checkout of "
                            "openRepoShape: from its root, pass `--into ..`). "
                            "The holder lands at <into>/<Family>/<Family>, "
-                           "beside where `make siblings` clones the members.")
+                           "beside where `make siblings` clones the members. "
+                           "An empty value is refused as `into-no-path`, and "
+                           "`.` means the directory the run stands in.")
     init.add_argument("--work-dir", default=None,
                       help="THE OVERRIDE: land the holder at "
                            "<work-dir>/<Family> and make no family folder at "
-                           "all. Mutually exclusive with --into.")
+                           "all. Mutually exclusive with --into. An empty "
+                           "value is refused as `work-dir-no-path`, and `.` "
+                           "means the directory the run stands in.")
     init.add_argument("--no-push", action="store_true")
     init.add_argument("--dry-run", action="store_true",
                       help="print the plan and ask, as the real run does, "

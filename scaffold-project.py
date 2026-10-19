@@ -380,7 +380,10 @@ def main(argv: list[str] | None = None) -> int:
     # parsed (`folder_flag_path`).
     parser.add_argument("--local-remote-dir", default=None,
                         help="create bare repositories here instead of calling "
-                             "`gh repo create` (the TEST path; no network)")
+                             "`gh repo create` (the TEST path; no network). "
+                             "An empty value is refused as "
+                             "`local-remote-dir-no-path`, and `.` means the "
+                             "directory the run stands in.")
     parser.add_argument("--no-push", action="store_true")
     parser.add_argument("--reuse-empty-repo", action="store_true",
                         help="if <org>/<Project>, <Project>-spec or "
@@ -433,7 +436,9 @@ def main(argv: list[str] | None = None) -> int:
                              "`pin-source-not-a-clone`.")
     parser.add_argument("--work-dir", default=None,
                         help="where the working trees are built "
-                             "(default: a temporary directory)")
+                             "(default: a temporary directory). An empty "
+                             "value is refused as `work-dir-no-path`, and `.` "
+                             "means the directory the run stands in.")
     parser.add_argument("--no-next-steps", action="store_true",
                         help="leave out the closing NEXT STEPS (the clone, "
                              "the cd and `make bootstrap`): setup-project.py "
