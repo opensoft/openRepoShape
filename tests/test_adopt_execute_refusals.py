@@ -820,7 +820,8 @@ BAD_SOURCE, BAD_LEGS = "plan-bad-source", "plan-bad-legs"
 BAD_ALLOW, BAD_PATHS = "plan-bad-allow-empty-legs", "plan-bad-paths"
 #: `pins:` is #273's: a `pins:` that is no list is `_read_pins`' own
 #: `plan-pin-malformed`, asked here first, and each entry of a list is
-#: `plan-pin-unrecorded` or `plan-pin-malformed` beside the entries.
+#: `plan-pin-unrecorded` or `plan-pin-malformed` beside the entries. What
+#: was read is said as `_read_as` says it, as for each other key (#901).
 PIN_MALFORMED, PIN_UNRECORDED = "plan-pin-malformed", "plan-pin-unrecorded"
 
 #: What a hand edit can leave a key `Plan` reads holding, by test id: the key,
@@ -834,14 +835,13 @@ PIN_MALFORMED, PIN_UNRECORDED = "plan-pin-malformed", "plan-pin-unrecorded"
 #: written as the mapping itself, with no list around it, is a row too.
 BAD_KEYS = {
     "pins-int": ("pins", "pins: 5\n", PIN_MALFORMED,
-                 "`pins:` is 5, not a list of pins"),
+                 "`pins:` is the number 5, not a list of pins"),
     "pins-true": ("pins", "pins: true\n", PIN_MALFORMED,
-                  "`pins:` is True, not a list of pins"),
+                  "`pins:` is the boolean true, not a list of pins"),
     "pins-text": ("pins", "pins: openGlass\n", PIN_MALFORMED,
-                  "`pins:` is 'openGlass', not a list of pins"),
+                  "`pins:` is the text 'openGlass', not a list of pins"),
     "pins-mapping": ("pins", "pins: {product: openGlass}\n", PIN_MALFORMED,
-                     "`pins:` is {'product': 'openGlass'}, not a list of "
-                     "pins"),
+                     "`pins:` is a mapping of 1 key(s), not a list of pins"),
     "allow-int": ("allow_empty_legs", "allow_empty_legs: 5\n", BAD_ALLOW,
                   "`allow_empty_legs:` is the number 5, not a list"),
     "allow-true": ("allow_empty_legs", "allow_empty_legs: true\n", BAD_ALLOW,
@@ -1985,7 +1985,8 @@ def test_pins_written_as_text_creates_no_leg_and_the_corrected_plan_runs(
     refused = run_script(ADOPT, "execute", *flags)
     assert refused.returncode == 2, refused.stderr + refused.stdout
     assert f"REFUSED {PIN_MALFORMED}: " in refused.stderr
-    assert "`pins:` is 'openGlass', not a list of pins" in refused.stderr
+    assert ("`pins:` is the text 'openGlass', not a list of pins"
+            in refused.stderr), refused.stderr
     assert_no_traceback(refused)
     assert_refused_before_any_leg(refused)
     assert "adoption verified" not in refused.stdout

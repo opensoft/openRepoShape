@@ -5221,10 +5221,10 @@ def _validator_ignores(plan: Plan) -> tuple:
     passes no such product, for it holds each to `PIN_ARG_RE`'s alphabet:
     every entry the validator refuses is one `_read_pins` names, with the
     `plan` that records the pin whole, the remedy, and `execute` refuses a
-    plan holding it before any leg exists. So wherever
-    `_read_pins` finds the plan's `pins:`, the validator's sentence about
-    an entry is left out, as #181 leaves such a plan's pins (`_plan_fields`)
-    and #255 asks only the pins `execute` writes (`_plan_values`).
+    plan holding it before any leg exists. So wherever `_read_pins` finds
+    the plan's `pins:`, the validator's sentence about an entry is left
+    out, as #181 leaves such a plan's pins (`_plan_fields`) and #255 asks
+    only the pins `execute` writes (`_plan_values`).
     """
     ignored = LEG_PATH_CODES + (PIN_ENTRY_CODES if _read_pins(plan)[1]
                                 else ())
@@ -12682,15 +12682,16 @@ def _checked_org_and_id(plan: Plan) -> str:
 
     ONE ORDER, THE MOST BASIC PROBLEM FIRST (#901). `execute` asked the two
     leg paths and the two branch names first, the organisation after them
-    (`_repository_urls`) and the id last, where `_refuse_what_check_finds`
-    renders the manifest, so a plan edited to `id: "North Wind"` and
-    `legs.spec_path: "../spec"` was `plan-bad-id` to `check` and
-    `plan-bad-leg-path` to `execute`, and one edited to `org: "-evil"` with
-    the same path was `unsafe-value` to one and `plan-bad-leg-path` to the
-    other. The organisation and the id come first because they say which
-    project the plan is about: every repository `execute` creates or pushes
-    to is `<org>/<name>`, and the topic it sets and the manifest's `id:`
-    are the id, where a leg path or a branch is a value inside that
+    (`_repository_urls`) and the id last, in `_refuse_what_check_finds`,
+    where the manifest is built (`_manifest_values`), so a plan edited to
+    `id: "North Wind"` and `legs.spec_path: "../spec"` was `plan-bad-id` to
+    `check` and `plan-bad-leg-path` to `execute`, and one edited to `org:
+    "-evil"` with the same path was `unsafe-value` to one and
+    `plan-bad-leg-path` to the other. The organisation and the id come
+    first because they say which project the plan is about: every
+    repository the plan names is `<org>/<name>`, on GitHub and in the
+    manifest, and the topic `execute` sets and the manifest's `id:` are
+    made from the id, where a leg path or a branch is a value inside that
     project. And `check` holds the manifest built from both to the
     project's own validator before it lists a finding, so it refuses
     either outright, exit 2, where a leg path or a branch name is one
