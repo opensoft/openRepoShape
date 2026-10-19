@@ -15,6 +15,12 @@ remotes, as the issue measured at 5017830:
   `plan-bad-leg-path` to the other. Both now ask the organisation and the
   id first (`_checked_org_and_id`): they say which project the plan is
   about, which is the most basic thing a plan can get wrong.
+- ONE FINDING PER VALUE. A pin edited to `product: "a\\t"` and `repository:
+  "opensoft/a\\t"` was three findings about one value: `plan-pin-malformed`,
+  `plan-unwritable-value` and the validator's `plan-manifest-invalid`. A
+  `pins:` entry `_read_pins` names is now that finding alone: #255 asks only
+  the pins `execute` writes, and the validator's word on such an entry is
+  left out.
 
 Each test runs `check` and then `execute --yes`, both with the same
 `--local-remote-dir`, on one hand-edited plan, as the issue measured, and
@@ -32,7 +38,7 @@ from pathlib import Path
 import pytest
 
 from conftest import ADOPT, make_source_repo, planned, run_script
-from test_adopt_pins import ANSWERS
+from test_adopt_pins import ANSWERS, pin_entry
 
 UTF8 = "utf-8"
 PLAN_FILE = "adoption-plan.yaml"
@@ -100,6 +106,24 @@ def named_first(result) -> str:
                  if line.startswith(("REFUSED ", "FINDING "))), "")
 
 
+def findings_of(result) -> list[str]:
+    """Each `FINDING` line `check` printed."""
+    return [line for line in result.stderr.splitlines()
+            if line.startswith("FINDING ")]
+
+
+def refused_with(executed, plan: Path, found: list[str]) -> str:
+    """The code `execute` refused the plan at `plan` under, where it said
+    every one of `found`, `check`'s findings, as `check` prints them."""
+    lines = executed.stderr.splitlines()
+    head = named_first(executed)
+    assert head.endswith(f": {len(found)} finding(s) in {plan}, as `check` "
+                         "prints them:"), executed.stderr
+    assert lines[lines.index(head) + 1:][:len(found)] == [
+        f"  {finding}" for finding in found], executed.stderr
+    return head.split()[1].rstrip(":")
+
+
 # --- one order: the organisation and the id first ---------------------------
 
 #: `(the edits, what both commands refuse first)`, by test id. The id and
@@ -144,3 +168,67 @@ def test_the_id_is_named_in_the_same_words_by_both(answered, tmp_path):
     assert named_first(checked) == said, checked.stderr
     assert named_first(executed) == said, executed.stderr
     assert "plan-bad-leg-path" not in executed.stderr, executed.stderr
+
+
+# --- one finding per value: a pin `_read_pins` names is its alone ----------
+
+#: A commit and a digest of the form `plan` records, for pins whose digest
+#: nobody reads here: `gh-api-tree-recursive` says the forge read it, and
+#: `check` reads no network.
+COMMIT = "0123456789abcdef" * 2 + "01234567"
+DIGEST = "0123456789abcdef" * 4
+
+
+def a_pin(product: str, repository: str) -> str:
+    """One `pins:` mapping as `plan` writes it, its `product:` and its
+    `repository:` spelled as given."""
+    return pin_entry(product=product, repository=repository, commit=COMMIT,
+                     digest=DIGEST, source="gh-api-tree-recursive")
+
+
+def pinned(text: str, *entries: str) -> str:
+    """`text` with its `pins: []` replaced by a list of `entries`."""
+    return edited(text, ("\npins: []\n", "\npins:\n" + "".join(entries)))
+
+
+#: The issue's own edit: a product and a repository holding a tab.
+TAB_PIN = a_pin('"a\\t"', '"opensoft/a\\t"')
+TAB_SAID = ("records `product: 'a\\t'` and `repository: 'opensoft/a\\t'`, "
+            "and `plan` records the repository as `<owner>/<openProduct>`")
+
+#: `(the plan's `pins:` entries, how its one finding begins)`, by test id.
+ONE_FINDING = {
+    "product-tab": ((TAB_PIN,),
+                    f"FINDING plan-pin-malformed: `pins:` entry 1 ('a\\t') "
+                    f"{TAB_SAID}"),
+    "product-line-break": ((a_pin('"a\\nb"', '"opensoft/a\\nb"'),),
+                           "FINDING plan-pin-malformed: `pins:` entry 1 "
+                           "('a\\nb') records `product: 'a\\nb'`"),
+    "name-with-an-escape": (('  - "open\\x1bGlass"\n',),
+                            "FINDING plan-pin-unrecorded: `pins:` entry 1, "
+                            "'open\\x1bGlass', is a name with no commit and "
+                            "no digest."),
+    "beside-a-whole-pin": ((a_pin("openGlass", "opensoft/openGlass"),
+                            TAB_PIN),
+                           f"FINDING plan-pin-malformed: `pins:` entry 2 "
+                           f"('a\\t') {TAB_SAID}"),
+}
+
+
+@needs_filter_repo
+@pytest.mark.parametrize("case", sorted(ONE_FINDING))
+def test_a_pin_its_own_rule_names_is_one_finding(answered, tmp_path, case):
+    """A `pins:` entry `_read_pins` names is that finding alone: neither
+    `plan-unwritable-value` nor the validator's `plan-manifest-invalid`
+    names its product again, a whole pin beside it is named by nothing, and
+    `execute` refuses the plan with that one finding, as `check` prints it,
+    before any leg exists."""
+    entries, said = ONE_FINDING[case]
+    checked, executed = both_on(pinned(answered, *entries), tmp_path)
+    found = findings_of(checked)
+    assert checked.returncode == 1, checked.stdout + checked.stderr
+    assert len(found) == 1, checked.stderr
+    assert found[0].startswith(said), found[0]
+    assert executed.returncode == 2, executed.stdout + executed.stderr
+    code = refused_with(executed, tmp_path / PLAN_FILE, found)
+    assert code == said.split()[1].rstrip(":")

@@ -5159,14 +5159,18 @@ def _validator_judged(plan: Plan) -> frozenset[str] | None:
 #: The validator's finding about `tracking_branch:` (#455), which `check`
 #: leaves to `unsafe-value` wherever that names the branch (#708).
 TRACKING_BRANCH_CODES = ("manifest-tracking-branch",)
+#: The validator's finding about a `neutral_product_pins:` entry (#714),
+#: which `check` leaves to `_read_pins` wherever that names an entry (#901).
+PIN_ENTRY_CODES = ("manifest-neutral-product-pins",)
 
 
 def _validator_ignores(plan: Plan) -> tuple:
     """The codes of the validator's findings `check` leaves out, because a
     rule of its own names the same value: a leg path's always
-    (`LEG_PATH_CODES`), and the tracking branch's where `checked_value`
+    (`LEG_PATH_CODES`), the tracking branch's where `checked_value`
     refuses that branch, which `_branch_name_findings` reports as
-    `unsafe-value` (#708).
+    `unsafe-value` (#708), and a pin's where `_read_pins` finds the plan's
+    `pins:` (#901).
 
     ONE BAD `tracking_branch` IS ONE FINDING. Since #644 (#455) the
     validator finds a NUL or a lone surrogate in it, and `check` asks the
@@ -5178,12 +5182,27 @@ def _validator_ignores(plan: Plan) -> tuple:
     alone is asked, the value `execute` reads (`_branch_name_refusal`'s),
     because the validator's question starts no process (git's verdict on
     a name is `_branch_name_findings`' own).
+
+    ONE BAD PIN IS ONE FINDING TOO (#901). A pin edited to `product:
+    "a\\t"` was `plan-pin-malformed`, `plan-unwritable-value` and then
+    `plan-manifest-invalid` in the validator's words, three findings about
+    one value. The validator refuses a `neutral_product_pins:` entry that
+    is blank or holds a character that is not printable, and `_read_pins`
+    passes no such product, for it holds each to `PIN_ARG_RE`'s alphabet:
+    every entry the validator refuses is one `_read_pins` names, with the
+    `plan` that records the pin whole, the remedy, and `execute` refuses a
+    plan holding it before any leg exists. So wherever
+    `_read_pins` finds the plan's `pins:`, the validator's sentence about
+    an entry is left out, as #181 leaves such a plan's pins (`_plan_fields`)
+    and #255 asks only the pins `execute` writes (`_plan_values`).
     """
+    ignored = LEG_PATH_CODES + (PIN_ENTRY_CODES if _read_pins(plan)[1]
+                                else ())
     try:
         checked_value(TRACKING_KEY, plan.get(TRACKING_KEY, "main"))
     except Refusal:
-        return LEG_PATH_CODES + TRACKING_BRANCH_CODES
-    return LEG_PATH_CODES
+        return ignored + TRACKING_BRANCH_CODES
+    return ignored
 
 
 def _named_as_read(plan: Plan) -> dict[str, str]:
@@ -8563,7 +8582,10 @@ def _entry_findings(plan: Plan, source: Source,
     `plan-tracking-branch-missing` alone (#479), and one only the source's
     remote `origin` has, which `execute --local-remote-dir` refuses, is
     named by neither (`_a_branch_execute_writes`); and a pin is named only
-    where the plan's `pins:` has no finding of #273's (`_plan_fields`).
+    where the plan's `pins:` has no finding of #273's (`_plan_fields`). A
+    `pins:` entry #273 names is that finding alone (#901): #255 asks only
+    the pins `execute` writes (`_plan_values`), and the validator's word on
+    such an entry is left out (`_validator_ignores`).
     And a tracking branch whose NAME is wrong is that finding alone (#520):
     one outside the alphabet or one git will not create is no branch of any
     source, and is not also said to be missing from this one.
@@ -13935,11 +13957,15 @@ def _plan_values(plan: Plan) -> list[tuple[str, str, str]]:
     by this tool (`private`, today's date) and is left out. The follow-ups
     are `_plan_follow_ups`', the items of text `_commit_the_split` writes; a
     `follow_ups:` that is not a list of text is `plan-bad-follow-ups` (#293),
-    and is never iterated here."""
+    and is never iterated here. The pins are the products of the pins
+    `execute` writes (`_declared_pins`): a `pins:` entry `_read_pins` names
+    is that finding alone (#901), and `execute` writes none of a plan
+    holding one."""
     fields = [(key, str(plan.get(key)), where)
               for key, where in WRITTEN_PLAN_VALUES.items()
               if plan.get(key) is not None]
-    fields += [("a `pins:` item", pin, ROOT_MANIFEST) for pin in plan.pins]
+    fields += [("a `pins:` item", pin, ROOT_MANIFEST)
+               for pin in _declared_pins(plan)]
     return fields + [("a `follow_ups:` item", item, SPLIT_MESSAGE)
                      for item in _plan_follow_ups(plan)]
 
