@@ -897,6 +897,47 @@ def test_install_sh_carries_the_launchers_misdrawn_check_as_it_is():
     assert misdrawn_check(REPO / "install.sh") == misdrawn_check(COMMAND)
 
 
+#: A CHECK FOR A CONTROL CHARACTER IN A REPOSITORY OR A REF, as the
+#: launcher, `setup.sh` and `install.sh` write each (#940): a one-line `if`
+#: whose subshell asks `[[:cntrl:]]`. The directory's (#760, #858) span
+#: lines, so none is such a line.
+CONTROL_CHECK_LINE = re.compile(r"^\s*if \((.*\[\[:cntrl:\]\].*)\); then$",
+                                re.M)
+
+#: #760's rule, as each such line asks it of the value, written `$value`.
+CONTROL_CHECK = ('LC_ALL=C; case "$value" in *[[:cntrl:]]* | '
+                 r"*$'\302'[$'\200'-$'\237']*) exit 0 ;; *) exit 1 ;; esac")
+
+#: `setup.sh`'s arm for U+2028 and U+2029, by their bytes (#940), in place
+#: of the launcher's `misdrawn_characters`, which it has no copy of.
+SEPARATORS_ARM = r" | *$'\342\200'[$'\250'$'\251']*"
+
+
+def control_checks(path: Path) -> list[str]:
+    """Each such line in the file at `path`, apart from what may differ
+    between them: the value it asks of, the leading `-` arm of the two
+    guards that hand a repository to `git clone`, and `SEPARATORS_ARM`."""
+    return [re.sub(r'case "[^"]*" in (-\* \| )?', 'case "$value" in ', line)
+            .replace(SEPARATORS_ARM, "")
+            for line in CONTROL_CHECK_LINE.findall(
+                path.read_text(encoding="utf-8"))]
+
+
+@pytest.mark.parametrize("name, count", [("openRepoShape", 2),
+                                         ("setup.sh", 2), ("install.sh", 3)])
+def test_the_seven_control_checks_carry_one_rule_as_it_is(name, count):
+    """The launcher's `checked_repo` and `ref_character_fault`, `setup.sh`'s
+    two guards, and `install.sh`'s `checked_repo`, `checked_version` and
+    option check ask #760's rule, one text in all seven (#940): under
+    `LC_ALL=C`, in a subshell, `[[:cntrl:]]` or U+0080 to U+009F's two
+    bytes. No locale this suite can count on tells a check without
+    `LC_ALL=C` from one with it: a Latin-1 locale's `[[:cntrl:]]` holds
+    `0x80` to `0x9F`, so a lone `0x9B` byte would be refused there, where
+    `C` and `C.UTF-8` take it. So the text is held here, as
+    `misdrawn_characters`'s is above."""
+    assert control_checks(REPO / name) == [CONTROL_CHECK] * count
+
+
 #: Every code point whose UTF-8 starts with the bytes one of `MISDRAWN`
 #: starts with: U+0080 to U+00BF (`0xC2`), U+0600 to U+063F (`0xD8`),
 #: U+2000 to U+20FF (`0xE2 0x80` to `0xE2 0x83`), U+FE00 to U+FFFF

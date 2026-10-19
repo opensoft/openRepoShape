@@ -931,6 +931,29 @@ def test_a_shape_ref_that_is_not_a_ref_is_refused_by_the_shim(tmp_path, ref):
     assert "--shape-ref" in result.stderr
 
 
+def run_shim_under(tmp_path: Path, repo: str, *args: str, locale: str = ""):
+    """The shim from a directory that is no checkout, run with `args`,
+    `$OPENREPOSHAPE_REPO` set to `repo`, `LC_ALL` to `locale` where one is
+    given, a `$TMPDIR` of its own, and a `gh` and a `curl` that log and
+    fail first on `$PATH`. Neither is asked, and the run leaves no shape
+    checkout. Read with `surrogateescape`: a value the guard takes may be
+    printed as typed, a byte that is not UTF-8 and all (#940)."""
+    outside = make_outside_checkout(tmp_path)
+    temporary = tmp_path / "tmp"
+    temporary.mkdir()
+    network = tmp_path / "network.log"
+    chosen = {"LC_ALL": locale} if locale else {}
+    result = run_bare_setup(outside / "setup.sh", *args,
+                            cwd=outside, errors="surrogateescape",
+                            extra_env={"OPENREPOSHAPE_REPO": repo, **chosen,
+                                       "TMPDIR": str(temporary),
+                                       **fake_github(tmp_path, (),
+                                                     log=network)})
+    assert not network.exists(), network.read_text(encoding="utf-8")
+    assert list(temporary.iterdir()) == [], "a shape checkout was left behind"
+    return result
+
+
 @pytest.mark.parametrize("name, takes", REF_PARTS)
 def test_the_shim_takes_a_shape_ref_as_git_does_before_any_clone(
         tmp_path, name, takes):
@@ -948,24 +971,12 @@ def test_the_shim_takes_a_shape_ref_as_git_does_before_any_clone(
     applied, and leaves nothing in `$TMPDIR`. A `gh` and a `curl` that log
     and fail stand first on `$PATH`, and neither is called.
     """
-    outside = make_outside_checkout(tmp_path)
-    temporary = tmp_path / "tmp"
-    temporary.mkdir()
-    network = tmp_path / "network.log"
-    result = run_bare_setup(outside / "setup.sh",
+    result = run_shim_under(tmp_path, str(tmp_path / "no-standard-here"),
                             "--org", "demoorg", "--project", "Sample", "--yes",
                             "--shape-ref", name,
-                            "--local-remote-dir", str(tmp_path / "remotes"),
-                            cwd=outside,
-                            extra_env={"OPENREPOSHAPE_REPO":
-                                       str(tmp_path / "no-standard-here"),
-                                       "TMPDIR": str(temporary),
-                                       **fake_github(tmp_path, (),
-                                                     log=network)})
-    assert not network.exists(), network.read_text(encoding="utf-8")
+                            "--local-remote-dir", str(tmp_path / "remotes"))
     took = "(0) self-bootstrap" in result.stdout
     assert_a_copy_answers_as_git_does("setup.sh", name, takes, took)
-    assert list(temporary.iterdir()) == [], "a shape checkout was left behind"
     if took:
         return
     assert result.returncode == 2, result.stderr + result.stdout
@@ -1057,29 +1068,6 @@ SHAPE_REF_CARRIES_A_CONTROL_CHARACTER = (
     "commit this tool will pass to `git checkout`.")
 
 
-def run_shim_under(tmp_path: Path, locale: str, repo: str, *args: str):
-    """The shim from a directory that is no checkout, run with
-    `--preflight` and `args`, `$OPENREPOSHAPE_REPO` set to `repo`, `LC_ALL`
-    to `locale`, a `$TMPDIR` of its own, and a `gh` and a `curl` that log
-    and fail first on `$PATH`. Neither is asked, and the run leaves no
-    shape checkout. Read with `surrogateescape`: a value the guard takes
-    may be printed as typed, a byte that is not UTF-8 and all."""
-    outside = make_outside_checkout(tmp_path)
-    temporary = tmp_path / "tmp"
-    temporary.mkdir()
-    network = tmp_path / "network.log"
-    result = run_bare_setup(outside / "setup.sh", "--preflight", *args,
-                            cwd=outside, errors="surrogateescape",
-                            extra_env={"OPENREPOSHAPE_REPO": repo,
-                                       "LC_ALL": locale,
-                                       "TMPDIR": str(temporary),
-                                       **fake_github(tmp_path, (),
-                                                     log=network)})
-    assert not network.exists(), network.read_text(encoding="utf-8")
-    assert list(temporary.iterdir()) == [], "a shape checkout was left behind"
-    return result
-
-
 @pytest.mark.parametrize("locale", LOCALES)
 @pytest.mark.parametrize("typed, said", SHIM_REPOSITORIES)
 def test_the_repository_guard_answers_as_the_launchers_rule_does(
@@ -1096,7 +1084,7 @@ def test_the_repository_guard_answers_as_the_launchers_rule_does(
     and a leading `-` are refused, exit 2, before any clone, none of it
     echoed."""
     repo = typed.format(d=tmp_path / "no-standard-here")
-    result = run_shim_under(tmp_path, locale, repo)
+    result = run_shim_under(tmp_path, repo, "--preflight", locale=locale)
     took = "(0) self-bootstrap" in result.stdout
     assert_a_copy_answers_as_the_rule_does(
         "setup.sh's guard on $OPENREPOSHAPE_REPO", repo, said,
@@ -1121,9 +1109,8 @@ def test_the_shape_ref_guard_answers_as_the_launchers_rule_does(
     character, and either separator, is refused, exit 2, and not echoed.
     No clone either way."""
     ref = "v1" + end
-    result = run_shim_under(tmp_path, locale,
-                            str(tmp_path / "no-standard-here"),
-                            "--shape-ref", ref)
+    result = run_shim_under(tmp_path, str(tmp_path / "no-standard-here"),
+                            "--preflight", "--shape-ref", ref, locale=locale)
     took = REF_RULE_WORDS in result.stderr
     assert_a_copy_answers_as_the_rule_does(
         "setup.sh's guard on --shape-ref", end, said,

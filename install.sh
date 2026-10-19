@@ -136,11 +136,11 @@ USAGE
 # `C` matches every byte past ASCII: a letter past ASCII was refused as a
 # control character there, and as no owner/name under a UTF-8 locale. It is
 # no owner/name in either now, in those words. The trade is the launcher's
-# (#867): a lone C1 byte that is not UTF-8 (`0x9B`) passes, in every
-# locale, and the refusal that names the value prints it: a terminal that
-# reads UTF-8 draws it as a character it cannot read, and only one set to
-# an 8-bit charset acts on it. `checked_version` and the option check in
-# `main` hold their values to the same rule.
+# (#867): a byte that is not UTF-8, as a lone `0x9B` or an overlong form of
+# a control, passes, in every locale, and the refusal that names the value
+# prints it: a terminal that reads UTF-8 draws it as a character it cannot
+# read, and only one set to an 8-bit charset acts on it. `checked_version`
+# and the option check in `main` hold their values to the same rule.
 checked_repo() {
 	local misdrawn
 	misdrawn="$(LC_ALL=C; misdrawn_characters "$REPO")"
@@ -165,9 +165,11 @@ checked_repo() {
 # between the length and the control character, a character a terminal
 # draws as something other than itself, as the launcher's `ref_fault` has
 # it (#837). The control character is `checked_repo`'s rule, above, with
-# its trade (#940): a version with a letter past ASCII is the shape's to
-# refuse, in its words, in every locale. Not shared, because this file
-# arrives alone down a pipe.
+# its trade (#940): a byte that is not UTF-8, as a lone `0x9B` or an
+# overlong form of a control, passes, and a version with a letter past
+# ASCII is the shape's to refuse, in its words, in every locale. A tag the
+# redirect names is printable ASCII by then (`latest_from_redirect`). Not
+# shared, because this file arrives alone down a pipe.
 #
 # THE SHAPE IS GIT'S RULE PART BY PART (#874), as `ref_fault`'s and
 # `setup.sh`'s are: no `..`, no empty part between slashes, no part that
@@ -205,7 +207,7 @@ checked_version() {
 # itself, never gathered into an array, so a reader and the analyser both
 # see them there. `tests/test_install_sh.py` holds every curl line to it.
 latest_from_redirect() {
-	local url="$1" headers line value status=0
+	local url="$1" headers line value tag status=0
 	FOUND=""
 	command -v curl >/dev/null 2>&1 || {
 		FAULT="curl is not installed"
@@ -229,8 +231,21 @@ latest_from_redirect() {
 			done
 			case "$value" in
 			*/releases/tag/?*)
-				FOUND="${value##*/releases/tag/}"
-				return 0
+				# The tag is the network's too, and `checked_version`, which
+				# it meets next, holds it to the byte rule a person's own
+				# values are held to (#940), whose trade passes a byte that
+				# is not UTF-8 and whose shape refusal prints the tag. So it
+				# is taken only when it is printable ASCII, under `LC_ALL=C`,
+				# which gives one answer in every locale. A release tag is
+				# ASCII, so this refuses no real one; any other tag names no
+				# release, unnamed, and `gh` is asked next.
+				tag="${value##*/releases/tag/}"
+				if (LC_ALL=C; case "$tag" in *[![:print:]]*) exit 1 ;; *) exit 0 ;; esac); then
+					FOUND="$tag"
+					return 0
+				fi
+				FAULT="it redirects to a location that names no release"
+				return 1
 				;;
 			esac
 			# The location is named only when it is text a terminal draws as
@@ -238,10 +253,11 @@ latest_from_redirect() {
 			# something other than itself (#837). It keeps the locale's
 			# `[![:print:]]`, not the byte rule a person's own values are
 			# held to (#940): it is the network's, naming it only lets the
-			# fault say more, and that class takes a lone C1 byte that is
-			# not UTF-8 (`0x9B`) in no locale, where the byte rule's trade
-			# would print one from the network. The cost: under `C` a
-			# location with a letter past ASCII goes unnamed.
+			# fault say more, and that class takes a byte that is not UTF-8,
+			# as a lone `0x9B` or an overlong form of a control, in no
+			# locale, where the byte rule's trade would print one from the
+			# network. The cost: under `C` a location with a letter past
+			# ASCII goes unnamed.
 			FAULT="it redirects to a location that names no release"
 			if [ -z "$(LC_ALL=C; misdrawn_characters "$value")" ]; then
 				case "$value" in
@@ -472,7 +488,9 @@ main() {
 			misdrawn="$(LC_ALL=C; misdrawn_characters "$1")"
 			[ -z "$misdrawn" ] ||
 				die "an option holds a character a terminal draws as something other than itself ($misdrawn): one that is invisible, is drawn as another character, ends a line or reorders the text around it. The one argument is a version, such as v1.0.1; with none, the newest release."
-			# `checked_repo`'s rule for a control character (#940).
+			# `checked_repo`'s rule for a control character, with its
+			# trade: a byte that is not UTF-8, as a lone `0x9B` or an
+			# overlong form of a control, passes (#940).
 			if (LC_ALL=C; case "$1" in *[[:cntrl:]]* | *$'\302'[$'\200'-$'\237']*) exit 0 ;; *) exit 1 ;; esac); then
 				die "an option carries a control character. The one argument is a version, such as v1.0.1; with none, the newest release."
 			fi

@@ -214,10 +214,10 @@ fi
 # ASCII, so a URL or a path with a letter past ASCII
 # (`/srv/café/openRepoShape.git`) was refused there as carrying a control
 # character, where a UTF-8 locale cloned it. The trade is the launcher's
-# (#867): a lone C1 byte that is not UTF-8 (`0x9B`) passes, in every
-# locale, and the clone line below prints it: a terminal that reads UTF-8
-# draws it as a character it cannot read, and only one set to an 8-bit
-# charset acts on it.
+# (#867): a byte that is not UTF-8, as a lone `0x9B` or an overlong form of
+# a control, passes, in every locale, and the clone line below prints it:
+# a terminal that reads UTF-8 draws it as a character it cannot read, and
+# only one set to an 8-bit charset acts on it.
 #
 # AND U+2028 AND U+2029, BY THEIR THREE BYTES (`\342\200`, then `\250` or
 # `\251`), which the launcher leaves to its check of the characters a
@@ -258,12 +258,13 @@ fi
 # 255+ characters of noise on stderr if named; (2) a CONTROL CHARACTER next
 # - a newline in the value could forge an extra line onto stdout or stderr
 # the way the comment above OPENREPOSHAPE_REPO's guard explains, and the
-# control character is that guard's rule, with its trade and its two
-# separators (#940). Only once a ref has passed both - so it is at most
-# 255 characters and holds no control character - does (3) the shape
-# `case` below echo it back, which is by then safe to read. A ref with a
-# letter past ASCII (`café`) is the shape's to refuse, in its words, under
-# `C` as under a UTF-8 locale.
+# control character is that guard's rule, with its trade (a byte that is
+# not UTF-8, as a lone `0x9B` or an overlong form of a control, passes)
+# and its two separators (#940). Only once a ref has passed both - so it
+# is at most 255 characters and holds no control character - does (3) the
+# shape `case` below echo it back, which is by then safe to read. A ref
+# with a letter past ASCII (`café`) is the shape's to refuse, in its
+# words, under `C` as under a UTF-8 locale.
 if [[ "${#SHAPE_REF}" -gt 255 ]]; then
 	die "--shape-ref is ${#SHAPE_REF} characters long; a branch, tag or commit this tool will pass to \`git checkout\` is at most 255 characters."
 fi

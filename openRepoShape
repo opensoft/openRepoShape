@@ -803,13 +803,14 @@ find_python() {
 # or a path with a letter past ASCII (`/srv/café/openRepoShape.git`) was
 # refused there as carrying a control character, which it does not carry,
 # where a UTF-8 locale and the package's `--version` took it. The trade is
-# the directory's (#867): a lone C1 byte that is not UTF-8 (`0x9B`)
-# passes, in every locale, as it passes the package's check, and
-# `--version` prints it: a terminal that reads UTF-8 draws it as a
-# character it cannot read, and only one set to an 8-bit charset acts on
-# it. `setup.sh`, which is handed the clone URL as `$OPENREPOSHAPE_REPO`,
-# holds it to the same rule, and refuses U+2028 and U+2029 there too,
-# which this file refuses first by their code points (below).
+# the directory's (#867): a byte that is not UTF-8, as a lone `0x9B` or an
+# overlong form of a control, passes, in every locale, as it passes the
+# package's check, and `--version` prints it: a terminal that reads UTF-8
+# draws it as a character it cannot read, and only one set to an 8-bit
+# charset acts on it. `setup.sh`, which is handed the clone URL as
+# `$OPENREPOSHAPE_REPO`, holds it to the same rule, and refuses U+2028 and
+# U+2029 there too, which this file refuses first by their code points
+# (below).
 #
 # A CHARACTER A TERMINAL DRAWS AS SOMETHING OTHER THAN ITSELF IS REFUSED
 # FIRST (#837), in words that name it by its code point and nothing else of
@@ -931,10 +932,11 @@ ref_fault() {
 # where a ref is used.
 #
 # THE CONTROL CHARACTER IS `checked_repo`'s RULE, #760's bytes under
-# `LC_ALL=C`, with its trade (#940): a ref with a letter past ASCII
-# (`café`) carries no control character in any locale, and is the shape's
-# to refuse where the ref is used, in the shape's words, as a UTF-8 locale
-# had it.
+# `LC_ALL=C`, with its trade (#940): a byte that is not UTF-8, as a lone
+# `0x9B` or an overlong form of a control, passes. A ref with a letter past
+# ASCII (`café`) carries no control character in any locale, and is the
+# shape's to refuse where the ref is used, in the shape's words, as a UTF-8
+# locale had it.
 ref_character_fault() {
 	local ref="$1" what="$2" misdrawn
 	misdrawn="$(LC_ALL=C; misdrawn_characters "$ref")"

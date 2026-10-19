@@ -2571,7 +2571,9 @@ A_LETTER_PAST_ASCII = "caf" + chr(0xE9)
 #:     lone `0x9B` byte, which is not UTF-8 and which a UTF-8 locale's
 #:     `[![:print:]]` refused too, the trade #867 made for the directory
 #:     (a terminal that reads UTF-8 draws it as a character it cannot
-#:     read); and a lone `0xE9` byte, Latin-1's e with an acute accent;
+#:     read); a lone `0xE9` byte, Latin-1's e with an acute accent; and an
+#:     escape in an overlong form (`0xC0 0x9B`), no UTF-8 either and the
+#:     same trade, as is every overlong form of a control;
 #:   * `CONTROL`: an escape, U+009B, DEL, a tab, U+0085, the first and the
 #:     last C1 control, so that an arm that stops one short at either end
 #:     is caught, a newline at the end, and a lone `0xE9` byte before
@@ -2591,6 +2593,7 @@ CONTROL_RULE = [pytest.param(end, said, id=name) for name, end, said in (
     ("an-e-acute", A_LETTER_PAST_ASCII, TAKEN),
     ("a-lone-0x9b-byte", "a" + chr(0xDC9B) + "b", TAKEN),
     ("a-lone-0xe9-byte", "caf" + chr(0xDCE9), TAKEN),
+    ("an-overlong-escape", "a" + chr(0xDCC0) + chr(0xDC9B) + "b", TAKEN),
     ("an-escape", "a" + chr(0x1B) + "[31mforged", CONTROL),
     ("u+009b", "a" + chr(0x9B) + "31mforged", CONTROL),
     ("a-delete", "a" + chr(0x7F) + "forged", CONTROL),

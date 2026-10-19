@@ -48,7 +48,8 @@ import pytest
 from conftest import (BASH, BASH_SKIP, REF_PARTS, REPO,
                       assert_a_copy_answers_as_git_does,
                       assert_the_refusal_states_the_ref_rule, bash_path)
-from conftest import (CONTROL, CONTROL_RULE, REF_RULE_WORDS, TAKEN,
+from conftest import (A_LETTER_PAST_ASCII, CONTROL, CONTROL_RULE,
+                      REF_RULE_WORDS, TAKEN,
                       assert_a_copy_answers_as_the_rule_does,
                       the_rules_answer)
 from test_openreposhape_command import (BIN_DIR_SPELLINGS, COMMAND,
@@ -1080,6 +1081,9 @@ def test_the_installer_refuses_as_the_bytes_say_under_c_or_c_utf_8(
 # location github.com redirects to, holding U+202E (#837). Each arranges
 # `net` and returns the arguments, the environment, what the refusal says,
 # and whether the value comes from the network, so that the run asks it.
+# The newest release's tag is `gh`'s: the redirect's is taken only when it
+# is printable ASCII (#940), so one holding U+202E names no release there,
+# as `a_location` does.
 
 def a_version(net):
     return (("v1" + RLO + "forged",), {},
@@ -1097,7 +1101,8 @@ def the_repository(net):
 
 
 def the_newest_tag(net):
-    net.config["redirects"][latest()] = tag_page("v1" + RLO + "forged")
+    net.config["redirects"][latest()] = f"https://github.com/{SLUG}/releases"
+    net.config["gh_latest"] = "v1" + RLO + "forged"
     return ((), {}, "the newest release's tag "
             f"{drawn_as_another('U+202E')}.", True)
 
@@ -1215,25 +1220,46 @@ def test_the_installer_answers_each_value_as_the_launchers_rule_does(
     assert assert_refused_saying(result, refusal) == f"REFUSED: {refusal}"
 
 
-@NO_NON_ASCII_INTO_GIT_BASH
-@pytest.mark.parametrize("locale", LOCALES)
-@pytest.mark.parametrize("end", [
+def holds_a_byte_that_is_not_utf_8(end: str) -> bool:
+    """A test spells such a byte as a surrogate (`surrogateescape`)."""
+    return any(0xDC80 <= ord(character) <= 0xDCFF for character in end)
+
+
+#: The ends of a location the fault never names (#940): each row
+#: `CONTROL_RULE` refuses as a control character, and each it takes only by
+#: its trade, a byte that is not UTF-8. A newline ends a header line, so the
+#: row that ends in one is no row here. Then two tags the location names,
+#: neither taken in any locale: one with a lone `0x9B` byte, which the
+#: trade would pass on to the shape refusal that prints it, and one with a
+#: letter past ASCII, which a UTF-8 locale's `[:print:]` holds.
+UNNAMED_LOCATION_ENDS = [
     *(pytest.param(row.values[0], id=row.id)
       for row in CONTROL_RULE
-      if row.values[1] == CONTROL and not row.values[0].endswith("\n")),
-    pytest.param("a" + chr(0xDC9B) + "b", id="a-lone-0x9b-byte")])
+      if not row.values[0].endswith("\n")
+      and (row.values[1] == CONTROL
+           or holds_a_byte_that_is_not_utf_8(row.values[0]))),
+    pytest.param("tag/v1" + chr(0xDC9B) + "31mforged",
+                 id="a-tag-with-a-lone-0x9b-byte"),
+    pytest.param("tag/v1" + A_LETTER_PAST_ASCII + "forged",
+                 id="a-tag-with-an-e-acute")]
+
+
+@NO_NON_ASCII_INTO_GIT_BASH
+@pytest.mark.parametrize("locale", LOCALES)
+@pytest.mark.parametrize("end", UNNAMED_LOCATION_ENDS)
 def test_the_redirect_names_no_location_holding_a_control_character(
         tmp_path, end, locale):
     """The location `releases/latest` redirects to is the network's, so its
     fault names it only where it holds no character `[![:print:]]` matches,
-    and that class it keeps (#940): it matches a lone `0x9B` byte in both
-    locales, where the byte rule a person's own values are held to passes
-    one (#867's trade), so no such byte from the network is printed. Each
-    row `CONTROL_RULE` refuses as a control character, and that byte, at
-    the end of a location that names no release, under `C` and `C.UTF-8`:
-    the fault says only that it names no release, and nothing of it
-    reaches either stream. A newline ends a header line, so the row that
-    ends in one is no row here."""
+    and that class it keeps (#940): it matches a byte that is not UTF-8, as
+    a lone `0x9B` or an overlong form of a control, in both locales, where
+    the byte rule a person's own values are held to passes one (#867's
+    trade), so no such byte from the network is printed. The tag in it is
+    taken only when it is printable ASCII, under `C`, so none of those
+    bytes reaches `checked_version` and its shape refusal from there, and
+    each locale gives a tag one answer. Each end above, under `C` and
+    `C.UTF-8`: the fault says only that the location names no release, and
+    nothing of it reaches either stream."""
     net = Net(tmp_path, ("curl",))
     net.config["redirects"][latest()] = (
         f"https://github.com/{SLUG}/releases/" + end)
