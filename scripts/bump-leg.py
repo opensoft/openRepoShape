@@ -1110,30 +1110,47 @@ def _has_origin(submodule: Path) -> bool:
 
 def _remote_tag_reaches(submodule: Path, remote: str, protocol: list[str],
                         commit: str) -> bool:
-    """Whether a tag of the leg's remote reaches `commit` (#898): a tag the
-    leg has whose commit contains it, which the remote lists under the same
-    id. Asked only for the refusal's words, after a fetch that worked, of a
-    commit the leg holds and no branch of the remote reaches; the rule stays
-    branches. `family.py`'s `_origin_tag_reaches` (#686), asked of a leg.
+    """Whether a tag of the leg's remote reaches `commit` (#898, #982): a tag
+    the leg has whose commit contains it, at a commit the remote lists a tag
+    at too. Asked only for the refusal's words, after a fetch that worked, of
+    a commit the leg holds and no branch of the remote reaches; the rule
+    stays branches. `family.py`'s `_origin_tag_reaches` (#686), asked of a
+    leg.
 
     WHY IT IS ASKED. Such a commit was refused with "somebody committed
     inside the leg's mount and never pushed it", which is untrue of one a tag
     of the remote holds: the tag was pushed, and a fresh clone holds the
     commit. The leg's own tags cannot say it alone, since a tag made inside
-    the leg is one only the leg has, so `git ls-remote --tags --refs` asks
-    the remote the fetch asked which of them it has, by object id. Only when
-    a tag of the leg contains the commit is the remote asked. A listing that
-    fails is no answer, and the words stay the plain ones. `ls-remote`
-    writes nothing: no ref the person's leg did not have is made.
+    the leg is one only the leg has, so `git ls-remote --tags` asks the
+    remote the fetch asked which of them it has. Only when a tag of the leg
+    contains the commit is the remote asked. A listing that fails is no
+    answer, and the words stay the plain ones. `ls-remote` writes nothing:
+    no ref the person's leg did not have is made.
+
+    THE COMMITS TAGS POINT TO ARE COMPARED, NOT THE TAG OBJECTS (#982). An
+    annotated tag's own id is the id of its tag object, which two tags at
+    one commit have apart when each was made on its own, and which a
+    lightweight tag does not have at all, so comparing them missed a
+    lightweight `v1` of the leg beside an annotated `v1` of the remote at the
+    same commit, and two annotated `v1` made apart (measured, git 2.43). The
+    leg's tags are read as `%(objectname) %(*objectname)`: for an annotated
+    tag the tag object and the commit it points to, for a lightweight one the
+    commit alone. The remote is listed WITHOUT `--refs`, so each annotated
+    tag has its `<tag>^{}` line, the commit, beside its own, and a
+    lightweight tag has its own line, the commit. Every id on either side is
+    compared, so the tag object of a tag the two share still matches as it
+    did, a tag of a tag included. Git reads `*` one level, so two tags of a
+    tag made apart at one commit are still told apart (measured, git 2.43).
     """
-    held = set(run(["git", "for-each-ref", "--contains", commit,
-                    "--format=%(objectname)", "refs/tags/"],
-                   cwd=submodule).lower().split())
+    listing = run(["git", "for-each-ref", "--contains", commit,
+                   "--format=%(objectname) %(*objectname)", "refs/tags/"],
+                  cwd=submodule)
+    held = set(listing.lower().split())
     if not held:
         return False
     try:
-        listed = run(["git", *protocol, "ls-remote", "--tags", "--refs",
-                      remote], cwd=submodule)
+        listed = run(["git", *protocol, "ls-remote", "--tags", remote],
+                     cwd=submodule)
     except CommandFailed:
         return False
     return any(line.split("\t", 1)[0].lower() in held
