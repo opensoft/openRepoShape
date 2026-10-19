@@ -2958,7 +2958,11 @@ def _mounted_by_hand(root: Path, path: str, project: str | None,
             f".git/modules if one is still there. {BRANCH_LEFT}\n"
             f"    {_switch_line(root, 'add', project)}\n{add}")
     why = _hand_cached(root, path, commit)
-    lines = [_switch_line(root, "add", project)]
+    # The lines after the switch line, which is the first and is written
+    # in the text itself, so that the prose it stands under is seen to end
+    # with `BRANCH_LEFT` (`_switch_line`): the one at `lines[i]` is the
+    # `_ordinal(i + 1)`.
+    lines: list[str] = []
     said = (_plain_rm_said(root, path, stage_first, report, lines)
             if why is None else
             _cached_rm_said(root, path, commit, why, stage_first, lines))
@@ -2966,11 +2970,12 @@ def _mounted_by_hand(root: Path, path: str, project: str | None,
         f"{RESTORE_ROW} If it was mounted by hand, make a branch "
         "with the first command below, since family.py add refuses the "
         f"holder's tracking branch, {said}, then mount it with the "
-        f"{_ordinal(len(lines))}, from a checkout of openRepoShape: "
+        f"{_ordinal(len(lines) + 1)}, from a checkout of openRepoShape: "
         "family.py add writes its row and its gitlink in one commit, and "
         "names the object store git rm leaves under .git/modules if one is "
         f"still there.{_cached_left(root, path) if why else ''} "
         f"{BRANCH_LEFT}\n"
+        f"    {_switch_line(root, 'add', project)}\n"
         + "".join(f"    {line}\n" for line in lines) + add)
 
 
@@ -2981,20 +2986,22 @@ COMMIT_WHY = ("since family.py add refuses a path under another spelling of "
 
 def _staging_said(stage_first: bool, lines: list[str]) -> str:
     """What the text says of `git add -- .gitmodules`, appended to `lines`,
-    where `stage_first` (#879's C3), else nothing."""
+    the lines after the switch line (`_mounted_by_hand`), where
+    `stage_first` (#879's C3), else nothing."""
     if not stage_first:
         return ""
     lines.append(STAGE_LINE)
-    return (f"stage {GITMODULES} with the {_ordinal(len(lines) - 1)}, "
+    return (f"stage {GITMODULES} with the {_ordinal(len(lines))}, "
             f"{STAGE_TOO}, {STAGE_WHY}, ")
 
 
 def _plain_rm_said(root: Path, path: str, stage_first: bool,
                    report: Report | None, lines: list[str]) -> str:
     """What the text says of a hand mount's plain `git rm`, from "take it
-    out" to "commit that removal", its lines appended to `lines`: the work
-    tree's `.gitmodules` put back first where it is gone and the file git
-    reads in its place gives `path` (`_file_put_back`, #936)."""
+    out" to "commit that removal", its lines appended to `lines`, the lines
+    after the switch line (`_mounted_by_hand`): the work tree's
+    `.gitmodules` put back first where it is gone and the file git reads
+    in its place gives `path` (`_file_put_back`, #936)."""
     put = ""
     if (not os.path.lexists(root / GITMODULES)
             and path in _given_as_git_reads(root)):
@@ -3002,7 +3009,7 @@ def _plain_rm_said(root: Path, path: str, stage_first: bool,
         if line:
             lines.append(line)
             put = (f"put {GITMODULES}, gone from the work tree, back from "
-                   f"{whose} with the {_ordinal(len(lines) - 1)}, so that "
+                   f"{whose} with the {_ordinal(len(lines))}, so that "
                    "the git rm takes its section out of that file and every "
                    "other section stays, ")
     staging = _staging_said(stage_first, lines)
@@ -3010,7 +3017,7 @@ def _plain_rm_said(root: Path, path: str, stage_first: bool,
     if report is not None:
         report.wrote = True
     return (f"{put}{staging}take it out with the "
-            f"{_ordinal(len(lines) - 1)}, which refuses while its checkout "
+            f"{_ordinal(len(lines))}, which refuses while its checkout "
             f"holds changes and takes its {GITMODULES} section out too, and "
             f"commit that removal, {COMMIT_WHY}")
 
@@ -3018,10 +3025,11 @@ def _plain_rm_said(root: Path, path: str, stage_first: bool,
 def _cached_rm_said(root: Path, path: str, commit: str, why: str,
                     stage_first: bool, lines: list[str]) -> str:
     """What the text says of a hand mount's `git rm --cached` (#936),
-    from "take it out" to the commit, its lines appended to `lines`: why
-    a plain `git rm` is not printed (`CACHED_WHY`), `-f` where `_forced`
-    says, with what it does (`FORCED_SAID`), and no commit of it where
-    HEAD records nothing at `path`."""
+    from "take it out" to the commit, its lines appended to `lines`, the
+    lines after the switch line (`_mounted_by_hand`): why a plain `git rm`
+    is not printed (`CACHED_WHY`), `-f` where `_forced` says, with what it
+    does (`FORCED_SAID`), and no commit of it where HEAD records nothing
+    at `path`."""
     staging = _staging_said(stage_first, lines)
     head = _forced(root, path, commit)
     lines.append(_cached_removal(path, head))
@@ -3031,7 +3039,7 @@ def _cached_rm_said(root: Path, path: str, commit: str, why: str,
                    "; HEAD records nothing there, so nothing of it is left "
                    "to commit")
     return (f"{staging}take it out of the index alone with the "
-            f"{_ordinal(len(lines) - 1)}, which touches no file{forced}, "
+            f"{_ordinal(len(lines))}, which touches no file{forced}, "
             f"since a plain git rm refuses it here: {CACHED_WHY[why]}"
             f"{commit_said}")
 
