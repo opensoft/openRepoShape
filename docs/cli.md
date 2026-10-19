@@ -1123,7 +1123,8 @@ options:
                         the caller's words for what would let LINK's tree be
                         read, offered in place of this script's own where that
                         link is declared-unverified. Repeatable; the last
-                        value for a link wins.
+                        value for a link wins, and a value no holder used is
+                        noted (with --link-source-label, it is not).
   --explain             print every family each name satisfies, why one of
                         them won, and what the others are recorded as
   --quiet

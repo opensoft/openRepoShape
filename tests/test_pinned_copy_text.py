@@ -61,6 +61,8 @@ TEMPLATE_PINS = (REPO / "templates" / "assembly-root" / "scripts" /
                  "validate-pins.py")
 TEMPLATE_FAMILY = (REPO / "templates" / "family-root" / "scripts" /
                    "validate-family.py")
+TEMPLATE_MANIFEST = (REPO / "templates" / "assembly-root" / "scripts" /
+                     "validate-manifest.py")
 POLICY = REPO / "contracts" / "repository-naming.yaml"
 
 #: What the pinned `AGENTS-shape.md` says of `CONTRACTS_DIR` (L2-33), with its
@@ -762,11 +764,12 @@ def test_the_naming_gate_names_a_printable_link_source_as_typed(tmp_path):
     "tab\there", "",
 ])
 def test_the_pinned_scripts_spell_a_path_as_the_library_does(path):
-    """`validate-pins.py` and `validate-repository-naming.py` each write
-    their own `_shown`, because a root whose `scripts/repo_shape.py` is
-    older than they are has no `shown_path` to import. Each must spell as
-    `shown_path` spells."""
-    for script, name in ((TEMPLATE_PINS, "pins"), (VALIDATOR, "naming")):
+    """`validate-pins.py`, `validate-repository-naming.py` and, since #909,
+    `validate-manifest.py` each write their own `_shown`, because a root
+    whose `scripts/repo_shape.py` is older than they are has no
+    `shown_path` to import. Each must spell as `shown_path` spells."""
+    for script, name in ((TEMPLATE_PINS, "pins"), (VALIDATOR, "naming"),
+                         (TEMPLATE_MANIFEST, "manifest")):
         module = load_without_bytecode(script, f"pinned_copy_text_{name}")
         assert module._shown(path) == shown_path(path), script
 
