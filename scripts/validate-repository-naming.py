@@ -212,6 +212,18 @@ class Target:
         self.root = root
 
 
+def _library_takes(keyword: str) -> bool:
+    """Does this root's `link_pins_from_trees` take `keyword`? The skew rule
+    `_library_takes_remedies` asks of `remedies=`, asked of any keyword:
+    `run_products=` is new with #909, and an older library ends a call passing
+    it in a `TypeError`."""
+    try:
+        return keyword in inspect.signature(
+            link_pins_from_trees).parameters
+    except (TypeError, ValueError):
+        return False
+
+
 class LinkSources:
     """Every `--link-source` value AS TYPED, read against the chain links this
     run names, and what each lookup made of it (#338).
@@ -402,6 +414,13 @@ class LinkSources:
         tried: dict = {}
         offered = ({"remedies": self.remedies}
                    if self.remedies and _library_takes_remedies() else {})
+        # ONE VARIABLE, ONE PRODUCT OF THE RUN (#909). The variable guard is
+        # asked over the declared pins and every chain this run reads, and
+        # not over this target's chain alone: two legs whose chains begin at
+        # `openß` and `openss` read `SHAPE_PIN_SOURCE_OPENSS` for both, and
+        # its one tree broke the chain of the product it is not.
+        if _library_takes("run_products"):
+            offered["run_products"] = [*target.pins, *self.links]
         found = link_pins_from_trees(
             target.chain, target.root,
             {key: path for key, (_typed, path) in self.keyed.items()},

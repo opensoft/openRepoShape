@@ -867,10 +867,11 @@ def _append_eol_block(target: Path, result: "Materialized",
     A SYMLINK IS NOT WRITTEN THROUGH: what it leads to may be another file of
     the source's, or nothing in this repository, and git follows no
     `.gitattributes` that is a link anyway: a checkout reads only the link's
-    own text, the path it leads to, which names no attribute (#654). It is
-    left as it is, and the follow-up says so and lists the lines a regular
-    file would need. A link is one on the disk OR in git's index
-    (`_tracked_as_link`)."""
+    own text, the path it leads to, as one line of rules, which names an
+    attribute only where that text holds a space, a tab or a carriage
+    return (#654, #906). It is left as it is, and the follow-up says so and
+    lists the lines a regular file would need. A link is one on the disk OR
+    in git's index (`_tracked_as_link`)."""
     if (ATTRIBUTES, f"{collision_dir}/{ATTRIBUTES}") not in result.collisions:
         return
     path = target / ATTRIBUTES
@@ -987,8 +988,9 @@ def collision_follow_up(intended: str, actual: str,
 def _attributes_link_follow_up(intended: str, actual: str,
                                beside: dict | None) -> str:
     """The follow-up for a source `.gitattributes` that is a symlink: no
-    block was appended, nothing git reads gives the root's pinned copies a
-    line ending, and these are the lines a regular file needs.
+    block was appended, for a link to a path nothing git reads gives the
+    root's pinned copies a line ending, and these are the lines a regular
+    file needs.
 
     The copies are the pinned ones that kept their own names, in the pin's
     order: every one `beside` does not send under the collision directory,
@@ -1001,9 +1003,10 @@ def _attributes_link_follow_up(intended: str, actual: str,
         f"never writes through a link) and wrote the shape's copy beside it "
         f"as {actual}, which governs only its own directory. Git follows no "
         f"{intended} that is a symlink: a checkout reads only the link's own "
-        "text, the path it leads to, and a path names no attribute, so no "
-        "line-ending rule reaches the pinned copies outside it: a Windows "
-        "clone writes them with CRLF and "
+        "text, the path it leads to, as one line of rules, which names an "
+        "attribute only where that text holds a space, a tab or a carriage "
+        "return, so, for a link to a path, no line-ending rule reaches the "
+        "pinned copies outside it: a Windows clone writes them with CRLF and "
         "reports shape-copy-drift on each one. To give every clone one, "
         f"replace the link with a regular {intended} holding the lines of "
         "the file it leads to that should still apply, then these, one per "
@@ -1517,6 +1520,10 @@ FOLDER_REMEDIATION = (
 #: empty working tree) alike.
 CANNOT_WRITE_IN = "is a folder this user cannot write in"
 
+#: How `target_in_the_way` begins its answer for a working tree this user
+#: cannot list (#930): `cannot be read: <the system's words>`.
+CANNOT_READ = "cannot be read"
+
 #: Said when the real run's own `mkdir` fails, after the question said yes:
 #: the run has made folders by then, and no remote.
 MKDIR_REMEDIATION = (
@@ -1595,6 +1602,18 @@ def _unwritable_remediation(choose: str) -> str:
             f"folder, or choose another {choose}, and run this again.")
 
 
+def _unreadable_remediation(choose: str) -> str:
+    """What a refusal of a working tree this user cannot list says to do
+    (#930), after `_unwritable_remediation`: the run cannot tell whether the
+    folder holds a tree, so it names the permission that would let it ask,
+    and the flag `choose` that chooses another folder."""
+    return ("Remediation: nothing was created, and `--dry-run` refuses the "
+            "same. This user cannot list that folder, so whether it holds a "
+            "tree cannot be asked: give this user read, write and search "
+            f"permission on it, or choose another {choose}, and run this "
+            "again.")
+
+
 def refuse_unmakeable_folder(refusal: str, named: str, path: Path,
                              choose: str | None = None) -> None:
     """Raise `Refusal(refusal)` when `folder_cannot_be_made(path)` says why.
@@ -1661,7 +1680,7 @@ def target_in_the_way(target: Path) -> str | None:
         if any(target.iterdir()):
             return "is not empty"
     except OSError as exc:
-        return f"cannot be read: {exc.strerror or exc}"
+        return f"{CANNOT_READ}: {exc.strerror or exc}"
     if not os.access(target, os.W_OK | os.X_OK):
         return CANNOT_WRITE_IN
     return None
@@ -1676,10 +1695,19 @@ def target_remediation(why: str, holds: str, choose: str) -> str:
     for an EMPTY folder whose only fault is its permissions
     (`CANNOT_WRITE_IN`, L2-60), which is told to be given write and search
     permission for this user, or to be replaced by another folder, named by
-    `choose`, the flag the person met it by."""
-    if why != CANNOT_WRITE_IN:
-        return holds
-    return _unwritable_remediation(choose)
+    `choose`, the flag the person met it by.
+
+    AND FOR A FOLDER THIS USER CANNOT LIST (`CANNOT_READ`, #930). An empty
+    folder at mode 000, 100, 200 or 300 was told "choose an empty
+    --work-dir. There is no --force: re-running over a live tree is not a
+    scaffold", a cause the run cannot see: it cannot tell an empty folder
+    from a live tree there, and the one cause it can see is a permission.
+    It is told what `_unreadable_remediation` says, naming `choose`."""
+    if why == CANNOT_WRITE_IN:
+        return _unwritable_remediation(choose)
+    if why.startswith(f"{CANNOT_READ}: "):
+        return _unreadable_remediation(choose)
+    return holds
 
 
 # ---------------------------------------------------------------------------
@@ -3758,6 +3786,39 @@ def pin_source_path(typed: str | None, *, nothing_made: str) -> Path | None:
             "the directory this runs in.",
             f"Remediation: {nothing_made} Give the clone's path "
             "(`--pin-source <path>`), or `.` to mean this directory.")
+    return Path(typed)
+
+
+def folder_flag_path(typed, flag: str, code: str, *, names: str,
+                     absent: str) -> Path | None:
+    """A folder flag as the `Path` the tool reads, or None when it was not
+    given; a value that names no path is refused as `code`.
+
+    `pin_source_path`'s question, asked of the folders the scaffold and
+    `family.py init` make things in (#972's review, S2): `--work-dir` and
+    `--local-remote-dir` in both, and `init`'s `--into`. Each was parsed as
+    a `Path`, and `Path("")` is `Path(".")`, so a flag passed empty was read
+    as the directory the tool ran in, without a word: from the root of a
+    checkout of openRepoShape, `init --into ''` planned the holder inside
+    it, where no `--into` is refused as `family-landing-in-standard`. Each
+    tool takes them as TEXT now and asks here, before anything exists and
+    before any process starts, under `--dry-run` alike. A typed `.` still
+    means the current directory, and a flag not given keeps its default.
+
+    `names` says what the folder is for and `absent` what the run does with
+    no flag, each in the tool's words, so the remedy names the three ways
+    on: a path, `.`, or no flag at all.
+    """
+    if typed is None:
+        return None
+    if not str(typed):
+        raise Refusal(
+            code,
+            f"`{flag} ''` names no path. An empty path would be read as the "
+            "directory this runs in.",
+            "Remediation: nothing was created, and `--dry-run` refuses the "
+            f"same. Give {names} (`{flag} <dir>`), or `.` to mean this "
+            f"directory; with no {flag}, {absent}.")
     return Path(typed)
 
 
