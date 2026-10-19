@@ -3149,9 +3149,10 @@ def cross_leg_references(source: "Source",
     does: both are paths in the SOURCE, which no edit of the plan moves. The
     Makefile follow-up (#522's review, F1) and the tracking branch's (#493's
     review, F3) are written the same way. The path from the code leg to the
-    spec leg's `contracts/`, which a person has then to work out from the two
-    mounts, is printed next to the CURRENT mounts by the two sentences that
-    name them (`contracts_from_code_leg`, #600's review, F1).
+    spec leg, and to its `contracts/` where it holds one, which a person has
+    then to work out from the two mounts, is printed next to the CURRENT
+    mounts by the two sentences that name them (`contracts_from_code_leg`,
+    #600's review, F1; #906).
 
     EVERY NAME IS A NAME (#216). Both inputs are source paths, and git reads
     each as something else unless told not to. A spec directory passed bare
@@ -3255,11 +3256,29 @@ def spec_leg_from_code_leg(spec_path: str, code_path: str) -> str:
     return "/".join([".."] * (len(code) - shared) + spec[shared:])
 
 
-def contracts_from_code_leg(spec_path, code_path, spec_leg_paths) -> str:
-    """What the two sentences that print the plan's CURRENT mounts end with
-    when the spec leg holds `contracts/`: ", so from the code leg the spec
-    leg's `contracts/` is `../spec/contracts/`", or "" when there is nothing
-    true to say (#600's review, F1).
+#: What each read-across follow-up says of what the file must do: both the
+#: line `cross_leg_references` writes for a file that names a spec directory,
+#: and `_search_by_hand`'s for a name git could not search for (#906).
+READ_ACROSS = "read across the assembly root"
+
+
+def holds_a_read_across(follow_ups) -> bool:
+    """Whether `follow_ups` holds a read-across follow-up: a line that says
+    a file must `READ_ACROSS`. Asked of the plan's own list, as the plan
+    stands, and not of a `git grep`, which `check` and the split message
+    never run (#906)."""
+    return any(isinstance(item, str) and READ_ACROSS in item
+               for item in follow_ups)
+
+
+def contracts_from_code_leg(spec_path, code_path, spec_leg_paths,
+                            follow_ups=()) -> str:
+    """What the two sentences that print the plan's CURRENT mounts end with:
+    ", so from the code leg the spec leg is `../spec/`" where the plan holds a
+    read-across follow-up, and ", so from the code leg the spec leg's
+    `contracts/` is `../spec/contracts/`" where the spec leg holds
+    `contracts/`, both joined by " and " where both are true; or "" when
+    there is nothing true to say (#600's review, F1; #906).
 
     THE READ-ACROSS FOLLOW-UP NAMES `legs.code_path` AND `legs.spec_path` AND
     NO PATH, so no hand edit of either can contradict it, and it leaves the
@@ -3272,23 +3291,42 @@ def contracts_from_code_leg(spec_path, code_path, spec_leg_paths) -> str:
     `execute` made. It is never stored in `follow_ups:`, so it cannot go stale
     between a hand edit and the next `check`, and it needs no `git grep`.
 
-    NOTHING, in three cases. No path of the spec leg is `contracts/` or lies
-    under it, so there is no `contracts/` to lead to (the Makefile follow-up's
-    own condition). A mount is not text, or the two are not mount paths
-    `execute` accepts, or they overlap or differ only in case: `check` says
-    so as a finding, and a path computed from two strings that are not two
-    mounts leads nowhere. `spec_leg_paths` are the paths the plan assigns to
-    the spec leg, as `_leg_paths` reads them.
+    THE SPEC LEG'S OWN PATH, NOT ONLY ITS `contracts/` (#906). The follow-up
+    is written for a code file that names ANY directory the plan sends to
+    the spec leg, `specs/` as much as `contracts/`, and a person finishing
+    it needs the path to that directory. It gave one only where the spec leg
+    held `contracts/`, so a file naming `specs/` got the key-form line and no
+    ready path, where v1.0.1 printed `../spec/specs/`. The spec leg's own
+    path is the one every such directory lies below: from it the person
+    reaches `specs/` or any other. It is printed wherever `follow_ups` holds
+    a read-across line (`holds_a_read_across`), `contracts/` or not, and the
+    `contracts/` clause stays for the spec leg that holds one.
+
+    NOTHING, in three cases. The plan holds no read-across follow-up and no
+    path of the spec leg is `contracts/` or lies under it (the Makefile
+    follow-up's own condition), so there is nothing to lead to. A mount is
+    not text, or the two are not mount paths `execute` accepts, or they
+    overlap or differ only in case: `check` says so as a finding, and a path
+    computed from two strings that are not two mounts leads nowhere.
+    `spec_leg_paths` are the paths the plan assigns to the spec leg, as
+    `_leg_paths` reads them, and `follow_ups` the plan's, as
+    `_plan_follow_ups` reads them.
     """
-    if not any(path == "contracts/" or path.startswith("contracts/")
-               for path in spec_leg_paths):
+    holds_contracts = any(path == "contracts/" or path.startswith("contracts/")
+                          for path in spec_leg_paths)
+    reads_across = holds_a_read_across(follow_ups)
+    if not (holds_contracts or reads_across):
         return ""
     if leg_path_problems(("legs.spec_path", spec_path),
                          ("legs.code_path", code_path)):
         return ""
     across = spec_leg_from_code_leg(spec_path, code_path)
-    return (", so from the code leg the spec leg's `contracts/` is "
-            f"`{across}/contracts/`")
+    said = []
+    if reads_across:
+        said.append(f"the spec leg is `{across}/`")
+    if holds_contracts:
+        said.append(f"the spec leg's `contracts/` is `{across}/contracts/`")
+    return ", so from the code leg " + " and ".join(said)
 
 
 def _search_by_hand(named: str, why: str) -> str:
@@ -3298,6 +3336,20 @@ def _search_by_hand(named: str, why: str) -> str:
             f"`{named}` ({why}); find the ones that name it by hand: each "
             f"must read across the assembly root once `{named}` moves to the "
             "spec leg")
+
+
+def _root_keeps(surviving: set[str], path: str) -> bool:
+    """Whether the root keeps `path`: as its own entry, or inside a
+    directory it keeps there. `surviving` is each path the plan's entries
+    send to the root.
+
+    ONE DEFINITION, for `_predict_collisions`, which moves the shape's copy
+    of a path the root keeps under `shape/`, and for `follow_ups_for`, whose
+    Makefile line says where the block waits when that copy is the one that
+    moved (#906). Two readings of "the source keeps its own `Makefile`" is
+    how a follow-up says the root wires what `shape/Makefile` holds.
+    """
+    return path in surviving or f"{path.split('/')[0]}/" in surviving
 
 
 def follow_ups_for(source: "Source", entries: list["Entry"], names: dict,
@@ -3336,19 +3388,36 @@ def follow_ups_for(source: "Source", entries: list["Entry"], names: dict,
     one (#522's review, F1). So does the read-across line that
     `cross_leg_references` writes, for both mounts, and this function takes
     no mount path: no value of either key can reach a line it writes (#600).
-    The path from the code leg to the spec leg's `contracts/` is printed
-    beside the CURRENT mounts instead, where `check` and the split message
-    name them (`contracts_from_code_leg`).
+    The path from the code leg to the spec leg, and to its `contracts/`, is
+    printed beside the CURRENT mounts instead, where `check` and the split
+    message name them (`contracts_from_code_leg`).
+
+    WHERE THE ROOT KEEPS A `Makefile` OF THE SOURCE'S OWN, the shape's goes
+    beside it as `shape/Makefile` with the block in it, and the root's is
+    the source's, untouched: `make contracts-dir` there answers `No rule to
+    make target` until the two are merged. The line then says the block
+    waits in `shape/Makefile`, as #634 words it for the pinned
+    `AGENTS-shape.md`, of the plan's entries as `_predict_collisions` reads
+    them (`_root_keeps`), the reading that moves the copy (#906).
     """
     out = cross_leg_references(source, entries)
     if any(e.leg == "spec" and (e.path == "contracts/"
                                 or e.path.startswith("contracts/"))
            for e in entries):
+        own = _root_keeps({e.path for e in entries if e.leg == "root"},
+                          SHAPE_MAKEFILE)
+        whose = "the shape's" if own else "the root"
+        waits = (
+            "; but the source keeps a Makefile of its own at the root, so "
+            f"that block waits in `{COLLISION_DIR}/{SHAPE_MAKEFILE}` until "
+            "the two are merged, and the run adds none of it to the root's "
+            "Makefile")
         out.append(
-            "the root Makefile wires `CONTRACTS_DIR` to the `contracts/` of "
+            f"{whose} Makefile wires `CONTRACTS_DIR` to the `contracts/` of "
             "the spec leg, where the plan's `legs.spec_path` mounts it, and "
             "exports it, so the code leg's tooling takes the path from the "
-            "environment instead of assuming it sits beside it")
+            "environment instead of assuming it sits beside it"
+            + (waits if own else ""))
     if any(e.path in ("CODEOWNERS", ".github/CODEOWNERS") for e in entries):
         out.append(
             "CODEOWNERS in the assembly root now names paths that live in the "
@@ -5533,7 +5602,7 @@ def _predict_collisions(entries: list[Entry], *,
     surviving = {e.path for e in entries if e.leg == "root"}
     beside = {path: f"{COLLISION_DIR}/{path}"
               for path in sorted(set(assembly_root_paths()))
-              if path in surviving or f"{path.split('/')[0]}/" in surviving}
+              if _root_keeps(surviving, path)}
     return [collision_follow_up(path, actual, beside,
                                 attributes_link=attributes_link)
             for path, actual in beside.items()]
@@ -8576,8 +8645,12 @@ def _print_what_will_happen(plan: Plan, source: Source, names: dict,
     # Every value below that is the plan's own is `_shown`, as a name is:
     # since #247 the reader gives back a lone surrogate, which raised on a
     # strict stdout before the FINDING about it was printed (#255).
-    print(f"  create {names['spec']} and {names['code']} "
-          f"({_shown(str(plan.get('visibility', 'private')))})")
+    # A bare repository on disk has no visibility, so under
+    # `--local-remote-dir` none is printed: `execute` creates the legs with
+    # `git init --bare`, and never calls `gh repo create` (#906).
+    visibility = ("" if local else
+                  f" ({_shown(str(plan.get('visibility', 'private')))})")
+    print(f"  create {names['spec']} and {names['code']}{visibility}")
     print(f"  extract {len(moved)} path(s) with `git filter-repo`, history "
           "preserved")
     for role in seeded:
@@ -8591,7 +8664,8 @@ def _print_what_will_happen(plan: Plan, source: Source, names: dict,
     # Beside the mounts, the path the read-across follow-up leaves to them,
     # from the mounts as the plan stands (#600's review, F1).
     across = contracts_from_code_leg(mounts[0], mounts[1],
-                                     _leg_paths(plan)["spec"])
+                                     _leg_paths(plan)["spec"],
+                                     _plan_follow_ups(plan))
     print(f"  ONE split commit on branch "
           f"{_shown(str(plan.get('adopt_branch', ADOPT_BRANCH)))} "
           f"of {names['assembly']}: `git rm -r` those paths, mount the "
@@ -9493,11 +9567,13 @@ def _refuse_symlinks_checked_out_as_files(plan: Plan, source: Source,
 # once those lines are in is named again by the next `check`, under the
 # file that then decides it. A deeper kept file that restores LF leaves
 # nothing to find, and one that alone keeps the copy LF is not named. A root
-# `.gitattributes` that is a symlink, which gives no rule (git follows no such
-# link, and a checkout reads only the link's own text, a path, which names
-# no attribute), is #471's follow-up, not this finding: its copies are asked
-# against the block that follow-up asks a regular file to hold, so a kept
-# nested file is still found, and the finding names that block's rule.
+# `.gitattributes` that is a symlink to a path, which gives no rule (git
+# follows no such link, and a checkout reads only the link's own text, the
+# path it leads to, which names no attribute unless it holds a space, a tab
+# or a carriage return, #906), is #471's follow-up, not this finding: its
+# copies are asked against the block that follow-up asks a regular file to
+# hold, so a kept nested file is still found, and the finding names that
+# block's rule.
 # Asked as a disk that keeps case does and again as one that ignores it, as
 # #262's findings are: there `core.ignorecase` folds git's patterns, and a
 # kept `.GitHub/.gitattributes` is read for `.github/`. A finding only the
@@ -9672,7 +9748,12 @@ def _kept_nested_attributes(plan: Plan, tree: list) -> list[tuple]:
     blob is its target, which git then reads as the file's rules: measured
     with git 2.43, a kept `.github/.gitattributes` linking to `*.yml
     eol=crlf` checked `.github/workflows/validate.yml` out with CRLF. A
-    target that is a path names no attribute, and changes nothing."""
+    target with no space, tab or carriage return, a path, is a pattern and
+    names no attribute, and changes nothing; one with any of them is a
+    pattern and the attributes after it, as any line of the file is read, so
+    every link is asked like a file (#906: measured with `config/attributes`,
+    which left the copy LF, and `*.yml eol=crlf`, `*.yml` TAB `eol=crlf` and
+    `*.yml` CR `eol=crlf`, which wrote it CRLF)."""
     blobs = {path: oid for path, _, oid, _ in tree}
     return [(path, mode, blobs[path], entry)
             for path, mode, entry in _kept_in_root(plan.entries, tree)
@@ -10128,17 +10209,38 @@ READ_AGAIN = ("each one git reads again (every file of a small source; of a "
               "large one, those checked out in the second git wrote its "
               "index)")
 
-#: What git refused, and the way out, for each step a refusal can stop.
+#: Where `execute` stops for each of git's refusals, measured with the
+#: refusal's own fixtures and the check that refuses them patched out (#906).
+#: A clone of the source meets the rule that refuses a checkout the first
+#: time `execute` makes one: extracting a leg (`REFUSED extracting the spec
+#: leg`, where both legs are extracted, before either is pushed). The split's
+#: `git add -A` stops it at `REFUSED committing the split`, a step the push
+#: of the split branch follows, unless a step before it meets the same rule:
+#: the extraction, on a filter that fails; the seeding of a leg, which runs
+#: a `git add -A` of its own (`REFUSED seeding the code leg`); or the mount,
+#: where a rule over every file reaches the `.gitmodules` it writes
+#: (`REFUSED mounting the legs`, `failed to encode '.gitmodules'`).
+STOPS_AT_A_CLONE = "at its first clone of the source"
+STOPS_AT_THE_SPLIT = (
+    "no later than committing the split, and sooner where a step before it "
+    "meets the same rule: extracting or seeding a leg, or mounting the legs, "
+    "where the rule reaches the `.gitmodules` it writes")
+
+#: What git refused, where `execute` would stop, and the way out, for each
+#: step a refusal can stop.
 CHECKOUT_REFUSED = (
     "to check the source's commit out as the split's clone does",
+    STOPS_AT_A_CLONE,
     "Change the rule or the setting git names, and re-run `plan`.")
 STORE_REFUSED = (
     "to store again what the plan keeps in the assembly root, as the split's "
     "`git add -A` does",
+    STOPS_AT_THE_SPLIT,
     "Commit the file git names in the source as git stores it, or change the "
     "rule or the setting that refuses it, and re-run `plan`.")
 COPY_REFUSED = (
     "to store the pinned shape copies the split writes",
+    STOPS_AT_THE_SPLIT,
     "Keep the rule off the copy git names with a line after it in the "
     "source's root `.gitattributes`, or narrow the rule, commit, and re-run "
     "`plan`.")
@@ -10441,11 +10543,17 @@ def _copies_finding(copies: list[str], at_the_root: dict) -> str:
             "the rules, commit, and re-run `plan`.")
 
 
-def _refused_finding(step: tuple[str, str], said: str) -> str:
-    what, way_out = step
+def _refused_finding(step: tuple[str, str, str], said: str) -> str:
+    """`check`'s line for a step of the split that git refuses: what it
+    refuses, in git's words, and where `execute` stops over it (`step`'s
+    `STOPS_AT_*`), which is never past the step git refuses and is not always
+    that step (#906: it said "there", and stopped on the mount's
+    `.gitmodules`, before the split's `git add`, for `* working-tree-encoding`
+    with `.gitattributes` exempted)."""
+    what, stops, way_out = step
     return (f"FINDING {REENCODED_FILES}: this machine's git refuses {what} "
-            f"(git said {_spelled(said)}), so `execute` would stop there, "
-            f"after the leg repositories exist. {way_out}")
+            f"(git said {_spelled(said)}), so `execute` would stop after the "
+            f"leg repositories exist, {stops}. {way_out}")
 
 
 def _reencoded_files_findings(plan: Plan, source: Source, tree: list,
@@ -13481,6 +13589,10 @@ def _split_message(names, paths_for, leg_commits, spec_path, code_path,
                 f"was assigned to it. It is mounted and pinned like the other "
                 f"leg and carries no history from here, there being none.)"]
 
+    # Beside the mounts `execute` made, the path the read-across follow-up
+    # leaves to them (#600's review, F1; #906).
+    across = contracts_from_code_leg(spec_path, code_path, paths_for["spec"],
+                                     follow_ups)
     lines = [
         f"Adopt the three-repository shape: {names['spec']} and "
         f"{names['code']}",
@@ -13491,7 +13603,7 @@ def _split_message(names, paths_for, leg_commits, spec_path, code_path,
         "moved file keeps the commits that made it. Nothing was deleted: what "
         "leaves this tree arrives in a leg at the same path, mounted back "
         f"here at {spec_path}/ and {code_path}/"
-        f"{contracts_from_code_leg(spec_path, code_path, paths_for['spec'])}.",
+        f"{across}.",
         "",
         f"MOVED TO THE SPEC LEG ({names['spec']} @ {leg_commits['spec'][:12]}):",
     ]

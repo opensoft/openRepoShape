@@ -339,8 +339,11 @@ def test_a_refusal_says_where_execute_stops_and_the_way_out(monkeypatch,
         "this machine's git refuses to store again what the plan keeps in "
         "the assembly root, as the split's `git add -A` does (git said "
         "`fatal: CRLF would be replaced by LF in notes.txt`), so `execute` "
-        "would stop there, after the leg repositories exist. Commit the file "
-        "git names in the source as git stores it, or change the rule or the "
+        "would stop after the leg repositories exist, no later than "
+        "committing the split, and sooner where a step before it meets the "
+        "same rule: extracting or seeding a leg, or mounting the legs, where "
+        "the rule reaches the `.gitmodules` it writes. Commit the file git "
+        "names in the source as git stores it, or change the rule or the "
         "setting that refuses it, and re-run `plan`.")]
 
 
