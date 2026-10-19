@@ -1122,32 +1122,35 @@ def _remote_tag_reaches(submodule: Path, remote: str, protocol: list[str],
     of the remote holds: the tag was pushed, and a fresh clone holds the
     commit. The leg's own tags cannot say it alone, since a tag made inside
     the leg is one only the leg has, so `git ls-remote --tags` asks the
-    remote the fetch asked which of them it has. Only when a tag of the leg
-    contains the commit is the remote asked. A listing that fails is no
-    answer, and the words stay the plain ones. `ls-remote` writes nothing:
-    no ref the person's leg did not have is made.
+    remote the fetch asked whether it has one of them, or a tag at a commit
+    one of them names. Only when a tag of the leg contains the commit is the
+    remote asked. A listing that fails is no answer, and the words stay the
+    plain ones. `ls-remote` writes nothing: no ref the person's leg did not
+    have is made.
 
-    THE COMMITS TAGS POINT TO ARE COMPARED, NOT THE TAG OBJECTS (#982). An
-    annotated tag's own id is the id of its tag object, which two tags at
+    THE COMMITS TAGS POINT TO ARE COMPARED, NOT THE TAG OBJECTS ALONE (#982).
+    An annotated tag's own id is the id of its tag object, which two tags at
     one commit have apart when each was made on its own, and which a
-    lightweight tag does not have at all, so comparing them missed a
+    lightweight tag does not have at all, so comparing them alone missed a
     lightweight `v1` of the leg beside an annotated `v1` of the remote at the
-    same commit, and two annotated `v1` made apart (measured, git 2.43). The
-    leg's tags are read as `%(objectname) %(*objectname)`: for an annotated
-    tag the tag object and the commit it points to, for a lightweight one the
-    commit alone. The remote is listed WITHOUT `--refs`, so each annotated
-    tag has its `<tag>^{}` line, the commit, beside its own, and a
-    lightweight tag has its own line, the commit. Every id on either side is
-    compared, so the tag object of a tag the two share still matches as it
-    did, a tag of a tag included. Git reads `*` one level, so two tags of a
-    tag made apart at one commit are still told apart (measured, git 2.43).
+    same commit, and two annotated `v1` made apart (measured, git 2.43). Each
+    tag of the leg is read as its own id and as the commit `git rev-parse
+    <id>^{}` peels it to, through a tag of a tag too; `%(*objectname)` would
+    not do, since git before 2.44 reads `*` one level, to the tag a tag of a
+    tag tags (measured, git 2.43). The remote is listed WITHOUT `--refs`, so
+    each annotated tag has its `<tag>^{}` line, the commit, beside its own,
+    and a lightweight tag has its own line, the commit. Every id on either
+    side is compared, so the tag object of a tag the two share still matches
+    as it did.
     """
-    listing = run(["git", "for-each-ref", "--contains", commit,
-                   "--format=%(objectname) %(*objectname)", "refs/tags/"],
-                  cwd=submodule)
-    held = set(listing.lower().split())
-    if not held:
+    tags = run(["git", "for-each-ref", "--contains", commit,
+                "--format=%(objectname)", "refs/tags/"],
+               cwd=submodule).lower().split()
+    if not tags:
         return False
+    held = set(tags) | set(run(["git", "rev-parse",
+                                *[f"{tag}^{{}}" for tag in tags]],
+                               cwd=submodule).lower().split())
     try:
         listed = run(["git", *protocol, "ls-remote", "--tags", remote],
                      cwd=submodule)
