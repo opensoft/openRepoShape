@@ -379,13 +379,18 @@ def test_a_derived_id_is_named_as_derived_and_mended_with_an_id(
         "which names the three repositories, stays as it is.\n"), err
 
 
-def test_an_empty_id_is_named_as_empty(scaffold, no_process, capsys):
-    """`--id ''` falls back to `--project` lowercased, as `_identity` reads
-    it, and is named as `_refuse_bad_id` names it: passed, and empty."""
+def test_an_empty_id_is_refused_as_passed_before_its_topic(
+        scaffold, no_process, capsys):
+    """#911: `--id ''` fell back to `--project` lowercased, as `_identity`
+    read it by its truth, and this refusal named it `--id (empty, so
+    --project lowercased)`. It is a passed value now, refused by name as
+    `scaffold-bad-id` before GitHub's limits are asked, with no process
+    started, and never named as derived."""
     err = refused_plan(scaffold, capsys, "--project", a_name(ID_MAX + 1),
                        "--id", "")
-    assert err.startswith(
-        f"{TOPIC_TOO_LONG}: --id (empty, so --project lowercased) is "), err
+    assert err.startswith("REFUSED scaffold-bad-id: --id '' must match "), err
+    assert "empty, so" not in err
+    assert TOPIC_TOO_LONG not in err
 
 
 def test_a_passed_id_is_named_as_passed(scaffold, no_process, capsys):
