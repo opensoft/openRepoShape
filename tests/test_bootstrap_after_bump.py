@@ -561,7 +561,10 @@ def test_the_branch_and_its_upstream_are_spelled_in_the_move_back(root):
     result = skip_validators(root)
     assert result.returncode == 0, result.stderr + result.stdout
     assert "\udcff" not in result.stdout, result.stdout
-    command = r"git -C spec merge --ff-only 'origin/tb\udcffx'"
+    # The byte 0xff has no spelling a shell reads back (#932): the command
+    # prints it again, with `printf`.
+    word = r'''"$(printf -- 'origin/tb\377x')"'''
+    command = f"git -C spec merge --ff-only {word}"
     assert moved_back(ahead, pin, r"tb\udcffx", command=command) in (
         result.stdout), result.stdout
     assert rev(leg, f"refs/heads/{raw}") == pin and rev(leg) == pin

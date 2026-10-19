@@ -874,11 +874,16 @@ def _staged_over(root: Path, path: str, commit: str) -> bool:
     which `_member_gitlinks` reads at `commit`, as staged (`STAGED_AT`):
     the index stages it at a commit HEAD does not record there, and
     anything is on disk at it, an empty directory too, which `git rm
-    --cached` takes with no `-f` (`_forced`). Measured on git 2.43, with
-    the gitlink staged and not committed: nothing on disk, it took it; an
-    empty directory, and the checkout `git mv members/<P> members/<P>2`
-    moved, staged, it refused (`the following file has changes staged in
-    the index`, exit 1; lane 1's SHOULD on #889, round 2)."""
+    --cached` takes with no `-f` (`_forced`). Measured on git 2.43: with
+    nothing on disk it took one staged and not committed; it refused one,
+    exit 1, saying `the following file has changes staged in the index`
+    where what is on disk matches what is staged, an empty directory, the
+    clean checkout `git mv members/<P> members/<P>2` moved, or a checkout
+    moved to `HEAD~1` and `git add`-ed, where HEAD records another commit,
+    and `... has staged content different from both the file and the HEAD`
+    where it differs too, a commit or an untracked file in the checkout
+    `git mv` moved, a directory holding a file, or a file (lane 1's SHOULD
+    on #889, round 2, and its NITs 1 and 2, round 3)."""
     return (os.path.lexists(root / path)
             and _head_records(root, path) != commit)
 
@@ -2520,10 +2525,14 @@ def _given_as_git_reads(root: Path) -> set[str]:
 
 #: What a hand mount's text says its `git rm` meets where the index stages
 #: the gitlink at a commit HEAD does not record there (`_mounted_by_hand`,
-#: lane 1's SHOULD on #889, round 2), measured on git 2.43.
+#: lane 1's SHOULD on #889, round 2): git's two refusals, each exit 1, the
+#: second where what is on disk differs from what is staged too, as git
+#: 2.43 gave them (`_staged_over`; lane 1's NIT 1 on #889, round 3).
 STAGED_AT = (", and while the index stages it at a commit HEAD does not "
              "record there, as it does here (the following file has changes "
-             "staged in the index, exit 1),")
+             "staged in the index, or, where what is on disk differs too, "
+             "has staged content different from both the file and the HEAD, "
+             "exit 1),")
 
 
 def _mounted_by_hand(root: Path, path: str, project: str | None,
