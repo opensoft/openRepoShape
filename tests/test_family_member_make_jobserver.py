@@ -1,5 +1,5 @@
 # SPDX-License-Identifier: Apache-2.0
-"""A member's make under the family holder's `make -jN` (#888).
+"""A member's make under the family holder's `make -jN` (#888, #987).
 
 THE ISSUE'S LINE, measured on 50178305 under GNU Make 4.3: under the
 holder's `make -j2 bootstrap`, each member's make printed `make[1]:
@@ -19,6 +19,18 @@ member's make runs its jobs one at a time, as it did, and says nothing.
 instead. `make siblings` runs no member's make: it runs a member's own
 `scripts/bootstrap.py`, which runs none.
 
+BUT NOT GNU MAKE 4.4's NAMED PIPE (#987), `--jobserver-auth=fifo:<path>`,
+which a make opens by its path: both scripts hand the holder's `MAKEFLAGS`
+on as it is where every jobserver it names is such a pipe, there now at an
+absolute path, and the member's make says it is GNU make 4.4 or later on
+`make --version`, asked once in a run. No GNU make 4.4 was on the host
+these tests were written on (GNU Make 4.3, as in CI), so a fake `make` that
+answers `--version` as each make does stands in for the member's
+(`fake_make`), under the `MAKEFLAGS` a 4.4 holder writes and a named pipe
+of the test's own. The one test that needs a real 4.4 is skipped where
+`make -j2` writes no named pipe, and #888's two that need a pipe's
+descriptors are skipped where it does.
+
 THE STATE is `tests/test_family.py`'s family, its two members scaffolded
 and added by this repository's own tools, in a private copy (`holder`),
 each member's Makefile replaced in its work tree by `TRACED`: the target's
@@ -37,9 +49,11 @@ from __future__ import annotations
 
 import os
 import re
+import shlex
 import shutil
 import subprocess
 import sys
+import time
 from pathlib import Path
 
 import pytest
@@ -60,6 +74,9 @@ pytestmark = [WINDOWS_SKIP,
 WARNING = "jobserver unavailable"
 #: The family root's two scripts that run a member's make.
 SCRIPTS = REPO / "templates" / "family-root" / "scripts"
+#: How GNU make 4.4 and later name a named pipe for their jobserver in
+#: `MAKEFLAGS`, before its path (#987).
+FIFO = "--jobserver-auth=fifo:"
 
 #: A member's Makefile, written over its own in the work tree: each target
 #: the holder runs in a member has two prerequisites that need nothing of
@@ -140,6 +157,35 @@ def jobs_words(flags: str) -> list[str]:
             if word.startswith(("-j", "--jobserver"))]
 
 
+def jobserver_of_make_j2(tmp_path: Path) -> str:
+    """The jobserver word this host's make writes into a recipe's
+    `MAKEFLAGS` under `make -j2`, or "" where it writes none: a pipe's
+    descriptors before GNU make 4.4 (`--jobserver-auth=3,4`, measured on
+    4.3), and from 4.4 on, where there is `mkfifo`, a named pipe (`FIFO`,
+    read in make's NEWS, not run)."""
+    probe = tmp_path / "make-j2"
+    probe.mkdir()
+    (probe / "Makefile").write_bytes(b"all:\n\t@echo \"$$MAKEFLAGS\"\n")
+    said = subprocess.run([MAKE, "-s", "-j2"], cwd=str(probe),
+                          env=without_make(), stdin=subprocess.DEVNULL,
+                          capture_output=True, check=True)
+    return next((word for word in WORD.findall(
+        said.stdout.decode("utf-8", "replace").strip())
+        if word.startswith("--jobserver-auth=")), "")
+
+
+def needs_a_pipe_s_descriptors(tmp_path: Path) -> None:
+    """Skips a test of #888's jobserver, a pipe's descriptors, where this
+    host's `make -j2` writes GNU make 4.4's named pipe instead, which a
+    member's make of 4.4 shares (#987): there
+    `test_under_make_4_4_a_member_s_make_shares_the_holder_s_named_pipe`
+    runs instead."""
+    word = jobserver_of_make_j2(tmp_path)
+    if word.startswith(FIFO):
+        pytest.skip(f"`make -j2` here writes {word}, a named pipe, which a "
+                    "member's make shares (#987)")
+
+
 @pytest.mark.parametrize("verb", VERBS)
 def test_no_member_s_make_warns_under_make_j2_and_its_jobs_run_serially(
         family, holder, offline, tmp_path, verb):
@@ -148,6 +194,7 @@ def test_no_member_s_make_warns_under_make_j2_and_its_jobs_run_serially(
     member's make ran its two jobs one at a time, with no `-j` and no
     jobserver in its flags. At 50178305 each printed the warning and ran
     with `-j1`."""
+    needs_a_pipe_s_descriptors(tmp_path)
     traces = traced_members(holder, family, VERBS[verb])
     env = environment(offline, tmp_path)
 
@@ -171,6 +218,7 @@ def test_a_member_s_make_keeps_every_other_flag_and_a_plain_run_is_as_it_was(
     whole, though its value holds ` -j3`. The plain run, no `-j`, names no
     jobserver, so its `MAKEFLAGS` reaches the member as it always did, and
     neither run warns."""
+    needs_a_pipe_s_descriptors(tmp_path)
     traces = traced_members(holder, family, beside=False)
     env = environment(offline, tmp_path)
     flags = {}
@@ -196,6 +244,174 @@ def test_a_member_s_make_keeps_every_other_flag_and_a_plain_run_is_as_it_was(
         assert jobs_words(said) == [], said
 
 
+# --- GNU make 4.4's named pipe, through the holder's rules (#987) ----------
+
+#: `{verb: the line of the holder's rule that runs a member's make}`, as
+#: `templates/family-root/Makefile` writes it. `run_rule` runs it with
+#: `$(PYTHON)` this interpreter and `$(ARGS)` empty, as the holder's make
+#: would.
+RULES = {
+    "bootstrap": "$(PYTHON) scripts/bootstrap.py",
+    "validate": "$(PYTHON) scripts/bootstrap.py --no-fetch --members-make "
+                "validate",
+    "park": "$(PYTHON) scripts/siblings.py --make park --make-arg "
+            "'ARGS=$(ARGS)'",
+    "resume": "$(PYTHON) scripts/siblings.py --make resume --make-arg "
+              "'ARGS=$(ARGS)'",
+}
+#: `{verb: what each verb's rule gives a member's make on its command
+#: line}`.
+TARGETS = {"bootstrap": "bootstrap", "validate": "validate",
+           "park": "park ARGS=", "resume": "resume ARGS="}
+
+
+def run_rule(holder: Path, env: dict, verb: str) -> tuple[int, str]:
+    """`verb`'s line of the holder's rule (`RULES`), found in its Makefile
+    and run straight in `holder` under `env`, as a GNU make 4.4 holder's
+    make would run it there: its exit code, and its stdout and stderr
+    together. Not run by this host's make, which would write a jobserver
+    of its own into `MAKEFLAGS`."""
+    line = RULES[verb]
+    assert f"\t{line}\n" in (holder / "Makefile").read_text(encoding="utf-8")
+    argv = shlex.split(line.replace("$(PYTHON)", shlex.quote(sys.executable))
+                       .replace("$(ARGS)", ""))
+    proc = subprocess.run(argv, cwd=str(holder), env=env,
+                          stdin=subprocess.DEVNULL, capture_output=True,
+                          check=False)
+    return proc.returncode, (proc.stdout + proc.stderr).decode(
+        "utf-8", "replace")
+
+
+def named_pipe(directory: Path) -> Path:
+    """A named pipe made in `directory`, as GNU make 4.4 makes its
+    jobserver: there for as long as the test is."""
+    pipe = directory / "GMfifo987"
+    os.mkfifo(pipe)
+    return pipe
+
+
+def fake_make(directory: Path, said: bytes = b"GNU Make 4.4.1\n",
+              code: int = 0, *, waits: bool = False) -> Path:
+    """An executable `make` in `directory`, which it makes, standing in for
+    a member's make: each call adds a line to `calls.log` beside it, its
+    arguments and the `MAKEFLAGS` it was given (`calls`); then `--version`
+    prints `said` and exits `code`, or, where it `waits`, sleeps 30
+    seconds in the same process; any other call exits 0."""
+    directory.mkdir()
+    (directory / "version").write_bytes(said)
+    answer = "exec sleep 30" if waits else f'cat "$here/version"; exit {code}'
+    make = directory / "make"
+    make.write_text("#!/bin/sh\n"
+                    "here=${0%/*}\n"
+                    "printf '%s|%s\\n' \"$*\" \"$MAKEFLAGS\" "
+                    ">> \"$here/calls.log\"\n"
+                    f"if [ \"$1\" = --version ]; then {answer}; fi\n"
+                    "exit 0\n", encoding="utf-8")
+    make.chmod(0o755)
+    return make
+
+
+def calls(make: Path) -> list[str]:
+    """`fake_make`'s calls, in order, each `<arguments>|<MAKEFLAGS>`."""
+    log = make.parent / "calls.log"
+    if not log.exists():
+        return []
+    return log.read_text(encoding="utf-8").splitlines()
+
+
+def version_of(make: str) -> tuple[int, int]:
+    """`make`'s GNU make version, as its `make --version` says it, read
+    here rather than by the scripts' own `reads_fifo`; (0, 0) where it
+    says none."""
+    said = subprocess.run([make, "--version"], env=without_make(),
+                          stdin=subprocess.DEVNULL, capture_output=True,
+                          check=False).stdout
+    found = re.match(rb"GNU Make (\d+)\.(\d+)", said)
+    return (int(found[1]), int(found[2])) if found else (0, 0)
+
+
+@pytest.mark.parametrize("verb", VERBS)
+def test_a_member_s_make_that_reads_a_named_pipe_is_handed_the_holder_s(
+        family, holder, offline, tmp_path, verb):
+    """#987, every path that runs a member's make: each verb's rule run
+    under the `MAKEFLAGS` a GNU make 4.4 holder's `make -j2` gives it,
+    `-j2` and a named pipe that is there, with `$MAKE` a make that says it
+    is GNU make 4.4.1. Each member's make is handed that `MAKEFLAGS` byte
+    for byte, and that make was asked its version once in the run, with no
+    jobserver in its own `MAKEFLAGS`. At 3864b18c each was handed none."""
+    traced_members(holder, family, VERBS[verb])
+    make = fake_make(tmp_path / "bin")
+    flags = f" -j2 {FIFO}{named_pipe(tmp_path)}"
+    env = {**environment(offline, tmp_path), "MAKE": str(make),
+           "MAKEFLAGS": flags, "MAKELEVEL": "1"}
+
+    code, said = run_rule(holder, env, verb)
+
+    assert code == 0, said
+    assert calls(make) == ["--version|",
+                           *[f"{TARGETS[verb]}|{flags}"] * len(MEMBERS)], said
+
+
+@pytest.mark.parametrize("verb", VERBS)
+def test_under_a_named_pipe_a_member_s_make_before_4_4_runs_serially(
+        family, holder, offline, tmp_path, verb):
+    """#987's second verify line, a holder's make of 4.4 and an older
+    `make` on PATH: each verb's rule run under the `MAKEFLAGS` 4.4 gives
+    it, `-j2` and a named pipe that is there, and this host's make for
+    each member's. Given that word, GNU make 4.3 stops (`invalid
+    --jobserver-auth string`, exit 2, measured). It is not given it: it
+    runs its two jobs one at a time, with no `-j` in its flags, and
+    nothing says a word of a jobserver. Skipped where the make on PATH is
+    4.4 or later."""
+    found = version_of(MAKE)
+    if found >= (4, 4):
+        pytest.skip(f"the make on PATH is GNU make {found[0]}.{found[1]}, "
+                    "which reads a named pipe")
+    traces = traced_members(holder, family, VERBS[verb])
+    env = {**environment(offline, tmp_path),
+           "MAKEFLAGS": f" -j2 {FIFO}{named_pipe(tmp_path)}",
+           "MAKELEVEL": "1"}
+
+    code, said = run_rule(holder, env, verb)
+
+    assert code == 0, said
+    assert "jobserver" not in said, said
+    for trace in traces:
+        lines = read(trace)
+        assert lines[:4] == SERIAL, (trace, lines)
+        (flags,) = lines[4:]
+        assert jobs_words(flags) == [], (trace, flags)
+
+
+def test_under_make_4_4_a_member_s_make_shares_the_holder_s_named_pipe(
+        family, holder, offline, tmp_path):
+    """#987's first verify line, where this host's make is GNU make 4.4 or
+    later and `make -j2` writes a named pipe: under the holder's `make -j2
+    bootstrap`, each member's make runs its two jobs together, within the
+    holder's jobserver, which its flags name, and nothing says a word of a
+    jobserver. Skipped where `make -j2` writes no named pipe, by what it
+    writes: GNU Make 4.3 writes a pipe's descriptors (measured), and it is
+    the make on the host this test was written on and in CI, so this test
+    has not been run."""
+    word = jobserver_of_make_j2(tmp_path)
+    if not word.startswith(FIFO):
+        pytest.skip(f"`make -j2` here writes {word or 'no jobserver'}, not "
+                    "GNU make 4.4's named pipe")
+    traces = traced_members(holder, family, beside=False)
+    env = environment(offline, tmp_path)
+
+    code, said = holder_make(holder, env, "-j2", "bootstrap")
+
+    assert code == 0, said
+    assert "jobserver" not in said, said
+    for trace in traces:
+        lines = read(trace)
+        assert sorted(lines[:2]) == ["start one", "start two"], (trace, lines)
+        (flags,) = lines[4:]
+        assert [word for word in jobs_words(flags)
+                if word.startswith(FIFO)], (trace, flags)
+
+
 # --- the two scripts' `member_make_env`, one answer ------------------------
 
 #: `{case: (MAKEFLAGS as a make writes it, as the member's make gets it)}`,
@@ -206,7 +422,8 @@ def test_a_member_s_make_keeps_every_other_flag_and_a_plain_run_is_as_it_was(
 #: documentation, not run. And 4.3's with `-j16`, and with a value that
 #: holds a no-break space (U+00A0), a narrow one (U+202F) or a newline:
 #: make splits only at a space or a tab, and passes each of those three
-#: through raw (measured), so each stays inside its word.
+#: through raw (measured), so each stays inside its word. The member's
+#: make says it is GNU make 4.3, which reads no named pipe (#987).
 TAKEN_OUT = {
     "4.3": (" -j2 --jobserver-auth=3,4", ""),
     "4.3-k-s-variables": (r"ks -j2 --jobserver-auth=3,4 -- B=a\ b F=x",
@@ -221,13 +438,17 @@ TAKEN_OUT = {
     "windows": (" -j2 --jobserver-auth=gmake_semaphore_1234", ""),
     "4.3-j16-k": ("k -j16 --jobserver-auth=3,4", "k"),
     "4.3-no-break-space": (
-        " -j2 --jobserver-auth=3,4 -- NOTE=x\u00a0EXTRA=injected",
-        "-- NOTE=x\u00a0EXTRA=injected"),
-    "4.3-narrow-no-break-space": (" -j2 --jobserver-auth=3,4 -- NOTE=x\u202f!",
-                                  "-- NOTE=x\u202f!"),
+        " -j2 --jobserver-auth=3,4 -- NOTE=x EXTRA=injected",
+        "-- NOTE=x EXTRA=injected"),
+    "4.3-narrow-no-break-space": (" -j2 --jobserver-auth=3,4 -- NOTE=x !",
+                                  "-- NOTE=x !"),
     "4.3-newline": (" -j2 --jobserver-auth=3,4 -- NOTE=x\nEXTRA=injected",
                     "-- NOTE=x\nEXTRA=injected"),
 }
+#: `TAKEN_OUT`'s spellings that name no named pipe: taken out for a member's
+#: make of 4.4 too (#987).
+NO_NAMED_PIPE = {case: spelling for case, spelling in TAKEN_OUT.items()
+                 if FIFO not in spelling[0]}
 #: `MAKEFLAGS` that names no jobserver, left exactly as it is: no flags,
 #: `make -j` with no number (which starts no jobserver), a person's own
 #: `-j8` with no make above, and a variable whose value only looks like one.
@@ -255,14 +476,15 @@ def scripts(monkeypatch) -> dict:
 @pytest.mark.parametrize("script", ["bootstrap.py", "siblings.py"])
 @pytest.mark.parametrize("flags, kept", TAKEN_OUT.values(), ids=TAKEN_OUT)
 def test_each_script_takes_out_a_jobserver_and_its_j_and_nothing_else(
-        scripts, monkeypatch, script, flags, kept):
+        scripts, monkeypatch, tmp_path, script, flags, kept):
     """Each make's spelling of its jobserver, and the `-j` beside it, taken
-    out by both scripts alike; every other word kept, a blank a backslash
-    keeps in a variable's value included, and nothing else in the
-    environment touched."""
+    out by both scripts alike for a member's make of GNU make 4.3; every
+    other word kept, a blank a backslash keeps in a variable's value
+    included, and nothing else in the environment touched."""
+    make = fake_make(tmp_path / "bin", b"GNU Make 4.3\n")
     monkeypatch.setenv("MAKEFLAGS", flags)
 
-    env = scripts[script].member_make_env()
+    env = scripts[script].member_make_env(str(make))
 
     assert env.pop("MAKEFLAGS") == kept
     assert env == {key: value for key, value in os.environ.items()
@@ -270,31 +492,212 @@ def test_each_script_takes_out_a_jobserver_and_its_j_and_nothing_else(
 
 
 @pytest.mark.parametrize("script", ["bootstrap.py", "siblings.py"])
+@pytest.mark.parametrize("flags, kept", NO_NAMED_PIPE.values(),
+                         ids=NO_NAMED_PIPE)
+def test_each_script_hands_no_other_jobserver_to_make_4_4(
+        scripts, monkeypatch, tmp_path, script, flags, kept):
+    """#987 hands on a named pipe and nothing else: for a member's make
+    that says it is GNU make 4.4.1, a pipe's descriptors, make 3.81's
+    `--jobserver-fds` and Windows' semaphore are taken out as for 4.3,
+    with the `-j` beside them, and that make is not even asked."""
+    make = fake_make(tmp_path / "bin")
+    monkeypatch.setenv("MAKEFLAGS", flags)
+
+    env = scripts[script].member_make_env(str(make))
+
+    assert env.pop("MAKEFLAGS") == kept
+    assert env == {key: value for key, value in os.environ.items()
+                   if key != "MAKEFLAGS"}
+    assert calls(make) == []
+
+
+@pytest.mark.parametrize("script", ["bootstrap.py", "siblings.py"])
 @pytest.mark.parametrize("flags", [None, *LEFT.values()],
                          ids=["unset", *LEFT])
 def test_each_script_leaves_a_makeflags_that_names_no_jobserver(
-        scripts, monkeypatch, script, flags):
+        scripts, monkeypatch, tmp_path, script, flags):
     """No jobserver named, nothing taken out: the environment is this
-    run's own, `MAKEFLAGS` byte for byte, and unset where it was."""
+    run's own, `MAKEFLAGS` byte for byte, and unset where it was; and the
+    member's make is not asked its version."""
+    make = fake_make(tmp_path / "bin")
     if flags is None:
         monkeypatch.delenv("MAKEFLAGS", raising=False)
     else:
         monkeypatch.setenv("MAKEFLAGS", flags)
 
-    assert scripts[script].member_make_env() == dict(os.environ)
+    assert scripts[script].member_make_env(str(make)) == dict(os.environ)
+    assert calls(make) == []
 
 
 @pytest.mark.parametrize("script", ["bootstrap.py", "siblings.py"])
 def test_each_script_hands_back_a_copy_and_leaves_its_own_environment(
-        scripts, monkeypatch, script):
+        scripts, monkeypatch, tmp_path, script):
     """The environment a member's make gets is a copy: this run's own
     `MAKEFLAGS`, which names a jobserver here, is as it was after the
     call, and the copy is a plain `dict`, not `os.environ`."""
+    make = fake_make(tmp_path / "bin")
     monkeypatch.setenv("MAKEFLAGS", " -j2 --jobserver-auth=3,4")
     before = dict(os.environ)
 
-    env = scripts[script].member_make_env()
+    env = scripts[script].member_make_env(str(make))
 
     assert type(env) is dict
     assert env["MAKEFLAGS"] == ""
     assert dict(os.environ) == before
+
+
+#: `{case: the first lines of `make --version`}` from a member's make that
+#: reads GNU make 4.4's named pipe: 4.4, 4.4.1, and a 4.10 and a 5.0 to
+#: come, whose versions are read as numbers.
+READERS = {"4.4": b"GNU Make 4.4\n",
+           "4.4.1": b"GNU Make 4.4.1\nBuilt for x86_64-pc-linux-gnu\n",
+           "4.10": b"GNU Make 4.10\n", "5.0": b"GNU Make 5.0\n"}
+
+
+@pytest.mark.parametrize("script", ["bootstrap.py", "siblings.py"])
+@pytest.mark.parametrize("said", READERS.values(), ids=READERS)
+def test_each_script_hands_a_named_pipe_to_a_make_that_reads_it(
+        scripts, monkeypatch, tmp_path, script, said):
+    """#987: GNU make 4.4's `MAKEFLAGS`, `-j2` and a named pipe that is
+    there, reaches a member's make that says it is 4.4 or later byte for
+    byte, the `-j2` with it, in a copy of this run's environment; that
+    make was asked its version once, with no jobserver."""
+    make = fake_make(tmp_path / "bin", said)
+    monkeypatch.setenv("MAKEFLAGS", f" -j2 {FIFO}{named_pipe(tmp_path)}")
+
+    env = scripts[script].member_make_env(str(make))
+
+    assert type(env) is dict
+    assert env == dict(os.environ)
+    assert calls(make) == ["--version|"]
+
+
+@pytest.mark.parametrize("script", ["bootstrap.py", "siblings.py"])
+@pytest.mark.parametrize("folder", ["t x", "t\tx", "t\\x"],
+                         ids=["space", "tab", "backslash"])
+def test_each_script_reads_a_named_pipe_s_path_as_make_reads_it(
+        scripts, monkeypatch, tmp_path, script, folder):
+    """A blank or a backslash in the named pipe's path, which make writes
+    into `MAKEFLAGS` with a backslash before it, is read as make reads it,
+    a backslash keeping the character after it: the pipe is found, and
+    `MAKEFLAGS` handed on as it is."""
+    directory = tmp_path / folder
+    directory.mkdir()
+    written = re.sub(r"([ \t\\])", r"\\\1", str(named_pipe(directory)))
+    monkeypatch.setenv("MAKEFLAGS", f" -j2 {FIFO}{written}")
+    make = fake_make(tmp_path / "bin")
+
+    assert scripts[script].member_make_env(str(make)) == dict(os.environ)
+    assert calls(make) == ["--version|"]
+
+
+@pytest.mark.parametrize("script", ["bootstrap.py", "siblings.py"])
+def test_each_script_asks_a_make_once_a_run_and_hands_it_no_jobserver(
+        scripts, monkeypatch, tmp_path, script):
+    """`make --version` is asked once in a run, however many members' makes
+    the run starts, and with the jobserver taken out of its own
+    `MAKEFLAGS`, every other word kept: a make asked its version is handed
+    no jobserver to open. Each member's make then gets 4.4's `MAKEFLAGS`
+    as it is, its `-k`, `-s` and variable included."""
+    make = fake_make(tmp_path / "bin")
+    flags = rf"ks -j2 {FIFO}{named_pipe(tmp_path)} -- NOTE=a\ -j3"
+    monkeypatch.setenv("MAKEFLAGS", flags)
+    module = scripts[script]
+
+    handed = [module.member_make_env(str(make))["MAKEFLAGS"]
+              for _ in range(3)]
+
+    assert handed == [flags] * 3
+    assert calls(make) == [r"--version|ks -- NOTE=a\ -j3"]
+
+
+#: `{case: (the first lines of `make --version`, its exit code)}` from a
+#: member's make that does not say it reads GNU make 4.4's named pipe: GNU
+#: make before 4.4 (4.3 measured: given the word, it stops with `invalid
+#: --jobserver-auth string`, exit 2), a make that names itself otherwise,
+#: one that names 4.4.1 and exits 1, and one that says nothing.
+NOT_READERS = {"4.3": (b"GNU Make 4.3\nBuilt for x86_64-pc-linux-gnu\n", 0),
+               "4.2.1": (b"GNU Make 4.2.1\n", 0),
+               "3.81": (b"GNU Make 3.81\n", 0),
+               "another-make": (b"bmake 20240711\n", 0),
+               "4.4.1-exit-1": (b"GNU Make 4.4.1\n", 1),
+               "silent": (b"", 0)}
+
+
+@pytest.mark.parametrize("script", ["bootstrap.py", "siblings.py"])
+@pytest.mark.parametrize("said, code", NOT_READERS.values(), ids=NOT_READERS)
+def test_each_script_takes_a_named_pipe_from_a_make_not_known_to_read_it(
+        scripts, monkeypatch, tmp_path, script, said, code):
+    """#987's other half: under 4.4's `MAKEFLAGS`, a named pipe that is
+    there, a member's make that does not say it is GNU make 4.4 or later
+    gets neither the pipe nor the `-j2`, as #888 left it; every other word
+    kept, and that make asked its version once."""
+    make = fake_make(tmp_path / "bin", said, code)
+    monkeypatch.setenv("MAKEFLAGS",
+                       f" -j2 {FIFO}{named_pipe(tmp_path)} -- NOTE=x")
+
+    env = scripts[script].member_make_env(str(make))
+
+    assert env.pop("MAKEFLAGS") == "-- NOTE=x"
+    assert env == {key: value for key, value in os.environ.items()
+                   if key != "MAKEFLAGS"}
+    assert calls(make) == ["--version|-- NOTE=x"]
+
+
+@pytest.mark.parametrize("script", ["bootstrap.py", "siblings.py"])
+def test_each_script_takes_a_named_pipe_from_a_make_that_is_not_there(
+        scripts, monkeypatch, tmp_path, script):
+    """A member's make that cannot be started is asked nothing it can
+    answer, and the run goes on: the pipe and its `-j2` are taken out,
+    and nothing is raised here."""
+    monkeypatch.setenv("MAKEFLAGS", f" -j2 {FIFO}{named_pipe(tmp_path)}")
+
+    env = scripts[script].member_make_env(str(tmp_path / "no-make"))
+
+    assert env["MAKEFLAGS"] == ""
+
+
+@pytest.mark.parametrize("script", ["bootstrap.py", "siblings.py"])
+def test_each_script_takes_a_named_pipe_from_a_make_too_slow_to_answer(
+        scripts, monkeypatch, tmp_path, script):
+    """A member's make that does not answer `--version` within
+    `VERSION_TIMEOUT` seconds, here 1, is a no, and the run is not held
+    for it: the fake sleeps 30 seconds, and is stopped."""
+    module = scripts[script]
+    monkeypatch.setattr(module, "VERSION_TIMEOUT", 1)
+    make = fake_make(tmp_path / "bin", waits=True)
+    monkeypatch.setenv("MAKEFLAGS", f" -j2 {FIFO}{named_pipe(tmp_path)}")
+    began = time.monotonic()
+
+    env = module.member_make_env(str(make))
+
+    assert time.monotonic() - began < 20
+    assert env["MAKEFLAGS"] == ""
+    assert calls(make) == ["--version|"]
+
+
+@pytest.mark.parametrize("script", ["bootstrap.py", "siblings.py"])
+@pytest.mark.parametrize("case", ["gone", "a-file", "relative",
+                                  "beside-descriptors"])
+def test_each_script_takes_out_a_named_pipe_a_member_s_make_cannot_open(
+        scripts, monkeypatch, tmp_path, script, case):
+    """A named pipe's word whose path holds no named pipe now, which would
+    make a 4.4 member's make warn that it cannot open the jobserver, is
+    taken out with its `-j2` though the member's make says it is 4.4.1,
+    and that make is not asked: a pipe that is gone, a path that holds a
+    file, a pipe named relative to this run's directory, which is not
+    the member's; and a pipe named beside a pipe's descriptors."""
+    make = fake_make(tmp_path / "bin")
+    pipe = named_pipe(tmp_path)
+    (tmp_path / "GMfifo-file").write_bytes(b"")
+    monkeypatch.chdir(tmp_path)
+    word = {"gone": f"{FIFO}{tmp_path / 'GMfifo-gone'}",
+            "a-file": f"{FIFO}{tmp_path / 'GMfifo-file'}",
+            "relative": f"{FIFO}{pipe.name}",
+            "beside-descriptors": f"--jobserver-auth=3,4 {FIFO}{pipe}"}[case]
+    monkeypatch.setenv("MAKEFLAGS", f" -j2 {word}")
+
+    env = scripts[script].member_make_env(str(make))
+
+    assert env["MAKEFLAGS"] == ""
+    assert calls(make) == []
