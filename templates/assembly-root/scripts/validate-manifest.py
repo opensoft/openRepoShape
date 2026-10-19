@@ -225,8 +225,10 @@ def _chain_and_links(naming, root: Path | None,
 def _run_products(pins, legs) -> list[str]:
     """Every product this run reads (#909): the declared pins, and every
     link of every chain a leg records, read as `_leg_findings` reads it
-    (`_recorded_chain`), as the naming gate's run reads every leg's
-    (`_project_chain_links`)."""
+    (`_recorded_chain`). That counts the chain of a leg whose `repository:`
+    is bad or missing, which the naming gate's `_project_chain_links`
+    leaves out; such a leg is a finding in both gates, so the run fails
+    either way."""
     products = sorted(pins)
     for leg in legs:
         naming = leg.get("naming") if isinstance(leg, dict) else None
@@ -236,8 +238,9 @@ def _run_products(pins, legs) -> list[str]:
 
 
 #: Why the lookup passed over a source with nothing at its path:
-#: `repo_shape.LINK_SOURCE_ABSENT`, word for word. This file imports nothing
-#: newer than the library a root may have kept (#610), and
+#: `repo_shape.LINK_SOURCE_ABSENT`, word for word. Every tagged library has
+#: it (cac6bb20, before v1.0.0), and the naming gate imports it; this copy
+#: keeps this file's import block clear of #958, which edits it.
 #: `tests/test_chain_pin_sources.py` holds the two equal.
 SOURCE_ABSENT = "no such file or directory"
 

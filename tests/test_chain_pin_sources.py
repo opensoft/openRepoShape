@@ -32,12 +32,14 @@ No network and no GitHub: scaffolds dry-run, or into local bare remotes.
 
 from __future__ import annotations
 
+import functools
 import subprocess
 import sys
 from pathlib import Path
 
 import pytest
 
+import test_chain_link_fold
 from conftest import (REPO, SCAFFOLD, clear_ambient_pin_sources,
                       load_without_bytecode, run_script)
 from test_chain_link_fold import SHARP, SS, scaffold_pinning
@@ -343,15 +345,18 @@ def a_root_sharing_one_variable(project: Path, where: str) -> Path:
     """The scaffolded root as `codexDox`, pinning `openss` with its pin file
     and recording `openss -> openDox`, and naming `openß` too: as the first
     link of a chain its spec leg records (this validator reads every chain a
-    leg records, whatever that leg's name claims), or as a pin on no
-    chain."""
+    leg records, whatever that leg's name claims), there with its owner,
+    `opensoft/`, before it, which is still that link (`repo_basename`), or
+    as a pin on no chain."""
     as_a_descendant_by_chain(project, first=SS)
     (project / "contracts" / f"{SS}-pin.yaml").write_text(
         "schema_version: 1\nkind: pinned_contract_manifest\n",
         encoding="utf-8")
-    if where == "chain":
+    owners = {"chain": "", "qualified-chain": "opensoft/"}
+    if where in owners:
         anchor = "      role: spec\n      also_matches: []\n"
-        added = f"{anchor}      referent_chain: [{SHARP}, openQuill]\n"
+        added = (f"{anchor}      referent_chain: "
+                 f"[{owners[where]}{SHARP}, openQuill]\n")
     else:
         anchor = f"neutral_product_pins:\n  - {SS}\n"
         added = f"{anchor}  - {SHARP}\n"
@@ -363,14 +368,17 @@ def a_root_sharing_one_variable(project: Path, where: str) -> Path:
 
 
 @pytest.mark.parametrize("variable", [True, False], ids=["set", "unset"])
-@pytest.mark.parametrize("where", ["chain", "pin"])
+@pytest.mark.parametrize("where", ["chain", "qualified-chain", "pin"])
 def test_the_manifest_gate_reads_a_shared_variable_for_no_chain(
         project, monkeypatch, tmp_path, where, variable):
     """The same defect in the root's own validator, which reads every leg's
     chain: set to `openß`'s tree, the variable was read for `openss` and
     broke `codexDox`'s chain, exit 1; unset, it was offered. It is read for
     neither now, and the holder is offered a checkout beside the root
-    alone."""
+    alone. The products are read by `repo_basename` (RV981's S2): this
+    validator hands them over as its manifest spells them, and read whole,
+    the owner-qualified link names `SHAPE_PIN_SOURCE_OPENSOFT_OPENSS` and
+    shares nothing."""
     clear_ambient_pin_sources(monkeypatch)
     root = a_root_sharing_one_variable(project, where)
     result = validate(root, sharp_tree(tmp_path, "openQuill")
@@ -436,6 +444,54 @@ def test_the_plan_names_the_chain_in_the_pins_spelling(tmp_path):
     assert ("reaching openInk through the declared pin chain openKdox → "
             "openInk") in result.stdout, result.stdout
     assert "contracts/openkdox-pin.yaml" in result.stdout, result.stdout
+    assert KELVIN not in result.stdout + result.stderr
+
+
+def scaffold_reading(monkeypatch, tmp_path: Path, env: dict, *args: str):
+    """The issue's probe, `--pin openKdox@<sha> --referent-chain
+    'open<KELVIN SIGN>dox,openInk'`, run by `scaffold_pinning` with `env`
+    given to the scaffold: that helper passes none, and `run_script` blanks
+    every `SHAPE_PIN_SOURCE_<PRODUCT>` its caller does not name."""
+    monkeypatch.setattr(test_chain_link_fold, "run_script",
+                        functools.partial(run_script, env=env))
+    return scaffold_pinning(tmp_path, "openKdox", f"{KDOX},openInk", *args)
+
+
+def test_the_kelvin_link_is_not_read_through_another_products_variable(
+        monkeypatch, tmp_path):
+    """RV981's S1: the fix changes which variable is read for that link.
+    Read as typed, `open<KELVIN SIGN>dox` was read through
+    `SHAPE_PIN_SOURCE_OPEN_DOX`: the Kelvin sign is upper case and not in
+    `[A-Z0-9_]`, so `pin_source_env_name` turns it into `_`, and that is the
+    variable of `open-dox`, `open_dox` and `open.dox`. Set to a tree
+    declaring `openQuill`, it refused a chain that holds,
+    `chain-not-declared`, exit 2. The link is the pin `openKdox` now, so
+    that variable is not its own, and the `--pin-source` verifies it."""
+    other = tree(tmp_path / "trees" / "open_dox", "openQuill")
+    result = scaffold_reading(monkeypatch, tmp_path,
+                              {"SHAPE_PIN_SOURCE_OPEN_DOX": str(other)},
+                              "--dry-run")
+    assert result.returncode == 0, result.stderr + result.stdout
+    assert ("reaching openInk through the declared pin chain openKdox → "
+            "openInk") in result.stdout, result.stdout
+    assert "declared-unverified" not in result.stderr, result.stderr
+    assert KELVIN not in result.stdout + result.stderr
+
+
+def test_the_kelvin_link_is_read_through_its_pins_variable(monkeypatch,
+                                                           tmp_path):
+    """The reverse: `SHAPE_PIN_SOURCE_OPENKDOX`, the pin's own variable, is
+    read for that link before its `--pin-source` (`resolve_link_source`'s
+    rule 2), so a tree there declaring `openQuill` refuses the chain."""
+    other = tree(tmp_path / "trees" / "openKdox", "openQuill")
+    result = scaffold_reading(monkeypatch, tmp_path,
+                              {"SHAPE_PIN_SOURCE_OPENKDOX": str(other)},
+                              "--dry-run")
+    assert result.returncode == 2, result.stderr + result.stdout
+    assert ("REFUSED chain-not-declared: --referent-chain openKdox,openInk: "
+            "the declared chain openKdox → openInk is broken (openKdox "
+            "declares openQuill, not openInk)\n") in result.stderr, (
+        result.stderr)
     assert KELVIN not in result.stdout + result.stderr
 
 
