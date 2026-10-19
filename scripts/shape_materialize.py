@@ -867,10 +867,11 @@ def _append_eol_block(target: Path, result: "Materialized",
     A SYMLINK IS NOT WRITTEN THROUGH: what it leads to may be another file of
     the source's, or nothing in this repository, and git follows no
     `.gitattributes` that is a link anyway: a checkout reads only the link's
-    own text, the path it leads to, which names no attribute (#654). It is
-    left as it is, and the follow-up says so and lists the lines a regular
-    file would need. A link is one on the disk OR in git's index
-    (`_tracked_as_link`)."""
+    own text, the path it leads to, as one line of rules, which names an
+    attribute only where that text holds a space, a tab or a carriage
+    return (#654, #906). It is left as it is, and the follow-up says so and
+    lists the lines a regular file would need. A link is one on the disk OR
+    in git's index (`_tracked_as_link`)."""
     if (ATTRIBUTES, f"{collision_dir}/{ATTRIBUTES}") not in result.collisions:
         return
     path = target / ATTRIBUTES
@@ -987,8 +988,9 @@ def collision_follow_up(intended: str, actual: str,
 def _attributes_link_follow_up(intended: str, actual: str,
                                beside: dict | None) -> str:
     """The follow-up for a source `.gitattributes` that is a symlink: no
-    block was appended, nothing git reads gives the root's pinned copies a
-    line ending, and these are the lines a regular file needs.
+    block was appended, for a link to a path nothing git reads gives the
+    root's pinned copies a line ending, and these are the lines a regular
+    file needs.
 
     The copies are the pinned ones that kept their own names, in the pin's
     order: every one `beside` does not send under the collision directory,
@@ -1001,9 +1003,10 @@ def _attributes_link_follow_up(intended: str, actual: str,
         f"never writes through a link) and wrote the shape's copy beside it "
         f"as {actual}, which governs only its own directory. Git follows no "
         f"{intended} that is a symlink: a checkout reads only the link's own "
-        "text, the path it leads to, and a path names no attribute, so no "
-        "line-ending rule reaches the pinned copies outside it: a Windows "
-        "clone writes them with CRLF and "
+        "text, the path it leads to, as one line of rules, which names an "
+        "attribute only where that text holds a space, a tab or a carriage "
+        "return, so, for a link to a path, no line-ending rule reaches the "
+        "pinned copies outside it: a Windows clone writes them with CRLF and "
         "reports shape-copy-drift on each one. To give every clone one, "
         f"replace the link with a regular {intended} holding the lines of "
         "the file it leads to that should still apply, then these, one per "

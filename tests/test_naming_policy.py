@@ -2058,11 +2058,13 @@ def test_the_naming_validator_keeps_its_own_two_lines_for_a_tree_it_reached(
         result.stderr)
 
 
-def test_the_projects_own_manifest_gate_keeps_its_warning_for_a_tree_it_reached(
+def test_the_projects_own_manifest_gate_says_why_a_tree_it_reached_was_unread(
         project):
     """`validate-manifest.py` reads the same link tree through the same
-    lookup and prints no reason of its own, so it is the text it always was;
-    this change reaches the scaffold alone."""
+    lookup and prints no reason of its own. It kept the text it always had,
+    "not reachable here", for a tree that is there, until #909: it asks the
+    lookup for the reason now, as the scaffold does, and its WARNING says
+    it."""
     _codexdox(project)
     sibling = project.parent / "openXdox"
     sibling.mkdir()
@@ -2070,12 +2072,13 @@ def test_the_projects_own_manifest_gate_keeps_its_warning_for_a_tree_it_reached(
         b"schema_version: 1\nneutral_product_pins: openDox\n")
     own = run_script(project / "scripts" / "validate-manifest.py",
                      cwd=project)
+    said = own.stdout + own.stderr
     assert "Traceback" not in own.stderr, own.stderr
-    assert ("which is not reachable here (SHAPE_PIN_SOURCE_OPENXDOX, or a "
-            "checkout of openXdox beside this root, would let it be read)"
-            ) in own.stdout + own.stderr, own.stdout + own.stderr
-    assert "--link-source" not in own.stdout + own.stderr
-    assert "was reached" not in own.stdout + own.stderr
+    assert ("which was reached but could not be read as a declaration "
+            f"({sibling.resolve() / 'project.yaml'}: neutral_product_pins is "
+            "not a list)") in said, said
+    assert "not reachable here" not in said
+    assert "--link-source" not in said
 
 
 # --- the ruling: a NEUTRAL PRODUCT MAY ELECT THE SHAPE ---------------------
