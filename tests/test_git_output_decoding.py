@@ -134,12 +134,14 @@ ALWAYS_TEXT = {"getoutput", "getstatusoutput"}
 #: name, and the reason it differs.
 EXEMPT = {
     # The `gh api` tree listing becomes a digest: UTF-8 yes, `replace` no, for
-    # a replaced byte would be a wrong digest with a confident tone. The
-    # first is `scaffold-project.py --pin`'s and `adopt-project.py plan
-    # --pin`'s, moved out of the scaffold for #273.
+    # a replaced byte would be a wrong digest with a confident tone. It is
+    # `scaffold-project.py --pin`'s and `adopt-project.py plan --pin`'s,
+    # moved out of the scaffold for #273. `repo_shape.py`'s
+    # `tree_digest_from_gh` needs no row: it reads gh's two streams as bytes
+    # and decodes each itself, stdout strictly and stderr with `replace`
+    # (#968).
     ("scripts/shape_materialize.py", "pin_digest_from_gh"):
         frozenset({"encoding"}),
-    ("scripts/repo_shape.py", "tree_digest_from_gh"): frozenset({"encoding"}),
 }
 
 #: A call the guard cannot read the keywords of: one that expands `**options`

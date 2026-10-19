@@ -229,6 +229,9 @@ from shape_materialize import (  # noqa: E402
     _both_ends, refuse_a_topic_github_cannot_set,
     refuse_an_owner_github_cannot_have, refuse_an_owner_github_cannot_spell,
 )
+# What `init`'s plan says "not found" means against GitHub, in the
+# scaffold's words (#913, L2-61).
+from shape_materialize import NOT_FOUND_WITH_THIS_TOKEN  # noqa: E402
 
 NAMING_POLICY = SHAPE_ROOT / "contracts" / "repository-naming.yaml"
 MANIFEST = "family.yaml"
@@ -2751,6 +2754,14 @@ def _print_init_plan(values: dict, repository: str, url: str,
     a line break and then `WARNING forged-line: pwned` printed that line as
     a line of the plan, on a dry run and on a run refused after it, and an
     ESC reached the terminal. A printable path is named byte for byte.
+
+    THE BRANCH AND, ON DISK, THE VISIBILITY ARE NAMED (#913), as the
+    scaffold's plan names them: the plan named neither the tracking branch
+    the holder is created on nor, under `--local-remote-dir`, the
+    visibility `family.yaml` records. And "not found" is what this token can
+    see (#913, L2-61): GitHub answers a private repository the token cannot
+    see as not found, so the `remotes` row says when the holder is created
+    in the scaffold's words (`NOT_FOUND_WITH_THIS_TOKEN`).
     """
     print(f"family       {values['FAMILY_NAME']} ({values['FAMILY_ID']})")
     print(f"shape        {SHAPE_REPOSITORY} @ {shape_commit[:12]} "
@@ -2767,11 +2778,20 @@ def _print_init_plan(values: dict, repository: str, url: str,
               "it")
     print(f"members      mounted under {MEMBERS_DIR}/; none yet — "
           "`family.py add` puts one there")
-    print("remotes      " + ("a bare repository on disk (no network)" if local
-                             else f"gh repo create --{values['VISIBILITY']}"))
+    if local:
+        print(f"visibility   {values['VISIBILITY']}, which {MANIFEST} "
+              "records; a bare repository on disk has none")
+        print("remotes      a bare repository on disk (no network)")
+    else:
+        print(f"remotes      gh repo create --{values['VISIBILITY']}, if gh "
+              f"does not find {repository}")
+        for line in NOT_FOUND_WITH_THIS_TOKEN:
+            print(f"             {line}")
     if reuse_empty_repo:
         print("reuse        an EXISTING <Family> with zero commits is used as "
               "the holder")
+    print(f"branch       {values['TRACKING_BRANCH']}, the tracking branch the "
+          "holder is created on")
     print("topics       " + ("skipped for local remotes" if local
                              else f"gh repo edit --add-topic {topic}"))
 
@@ -2962,11 +2982,20 @@ def _create_holder_worktree(args, work: Path, values: dict, shape_commit: str,
 
 def _finish_holder_remote(args, repository: str, topic: str, local: bool,
                           reuse: bool) -> None:
-    """Set the holder's topic and print the private-visibility NOTE and the
+    """Set the holder's topic and print the members' credential NOTE and the
     Free-plan secrets note.
 
     Neither applies to a local (no-network) remote. Split from `cmd_init`
     for #136.
+
+    THE CREDENTIAL NOTE IS ABOUT THE MEMBERS, AND EVERY HOLDER GETS IT (#913,
+    L2-95). The `validate` workflow's default GITHUB_TOKEN cannot read a
+    private or internal member whatever the holder is, so a public holder
+    needs the App or the PAT as much as a private one. The NOTE was printed
+    only for a holder that is private or internal, in words that gave the
+    holder's visibility as the reason: a public holder whose members are
+    private was never told, and its `validate` check then could not check
+    them out. `add`, which knows each member, is not this function's.
 
     BY THE HOLDER AS IT STANDS (#660). The holder is the repository whose
     `validate` workflow reads the secrets. One this run created has the
@@ -2975,8 +3004,8 @@ def _finish_holder_remote(args, repository: str, topic: str, local: bool,
     (`repository_visibility`). Both lines went by `--visibility` alone, so
     a public holder reused under the default `private` was called private
     and given the Free-plan hint. A reused holder whose visibility GitHub
-    does not give is `ROOT_VISIBILITY_UNREAD` and gets no NOTE: whether it
-    is private is the very question that went unanswered.
+    does not give is `ROOT_VISIBILITY_UNREAD`: whether it is private is the
+    very question that went unanswered.
 
     NO MEMBER IS NAMED THAT DOES NOT EXIST (#660). `init` mounts none, and
     `add` mounts a member of any visibility, so the NOTE's "and its members
@@ -2998,12 +3027,12 @@ def _finish_holder_remote(args, repository: str, topic: str, local: bool,
             visibility = repository_visibility(repository)
         except OSError:
             visibility = None
-    if visibility in ("private", "internal"):
-        print(f"NOTE {repository} is {visibility}: give it a way to read the "
-              "members you add that are private or internal — a GitHub App "
-              "(SHAPE_LEGS_APP_ID + SHAPE_LEGS_APP_PRIVATE_KEY, preferred) or "
-              "a SHAPE_LEGS_TOKEN PAT with contents:read on the members AND "
-              "their legs — or the `validate` check cannot check them out.")
+    print("NOTE a member you add that is, or has a leg that is, private or "
+          f"internal needs a way for {repository}, public or not, to read "
+          "it — a GitHub App (SHAPE_LEGS_APP_ID + SHAPE_LEGS_APP_PRIVATE_KEY, "
+          "preferred) or a SHAPE_LEGS_TOKEN PAT with contents:read on the "
+          "members AND their legs — or the `validate` check cannot check "
+          "that member out.")
     note = free_plan_secrets_note(args.org, repository, visibility)
     if note:
         print(note)

@@ -1245,6 +1245,15 @@ def tree_digest(repo: Path, rev: str) -> str:
     return digest.hexdigest()
 
 
+def _child_text(data: bytes, errors: str) -> str:
+    """A child's bytes as text mode reads them (#968): UTF-8 with `errors`,
+    and each carriage return, alone or before a line feed, a line feed, as
+    `subprocess` translates them. `tree_digest_from_gh` reads gh's two
+    streams as bytes so that each takes its own `errors`."""
+    return (data.decode("utf-8", errors)
+            .replace("\r\n", "\n").replace("\r", "\n"))
+
+
 def tree_digest_from_gh(repository: str, commit: str) -> str:
     """The same `sorted-ls-tree-r-v1` digest, read from the forge's own
     recursive tree listing — no clone, no working tree, just `gh api`.
@@ -1265,37 +1274,73 @@ def tree_digest_from_gh(repository: str, commit: str) -> str:
     also fails, always catches this rather than letting it reach a user
     directly: an unanswerable neutral-product pin is a gap in the check, not
     a reason to fail a project that only lacks a `gh` login.
+
+    `gh-unreadable`'S TWO UNTRUSTED PARTS ARE SPELLED (#919), as `git_out`
+    spells its own (#610), because a root's `validate-pins.py` prints the
+    detail inside its `skip` line. The repository is the pin's
+    `source_repository`, named with `shown_path`: as it is, unless a
+    character in it is not printable. What `gh` printed is `spelled`, as ONE
+    line: it was put in raw, so an ESC in it reached the terminal as the
+    control it is and each line break began a line of the skip that the
+    validator never printed. `gh`'s not-logged-in help is two lines (four
+    under `GITHUB_ACTIONS`), and the break between them is an escape here,
+    as a break git prints is in `git_out`. A carriage return is a line break
+    by then, as text mode reads one. Printable text, UTF-8 included, is
+    unchanged. The repository is named the same way in `gh-response-
+    unreadable` and `gh-tree-truncated` (#968), which end in that line too.
+
+    THE TWO STREAMS ARE DECODED APART (#968), by `_child_text`, because they
+    are read for two purposes. Read together in text mode, both strictly, a
+    byte of gh's stderr that is not UTF-8 ended the validator in a
+    `UnicodeDecodeError` traceback, exit 1, where a skip belongs. gh's
+    stderr is words for a person, so a byte that is not UTF-8 is replaced
+    (U+FFFD), as `git_out` reads git's. The JSON on stdout stays strict, and
+    a byte that is not UTF-8 there is `gh-response-unreadable`, a refusal.
+    So is JSON that is not the listing's object, where `.get` on a list or
+    a missing column ended the run in a traceback too.
     """
     try:
         proc = subprocess.run(
             ["gh", "api", GH_TREE_API.format(repo=repository, commit=commit)],
-            # UTF-8 and STRICT, not `errors="replace"`: this JSON becomes a
-            # digest, and a replaced byte would be a wrong digest with a
-            # confident tone (#217).
-            capture_output=True, text=True, encoding="utf-8", check=False)
+            capture_output=True, check=False)
     except FileNotFoundError as exc:
         raise Refusal("gh-not-found",
                       f"the `gh` CLI is not on PATH: {exc}") from exc
+    named = shown_path(repository)
     if proc.returncode != 0:
         raise Refusal(
             "gh-unreadable",
-            f"`gh api` could not read {repository} @ {commit}: "
-            f"{proc.stderr.strip()}",
+            f"`gh api` could not read {named} @ {commit}: "
+            f"{spelled(_child_text(proc.stderr, 'replace').strip())}",
         )
     try:
-        payload = json.loads(proc.stdout)
-    except json.JSONDecodeError as exc:
+        # UTF-8 and STRICT, not `errors="replace"`: this JSON becomes a
+        # digest, and a replaced byte would be a wrong digest with a
+        # confident tone (#217).
+        payload = json.loads(_child_text(proc.stdout, "strict"))
+    except (UnicodeDecodeError, json.JSONDecodeError) as exc:
         raise Refusal("gh-response-unreadable",
-                      f"{repository} @ {commit}: {exc}") from exc
-    if payload.get("truncated"):
+                      f"{named} @ {commit}: {exc}") from exc
+    try:
+        if payload.get("truncated"):
+            raise Refusal(
+                "gh-tree-truncated",
+                f"the forge truncated its tree listing for {named} @ "
+                f"{commit}, so the digest would be computed over a PARTIAL "
+                "tree",
+            )
+        records = sorted(
+            f"{row['mode']} {row['type']} {row['sha']}\t{row['path']}"
+            .encode()
+            for row in payload.get("tree") or [] if row.get("type") != "tree")
+    except (AttributeError, KeyError, TypeError, UnicodeEncodeError) as exc:
+        # JSON that is not the listing's object (a list, a row that is no
+        # mapping or lacks a column, a column holding a lone surrogate) is
+        # what gh said, and no traceback (#968).
         raise Refusal(
-            "gh-tree-truncated",
-            f"the forge truncated its tree listing for {repository} @ "
-            f"{commit}, so the digest would be computed over a PARTIAL tree",
-        )
-    records = sorted(
-        f"{row['mode']} {row['type']} {row['sha']}\t{row['path']}".encode()
-        for row in payload.get("tree") or [] if row.get("type") != "tree")
+            "gh-response-unreadable",
+            f"{named} @ {commit}: the answer is not a tree listing "
+            f"({type(exc).__name__}: {exc})") from exc
     digest = hashlib.sha256()
     for record in records:
         digest.update(record)
@@ -3296,11 +3341,22 @@ def link_pins_from_trees(links, root: Path | None = None,
 
 
 def find_repo_root(start: Path) -> Path:
+    """The nearest directory at or above `start` that holds a `.git`, or
+    `not-a-git-repo` naming `start`.
+
+    `start` IS NAMED AS `shown_path` NAMES A PATH (#919): as it is, unless a
+    character in it is not printable, and then as Python's `repr` spells
+    it. It is a `--root` as a person typed it, and printed raw, an ESC in it
+    reached the terminal as the control it is from every tool that asks
+    this, and a line break began a line of its choosing. A printable path
+    is named byte for byte as it always was.
+    """
     path = Path(start).resolve()
     for candidate in [path, *path.parents]:
         if (candidate / ".git").exists():
             return candidate
-    raise Refusal("not-a-git-repo", f"no .git found at or above {start}")
+    raise Refusal("not-a-git-repo",
+                  f"no .git found at or above {shown_path(start)}")
 
 
 def die(exc: Refusal, stream=sys.stderr) -> int:
