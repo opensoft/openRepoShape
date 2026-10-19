@@ -8648,7 +8648,7 @@ def _entry_findings(plan: Plan, source: Source,
     linked = _root_symlink_findings(plan, source, tree, probe)
     asked, unasked_notes = (
         unasked.said() if unasked is not None
-        else _asked_in_throwaways(plan, source, tree, probe))
+        else _asked_in_throwaways(plan, source, tree, probe, refused))
     return (findings + misread + split + linked + asked
             + unwritable_findings + value_findings + names
             + tracking_findings + moved + field_findings,
@@ -10259,18 +10259,22 @@ def _path_git_refuses_findings(paths: list[str]
 
 
 def _asked_in_throwaways(plan: Plan, source: Source, tree: list,
-                         probe: _SymlinkProbe
+                         probe: _SymlinkProbe, refused: list[str]
                          ) -> tuple[list[str], list[str]]:
     """`(findings, notes)` of `check`'s questions to git in throwaway
-    repositories, in `_entry_findings`' order (#530, #654). Where one cannot
-    be asked, those before it, and what `_Unasked.said` says of it; none
-    after it, asked in the same work directory, is asked (#910)."""
+    repositories, in `_entry_findings`' order (#530, #654); `refused` is
+    `_paths_git_refuses`' answer. Where one cannot be asked, those before
+    it, and what `_Unasked.said` says of it; none after it, asked in the
+    same work directory, is asked (#910)."""
     found: list[str] = []
-    for question in (_nested_attributes_findings,
-                     _reencoded_attributes_findings,
-                     _reencoded_files_findings):
+    for question in (
+            lambda: _nested_attributes_findings(plan, source, tree, probe),
+            lambda: _reencoded_attributes_findings(plan, source, tree,
+                                                   probe),
+            lambda: _reencoded_files_findings(plan, source, tree, probe,
+                                              refused)):
         try:
-            found += question(plan, source, tree, probe)
+            found += question()
         except _Unasked as exc:
             more, notes = exc.said()
             return [*found, *more], notes
@@ -11102,9 +11106,11 @@ class _SplitRehearsal:
         git will not hold in an index, in the tree's order (#910):
         `update-index --index-info` leaves out each path it refuses, saying
         `Ignoring path`, and takes the rest, and git's own listing of the
-        index is read back."""
-        self.hold(PATHS_HELD, [(path, mode, oid)
-                               for path, mode, oid, _ in tree])
+        index is read back. Written here, not by `hold`: nothing is ever
+        checked out of this index."""
+        self.asked(["update-index", "-z", "--index-info"], PATHS_HELD,
+                   b"".join(f"{mode} {oid}\t".encode("ascii") + _nul(path)
+                            for path, mode, oid, _ in tree))
         held = set(self.listed(["ls-files", "-z"], PATHS_HELD))
         return [path for path, _, _, _ in tree if path not in held]
 
@@ -11357,7 +11363,8 @@ def _refused_finding(step: tuple[str, str, str], said: str) -> str:
 
 
 def _reencoded_files_findings(plan: Plan, source: Source, tree: list,
-                              probe: _SymlinkProbe | None = None
+                              probe: _SymlinkProbe | None = None,
+                              refused: list[str] | None = None
                               ) -> list[str]:
     """A FINDING for each group of files the plan keeps or moves, and of
     pinned copies, that this machine's git would store as other bytes than
@@ -11368,7 +11375,9 @@ def _reencoded_files_findings(plan: Plan, source: Source, tree: list,
     `probe` is `_entry_findings`' one probe, shared with
     `_root_symlink_findings`. A source commit holding a path git refuses is
     asked nothing more, and `_Unasked` is raised where git cannot be asked
-    (#910)."""
+    (#910). `refused` is `_paths_git_refuses`' answer, where `_entry_findings`
+    has it, so the rehearsal asks no path question of its own; given none,
+    it asks."""
     kept_rows = _kept_in_root(plan.entries, tree)
     kept = {path for path, _, _ in kept_rows}
     disk = _KeptTree(kept_rows, False)
@@ -11390,10 +11399,12 @@ def _reencoded_files_findings(plan: Plan, source: Source, tree: list,
     spec, code = _plan_leg_paths(plan)
     makefile = (None if leg_path_problems(spec, code)
                 else adopt_makefile_block(spec[1], code[1]))
+    # A path git refuses stops the split's clone before anything asked here,
+    # and `read-tree` at it: `plan-path-git-refuses` names it.
+    if refused:
+        return []
     with _SplitRehearsal(source) as asked:
-        # A path git refuses stops the split's clone before anything asked
-        # here, and `read-tree` at it: `plan-path-git-refuses` names it.
-        if asked.refused_paths(tree):
+        if refused is None and asked.refused_paths(tree):
             return []
         reached, at_the_root = _rules_reaching(
             asked, source, tree, kept, written,
