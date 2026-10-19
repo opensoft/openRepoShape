@@ -41,6 +41,12 @@ THE CONTROLS: a hand mount with nothing on disk, one with its checkout and
 its section, and a clone a section names, which a plain `git rm` moves into
 the holder's store first: each still prints the plain `git rm`, which works.
 
+WHAT CANNOT BE READ (#430, met on main after #956): what is on disk at a
+hand mount is asked as #956 asks it, so a `.git` whose `stat` is refused is
+`member-unreadable` by name, never a traceback or a false "no checkout".
+`tests/test_validate_family_unreadable.py` holds the rows for the path
+itself and the folder above it.
+
 Each row types every `git` line as printed, in the order printed, split as
 a POSIX shell splits it and run with no shell (not `family.py add`, which
 mounts a hand mount again only where the person wants it), deals by hand
@@ -58,6 +64,7 @@ from pathlib import Path
 import pytest
 
 from conftest import rmtree
+from test_bump_leg_unopenable import made_unopenable, needs_a_mode
 from test_family import SPARE, family, validate  # noqa: F401
 from test_family_add_refusals import holder, offline  # noqa: F401
 from test_family_bootstrap_gate_order import hand_mounted, type_line
@@ -429,3 +436,41 @@ def test_control_a_hand_mount_the_plain_git_rm_takes_keeps_it(
     commit_all(holder, env, "Typed in order")
     assert raw(holder, env, "status", "--porcelain").stdout == b""
     ends_well(holder, env, family, tmp_path)
+
+
+# --- what cannot be read (#430) --------------------------------------------
+
+#: A hand mount's checkout with its section, committed, whose plain `git rm`
+#: turns on its `.git` (`_hand_cached`), and the same staged by `git
+#: submodule add`, whose `--cached` line says what it leaves by its `.git`
+#: (`_cached_left`).
+UNSEARCHABLE = {
+    "a-checkout-and-its-section": committed_with_its_checkout,
+    "submodule-add-not-committed": added_not_committed,
+}
+
+
+@needs_a_mode
+@pytest.mark.parametrize("make", UNSEARCHABLE.values(), ids=UNSEARCHABLE)
+def test_a_hand_mount_s_git_this_user_cannot_reach_is_refused_by_name(
+        family, holder, offline, tmp_path, make):
+    """WHAT IS ON DISK IS ASKED AS #430 ASKS IT (#956): the checkout at mode
+    444, which this user can list but not search, so the `stat` of its
+    `.git` is refused. `os.path.lexists` read no `.git` there, a false "no
+    checkout" and a `git rm --cached` the plain line did not need, and
+    `Path.is_dir()` ended the run in a traceback on 3.12. Now each mode is
+    refused by name, exit 2, with the `chmod` cure, and with the mode back
+    the gate says what it said before."""
+    env = cloning(offline, tmp_path, family)
+    path = make(holder, env, family)
+    before = found_alike(holder, *MODES)
+    with made_unopenable(holder, path, mode=0o444):
+        refused = [validate(holder, *extra) for extra in MODES]
+    for result in refused:
+        assert result.returncode == 2, result.stderr
+        assert result.stderr.splitlines()[0] == (
+            f"REFUSED member-unreadable: {path}/.git: cannot be read "
+            "(Permission denied)"), result.stderr
+        assert "Traceback" not in result.stderr
+        assert "chmod u+rx" in result.stderr
+    assert found_alike(holder, *MODES) == before

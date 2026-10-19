@@ -2857,13 +2857,27 @@ def _hand_cached(root: Path, path: str, commit: str) -> str | None:
     `_forced` says, and what it leaves is said with what to do with it
     (`_cached_left`); the `.gitmodules` section it leaves, where one gives
     the path, `gitmodules-path-unnamed` takes out by key
-    (`_check_gitmodules_named`)."""
+    (`_check_gitmodules_named`).
+
+    WHAT IS ON DISK IS ASKED AS #430 ASKS IT (`_anything_at`, `_asked`): a
+    `stat` the operating system refuses is `member-unreadable` by name,
+    never nothing there and never a traceback. The path itself is asked
+    first, so a folder this user cannot search above it is refused at the
+    path, as `_staged_over` refuses it, and nothing there is the plain
+    line. Where HEAD records the gitlink at the index's own commit too,
+    the disk is asked: whether a plain `git rm` takes it turns on what is
+    there, a clone no section names or what is no checkout, and under a
+    folder this user cannot search it exits 128 (`failed to stat`, `could
+    not remove`), so the line it printed there was no line that works."""
+    if not _anything_at(root / path, path):
+        return None
     git = root / path / ".git"
-    if git.is_dir() and path not in _given_as_git_reads(root):
+    if (path not in _given_as_git_reads(root)
+            and _asked(git, stat.S_ISDIR, MEMBER_UNREADABLE, f"{path}/.git")):
         return "clone"
     if _staged_over(root, path, commit):
         return "staged"
-    if _on_disk(root, path) and not os.path.lexists(git):
+    if _on_disk(root, path) and not _anything_at(git, f"{path}/.git"):
         return "no checkout"
     return None
 
@@ -2882,16 +2896,19 @@ def _cached_left(root: Path, path: str) -> str:
     whole, as `member-gitlink-removal-staged` says of one (`_moved_said`);
     a checkout whose `.git` file names a store keeps its commits there, so
     only what is not committed is lost with it; anything else is moved or
-    deleted, and an empty directory deleted."""
+    deleted, and an empty directory deleted. Its `.git` is asked as #430
+    asks it (`_asked`, `_anything_at`): one whose `stat` is refused is
+    `member-unreadable` by name, never no checkout."""
     git = root / path / ".git"
+    named = f"{path}/.git"
     then = ADD_REFUSES.format(path=path)
-    if git.is_dir():
+    if _asked(git, stat.S_ISDIR, MEMBER_UNREADABLE, named):
         return (f" The clone at {path}, whose .git is a directory, stays "
                 "there, untracked: it holds its commits there and nowhere "
                 f"else, and {_unpushed([path])} lists the ones not pushed, "
                 "so move it out of the holder whole, by hand, rather than "
                 f"delete it, {then}")
-    if os.path.lexists(git):
+    if _anything_at(git, named):
         return (f" The checkout at {path} stays there, untracked: its .git "
                 "file names the store that keeps its commits whatever "
                 "becomes of the checkout, so only what is not committed is "
