@@ -395,9 +395,11 @@ def test_the_follow_up_for_a_linked_attributes_file_lists_the_lines_it_needs(
     assert said.startswith(f"{ATTRIBUTES} is a symlink, so the split "
                            "appended nothing to it"), said
     assert (f"Git follows no {ATTRIBUTES} that is a symlink: a checkout "
-            "reads only the link's own text, the path it leads to, and a "
-            "path names no attribute, so no line-ending rule reaches the "
-            "pinned copies outside it") in said
+            "reads only the link's own text, the path it leads to, as one "
+            "line of rules, which names an attribute only where that text "
+            "holds a space, a tab or a carriage return, so, for a link to a "
+            "path, no line-ending rule reaches the pinned copies outside "
+            "it") in said
     assert f"replace the link with a regular {ATTRIBUTES}" in said
     assert ", ".join(f"`{line}`" for line in needed) in said
     assert needed[0] == EOL_BLOCK_HEAD

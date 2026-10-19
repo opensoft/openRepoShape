@@ -175,7 +175,8 @@ def _recorded_chain(naming: dict) -> tuple:
     return tuple(recorded)
 
 
-def _chain_and_links(naming, root: Path | None) -> tuple[tuple, dict]:
+def _chain_and_links(naming, root: Path | None,
+                     run_products=()) -> tuple[tuple, dict]:
     """The chain a leg RECORDS, and what its READABLE links declare.
 
     Read ONCE and handed to both the leg's own classification and the check of
@@ -190,16 +191,93 @@ def _chain_and_links(naming, root: Path | None) -> tuple[tuple, dict]:
     THE WARNING OFFERS WHAT THIS READS (#661): `_link_remedies`,
     handed over only where `link_pins_from_trees` takes `remedies=`
     (`_library_takes_remedies`).
+
+    AND SAYS WHAT A SOURCE THAT IS THERE IS (#909). The lookup is asked what
+    it tried (`tried=`) and why a tree it reached could not be read
+    (`with_reasons=`), as the naming gate asks, behind the same guard: every
+    library that takes `remedies=` takes both. Without them, a checkout of
+    openXdox beside this root holding no `project.yaml`, or a
+    `SHAPE_PIN_SOURCE_OPENXDOX` naming no folder, was offered as what would
+    let the tree be read while it was there, in the words said when nothing
+    was, and a manifest beside the root that is not a declaration was "not
+    reachable here". The offer is made once the lookup has said what it
+    tried, so it is filled in on the answer's `remedies`.
+
+    `run_products` is every product this run reads (`_run_products`). A
+    variable two of them share answers for none of them, wherever they are,
+    where the library takes `run_products=` (#909), and it is offered to
+    none of them.
     """
     chain = _recorded_chain(naming) if isinstance(naming, dict) else ()
     if not chain:
         return chain, {}
-    offered = ({"remedies": _link_remedies(chain)}
-               if _library_takes_remedies() else {})
-    return chain, link_pins_from_trees(chain, root, **offered)
+    if not _library_takes_remedies():
+        return chain, link_pins_from_trees(chain, root)
+    tried: dict = {}
+    run = ({"run_products": run_products}
+           if _library_takes("run_products") else {})
+    found = link_pins_from_trees(chain, root, tried=tried, with_reasons=True,
+                                 **run)
+    found.remedies.update(_link_remedies(chain, tried, run_products))
+    return chain, found
 
 
-def _link_remedies(chain) -> dict[str, str]:
+def _run_products(pins, legs) -> list[str]:
+    """Every product this run reads (#909): the declared pins, and every
+    link of every chain a leg records, read as `_leg_findings` reads it
+    (`_recorded_chain`). That counts the chain of a leg whose `repository:`
+    is bad or missing, which the naming gate's `_project_chain_links`
+    leaves out; such a leg is a finding in both gates, so the run fails
+    either way."""
+    products = sorted(pins)
+    for leg in legs:
+        naming = leg.get("naming") if isinstance(leg, dict) else None
+        if isinstance(naming, dict):
+            products.extend(str(link) for link in _recorded_chain(naming))
+    return products
+
+
+#: Why the lookup passed over a source with nothing at its path:
+#: `repo_shape.LINK_SOURCE_ABSENT`, word for word. Every tagged library has
+#: it (cac6bb20, before v1.0.0), and the naming gate imports it; this copy
+#: keeps this file's import block clear of #958, which edits it.
+#: `tests/test_chain_pin_sources.py` holds the two equal.
+SOURCE_ABSENT = "no such file or directory"
+
+
+def _shown(path) -> str:
+    """A path as it is, or as Python's `repr` spells it where a character in
+    it is not printable: `repo_shape.shown_path`, which a root's library
+    may predate (#610), as `validate-pins.py` and the naming gate spell it
+    for themselves."""
+    text = str(path)
+    return text if text.isprintable() else repr(text)
+
+
+def _sources_there(link: str, asked) -> tuple[list[str], set[str]]:
+    """The sources the lookup found THERE for `link` and could not read,
+    each said with why, and which of the two rules they were: `env` and
+    `sibling` (#909). `asked` is the lookup's `(rule, how, path, why)` rows
+    for the link (`link_pins_from_trees(..., tried=)`).
+
+    A variable that is set is there, whatever it names. A checkout beside
+    this root is there unless nothing is at its path (`SOURCE_ABSENT`). A
+    source that answered is not said: its tree was read, or was reached and
+    is said as the library says it. A path is spelled (`_shown`), so an ESC
+    in a variable's value is not printed raw."""
+    said: list[str] = []
+    there: set[str] = set()
+    for rule, _how, path, why in asked:
+        if why is None or (rule == "sibling" and why == SOURCE_ABSENT):
+            continue
+        source = (pin_source_env_name(link) if rule == "env"
+                  else f"the {link} beside this root")
+        said.append(f"{source}, {_shown(path)}, could not answer: {why}")
+        there.add(rule)
+    return said, there
+
+
+def _link_remedies(chain, tried=None, run_products=()) -> dict[str, str]:
     """What would let each chain link's own tree be read, in THIS
     validator's sources: `{pin_product_key(link): the words}`, for the
     `declared-unverified` WARNING about a tree that is not reachable
@@ -218,19 +296,45 @@ def _link_remedies(chain) -> dict[str, str]:
     Keyed by `pin_product_key`, the key `_chain_link_findings` looks a
     holder's entry up by (#444), and the links are read as that function
     reads them: by `repo_basename`, a blank entry dropped.
+
+    WHAT IS THERE IS SAID, AND NOT OFFERED (#909). Given `tried`, the
+    lookup's own record, a variable that is set and a checkout beside this
+    root that is there are each named with why they could not answer
+    (`_sources_there`), and only a source that is not there is offered:
+    "SHAPE_PIN_SOURCE_OPENXDOX, /x/openXdox, could not answer: no such file
+    or directory; a checkout of openXdox beside this root would let it be
+    read". A variable another product of the RUN shares (`run_products`) is
+    not read, and is not offered either.
     """
     links = [repo_basename(str(link)) for link in chain if str(link).strip()]
-    shared = pin_source_env_shared(links)
+    shared = pin_source_env_shared(
+        [*links, *(repo_basename(str(link)) for link in run_products)])
     remedies: dict[str, str] = {}
     for link in links[:-1]:
-        beside = f"a checkout of {link} beside this root"
-        if pin_product_key(link) in shared:
-            words = f"{beside} would let it be read"
-        else:
-            words = (f"{pin_source_env_name(link)}, or {beside}, would let "
-                     "it be read")
-        remedies[pin_product_key(link)] = words
+        said, there = _sources_there(link, (tried or {}).get(link, ()))
+        offers = []
+        if pin_product_key(link) not in shared and "env" not in there:
+            offers.append(pin_source_env_name(link))
+        if "sibling" not in there:
+            offers.append(f"a checkout of {link} beside this root")
+        if len(offers) == 2:
+            said.append(f"{offers[0]}, or {offers[1]}, would let it be read")
+        elif offers:
+            said.append(f"{offers[0]} would let it be read")
+        remedies[pin_product_key(link)] = "; ".join(said)
     return remedies
+
+
+def _library_takes(keyword: str) -> bool:
+    """Does this root's `link_pins_from_trees` take `keyword`? The skew rule
+    `_library_takes_remedies` states, for any keyword: `run_products=` is new
+    with #909, and a library older than that ends a call passing it in a
+    `TypeError`."""
+    try:
+        return keyword in inspect.signature(
+            link_pins_from_trees).parameters
+    except (TypeError, ValueError):
+        return False
 
 
 def _library_takes_remedies() -> bool:
@@ -241,13 +345,9 @@ def _library_takes_remedies() -> bool:
     update, `update-shape.py apply --accept-local`). Before #610 the library
     had no `remedies=`, and passing it ended this validator in a `TypeError`
     before it checked a leg. So it is passed only where the function's own
-    signature names it, and an older library's warning keeps that library's
-    words."""
-    try:
-        return "remedies" in inspect.signature(
-            link_pins_from_trees).parameters
-    except (TypeError, ValueError):
-        return False
+    signature names it (`_library_takes`), and an older library's warning
+    keeps that library's words."""
+    return _library_takes("remedies")
 
 
 def _naming_chain_field_finding(leg_role, naming: dict) -> list[str]:
@@ -830,7 +930,8 @@ def _leg_path_findings(role, path, paths: dict[str, str]) -> list[str]:
 
 
 def _leg_findings(leg, policy: NamingPolicy, pins: set[str], root,
-                  owners: set[str], paths: dict[str, str]) -> list[str]:
+                  owners: set[str], paths: dict[str, str],
+                  run_products=()) -> list[str]:
     """One `legs:` entry, start to finish: its repository name against the
     naming policy, its optional `naming:` record, and its path.
 
@@ -838,7 +939,8 @@ def _leg_findings(leg, policy: NamingPolicy, pins: set[str], root,
     call per entry. Mutates `owners` and `paths` exactly as the original
     loop body did, so the path-collision check and the owners-span check
     after the loop see the same accumulated state; every `continue` in the
-    original loop is a `return` here.
+    original loop is a `return` here. `run_products` is every product the
+    run reads (`_run_products`, #909).
     """
     if not isinstance(leg, dict):
         return [_finding("manifest-leg", f"a leg is not a mapping: {leg!r}")]
@@ -858,7 +960,7 @@ def _leg_findings(leg, policy: NamingPolicy, pins: set[str], root,
     # declaring `assembly` over `<Project>-spec` still lands in
     # naming-role-mismatch below.
     naming = leg.get("naming")
-    chain, link_pins = _chain_and_links(naming, root)
+    chain, link_pins = _chain_and_links(naming, root, run_products)
     found = policy.classify(name, str(role) if role else None, pins,
                             chain, link_pins)
     out = list(_leg_role_classification_finding(role, name, found))
@@ -1066,8 +1168,10 @@ def _findings(manifest: dict, policy: NamingPolicy, root=None) -> list[str]:
 
     owners: set[str] = set()
     paths: dict[str, str] = {}
+    run_products = _run_products(pins, legs)
     for leg in legs:
-        out.extend(_leg_findings(leg, policy, pins, root, owners, paths))
+        out.extend(_leg_findings(leg, policy, pins, root, owners, paths,
+                                 run_products))
     out.extend(_owners_span_finding(owners))
     return out
 
