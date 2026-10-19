@@ -37,13 +37,16 @@ from __future__ import annotations
 
 import re
 import shutil
+import sys
 from pathlib import Path
 
 import pytest
 
 from conftest import ADOPT, git, make_source_repo, run_script, write_plan
+from test_adopt_plan_flag_refusals_first import Harness
 from test_adopt_project_is_the_source import (NAME_RULE, RENAME_FIRST, TREE,
-                                              findings, source_of)
+                                              findings, in_place_remedy,
+                                              source_of)
 
 #: `repo_shape.PROJECT_ID_RE`, as the refusals print it.
 PATTERN = "^[a-z0-9][a-z0-9-]*$"
@@ -68,8 +71,6 @@ QUOTE_IT = (
     'as typed (`"007"`, `"true"`), so that the plan\'s reader takes it as '
     "text, and run `check` again; or re-run `plan`, which writes every value "
     "so that it is read back as typed.")
-#: What `naming-unclassified` says first in place, before `RENAME_FIRST`.
-OWN_NAME_RULE = f"--project is the source's own name, which must be {NAME_RULE}."
 #: `checked_value`'s words for an empty value, as `--tracking-branch ''`
 #: has them.
 EMPTY_ORG = ("REFUSED unsafe-value: --org is '', which is not a value this "
@@ -344,7 +345,7 @@ def test_in_place_the_naming_refusal_says_the_rule_before_renaming(tmp_path):
     assert first_two(refused) == [
         "REFUSED naming-unclassified: 'North_Wind' matches no family in the "
         "naming policy",
-        f"Remediation: {OWN_NAME_RULE} testorg/North_Wind {RENAME_FIRST}"]
+        in_place_remedy("testorg/North_Wind", "naming-unclassified")]
 
 
 def test_not_the_source_says_the_rule_its_own_name_breaks(tmp_path):
@@ -376,7 +377,7 @@ NOT_IN_PLACE_RULE = f"Remediation: --project takes {NAME_RULE}."
     ("testorg/Atlas", "North_Wind", "north_wind", "naming-unclassified",
      NOT_IN_PLACE_RULE),
     ("testorg/North_Wind", "North_Wind", "north_wind", "naming-unclassified",
-     f"Remediation: {OWN_NAME_RULE} testorg/North_Wind {RENAME_FIRST}"),
+     in_place_remedy("testorg/North_Wind", "naming-unclassified")),
     (None, "Tools-Install", "tools_install", "naming-role-mismatch",
      "Remediation: --project takes one CamelCase token. Two forms beyond "
      "the bare one MAY be the assembly root"),
@@ -419,3 +420,27 @@ def test_a_passed_id_is_told_what_an_id_may_hold(tmp_path, passed):
         f"REFUSED adopt-bad-id: --id {passed!r} must match {PATTERN}",
         WHAT_AN_ID_HOLDS]
     assert not out.exists()
+
+
+@pytest.mark.skipif(sys.platform == "win32",
+                    reason="the `gh` stub is a `#!/bin/sh` script")
+def test_an_org_repo_sources_own_name_speaks_before_a_passed_id_uncloned(
+        tmp_path):
+    """L2-90 with an `org/repo` source, which `plan` clones: since #903 a
+    passed `--id` is refused with the flags, before the clone, and the
+    naming refusal after it. A passed id beside a name the policy refuses
+    is left to where the source is known, and that is before the clone for
+    an `org/repo` one: the name is refused, in place, and `gh` never runs."""
+    harness = Harness(tmp_path)
+
+    refused = harness.plan(
+        "testorg/North_Wind", "--id", "north_wind", work=True,
+        planned=("--project", "North_Wind", "--org", "testorg",
+                 "--elected-by", "Test Human", "--elected-on", "2026-09-02"))
+
+    assert first_two(refused) == [
+        "REFUSED naming-unclassified: 'North_Wind' matches no family in the "
+        "naming policy",
+        in_place_remedy("testorg/North_Wind", "naming-unclassified")]
+    assert harness.gh_calls() == []
+    assert not harness.work.exists()

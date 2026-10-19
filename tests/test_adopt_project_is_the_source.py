@@ -66,6 +66,30 @@ NAME_RULE = "one CamelCase token with no hyphen, underscore, dot or space"
 #: before the repository and `RENAME_FIRST` (#658).
 DERIVED_OWN_NAME = ("the id is --project lowercased, and --project is the "
                     f"source's own name, which must be {NAME_RULE}.")
+#: What a naming refusal of the source's own name says before the repository
+#: and `RENAME_FIRST`, in place, by its code (#902, L2-89 on #457): the rule
+#: the new name must follow, the one the same refusal gives `--project` for
+#: a name that is not the source's.
+OWN_NAME_SAID = {
+    "naming-unclassified": ("--project is the source's own name, which must "
+                            f"be {NAME_RULE}."),
+    "naming-role-mismatch": (
+        "--project is the source's own name, which must be one CamelCase "
+        "token. Two forms beyond the bare one MAY be the assembly root: a "
+        "declared descendant (declare the pin with `--pin open<Product>@<40 "
+        "hex commit>` and it classifies as one, 2026-09-02), and an "
+        "`open<Product>` neutral product, which may elect the shape and be "
+        "its own root (2026-09-05). Neither may be the spec or code leg, and "
+        "an `<X>-Install` may be no leg at all."),
+}
+
+
+def in_place_remedy(repository: str, code: str) -> str:
+    """The remediation of naming refusal `code` of `repository`'s own name,
+    adopted in place: the rule, then renaming first."""
+    return f"Remediation: {OWN_NAME_SAID[code]} {repository} {RENAME_FIRST}"
+
+
 #: A source small enough that `plan` asks no question.
 TREE = {"README.md": "# here\n", "src/app.py": "print(1)\n",
         "specs/001/spec.md": "# Spec\n"}
@@ -170,8 +194,8 @@ def test_plan_refuses_a_name_that_is_not_the_sources(tmp_path, repository,
     else:
         assert remediation.endswith(
             "The source's own name is no remedy either: 'billing-service' "
-            "matches no family in the naming policy. acme/billing-service "
-            f"{RENAME_FIRST}"), remediation
+            f"matches no family in the naming policy. The name must be "
+            f"{NAME_RULE}. acme/billing-service {RENAME_FIRST}"), remediation
     assert RETYPE not in refused.stderr
     assert not (tmp_path / PLAN).exists()
 
@@ -193,7 +217,7 @@ def test_the_sources_own_name_the_policy_refuses_is_renamed_first(
     assert refused.returncode == 2, refused.stdout + refused.stderr
     detail, remediation = refused.stderr.splitlines()[:2]
     assert detail.startswith(f"REFUSED {code}: "), refused.stderr
-    assert remediation == f"Remediation: {repository} {RENAME_FIRST}"
+    assert remediation == in_place_remedy(repository, code)
     assert RETYPE not in refused.stderr
     assert not (tmp_path / PLAN).exists()
 
@@ -452,8 +476,8 @@ def test_a_plan_older_than_its_sources_origin_is_caught_by_check_and_execute(
         "in-place adoption keeps the source's own name, and `execute` acts "
         "on the repository `org:` and `legs.assembly:` name"]
     rename = (" The source's own name is no remedy either: 'billing-service' "
-              f"matches no family in the naming policy. acme/billing-service "
-              f"{RENAME_FIRST}")
+              f"matches no family in the naming policy. The name must be "
+              f"{NAME_RULE}. acme/billing-service {RENAME_FIRST}")
     assert f"Remediation:{rename}\n" in checked.stderr, checked.stderr
     assert refusal.code == PLAN_NOT_THE_SOURCE
     assert refusal.remediation == (
@@ -484,8 +508,8 @@ def test_execute_says_rename_first_of_the_sources_own_name(adopter, tmp_path,
                                         tmp_path / PLAN, tmp_path / "work")
 
     assert refusal.code == "naming-unclassified"
-    assert refusal.remediation == \
-        f"Remediation: acme/billing-service {RENAME_FIRST}"
+    assert refusal.remediation == in_place_remedy("acme/billing-service",
+                                                  "naming-unclassified")
 
 
 def test_a_source_with_no_origin_executes_past_the_comparison(
