@@ -24,6 +24,21 @@ that git cannot read (#542), which run against a fake `gh` on `PATH`, with
 server that refuses it. The ruleset is the `pre-receive` hook
 `test_ruleset_hint_tracking_branch.py` builds, and an empty `RULESET_REFUSES`
 is the operator holding the bypass right.
+
+EVERY GIT COMMAND THAT REACHES A REMOTE runs under one prompt rule (#915):
+`only_commit`'s two, `_take_held_seed`'s fetch and each push, a first run's
+and a re-run's, the pushes asked in a terminal against a local server that
+asks for a login. A push git has no login for is refused naming how to give
+it one, then the re-run. And a leg git reaches over ssh, through an
+operator's `insteadOf` rewrite, is refused with ssh's reason and a remedy for
+an ssh key, in the locale git runs in and in one that translates git; the ssh
+is a stand-in that refuses every key, so nothing leaves this machine.
+
+A PUSH THE HOST REFUSED A LOGIN FOR names the fix as well (#993): a login a
+credential helper holds that the local server refuses, a first run's and a
+re-run's, in a terminal, and a key the stand-in ssh refuses where an
+`insteadOf` or a `pushInsteadOf` rule sends the push over ssh, each in git's
+own locale and in one that translates git.
 """
 
 from __future__ import annotations
@@ -33,7 +48,9 @@ import importlib.util
 import json
 import os
 import re
+import shutil
 import stat
+import struct
 import subprocess
 import sys
 import textwrap
@@ -43,7 +60,8 @@ from pathlib import Path
 import pytest
 
 from conftest import (ORG, PROJECT, PTY_SKIP, SCAFFOLD, WINDOWS_SKIP,
-                      appended_to_command_scope, git, rmtree,
+                      appended_to_command_scope, git,
+                      load_without_bytecode, rmtree,
                       run_in_a_terminal, run_script)
 from test_ruleset_hint_tracking_branch import refusing, template  # noqa: F401
 
@@ -142,6 +160,8 @@ def test_the_flag_without_the_operator_is_refused_again_and_changes_nothing(
     assert again.returncode == 2
     assert "REFUSED pushing the spec leg" in again.stderr
     assert "ONE exit finishes this scaffold" in again.stderr
+    assert "could not get a login" not in again.stderr, (
+        "a push a ruleset refused is not one git had no login for (#915)")
     assert [commits(tmp_path, role) for role in REPOS] == [0, 0, 0]
 
 
@@ -581,14 +601,18 @@ def test_the_free_plan_hint_goes_by_the_root_as_it_stands(
 def test_the_two_git_commands_that_read_a_leg_ask_no_terminal(
         tmp_path, monkeypatch):
     """`only_commit`'s `git ls-remote` and `git fetch`, the two commands
-    that reach the leg, run under `PROBE_ENV`, `GIT_TERMINAL_PROMPT=0`
-    (#542). Asked in-process of a leg on disk, so it runs on every platform,
-    Windows included, where the terminal test below cannot."""
+    that reach the leg, run under `PROBE_ENV`: `GIT_TERMINAL_PROMPT=0`
+    (#542), the prompt rule `REMOTE_ENV` every command that reaches a remote
+    runs under, and `LC_ALL=C`, so `_unread_because` reads git's words
+    untranslated (#915). Asked in-process of a leg on disk, so it runs on
+    every platform, Windows included, where the terminal test below
+    cannot."""
     spec = importlib.util.spec_from_file_location("scaffold_for_probe_env",
                                                   SCAFFOLD)
     module = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(module)
-    assert module.PROBE_ENV == {"GIT_TERMINAL_PROMPT": "0"}
+    assert module.REMOTE_ENV == {"GIT_TERMINAL_PROMPT": "0"}
+    assert module.PROBE_ENV == {"GIT_TERMINAL_PROMPT": "0", "LC_ALL": "C"}
     asked = []
     real = module.run
 
@@ -606,17 +630,68 @@ def test_the_two_git_commands_that_read_a_leg_ask_no_terminal(
         "ls-remote": module.PROBE_ENV, "fetch": module.PROBE_ENV}, asked
 
 
-def git_reads_github_from(base: str) -> dict:
+#: The verbs of the git commands this scaffold sends to a remote.
+REACHES_A_REMOTE = ("ls-remote", "fetch", "push")
+
+
+def test_every_git_command_that_reaches_a_remote_runs_under_the_rule(
+        tmp_path, monkeypatch, capsys, template):
+    """#915. `PROBE_ENV` covered `only_commit`'s two commands alone, and a
+    reuse re-run's other three ran with git's terminal prompt on:
+    `_take_held_seed`'s fetch, each leg's push and the root's. A re-run over
+    legs that hold the seed, in-process, records each git command that
+    reaches a remote, in order, with the environment it was given: the
+    probe's two for each leg under `PROBE_ENV`, then each leg's fetch and
+    push, and the root's push, the fetches under `REMOTE_ENV` and the pushes
+    under `PUSH_ENV`, which also keeps git's words untranslated for
+    `_refused_push` to read (#993). Asked of bare repositories on disk, so it
+    runs on every platform."""
+    seeds = refused_at_the_root(tmp_path, template)
+    module = load_without_bytecode(SCAFFOLD, "scaffold_for_remote_env")
+    assert module.PUSH_ENV == {"GIT_TERMINAL_PROMPT": "0", "LC_ALL": "C"}
+    asked = []
+    real = module.run
+
+    def recording(args, cwd=None, capture=True, env=None):
+        if args[1] in REACHES_A_REMOTE:
+            asked.append((" ".join(args[1:2] + [arg for arg in args
+                                                 if arg == "--depth=1"]),
+                          env))
+        return real(args, cwd=cwd, capture=capture, env=env)
+
+    monkeypatch.setattr(module, "run", recording)
+    code = module.main(["--org", ORG, "--project", PROJECT,
+                        "--elected-by", "Test Human",
+                        "--elected-on", "2026-09-02",
+                        "--local-remote-dir", str(tmp_path / "remotes"),
+                        "--work-dir", str(tmp_path / "work"),
+                        "--reuse-empty-repo"])
+    out, err = capsys.readouterr()
+    assert code == 0, err + out
+    assert {leg: tip(tmp_path, leg) for leg in LEGS} == seeds
+    assert commits(tmp_path, "assembly") == 1
+    probe, rule, push = module.PROBE_ENV, module.REMOTE_ENV, module.PUSH_ENV
+    assert asked == [("ls-remote", probe), ("fetch --depth=1", probe),
+                     ("ls-remote", probe), ("fetch --depth=1", probe),
+                     ("fetch", rule), ("push", push),
+                     ("fetch", rule), ("push", push),
+                     ("push", push)], asked
+
+
+def git_reads_github_from(base: str, helper: str = "") -> dict:
     """What makes git read `https://github.com/<ORG>/` at `base` instead,
-    with no credential helper and no askpass program, so git answers a leg
-    as it would with no login of its own. The prefix is longer than an
-    operator's own `https://github.com/` rewrite, so it wins over one. The two
-    entries are appended, when this is called, to the command scope the
-    environment holds."""
+    with no askpass program and no credential helper but `helper`, so git
+    answers a leg as it would with no login of its own. The prefix is longer
+    than an operator's own `https://github.com/` rewrite, so it wins over
+    one. An empty `credential.helper` empties the list a config before it
+    made, and `helper` is the one after it. The entries are appended, when
+    this is called, to the command scope the environment holds."""
     return {**appended_to_command_scope(
                 os.environ, [(f"url.{base}.insteadOf",
                               f"https://github.com/{ORG}/"),
-                             ("credential.helper", "")]),
+                             ("credential.helper", ""),
+                             *([("credential.helper", helper)] if helper
+                               else [])]),
             "GIT_ASKPASS": ""}
 
 
@@ -627,12 +702,24 @@ UNREAD = (f"REFUSED scaffold-remote-exists: {SPEC_REPO} already exists on "
           "GitHub and has commits\nRemediation: git could not read it "
           f"(`git ls-remote https://github.com/{SPEC_REPO}.git` exited 128: "
           "fatal: ")
+#: The ssh key's clause, as each remedy for git's access names it (#915):
+#: `ssh -T` against the user, host and port the rule names, with what
+#: `GIT_SSH_COMMAND` or `core.sshCommand` adds, which `ssh -T git@github.com`
+#: was not for a `Host` alias, `ssh.github.com` on port 443 or a key given by
+#: `-i` (RV971), and which `ssh -T -p 443 ssh.github.com` without the user
+#: `git` was not either: GitHub refuses it whatever the key (RV971, round 2).
+SSH_KEY_CHECK = ("`ssh -T` against the user, host and port your rule names, "
+                 "with anything your `GIT_SSH_COMMAND` or `core.sshCommand` "
+                 "adds, says whether GitHub takes yours")
+SSH_KEY = ("where a `url.<base>.insteadOf` rule in your git config sends "
+           "`https://github.com/` over ssh, git logs in with an ssh key "
+           f"instead, and {SSH_KEY_CHECK}")
 UNREAD_EXIT = ("so whether its one commit is the seed this scaffold pushes "
                "cannot be asked. Let git read it (on GitHub, `gh auth "
-               "setup-git` gives git the login `gh` has), then re-run: with "
-               "--reuse-empty-repo a leg whose one commit is that seed is "
-               "reused, and a leg holding anything else is still refused. "
-               "There is no --force.")
+               f"setup-git` gives git the login `gh` has; {SSH_KEY}), then "
+               "re-run: with --reuse-empty-repo a leg whose one commit is "
+               "that seed is reused, and a leg holding anything else is "
+               "still refused. There is no --force.")
 
 
 @WINDOWS_SKIP
@@ -674,6 +761,46 @@ class _AsksForALogin(http.server.BaseHTTPRequestHandler):
         pass
 
 
+def in_a_terminal_asked_for_a_login(tmp_path, env: dict, *flags: str,
+                                    helper: str = "", stored: str = "",
+                                    said: str = "terminal prompts disabled",
+                                    timeout: float = 90) -> tuple:
+    """The scaffold in its GitHub mode with `flags`, a first run or, with
+    `--reuse-empty-repo` among them, a re-run, typed in a terminal, with
+    `env` (a `fake_gh`'s) and git reading `https://github.com/<ORG>/` from a
+    local server that answers every request 401, with `helper` as its one
+    credential helper or none, or, given `stored`, a `user:token` login, a
+    `store` helper holding that login for the server, which refuses it as a
+    host refuses a stale token (#993): `(exit status, the screen)`, the
+    screen holding `said`, git's words for the refusal. A run that waits at
+    git's prompt is killed after `timeout` seconds, which fails the test."""
+    server = http.server.ThreadingHTTPServer(("127.0.0.1", 0), _AsksForALogin)
+    threading.Thread(target=server.serve_forever, daemon=True).start()
+    try:
+        port = server.server_address[1]
+        if stored:
+            store = tmp_path / "stored-login"
+            store.write_text(f"http://{stored}@127.0.0.1:{port}\n",
+                             encoding="utf-8")
+            helper = f'store --file="{store}"'
+        status, screen, _typed = run_in_a_terminal(
+            [sys.executable, str(SCAFFOLD), "--org", ORG, "--project",
+             PROJECT, "--elected-by", "Test Human", *flags,
+             "--work-dir", str(tmp_path / "work")],
+            cwd=tmp_path, timeout=timeout,
+            env={**os.environ, **env, "LANES_LANE": "",
+                 **git_reads_github_from(f"http://127.0.0.1:{port}/{ORG}/",
+                                         helper)})
+    finally:
+        server.shutdown()
+        server.server_close()
+    # git's prompt starts a line; its refusal says `could not read Username
+    # for '...': terminal prompts disabled` inside a line of its own.
+    assert not re.search(r"(?m)^Username for ", screen), screen
+    assert said in screen, screen
+    return status, screen
+
+
 @WINDOWS_SKIP
 @PTY_SKIP
 def test_a_leg_git_would_ask_a_login_for_does_not_wait_on_the_terminal(
@@ -684,24 +811,486 @@ def test_a_leg_git_would_ask_a_login_for_does_not_wait_on_the_terminal(
     bfed143 this run waits there until the harness kills it. Now git's ask
     is a failure, and the run is refused as `scaffold-remote-exists`."""
     env, _log = fake_gh(tmp_path, SEEN_SPEC, full=[f"{PROJECT}-spec"])
-    server = http.server.ThreadingHTTPServer(("127.0.0.1", 0), _AsksForALogin)
-    threading.Thread(target=server.serve_forever, daemon=True).start()
-    try:
-        port = server.server_address[1]
-        status, screen, _typed = run_in_a_terminal(
-            [sys.executable, str(SCAFFOLD), "--org", ORG, "--project",
-             PROJECT, "--elected-by", "Test Human", "--no-push",
-             "--reuse-empty-repo", "--work-dir", str(tmp_path / "work")],
-            cwd=tmp_path, timeout=90,
-            env={**os.environ, **env, "LANES_LANE": "",
-                 **git_reads_github_from(f"http://127.0.0.1:{port}/{ORG}/")})
-    finally:
-        server.shutdown()
-        server.server_close()
-    # git's prompt starts a line; its refusal says `could not read Username
-    # for '...': terminal prompts disabled` inside the remedy's line.
-    assert not re.search(r"(?m)^Username for ", screen), screen
+    status, screen = in_a_terminal_asked_for_a_login(
+        tmp_path, env, "--reuse-empty-repo", "--no-push")
     assert status == 2, screen
     assert f"REFUSED scaffold-remote-exists: {SPEC_REPO} already exists" in (
         screen), screen
-    assert "terminal prompts disabled" in screen, screen
+
+
+@WINDOWS_SKIP
+@PTY_SKIP
+def test_a_reuse_re_run_over_empty_legs_does_not_wait_at_its_push(tmp_path):
+    """#915. A `--reuse-empty-repo` re-run whose three repositories are all
+    empty asks `only_commit` nothing, so its first push, the spec leg's, was
+    the first git command to reach GitHub, and it ran with git's terminal
+    prompt on: typed in a terminal with no login for the host, it stopped at
+    `Username for '...':`, and on main through 01a2b01 this run waits there
+    until the harness kills it. Now each push runs under `REMOTE_ENV`, and
+    git's ask is a refused push, printed as one with how to give git a login
+    and the re-run, this run's own command, before the ruleset hint."""
+    env, log = fake_gh(tmp_path, {PROJECT: "PRIVATE",
+                                  f"{PROJECT}-spec": "PRIVATE",
+                                  f"{PROJECT}-code": "PRIVATE"}, plan="team")
+    status, screen = in_a_terminal_asked_for_a_login(
+        tmp_path, env, "--reuse-empty-repo", timeout=120)
+    assert status == 2, screen
+    assert "REFUSED pushing the spec leg. THE EXACT COMMAND WAS:" in screen, (
+        screen)
+    assert_the_login_is_named(screen, SPEC_REPO, RE_RUN_AS_IT_WAS)
+    assert "repo create" not in log.read_text(encoding="utf-8"), (
+        "a reused repository is never created")
+
+
+# --- a push git has no login for (#915) -------------------------------------
+
+#: How `_refused_push` names the fix for a push git had no login for, up to
+#: the re-run, with the repository as `@REPO@`. A literal, so the test cannot
+#: agree with whatever the code's words become.
+NO_LOGIN_REMEDY = (
+    "Remediation: git could not get a login for @REPO@: every push this "
+    "scaffold makes runs with git's terminal prompt off, so where git would "
+    "have asked you for one the push is refused, and a credential helper "
+    "with nothing stored for the host answers nothing. Give git a login "
+    "first (on GitHub, `gh auth setup-git` gives git the login `gh` has, or "
+    "store a token for the host in your credential helper; "
+    f"{SSH_KEY}), then re-run ")
+#: The re-run it names after a first run: the same command, the flag added.
+RE_RUN_WITH_THE_FLAG = (
+    "the same command with --reuse-empty-repo added (after `--` through "
+    "setup.sh) and a new --work-dir or none: it reuses the repositories this "
+    "run left empty, and a leg whose one commit is the seed this scaffold "
+    "pushes.")
+#: And after a run that was that re-run: the same command again.
+RE_RUN_AS_IT_WAS = (
+    "the same command with a new --work-dir or none: it reuses the "
+    "repositories this run left empty, and a leg whose one commit is the "
+    "seed this scaffold pushes.")
+
+
+#: How it names the fix for a push whose login the host refused (#993): git
+#: had one, so "could not get" is not said of it.
+LOGIN_REFUSED_REMEDY = (
+    "Remediation: the host refused the login git sent for @REPO@: git had "
+    "one, from your credential helper for one, and it is wrong, expired or "
+    "revoked, so a re-run is refused too until git has one the host takes. "
+    "Replace it first (on GitHub, `gh auth setup-git` makes git use the login "
+    "`gh` has instead, or store a new token for the host in your credential "
+    f"helper; {SSH_KEY}), then re-run ")
+#: And for a push ssh was refused the key for (#993): `setup-git` is not
+#: named as a fix, since it changes nothing over ssh.
+KEY_REFUSED_REMEDY = (
+    "Remediation: GitHub took no ssh key of yours for the push to @REPO@: a "
+    "`url.<base>.insteadOf` or `url.<base>.pushInsteadOf` rule in your git "
+    "config sends it over ssh, where git logs in with an ssh key and not with "
+    "the login `gh` has, so `gh auth setup-git` changes nothing for it. Give "
+    f"GitHub a key it takes first ({SSH_KEY_CHECK}), then re-run ")
+
+
+def assert_the_login_is_named(printed: str, repo: str, re_run: str,
+                              fix: str = NO_LOGIN_REMEDY) -> None:
+    """`printed` says a push was refused, then `fix`, how to give git a login
+    for `repo`, then `re_run`, then the ruleset hint: the remedy once, read
+    with its lines joined, as a person reads a line the terminal wrapped."""
+    said = " ".join(printed.split())
+    remedy = fix.replace("@REPO@", repo) + re_run
+    assert said.count(remedy) == 1, printed
+    assert (said.index("REFUSED pushing ") < said.index(remedy)
+            < said.index("If the organisation applies a ruleset")), printed
+
+
+@WINDOWS_SKIP
+@PTY_SKIP
+@pytest.mark.parametrize("helper", ["", "store"],
+                         ids=["no-helper", "a-store-with-nothing-stored"])
+def test_a_first_scaffold_s_push_git_has_no_login_for_names_the_fix(
+        tmp_path, helper):
+    """#915, RV971's MUST-1. A first scaffold's pushes are the same call as
+    a re-run's, so the prompt is off for them too. Typed in a terminal
+    against a host that asks for a login, with no credential helper, or
+    with `store` over an empty file (a helper `setup-project.py` counts as
+    configured, with nothing to give), git asked at `Username for '...':`
+    before #915, took what was typed, and pushed (RV971's probe). Now the
+    spec leg's push is refused without waiting, the three repositories this
+    run created are left empty, and before the ruleset hint, whose re-run
+    alone is refused the same way, the run names how to give git a login
+    and then the re-run with --reuse-empty-repo. With the rule on a
+    re-run's pushes alone (RV971's M10), this run waits at git's prompt
+    until the harness kills it."""
+    env, log = fake_gh(tmp_path, {}, plan="team")
+    store = tmp_path / "git-credentials"
+    store.write_text("", encoding="utf-8")
+    status, screen = in_a_terminal_asked_for_a_login(
+        tmp_path, env, helper=f'store --file="{store}"' if helper else "",
+        timeout=120)
+    assert status == 2, screen
+    assert "REFUSED pushing the spec leg. THE EXACT COMMAND WAS:" in screen, (
+        screen)
+    assert_the_login_is_named(screen, SPEC_REPO, RE_RUN_WITH_THE_FLAG)
+    assert log.read_text(encoding="utf-8").count("repo create") == 3, (
+        "a first run creates all three")
+    assert store.read_text(encoding="utf-8") == "", "nothing was stored"
+
+
+#: What the GitHub side holds for a re-run: the three repositories, empty.
+ALL_THREE = {PROJECT: "PRIVATE", f"{PROJECT}-spec": "PRIVATE",
+             f"{PROJECT}-code": "PRIVATE"}
+
+
+@WINDOWS_SKIP
+@PTY_SKIP
+@pytest.mark.parametrize("flags,repos,re_run", [
+    ((), {}, RE_RUN_WITH_THE_FLAG),
+    (("--reuse-empty-repo",), ALL_THREE, RE_RUN_AS_IT_WAS),
+], ids=["a-first-run", "a-re-run"])
+def test_a_push_whose_stored_login_the_host_refuses_names_the_fix(
+        tmp_path, git_language, flags, repos, re_run):
+    """#993. A stored login the host refuses is not one git could not get:
+    git sends the token its credential helper holds, the host answers 401,
+    and git dies `Authentication failed for '<url>'`, which holds none of
+    `NO_LOGIN`'s words, so on main through 04923f1 the push printed the
+    ruleset hint alone, whose re-run pushes with the same login. Typed in a
+    terminal, with `store` holding a token the local server refuses, a first
+    run and a re-run each exit 2 without waiting, and name the login the
+    host refused, how to replace it and the re-run, before the hint.
+
+    `translated` runs git where it speaks another language, whose catalogue
+    translates `Authentication failed for` (`XX_GIT`): each push runs under
+    `PUSH_ENV`, so git's words are found there too; under `REMOTE_ENV` they
+    were not, and the run printed the hint alone."""
+    env, log = fake_gh(tmp_path, repos, plan="team")
+    env.update(git_language)
+    status, screen = in_a_terminal_asked_for_a_login(
+        tmp_path, env, *flags, stored="someone:badtoken",
+        said="fatal: Authentication failed for ", timeout=120)
+    assert status == 2, screen
+    assert "REFUSED pushing the spec leg. THE EXACT COMMAND WAS:" in screen, (
+        screen)
+    assert_the_login_is_named(screen, SPEC_REPO, re_run,
+                              fix=LOGIN_REFUSED_REMEDY)
+    assert "could not get a login" not in screen, screen
+    assert log.read_text(encoding="utf-8").count("repo create") == (
+        0 if flags else 3), "a first run creates all three, a re-run none"
+
+
+# --- a leg git reaches over ssh (#915) --------------------------------------
+
+#: What ssh prints when GitHub takes none of its keys, on stderr, before it
+#: exits 255. git then prints its generic `fatal:` line, and nothing of
+#: ssh's has a `fatal:` of its own.
+REFUSED_KEY = "git@github.com: Permission denied (publickey)."
+#: An ssh that says `REFUSED_KEY` to every command line, so nothing leaves
+#: this machine.
+FAKE_SSH = textwrap.dedent(f"""\
+    import sys
+    print({REFUSED_KEY!r}, file=sys.stderr)
+    sys.exit(255)
+    """)
+
+
+def git_reaches_github_over_ssh(tmp_path, rule: str = "insteadOf") -> dict:
+    """What an operator's git config that rewrites `https://github.com/` to
+    ssh does (#915), for `https://github.com/<ORG>/`, appended to the
+    command scope the environment holds, with `FAKE_SSH` as the ssh git
+    runs. `rule` is `insteadOf`, for every command, or `pushInsteadOf`, for
+    pushes alone (#993). `GIT_SSH_VARIANT` says it takes OpenSSH's options,
+    which git would otherwise find out by running it once more, with `-G`."""
+    ssh = tmp_path / "fake_ssh.py"
+    ssh.write_text(FAKE_SSH, encoding="utf-8")
+    return {**appended_to_command_scope(
+                os.environ, [(f"url.ssh://git@github.com/{ORG}/.{rule}",
+                              f"https://github.com/{ORG}/")]),
+            "GIT_SSH_COMMAND": f'"{sys.executable}" "{ssh}"',
+            "GIT_SSH_VARIANT": "ssh"}
+
+
+#: glibc's own `C.UTF-8`, which a test copies under a name of its own into
+#: a `LOCPATH` of its own: a locale that is not `C`, so gettext reads
+#: `LANGUAGE`, and needs nothing installed beyond the C library's.
+C_UTF8 = Path("/usr/lib/locale/C.utf8")
+#: What git prints for `fatal: ` in `xx`, the test's own language.
+XX_FATAL = "XX-FATAL: "
+#: A catalogue for git in `xx`: the `fatal: ` before every fatal line, git's
+#: generic message with its advice, and its line for a login the host
+#: refused (#993), translated as a person's locale translates them, so where
+#: git speaks `xx` none is in git's words.
+XX_GIT = {
+    "": "Content-Type: text/plain; charset=UTF-8\nLanguage: xx\n",
+    "fatal: ": XX_FATAL,
+    "Authentication failed for '%s'": "XX the host said no to '%s'",
+    "Could not read from remote repository.\n\nPlease make sure you have "
+    "the correct access rights\nand the repository exists.":
+        "XX could not read the remote.\n\nXX make sure of your rights\n"
+        "XX and that the repository is there.",
+}
+
+
+def mo_bytes(messages: dict) -> bytes:
+    """`messages` as a GNU gettext catalogue, a `.mo` file, so no `msgfmt` is
+    needed: the header (magic, revision 0, the count, where each table is,
+    no hash table), a table of each original's length and offset, sorted by
+    original, a table of each translation's, then the strings, each ended
+    by a NUL. Little-endian; gettext reads either order by the magic."""
+    originals = sorted(messages)  # code-point order is UTF-8's byte order
+    keys = [key.encode("utf-8") for key in originals]
+    values = [messages[key].encode("utf-8") for key in originals]
+    count = len(originals)
+    strings = 7 * 4 + 2 * 8 * count
+    tables = []
+    at = strings
+    for column in (keys, values):
+        for text in column:
+            tables += [len(text), at]
+            at += len(text) + 1
+    return (struct.pack("<7I", 0x950412DE, 0, count, 7 * 4,
+                        7 * 4 + 8 * count, 0, 0)
+            + struct.pack(f"<{4 * count}I", *tables)
+            + b"".join(text + b"\0" for text in keys + values))
+
+
+def git_speaks_xx(tmp_path) -> dict:
+    """What makes git speak `xx` (`XX_GIT`): `LOCPATH` holds `C_UTF8` as
+    `xx_XX.UTF-8`, `LC_ALL` names it, `LANGUAGE` asks for `xx`, and
+    `GIT_TEXTDOMAINDIR` holds the catalogue. Skipped where there is no
+    `C_UTF8` to copy, and where git, asked once of a path that is no
+    repository, does not speak it: a git built without gettext, or a C
+    library that reads no `LOCPATH`."""
+    if not C_UTF8.is_dir():
+        pytest.skip(f"no {C_UTF8} to copy as a locale of the test's own")
+    kit = tmp_path / "xx"
+    shutil.copytree(C_UTF8, kit / "locales" / "xx_XX.UTF-8")
+    catalogue = kit / "catalogues" / "xx" / "LC_MESSAGES"
+    catalogue.mkdir(parents=True)
+    (catalogue / "git.mo").write_bytes(mo_bytes(XX_GIT))
+    speaks = {"LOCPATH": str(kit / "locales"), "LC_ALL": "xx_XX.UTF-8",
+              "LANGUAGE": "xx", "GIT_TEXTDOMAINDIR": str(kit / "catalogues")}
+    asked = subprocess.run(["git", "ls-remote", str(kit / "no-repository")],
+                           env={**os.environ, **speaks}, capture_output=True,
+                           text=True, encoding="utf-8", errors="replace",
+                           check=False)
+    if not asked.stderr.startswith(XX_FATAL):
+        pytest.skip("git here does not speak a catalogue from "
+                    f"GIT_TEXTDOMAINDIR: {asked.stderr.strip()[:200]}")
+    return speaks
+
+
+@pytest.fixture(params=["as-it-is", "translated"])
+def git_language(request, tmp_path) -> dict:
+    """What a test adds to its environment to run git as it is (`{}`) or
+    translated (`git_speaks_xx`, RV971's kit). Only the translated row is
+    skipped where `git_speaks_xx` skips; the other row runs there."""
+    return {} if request.param == "as-it-is" else git_speaks_xx(tmp_path)
+
+
+@WINDOWS_SKIP
+def test_a_leg_git_reaches_over_ssh_is_refused_with_ssh_s_reason(
+        tmp_path, git_language):
+    """#915. Where git config rewrites `https://github.com/` to ssh, git's
+    one `fatal:` line for a leg ssh could not log in to is the generic
+    `Could not read from remote repository.`, and ssh's own reason, which
+    has no `fatal:`, was dropped: the refusal said git could not read the
+    leg and not why, and named `gh auth setup-git` alone, which changes
+    nothing for git over ssh. Now ssh's last line is the reason, and the
+    remedy names the ssh key beside `setup-git`.
+
+    `translated` asks it where git speaks another language (`git_speaks_xx`,
+    RV971's kit). `only_commit`'s git runs under `LC_ALL=C` (`PROBE_ENV`),
+    so its `fatal:` and its generic line are found there too; without it no
+    line started `fatal:`, and the reason was git's last line, advice about
+    its own command (RV971's M4)."""
+    env, log = fake_gh(tmp_path, SEEN_SPEC, full=[f"{PROJECT}-spec"])
+    env.update(git_reaches_github_over_ssh(tmp_path))
+    env.update(git_language)
+    result = on_github(tmp_path, "--reuse-empty-repo", env=env, cwd=tmp_path)
+    assert result.returncode == 2, result.stderr + result.stdout
+    assert (f"REFUSED scaffold-remote-exists: {SPEC_REPO} already exists on "
+            "GitHub and has commits\nRemediation: git could not read it "
+            f"(`git ls-remote https://github.com/{SPEC_REPO}.git` exited "
+            f"128: {REFUSED_KEY}), {UNREAD_EXIT}") in result.stderr, (
+        result.stderr)
+    assert "Could not read from remote repository" not in result.stderr
+    assert "repo create" not in log.read_text(encoding="utf-8"), (
+        "nothing was created")
+
+
+@WINDOWS_SKIP
+@pytest.mark.parametrize("rule", ["insteadOf", "pushInsteadOf"])
+def test_a_push_ssh_was_refused_the_key_for_names_the_fix(
+        tmp_path, git_language, rule):
+    """#993. Where git config sends a first scaffold's push over ssh, by an
+    `insteadOf` rule or a `pushInsteadOf` one, and the host takes no key,
+    ssh says `Permission denied (publickey).` and git its generic line,
+    neither of them `NO_LOGIN`'s words, so on main through 04923f1 the push
+    printed the ruleset hint alone. Now the run exits 2 and names the ssh
+    check, then the re-run with the flag, then the hint, and not `gh auth
+    setup-git`, which changes nothing over ssh. ssh's words are its own and
+    untranslated, so `translated` finds them too."""
+    env, log = fake_gh(tmp_path, {}, plan="team")
+    env.update(git_reaches_github_over_ssh(tmp_path, rule))
+    env.update(git_language)
+    result = run_script(SCAFFOLD, "--org", ORG, "--project", PROJECT,
+                        "--elected-by", "Test Human",
+                        "--work-dir", str(tmp_path / "work"),
+                        cwd=tmp_path, env=env)
+    assert result.returncode == 2, result.stderr + result.stdout
+    assert "REFUSED pushing the spec leg. THE EXACT COMMAND WAS:" in (
+        result.stderr), result.stderr
+    assert REFUSED_KEY in result.stderr, result.stderr
+    assert_the_login_is_named(result.stderr, SPEC_REPO, RE_RUN_WITH_THE_FLAG,
+                              fix=KEY_REFUSED_REMEDY)
+    assert "setup-git` gives git" not in result.stderr, result.stderr
+    assert log.read_text(encoding="utf-8").count("repo create") == 3, (
+        "a first run creates all three")
+
+
+@pytest.fixture(scope="module")
+def scaffold_module():
+    return load_without_bytecode(SCAFFOLD, "scaffold_for_unread_because")
+
+
+#: git's advice after its generic `fatal:` line, which no reason keeps.
+ADVICE = ("\n\nPlease make sure you have the correct access rights\n"
+          "and the repository exists.")
+GENERIC = "fatal: Could not read from remote repository."
+NOT_A_REPOSITORY = ("fatal: '/x/Atlas-spec.git' does not appear to be a "
+                    "git repository")
+NO_PROMPT = ("fatal: could not read Username for 'https://github.com': "
+             "terminal prompts disabled")
+#: Two `fatal:` lines of git's own, the first of them the reason (RV971).
+NOT_OUR_REF = ("fatal: remote error: upload-pack: not our ref "
+               "0123456789abcdef0123456789abcdef01234567")
+HUNG_UP = "fatal: the remote end hung up unexpectedly"
+#: A line git prints before a `fatal:` that is not the generic one (RV971).
+REDIRECTED = "warning: redirecting to https://github.com/o/r.git/"
+
+
+@pytest.mark.parametrize("output,reason", [
+    (f"Warning: Permanently added 'github.com' to the list of known "
+     f"hosts.\n{REFUSED_KEY}\n{GENERIC}{ADVICE}", REFUSED_KEY),
+    (f"{NOT_A_REPOSITORY}\n{GENERIC}{ADVICE}", NOT_A_REPOSITORY),
+    (f"{GENERIC}{ADVICE}", GENERIC),
+    (NO_PROMPT, NO_PROMPT),
+    (f"{NOT_OUR_REF}\n{HUNG_UP}", NOT_OUR_REF),
+    (f"{REDIRECTED}\n{NO_PROMPT}", NO_PROMPT),
+    ("error: one thing\nanother thing", "another thing"),
+    ("", None),
+], ids=["ssh-before-the-generic-line", "git-s-own-fatal-first",
+        "the-generic-line-alone", "one-fatal", "two-fatal-lines-the-first",
+        "a-line-before-a-fatal-not-the-generic-one", "no-fatal",
+        "nothing-said"])
+def test_the_reason_git_could_not_read_a_leg(scaffold_module, output,
+                                             reason):
+    """`_unread_because` (#542, #915): git's first `fatal:` line, except
+    that where it is the generic one the line before it, ssh's, is the
+    reason; a `fatal:` of git's own before the generic one, and the generic
+    one with nothing before it, are kept; with no `fatal:`, git's last line.
+    Of two `fatal:` lines the first is kept, where the last is git hanging
+    up (RV971's M8), and a line before a `fatal:` that is not the generic
+    one is not the reason (RV971's M11). In-process, so it runs on every
+    platform."""
+    failed = scaffold_module.CommandFailed(["git", "ls-remote", "u"], None,
+                                           128, output)
+    assert scaffold_module._unread_because(failed) == (
+        "`git ls-remote u` exited 128" + (f": {reason}" if reason else ""))
+
+
+# --- what a refused push prints (#915) --------------------------------------
+
+#: A refused push that is not a login git could not get: a ruleset's, as
+#: `test_ruleset_hint_tracking_branch.py`'s hook and GitHub refuse one.
+RULESET_SAID = ("remote: error: GH013: Repository rule violations found for "
+                "refs/heads/main: changes must be made through a pull "
+                "request.\nTo https://github.com/o/r.git\n ! [remote "
+                "rejected] HEAD -> main (pre-receive hook declined)\nerror: "
+                "failed to push some refs to 'https://github.com/o/r.git'")
+#: git's line where the URL names the user, so only a password is asked.
+NO_PASSWORD = ("fatal: could not read Password for "
+               "'https://someone@github.com': terminal prompts disabled")
+#: git's line where its prompt is on and there is no terminal to ask in: a
+#: login git could not get as much as the two above.
+NO_TERMINAL = ("fatal: could not read Username for 'https://github.com': "
+               "No such device or address")
+#: git's line where it sent a login and the host refused it (#993).
+LOGIN_REFUSED = ("fatal: Authentication failed for "
+                 "'https://github.com/o/r.git/'")
+#: What GitHub and git say for a login the host took and a right it lacks:
+#: not a login to give or replace, so it keeps the hint alone (#993).
+FORBIDDEN = ("remote: Permission to o/r.git denied to someone.\nfatal: "
+             "unable to access 'https://github.com/o/r.git/': The requested "
+             "URL returned error: 403")
+#: ssh's line where the host offers more ways to log in than a key.
+REFUSED_KEY_AND_MORE = ("git@example.invalid: Permission denied "
+                        "(publickey,password).")
+
+
+@pytest.mark.parametrize("output,reused,fix,re_run", [
+    (NO_PROMPT, False, NO_LOGIN_REMEDY, RE_RUN_WITH_THE_FLAG),
+    (NO_PROMPT, True, NO_LOGIN_REMEDY, RE_RUN_AS_IT_WAS),
+    (NO_PASSWORD, False, NO_LOGIN_REMEDY, RE_RUN_WITH_THE_FLAG),
+    (NO_TERMINAL, False, NO_LOGIN_REMEDY, RE_RUN_WITH_THE_FLAG),
+    (LOGIN_REFUSED, False, LOGIN_REFUSED_REMEDY, RE_RUN_WITH_THE_FLAG),
+    (LOGIN_REFUSED, True, LOGIN_REFUSED_REMEDY, RE_RUN_AS_IT_WAS),
+    (f"{REFUSED_KEY}\n{GENERIC}{ADVICE}", False, KEY_REFUSED_REMEDY,
+     RE_RUN_WITH_THE_FLAG),
+    (f"{REFUSED_KEY}\n{GENERIC}{ADVICE}", True, KEY_REFUSED_REMEDY,
+     RE_RUN_AS_IT_WAS),
+    (f"{REFUSED_KEY_AND_MORE}\n{GENERIC}{ADVICE}", False, KEY_REFUSED_REMEDY,
+     RE_RUN_WITH_THE_FLAG),
+    (RULESET_SAID, False, None, None),
+    (FORBIDDEN, False, None, None),
+], ids=["no-username", "no-username-on-the-re-run", "no-password",
+        "no-terminal", "login-refused", "login-refused-on-the-re-run",
+        "ssh-refused-the-key", "ssh-refused-the-key-on-the-re-run",
+        "ssh-refused-the-key-of-more-ways", "a-ruleset", "a-403"])
+def test_what_a_refused_push_prints(scaffold_module, capsys, output, reused,
+                                    fix, re_run):
+    """`_refused_push` (#915, #993): the command and git's output, then,
+    where git could not get a login (`NO_LOGIN`), the host refused the one
+    git sent (`LOGIN_REFUSED`) or ssh was refused the key (`KEY_REFUSED`),
+    that case's fix and the re-run, then the ruleset hint. Any other
+    refusal, an HTTP 403 among them, prints, byte for byte, what a refused
+    push always printed: the command, git's output, the hint. A re-run's
+    remedy names its own command again, not the flag it has. In-process, so
+    it runs on every platform."""
+    failed = scaffold_module.CommandFailed(
+        ["git", "push", "-q", "-u", "origin", "HEAD:refs/heads/main"],
+        Path("work"), 128, output)
+    scaffold_module._refused_push(failed, "pushing the spec leg", "o/r",
+                                  "main", reused)
+    out, err = capsys.readouterr()
+    remedy = ("" if fix is None else
+              "\n" + fix.replace("@REPO@", "o/r") + re_run + "\n")
+    assert out == ""
+    assert err == (failed.loudly("pushing the spec leg") + "\n" + remedy
+                   + scaffold_module.RULESET_HINT.format(repo="o/r",
+                                                         tracking="main")
+                   + "\n"), err
+
+
+def test_the_root_s_push_git_has_no_login_for_names_the_fix_too(
+        tmp_path, monkeypatch, capsys):
+    """#915. The root's push is refused as each leg's is (`_refused_push`):
+    after both legs went through to bare repositories on disk, the root's
+    push, refused in-process with git's words for a login it could not get,
+    names how to give git a login for `<ORG>/<PROJECT>` and the re-run,
+    before the ruleset hint. In-process, so it runs on every platform."""
+    module = load_without_bytecode(SCAFFOLD, "scaffold_for_root_login")
+    real = module.run
+
+    def no_login_for_the_root(args, cwd=None, capture=True, env=None):
+        if args[:2] == ["git", "push"] and Path(cwd).name == PROJECT:
+            raise module.CommandFailed(args, cwd, 128, NO_PROMPT)
+        return real(args, cwd=cwd, capture=capture, env=env)
+
+    monkeypatch.setattr(module, "run", no_login_for_the_root)
+    code = module.main(["--org", ORG, "--project", PROJECT,
+                        "--elected-by", "Test Human",
+                        "--elected-on", "2026-09-02",
+                        "--local-remote-dir", str(tmp_path / "remotes"),
+                        "--work-dir", str(tmp_path / "work")])
+    out, err = capsys.readouterr()
+    assert code == 2, err + out
+    assert "REFUSED pushing the assembly root." in err, err
+    assert_the_login_is_named(err, f"{ORG}/{PROJECT}", RE_RUN_WITH_THE_FLAG)
+    assert all(tip(tmp_path, leg) for leg in LEGS), "both legs went through"
+    assert commits(tmp_path, "assembly") == 0

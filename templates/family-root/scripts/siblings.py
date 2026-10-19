@@ -117,7 +117,10 @@ happens under a `--- <Project>: make <target> ---` header; a member with NO
 working clone is reported and SKIPPED, naming `make siblings`; one that is
 not this member is reported and skipped exactly as it is above. Every member
 is tried — a refusal never stops the ones after it — and the summary names
-each outcome. `--dry-run` prints what would run and runs nothing.
+each outcome. `--dry-run` prints what would run and runs nothing. Under the
+holder's `make -jN`, each member's make runs its jobs one at a time and says
+nothing of it: the jobserver of the make above, and the `-j` that comes with
+it, are taken out of the `MAKEFLAGS` it inherits (`member_make_env`, #888).
 
 IT CONFERS NOTHING, and neither does the layout. A folder is navigation.
 
@@ -153,19 +156,27 @@ EXIT CODES
        a `make resume` that skipped every member because nobody had run `make
        siblings` must never read as success
     2  a REFUSAL: the question could not be asked — no `family.yaml`, no
-       `git`, no `make` for a `--make` run. An unanswerable question is never
-       an implicit pass.
+       `git`, no `make` for a `--make` run, or a path of a member's that this
+       user cannot read (`member-unreadable`, #430): the pinned copy's
+       `project.yaml` or `.git`, or the working clone's `project.yaml`,
+       `scripts/bootstrap.py` or `Makefile`, whose `stat` the operating
+       system refused, as it does in a folder this user cannot search. That
+       member is refused by name, with the cure, and the others are still
+       tried. An unanswerable question is never an implicit pass.
 """
 
 from __future__ import annotations
 
 import argparse
+import errno
 import os
 import re
 import shlex
 import shutil
+import stat
 import subprocess
 import sys
+from collections.abc import Callable
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
@@ -235,6 +246,89 @@ VALUED_KEYS = ("path", "url", "ignore", "update", "branch")
 GIT_BOOL_WORDS = ("", "true", "yes", "on", "false", "no", "off")
 GIT_INT = re.compile(r"([+-]?)(0[xX][0-9a-fA-F]+|0[0-7]*|[1-9][0-9]*)"
                      r"([kKmMgG]?)")
+
+#: The `OSError`s that `Path.is_file()` and `Path.exists()` answered False to
+#: on Python 3.9 to 3.13 (pathlib's `_ignore_error`), because each means there
+#: is nothing at the name to open: no such file, a part of the path that is
+#: not a directory, a bad descriptor, a symlink loop, and Windows' "not
+#: ready", "invalid name" and "cannot resolve". Every other one was raised.
+_ABSENT_ERRNOS = (errno.ENOENT, errno.ENOTDIR, errno.EBADF, errno.ELOOP)
+_ABSENT_WINERRORS = (21, 123, 1921)
+
+#: What a path the operating system refused for ANOTHER reason than
+#: permission is told: an I/O error, a name longer than the filesystem
+#: takes, a file replaced while this ran. No `chmod` puts one right.
+#: `validate-pins.py`'s words for the same refusal (#712, #430).
+OTHER_REASON = (
+    "Where the operating system gave another reason, put a regular file this "
+    "user can open back in its place, or take away one nobody wants, and make "
+    "sure nothing is changing the directory while this runs. ")
+
+
+def _is_a(path: Path, kind: Callable[[int], bool]) -> bool:
+    """Whether `path` is there and of `kind` (`stat.S_ISREG`, `_anything`),
+    raising the `OSError` of a `stat` the operating system REFUSED (#430).
+
+    NOT `Path.is_file()` OR `Path.exists()`, whose answer depends on the
+    Python. Up to 3.13 they raised a refused `stat` (`PermissionError`), and
+    `make siblings` ended in that traceback; from 3.14 they answer False to
+    ANY `OSError`. On 3.14 a pinned copy under a `members/<Project>` this
+    user cannot search was "not checked out", and the member's working
+    clone was made on its remote's default branch, not its tracking branch;
+    a clone's `project.yaml` that could not be reached was no id, so the
+    clone was fetched into, or a verb run in it, unidentified; and a
+    `scripts/bootstrap.py` or `Makefile` that could not be reached was none,
+    so nothing ran there. Asked here, every Python answers as 3.9 to 3.13
+    did, and a refused `stat` is `member_unreadable`'s refusal, naming the
+    path. A name the system cannot take at all (a NUL in a row's `path:`)
+    is no file, as `exists()` answered it. This file's own copy, as each
+    pinned copy keeps one (#370, #610): `bump-leg.py` has the same.
+    """
+    try:
+        mode = path.stat().st_mode
+    except OSError as exc:
+        if (exc.errno in _ABSENT_ERRNOS
+                or getattr(exc, "winerror", None) in _ABSENT_WINERRORS):
+            return False
+        raise
+    except ValueError:
+        return False
+    return kind(mode)
+
+
+def _anything(mode: int) -> bool:
+    """Any kind of file at all: what `Path.exists()` asks of a `.git`,
+    which is a folder in a clone and a file in a mounted member (#430)."""
+    return stat.S_IFMT(mode) != 0
+
+
+def member_unreadable(named: str, exc: OSError, what: str,
+                      then: str = "Then run the same command again."
+                      ) -> Refusal:
+    """`member-unreadable`: `<named>: cannot be read (<the system's
+    reason>)`, `validate-pins.py`'s `_cannot_read` line (#430), for a path
+    of a member's that this command must ask about and the operating system
+    will not let it: its `stat` refused (`_is_a`), as in a folder this user
+    cannot search.
+
+    `named` is the path as this run names it, spelled: relative to the
+    holder where it is in it (`members/<Project>/project.yaml`), and whole
+    where it is the working clone beside it. `what` says what was not done
+    for the member, and why the question matters; `then` is the step after
+    the cure. THE ADVICE FOLLOWS THE CAUSE, in `validate-pins.py`'s words: a
+    permission (`PermissionError`, which is `EACCES` and `EPERM`) is put
+    right by the mode or the owner, and any other cause is `OTHER_REASON`,
+    which is not told to `chmod`."""
+    advice = (
+        "Make what this user may not open readable by this user: `chmod u+r` "
+        "on a file, `chmod u+rx` on a directory (and on every directory above "
+        "it), or fix who owns it. "
+        if isinstance(exc, PermissionError) else OTHER_REASON)
+    return Refusal(
+        "member-unreadable",
+        f"{named}: cannot be read ({exc.strerror or type(exc).__name__})",
+        f"Remediation: {what} A path this command cannot read is a question "
+        f"it cannot answer, never a pass. {advice}{then}")
 
 
 # ---------------------------------------------------------------------------
@@ -440,11 +534,27 @@ def tracking_branch(root: Path, row: dict) -> tuple[str | None, str]:
     print. An ESC or a newline would reach this command's output raw, where
     the member's own bootstrap escapes the same field (#391); `repr` escapes
     exactly what `isprintable` refuses, so the two agree with no import.
+
+    A COPY THAT CANNOT BE ASKED ABOUT IS REFUSED, NOT "NOT CHECKED OUT"
+    (#430): where the `stat` of its `project.yaml` is refused, as under a
+    `members/<Project>` this user cannot search, this raises
+    `member-unreadable`, and the member is not cloned. On Python 3.14 the
+    copy read as not checked out and the clone was made on the remote's
+    default branch, which is the wrong one wherever the two differ.
     """
     label = (str(row.get("path") or f"members/{row.get('project')}")
              + "/project.yaml")
     manifest = member_path(root, row) / "project.yaml"
-    if not manifest.is_file():
+    try:
+        checked_out = _is_a(manifest, stat.S_ISREG)
+    except OSError as exc:
+        raise member_unreadable(
+            spelled(label), exc,
+            "`make siblings` reads the member's pinned copy for the "
+            "tracking branch its working clone is made on, so nothing was "
+            "cloned for it: a clone on the remote's default branch is on "
+            "the wrong one wherever the two differ.") from exc
+    if not checked_out:
         return None, (f"{label} is not checked out, so its tracking branch "
                       "is not known here (`make bootstrap` checks it out)")
     try:
@@ -553,6 +663,9 @@ class Sibling:
         self.state = "?"
         self.branch = "-"
         self.finding: str | None = None
+        #: A path of this member's the system would not let this command
+        #: read (`member-unreadable`, #430): the run then exits 2.
+        self.refusal: Refusal | None = None
 
     def row(self, kind: str = "sibling") -> str:
         # `project` is a manifest's text and `branch` a clone's (#454), so a
@@ -562,9 +675,47 @@ class Sibling:
                 f"{spelled(self.branch)}")
 
 
+def refused_member(root: Path, row: dict, refusal: Refusal) -> Sibling:
+    """The row of a member that `place` or `dispatch` refused, for a path of
+    its own this command cannot read (`member-unreadable`, #430). The
+    members after it are still placed, or their verb run: a refusal never
+    stops the ones after it, and `make park` exists to save work."""
+    project = str(row.get("project") or "?")
+    sibling = Sibling(project, root.parent / project)
+    sibling.state = "CANNOT BE READ"
+    sibling.refusal = refusal
+    return sibling
+
+
+def said_findings_and_refusals(findings: list[str],
+                               refusals: list[Refusal]) -> None:
+    """Each FINDING, then each refusal whole, its remedy included (#430),
+    on stderr: the lines before a run's summary."""
+    for finding in findings:
+        print(f"FINDING {finding}", file=sys.stderr)
+    for refusal in refusals:
+        print(str(refusal), file=sys.stderr)
+
+
 def project_id(path: Path) -> str | None:
+    """The `id:` of the clone at `path`, or None where it has no
+    `project.yaml`, or one that does not load.
+
+    ONE IT CANNOT REACH IS REFUSED (#430): where the `stat` of `project.yaml`
+    is refused, this raises `member-unreadable`, since the id is how
+    `verify_sibling` tells this member's clone from another's. On Python
+    3.14 it was None, so the clone was fetched into, or a verb run in it,
+    with its id never read."""
     manifest = path / "project.yaml"
-    if not manifest.is_file():
+    try:
+        present = _is_a(manifest, stat.S_ISREG)
+    except OSError as exc:
+        raise member_unreadable(
+            spelled(manifest), exc,
+            "This command never fetches into, or runs a verb in, a clone it "
+            "cannot identify, and the clone's own `project.yaml` is how it "
+            "is identified: nothing was fetched or run there.") from exc
+    if not present:
         return None
     try:
         data = load_yaml(manifest)
@@ -676,10 +827,27 @@ def run_member_bootstrap(path: Path, sibling: Sibling) -> None:
 
     Not reimplemented here for the same reason the family's `bootstrap.py`
     does not reimplement it: each member is a whole project and knows how.
+
+    A SCRIPT THAT CANNOT BE REACHED IS REFUSED, NOT "NONE" (#430): where its
+    `stat` is refused this raises `member-unreadable`, whose remedy says the
+    clone is there and how to run its bootstrap, since a run of `make
+    siblings` after it only fetches. On Python 3.14 it was "no
+    scripts/bootstrap.py", and the run said `siblings ok`.
     """
     script = path / "scripts" / "bootstrap.py"
     project = spelled(sibling.project)
-    if not script.is_file():
+    try:
+        present = _is_a(script, stat.S_ISREG)
+    except OSError as exc:
+        raise member_unreadable(
+            spelled(script), exc,
+            f"The clone of {project} at {spelled(path)} was made, and its "
+            "own bootstrap, which puts its legs on their branches, was not "
+            "run.",
+            f"Then run `{PYTHON} scripts/bootstrap.py` in that clone: a "
+            "second `make siblings` only fetches a clone that is "
+            "there.") from exc
+    if not present:
         print(f"  [{project}] no scripts/bootstrap.py; cloned and "
               "left as it is. A member without one is not misconfigured — it "
               "simply has nothing for this command to call.")
@@ -847,6 +1015,32 @@ def place(root: Path, row: dict, urls: dict[str, str], prefix: list[str],
 # dispatching a verb into the WORKING CLONES (--make)
 # ---------------------------------------------------------------------------
 
+#: `bootstrap.py`'s three readings of `MAKEFLAGS` (#888), written here
+#: rather than imported: a holder may keep a `bootstrap.py` older than this
+#: file (`update-shape.py apply --accept-local`), which has none of them,
+#: and `make park` would then end in an `ImportError` before it ran in any
+#: member. `tests/test_family_member_make_jobserver.py` holds the two files
+#: to one answer. A word is split as make splits it: only at a space or a
+#: tab, a backslash keeping either in a value.
+JOBSERVER_WORD = re.compile(r"--jobserver-(?:auth|fds)=.*", re.DOTALL)
+JOBS_WORD = re.compile(r"-j[0-9]*|--jobserver-(?:auth|fds)=.*", re.DOTALL)
+MAKEFLAGS_WORD = re.compile(r"(?:\\.|[^ \t])+", re.DOTALL)
+
+
+def member_make_env() -> dict[str, str]:
+    """This run's environment for a member's `make <target>`: `MAKEFLAGS`
+    without the jobserver of the make above it, where it names one, nor
+    the `-j` that comes with it, as `bootstrap.py`'s `member_make_env`
+    gives it and for its reasons. Under the holder's `make -j2 park`, each
+    member's make said `jobserver unavailable: using -j1.  Add '+' to
+    parent make rule.`, of a rule the person does not own (#888)."""
+    env = dict(os.environ)
+    words = MAKEFLAGS_WORD.findall(env.get("MAKEFLAGS", ""))
+    if any(JOBSERVER_WORD.fullmatch(word) for word in words):
+        env["MAKEFLAGS"] = " ".join(
+            word for word in words if not JOBS_WORD.fullmatch(word))
+    return env
+
 
 def make_program() -> str:
     """`make`, resolved to an EXECUTABLE PATH, or a named refusal.
@@ -964,7 +1158,16 @@ def dispatch(root: Path, row: dict, urls: dict[str, str], target: str,
     if not verify_sibling(row, path, url, repository, sibling):
         return sibling
 
-    if not (path / "Makefile").is_file():
+    makefile = path / "Makefile"
+    try:
+        present = _is_a(makefile, stat.S_ISREG)
+    except OSError as exc:
+        # One it cannot reach is no "no Makefile" (#430), which Python 3.14
+        # said of it: the member is refused by name, and the others run.
+        raise member_unreadable(
+            spelled(makefile), exc,
+            f"`{spelling}` was not run in {at}.") from exc
+    if not present:
         sibling.state = "SKIPPED no Makefile"
         sibling.finding = (
             f"{who}: {at} has no Makefile, so there is no `{spelling}` "
@@ -1002,7 +1205,7 @@ def dispatch(root: Path, row: dict, urls: dict[str, str], target: str,
     print(f"  --- {who}: make {checked_target} ---")
     sys.stdout.flush()
     proc = subprocess.run([make, checked_target, *checked_assignments],
-                          cwd=str(path), check=False)
+                          cwd=str(path), check=False, env=member_make_env())
     sys.stdout.flush()
     if proc.returncode != 0:
         sibling.state = f"make {target} exited {proc.returncode}"
@@ -1044,8 +1247,11 @@ def dispatch_all(root: Path, name: str, rows: list[dict],
         print("  no members declared. A family with none is empty, not wrong: "
               "`family.py add` is what puts one here.")
     for row in rows:
-        dispatched.append(dispatch(root, row, urls, target, make_args, make,
-                                   dry_run))
+        try:
+            dispatched.append(dispatch(root, row, urls, target, make_args,
+                                       make, dry_run))
+        except Refusal as exc:
+            dispatched.append(refused_member(root, row, exc))
 
     print("\n(b) what ran")
     print(f"  {'what':<9} {'name':<18} {'state':<22} branch")
@@ -1053,16 +1259,16 @@ def dispatch_all(root: Path, name: str, rows: list[dict],
         print(sibling.row())
 
     findings = [s.finding for s in dispatched if s.finding]
+    refusals = [s.refusal for s in dispatched if s.refusal]
     print()
     sys.stdout.flush()
-    if findings:
-        for finding in findings:
-            print(f"FINDING {finding}", file=sys.stderr)
+    if findings or refusals:
+        said_findings_and_refusals(findings, refusals)
         print(f"siblings: `make {target}` did not run everywhere — "
-              f"{len(dispatched) - len(findings)} of {len(dispatched)} "
-              "member(s) ran and exited 0. Nothing was cloned or fetched.",
-              file=sys.stderr)
-        return 1
+              f"{len(dispatched) - len(findings) - len(refusals)} of "
+              f"{len(dispatched)} member(s) ran and exited 0. Nothing was "
+              "cloned or fetched.", file=sys.stderr)
+        return 2 if refusals else 1
     if dry_run:
         print(f"--dry-run: nothing was run. `make {target}` would run in "
               f"{len(dispatched)} member(s).")
@@ -1334,18 +1540,33 @@ def _place_all_members(root: Path, rows: list[dict], urls: dict[str, str],
     """Every member, placed, in the order `family.yaml` lists them.
 
     Split from `main` for #137 — "(a) the members, beside the holder".
+    A member `place` refuses, for a path of its own this command cannot
+    read, is that member's row, and the next is placed (#430).
     """
     if not rows:
         print("  no members declared. A family with none is empty, not wrong: "
               "`family.py add` is what puts one here.")
-    return [place(root, row, urls, prefix, token, dry_run) for row in rows]
+    placed: list[Sibling] = []
+    for row in rows:
+        try:
+            placed.append(place(root, row, urls, prefix, token, dry_run))
+        except Refusal as exc:
+            placed.append(refused_member(root, row, exc))
+    return placed
 
 
-def _print_pinned_row(root: Path, row: dict) -> None:
+def _print_pinned_row(root: Path, row: dict) -> Sibling:
     """One `members/<Project>` row of the layout table: the PINNED copy,
-    detached, that `make bootstrap` and `make validate` read.
+    detached, that `make bootstrap` and `make validate` read. Returns it,
+    so a refusal on it reaches the report.
 
     Split from `main` for #137 — the body of its second layout-table loop.
+
+    A MOUNT THAT CANNOT BE ASKED ABOUT IS REFUSED, NOT "NOT CHECKED OUT"
+    (#430): where the `stat` of its `.git` is refused, as in a `members/`
+    this user cannot search, the row says `CANNOT BE READ` and the run is
+    refused `member-unreadable`. On Python 3.14 it said `not checked out`,
+    `make bootstrap`, of a checked-out copy, and the run said `siblings ok`.
     """
     mounted = member_path(root, row)
     # The row's OWN `path:` as the label, never a path computed back out
@@ -1353,18 +1574,30 @@ def _print_pinned_row(root: Path, row: dict) -> None:
     # under this root, and a table is not the place to discover it.
     pinned = Sibling(str(row.get("path")
                          or f"members/{row.get('project')}"), mounted)
-    if (mounted / ".git").exists():
-        pinned.state = "pinned in the holder"
-        pinned.branch = branch_of(mounted)
+    try:
+        checked_out = _is_a(mounted / ".git", _anything)
+    except OSError as exc:
+        pinned.state = "CANNOT BE READ"
+        pinned.refusal = member_unreadable(
+            spelled(f"{pinned.project}/.git"), exc,
+            "The pinned copy under members/ is what `make bootstrap` and "
+            "`make validate` read, and whether it is checked out could not "
+            "be asked.")
     else:
-        pinned.state = "not checked out"
-        pinned.branch = "make bootstrap"
+        if checked_out:
+            pinned.state = "pinned in the holder"
+            pinned.branch = branch_of(mounted)
+        else:
+            pinned.state = "not checked out"
+            pinned.branch = "make bootstrap"
     print(pinned.row("pinned"))
+    return pinned
 
 
 def _print_layout_table(root: Path, siblings: list[Sibling],
-                        rows: list[dict]) -> None:
+                        rows: list[dict]) -> list[Sibling]:
     """"(b) the layout": the holder, every sibling, then every PINNED mount.
+    Returns the pinned rows, for the report (#430).
 
     Split from `main` for #137.
     """
@@ -1379,24 +1612,30 @@ def _print_layout_table(root: Path, siblings: list[Sibling],
     # THE SECOND COPY, said out loud in the same table: the pinned mount is
     # what `make bootstrap` and `make validate` read, and it is detached
     # because a pin is a commit and not a branch.
-    for row in rows:
-        _print_pinned_row(root, row)
+    return [_print_pinned_row(root, row) for row in rows]
 
 
-def _report_placement(root: Path, siblings: list[Sibling],
-                      dry_run: bool) -> int:
+def _report_placement(root: Path, siblings: list[Sibling], dry_run: bool,
+                      pinned: list[Sibling] | None = None) -> int:
     """The findings (or the ok / dry-run line), and the exit code that
     matches. Split from `main` for #137.
+
+    A path of a member's this command cannot read, a sibling's or a pinned
+    copy's (`pinned`), is a refusal and the run exits 2 (#430).
     """
     findings = [s.finding for s in siblings if s.finding]
+    refusals = [s.refusal for s in [*siblings, *(pinned or [])]
+                if s.refusal]
     print()
     sys.stdout.flush()
-    if findings:
-        for finding in findings:
-            print(f"FINDING {finding}", file=sys.stderr)
-        print(f"siblings: {len(findings)} finding(s); nothing was moved and "
+    if findings or refusals:
+        said_findings_and_refusals(findings, refusals)
+        counted = [f"{len(findings)} finding(s)"] if findings else []
+        if refusals:
+            counted.append(f"{len(refusals)} path(s) this user cannot read")
+        print(f"siblings: {' and '.join(counted)}; nothing was moved and "
               "no existing clone was touched", file=sys.stderr)
-        return 1
+        return 2 if refusals else 1
     if dry_run:
         print("--dry-run: nothing was cloned, fetched or moved.")
         return 0
@@ -1462,9 +1701,9 @@ def _run_placement(root: Path, name: str, rows: list[dict], manifest: dict,
           f"{source})")
     siblings = _place_all_members(root, rows, urls, prefix, token, dry_run)
 
-    _print_layout_table(root, siblings, rows)
+    pinned = _print_layout_table(root, siblings, rows)
 
-    return _report_placement(root, siblings, dry_run)
+    return _report_placement(root, siblings, dry_run, pinned)
 
 
 def main(argv: list[str] | None = None) -> int:

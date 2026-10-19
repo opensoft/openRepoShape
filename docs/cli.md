@@ -351,7 +351,9 @@ options:
                         folder, create no remote and push nothing
   --local-remote-dir LOCAL_REMOTE_DIR
                         create bare repositories here instead of calling `gh
-                        repo create` (the TEST path; no network)
+                        repo create` (the TEST path; no network). An empty
+                        value is refused as `local-remote-dir-no-path`, and
+                        `.` means the directory the run stands in.
   --no-push
   --reuse-empty-repo    if <org>/<Project>, <Project>-spec or <Project>-code
                         already exists and has ZERO commits, use it instead of
@@ -392,7 +394,9 @@ options:
                         top level, or a bare clone's: any other path is
                         refused as `pin-source-not-a-clone`.
   --work-dir WORK_DIR   where the working trees are built (default: a
-                        temporary directory)
+                        temporary directory). An empty value is refused as
+                        `work-dir-no-path`, and `.` means the directory the
+                        run stands in.
   --no-next-steps       leave out the closing NEXT STEPS (the clone, the cd
                         and `make bootstrap`): setup-project.py passes it,
                         because it runs those steps itself next. `Working
@@ -448,7 +452,11 @@ options:
                         --show-toplevel` prints it): `source-not-top-level`
                         refuses a file, or a directory inside a repository.
                         `source-unresolvable` refuses an empty value, and one
-                        that is neither a path that exists nor an `org/repo`.
+                        that is neither a path that exists nor an `org/repo`;
+                        `source-unreadable`, a path this user cannot reach
+                        (under a directory it may not search), which is never
+                        read as one that is not there, nor cloned as an
+                        `org/repo`.
   --project PROJECT     the assembly-root name; for an in-place adoption it is
                         the source repository's own name. `execute` refuses
                         one over 95 characters without --local-remote-dir:
@@ -615,7 +623,9 @@ options:
                         longer whole, its `source.repository` is cloned again,
                         and any other `local_path` that is gone is refused as
                         `plan-source-gone`; one that is a file, or a directory
-                        inside a repository, as `source-not-top-level`.
+                        inside a repository, as `source-not-top-level`; and
+                        one this user cannot reach, a clone `plan` made
+                        included, as `source-unreadable`, never cloned again.
   --local-remote-dir LOCAL_REMOTE_DIR
                         the directory `execute --local-remote-dir` will be
                         given (the TEST path): each relative submodule url the
@@ -672,7 +682,9 @@ options:
                         longer whole, its `source.repository` is cloned again,
                         and any other `local_path` that is gone is refused as
                         `plan-source-gone`; one that is a file, or a directory
-                        inside a repository, as `source-not-top-level`.
+                        inside a repository, as `source-not-top-level`; and
+                        one this user cannot reach, a clone `plan` made
+                        included, as `source-unreadable`, never cloned again.
   --local-remote-dir LOCAL_REMOTE_DIR
                         create the legs as bare repositories here instead of
                         calling `gh` (the TEST path). Both are asked about
@@ -915,16 +927,22 @@ options:
                         slot.
   --local-remote-dir LOCAL_REMOTE_DIR
                         create a bare repository here instead of calling `gh
-                        repo create` (the TEST path; no network)
+                        repo create` (the TEST path; no network). An empty
+                        value is refused as `local-remote-dir-no-path`, and
+                        `.` means the directory the run stands in.
   --into DIR            the PARENT directory the family folder is made in
                         (default: the directory you are standing in, which is
                         refused inside a checkout of openRepoShape: from its
                         root, pass `--into ..`). The holder lands at
                         <into>/<Family>/<Family>, beside where `make siblings`
-                        clones the members.
+                        clones the members. An empty value is refused as
+                        `into-no-path`, and `.` means the directory the run
+                        stands in.
   --work-dir WORK_DIR   THE OVERRIDE: land the holder at <work-dir>/<Family>
                         and make no family folder at all. Mutually exclusive
-                        with --into.
+                        with --into. An empty value is refused as `work-dir-
+                        no-path`, and `.` means the directory the run stands
+                        in.
   --no-push
   --dry-run             print the plan and ask, as the real run does, whether
                         each folder it makes can be made (the family folder or
@@ -1115,7 +1133,8 @@ options:
                         the caller's words for what would let LINK's tree be
                         read, offered in place of this script's own where that
                         link is declared-unverified. Repeatable; the last
-                        value for a link wins.
+                        value for a link wins, and a value no holder used is
+                        noted (with --link-source-label, it is not).
   --explain             print every family each name satisfies, why one of
                         them won, and what the others are recorded as
   --quiet
