@@ -74,12 +74,19 @@ line, and the NOTE's advice to name the link (`--link-source <link>=PATH`)
 where the chains begin at more than one link, keep this script's own flag.
 `--link-remedy LINK=TEXT` is what would let LINK's tree be read in that
 caller's sources, offered in place of this script's own for a link that is
-declared-unverified. A project's own runs pass neither. Every `--link-source`
-value and path this prints, and the path of a `SHAPE_PIN_SOURCE_<PRODUCT>`
-or of a checkout beside the project it names, is named as it is, or as
-Python's `repr` spells it where a character in it is not printable
-(`_shown`). A caller's FLAG and the words it offers for a link, a chain
-link's name, and the `--project` and `--policy` paths are printed as given.
+declared-unverified. LINK is the longest text before an `=` that names a
+link of a chain this run reads and leaves words after it (#907), so a link
+holding `=` keeps it, and the words are stripped. A `--link-source` key is
+not read so: it is the text before the value's first `=`, so a link holding
+`=` is never one. A `--link-remedy` no holder used is a NOTE saying why,
+except where the caller gave a label: its words are its own, not the
+person's. A project's own runs pass neither.
+Every `--link-source` and `--link-remedy` value and path this prints, and
+the path of a `SHAPE_PIN_SOURCE_<PRODUCT>` or of a checkout beside the
+project it names, is named as it is, or as Python's `repr` spells it where a
+character in it is not printable (`_shown`). A caller's FLAG and the words
+it offers for a link, a chain link's name, and the `--project` and
+`--policy` paths are printed as given.
 
 EXIT CODES, the same three in every validator this standard ships:
     0  every name classified (and, with `--project`, every declared role and
@@ -102,7 +109,7 @@ there and still cannot answer. An explicit source stays a warning here, where
 answers that validator's digest question too, from a checkout that need not
 carry a manifest, and a source that cannot answer is passed over for the next
 one in the order, which may. A `--link-source` no link used is a NOTE saying
-why.
+why, and so is a `--link-remedy` no holder used (#907).
 
 The 1/2 split is deliberate. "This name is wrong" and "I could not read the
 policy" are different facts and a gate that renders them identically invites a
@@ -171,17 +178,19 @@ def _library_takes_remedies() -> bool:
         return False
 
 
-def _link_remedy(value: str) -> tuple[str, str]:
-    """One `--link-remedy LINK=TEXT`: the link, by `repo_basename`, and
-    the words. The text before the first `=` is the link; a value with no
-    `=`, no link or no words is refused, exit 2."""
+def _link_remedy(value: str) -> str:
+    """One `--link-remedy LINK=TEXT`, as typed; a value with no `=`, no
+    link before its first `=` or no words after it is refused, exit 2.
+    WHICH `=` ENDS THE LINK is decided once the chains this run reads are
+    known (`LinkSources._read_remedy`, #907): the last one that leaves a
+    link of theirs before it and words after it. A `--link-source` key
+    ends at the value's first `=`, whatever the chains name."""
     link, sep, text = value.partition("=")
-    link = repo_basename(link.strip())
-    if not (sep and link and text.strip()):
+    if not (sep and repo_basename(link.strip()) and text.strip()):
         raise argparse.ArgumentTypeError(
             f"{_shown(value)} is not LINK=TEXT: name a chain link, then `=`, "
             "then the words for what would let its tree be read")
-    return link, text
+    return value
 
 
 class Target:
@@ -201,6 +210,18 @@ class Target:
         self.pins = pins
         self.chain = tuple(chain)
         self.root = root
+
+
+def _library_takes(keyword: str) -> bool:
+    """Does this root's `link_pins_from_trees` take `keyword`? The skew rule
+    `_library_takes_remedies` asks of `remedies=`, asked of any keyword:
+    `run_products=` is new with #909, and an older library ends a call passing
+    it in a `TypeError`."""
+    try:
+        return keyword in inspect.signature(
+            link_pins_from_trees).parameters
+    except (TypeError, ValueError):
+        return False
 
 
 class LinkSources:
@@ -271,18 +292,36 @@ class LinkSources:
         #: The caller's own name for the bare PATH it passes, or None
         #: (`--link-source-label`, #661).
         self.label = label
-        #: `{pin_product_key(link): the caller's words}` from
-        #: `--link-remedy`, the last value given for a link wins (#661).
-        self.remedies: dict[str, str] = {
-            pin_product_key(link): text for link, text in remedies}
         #: Every link of every chain this run reads, in its first spelling.
         self.links: list[str] = []
-        names: dict[str, str] = {}
+        #: `{pin_product_key: first spelling}` of those links.
+        self.names: dict[str, str] = {}
+        names = self.names
         for link in links:
             name = repo_basename(str(link))
             if name and pin_product_key(name) not in names:
                 names[pin_product_key(name)] = name
                 self.links.append(name)
+        #: `{pin_product_key(link): the caller's words}` from
+        #: `--link-remedy`, the last value given for a link wins (#661),
+        #: each read by `_read_remedy` (#907).
+        self.remedies: dict[str, str] = {}
+        #: Every distinct `--link-remedy` value in the order given, and the
+        #: link it was read as for.
+        self.remedy_reading: dict[str, str] = {}
+        #: `{typed: the later value for its link that took its place}`.
+        self.remedy_replaced: dict[str, str] = {}
+        last: dict[str, str] = {}
+        for typed in remedies:
+            link, words = self._read_remedy(typed)
+            key = pin_product_key(link)
+            self.remedy_reading[typed] = link
+            self.remedies[key] = words
+            earlier = last.get(key)
+            last[key] = typed
+            self.remedy_replaced.pop(typed, None)
+            if earlier is not None and earlier != typed:
+                self.remedy_replaced[earlier] = typed
         #: `{pin_product_key: first spelling}` of the first link of every
         #: chain a name here reads (#441). `link_pins` adds a chain's first
         #: link as it reads it, which matters only for names read from stdin:
@@ -330,6 +369,32 @@ class LinkSources:
         #: or a checkout beside the project that could not answer.
         self.unanswered: dict[tuple, list[str]] = {}
 
+    def _read_remedy(self, typed: str) -> tuple[str, str]:
+        """`(link, words)` for one `--link-remedy` (#907): the text before
+        an `=` is a LINK only where it names a link of a referent chain this
+        run reads, by `pin_product_key`, and leaves words after it. The LAST
+        `=` that does so ends the link, so the longest link is read first
+        and a link holding `=` keeps it: setup's step (4) gives `open=y` its
+        words as `--link-remedy=open=y=<words>`, and splitting at the first
+        `=` made them `y=<words>` for a link `open` that no chain names. In
+        a chain naming `openXdox` and `openXdox=y` both, each is read for
+        its own words, and from the first `=` `openXdox=y=<words>` was
+        `y=<words>` for `openXdox`. Where no `=` does, the text before the
+        first one is the link, which no chain here names, and `unused_lines`
+        says so. A `--link-source` key is not read so: it is the text before
+        its first `=` alone (`__init__`). The link is spelled as the chain
+        spells it, and the words are stripped: `openXdox= padded` offered
+        ` padded`."""
+        at = typed.rfind("=")
+        while at >= 0:
+            link = repo_basename(typed[:at].strip())
+            words = typed[at + 1:].strip()
+            if words and pin_product_key(link) in self.names:
+                return self.names[pin_product_key(link)], words
+            at = typed.rfind("=", 0, at)
+        link, _sep, words = typed.partition("=")
+        return repo_basename(link.strip()), words.strip()
+
     def link_pins(self, policy: NamingPolicy, target: Target) -> dict:
         """What the chain's links declare, for the links whose trees answer,
         with what each lookup asked recorded against the values given.
@@ -349,6 +414,13 @@ class LinkSources:
         tried: dict = {}
         offered = ({"remedies": self.remedies}
                    if self.remedies and _library_takes_remedies() else {})
+        # ONE VARIABLE, ONE PRODUCT OF THE RUN (#909). The variable guard is
+        # asked over the declared pins and every chain this run reads, and
+        # not over this target's chain alone: two legs whose chains begin at
+        # `openß` and `openss` read `SHAPE_PIN_SOURCE_OPENSS` for both, and
+        # its one tree broke the chain of the product it is not.
+        if _library_takes("run_products"):
+            offered["run_products"] = [*target.pins, *self.links]
         found = link_pins_from_trees(
             target.chain, target.root,
             {key: path for key, (_typed, path) in self.keyed.items()},
@@ -487,7 +559,8 @@ class LinkSources:
         name records a chain, none reads a link's declaration, or the one
         link a bare PATH answers for had a more specific source
         (`_not_asked_why`). A value holding `=` that was read as a PATH says
-        so too."""
+        so too. Then a NOTE for each `--link-remedy` no holder used
+        (`_unused_remedy_lines`)."""
         lines = []
         for typed, link in self.reading.items():
             if typed in self.used or typed in self.unread:
@@ -508,6 +581,39 @@ class LinkSources:
             lines.append(" ".join(filter(None, (
                 f"{flag} {_shown(typed)}: not used — {why}.",
                 self.read_as_path(typed)))))
+        return lines + self._unused_remedy_lines()
+
+    def _unused_remedy_lines(self) -> list[str]:
+        """A NOTE for each `--link-remedy` no holder used (#907), named as
+        typed, with why: a later value for its link replaced it, no chain
+        here names its link, or no name classified here reads that link's
+        own declaration, so no lookup asked for the tree the words are
+        about. A holder that was asked used its words, whether its tree
+        answered or not: the words are offered only where it did not, and
+        that is the disk's answer, not a mistake in the value.
+
+        NOTHING IS SAID UNDER A LABEL. A caller that passes
+        `--link-source-label` speaks for someone else (#661), and its
+        remedies are its own words: setup's step (4) passes one per holder
+        of the chain it hands over, and a NOTE would name `--link-remedy`,
+        a flag the person never typed and setup does not take."""
+        if self.label:
+            return []
+        lines = []
+        for typed, link in self.remedy_reading.items():
+            later = self.remedy_replaced.get(typed)
+            if later is None and pin_product_key(link) in self.asked:
+                continue
+            if later is not None:
+                why = f"the later `--link-remedy {_shown(later)}` replaced it"
+            elif not self.links:
+                why = "no name classified here records a referent chain"
+            elif pin_product_key(link) not in self.names:
+                why = (f"`{_shown(link)}` is not a link of a referent chain "
+                       f"here (links: {', '.join(self.links)})")
+            else:
+                why = f"no name classified here reads {link}'s own declaration"
+            lines.append(f"--link-remedy {_shown(typed)}: not used — {why}.")
         return lines
 
     def _flag(self, link: str | None) -> str:
@@ -1174,7 +1280,9 @@ def main(argv: list[str] | None = None) -> int:
                              "tree be read, offered in place of this "
                              "script's own where that link is "
                              "declared-unverified. Repeatable; the last "
-                             "value for a link wins.")
+                             "value for a link wins, and a value no holder "
+                             "used is noted (with --link-source-label, it "
+                             "is not).")
     parser.add_argument("--explain", action="store_true",
                         help="print every family each name satisfies, why one "
                              "of them won, and what the others are recorded as")

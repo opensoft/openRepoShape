@@ -21,6 +21,12 @@ WHAT WAS WRONG.
   see was told nothing: the silent failure the hint exists for.
 - `init`'s hint said "<holder> and its members are private" (L2-71), and its
   NOTE "and its members will be too", of members `init` never makes.
+- #913: `init`'s NOTE was printed only for a holder that is private or
+  internal, so a public holder whose members are private was never told
+  they need the credential (L2-95); an internal root whose plan could not
+  be read was told the hint applies when its organisation is on the Free
+  plan, which cannot hold of it (L2-93); and the `not-found-on-stdout-alone`
+  row did not hold gh's not-found words on stdout (L2-97).
 
 WHAT IS PINNED. One table, the three tools: a root or holder GitHub calls
 PUBLIC (no hint, no plan asked), PRIVATE (the hint, naming it alone), one
@@ -187,31 +193,36 @@ def test_each_tool_says_what_github_said_of_the_root_and_its_plan(
     assert "its members" not in printed, printed
 
 
-#: The NOTE `init` prints for a closed holder, after its subject.
-HOLDER_NOTE = (": give it a way to read the members you add that are private "
-               "or internal — a GitHub App (SHAPE_LEGS_APP_ID + "
-               "SHAPE_LEGS_APP_PRIVATE_KEY, preferred) or a SHAPE_LEGS_TOKEN "
-               "PAT with contents:read on the members AND their legs — or the "
-               "`validate` check cannot check them out.")
+def member_note(holder: str) -> str:
+    """The NOTE `init` prints for every holder on GitHub (#913, L2-95): about
+    the members a person adds, whatever the holder's own visibility."""
+    return ("NOTE a member you add that is, or has a leg that is, private or "
+            f"internal needs a way for {holder}, public or not, to read "
+            "it — a GitHub App (SHAPE_LEGS_APP_ID + "
+            "SHAPE_LEGS_APP_PRIVATE_KEY, preferred) or a SHAPE_LEGS_TOKEN "
+            "PAT with contents:read on the members AND their legs — or the "
+            "`validate` check cannot check that member out.")
 
 
 @WINDOWS_SKIP
-@pytest.mark.parametrize("seen, errors, noted", [
-    ("PUBLIC", None, None),
-    ("PRIVATE", None, "private"),
-    ("INTERNAL", None, "internal"),
-    ("PRIVATE", {HOLDER: BAD_GATEWAY}, None),
-    ("PRIVATE", {HOLDER: NOT_FOUND}, None),
+@pytest.mark.parametrize("seen, errors", [
+    ("PUBLIC", None),
+    ("PRIVATE", None),
+    ("INTERNAL", None),
+    ("PRIVATE", {HOLDER: BAD_GATEWAY}),
+    ("PRIVATE", {HOLDER: NOT_FOUND}),
 ], ids=["public", "private", "internal", "visibility-502", "visibility-404"])
-def test_init_notes_a_reused_holder_at_its_own_visibility(
-        tmp_path, monkeypatch, capsys, seen, errors, noted):
-    """L2-58 and the NOTE's half of L2-71. `init`'s NOTE goes by the reused
-    holder as GitHub reports it, and names no member: `init` mounts none, and
-    `add` mounts a member of any visibility, so "and its members will be
-    too" said what nothing decides. An unread holder gets no NOTE, since
-    whether it is private is the question that went unanswered. On main the
-    NOTE said "is private and its members will be too" of every holder the
-    default `--visibility private` reused, the public one included.
+def test_init_notes_the_members_credential_for_every_reused_holder(
+        tmp_path, monkeypatch, capsys, seen, errors):
+    """L2-58, the NOTE's half of L2-71, and L2-95. `init`'s NOTE names no
+    member: `init` mounts none, and `add` mounts a member of any visibility,
+    so "and its members will be too" said what nothing decides. And it is
+    about the members, for every holder (#913): the `validate` workflow's
+    default token cannot read a private or internal member whatever the
+    holder is. On main it was printed only for a holder GitHub called
+    private or internal, "NOTE <holder> is <visibility>: give it a way to
+    read the members ...", so a public holder whose members are private was
+    never told, and neither was one whose visibility went unread.
 
     family.yaml keeps the RUN's `--visibility`, as it always has, which is
     the decision #660 records: the table that writes it is checked before
@@ -219,38 +230,40 @@ def test_init_notes_a_reused_holder_at_its_own_visibility(
     printed, _calls = run_tool("family", tmp_path, monkeypatch, capsys, None,
                                seen, plan="team", visibility_errors=errors)
     holder = ROOTS["family"]
-    if noted is None:
-        assert f"NOTE {holder} is " not in printed, printed
-    else:
-        assert f"NOTE {holder} is {noted}{HOLDER_NOTE}" in printed, printed
+    assert printed.count(member_note(holder)) == 1, printed
+    assert f"NOTE {holder} is " not in printed, printed
     assert "will be too" not in printed, printed
     manifest = load_yaml(tmp_path / "work" / HOLDER / "family.yaml")
     assert manifest["visibility"] == "private"
 
 
 @WINDOWS_SKIP
-def test_init_asks_nothing_of_a_holder_it_creates(tmp_path):
+@pytest.mark.parametrize("visibility", ["private", "public"])
+def test_init_asks_nothing_of_a_holder_it_creates(tmp_path, visibility):
     """The control: a holder this run creates is created at the run's
     `--visibility`, which is what it is, so GitHub is not asked; it gets the
-    NOTE and, on Free, the hint naming it alone."""
+    members' NOTE, a public one too (#913, L2-95), and, private on Free, the
+    hint naming it alone."""
     env, log = fake_gh(tmp_path, {}, plan="free")
-    result = init_on_github(tmp_path, env)
+    result = init_on_github(tmp_path, env, "--visibility", visibility)
     assert result.returncode == 0, result.stderr + result.stdout
     holder = ROOTS["family"]
-    assert f"NOTE {holder} is private{HOLDER_NOTE}" in result.stdout
-    assert f"{holder} is private, so org-level" in result.stdout
+    assert member_note(holder) in result.stdout
+    assert (f"{holder} is private, so org-level" in result.stdout) == (
+        visibility == "private"), result.stdout
     calls = log.read_text(encoding="utf-8").splitlines()
-    assert f"repo create {holder} --private" in " | ".join(calls), calls
+    assert f"repo create {holder} --{visibility}" in " | ".join(calls), calls
     assert f"repo view {holder} --json visibility" not in calls, calls
 
 
 def test_init_takes_a_holder_gh_cannot_be_asked_about_as_unread(
         monkeypatch, capsys):
     """A reused holder whose visibility read cannot start `gh` (an `OSError`)
-    is unread, as a failed read is: `ROOT_VISIBILITY_UNREAD`, and no NOTE
-    and no hint at the run's `--visibility`, which is not the holder's
-    (#660's F8). In process, so it runs on every platform: the topic edit and
-    the plan are answered here, and nothing reaches `gh`."""
+    is unread, as a failed read is: `ROOT_VISIBILITY_UNREAD`, and no hint at
+    the run's `--visibility`, which is not the holder's (#660's F8); the
+    members' NOTE, which goes by no visibility (#913). In process, so it runs
+    on every platform: the topic edit and the plan are answered here, and
+    nothing reaches `gh`."""
     family = load_without_bytecode(FAMILY, "family_free_plan_hint_reads")
     edits: list = []
     monkeypatch.setattr(family, "run",
@@ -269,6 +282,7 @@ def test_init_takes_a_holder_gh_cannot_be_asked_about_as_unread(
     printed = capsys.readouterr().out
     assert unread_root(holder)[0] in printed, printed
     assert f"NOTE {holder} is " not in printed, printed
+    assert member_note(holder) in printed, printed
     assert HINT not in printed, printed
     assert edits == [["gh", "repo", "edit", holder, "--add-topic",
                       "xf-project-orbit"]]
@@ -276,22 +290,6 @@ def test_init_takes_a_holder_gh_cannot_be_asked_about_as_unread(
 
 # --- the readers, on every platform -----------------------------------------
 
-def answering(monkeypatch, answer) -> list:
-    """`shape_materialize.run` answering every command with `answer`, or
-    raising it when it is an exception; returns the commands it was asked."""
-    asked: list = []
-
-    def run(args, *_rest, **_keywords):
-        asked.append(args)
-        if isinstance(answer, BaseException):
-            raise answer
-        return answer
-
-    monkeypatch.setattr(shape_materialize, "run", run)
-    return asked
-
-
-FAILED = shape_materialize.CommandFailed(["gh"], None, 1, BAD_GATEWAY)
 NO_GH = FileNotFoundError(2, "No such file or directory", "gh")
 
 
@@ -309,7 +307,7 @@ NOT_FOUND_BODY = ('{"message":"Not Found","documentation_url":"https://docs.'
     ((1, "", "gh: Resource protected by organization SAML enforcement. (HTTP "
              "403)\n"), None),
     ((1, "", f"gh: {BAD_GATEWAY}\n"), None),
-    ((1, NOT_FOUND_BODY, f"gh: {BAD_GATEWAY}\n"), None),
+    ((1, NOT_AN_ORGANISATION + "\n", f"gh: {BAD_GATEWAY}\n"), None),
     (NO_GH, None),
 ], ids=["free", "free-spaced", "team", "enterprise", "unnamed",
         "blank-line", "not-an-organisation", "saml-403", "failed-502",
@@ -320,7 +318,10 @@ def test_the_plan_is_free_other_or_unread(monkeypatch, answer, plan):
     organisation (the reading `refuse_unless_not_found` gives, #609); and
     None where it names no plan, never "other" for a plan it did not name.
     The command is asked of `subprocess.run`, faked here, since the reading
-    is of stderr alone."""
+    is of stderr alone: the `not-found-on-stdout-alone` row holds gh's
+    not-found words on stdout, so a reading that searched stdout too would
+    take it for `not-an-organisation` (#913, L2-97; its stdout was the REST
+    body, which does not hold them)."""
     asked: list = []
 
     def gh(args, *_rest, **_keywords):
@@ -334,46 +335,110 @@ def test_the_plan_is_free_other_or_unread(monkeypatch, answer, plan):
     assert asked == [["gh", "api", f"orgs/{ORG}", "--jq", ".plan.name"]]
 
 
-def test_a_visibility_read_is_one_of_three_or_unread(monkeypatch):
-    """`repository_visibility`: what `visibility_in` reads, None for a failed
-    `gh repo view`, and a `gh` that cannot be started left to the caller,
-    which the scaffold refuses as `gh-not-found` (#537)."""
+#: `gh repo view`'s answer for a repository GitHub does not show this token.
+NOT_FOUND_IN_GRAPHQL = ("GraphQL: Could not resolve to a Repository with the "
+                        f"name '{ROOTS['scaffold']}'. (repository)\n")
+
+
+@pytest.mark.parametrize("answer, seen", [
+    ((0, '{"visibility": "Internal"}\n', ""), "internal"),
+    ((0, '{"visibility": "PUBLIC"}', ""), "public"),
+    ((0, '{"visibility": "SECRET"}\n', ""), None),
+    ((0, "", ""), None),
+    ((1, "", NOT_FOUND_IN_GRAPHQL), "not-found"),
+    ((1, NOT_FOUND_IN_GRAPHQL, f"{BAD_GATEWAY}\n"), None),
+    ((4, "", NOT_FOUND_IN_GRAPHQL), None),
+    ((1, "", f"{BAD_GATEWAY}\n"), None),
+    ((1, "", SAML_REFUSED + "\n"), None),
+], ids=["internal", "public", "not-a-visibility", "empty", "not-found",
+        "not-found-on-stdout-alone", "not-found-words-exit-4", "failed-502",
+        "saml-403"])
+def test_a_visibility_read_is_one_of_three_not_found_or_unread(
+        monkeypatch, answer, seen):
+    """`repository_visibility_answer`: what `visibility_in` reads;
+    `REPOSITORY_NOT_FOUND` for gh's own not-found answer, exit 1 with its
+    words on stderr, the reading `refuse_unless_not_found` gives (#609), so
+    the scaffold tells a root not there yet from one it could not read
+    (#913); and None for every other failure. `repository_visibility` is the
+    same reading with not-found taken as unread, as its callers ask it of a
+    repository that is there. Asked of `subprocess.run`, faked here, since
+    the reading is of stderr alone."""
     root = ROOTS["scaffold"]
-    asked = answering(monkeypatch, '{"visibility": "Internal"}')
-    assert shape_materialize.repository_visibility(root) == "internal"
-    assert asked == [["gh", "repo", "view", root, "--json", "visibility"]]
-    answering(monkeypatch, '{"visibility": "SECRET"}')
-    assert shape_materialize.repository_visibility(root) is None
-    answering(monkeypatch, FAILED)
-    assert shape_materialize.repository_visibility(root) is None
-    answering(monkeypatch, NO_GH)
-    with pytest.raises(FileNotFoundError):
-        shape_materialize.repository_visibility(root)
+    asked: list = []
+
+    def gh(args, *_rest, **_keywords):
+        asked.append(list(args))
+        return subprocess.CompletedProcess(args, *answer)
+
+    monkeypatch.setattr(shape_materialize.subprocess, "run", gh)
+    assert shape_materialize.repository_visibility_answer(root) == seen
+    assert shape_materialize.repository_visibility(root) == (
+        None if seen == shape_materialize.REPOSITORY_NOT_FOUND else seen)
+    assert asked == [["gh", "repo", "view", root, "--json", "visibility"]] * 2
+
+
+def test_a_visibility_read_leaves_a_gh_that_cannot_start_to_the_caller(
+        monkeypatch):
+    """A `gh` that cannot be started is left to the caller, which the
+    scaffold refuses as `gh-not-found` (#537) and `family.py` takes as
+    unread."""
+    def gh(args, *_rest, **_keywords):
+        raise NO_GH
+
+    monkeypatch.setattr(shape_materialize.subprocess, "run", gh)
+    for read in (shape_materialize.repository_visibility_answer,
+                 shape_materialize.repository_visibility):
+        with pytest.raises(FileNotFoundError):
+            read(ROOTS["scaffold"])
+
+
+#: What a run says of an INTERNAL root whose organisation's plan it could not
+#: read (#913, L2-93): the plan is not what the hint hangs on.
+def unread_plan_internal(root: str) -> str:
+    return (f"NOTE this run could not read {ORG}'s plan from GitHub, but the "
+            "Free-plan secrets hint does not hang on it: "
+            f"{root} is internal, which GitHub gives only to a repository of "
+            "an organisation an enterprise account owns, and that "
+            "organisation is not on the GitHub Free plan. Org-level "
+            "SHAPE_LEGS_APP_ID / SHAPE_LEGS_APP_PRIVATE_KEY reach "
+            f"{root}'s `validate` workflow where each secret's repository "
+            f"access includes {root}.")
 
 
 @pytest.mark.parametrize("visibility, plan, said", [
     (None, "free", "root"), ("public", "free", None),
     ("private", "free", "hint"), ("internal", "free", "hint"),
     ("private", "other", None), ("private", None, "plan"),
+    ("internal", None, "internal"), ("internal", "other", None),
     ("private", "not-an-organisation", None),
 ], ids=["unread-root", "public", "private-free", "internal-free",
-        "private-paid", "private-unread-plan", "private-not-an-organisation"])
+        "private-paid", "private-unread-plan", "internal-unread-plan",
+        "internal-paid", "private-not-an-organisation"])
 def test_the_note_goes_by_both_answers(monkeypatch, visibility, plan, said):
     """`free_plan_secrets_note`, the one decision the three tools ask: the
     plan is asked only of a closed root, and what neither GitHub answer
-    gives is said."""
+    gives is said. An internal root whose plan is unread is told the plan
+    is not what the hint hangs on (#913, L2-93): it was told the hint
+    "applies when" its organisation "is on the GitHub Free plan", which an
+    organisation that holds internal repositories is not."""
     asked: list = []
     monkeypatch.setattr(shape_materialize, "organisation_plan",
                         lambda org: asked.append(org) or plan)
     root = ROOTS["adopt"]
     note = shape_materialize.free_plan_secrets_note(ORG, root, visibility)
     first = {"hint": HINT, "root": unread_root(root)[0],
-             "plan": f"NOTE this run could not read {ORG}'s plan"}
+             "plan": f"NOTE this run could not read {ORG}'s plan",
+             "internal": unread_plan_internal(root)}
     if said is None:
         assert note is None
     else:
         assert note.startswith(first[said]), note
     if said == "hint":
         assert f"{root} is private, so org-level" in note, note
+    if said == "plan":
+        assert note == unread_plan(root)[0], note
+    if said == "internal":
+        assert note == unread_plan_internal(root), note
+        assert "applies when" not in note, note
     assert asked == ([ORG] if visibility in ("private", "internal")
                      else []), asked
