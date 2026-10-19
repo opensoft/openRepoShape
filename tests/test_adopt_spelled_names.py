@@ -420,7 +420,7 @@ def test_the_table_pads_a_name_as_an_ascii_stdout_prints_it(adopter,
     adopter._print_entries([
         adopter.Entry(path, adopter.Verdict(leg, rule, "Why.", "high"), 1, 1)
         for path, leg, rule in (("README.md", "root", "root-front-door"),
-                                ("café.md", "spec", "extension-majority"))
+                                ("caf\u00e9.md", "spec", "extension-majority"))
     ])
     stream.flush()
     heading, rows = table_of(stream.buffer.getvalue().decode("ascii") + "\n")
@@ -450,7 +450,7 @@ def test_plan_under_the_c_locale_keeps_each_column_under_its_heading(
                            stdin=subprocess.DEVNULL, check=True)
     codec = probe.stdout.decode("ascii").split()[0]
     try:
-        "é".encode(codec)
+        "\u00e9".encode(codec)
     except UnicodeEncodeError:
         pass
     else:
@@ -458,7 +458,7 @@ def test_plan_under_the_c_locale_keeps_each_column_under_its_heading(
                     "the C locale, which holds the name")
     source = make_source_repo(tmp_path / "Thing",
                               {"README.md": "# Thing\n",
-                               "café.md": "x\n",
+                               "caf\u00e9.md": "x\n",
                                "src/app.py": "VALUE = 1\n"}, edits=())
     written = planned(source, tmp_path / "adoption-plan.yaml", env=env)
     assert written.returncode == 0, written.stderr + written.stdout

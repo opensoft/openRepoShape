@@ -1579,7 +1579,9 @@ def _exported_gitlink(source: "Source") -> str | None:
     untrusted parts are spelled as `git_out` spells them (#900): the source
     folder with `shown_path`, and what git printed `spelled`, as one line.
     Raw, a folder named with a line break began a line the tool never
-    printed, and an ESC git echoed reached the terminal.
+    printed and an ESC in its name reached the terminal, and git, which
+    echoes the folder (`invalid gitfile format: <folder>/.git`), passes a
+    line break and a C1 control through.
     """
     command = ["git", *EXPORTED_DIFFS, source.commit, "--branches", "--tags",
                "--"]
@@ -3111,11 +3113,12 @@ def _spelled(path: str) -> str:
 
     A BACKTICK IS `\\x60` AND A DOUBLE QUOTE `\\"` (#900), the plan's own
     escapes for them, so that EVERY spelled name, copied between the plan's
-    double quotes, is that entry. A backslash before a backtick, as it was
-    written, is no escape the plan's reader resolves, so it kept the
-    backslash and named another entry, and a double quote written as it is
-    ended the quoting, so the plan no longer read at all. `\\x60` holds no
-    backtick, so the two that wrap the name are still the only ones.
+    double quotes, is that entry. A backtick was written after a
+    backslash, which is no escape the plan's reader resolves: it kept the
+    backslash, and so read another entry. A double quote was written as it
+    is, which ended the quoting, and the plan no longer read at all.
+    `\\x60` holds no backtick, so the two that wrap the name are still the
+    only ones.
     """
     return "`" + "".join(map(_spelled_character, path)) + "`"
 
@@ -5712,7 +5715,7 @@ def _print_entries(entries: list[Entry]) -> None:
 
     THE PATH IS PADDED AS IT IS PRINTED (#900): `_shown`, then as stdout
     writes it (`_printed`). Padded before stdout escaped it, `caf\\u00e9.md`
-    took 7 of the column's 34 characters and printed as the 10 of
+    was padded as the 7 characters it holds and printed as the 10 of
     `caf\\xe9.md` under `LC_ALL=C PYTHONUTF8=0`, so every column after it
     stood 3 characters right of its heading. The rule id is a path
     policy's, which `--path-policy` may name and nothing asks to be
@@ -5730,9 +5733,10 @@ def _printed(text: str) -> str:
     """`text` as stdout writes it: each character its encoding cannot hold
     escaped, as `escape_what_stdout_cannot_encode` has it write one, so
     `caf\\u00e9.md` is the 10 characters of `caf\\xe9.md` on an ASCII
-    stdout and the 7 of `caf\\u00e9.md` on a UTF-8 one (#900). For a text
-    `_shown` returned, which holds no surrogate: a stdout that names no
-    encoding, or one this cannot encode with, gets `text` back."""
+    stdout and the 7 of `caf\\u00e9.md` on a UTF-8 one (#900). It is asked
+    of a text `_shown` returned, which holds no surrogate; where stdout
+    names no encoding, or cannot encode `text` with its own handler, it is
+    `text` as it is."""
     encoding = getattr(sys.stdout, "encoding", None) or "utf-8"
     errors = getattr(sys.stdout, "errors", None) or "strict"
     try:
