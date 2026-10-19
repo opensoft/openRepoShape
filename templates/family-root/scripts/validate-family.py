@@ -138,6 +138,17 @@ with changes not staged; and a checkout `git mv` moved off a row's path,
 whose `.git` file names that member's store, is named, with its `git -C`
 status, before the update that points the store at the row's path.
 
+A PATH THIS USER CANNOT READ IS NEVER ABSENT (#430). Every guard asks the
+operating system for the path's `stat` (`_is_a`), the same answer on every
+Python, and one it refuses is refused by name, `<path>: cannot be read
+(<reason>)`, with a cure for the cause, exit 2: a member's checkout or what
+is on disk at any gitlink `member-unreadable`, the shape pin
+`shape-pin-unreadable`, a shape copy `shape-copy-unreadable` and
+`family.yaml` `family-manifest-unreadable`. A member's `project.yaml` is
+the finding `member-manifest-unreadable`, exit 1, as one that cannot be
+opened already was. Python 3.14's `is_file()` and `exists()` read each as
+not there.
+
 EXIT CODES
     0  the manifest is valid, every member is in lockstep, every copy matches
     1  a FINDING: drift a reviewer can act on
@@ -147,21 +158,23 @@ EXIT CODES
        `.gitmodules` gives a value git dies on: those are
        `member-gitmodules-absent`, `member-gitmodules-url-absent`,
        `member-gitlink-removal-staged` and `gitmodules-value-refused`,
-       exit 1), an unreadable pin, no git to run. An unanswerable question
-       is never an implicit pass.
+       exit 1), an unreadable pin, a path this user cannot read (#430), no
+       git to run. An unanswerable question is never an implicit pass.
 """
 
 from __future__ import annotations
 
 import argparse
+import errno
 import os
 import re
 import shlex
+import stat
 import sys
 from collections import Counter
 from contextlib import contextmanager
 from pathlib import Path
-from typing import Iterator, NamedTuple
+from typing import Callable, Iterator, NamedTuple
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 from repo_shape import (  # noqa: E402
@@ -320,6 +333,199 @@ def _git_runs(unread: str) -> Iterator[None]:
             "Remediation: put git on PATH and run this again. This check "
             "reads the holder the way git does, and nothing could clone it "
             "or fetch its members without git either.") from exc
+
+
+# ---------------------------------------------------------------------------
+# A path this user cannot read (#430)
+# ---------------------------------------------------------------------------
+#
+# `Path.is_file()`, `is_dir()` and `exists()` answer differently by Python:
+# up to 3.13 they raised a refused `stat` (`PermissionError`) and answered
+# False only where nothing was there; from 3.14 they call `os.path.isfile`
+# and the like, which answer False to ANY `OSError`. So a member checkout
+# this user cannot search ended this run in a traceback on 3.12, and on
+# 3.14 was refused `member-uninitialized`, whose `git submodule update`
+# then failed on the checkout that was there; a shape copy in a folder
+# this user cannot search was `pinned but absent`, the shape pin and
+# `family.yaml` `does not exist`, and a staged removal's lines ended on an
+# update of a checkout that was there. Every guard here asks the operating
+# system itself now, as `bump-leg.py` and `validate-pins.py` do, and a
+# `stat` it refuses is refused by name.
+#
+# THE `os.path.lexists` OF `.gitmodules` STAY, deliberately: it is a name
+# at the holder's root, whose `lstat` needs no access the read of
+# `family.yaml` before it did not already have, and git reads that file
+# by the same `lstat`.
+
+#: The `OSError`s that `Path.is_file()` and `Path.is_dir()` answered False to
+#: on Python 3.9 to 3.13 (pathlib's `_ignore_error`), because each means there
+#: is nothing at the name to open: no such file, a part of the path that is
+#: not a directory, a bad descriptor, a symlink loop, and Windows' "not
+#: ready", "invalid name" and "cannot resolve". Every other one was raised.
+_ABSENT_ERRNOS = (errno.ENOENT, errno.ENOTDIR, errno.EBADF, errno.ELOOP)
+_ABSENT_WINERRORS = (21, 123, 1921)
+
+
+def _is_a(path: Path, kind: Callable[[int], bool]) -> bool:
+    """Whether `path` is there and of `kind` (`stat.S_ISREG`, `stat.S_ISDIR`,
+    `_any_kind`), raising the `OSError` of a `stat` the operating system
+    REFUSED (#430).
+
+    NOT `Path.is_file()`, `is_dir()` OR `exists()`, whose answer depends on
+    the Python. Up to 3.13 they raised a refused `stat` (`PermissionError`)
+    and answered False only when nothing was there; from 3.14 they call
+    `os.path.isfile` and the like, which answer False to ANY `OSError`. On
+    3.14 a member checkout under a `members/` this user cannot search was
+    "not an initialized submodule checkout" (`member-uninitialized`, whose
+    update then failed `could not open ... for writing`), and a shape copy
+    in a folder it can list but not search was "pinned but absent". Asked
+    here, every Python answers as 3.9 to 3.13 did, and a refused `stat` is
+    a refusal that names the path. `bump-leg.py`'s, word for word.
+    """
+    try:
+        mode = path.stat().st_mode
+    except OSError as exc:
+        if (exc.errno in _ABSENT_ERRNOS
+                or getattr(exc, "winerror", None) in _ABSENT_WINERRORS):
+            return False
+        raise
+    except ValueError:
+        # a name the operating system cannot take at all (a NUL in it)
+        return False
+    return kind(mode)
+
+
+def _any_kind(_mode: int) -> bool:
+    """`_is_a`'s kind for anything at all, what `exists()` asked."""
+    return True
+
+
+def _gone(path: Path) -> bool:
+    """Whether NOTHING is at `path` (`ENOENT`), asked BEFORE A LINE THAT PUTS
+    SOMETHING THERE OR NAMES WHAT TO DELETE (#430): the staged removal's
+    `git submodule update` that checks a member out at its path
+    (`_put_back_lines`), and the checkouts it names to delete by hand once
+    none is at that path (`_moved_checkouts`).
+
+    STRICTER THAN `_is_a`: a part of the path that is not a directory
+    (`ENOTDIR`, a file where `members/<P>` should be), a symlink loop and
+    every other `OSError` is raised, since each says something IS on the
+    way, which that update fails on and which no checkout moved away. As
+    `family.py` asks before its clean-ups (#430's slice G). A name the
+    operating system cannot take at all holds nothing, as `exists()`
+    answered it."""
+    try:
+        path.stat()
+    except FileNotFoundError:
+        return True
+    except ValueError:
+        return True
+    return False
+
+
+#: What a path the operating system refused for ANOTHER reason than
+#: permission is told: an I/O error, a name longer than the filesystem
+#: takes, a part of the path that is a file. No `chmod` puts one right.
+#: `validate-pins.py`'s and `bump-leg.py`'s words for the same refusal
+#: (#383, #712).
+OTHER_REASON = (
+    "Where the operating system gave another reason, put a regular file this "
+    "user can open back in its place, or take away one nobody wants, and make "
+    "sure nothing is changing the directory while this runs. ")
+
+#: The sentence every refusal of a path this validator cannot read ends on.
+RUN_AGAIN = "Then run the same command again."
+
+#: What this validator reads, as `_unreadable`'s remedy says it.
+PATHS_READ = (f"{MANIFEST}, the shape pin, every copy it lists, each "
+              "member's checkout and its project.yaml, and what is on disk "
+              "at each gitlink this holder records")
+
+#: A checkout, or what is on disk at a gitlink, whose `stat` the operating
+#: system refused (#430): a member's `.git`, a case variant or a stray the
+#: holder records, the checkout `git mv` moved. The one new code: no code
+#: here meant "a checkout cannot be read", and `member-uninitialized`, what
+#: Python 3.14 made of it, sent the person after a checkout that is there.
+MEMBER_UNREADABLE = "member-unreadable"
+
+
+def _advice(exc: OSError) -> str:
+    """What to do about `exc`, by its cause, in `validate-pins.py`'s words
+    (#712): a permission (`PermissionError`, which is `EACCES` and `EPERM`)
+    is put right by the mode or the owner, and any other cause is
+    `OTHER_REASON`, which is not told to `chmod`."""
+    return ("Make what this user may not open readable by this user: `chmod "
+            "u+r` on a file, `chmod u+rx` on a directory (and on every "
+            "directory above it inside the root), or fix who owns it. "
+            if isinstance(exc, PermissionError) else OTHER_REASON)
+
+
+def _cannot_read(named: str, exc: OSError) -> str:
+    """`<named>: cannot be read (<the operating system's reason>)`, the line
+    for a path whose `stat` or open the operating system refused, in
+    `validate-pins.py`'s words (#359, #712). `named` is relative to the
+    holder, and spelled (`spelled`)."""
+    return (f"{spelled(named)}: cannot be read "
+            f"({exc.strerror or type(exc).__name__})")
+
+
+def _unreadable(code: str, named: str, exc: OSError) -> Refusal:
+    """`code`'s refusal, exit 2, for the path `named` whose `stat` or open
+    the operating system refused (#430): `_cannot_read`'s line and a remedy
+    that follows the cause (`_advice`), as `validate-pins.py`'s
+    `_unreadable_file` says it. A path this validator must read and cannot
+    is a question it cannot answer, never "absent"."""
+    return Refusal(
+        code, _cannot_read(named, exc),
+        f"Remediation: this validator reads {PATHS_READ}, and one it cannot "
+        "read is a question it cannot answer, never a pass. "
+        + _advice(exc) + RUN_AGAIN)
+
+
+def _asked(path: Path, kind: Callable[[int], bool], code: str,
+           named: str) -> bool:
+    """`_is_a(path, kind)`, or `code`'s refusal naming `path` as `named`
+    (`_unreadable`) where its `stat` was refused (#430)."""
+    try:
+        return _is_a(path, kind)
+    except OSError as exc:
+        raise _unreadable(code, named, exc) from exc
+
+
+def _checked_out(checkout: Path, path: str) -> bool:
+    """Whether a `.git` entry is in `checkout`, the gitlink path `path`
+    (what `exists()` asked of it), or `member-unreadable` naming
+    `<path>/.git` where its `stat` was refused (#430)."""
+    return _asked(checkout / ".git", _any_kind, MEMBER_UNREADABLE,
+                  f"{path}/.git")
+
+
+def _checkout_gone(root: Path, path: str) -> bool:
+    """`_gone` of the `.git` at the gitlink path `path`, or
+    `member-unreadable` naming it where its `stat` was refused for any
+    reason but `ENOENT` (#430)."""
+    try:
+        return _gone(root / path / ".git")
+    except OSError as exc:
+        raise _unreadable(MEMBER_UNREADABLE, f"{path}/.git", exc) from exc
+
+
+def _anything_at(where: Path, named: str) -> bool:
+    """Whether anything is at `where`, a symbolic link that leads nowhere
+    included, as `os.path.lexists` answered it, or `member-unreadable`
+    naming it as `named` where its `stat` was refused (#430).
+
+    `os.path.lexists` answered False to ANY `OSError`, on every Python, so
+    a gitlink path in a folder this user cannot search was "nothing on
+    disk" (#430). A symbolic link there is on disk, asked by its own
+    `lstat` first (`os.path.islink`), as `lexists` asks it: where it leads
+    is not asked, so a link that leads nowhere, or into a folder this user
+    cannot search, is something on disk and no refusal (r956's trial on
+    #956). Anything else is asked by its `stat`, through `_asked`; where
+    the `lstat` was refused, so is that `stat`, and the path is refused by
+    name."""
+    return (os.path.islink(where)
+            or _asked(where, _any_kind, MEMBER_UNREADABLE, named))
 
 
 def _check_schema_kind_and_id(manifest: dict, report: Report) -> None:
@@ -851,11 +1057,17 @@ def _forced(root: Path, path: str, commit: str) -> str | None:
     that holds files and no `.git`, a file or a symbolic link, and takes it
     over an empty directory or nothing (git 2.43, rv882's NIT 2 on #882).
     A gitlink HEAD alone records, at a staged removal or a conflict, is
-    read at HEAD's commit and takes none."""
-    if not _on_disk(root, path):
-        return None
+    read at HEAD's commit and takes none.
+
+    GIT IS ASKED FIRST, AND THE DISK ONLY WHERE THE ANSWER TURNS ON IT
+    (#430, r956's SHOULD 1 on #956): where HEAD records the gitlink at the
+    index's own commit, no `-f` is printed whatever is on disk, so a path
+    in a folder this user cannot search is not asked there, and the
+    finding is said as it always was, not refused `member-unreadable`."""
     head = _head_records(root, path)
-    return None if head == commit else head
+    if head == commit or not _on_disk(root, path):
+        return None
+    return head
 
 
 def _head_records(root: Path, path: str) -> str:
@@ -884,8 +1096,14 @@ def _staged_over(root: Path, path: str, commit: str) -> bool:
     where it differs too, a commit or an untracked file in the checkout
     `git mv` moved, a directory holding a file, or a file (lane 1's SHOULD
     on #889, round 2, and its NITs 1 and 2, round 3)."""
-    return (os.path.lexists(root / path)
-            and _head_records(root, path) != commit)
+    # Git first (r956's SHOULD 1 on #956): where HEAD records the gitlink
+    # at the index's own commit, nothing is said of the disk, so it is not
+    # asked. Where the answer turns on it, a path whose `stat` is refused,
+    # in a folder this user cannot search, is `member-unreadable`
+    # (`_anything_at`, #430): `os.path.lexists` read it as nothing there,
+    # and the refusal went unsaid.
+    return (_head_records(root, path) != commit
+            and _anything_at(root / path, path))
 
 
 def _on_disk(root: Path, path: str) -> bool:
@@ -895,11 +1113,16 @@ def _on_disk(root: Path, path: str) -> bool:
     and no `.git` (rv882's NIT 2 on #882), a file and a symbolic link, and
     took it over an empty directory and over nothing. A directory this user
     cannot list is taken to hold something: `-f`, with `--cached`, touches
-    no file."""
+    no file. A path whose `stat` is refused, in a folder this user cannot
+    search, is `member-unreadable` (`_anything_at`, #430): asked with
+    `os.path.lexists`, it was nothing on disk, and the `-f` git needs there
+    was not printed."""
     where = root / path
-    if not os.path.lexists(where):
+    if not _anything_at(where, path):
         return False
-    if where.is_symlink() or not where.is_dir():
+    # After that `stat`, `lstat` needs no more access: a link is on disk.
+    if os.path.islink(where) or not _asked(where, stat.S_ISDIR,
+                                            MEMBER_UNREADABLE, path):
         return True
     try:
         with os.scandir(where) as entries:
@@ -910,9 +1133,20 @@ def _on_disk(root: Path, path: str) -> bool:
 
 def _held_as(root: Path, path: str) -> str:
     """What the `-f` sentence says is on disk at `path` (`_forced_said`):
-    `CHECKOUT` where a `.git` entry is there, else `NO_CHECKOUT`."""
-    return (CHECKOUT if os.path.lexists(root / path / ".git")
+    `CHECKOUT` where a `.git` entry is there, else `NO_CHECKOUT`, and
+    `member-unreadable` where its `stat` was refused (`_anything_at`,
+    #430): a checkout this user cannot search was said to be no checkout.
+    Asked only where the `-f` is printed."""
+    return (CHECKOUT if _anything_at(root / path / ".git", f"{path}/.git")
             else NO_CHECKOUT)
+
+
+def _held_if_forced(root: Path, path: str, head: str | None) -> str:
+    """`_held_as` where `_forced` answered `head` for the gitlink at `path`
+    and the `-f` sentence says it, else `CHECKOUT`, which `_forced_said`
+    does not read: a `.git` this user cannot search is refused only where
+    what is said of it is printed (#430)."""
+    return CHECKOUT if head is None else _held_as(root, path)
 
 
 def _wrong_case_move(path: str, commit: str, variants: list[str],
@@ -1111,8 +1345,14 @@ def _check_member_tree(member: Path, pin: dict, path: str, commit: str,
     ref`, and THE LOCKSTEP RULE's `bump` for a pin no remote holds (#762,
     rv681's P2: on the remote, the fetch put it in the store and the gate
     passed; on none, the fetch and `git submodule update` both exit 128).
+
+    A CHECKOUT THIS USER CANNOT SEARCH is `member-unreadable`, naming its
+    `.git` (`_checked_out`, #430): it ended the run in a traceback up to
+    Python 3.13, and on 3.14 was `member-uninitialized`, whose update then
+    failed (`could not open '<path>/.git' for writing`) on the checkout
+    that is there.
     """
-    if not (member / ".git").exists():
+    if not _checked_out(member, path):
         raise Refusal(
             "member-uninitialized",
             f"{path} is not an initialized submodule checkout, so neither the "
@@ -1236,19 +1476,22 @@ def _check_member_checkout(root: Path, asked: Gitlinked, report: Report,
     section gives no url, and one whose removal is staged (#762), each the
     finding of its own. `stop` is what `member-uninitialized` says first
     where git's init would stop at a gitlink it has no url for
-    (`_init_stop_said`).
+    (`_init_stop_said`). A checkout this user cannot search is
+    `member-unreadable` (`_checked_out`, #430): on Python 3.14 it was
+    one not checked out, and its digest and identity were not asked.
     """
     member = root / asked.path
-    if asked.path in unregistered and not (member / ".git").exists():
+    if asked.path in unregistered and not _checked_out(member, asked.path):
         return
     with _git_runs(f"{asked.project}'s pinned commit and its tree digest "
                    f"could not be read in {asked.path}"):
         _check_member_tree(member, asked.pin, asked.path, asked.commit,
                            asked.project, report, asked.rule, stop)
-    _check_member_identity(member, asked.row, asked.project, report)
+    _check_member_identity(member, asked.row, asked.project, asked.path,
+                           report)
 
 
-def _check_member_identity(member: Path, row: dict, project: str,
+def _check_member_identity(member: Path, row: dict, project: str, path: str,
                            report: Report) -> None:
     """The mounted tree is the PROJECT this row claims, not just a commit.
 
@@ -1256,24 +1499,45 @@ def _check_member_identity(member: Path, row: dict, project: str,
     is the SOURCE of what that project is. The row here is a pin of it. Where
     the two disagree the row is wrong, because a family cannot rename a
     project by describing it differently.
+
+    A `project.yaml` WHOSE `stat` IS REFUSED is `member-manifest-unreadable`,
+    the finding one that cannot be opened already is, naming it and the
+    cure (#430): on Python 3.14 it was `member-not-a-project`, "a family
+    pins assembly roots, never legs", of a project that is one. ONE CODE,
+    ONE TEXT: one that cannot be OPENED says the same, `<path>: cannot be
+    read (<reason>)` and the cure for that cause (r956's SHOULD 2 on #956),
+    where it named the file twice, relative and then absolute
+    (`load_yaml`'s `yaml-unreadable` line), and gave no cure. `path` is the
+    row's path as `_check_member_repository_and_path` resolved it, so a
+    row that gives none is named at `members/<P>`, not `None` (r956's NIT 1).
     """
     manifest_path = member / "project.yaml"
-    if not manifest_path.is_file():
+    named = f"{path}/project.yaml"
+    try:
+        is_file = _is_a(manifest_path, stat.S_ISREG)
+    except OSError as exc:
+        report.finding("member-manifest-unreadable",
+                       f"{_cannot_read(named, exc)}. {_advice(exc)}"
+                       + RUN_AGAIN)
+        return
+    if not is_file:
         report.finding(
             "member-not-a-project",
-            f"{row.get('path')}: no project.yaml in the mounted tree. A member "
+            f"{path}: no project.yaml in the mounted tree. A member "
             "is a project's ASSEMBLY ROOT — the repository an engineer clones "
             "— and a family pins assembly roots, never legs.")
         return
     try:
         manifest = load_yaml(manifest_path)
     except Refusal as exc:
-        report.finding("member-manifest-unreadable",
-                       f"{row.get('path')}/project.yaml: {exc.detail}")
+        cause = exc.__cause__
+        said = (f"{_cannot_read(named, cause)}. {_advice(cause)}{RUN_AGAIN}"
+                if isinstance(cause, OSError) else f"{named}: {exc.detail}")
+        report.finding("member-manifest-unreadable", said)
         return
     if not isinstance(manifest, dict):
         report.finding("member-manifest-unreadable",
-                       f"{row.get('path')}/project.yaml: not a mapping")
+                       f"{named}: not a mapping")
         return
     recorded_id = row.get("id")
     actual_id = manifest.get("id")
@@ -1285,11 +1549,11 @@ def _check_member_identity(member: Path, row: dict, project: str,
     elif str(recorded_id) != str(actual_id):
         report.finding(
             "member-id-mismatch",
-            f"{row.get('path')}: project.yaml declares id {actual_id!r} but "
+            f"{path}: project.yaml declares id {actual_id!r} but "
             f"{MANIFEST} records {recorded_id!r} for {project}. The project's "
             "own manifest is the source; this row is a pin of it.")
     else:
-        report.note(f"{row.get('path')}: project.yaml id {actual_id}")
+        report.note(f"{path}: project.yaml id {actual_id}")
 
 
 def _load_shape_pin(root: Path) -> tuple[dict, str]:
@@ -1297,10 +1561,14 @@ def _load_shape_pin(root: Path) -> tuple[dict, str]:
 
     Split from `_check_shape_pin` for #137. Raises `Refusal` for a pin this
     validator cannot read at all — absent, or not a mapping — the same two
-    ways every other REFUSAL in this file is unreadable.
+    ways every other REFUSAL in this file is unreadable. A pin whose `stat`
+    is refused, in a `contracts/` this user cannot search, is
+    `shape-pin-unreadable` by name (`_asked`, #430): on Python 3.14 it was
+    `shape-pin-missing`, a present file said not to exist.
     """
     pin_path = root / "contracts" / "shape-pin.yaml"
-    if not pin_path.is_file():
+    if not _asked(pin_path, stat.S_ISREG, "shape-pin-unreadable",
+                  "contracts/shape-pin.yaml"):
         raise Refusal("shape-pin-missing", f"{pin_path} does not exist")
     pin = load_yaml(pin_path)
     # POSIX, on every platform: a finding names a path in THIS repository,
@@ -1344,6 +1612,13 @@ def _check_one_shape_file(root: Path, rel: str, row, report: Report) -> None:
     string, is `shape-pin-row`, as `update-shape.py` refuses it
     `update-pin-row`: its `path:` was read as a path, so a row with none
     was `None is pinned but absent` (#681).
+
+    A copy whose `stat` or read is refused is `shape-copy-unreadable`, a
+    refusal naming it as the row does (#430), `validate-pins.py`'s code for
+    the same copy (#712): `is_file()` raised a refused `stat` out of the
+    run up to Python 3.13, and called the copy "pinned but absent" on 3.14;
+    a copy at mode 000 ended in `file_sha256`'s `PermissionError` on every
+    Python.
     """
     if not isinstance(row, dict):
         report.finding("shape-pin-row", f"{rel}: a files row is not a mapping")
@@ -1354,11 +1629,14 @@ def _check_one_shape_file(root: Path, rel: str, row, report: Report) -> None:
                                         f"{path!r}, not the path of a file")
         return
     target = root / path
-    if not target.is_file():
+    if not _asked(target, stat.S_ISREG, "shape-copy-unreadable", path):
         report.finding("shape-copy-missing",
                        f"{rel}: {row.get('path')} is pinned but absent")
         return
-    actual = file_sha256(target)
+    try:
+        actual = file_sha256(target)
+    except OSError as exc:
+        raise _unreadable("shape-copy-unreadable", path, exc) from exc
     if actual != str(row.get("sha256", "")).lower():
         report.finding(
             "shape-copy-drift",
@@ -2367,7 +2645,7 @@ def _second_path_out(root: Path, path: str, commit: str,
              else "Take")
             + " it out of the index alone, which touches no file"
             + _forced_said(head, "the second line" if stage_first
-                           else "the line", _held_as(root, path))
+                           else "the line", _held_if_forced(root, path, head))
             + ":\n    " + (f"{STAGE_LINE}\n    " if stage_first else "")
             + _cached_removal(path, head))
 
@@ -2767,7 +3045,7 @@ def _gitlink_out_first(root: Path, name: str, keys: dict[str, str],
             "any member: " + (STAGE_SAID if stage else "")
             + f"take it out of the index alone, which touches no file, with "
             f"{nth}"
-            + _forced_said(head, nth, _held_as(root, path)) + "."
+            + _forced_said(head, nth, _held_if_forced(root, path, head)) + "."
             + _section_out(name, keys, "Then, with the lines after it, take",
                            then, (f"\n    {STAGE_LINE}" if stage else "")
                            + f"\n    {_cached_removal(path, head)}"))
@@ -3037,16 +3315,23 @@ def _moved_checkouts(root: Path, path: str, gitlinks: dict[str, str],
     whose `.git` is a DIRECTORY, a clone of its own, which holds its
     commits there and nowhere else. It was said to be the checkout `git
     mv` moved, to delete by hand, which lost a commit only it held (lane
-    1's SHOULD 2 on #889)."""
-    if (root / path / ".git").exists():
+    1's SHOULD 2 on #889).
+
+    NONE IS AT `path` ONLY WHERE NOTHING IS (`_checkout_gone`, ENOENT
+    alone), and a `.git` this user cannot search, at `path` or at another
+    gitlink, is `member-unreadable` (#430): on Python 3.14 a checkout
+    under a folder it cannot search was none, or named nothing, so the
+    checkout `git mv` moved went unnamed again."""
+    if not _checkout_gone(root, path):
         return [], []
     store = _store(root, path, sections)
     others = [other for other in sorted(gitlinks) if other != path]
     moved = [other for other in others
-             if _names_store(root / other / ".git", store)]
+             if _names_store(root, other, store)]
     clones = [other for other in others
               if other.casefold() == path.casefold()
-              and (root / other / ".git").is_dir()]
+              and _asked(root / other / ".git", stat.S_ISDIR,
+                         MEMBER_UNREADABLE, f"{other}/.git")]
     return moved, clones
 
 
@@ -3071,16 +3356,22 @@ def _store(root: Path, path: str,
         common_dir / "modules" / (names[-1] if names else path)))
 
 
-def _names_store(gitfile: Path, store: str) -> bool:
-    """Whether `gitfile` is a `.git` FILE that names `store` (`_store`), read
-    as git reads one: `gitdir: <path>`, trailing blanks stripped, the path
-    relative to the file's directory unless it is absolute."""
-    if not store or not gitfile.is_file():
+def _names_store(root: Path, path: str, store: str) -> bool:
+    """Whether the `.git` at the gitlink path `path` is a FILE that names
+    `store` (`_store`), read as git reads one: `gitdir: <path>`, trailing
+    blanks stripped, the path relative to the file's directory unless it is
+    absolute. One whose `stat` or read is refused is `member-unreadable`
+    (#430): it was a `.git` that named no store, so the checkout `git mv`
+    moved there went unnamed."""
+    gitfile = root / path / ".git"
+    named = f"{path}/.git"
+    if not store or not _asked(gitfile, stat.S_ISREG, MEMBER_UNREADABLE,
+                               named):
         return False
     try:
         text = gitfile.read_bytes().decode("utf-8", "surrogateescape")
-    except OSError:
-        return False
+    except OSError as exc:
+        raise _unreadable(MEMBER_UNREADABLE, named, exc) from exc
     text = text.rstrip()
     if not text.startswith("gitdir: "):
         return False
@@ -3208,10 +3499,14 @@ def _put_back_lines(root: Path, path: str,
     """The lines `member-gitlink-removal-staged` prints that keep the member
     at `path`, each group with what it puts back (#762): its gitlink;
     `section`, the lines for `.gitmodules` (`_section_back`, #879); and
-    its checkout, where none is there."""
+    its checkout, where none is there: where NOTHING is there
+    (`_checkout_gone`, ENOENT alone), and a `.git` this user cannot search
+    is `member-unreadable` (#430). On Python 3.14 that checkout was none,
+    and the update printed for it failed (`could not open '<path>/.git'
+    for writing`) on the checkout that is there."""
     lines = [([f"git reset -q -- {shlex.quote(path)}"], "its gitlink"),
              *section]
-    if not (root / path / ".git").exists():
+    if _checkout_gone(root, path):
         lines.append((["git submodule update --init --recursive -- "
                        f"{shlex.quote(path)}"], "its checkout"))
     return lines
@@ -3542,7 +3837,7 @@ def _check_members(root: Path, members: list, no_members: bool,
     stop = (_init_stop_said(root, sections, named)
             if not refused and any(
                 asked.path not in unregistered
-                and not (root / asked.path / ".git").exists()
+                and not _checked_out(root / asked.path, asked.path)
                 for asked in gitlinked) else "")
     for asked in gitlinked:
         _check_member_checkout(root, asked, report,
@@ -3566,7 +3861,11 @@ def _run_checks(args: argparse.Namespace,
     """
     root = find_repo_root(args.root or Path(__file__).resolve().parents[1])
     manifest_path = root / MANIFEST
-    if not manifest_path.is_file():
+    # A `family.yaml` whose `stat` is refused (a link into a folder this
+    # user cannot search) is refused by name (#430): on Python 3.14 it was
+    # `family-manifest-missing`, whose remedy makes a family that is here.
+    if not _asked(manifest_path, stat.S_ISREG, "family-manifest-unreadable",
+                  MANIFEST):
         raise Refusal(
             "family-manifest-missing",
             f"{manifest_path} does not exist. A family holder declares "
