@@ -5067,7 +5067,9 @@ def _manifest_values(plan: Plan, naming: NamingPolicy) -> dict | None:
     same question as any other. A refusal of the plan's own names, id,
     organisation or leg paths is raised here as it is by `check` and `execute`
     a few lines later. The organisation and the id are asked BEFORE the date
-    is: a bad date does not change which problem either command names first.
+    is, by the function `execute` asks first of the plan's options
+    (`_checked_org_and_id`, #901), so a bad date beside a bad organisation or
+    id does not make `check` and `execute` name different problems first.
     """
     if not isinstance(plan.legs, dict):
         # The doctor's PLACEMENT plan writes `legs:` as a list (see
@@ -5080,16 +5082,15 @@ def _manifest_values(plan: Plan, naming: NamingPolicy) -> dict | None:
         _check_names(naming, names, pins)
     except Refusal:
         return None
-    # The organisation and the id are asked BEFORE the date's guard below.
-    # `checked_value` refuses an `org:` this tool will not put on a command
-    # line (`unsafe-value`; `execute` meets it first, in `_repository_urls`),
-    # and `Plan.project_id` refuses an `id:` that is not a project id
-    # (`plan-bad-id`; `_template_table` reads it again). After the guard,
-    # neither was asked of a plan whose date is a finding: `check` listed the
-    # date where `execute` refused the organisation, and refused the id where
-    # `execute` refused the date.
-    org = checked_value("org", plan.get("org"))
-    _ = plan.project_id
+    # The organisation and the id are asked BEFORE the date's guard below,
+    # and as `execute` asks them, first of the plan's options (#901):
+    # `unsafe-value` for an `org:` this tool will not put on a command line,
+    # and `plan-bad-id` for an `id:` that is not a project id
+    # (`_template_table` reads it again). After the guard, neither was asked
+    # of a plan whose date is a finding: `check` listed the date where
+    # `execute` refused the organisation, and refused the id where `execute`
+    # refused the date.
+    org = _checked_org_and_id(plan)
     if _elected_on_findings(plan):
         # Reported in the plan key's own words (#294), and the reference the
         # manifest records is chosen BY that date when the plan names none:
@@ -12112,7 +12113,7 @@ def _held_findings(plan: Plan, names: dict, local_remote_dir: Path | None,
     first of (#863), each as a FINDING under its code, and the codes, which
     say whether the leg question is still asked (`RENAMES_THE_LEGS`). Asked
     only of an `org:` `execute` would get that far with: another is
-    `unsafe-value`, refused first in `_repository_urls`."""
+    `unsafe-value`, refused first in `_checked_plan_values` (#901)."""
     try:
         org = checked_value("org", _plan_org(plan))
     except Refusal:
@@ -12619,8 +12620,40 @@ def _mount_the_legs(assembly: Path, work_root: Path, names: dict, urls: dict,
     run(["git", "submodule", "sync", "-q"], cwd=assembly)
 
 
+def _checked_org_and_id(plan: Plan) -> str:
+    """The plan's `org:` as `checked_value` hands it back, once its `id:`
+    is asked too: THE FIRST OF THE PLAN'S OPTIONS, which `check` asks in
+    `_manifest_values` and `execute` in `_checked_plan_values`, before the
+    leg paths and the branch names. `checked_value` refuses an `org:` this
+    tool will not put on a `git` or `gh` command line as `unsafe-value`,
+    and `Plan.project_id` an `id:` that is no project id as `plan-bad-id`.
+
+    ONE ORDER, THE MOST BASIC PROBLEM FIRST (#901). `execute` asked the two
+    leg paths and the two branch names first, the organisation after them
+    (`_repository_urls`) and the id last, where `_refuse_what_check_finds`
+    renders the manifest, so a plan edited to `id: "North Wind"` and
+    `legs.spec_path: "../spec"` was `plan-bad-id` to `check` and
+    `plan-bad-leg-path` to `execute`, and one edited to `org: "-evil"` with
+    the same path was `unsafe-value` to one and `plan-bad-leg-path` to the
+    other. The organisation and the id come first because they say which
+    project the plan is about: every repository `execute` creates or pushes
+    to is `<org>/<name>`, and the topic it sets and the manifest's `id:`
+    are the id, where a leg path or a branch is a value inside that
+    project. And `check` holds the manifest built from both to the
+    project's own validator before it lists a finding, so it refuses
+    either outright, exit 2, where a leg path or a branch name is one
+    finding of the many it lists: asked first by both commands, this is
+    the one order they can share.
+    """
+    org = checked_value("org", _plan_org(plan))
+    _ = plan.project_id
+    return org
+
+
 def _checked_plan_values(plan: Plan) -> tuple[str, str, str, str]:
-    """The four plan values that reach a `git` command line as arguments:
+    """The plan's options, in the order `check` asks them (#901): its
+    `org:` and `id:` first (`_checked_org_and_id`), then the four values
+    that reach a `git` command line as arguments, which it returns:
     `(spec_path, code_path, branch, tracking)`.
 
     Split out of `cmd_execute` for #138, in the order the refusals came in.
@@ -12629,6 +12662,7 @@ def _checked_plan_values(plan: Plan) -> tuple[str, str, str, str]:
     git will not create is refused with `check`'s other findings, by
     `_refuse_what_check_finds`, and before any leg exists as well.
     """
+    _checked_org_and_id(plan)
     spec_leg, code_leg = _plan_leg_paths(plan)
     # Before ANY leg exists: `check` finds a bad path and `execute` refuses it
     # on its own account, not because `check` happened to be run first (#169).
@@ -15222,8 +15256,8 @@ def _not_the_source(plan: Plan, source: Source,
     a leading `-` or a character outside ASCII. `execute` asks this first,
     so it refuses such an `org:` as `plan-not-the-source` where the plan is
     held to a repository (`_held_repository`, and the `org:` is not that
-    repository's own), and as `unsafe-value`, from `_repository_urls`,
-    where it is held to none. `check` asks
+    repository's own), and as `unsafe-value`, from `_checked_plan_values`
+    (#901), where it is held to none. `check` asks
     `checked_value` of `org:` first (`_manifest_values`, and
     `_submodule_findings` where a kept submodule url is relative) and ends
     in `unsafe-value`, exit 2, before it compares anything; only where the
