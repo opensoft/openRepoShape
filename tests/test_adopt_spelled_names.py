@@ -9,7 +9,8 @@ Measured on c7a3ff16, each by the rows below that ask it:
   `caf<0xE9>.md` and `cr<CR>` in the root adopted to `adoption verified`,
   and the message read `  caf?.md` and `  cr`: `env_commit` writes the byte
   as `?`, and `git commit` strips the carriage return that ends the line,
-  so each line named another path. It lists each as `plan` shows it now.
+  so each line named another path. It lists each as `plan` shows it now,
+  and `_shown` spells a name that ends in a space, which git strips too.
 - `_spelled` wrote a backtick as a backslash and a backtick, which the
   plan's reader keeps as both, and a double quote as it is, which ends the
   plan's quoting: a spelled name copied into the plan named another entry,
@@ -46,6 +47,7 @@ from conftest import (ADOPT, REPO, blank_unnamed_pin_sources, git,
 
 sys.path.insert(0, str(REPO / "scripts"))
 from repo_shape import double_quoted, git_out, parse_yaml  # noqa: E402
+from shape_materialize import env_commit  # noqa: E402
 
 UTF8 = "utf-8"
 PROJECT = "Northwind"
@@ -175,6 +177,16 @@ def test_shown_prints_no_two_texts_alike(adopter):
     assert len(set(shown)) == len(texts), shown
 
 
+def test_a_text_that_ends_in_a_space_is_shown_spelled(adopter):
+    """A space that ends a name reads as nothing: `plan`'s table padded
+    `trail.md ` and `trail.md` to the same row, and `git commit` strips it
+    from the end of a line of the split commit's message. On c7a3ff16 it
+    was printed as it is. A space that begins one is seen, and stays."""
+    assert adopter._shown("trail.md ") == "`trail.md `"
+    assert adopter._shown("   ") == "`   `"
+    assert adopter._shown(" lead.md") == " lead.md"
+
+
 # --- the split commit's message --------------------------------------------
 
 def split_message(adopter, paths_for: dict, follow_ups=()) -> str:
@@ -195,6 +207,7 @@ LISTED = {
     "drop-esc": ("drop", "d\x1b[2Jx", "  `d\\x1b[2Jx`"),
     "root-byte": ("root", "caf\udce9.md", "  `caf\\udce9.md`"),
     "root-carriage-return": ("root", "cr\r", "  `cr\\r`"),
+    "root-trailing-space": ("root", "trail.md ", "  `trail.md `"),
 }
 
 
@@ -208,10 +221,29 @@ def test_the_split_message_lists_each_path_as_plan_shows_it(adopter, role,
     paths_for[role] = paths_for.get(role, []) + [name]
     message = split_message(adopter, paths_for)
     assert f"\n{line}\n" in message, message
-    assert name not in message
+    assert f"\n  {name}\n" not in message
     assert [part for part in message.split("\n")
             if not part.isprintable()] == []
     assert message.encode(UTF8).decode(UTF8) == message
+
+
+def test_git_commit_keeps_every_line_of_the_split_message(adopter, tmp_path):
+    """The message `env_commit` hands `git commit -F -`, read back from the
+    commit object byte for byte: git changes no line of it. On c7a3ff16 it
+    stripped the carriage return and the space that ended two names, and
+    the byte 0xE9 reached it as `?`."""
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    git("init", "-q", "-b", "main", ".", cwd=repo)
+    (repo / "README.md").write_text("# Thing\n", encoding=UTF8)
+    git("add", "README.md", cwd=repo)
+    message = split_message(adopter, {"root": [
+        "README.md", "caf\udce9.md", "cr\r", "trail.md ", "`x`"]})
+    env_commit(repo, message)
+    stored = subprocess.run(["git", "cat-file", "commit", "HEAD"],
+                            cwd=str(repo), capture_output=True,
+                            check=True).stdout.split(b"\n\n", 1)[1]
+    assert stored.decode(UTF8).split("\n") == message.split("\n")
 
 
 def test_a_follow_up_is_shown_in_the_message_as_execute_prints_it(adopter):

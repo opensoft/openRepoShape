@@ -3137,9 +3137,13 @@ def _shown(path: str) -> str:
     them, so the name `` `x` ``, printed as it is, read exactly as the
     spelling of the name `x`: spelled, it is `` `\\x60x\\x60` ``. A text
     printed as it is now never begins and ends with a backtick, and a
-    spelling always does, so no two texts print alike."""
-    if path.isprintable() and not (path.startswith("`")
-                                   and path.endswith("`")):
+    spelling always does, so no two texts print alike. AND SO IS ONE THAT
+    ENDS IN A SPACE, which reads as nothing: `git commit` strips it from
+    the end of each line of the split commit's message, which lists names
+    `_shown`, so `trail.md ` was listed as `trail.md`, and `plan`'s table
+    pads `trail.md ` and `trail.md` to the same row."""
+    if (path.isprintable() and not path.endswith(" ")
+            and not (path.startswith("`") and path.endswith("`"))):
         return path
     return _spelled(path)
 
@@ -14132,13 +14136,13 @@ def _split_message(names, paths_for, leg_commits, spec_path, code_path,
     """The split commit's message, which is also the pull request's body.
 
     EACH PATH IS NAMED AS `plan`'S REPORT NAMES IT (`_shown`, #900): as it
-    is, unless it is not printable or `_shown` would read it as a
-    spelling, and then `_spelled`. Written as it is, a name read as
-    another path: `git commit` strips the end of each line, so `cr\\r` was
-    `cr`, and `env_commit` writes a character UTF-8 cannot carry as `?`, so
-    `caf\\udce9.md`, the byte 0xE9 that is not UTF-8, was `caf?.md`. A
-    follow-up, which a person may edit in the plan, is `_shown` too, as
-    `execute` prints it before it begins.
+    is, unless it is not printable, begins and ends with a backtick or
+    ends in a space, and then `_spelled`. Written as it is, a name read as
+    another path: `git commit` strips the whitespace that ends a line, so
+    `cr\\r` was `cr`, and `env_commit` writes a character UTF-8 cannot
+    carry as `?`, so `caf\\udce9.md`, the byte 0xE9 that is not UTF-8, was
+    `caf?.md`. A follow-up, which a person may edit in the plan, is
+    `_shown` too, as `execute` prints it before it begins.
     """
     def none_line(role: str) -> list[str]:
         if role not in seeded:
