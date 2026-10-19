@@ -2278,6 +2278,18 @@ class Source:
         #: serves every later question about a link's target (#908). A blob
         #: git did not have is kept as None, and not asked for again.
         self.link_targets: dict[str, bytes | None] = {}
+        #: `object_format`'s answer, once read.
+        self._object_format: str | None = None
+
+    def object_format(self) -> str:
+        """The source's object format, `sha1` or `sha256`, as git reads it,
+        once: each throwaway repository `check` makes is given it, since a
+        clone takes its source's whatever `GIT_DEFAULT_HASH` says (#910)."""
+        if self._object_format is None:
+            self._object_format = git_out(
+                ["rev-parse", "--show-object-format"], cwd=self.path,
+                env=_inherited_env())
+        return self._object_format
 
     @classmethod
     def open(cls, spec: str, work_root: Path, unwritable: str | None = None,
@@ -8334,16 +8346,19 @@ def _named_symlinks(tree: list, targets: dict[str, bytes]) -> set[str]:
                 tree, targets)[:BAD_SYMLINK_TARGETS_NAMED])}
 
 
-def _source_path_findings(plan: Plan, tree: list, targets: dict[str, bytes]
+def _source_path_findings(plan: Plan, tree: list, targets: dict[str, bytes],
+                          refused: list[str] | tuple = ()
                           ) -> tuple[list[str], list[str]]:
     """The findings `_entry_findings` lists first, about the source's own
     paths, and what to print once after every finding for them: each entry
     path `execute` will not extract (#196), then each symlink of the source
     whose target is empty (#303) or begins with a NUL byte (#388), its
     target read from `targets` (`symlink_targets`), and each whose target
-    holds a NUL byte after its first, or is longer than Linux takes (#908).
-    A link the plan keeps in the root AT `project.yaml` says so in its
-    finding, which is then the only one that names it."""
+    holds a NUL byte after its first, or is longer than Linux takes (#908),
+    then the paths of the source commit git refuses, `refused`
+    (`_paths_git_refuses`, #910). A link the plan keeps in the root AT
+    `project.yaml` says so in its finding, which is then the only one that
+    names it."""
     unsafe, unsafe_remediation = _unsafe_path_findings(plan)
     # Asked only where a named link sits at the manifest's own name, which
     # is rare: it reads the plan's answers, which no other finding here does.
@@ -8355,8 +8370,11 @@ def _source_path_findings(plan: Plan, tree: list, targets: dict[str, bytes]
                                                        manifest)
     bad, bad_remediation = _bad_symlink_target_findings(tree, targets,
                                                         manifest)
-    return (unsafe + empty + bad,
-            unsafe_remediation + empty_remediation + bad_remediation)
+    git_refuses, git_refuses_remediation = _path_git_refuses_findings(
+        list(refused))
+    return (unsafe + empty + bad + git_refuses,
+            unsafe_remediation + empty_remediation + bad_remediation
+            + git_refuses_remediation)
 
 
 def _unsafe_path_findings(plan: Plan) -> tuple[list[str], list[str]]:
@@ -8569,7 +8587,17 @@ def _entry_findings(plan: Plan, source: Source,
     """
     tree = source.tree()
     targets = symlink_targets(source, tree)
-    unsafe, unsafe_remediation = _source_path_findings(plan, tree, targets)
+    # Which of the source's paths git holds at all, asked of git first, in a
+    # throwaway repository of its own: one it refuses is a fact of the
+    # source, said with the others (#910). Where that repository cannot be
+    # made or asked, neither can the others `check` makes in the same work
+    # directory, and one finding says why, in their place below.
+    try:
+        refused, unasked = _paths_git_refuses(source, tree), []
+    except _Unasked as exc:
+        refused, unasked = [], [f"FINDING {exc.code}: {exc.detail}"]
+    unsafe, unsafe_remediation = _source_path_findings(plan, tree, targets,
+                                                       refused)
     findings = (unsafe
                 + _coverage_findings([str(e.get("path"))
                                       for e in plan.entries],
@@ -8599,14 +8627,12 @@ def _entry_findings(plan: Plan, source: Source,
         plan, () if tracking is None
         or _a_branch_execute_writes(source, TRACKING_KEY, str(tracking))
         else (MANIFEST_FIELDS[TRACKING_KEY],))
-    # One answer to whether git checks a symlink out as one, for the two
-    # questions whose walks may need it on any source (#654).
+    # One answer to whether git checks a symlink out as one, for every
+    # question whose walks may need it on any source (#654, #910).
     probe = _SymlinkProbe(source.work_root)
     return (findings + misread + split
             + _root_symlink_findings(plan, source, tree, probe)
-            + _nested_attributes_findings(plan, source, tree)
-            + _reencoded_attributes_findings(plan, source, tree)
-            + _reencoded_files_findings(plan, source, tree, probe)
+            + (unasked or _asked_in_throwaways(plan, source, tree, probe))
             + unwritable_findings + value_findings + names
             + tracking_findings + moved + field_findings,
             unsafe_remediation
@@ -8614,7 +8640,7 @@ def _entry_findings(plan: Plan, source: Source,
             + split_remediation + unwritable_remediation + value_remediation
             + names_remediation + tracking_remediation + moved_remediation
             + field_remediation,
-            pin_notes + notes)
+            pin_notes + notes + probe.notes())
 
 
 # ---------------------------------------------------------------------------
@@ -9903,6 +9929,9 @@ class _SymlinkProbe:
     def __init__(self, work_root: Path | None) -> None:
         self.work_root = work_root
         self._answer: bool | None = None
+        #: Why git could not be asked, where it refused to make the
+        #: repository (#910), for `notes`.
+        self.unasked: str | None = None
 
     def symlinks(self) -> bool:
         """Whether `git` checks a symlink out AS a symlink there."""
@@ -9921,7 +9950,31 @@ class _SymlinkProbe:
                 # would otherwise end in a traceback. `execute` itself
                 # refuses such a directory before it gets here (#524).
                 self._answer = True
+            except (CommandFailed, Refusal) as exc:
+                # `git init` there failed otherwise: `GIT_DEFAULT_HASH`
+                # naming no hash, say, or an `init.defaultBranch` git will
+                # not take. It stopped `check` with "a git or gh command
+                # failed" where main printed the finding (L1-32 of #457):
+                # taken as a disk that holds symlinks, as above, `check`
+                # prints the finding the probe stands for, and says why in a
+                # NOTE (`notes`, #910).
+                self._answer = True
+                self.unasked = (
+                    f"`{' '.join(exc.args_list)}` exited {exc.code}: "
+                    f"{_spelled(exc.output)}"
+                    if isinstance(exc, CommandFailed) else exc.detail)
         return self._answer
+
+    def notes(self) -> list[str]:
+        """The NOTE `check` prints where git refused to make the repository
+        it asks (#910): none where it was asked, or never needed."""
+        if self.unasked is None:
+            return []
+        return [f"NOTE `check` could not ask git whether it checks a symlink "
+                f"out as a symlink in {_spelled(str(self.work_root))}, the "
+                f"work directory: {self.unasked}. It took it that git does, "
+                "as on a disk that holds symlinks, so a finding about a "
+                "symlink above says what such a disk makes of it."]
 
 
 def _refuse_symlinks_checked_out_as_files(plan: Plan, source: Source,
@@ -9972,6 +10025,205 @@ def _refuse_symlinks_checked_out_as_files(plan: Plan, source: Source,
         "`core.symlinks` true, on a filesystem that can hold one -- or send "
         f"{_spelled(link)} to a leg or `drop` it in the plan and run `check` "
         "again.")
+
+
+# ---------------------------------------------------------------------------
+# `check`'s throwaway repositories (#910)
+# ---------------------------------------------------------------------------
+#
+# `check` asks this machine's git in repositories of its own, which it
+# removes again: which of the source's paths git holds at all
+# (`_paths_git_refuses`), which kept nested `.gitattributes` outrank the
+# root's rule (`_AttributesProbe`, #530), what `git add` stores at the root's
+# own (`_stored_as_written`, #530's D5(a)), and what the split's checkout,
+# `git rm` and `git add` make of every file (`_SplitRehearsal`, #654). Each
+# answers as the split will, or `check` says why it cannot (#910, from lane
+# 3's triage of #457: L1-90, L1-92 and L1-94; L1-32 is `_SymlinkProbe`'s).
+# Measured with git 2.43 on c7a3ff16:
+#
+# * THE SOURCE'S OBJECT FORMAT (L1-90). `git init` takes `GIT_DEFAULT_HASH`,
+#   and the rehearsal borrows the source's objects, so a SHA-256 source, or
+#   `GIT_DEFAULT_HASH=sha256` over a SHA-1 one, stopped `check` with
+#   `REFUSED git-failed` at its `read-tree`, where the split's clone takes
+#   its source's format whatever the variable says. Each is made with the
+#   source's own (`Source.object_format`).
+# * A PATH GIT REFUSES (L1-90). A tree can hold a path git checks out
+#   nowhere, `..` or `.Git/x` (`git mktree` writes either), and `read-tree`
+#   stopped `check` at it with `REFUSED git-failed`. Before #654 `check`
+#   passed it, and `execute` made both legs and stopped extracting the spec
+#   leg, its first clone of the source saying `error: invalid path '..'`.
+#   Which paths git refuses is git's to say, with this machine's settings
+#   (`core.protectNTFS` refuses `GIT~1/x` and `.git.` too): every path of the
+#   source commit is handed to `update-index --index-info`, which leaves out
+#   each one it refuses and takes the rest, and what the index then lacks is
+#   `plan-path-git-refuses`, a fact of the source, said with the others
+#   (`_source_path_findings`).
+# * IN THE WORK DIRECTORY (L1-92). The three made after #183's probe were
+#   made in the system's temporary directory, so with `TMPDIR` on another
+#   file system than the work directory they asked another disk than the
+#   split's: what `git init` writes there for case and symlinks, and what a
+#   checkout can write. Each is now made where the probe always was, in the
+#   work directory, where `execute` builds the split, and which `check
+#   --work-dir` is to be given as `execute` is; a `Source` no command opened
+#   has none, and uses the system's.
+# * NO HOOK OF THIS MACHINE'S (L1-94). A `core.hooksPath` in this machine's
+#   config ran its `post-index-change` hook in the rehearsal and in
+#   `_stored_as_written`'s repository, 12 times in one `check`. Every git
+#   command there takes `-c core.hooksPath=` an empty directory of its own,
+#   which is its `--template` too: no hook runs and none is copied in, and a
+#   `-c` outranks every config file and `GIT_CONFIG_COUNT`.
+# * ONE THAT CANNOT BE MADE OR ASKED IS A FINDING (`UNASKED`), never
+#   `git-failed`: a work directory nothing can be made in, a setting `git
+#   init` refuses (`init.defaultBranch = a..b`, which the split's own clone
+#   refuses too), or git failing a step there. It says where and why, and
+#   `execute`, which asks the same in its own work directory before it makes
+#   either leg, refuses it there. The questions after it are not asked.
+
+#: `check`'s finding, and the code of `execute`'s refusal, for the paths of
+#: the source commit that this machine's git will not hold in an index, and
+#: so checks out nowhere (#910).
+PATH_GIT_REFUSES = "plan-path-git-refuses"
+#: What a plan whose source holds one is told to do. Said by `check`, once
+#: after its findings, and by `execute`'s refusal, after its own remediation.
+PATH_GIT_REFUSES_REMEDIATION = (
+    "Remediation: a path git refuses is a fact of the source, and no answer "
+    "in the plan changes it, `drop` included: `execute` clones the whole "
+    "source before it takes out anything the plan sends elsewhere, and git "
+    "checks out no commit that holds such a path. Rename or remove each one "
+    "in the source, in a commit git can check out, and re-run `plan`: a "
+    "plan is written against one commit of the source, and `check` calls it "
+    "`plan-stale` once the source has moved.")
+#: `check`'s finding, and the code of `execute`'s refusal, where a throwaway
+#: repository cannot be made in the work directory, or git there fails a
+#: step it is asked, so that the question goes unasked (#910).
+UNASKED = "adopt-git-unasked"
+#: The empty directory beside each throwaway repository: its `--template`, so
+#: `git init` copies nothing in, and its `core.hooksPath`, so no hook runs.
+THROWAWAY_EMPTY = "empty"
+
+
+class _Unasked(Refusal):
+    """A question of `check`'s that could not be asked in a throwaway
+    repository in `where`, and why (#910). A `Refusal` under `UNASKED`, so
+    that one nothing makes a finding of still says why, and never as
+    `git-failed`; `_entry_findings` makes it the finding."""
+
+    def __init__(self, where: Path, why: str) -> None:
+        super().__init__(
+            UNASKED,
+            "`check` asks this machine's git what the split will make of the "
+            f"source in throwaway repositories in {_spelled(str(where))}, the "
+            "work directory, where `execute` builds the split, and it could "
+            f"not: {why}. `execute` asks the same in its own work directory "
+            "before it makes either leg, and refuses while git cannot answer "
+            "there. Fix what that names -- a git setting, the disk or the "
+            "directory -- or pass another --work-dir, and run `check` again.")
+
+
+def _why_unasked(exc: BaseException) -> str:
+    """What `_Unasked` says of `exc`: an `OSError` making or writing in the
+    throwaway repository, or git's refusal of a step there, in git's words
+    as `git_out` spells them."""
+    if isinstance(exc, OSError):
+        return ("a directory or a file could not be made there "
+                f"({exc.strerror or exc})")
+    return exc.detail if isinstance(exc, Refusal) else str(exc)
+
+
+@contextlib.contextmanager
+def _asked_there(where: Path):
+    """What fails in a throwaway repository in `where`, an `OSError` or a
+    git refusal, raised as the `_Unasked` that says why (#910)."""
+    try:
+        yield
+    except _Unasked:
+        raise
+    except (OSError, Refusal) as exc:
+        raise _Unasked(where, _why_unasked(exc)) from None
+
+
+def _throwaway(prefix: str, source: Source | None) -> Path:
+    """A new directory for a throwaway repository of `check`'s, named from
+    `prefix`, in the work directory `source` was opened in (#910), or in the
+    system's temporary directory for a `Source` no command opened; it is
+    `_Unasked` where none can be made there."""
+    where = source.work_root if source is not None else None
+    with _asked_there(where or Path(tempfile.gettempdir())):
+        return Path(tempfile.mkdtemp(prefix=prefix, dir=where))
+
+
+def _throwaway_made(scratch: Path, repository: Path, source: Source | None,
+                    env: dict) -> list[str]:
+    """`git init` of `repository` in `scratch`, as `check` makes each of its
+    throwaway repositories (#910): from the empty `THROWAWAY_EMPTY` and with
+    the source's object format. Returns the `-c` every git command run there
+    takes: `core.hooksPath` that same empty directory. `_Unasked` where it
+    cannot be made."""
+    formats = ([] if source is None
+               else [f"--object-format={source.object_format()}"])
+    empty = scratch / THROWAWAY_EMPTY
+    hooks_off = ["-c", f"core.hooksPath={empty}"]
+    with _asked_there(scratch.parent):
+        empty.mkdir()
+        git_out([*hooks_off, "init", "-q", f"--template={empty}", *formats,
+                 str(repository)], cwd=scratch, env=env)
+    return hooks_off
+
+
+def _throwaway_removed(scratch: Path) -> None:
+    """`scratch` removed with all it holds, what git wrote read-only
+    included, which Windows refuses to unlink (`_writable_then_removed`);
+    what still cannot be removed is left, as `ignore_errors` left it."""
+    def removed(remove, target, error) -> None:
+        with contextlib.suppress(OSError):
+            _writable_then_removed(remove, target, error)
+
+    shutil.rmtree(scratch, **{REMOVAL_HANDLER: removed})
+
+
+def _paths_git_refuses(source: Source, tree: list) -> list[str]:
+    """Each path of `tree` (`Source.tree()`'s rows) that this machine's git
+    will not hold in an index, in the tree's order (#910), asked in a
+    rehearsal of its own (`_SplitRehearsal.refused_paths`)."""
+    with _SplitRehearsal(source) as asked:
+        return asked.refused_paths(tree)
+
+
+def _path_git_refuses_findings(paths: list[str]
+                               ) -> tuple[list[str], list[str]]:
+    """`check`'s finding for the paths of the source commit that git
+    refuses, `_paths_git_refuses`' answer, naming `NAMED_PATHS` of them and
+    counting the rest; and what to print once after every finding. Read from
+    the tree alone: no answer of the plan's changes it."""
+    if not paths:
+        return [], []
+    one = len(paths) == 1
+    return ([f"FINDING {PATH_GIT_REFUSES}: the source commit holds "
+             f"{'1 path' if one else f'{len(paths)} paths'} this machine's "
+             f"git refuses as a path, and holds in no index: "
+             f"{_named_and_counted(paths)}. Each clone `execute` makes of "
+             f"the source stops at {'it' if one else 'the first'}, `unable "
+             "to checkout working tree`, after both leg repositories were "
+             "created, whatever the plan answers for "
+             f"{'it' if one else 'them'}."],
+            [PATH_GIT_REFUSES_REMEDIATION])
+
+
+def _asked_in_throwaways(plan: Plan, source: Source, tree: list,
+                         probe: _SymlinkProbe) -> list[str]:
+    """The findings of `check`'s questions to git in throwaway repositories,
+    in `_entry_findings`' order (#530, #654). Where one cannot be asked,
+    those before it and `UNASKED`'s, which says why; none after it, asked in
+    the same work directory, is asked (#910)."""
+    found: list[str] = []
+    for question in (_nested_attributes_findings,
+                     _reencoded_attributes_findings,
+                     _reencoded_files_findings):
+        try:
+            found += question(plan, source, tree, probe)
+        except _Unasked as exc:
+            return [*found, f"FINDING {exc.code}: {exc.detail}"]
+    return found
 
 
 # ---------------------------------------------------------------------------
@@ -10148,34 +10400,35 @@ def checked_out_as(values: dict) -> str:
 class _AttributesProbe:
     """A throwaway repository to ask `git check-attr` in: each question's
     `.gitattributes` files are written into a work tree of their own, which
-    holds nothing else. Made where `_ask_git_branch` makes its own, in the
-    system's temporary directory, and removed on leaving the `with`."""
+    holds nothing else. Made as `check` makes each of its own (#910): in the
+    work directory `source` was opened in, with its object format and no
+    hook; and removed on leaving the `with`."""
 
-    def __init__(self) -> None:
-        self._scratch = Path(tempfile.mkdtemp(
-            prefix="openreposhape-attributes-"))
+    def __init__(self, source: Source | None = None) -> None:
+        self._source = source
+        self._scratch = _throwaway("openreposhape-attributes-", source)
         self._asked = 0
         #: An empty file, read in place of the person's own global config
         #: and `core.attributesFile`.
         self._nothing = self._scratch / "nothing"
         self._env = _probe_env(self._nothing)
         self._git_dir = self._scratch / "repository" / ".git"
+        #: The `-c` every git command here takes (`_throwaway_made`).
+        self._hooks_off: list[str] = []
 
     def __enter__(self) -> "_AttributesProbe":
         try:
-            empty = self._scratch / "no-template"
-            empty.mkdir()
-            self._nothing.write_bytes(b"")
-            git_out(["init", "-q", f"--template={empty}",
-                     str(self._git_dir.parent)], cwd=self._scratch,
-                    env=self._env)
+            with _asked_there(self._scratch.parent):
+                self._nothing.write_bytes(b"")
+            self._hooks_off = _throwaway_made(
+                self._scratch, self._git_dir.parent, self._source, self._env)
         except BaseException:
             self.__exit__()
             raise
         return self
 
     def __exit__(self, *_exc) -> None:
-        shutil.rmtree(self._scratch, ignore_errors=True)
+        _throwaway_removed(self._scratch)
 
     def ask(self, layout: dict, paths: list[str],
             fold: bool) -> dict[str, dict[str, str]]:
@@ -10184,16 +10437,19 @@ class _AttributesProbe:
         reads them, and git ignoring case where `fold` says so."""
         self._asked += 1
         tree = self._scratch / f"tree-{self._asked}"
-        tree.mkdir()
-        for rel, data in layout.items():
-            target = tree.joinpath(*rel.split("/"))
-            target.parent.mkdir(parents=True, exist_ok=True)
-            target.write_bytes(data)
-        raw = git_out([f"--git-dir={self._git_dir}", f"--work-tree={tree}",
-                       "-c", f"core.ignorecase={str(fold).lower()}",
-                       "-c", f"core.attributesFile={self._nothing}",
-                       "check-attr", "-z", *LINE_ENDING_ATTRIBUTES, "--",
-                       *paths], cwd=tree, binary=True, env=self._env)
+        with _asked_there(self._scratch.parent):
+            tree.mkdir()
+            for rel, data in layout.items():
+                target = tree.joinpath(*rel.split("/"))
+                target.parent.mkdir(parents=True, exist_ok=True)
+                target.write_bytes(data)
+            raw = git_out([*self._hooks_off, f"--git-dir={self._git_dir}",
+                           f"--work-tree={tree}",
+                           "-c", f"core.ignorecase={str(fold).lower()}",
+                           "-c", f"core.attributesFile={self._nothing}",
+                           "check-attr", "-z", *LINE_ENDING_ATTRIBUTES,
+                           "--", *paths], cwd=tree, binary=True,
+                          env=self._env)
         fields = raw.split(b"\0")
         said: dict[str, dict[str, str]] = {}
         for at in range(0, len(fields) - 2, 3):
@@ -10381,17 +10637,20 @@ def _outranking(asked: _AttributesProbe, fold: bool, landed: list[str],
     return found
 
 
-def _nested_attributes_findings(plan: Plan, source: Source,
-                                tree: list) -> list[str]:
+def _nested_attributes_findings(plan: Plan, source: Source, tree: list,
+                                probe: _SymlinkProbe | None = None
+                                ) -> list[str]:
     """A FINDING for each `.gitattributes` the plan keeps below the root
     whose rules outrank the root's line-ending rule for a pinned copy (#530),
     in the tree's order. A source that keeps none above a copy asks git
-    nothing, and adopts as it did."""
+    nothing, and adopts as it did. `probe` is `_entry_findings`' one probe
+    (#910); `_Unasked` where git cannot be asked."""
     nested = _kept_nested_attributes(plan, tree)
     if not nested:
         return []
     kept = _kept_in_root(plan.entries, tree)
-    probe = _SymlinkProbe(source.work_root)
+    if probe is None:
+        probe = _SymlinkProbe(source.work_root)
     questions = []
     for fold in (False, True):
         walks = _PlannedRoot(plan, source, tree, probe=probe,
@@ -10417,7 +10676,7 @@ def _nested_attributes_findings(plan: Plan, source: Source,
     if not questions:
         return []
     found: dict[str, str] = {}
-    with _AttributesProbe() as asked:
+    with _AttributesProbe(source) as asked:
         for fold, landed, root, placed, linked in questions:
             for path, finding in _outranking(asked, fold, landed, root,
                                              placed, linked):
@@ -10471,17 +10730,20 @@ def _nested_attributes_findings(plan: Plan, source: Source,
 REENCODED_ATTRIBUTES = "plan-attributes-reencoded"
 
 
-def _stored_as_written(blob: bytes, mode: str,
-                       written: bytes) -> tuple[str | None, bool]:
+def _stored_as_written(blob: bytes, mode: str, written: bytes,
+                       source: Source | None = None
+                       ) -> tuple[str | None, bool]:
     """`(None, …)` when this machine's `git add` stores `written` at the
     root's `.gitattributes`, over an index that holds `blob` there with
     `mode`, as exactly those bytes; else what it did: git's last line where
     it refused, or "" where it stored other bytes. And whether a
     `working-tree-encoding` rule reaches the file itself, which leaves the
     split's checkout of it a file git reads no rule from (#654's L1-12).
-    Asked in a throwaway repository in the system's temporary directory,
-    removed afterwards."""
-    scratch = Path(tempfile.mkdtemp(prefix="openreposhape-attributes-"))
+    Asked in a throwaway repository made as `check` makes each of its own
+    (#910), in the work directory `source` was opened in, with its object
+    format and no hook, and removed afterwards; `_Unasked` where git cannot
+    be asked there."""
+    scratch = _throwaway("openreposhape-attributes-", source)
     env = _inherited_env()
     # No fsmonitor daemon is started for a repository that is about to go.
     git = ["-c", "core.fsmonitor=false"]
@@ -10494,30 +10756,30 @@ def _stored_as_written(blob: bytes, mode: str,
                         str(scratch / name)], cwd=repository, env=env)
 
     try:
-        empty = scratch / "no-template"
-        empty.mkdir()
-        git_out(["init", "-q", f"--template={empty}", str(repository)],
-                cwd=scratch, env=env)
-        git_out([*git, "update-index", "--add", "--cacheinfo",
-                 f"{mode},{raw_oid(blob, 'held', '-w')},{ATTRIBUTES}"],
-                cwd=repository, env=env)
-        (repository / ATTRIBUTES).write_bytes(written)
-        encoded = git_out([*git, "check-attr", "-z", "working-tree-encoding",
-                           "--", ATTRIBUTES], cwd=repository, env=env,
-                          binary=True).split(b"\0")[2].decode(
-                              "utf-8", "replace") not in NO_RULE
-        added = subprocess.run(["git", *git, "add", "--", ATTRIBUTES],
-                               cwd=str(repository), env=env,
-                               capture_output=True, check=False)
-        if added.returncode:
-            said = added.stderr.decode(errors="replace").strip()
-            return (said.splitlines()[-1] if said else
-                    f"exit {added.returncode}"), encoded
-        staged = git_out([*git, "ls-files", "-s", "--", ATTRIBUTES],
-                         cwd=repository, env=env).split()[1]
-        return (None if staged == raw_oid(written, "wanted") else ""), encoded
+        git += _throwaway_made(scratch, repository, source, env)
+        with _asked_there(scratch.parent):
+            git_out([*git, "update-index", "--add", "--cacheinfo",
+                     f"{mode},{raw_oid(blob, 'held', '-w')},{ATTRIBUTES}"],
+                    cwd=repository, env=env)
+            (repository / ATTRIBUTES).write_bytes(written)
+            encoded = git_out([*git, "check-attr", "-z",
+                               "working-tree-encoding", "--", ATTRIBUTES],
+                              cwd=repository, env=env,
+                              binary=True).split(b"\0")[2].decode(
+                                  "utf-8", "replace") not in NO_RULE
+            added = subprocess.run(["git", *git, "add", "--", ATTRIBUTES],
+                                   cwd=str(repository), env=env,
+                                   capture_output=True, check=False)
+            if added.returncode:
+                said = added.stderr.decode(errors="replace").strip()
+                return (said.splitlines()[-1] if said else
+                        f"exit {added.returncode}"), encoded
+            staged = git_out([*git, "ls-files", "-s", "--", ATTRIBUTES],
+                             cwd=repository, env=env).split()[1]
+            return ((None if staged == raw_oid(written, "wanted") else ""),
+                    encoded)
     finally:
-        shutil.rmtree(scratch, ignore_errors=True)
+        _throwaway_removed(scratch)
 
 
 def _reencoded_attributes_finding(said: str, encoded: bool = False) -> str:
@@ -10562,25 +10824,29 @@ def _reencoded_attributes_finding(said: str, encoded: bool = False) -> str:
 
 
 def _reencoded_attributes_findings(plan: Plan, source: Source,
-                                   tree: list) -> list[str]:
+                                   tree: list,
+                                   probe: _SymlinkProbe | None = None
+                                   ) -> list[str]:
     """A FINDING where the plan keeps the source's own `.gitattributes` in
     the root, which the split appends the block to, and this machine's `git
     add` would not store what the split writes there as those bytes (#530,
     D5(a)). A root that keeps none, or keeps a symlink there, asks git
-    nothing."""
+    nothing. `probe` is `_entry_findings`' one probe (#910); `_Unasked`
+    where git cannot be asked."""
     disk = _KeptTree(_kept_in_root(plan.entries, tree), False)
     row = disk.at(ATTRIBUTES)
     if row is None or row[1] not in FILE_MODES:
         return []
-    walks = _PlannedRoot(plan, source, tree,
-                         probe=_SymlinkProbe(source.work_root)).walks()
+    if probe is None:
+        probe = _SymlinkProbe(source.work_root)
+    walks = _PlannedRoot(plan, source, tree, probe=probe).walks()
     written = _root_attributes(source, walks, disk, tree,
                                [name for name, _ in _pinned_landings(walks)])
     if f"{COLLISION_DIR}/{ATTRIBUTES}" not in written:
         return []
     blobs = {path: oid for path, _, oid, _ in tree}
     said, encoded = _stored_as_written(_blob_bytes(source.path, blobs[row[0]]),
-                                       row[1], written[ATTRIBUTES])
+                                       row[1], written[ATTRIBUTES], source)
     return ([] if said is None
             else [_reencoded_attributes_finding(said, encoded)])
 
@@ -10665,9 +10931,11 @@ NAMED_PATHS = 10
 
 #: The rehearsal's index files: the commit as the source holds it, and as
 #: the split's root will; what the split's checkout writes; what the mount's
-#: `git rm` takes; and what the split's `git add` stores again.
+#: `git rm` takes; and what the split's `git add` stores again. And every
+#: path of the commit git holds at all (`refused_paths`, #910).
 AS_HELD, AS_SPLIT = "index-as-held", "index-as-split"
 CHECKED_OUT, TAKEN, STORED = "index-checked-out", "index-taken", "index-stored"
+PATHS_HELD = "index-paths"
 
 #: How a finding says which files git reads again.
 READ_AGAIN = ("each one git reads again (every file of a small source; of a "
@@ -10719,65 +10987,75 @@ def _nul(path: str) -> bytes:
 class _SplitRehearsal:
     """A throwaway repository that borrows a source's objects, to ask this
     machine's git what the split's checkout, `git rm` and `git add` make of
-    them. Made in the system's temporary directory, as `_stored_as_written`
-    makes its own, and removed on leaving the `with`."""
+    them. Made as `check` makes each of its own (#910): in the work directory
+    the source was opened in, with its object format and no hook; and removed
+    on leaving the `with`. `_Unasked` where git cannot be asked there."""
 
     def __init__(self, source: Source) -> None:
         self._source = source
-        self._scratch = Path(tempfile.mkdtemp(
-            prefix="openreposhape-reencoded-"))
+        self._scratch = _throwaway("openreposhape-reencoded-", source)
         self.work = self._scratch / "repository"
         # git-lfs's smudge is skipped: each LFS file is checked out as its
         # pointer, which git-lfs's clean stores as it is, so no LFS object is
         # read, linked or fetched, and a blob under `filter=lfs` that is not
         # a pointer is still stored otherwise and found.
         self._env = {**_inherited_env(), "GIT_LFS_SKIP_SMUDGE": "1"}
+        #: The `-c` every git command here takes (`_throwaway_made`).
+        self._hooks_off: list[str] = []
 
     def __enter__(self) -> "_SplitRehearsal":
         try:
-            objects = git_out(["rev-parse", "--path-format=absolute",
-                               "--git-path", "objects"],
-                              cwd=self._source.path, binary=True,
-                              env=self._env).strip()
-            # The source's own object format, whatever `GIT_DEFAULT_HASH`
-            # says: a SHA-256 source's objects are none to a SHA-1
-            # repository, and the reverse (#910).
-            object_format = git_out(["rev-parse", "--show-object-format"],
-                                    cwd=self._source.path, env=self._env)
-            empty = self._scratch / "no-template"
-            empty.mkdir()
-            git_out(["init", "-q", f"--template={empty}",
-                     f"--object-format={object_format}", str(self.work)],
-                    cwd=self._scratch, env=self._env)
-            info = self.work / ".git" / "objects" / "info"
-            info.mkdir(parents=True, exist_ok=True)
-            (info / "alternates").write_bytes(objects + b"\n")
+            with _asked_there(self._scratch.parent):
+                objects = git_out(["rev-parse", "--path-format=absolute",
+                                   "--git-path", "objects"],
+                                  cwd=self._source.path, binary=True,
+                                  env=self._env).strip()
+            self._hooks_off = _throwaway_made(self._scratch, self.work,
+                                              self._source, self._env)
+            with _asked_there(self._scratch.parent):
+                info = self.work / ".git" / "objects" / "info"
+                info.mkdir(parents=True, exist_ok=True)
+                (info / "alternates").write_bytes(objects + b"\n")
         except BaseException:
             self.__exit__()
             raise
         return self
 
     def __exit__(self, *_exc) -> None:
-        shutil.rmtree(self._scratch, ignore_errors=True)
+        _throwaway_removed(self._scratch)
 
     def git(self, args: list[str], index: str,
             data: bytes = b"") -> subprocess.CompletedProcess:
         """`git <args>` here, over the index file `index`, `data` its stdin.
         No fsmonitor daemon is started for a repository about to go."""
         return subprocess.run(
-            ["git", "-c", "core.fsmonitor=false", *args], cwd=str(self.work),
-            input=data, capture_output=True, check=False,
+            ["git", *self._hooks_off, "-c", "core.fsmonitor=false", *args],
+            cwd=str(self.work), input=data, capture_output=True, check=False,
             env={**self._env,
                  "GIT_INDEX_FILE": str(self.work / ".git" / index)})
 
     def asked(self, args: list[str], index: str, data: bytes = b"") -> bytes:
-        """`git`'s stdout, or the `git-failed` refusal `git_out` raises."""
+        """`git`'s stdout; where git fails, the `_Unasked` that says so in
+        its words, as `git_out` spells them, never `git-failed` (#910)."""
         proc = self.git(args, index, data)
         if proc.returncode:
-            raise Refusal("git-failed", "`git {}` in {} exited {}: {}".format(
-                " ".join(args), self.work, proc.returncode,
-                proc.stderr.decode("utf-8", "replace").strip()))
+            raise _Unasked(self._scratch.parent, "`git {}` in {} exited {}: {}"
+                           .format(" ".join(args), shown_path(self.work),
+                                   proc.returncode, spelled_as_git_out(
+                                       proc.stderr.decode(
+                                           "utf-8", "replace").strip())))
         return proc.stdout
+
+    def refused_paths(self, tree: list) -> list[str]:
+        """Each path of `tree` (`Source.tree()`'s rows) that this machine's
+        git will not hold in an index, in the tree's order (#910):
+        `update-index --index-info` leaves out each path it refuses, saying
+        `Ignoring path`, and takes the rest, and git's own listing of the
+        index is read back."""
+        self.hold(PATHS_HELD, [(path, mode, oid)
+                               for path, mode, oid, _ in tree])
+        held = set(self.listed(["ls-files", "-z"], PATHS_HELD))
+        return [path for path, _, _, _ in tree if path not in held]
 
     def refused(self, args: list[str], index: str,
                 data: bytes = b"") -> str | None:
@@ -11037,7 +11315,9 @@ def _reencoded_files_findings(plan: Plan, source: Source, tree: list,
     question, and is not asked again; one kept as a symlink, which the split
     never writes through, is `plan-root-symlink`'s or #471's follow-up's.
     `probe` is `_entry_findings`' one probe, shared with
-    `_root_symlink_findings`."""
+    `_root_symlink_findings`. A source commit holding a path git refuses is
+    asked nothing more, and `_Unasked` is raised where git cannot be asked
+    (#910)."""
     kept_rows = _kept_in_root(plan.entries, tree)
     kept = {path for path, _, _ in kept_rows}
     disk = _KeptTree(kept_rows, False)
@@ -11060,6 +11340,10 @@ def _reencoded_files_findings(plan: Plan, source: Source, tree: list,
     makefile = (None if leg_path_problems(spec, code)
                 else adopt_makefile_block(spec[1], code[1]))
     with _SplitRehearsal(source) as asked:
+        # A path git refuses stops the split's clone before anything asked
+        # here, and `read-tree` at it: `plan-path-git-refuses` names it.
+        if asked.refused_paths(tree):
+            return []
         reached, at_the_root = _rules_reaching(
             asked, source, tree, kept, written,
             [landed for _, landed in landings])
