@@ -9965,7 +9965,7 @@ def sibling_slot(root: Path, sibling: Path, row: dict,
 
 
 def member_state(ctx: Context, row: dict, members_dir: str,
-                 refused: list | None = None) -> dict:
+                 refused: list) -> dict:
     """ONE member's `--json` entry: both copies of it, as they are found.
 
     NOTHING IS ASKED OF A MOUNT THAT IS NOT POPULATED. An unbootstrapped
@@ -9992,9 +9992,8 @@ def member_state(ctx: Context, row: dict, members_dir: str,
     A MOUNT THIS USER CANNOT REACH IS NAMED (#430), by `mount_read`, as the
     `legs` row names a leg's: the gate's line under `mount_cannot_be_read`,
     and nothing asked of it. A `members/` at mode 000 was `could not be run`
-    up to Python 3.13 and an unbootstrapped submodule from 3.14. `refused`,
-    where given, collects `mount_read`'s `(line, OSError, listed)` for the
-    row's advice.
+    up to Python 3.13 and an unbootstrapped submodule from 3.14. `refused`
+    collects `mount_read`'s `(line, OSError, listed)` for the row's advice.
 
     Split out of `check_members` for #134.
     """
@@ -10020,8 +10019,7 @@ def member_state(ctx: Context, row: dict, members_dir: str,
              "working_clone": clone, "other_origin": elsewhere}
     if unread is not None:
         entry[MOUNT_UNREAD] = unread[0]
-        if refused is not None:
-            refused.append(unread)
+        refused.append(unread)
     return entry
 
 
