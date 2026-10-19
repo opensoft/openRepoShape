@@ -96,8 +96,10 @@ TAKE_OUT = "take it out of the index alone, which touches no file"
 
 #: What it says first where lines printed before it may leave `.gitmodules`
 #: with changes not staged, or it holds some, and the line it prints for
-#: that: git takes no gitlink out of the index then (#879's C3).
-STAGE_SAID = ("stage .gitmodules with the first line, since git rm refuses to "
+#: that: git takes no gitlink out of the index then (#879's C3), and the
+#: line stages every other change in the file too (rv882's NIT 3).
+STAGE_SAID = ("stage .gitmodules with the first line, which stages every "
+              "other change in it too, since git rm refuses to "
               "take any gitlink out of the index, -f or not, while "
               ".gitmodules holds changes not staged (please stage your "
               "changes to .gitmodules or stash them to proceed, exit 128), "
