@@ -761,12 +761,18 @@ MISREAD_BARE = {
                 "Null", "NULL"),
     "list": ("-",),
 }
-#: Names it reads back bare as the same text, so each is written bare, as
-#: main wrote it: the plain names, and those that only look like a number
-#: or a word to a reader other than the project's.
+#: Names that begin with a letter, `_` or `.` and that it reads back bare as
+#: the same text, so each is written bare, as main wrote it: the plain
+#: names, and those that only look like a number or a word to a reader
+#: other than the project's.
 READ_BARE = ("openGlass", "Openglass", "open-glass", "open_glass",
-             "openGlass2", "_x", "x.y", ".5", "3dGlass", "-x", "--", "0x1F",
-             "1e3", "1_000", ".inf", "yes", "off")
+             "openGlass2", "_x", "x.y", ".5", ".inf", "yes", "off")
+#: Names it reads back bare as the same text, but that begin with a digit
+#: or `-`, so `adopt-project.py`'s `y` quotes them in a plan's `product:`.
+#: The scaffold wrote them bare until #924, and a standard YAML reader took
+#: its `0x1F` for 31 and its `1_000` for 1000; both tools now spell an entry
+#: by `shape_materialize.neutral_pin_entry`, which double-quotes them.
+QUOTED_BY_Y = ("3dGlass", "-x", "--", "0x1F", "1e3", "1_000")
 #: Text the reader refuses outright bare. `--pin` admits none of it, and
 #: each is double-quoted all the same, which the reader reads back.
 REFUSED_BARE = ("[", "{", "&a", "*a", "!t", "'a", '"a')
@@ -788,11 +794,14 @@ def listed(entries: str) -> object:
     *(pytest.param(name, id=f"{kind}-{name}")
       for kind, names in MISREAD_BARE.items() for name in names),
     *(pytest.param(name, id=f"bare-{name}") for name in READ_BARE),
+    *(pytest.param(name, id=f"quoted-by-y-{name}") for name in QUOTED_BY_Y),
 ])
 def test_each_entry_reads_back_as_the_product(scaffolder, product):
-    """Every product reads back as its text. A name the reader reads back
-    bare is written bare, so a root's `openGlass` line does not move by a
-    byte; every other is double-quoted, which the reader always reads back."""
+    """Every product reads back as its text. A name that begins with a
+    letter, `_` or `.` and that the reader reads back bare is written bare,
+    so a root's `openGlass` line does not move by a byte; every other is
+    double-quoted, as `adopt-project.py` writes it (#924), which the reader
+    always reads back."""
     entries = scaffolder._neutral_product_pins([product])
     assert listed(entries) == [product]
     spelled = product if product in READ_BARE else double_quoted(product)
@@ -803,7 +812,7 @@ def test_every_entry_together_reads_back_in_the_order_given(scaffolder):
     """All of them in one list, as many `--pin`s write it: one line each, in
     the order the pins were given, as the scaffold has always listed them."""
     every = [*(name for names in MISREAD_BARE.values() for name in names),
-             *READ_BARE]
+             *READ_BARE, *QUOTED_BY_Y]
     entries = scaffolder._neutral_product_pins(every)
     assert entries.count("\n") == len(every)
     assert listed(entries) == every

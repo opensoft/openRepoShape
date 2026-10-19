@@ -10,9 +10,11 @@ AND THAT IS ENFORCED, NOT HOPED FOR (#296). A session fixture at the end of
 this file puts a GUARD `gh` (`tests/gh_guard.py`) first on PATH for every
 child of every test: it answers the two questions the doctor's `machine` row
 and the installed command's machine report ask -- `gh --version` and `gh
-auth status` -- as an installed `gh` with no login, and refuses and logs
-anything else, and a check after each test fails that test by name if the
-guard refused one of its calls. A test that means to run `gh` puts a stub
+auth status` -- as an installed `gh` with no login, and one more, which
+`adopt-project.py check` asks of each leg repository (#798), `gh repo view
+<owner>/<name> --json nameWithOwner`, as a `gh` with no login does; it refuses
+and logs anything else, and a check after each test fails that test by name if
+the guard refused one of its calls. A test that means to run `gh` puts a stub
 of its own ahead of the guard, as the existing ones do.
 
 The scaffold and the recursive clone happen ONCE per session because they are
@@ -2245,6 +2247,10 @@ STEP_FOUR_WORDS = {
     "three-links-no-source": ("", "openXdox,openYdox,openDox", None, False),
     "blank": (" ", "openXdox,openDox", None, False),
     "holds-an-equals": ("openXdox=layer", "openXdox,openDox", None, False),
+    "relative": ("./nowhere/", "openXdox,openDox", None, False),
+    "relative-to-the-parent": ("../nowhere", "openXdox,openDox", None, False),
+    "a-link-holding-an-equals": ("tree", "openXdox,open=y,openDox", "open=y",
+                                 False),
     "variable-first": ("tree", "openXdox,openDox", "openDox", True),
 }
 
@@ -2265,7 +2271,17 @@ def assert_step_four_speaks_in_the_plans_words(run, tmp_path: Path,
     `=` is not said to have been read as a PATH. On main step (4) offered
     `--link-source <link>=<path>` and labelled the source `(--link-source)`;
     typed as printed, the offer ended step (5) in `unrecognized
-    arguments`."""
+    arguments`.
+
+    AND IT NAMES THE `--pin-source` STEP (5) NAMES (#907, U171): the value
+    joined to the standard's checkout, this one, and resolved. Step (4)
+    named it as typed, `nowhere (--pin-source)` for `./nowhere/`, and step
+    (5) `<standard>/nowhere`; a blank value was a blank and `<standard>/ `.
+    `../nowhere` is named `<the standard's parent>/nowhere` in both, which
+    tells a resolved path from one only joined, `<standard>/../nowhere`:
+    pathlib folds `./nowhere/` to `<standard>/nowhere` either way (rv949 on
+    #949). A chain link holding `=` is offered step (5)'s words too (U170).
+    """
     clear_ambient_pin_sources(monkeypatch)
     source, chain, declares, variable = STEP_FOUR_WORDS[case]
     commit = "0123456789abcdef" * 2 + "01234567"
@@ -2309,15 +2325,31 @@ def assert_step_four_speaks_in_the_plans_words(run, tmp_path: Path,
                       f"{LATER_LINK_WORDS}). The recorded chain still "
                       "classifies."]
         assert "REFUSED pin-source-no-path:" in result.stderr
+    elif case == "a-link-holding-an-equals":
+        # U170 (#907): the naming check reads the link `open=y` whole, so it
+        # is offered step (5)'s words; split at its first `=` they were
+        # words for a link `open`, and `open=y` was offered the naming
+        # check's own `--link-source open=y=<path>`. Step (5) refuses the
+        # link, as it refuses any that is not a neutral product's name.
+        assert offered == [
+            "WARNING declared-unverified: open=y declaring a pin on openDox "
+            "is a fact in open=y's own tree, which is not reachable here "
+            "(SHAPE_PIN_SOURCE_OPEN_Y would let it be read). The recorded "
+            "chain still classifies."], step_four
+        assert "REFUSED chain-link-malformed:" in result.stderr, result.stderr
     elif case == "variable-first":
         assert "[verified]" in step_four, step_four
-        assert (f"NOTE --pin-source {source}: not used — each link whose own "
-                "declaration is read had a more specific source "
-                "(SHAPE_PIN_SOURCE_<PRODUCT>, or a checkout beside the "
-                "project).") in result.stderr, result.stderr
+        assert (f"NOTE --pin-source {Path(REPO, source).resolve()}: not used "
+                "— each link whose own declaration is read had a more "
+                "specific source (SHAPE_PIN_SOURCE_<PRODUCT>, or a checkout "
+                "beside the project).") in result.stderr, result.stderr
     else:
-        assert (f"WARNING link-source-unreadable: {source} (--pin-source) "
+        named = Path(REPO, source).resolve()
+        assert (f"WARNING link-source-unreadable: {named} (--pin-source) "
                 "could not answer for openXdox: no such file or directory"
+                ) in result.stderr, result.stderr
+        assert (f"REFUSED pin-source-unreadable: {named} could not answer for "
+                f"opensoft/openXdox @ {commit}: no such directory"
                 ) in result.stderr, result.stderr
         assert "read as a PATH" not in result.stderr, result.stderr
         assert offered, step_four

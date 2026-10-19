@@ -105,7 +105,11 @@ WHAT IT DOES, in order:
       the member's make runs another, the code is the innermost command's,
       as far as make's lines tell it (`MakeErrors` says where they do not);
       make's stderr reaches the terminal through this run, and `run_make`
-      says what that changes for a member (#884).
+      says what that changes for a member (#884). Under the holder's `make
+      -jN`, each member's make runs its jobs one at a time and says
+      nothing of it: the jobserver of the make above this run, and the
+      `-j` that comes with it, are taken out of the `MAKEFLAGS` it
+      inherits (`member_make_env`, #888).
 
   (c) EXITS 0 unless a member's own command failed, or (a) left a member not
       checked out that no credential would check out, or found a line or a
@@ -120,6 +124,16 @@ WHAT IT DOES, in order:
       Where (a) cannot start git, the run STOPS there, exit 2, refused
       `git-not-runnable` as `validate-family.py` refuses it (#694): each
       member's own bootstrap runs git too, so (b) would only say it again.
+      And where (a) or (b) cannot ask whether a row's member is checked
+      out, or whether it has a `Makefile`, because the operating system
+      refused the `stat` of its `.git` or its `Makefile` (a `members/` this
+      user cannot search), the run STOPS there, exit 2, refused
+      `member-unreadable`, naming the path and the cure (#430). On Python
+      3.14 that member read as NOT CHECKED OUT, or as having no Makefile,
+      and was skipped, and the run said `family bootstrap ok`; before it,
+      the run ended in a `PermissionError` traceback. A `family.yaml` whose
+      `stat` is refused is `family-manifest-unreadable`, never
+      `family-manifest-missing`.
 
 THE FAMILY CONFERS NOTHING and neither does this command. It fetches, it
 delegates, and it says what it could not reach.
@@ -128,13 +142,16 @@ delegates, and it says what it could not reach.
 from __future__ import annotations
 
 import argparse
+import errno
 import os
 import re
 import shlex
 import shutil
+import stat
 import subprocess
 import sys
 from collections import Counter
+from collections.abc import Callable
 from pathlib import Path
 from typing import NamedTuple
 
@@ -212,6 +229,102 @@ CREDENTIAL_ENV = ("SHAPE_LEGS_APP_TOKEN", "SHAPE_LEGS_TOKEN")
 #: HTTPS one for the duration of a single command.
 REWRITE_TARGETS = ("https://github.com/", "git@github.com:")
 
+#: The `OSError`s that `Path.is_file()` and `Path.exists()` answered False to
+#: on Python 3.9 to 3.13 (pathlib's `_ignore_error`), because each means there
+#: is nothing at the name to open: no such file, a part of the path that is
+#: not a directory, a bad descriptor, a symlink loop, and Windows' "not
+#: ready", "invalid name" and "cannot resolve". Every other one was raised.
+_ABSENT_ERRNOS = (errno.ENOENT, errno.ENOTDIR, errno.EBADF, errno.ELOOP)
+_ABSENT_WINERRORS = (21, 123, 1921)
+
+#: What a path the operating system refused for ANOTHER reason than
+#: permission is told: an I/O error, a name longer than the filesystem
+#: takes, a file replaced while this ran. No `chmod` puts one right.
+#: `validate-pins.py`'s words for the same refusal (#712, #430).
+OTHER_REASON = (
+    "Where the operating system gave another reason, put a regular file this "
+    "user can open back in its place, or take away one nobody wants, and make "
+    "sure nothing is changing the directory while this runs. ")
+
+
+def _is_a(path: Path, kind: Callable[[int], bool]) -> bool:
+    """Whether `path` is there and of `kind` (`stat.S_ISREG`, `_anything`),
+    raising the `OSError` of a `stat` the operating system REFUSED (#430).
+
+    NOT `Path.is_file()` OR `Path.exists()`, whose answer depends on the
+    Python. Up to 3.13 they raised a refused `stat` (`PermissionError`), and
+    `make bootstrap` ended in that traceback; from 3.14 they answer False to
+    ANY `OSError`. On 3.14 a member mounted under a `members/` this user
+    cannot search was NOT CHECKED OUT, skipped, beside the advice to set a
+    credential, and one whose `Makefile` could not be reached had none, and
+    the run said `family bootstrap ok` over members nothing ran in. Asked
+    here, every Python answers as 3.9 to 3.13 did, and a refused `stat` is a
+    refusal that names the path (`unreadable`). A name the system cannot
+    take at all (a NUL in a row's `path:`) is no file, as `exists()`
+    answered it. This file's own copy, as each pinned copy keeps one (#370,
+    #610): `bump-leg.py` has the same.
+    """
+    try:
+        mode = path.stat().st_mode
+    except OSError as exc:
+        if (exc.errno in _ABSENT_ERRNOS
+                or getattr(exc, "winerror", None) in _ABSENT_WINERRORS):
+            return False
+        raise
+    except ValueError:
+        return False
+    return kind(mode)
+
+
+def _anything(mode: int) -> bool:
+    """Any kind of file at all: what `Path.exists()` asks of a `.git`,
+    which is a file in a mounted member and a folder in a clone (#430)."""
+    return stat.S_IFMT(mode) != 0
+
+
+def unreadable(code: str, named: str, exc: OSError, what: str) -> Refusal:
+    """`code`'s refusal of a path this command must ask about and the
+    operating system will not let it: its `stat` refused (`_is_a`), as in a
+    folder this user cannot search (#430). The line is `validate-pins.py`'s
+    `_cannot_read`, `<named>: cannot be read (<the system's reason>)`, with
+    `named` relative to the holder and spelled; `what` says what was not
+    done, and why the question matters. THE ADVICE FOLLOWS THE CAUSE, in
+    `validate-pins.py`'s `_unreadable_file`'s words, word for word, since
+    every path this command asks about is inside the holder: a permission
+    (`PermissionError`, which is `EACCES` and `EPERM`) is put right by the
+    mode or the owner, and any other cause is `OTHER_REASON`, which is not
+    told to `chmod`."""
+    advice = (
+        "Make what this user may not open readable by this user: `chmod u+r` "
+        "on a file, `chmod u+rx` on a directory (and on every directory above "
+        "it inside the root), or fix who owns it. "
+        if isinstance(exc, PermissionError) else OTHER_REASON)
+    return Refusal(
+        code,
+        f"{named}: cannot be read ({exc.strerror or type(exc).__name__})",
+        f"Remediation: {what} A path this command cannot read is a question "
+        f"it cannot answer, never a pass. {advice}Then run the same command "
+        "again.")
+
+
+def checked_out(root: Path, row: dict) -> bool:
+    """Whether the row's member is checked out: its mount holds a `.git`,
+    asked as `_is_a` asks it, or the `member-unreadable` refusal naming that
+    `.git` where its `stat` was refused (#430). (a) asks it of every row
+    (`unfetchable`) and (b) before it runs anything in the member
+    (`run_member_target`); on Python 3.14 the answer was "not checked out",
+    and the member was skipped."""
+    git_dir = member_path(root, row) / ".git"
+    try:
+        return _is_a(git_dir, _anything)
+    except OSError as exc:
+        raise unreadable(
+            "member-unreadable", spelled(f"{row_path(row)}/.git"), exc,
+            "Each row's mount is asked whether git checked its member out "
+            "before anything is run in it, and this one could not be asked, "
+            "so the run stopped there: no member's command was run after "
+            "it.") from exc
+
 
 def credential() -> tuple[str, str]:
     """`(source, token)`; `("none", "")` when the environment carries none."""
@@ -240,7 +353,9 @@ def fetch_members(root: Path, rows: list[dict]) -> list[str]:
     fetched only where there is none and git exited 0. The advice to set a
     credential is printed only where git asked for one
     (`credential_advice`, #839). Raises the `git-not-runnable` refusal
-    where git cannot be started (#694)."""
+    where git cannot be started (#694), and `member-unreadable` where a
+    row's mount cannot be asked about, after git's own words (`unfetched`,
+    #430)."""
     source, token = credential()
     args = ["git"]
     if token:
@@ -259,7 +374,7 @@ def fetch_members(root: Path, rows: list[dict]) -> list[str]:
         if refusal is None:
             raise
         raise refusal from exc
-    left, stopper, modules = unfetchable(root, rows, proc.returncode == 0)
+    left, stopper, modules = unfetched(root, rows, proc, source, token)
     if proc.returncode != 0:
         fetch_incomplete(proc, source, token,
                          credential_advice(bool(left), stopper, modules))
@@ -281,6 +396,24 @@ def fetch_members(root: Path, rows: list[dict]) -> list[str]:
     if proc.returncode == 0:
         print("  every member and leg fetched")
     return []
+
+
+def unfetched(root: Path, rows: list[dict],
+              proc: subprocess.CompletedProcess, source: str, token: str
+              ) -> tuple[list[tuple[dict, str, str]], str | None,
+                         Gitmodules]:
+    """`unfetchable`, asked after git's update `proc` (#430). Where it
+    refuses a mount it cannot ask about (`member-unreadable`) and git did
+    not exit 0, git's own words for the update are printed first
+    (`fetch_incomplete`), with no advice: what git said of that mount is
+    the same fact, the refusal after it names the cure, and no credential
+    is it. It refused before they were printed, and they were lost."""
+    try:
+        return unfetchable(root, rows, proc.returncode == 0)
+    except Refusal:
+        if proc.returncode != 0:
+            fetch_incomplete(proc, source, token, "")
+        raise
 
 
 def fetch_incomplete(proc: subprocess.CompletedProcess, source: str,
@@ -915,10 +1048,11 @@ def unfetchable(root: Path, rows: list[dict], exited_0: bool
     same, and git's init asked where it stopped, for `fetch_members` to
     ask why git updated none (`updated_none`): this returned before
     `init_stop` there, so a run whose update git's init stopped said
-    `family bootstrap ok` (#879)."""
+    `family bootstrap ok` (#879). A row whose mount cannot be asked is
+    refused, `member-unreadable` (`checked_out`, #430)."""
     left: dict[str, dict] = {}
     for row in rows:
-        if not (member_path(root, row) / ".git").exists():
+        if not checked_out(root, row):
             left.setdefault(row_path(row), row)
     if not left and exited_0:
         return [], None, Gitmodules(Counter(), {}, {})
@@ -978,8 +1112,21 @@ def updated_none(stopper: str | None, modules: Gitmodules) -> str | None:
 
 
 def members_of(root: Path) -> tuple[str, list[dict]]:
+    """`(name:, the member rows)` out of `family.yaml`, or a refusal.
+
+    A `family.yaml` whose `stat` the operating system refused is
+    `family-manifest-unreadable`, naming it and the cure (#430), never
+    `family-manifest-missing`, which Python 3.14 said of it, whose remedy
+    sends a person to the wrong kind of root."""
     manifest_path = root / MANIFEST
-    if not manifest_path.is_file():
+    try:
+        present = _is_a(manifest_path, stat.S_ISREG)
+    except OSError as exc:
+        raise unreadable(
+            "family-manifest-unreadable", MANIFEST, exc,
+            f"{MANIFEST} declares this holder's members, and which they are "
+            "cannot be told without it.") from exc
+    if not present:
         raise Refusal(
             "family-manifest-missing",
             f"{manifest_path} does not exist, so there is no declaration of "
@@ -1031,11 +1178,20 @@ def run_member_target(root: Path, row: dict, target: str) -> str | None:
     project = spelled(row.get("project") or "?")
     path = member_path(root, row)
     named = spelled(target)
-    if not (path / ".git").exists():
+    if not checked_out(root, row):
         print(f"  [{project}] {spelled(path.name)}: NOT CHECKED OUT; skipped. "
               "See the fetch above.")
         return None
-    if not (path / "Makefile").is_file():
+    try:
+        has_makefile = _is_a(path / "Makefile", stat.S_ISREG)
+    except OSError as exc:
+        # One it cannot reach is no "no Makefile" (#430), which Python 3.14
+        # said of it, and `family bootstrap ok` after.
+        raise unreadable(
+            "member-unreadable", spelled(f"{row_path(row)}/Makefile"), exc,
+            f"`make {named}` was not run in {project}, nor in any member "
+            "after it.") from exc
+    if not has_makefile:
         print(f"  [{project}] no Makefile; skipped. A member without one is "
               "not misconfigured — it simply has nothing for this command to "
               "call.")
@@ -1144,6 +1300,29 @@ class MakeErrors:
             self.code = int(code)
 
 
+def run_members(root: Path, rows: list[dict], target: str,
+                skip: bool) -> list[str]:
+    """(b) Each member's own `make <target>`, in row order: the failure lines
+    (`run_member_target`), or none where `skip` (`--skip-members`) or no row
+    is declared. Raises `member-unreadable` at the first member whose mount
+    or `Makefile` cannot be asked about (#430), and no member after it is
+    run: `main` refuses the run there, exit 2."""
+    print(f"\n(b) each member's own `make {spelled(target)}`")
+    if skip:
+        print("  skipped (--skip-members)")
+        return []
+    if not rows:
+        print("  no members declared. A family with none is empty, not wrong: "
+              "`family.py add` is what puts one here.")
+        return []
+    failed = []
+    for row in rows:
+        failure = run_member_target(root, row, target)
+        if failure:
+            failed.append(failure)
+    return failed
+
+
 def run_make(make: str, target: str, cwd: Path) -> tuple[int, int | None]:
     """(b) `make <target>` in a member, as `(make's exit code, the exit code
     of the member's command it names)`, the second None where make names
@@ -1200,7 +1379,7 @@ def run_make(make: str, target: str, cwd: Path) -> tuple[int, int | None]:
     "Reaping losing child"), and the line would say `exited 2` for every
     failure again."""
     proc = subprocess.Popen([make, target], cwd=str(cwd),
-                            stderr=subprocess.PIPE)
+                            stderr=subprocess.PIPE, env=member_make_env())
     errors = MakeErrors()
     for chunk in iter(lambda: proc.stderr.read1(65536), b""):
         passed_on(chunk)
@@ -1224,6 +1403,66 @@ def passed_on(chunk: bytes) -> None:
         return
     sink.write(chunk)
     sink.flush()
+
+
+#: A word of `MAKEFLAGS` that names the jobserver of the make above this
+#: run (#888): `--jobserver-auth=3,4`, a pipe's two descriptors (GNU make
+#: 4.2 on), `--jobserver-auth=fifo:<path>`, a named pipe (4.4 on, where
+#: there is `mkfifo`), and `--jobserver-fds=3,4` (before 4.2, as macOS's
+#: make 3.81 writes it). `re.DOTALL` here and below, since a path may hold
+#: any character.
+JOBSERVER_WORD = re.compile(r"--jobserver-(?:auth|fds)=.*", re.DOTALL)
+#: The words `member_make_env` takes out where one names a jobserver: that
+#: word, and the jobs that come with it, `-j2`, or the bare `-j` a make
+#: before 4.2 writes beside `--jobserver-fds`.
+JOBS_WORD = re.compile(r"-j[0-9]*|--jobserver-(?:auth|fds)=.*", re.DOTALL)
+#: A word of `MAKEFLAGS` as make splits it: only at a space or a tab, and
+#: a backslash keeps the character after it in the word, a space or a tab
+#: included (`ARGS=a\ -j2` is one word). Any other character, a newline
+#: or a no-break space among them, is part of its word, as make reads it.
+MAKEFLAGS_WORD = re.compile(r"(?:\\.|[^ \t])+", re.DOTALL)
+
+
+def member_make_env() -> dict[str, str]:
+    """This run's environment for a member's make: `MAKEFLAGS` without the
+    jobserver of the make above this run, where it names one, and without
+    the `-j` that comes with it (`JOBS_WORD`, #888). Every other word is
+    kept, `-k`, `-s` and a variable given on the holder's command line
+    among them, each word as make splits it: only at a space or a tab,
+    a backslash keeping either in a value (`MAKEFLAGS_WORD`). A
+    `MAKEFLAGS` that names no jobserver is left as it is: `make -j` with
+    no number, which starts none, or a person's own `MAKEFLAGS=-j8` with
+    no make above this run.
+
+    WHY. Under the holder's `make -j2 bootstrap`, `validate`, `park` or
+    `resume`, a member's make found `-j2 --jobserver-auth=3,4` in the
+    `MAKEFLAGS` it inherits, and not the two descriptors: the holder's
+    rule runs this script with no `+`, so make closes them for it, and
+    `Popen` closes every descriptor past stderr. It printed `make[1]:
+    warning: jobserver unavailable: using -j1.  Add '+' to parent make
+    rule.`, of a rule the person does not own, and ran its jobs one at a
+    time (GNU Make 4.3, measured). It runs them one at a time now, and
+    says nothing.
+
+    WHY NOT HAND THE JOBSERVER ON, as a `+` on the holder's rules and the
+    descriptors passed to the member's make would, which then ran its
+    jobs together (measured):
+    - a `+` runs its line under `make -n` too: `make -n bootstrap`
+      fetched every member and leg (measured);
+    - a descriptor `MAKEFLAGS` names is a number, and no proof that it is
+      the jobserver's: with a file open there, a member's make read a
+      byte of it for a token and wrote a `+` into another (measured);
+    - the member's make is `$MAKE` or `make` on PATH, not the make that
+      ran the holder, which exports no `MAKE` (measured), and a make may
+      not read another's jobserver: GNU make 4.3 stops at 4.4's `fifo:`
+      (`invalid --jobserver-auth string`, measured).
+    Taken out, no make is asked to read a jobserver at all."""
+    env = dict(os.environ)
+    words = MAKEFLAGS_WORD.findall(env.get("MAKEFLAGS", ""))
+    if any(JOBSERVER_WORD.fullmatch(word) for word in words):
+        env["MAKEFLAGS"] = " ".join(
+            word for word in words if not JOBS_WORD.fullmatch(word))
+    return env
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -1252,26 +1491,20 @@ def main(argv: list[str] | None = None) -> int:
 
     print("\n(a) members and their legs")
     failed: list[str] = []
-    if args.no_fetch:
-        print("  skipped (--no-fetch)")
-    else:
-        try:
+    try:
+        if args.no_fetch:
+            print("  skipped (--no-fetch)")
+        else:
             failed += fetch_members(root, rows)
-        except Refusal as exc:
-            print(str(exc), file=sys.stderr)
-            return 2
-
-    print(f"\n(b) each member's own `make {spelled(args.members_make)}`")
-    if args.skip_members:
-        print("  skipped (--skip-members)")
-    elif not rows:
-        print("  no members declared. A family with none is empty, not wrong: "
-              "`family.py add` is what puts one here.")
-    else:
-        for row in rows:
-            failure = run_member_target(root, row, args.members_make)
-            if failure:
-                failed.append(failure)
+        failed += run_members(root, rows, args.members_make,
+                              args.skip_members)
+    except Refusal as exc:
+        # `git-not-runnable` from (a) (#694), or `member-unreadable` from
+        # (a) or (b) (#430). Stdout first, so a log of both streams reads
+        # in the order the run went.
+        sys.stdout.flush()
+        print(str(exc), file=sys.stderr)
+        return 2
 
     print()
     if failed:

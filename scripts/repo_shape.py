@@ -215,6 +215,14 @@ class YamlError(Exception):
 # would have to invent, and an invented meaning in a validator is a wrong
 # answer with a confident tone.
 #
+# A KEY WRITTEN TWICE IN ONE MAPPING IS REFUSED BY ITS LINE (#917), block or
+# flow: YAML requires a mapping's keys to be unique, and keeping the last, as
+# PyYAML does, read a doubled `commit:` or `files:` as whichever came second.
+# So is A BLOCK SCALAR'S LINE INDENTED LESS THAN ITS FIRST, which lost the
+# characters left of the block's column; one opening `#` is a comment that
+# ends the block, as YAML reads it. See `_refuse_written_twice` and
+# `_block_scalar_body`.
+#
 # A QUOTE OPENS A QUOTED SCALAR ONLY WHERE A SCALAR BEGINS, as in YAML; in
 # the middle of a plain scalar (`it's`) it is a character of it (#249). A
 # quoted scalar must close on its own line, with nothing after its closing
@@ -652,8 +660,12 @@ def _refuse_entry_indicator(text: str, remedy: bool = True) -> None:
         raise refusal
 
 
-def _flow_value(text: str, item: bool = False) -> Any:
+def _flow_value(text: str, line: int, item: bool = False) -> Any:
     """A flow entry is itself a flow collection when it OPENS with `[` or `{`.
+
+    `line` IS THE LINE THE OUTERMOST COLLECTION IS ON, and so this entry's
+    (#917): this reader takes a flow collection on one line, and a nested
+    mapping refuses a key written twice by it, as `_flow` does.
 
     AN EMPTY ENTRY OPENS NOTHING (#252): `{a: }` and `{a:}` give this `''`,
     and `'' in "[{"` is True for any string, so the test used to run `_flow`
@@ -686,7 +698,7 @@ def _flow_value(text: str, item: bool = False) -> Any:
     keep those words.
     """
     if text.startswith(("[", "{")):
-        return _flow(text)
+        return _flow(text, line)
     _refuse_flow_indicator(text)
     if item:
         _refuse_entry_indicator(text)
@@ -707,11 +719,14 @@ def _flow_value(text: str, item: bool = False) -> Any:
     return _scalar(text)
 
 
-def _flow(text: str) -> Any:
+def _flow(text: str, line: int) -> Any:
+    """A flow collection, on `line`: this reader takes one on a single
+    line, the block line holding it, and a key its mapping holds twice is
+    refused by that line (#917)."""
     text = text.strip(_YAML_WHITE)
     if text.startswith("[") and text.endswith("]"):
         body = text[1:-1].strip(_YAML_WHITE)
-        return [] if not body else [_flow_value(p, item=True)
+        return [] if not body else [_flow_value(p, line, item=True)
                                     for p in _split_flow(body)]
     if text.startswith("{") and text.endswith("}"):
         body = text[1:-1].strip(_YAML_WHITE)
@@ -721,9 +736,29 @@ def _flow(text: str) -> Any:
                 kv = _split_key_flow(part)
                 if kv is None:
                     raise YamlError(f"flow mapping entry without a key: {part!r}")
-                out[kv[0]] = _flow_value(kv[1])
+                _refuse_written_twice(out, kv[0], line)
+                out[kv[0]] = _flow_value(kv[1], line)
         return out
     raise YamlError(f"not a flow collection: {text!r}")
+
+
+def _refuse_written_twice(out: dict, key: str, line: int) -> None:
+    """Refuse `key` where the mapping being built, `out`, holds it already
+    (#917), naming the line of the second.
+
+    YAML requires a mapping's keys to be unique. Both builders assigned each
+    key as it came, as PyYAML's constructor does, so the last of two won
+    without a word: a shape pin holding a `files:` list and then `files: 5`
+    read as `files: 5`, and a doubled `commit:` or `members:` in any contract
+    file passed. Each builder asks before it reads the second value, so the
+    key written twice is what is named, whatever that value holds.
+
+    A KEY IS THE TEXT THIS READER RETURNS FOR IT, so `a` and `"a"` are one
+    key, as they are to YAML, and so are `1` and `"1"`, which YAML reads as
+    two: this reader reads every key as text, so its caller would see one.
+    """
+    if key in out:
+        raise YamlError(f"line {line}: key {key!r} is written twice")
 
 
 def _split_key_flow(text: str) -> tuple[str, str] | None:
@@ -897,6 +932,15 @@ def _block_scalar_body(raw_lines: list[str], i: int,
     belongs to the body whatever its column, because it has none. A line of
     Unicode spaces at the block's own indentation or deeper is not blank
     (#715): it is text, as YAML reads it.
+
+    A LINE INDENTED LESS THAN THE BLOCK'S OWN, BUT MORE THAN THE KEY, IS
+    REFUSED BY ITS LINE (#917). Stripping the block's column from it took
+    its first characters with its spaces: `k: |` over `    a`, `  bcd` and
+    `    e` read `'a\\nd\\ne\\n'`. YAML ends the block at such a line, which
+    then stands where no key or entry can, and PyYAML refuses the document.
+    ONE OPENING `#` IS A COMMENT, which ends the block as YAML's trailing
+    comment does and is read as one: `  # c` under `    a` and over the next
+    key was the text `c`.
     """
     body: list[str] = []
     block_indent = None
@@ -911,6 +955,13 @@ def _block_scalar_body(raw_lines: list[str], i: int,
             break
         if block_indent is None:
             block_indent = nxt_indent
+        elif nxt_indent < block_indent:
+            if nxt[nxt_indent] == "#":
+                break
+            raise YamlError(
+                f"line {i + 1}: a line of a block scalar is indented "
+                f"{nxt_indent} spaces, fewer than the {block_indent} of its "
+                "first line")
         body.append(nxt[block_indent:])
         i += 1
     return body, i
@@ -984,8 +1035,11 @@ def _tokenise(text: str) -> list[_Rec]:
         if _opens_block_scalar(kv):
             # A block scalar: swallow every following line more indented than
             # the key, and keep the key and the body as the record's pair.
+            # The record is on the HEADER's line, where its key is, which a
+            # key written twice is refused by (#917); it was the body's last.
+            header_line = i
             body, i = _block_scalar_body(raw_lines, i, indent)
-            recs.append(_Rec(indent, "", False, i,
+            recs.append(_Rec(indent, "", False, header_line,
                              (kv[0], _block_scalar_text(kv[1], body))))
             continue
         recs.append(_Rec(indent, content, False, i))
@@ -1043,12 +1097,17 @@ def _parse_mapping(recs: list[_Rec], i: int, indent: int) -> tuple[dict, int]:
     text `-`, and PyYAML refuses it. `_scalar` refuses the other indicators;
     this one is refused here because a flow collection reads `[-]` and
     `{a: -}` as the text `-`, as PyYAML does.
+
+    A KEY WRITTEN TWICE IS REFUSED BY THE LINE OF THE SECOND (#917), before
+    its value is read, whether that value is on the line, under it, or a
+    block scalar: `_refuse_written_twice`.
     """
     out: dict[str, Any] = {}
     while i < len(recs) and not recs[i].dash and recs[i].indent == indent:
         rec = recs[i]
         if rec.block is not None:
             key, body = rec.block
+            _refuse_written_twice(out, key, rec.line)
             out[key] = body
             i += 1
             continue
@@ -1056,6 +1115,7 @@ def _parse_mapping(recs: list[_Rec], i: int, indent: int) -> tuple[dict, int]:
         if kv is None:
             raise YamlError(f"line {rec.line}: expected `key: value`, got {rec.text!r}")
         key, rest = kv
+        _refuse_written_twice(out, key, rec.line)
         i += 1
         if rest == "":
             out[key], i = _nested_value(recs, i, indent)
@@ -1084,7 +1144,7 @@ def _block_value(text: str, line: int) -> Any:
     """
     try:
         if text[0] in "[{":
-            return _flow(text)
+            return _flow(text, line)
         if text == "-":
             raise _indicator_refusal(text)
         return _scalar(text)
@@ -1544,7 +1604,10 @@ CHAIN_UNVERIFIED = "declared-unverified"
 #: files. Every existing name is kept, because an operator may have set it and
 #: the docs name it. What is done instead (`pin_source_env_collisions`): a
 #: variable two declared products share answers for NEITHER, wherever it is
-#: read; `scaffold-project.py --pin` refuses to create such a pair; and
+#: read, and a chain reader asks that over every product its run reads, the
+#: declared pins and every chain's links (#909, `link_pins_from_trees`'
+#: `run_products`); `scaffold-project.py --pin` refuses to create such a
+#: pair; and
 #: `validate-pins.py` NOTES a pair a project already declares, and never fails
 #: it, because the project did nothing wrong that an update could undo.
 PIN_SOURCE_ENV_PREFIX = "SHAPE_PIN_SOURCE_"
@@ -1794,15 +1857,25 @@ def _chain_link_findings(chain, link_pins) -> tuple:
     (#444): a tree declaring `openss` does not declare `openß`, whose pin
     file is another. A holder's `remedies` entry is found by it too, so in a
     chain naming both, each is offered its own sources and not the other's.
+
+    THE VARIABLE IS OFFERED AS IT WAS READ (#909). A `LinkPins` carries
+    `env_shared`, the links whose variable was not read because another
+    product of the RUN shares it: a declared pin, or a link of this chain or
+    of another one the same run reads (`link_pins_from_trees`'
+    `run_products`). Asked over this chain alone, two legs whose chains
+    begin at `openß` and `openss` were each offered
+    `SHAPE_PIN_SOURCE_OPENSS`, which would have answered for both.
     """
     available = _link_declarations(link_pins)
     unreadable = getattr(link_pins, "unreadable", None) or {}
     remedies = getattr(link_pins, "remedies", None) or {}
     warnings: list[str] = []
     unverified: list[str] = []
-    # A link whose variable another link of the chain shares is never offered
-    # that variable: it would be read for both (#275).
-    shared = pin_source_env_shared(chain)
+    # A link whose variable another link of the chain, or another product of
+    # the run, shares is never offered that variable: it would be read for
+    # both (#275, #909).
+    shared = (pin_source_env_shared(chain)
+              | set(getattr(link_pins, "env_shared", None) or ()))
     for holder, held in zip(chain, chain[1:]):
         declared = available.get(pin_product_key(holder))
         why = unreadable.get(pin_product_key(holder))
@@ -3252,13 +3325,20 @@ class LinkPins(dict):
     and has no `--link-source`, so it names its own here. A link with no
     entry, and every link for a caller that gives none, gets the naming
     validator's words, as ever.
+
+    `env_shared`, a set of `pin_product_key(link)`, is the links whose
+    `SHAPE_PIN_SOURCE_<PRODUCT>` was not read because another product the
+    run reads shares it (#275, #909), so that `_chain_link_findings` offers
+    that variable to none of them.
     """
 
     def __init__(self, found=(), unreadable: dict | None = None,
-                 remedies: dict | None = None) -> None:
+                 remedies: dict | None = None,
+                 env_shared=None) -> None:
         super().__init__(found)
         self.unreadable: dict[str, str] = dict(unreadable or {})
         self.remedies: dict[str, str] = dict(remedies or {})
+        self.env_shared: set[str] = set(env_shared or ())
 
 
 def link_pins_from_trees(links, root: Path | None = None,
@@ -3267,7 +3347,8 @@ def link_pins_from_trees(links, root: Path | None = None,
                          key: str = CHAIN_LINK_DECLARED_BY, *,
                          tried: dict | None = None,
                          with_reasons: bool = False,
-                         remedies: dict | None = None) -> dict[str, set]:
+                         remedies: dict | None = None,
+                         run_products=None) -> dict[str, set]:
     """`{link: the pins ITS manifest declares}` for the links that answered.
 
     A link whose tree is not on the disk is simply ABSENT from the mapping,
@@ -3297,6 +3378,19 @@ def link_pins_from_trees(links, root: Path | None = None,
     `scaffold-project.py` takes every link but the first from the naming
     policy's `open<Product>` form, which has no `-`, `.` or `_` to fold.
 
+    ONE VARIABLE, ONE PRODUCT OF THE RUN (#909). `run_products` is every
+    product the caller's run reads: the project's declared pins, and every
+    link of every chain it reads. The variable guard is asked over them as
+    well as over `links`, so it gives every chain of the run the same
+    answer, and a variable two declared pins share is read for no link
+    (#275's rule). A caller that reads several chains calls this once per
+    chain, and the guard was asked over that chain alone: in a project whose
+    two legs' chains begin at `openß` and `openss`,
+    `SHAPE_PIN_SOURCE_OPENSS` was read for both, so one tree answered for two
+    products and broke the chain of the one it is not. Given, it returns a
+    `LinkPins` whose `env_shared` says which variables were not read, so the
+    warning does not offer them.
+
     `default_source` IS THE FIRST LINK'S TREE AND NO OTHER'S (#441). It is
     one tree — the naming validator's bare `--link-source`, the scaffold's
     `--pin-source` — and the first link is the pin this project holds, the
@@ -3316,7 +3410,8 @@ def link_pins_from_trees(links, root: Path | None = None,
     found: dict[str, set] = {}
     unreadable: dict[str, str] = {}
     links = list(links)
-    shared = pin_source_env_shared(repo_basename(str(link)) for link in links)
+    shared = pin_source_env_shared(repo_basename(str(link)) for link in
+                                   [*links, *(run_products or ())])
     for index, link in enumerate(links):
         name = repo_basename(str(link))
         asked: list = []
@@ -3335,9 +3430,10 @@ def link_pins_from_trees(links, root: Path | None = None,
             unreadable[pin_product_key(name)] = why
             continue
         found[pin_product_key(name)] = pins
-    if not (with_reasons or remedies):
+    if not (with_reasons or remedies or run_products is not None):
         return found
-    return LinkPins(found, unreadable if with_reasons else None, remedies)
+    return LinkPins(found, unreadable if with_reasons else None, remedies,
+                    shared)
 
 
 def find_repo_root(start: Path) -> Path:
