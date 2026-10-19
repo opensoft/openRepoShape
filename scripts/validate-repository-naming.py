@@ -109,7 +109,11 @@ there and still cannot answer. An explicit source stays a warning here, where
 answers that validator's digest question too, from a checkout that need not
 carry a manifest, and a source that cannot answer is passed over for the next
 one in the order, which may. A `--link-source` no link used is a NOTE saying
-why, and so is a `--link-remedy` no holder used (#907).
+why, and so is a `--link-remedy` no holder used (#907). So is a
+`SHAPE_PIN_SOURCE_<PRODUCT>` that is set and is read for no link because
+two products this run reads share it (#275, #909): one
+`link-source-collides` NOTE names it and the products, except where the
+caller gave a label (#990).
 
 The 1/2 split is deliberate. "This name is wrong" and "I could not read the
 policy" are different facts and a gate that renders them identically invites a
@@ -128,7 +132,8 @@ sys.path.insert(0, str(Path(__file__).resolve().parent))
 from repo_shape import (  # noqa: E402
     CHAIN_RECORD_FIELD, LINK_SOURCE_ABSENT, LINK_SOURCE_NO_MANIFEST,
     UNAMBIGUOUS_FORMS, Classification, NamingPolicy, Refusal,
-    link_pins_from_trees, load_yaml, pin_product_key, repo_basename,
+    link_pins_from_trees, load_yaml, pin_product_key,
+    pin_source_env_collisions, repo_basename,
 )
 
 DEFAULT_POLICY = Path(__file__).resolve().parents[1] / "contracts" / "repository-naming.yaml"
@@ -266,6 +271,16 @@ class LinkSources:
     warning in this validator, deliberately, and an explicit source is no
     exception — the module docstring says why.
 
+    A VARIABLE THE GUARD PASSED OVER IS SAID (#990). A
+    `SHAPE_PIN_SOURCE_<PRODUCT>` two products share is read for neither
+    (#275), and the guard is asked over the chain and every product of the
+    run (#909). It leaves no row in `tried`, so a variable a person set was
+    named by no line, and the `declared-unverified` WARNING, which leaves it
+    out of its offer, read as if nothing were set. `link_pins` keeps each
+    such variable that is set, for a holder it passed over, with the
+    products that share it (`_record_shared_variables`), and `unused_lines`
+    names each once.
+
     ONE VALUE, ONE LINK (#441). A keyed value is asked for its own link
     alone. The bare PATH is asked for the FIRST link of a chain a name here
     reads (`link_pins_from_trees` offers it to no later link), and only
@@ -368,6 +383,10 @@ class LinkSources:
         #: `{(path, how, why): [links]}` for a `SHAPE_PIN_SOURCE_<PRODUCT>`
         #: or a checkout beside the project that could not answer.
         self.unanswered: dict[tuple, list[str]] = {}
+        #: `{variable: [the products that share it]}` for each
+        #: `SHAPE_PIN_SOURCE_<PRODUCT>` that is set and that a holder's
+        #: lookup passed over (#990), in the order first met.
+        self.shared_variables: dict[str, list[str]] = {}
 
     def _read_remedy(self, typed: str) -> tuple[str, str]:
         """`(link, words)` for one `--link-remedy` (#907): the text before
@@ -421,6 +440,8 @@ class LinkSources:
         # its one tree broke the chain of the product it is not.
         if _library_takes("run_products"):
             offered["run_products"] = [*target.pins, *self.links]
+        self._record_shared_variables(target.chain,
+                                      offered.get("run_products", ()))
         found = link_pins_from_trees(
             target.chain, target.root,
             {key: path for key, (_typed, path) in self.keyed.items()},
@@ -439,6 +460,38 @@ class LinkSources:
             for rule, how, path, why in asked:
                 self._record(link, rule, how, path, why)
         return found
+
+    def _record_shared_variables(self, chain, run_products) -> None:
+        """Keep each `SHAPE_PIN_SOURCE_<PRODUCT>` that is SET and that this
+        lookup passes over for a holder (#990), with the products that
+        share it, in `shared_variables`.
+
+        THE PRODUCTS THE LIBRARY'S GUARD IS ASKED OVER, and no others:
+        `link_pins_from_trees` passes over a variable two of `chain` and
+        `run_products` share (#275, #909), and `run_products` is what
+        `link_pins` hands it, nothing where the library takes no
+        `run_products=`. A library that predates them asks the guard over
+        the chain alone, and reads a variable a declared pin shares with
+        it, so saying that variable was read for none would be untrue.
+
+        A HOLDER, BECAUSE ONLY A HOLDER'S DECLARATION IS READ: a variable
+        only the chain's end shares decided nothing. An unset or empty
+        variable is read for no product (`resolve_link_source` asks only a
+        value), and is left unsaid, as before. Each product keeps the
+        spelling it was first given in, and a variable met again in a later
+        lookup adds only the products not named yet."""
+        holders = {pin_product_key(repo_basename(str(link)))
+                   for link in chain[:-1]}
+        guarded = [repo_basename(str(product))
+                   for product in (*chain, *run_products)]
+        for variable, group in pin_source_env_collisions(guarded).items():
+            if not (os.environ.get(variable) and holders.intersection(
+                    pin_product_key(product) for product in group)):
+                continue
+            named = self.shared_variables.setdefault(variable, [])
+            known = {pin_product_key(product) for product in named}
+            named.extend(product for product in group
+                         if pin_product_key(product) not in known)
 
     def _bare_path(self) -> Path | None:
         """The bare PATH for `link_pins_from_trees`, which asks it for a
@@ -560,7 +613,9 @@ class LinkSources:
         link a bare PATH answers for had a more specific source
         (`_not_asked_why`). A value holding `=` that was read as a PATH says
         so too. Then a NOTE for each `--link-remedy` no holder used
-        (`_unused_remedy_lines`)."""
+        (`_unused_remedy_lines`), and one for each variable that is set and
+        was read for no link because products of the run share it
+        (`_shared_variable_lines`, #990)."""
         lines = []
         for typed, link in self.reading.items():
             if typed in self.used or typed in self.unread:
@@ -581,7 +636,37 @@ class LinkSources:
             lines.append(" ".join(filter(None, (
                 f"{flag} {_shown(typed)}: not used — {why}.",
                 self.read_as_path(typed)))))
-        return lines + self._unused_remedy_lines()
+        return (lines + self._unused_remedy_lines()
+                + self._shared_variable_lines())
+
+    def _shared_variable_lines(self) -> list[str]:
+        """One `link-source-collides` NOTE for each variable
+        `_record_shared_variables` kept (#990): it is set, the products of
+        the run that share it, that it is read for none of them, and what
+        reads a link's own tree here instead, the gate's words for a link
+        whose variable is shared (`_chain_link_findings`). A NOTE, so it
+        fails nothing and `--quiet` drops it, as it drops every NOTE. A
+        product is named as `_shown` spells it, so the NOTE is one line.
+
+        NOTHING IS SAID UNDER A LABEL, as `_unused_remedy_lines` says
+        nothing there: a caller that passes `--link-source-label` speaks for
+        someone else, in its own sources. Setup's step (4) speaks for the
+        scaffold, which #990 leaves out: it asks the guard over its one
+        chain and no `run_products`, so it reads a variable this run passed
+        over for a declared pin's sake, and it takes no `--link-source` and
+        reads no sibling checkout, the two this NOTE would offer."""
+        if self.label:
+            return []
+        lines = []
+        for variable, products in self.shared_variables.items():
+            named = [_shown(product) for product in products]
+            lines.append(
+                f"link-source-collides: {variable} is set, but "
+                f"{', '.join(named[:-1])} and {named[-1]}, products this run "
+                "reads, share it: it cannot say which it holds, so it is "
+                "read for none of them. A link's own tree is read from a "
+                "sibling checkout or --link-source <link>=<path>.")
+        return lines
 
     def _unused_remedy_lines(self) -> list[str]:
         """A NOTE for each `--link-remedy` no holder used (#907), named as
