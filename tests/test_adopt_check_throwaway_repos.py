@@ -516,14 +516,26 @@ def test_execute_refuses_it_before_any_leg_exists(adopter, monkeypatch,
     assert not remotes.exists()
 
 
+#: The NOTE `check` prints where no throwaway repository can be made in the
+#: work directory at all; `{}` is that directory.
+UNMADE_NOTE = ("NOTE `check` could not make a throwaway repository in `{}`, "
+               "the work directory, to ask this machine's git what the split "
+               "will make of the source: a directory or a file could not be "
+               "made there (Permission denied). It asked nothing about the "
+               "source's paths and files there; run `check` again with a "
+               "--work-dir this user can write in.")
+
+
 def test_a_work_directory_nothing_can_be_made_in_says_so_once(
         tmp_path, unwritable_work):  # noqa: F811
-    """`adopt-work-dir-unwritable` names the directory (#524), and
-    `adopt-git-unasked` the questions it kept from being asked: once, in
-    their place, where on c7a3ff16 they were asked in `TMPDIR`."""
+    """`adopt-work-dir-unwritable` names the directory (#524), the one
+    finding for the one cause, as `check` asks it the same way, and a NOTE
+    the questions it kept from being asked, where on c7a3ff16 they were
+    asked in `TMPDIR`, another disk than the split's."""
     plan = planned(a_source(tmp_path), tmp_path, {})
     result = checked(plan, None, "--work-dir", str(unwritable_work))
     assert "Traceback" not in result.stderr, result.stderr
     assert result.returncode == 1, result.stderr
-    assert codes(result) == [WORK_DIR_UNWRITABLE, UNASKED], result.stderr
-    assert "(Permission denied)" in finding_lines(result)[1]
+    assert codes(result) == [WORK_DIR_UNWRITABLE], result.stderr
+    assert UNMADE_NOTE.format(os.path.realpath(unwritable_work)) in \
+        result.stdout.splitlines(), result.stdout

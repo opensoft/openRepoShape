@@ -108,7 +108,7 @@ THREE SUBCOMMANDS, BECAUSE THE MIDDLE ONE IS A HUMAN.
            path, `..` or `.Git/x`, is `plan-path-git-refuses`. Its
            questions to git are asked in throwaway repositories in the work
            directory, with the source's object format and no hook of this
-           machine's, and one that cannot be made or asked there is
+           machine's, and one git cannot make or ask there is
            `adopt-git-unasked`, which says why (#910). It prints what will
            happen and changes nothing.
   execute  asks about both legs before it makes either (#798), then
@@ -8558,9 +8558,11 @@ def _entry_findings(plan: Plan, source: Source,
 
     `check`'S THROWAWAY REPOSITORIES (#910) are made in the work directory,
     with the source's object format and no hook of this machine's. Where
-    one cannot be made or asked, `adopt-git-unasked` says why, once, in the
+    git cannot make or ask one, `adopt-git-unasked` says why, once, in the
     place of the questions asked in them, which are not asked; never
-    `git-failed`.
+    `git-failed`. Where no directory can be made in the work directory at
+    all, `adopt-work-dir-unwritable` is that cause's one finding (#524), and
+    a NOTE says what went unasked.
 
     A VALUE NO FILE CAN HOLD IS SAID BEFORE THE VALIDATOR'S WORD ON IT (#255
     before #261). A lone surrogate, a line break or a bidi control in
@@ -8604,11 +8606,11 @@ def _entry_findings(plan: Plan, source: Source,
     # throwaway repository of its own: one it refuses is a fact of the
     # source, said with the others (#910). Where that repository cannot be
     # made or asked, neither can the others `check` makes in the same work
-    # directory, and one finding says why, in their place below.
+    # directory, and `_Unasked.said` says why, once, in their place below.
     try:
-        refused, unasked = _paths_git_refuses(source, tree), []
+        refused, unasked = _paths_git_refuses(source, tree), None
     except _Unasked as exc:
-        refused, unasked = [], [f"FINDING {exc.code}: {exc.detail}"]
+        refused, unasked = [], exc
     unsafe, unsafe_remediation = _source_path_findings(plan, tree, targets,
                                                        refused)
     findings = (unsafe
@@ -8643,9 +8645,11 @@ def _entry_findings(plan: Plan, source: Source,
     # One answer to whether git checks a symlink out as one, for every
     # question whose walks may need it on any source (#654, #910).
     probe = _SymlinkProbe(source.work_root)
-    return (findings + misread + split
-            + _root_symlink_findings(plan, source, tree, probe)
-            + (unasked or _asked_in_throwaways(plan, source, tree, probe))
+    linked = _root_symlink_findings(plan, source, tree, probe)
+    asked, unasked_notes = (
+        unasked.said() if unasked is not None
+        else _asked_in_throwaways(plan, source, tree, probe))
+    return (findings + misread + split + linked + asked
             + unwritable_findings + value_findings + names
             + tracking_findings + moved + field_findings,
             unsafe_remediation
@@ -8653,7 +8657,7 @@ def _entry_findings(plan: Plan, source: Source,
             + split_remediation + unwritable_remediation + value_remediation
             + names_remediation + tracking_remediation + moved_remediation
             + field_remediation,
-            pin_notes + notes + probe.notes())
+            pin_notes + notes + unasked_notes + probe.notes())
 
 
 # ---------------------------------------------------------------------------
@@ -10085,12 +10089,15 @@ def _refuse_symlinks_checked_out_as_files(plan: Plan, source: Source,
 #   command there takes `-c core.hooksPath=` an empty directory of its own,
 #   which is its `--template` too: no hook runs and none is copied in, and a
 #   `-c` outranks every config file and `GIT_CONFIG_COUNT`.
-# * ONE THAT CANNOT BE MADE OR ASKED IS A FINDING (`UNASKED`), never
-#   `git-failed`: a work directory nothing can be made in, a setting `git
-#   init` refuses (`init.defaultBranch = a..b`, which the split's own clone
-#   refuses too), or git failing a step there. It says where and why, and
-#   `execute`, which asks the same in its own work directory before it makes
-#   either leg, refuses it there. The questions after it are not asked.
+# * ONE GIT CANNOT MAKE OR ASK IS A FINDING (`UNASKED`), never `git-failed`:
+#   a setting `git init` refuses (`init.defaultBranch = a..b`, which the
+#   split's own clone refuses too), or git failing a step there. It says
+#   where and why, and `execute`, which asks the same in its own work
+#   directory before it makes either leg, refuses it there. A work directory
+#   no directory can be made in at all is `adopt-work-dir-unwritable`'s, as
+#   `check` asks it the same way (#524), and `execute` refuses it before it
+#   asks anything: one cause, one finding, and a NOTE of what went unasked.
+#   The questions after one that cannot be asked are not asked.
 
 #: `check`'s finding, and the code of `execute`'s refusal, for the paths of
 #: the source commit that this machine's git will not hold in an index, and
@@ -10119,9 +10126,10 @@ class _Unasked(Refusal):
     """A question of `check`'s that could not be asked in a throwaway
     repository in `where`, and why (#910). A `Refusal` under `UNASKED`, so
     that one nothing makes a finding of still says why, and never as
-    `git-failed`; `_entry_findings` makes it the finding."""
+    `git-failed`; `_entry_findings` makes it the finding, or the NOTE
+    `said` gives."""
 
-    def __init__(self, where: Path, why: str) -> None:
+    def __init__(self, where: Path, why: str, unmade: bool = False) -> None:
         super().__init__(
             UNASKED,
             "`check` asks this machine's git what the split will make of the "
@@ -10131,6 +10139,24 @@ class _Unasked(Refusal):
             "before it makes either leg, and refuses while git cannot answer "
             "there. Fix what that names -- a git setting, the disk or the "
             "directory -- or pass another --work-dir, and run `check` again.")
+        self.where, self.why = where, why
+        #: No directory could be made in `where` at all: what
+        #: `_unwritable_work_dir` asks of a `--work-dir`, the same way, and
+        #: `adopt-work-dir-unwritable` names, and `execute` refuses before
+        #: it asks anything (#524). One cause, one finding: this one is a
+        #: NOTE of what went unasked.
+        self.unmade = unmade
+
+    def said(self) -> tuple[list[str], list[str]]:
+        """`(findings, notes)`: what `check` prints for it."""
+        if self.unmade:
+            return [], [f"NOTE `check` could not make a throwaway repository "
+                        f"in {_spelled(str(self.where))}, the work directory, "
+                        f"to ask this machine's git what the split will make "
+                        f"of the source: {self.why}. It asked nothing about "
+                        "the source's paths and files there; run `check` "
+                        "again with a --work-dir this user can write in."]
+        return [f"FINDING {self.code}: {self.detail}"], []
 
 
 def _why_unasked(exc: BaseException) -> str:
@@ -10161,8 +10187,11 @@ def _throwaway(prefix: str, source: Source | None) -> Path:
     system's temporary directory for a `Source` no command opened; it is
     `_Unasked` where none can be made there."""
     where = source.work_root if source is not None else None
-    with _asked_there(where or Path(tempfile.gettempdir())):
+    try:
         return Path(tempfile.mkdtemp(prefix=prefix, dir=where))
+    except OSError as exc:
+        raise _Unasked(where or Path(tempfile.gettempdir()),
+                       _why_unasked(exc), unmade=True) from None
 
 
 def _throwaway_made(scratch: Path, repository: Path, source: Source | None,
@@ -10230,11 +10259,12 @@ def _path_git_refuses_findings(paths: list[str]
 
 
 def _asked_in_throwaways(plan: Plan, source: Source, tree: list,
-                         probe: _SymlinkProbe) -> list[str]:
-    """The findings of `check`'s questions to git in throwaway repositories,
-    in `_entry_findings`' order (#530, #654). Where one cannot be asked,
-    those before it and `UNASKED`'s, which says why; none after it, asked in
-    the same work directory, is asked (#910)."""
+                         probe: _SymlinkProbe
+                         ) -> tuple[list[str], list[str]]:
+    """`(findings, notes)` of `check`'s questions to git in throwaway
+    repositories, in `_entry_findings`' order (#530, #654). Where one cannot
+    be asked, those before it, and what `_Unasked.said` says of it; none
+    after it, asked in the same work directory, is asked (#910)."""
     found: list[str] = []
     for question in (_nested_attributes_findings,
                      _reencoded_attributes_findings,
@@ -10242,8 +10272,9 @@ def _asked_in_throwaways(plan: Plan, source: Source, tree: list,
         try:
             found += question(plan, source, tree, probe)
         except _Unasked as exc:
-            return [*found, f"FINDING {exc.code}: {exc.detail}"]
-    return found
+            more, notes = exc.said()
+            return [*found, *more], notes
+    return found, []
 
 
 # ---------------------------------------------------------------------------
