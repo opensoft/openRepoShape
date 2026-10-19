@@ -325,6 +325,12 @@ EQUALS = ("--pins", "openXdox", "--referent-chain", "openXdox,open=y,openInk")
                  "OURS for y", id="padded"),
     pytest.param(THREE, "openXdox=a=b", "openXdox", "openYdox", "a=b",
                  id="words-holding-an-equals"),
+    # #991: an `=` whose owner, the text before the link's last `/`, holds
+    # one does not end the link, so the words are `openXdox`'s.
+    pytest.param(THREE, "openXdox=a/openYdox=b", "openXdox", "openYdox",
+                 "a/openYdox=b", id="an-owner-holding-an-equals"),
+    pytest.param(EQUALS, "opensoft/open=y=OURS for y", "open=y", "openInk",
+                 "OURS for y", id="an-owner-before-a-link-holding-an-equals"),
 ])
 def test_a_remedys_link_is_the_one_a_chain_names(tmp_path, monkeypatch, chain,
                                                  remedy, holder, held, words):
@@ -333,7 +339,13 @@ def test_a_remedys_link_is_the_one_a_chain_names(tmp_path, monkeypatch, chain,
     at the first `=`, `open=y=OURS for y` was the words `y=OURS for y` for a
     link `open` that no chain names, and `open=y` was offered the gate's own
     `--link-source open=y=<path>`, a flag setup does not take. Unstripped,
-    ` open=y ` names no link, and the value fell back to `open`."""
+    ` open=y ` names no link, and the value fell back to `open`.
+
+    #991, the tightening RV949 offered: that `=` is passed over where the
+    link's owner holds one, since no owner is spelled with an `=`. Read at
+    its last `=`, `openXdox=a/openYdox=b` gave `openYdox` the words `b`,
+    and `openXdox` kept the gate's own. An owner before a link holding `=`,
+    `opensoft/open=y`, still reads as that link."""
     clear_ambient_pin_sources(monkeypatch)
     result = naming(tmp_path, *chain, "--link-remedy", remedy, "codexInk")
     assert result.returncode == 0, result.stderr

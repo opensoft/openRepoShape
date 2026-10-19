@@ -52,7 +52,11 @@ WHAT IS CHECKED
     `contracts/<the pin this project holds>-pin.yaml` in the tree either way.
     A link of the chain is VERIFIED against that link's own manifest when its
     tree is beside this root, and reported as `declared-unverified` — a
-    WARNING, not a finding — when it is not. The whole check is OFFLINE.
+    WARNING, not a finding — when it is not. A `SHAPE_PIN_SOURCE_<LINK>`
+    that is set, and that two products this run reads share, is read for
+    none of them (#275, #909), and a `link-source-collides` note says so
+    once (#990): a note, printed as `validate-pins.py` prints one, which
+    fails nothing either. The whole check is OFFLINE.
   - `submodules`, OPTIONAL: the record an adoption writes of the leg each
     source submodule was answered into (#189). Absent is fine, because a
     project with no source submodule has none, and nor does one adopted
@@ -90,6 +94,7 @@ from __future__ import annotations
 
 import argparse
 import inspect
+import os
 import re
 import sys
 from pathlib import Path
@@ -99,8 +104,8 @@ from repo_shape import (  # noqa: E402
     CHAIN_RECORD_FIELD, COMMIT_RE, PATH_NOT_CANONICAL, PROJECT_ID_RE,
     SHA256_RE, TREE_DIGEST_DEFINITION, VISIBILITY_CHOICES, NamingPolicy,
     Refusal, accepts_role, find_repo_root, link_pins_from_trees, load_yaml,
-    path_spelling_fault, pin_product_key, pin_source_env_name,
-    pin_source_env_shared, repo_basename,
+    path_spelling_fault, pin_product_key, pin_source_env_collisions,
+    pin_source_env_name, pin_source_env_shared, repo_basename,
 )
 
 DATE_RE = re.compile(r"^\d{4}-\d{2}-\d{2}$")
@@ -175,8 +180,8 @@ def _recorded_chain(naming: dict) -> tuple:
     return tuple(recorded)
 
 
-def _chain_and_links(naming, root: Path | None,
-                     run_products=()) -> tuple[tuple, dict]:
+def _chain_and_links(naming, root: Path | None, run_products=(),
+                     shared: dict | None = None) -> tuple[tuple, dict]:
     """The chain a leg RECORDS, and what its READABLE links declare.
 
     Read ONCE and handed to both the leg's own classification and the check of
@@ -206,11 +211,15 @@ def _chain_and_links(naming, root: Path | None,
     `run_products` is every product this run reads (`_run_products`). A
     variable two of them share answers for none of them, wherever they are,
     where the library takes `run_products=` (#909), and it is offered to
-    none of them.
+    none of them. Where `shared` is given, each such variable that is set is
+    kept in it for the note that names it (`_record_shared_variables`,
+    #990).
     """
     chain = _recorded_chain(naming) if isinstance(naming, dict) else ()
     if not chain:
         return chain, {}
+    if shared is not None:
+        _record_shared_variables(shared, chain, run_products)
     if not _library_takes_remedies():
         return chain, link_pins_from_trees(chain, root)
     tried: dict = {}
@@ -226,7 +235,7 @@ def _run_products(pins, legs) -> list[str]:
     """Every product this run reads (#909): the declared pins, and every
     link of every chain a leg records, read as `_leg_findings` reads it
     (`_recorded_chain`). That counts the chain of a leg whose `repository:`
-    is bad or missing, which the naming gate's `_project_chain_links`
+    is missing, which the naming gate's `_project_chain_links`
     leaves out; such a leg is a finding in both gates, so the run fails
     either way."""
     products = sorted(pins)
@@ -235,6 +244,58 @@ def _run_products(pins, legs) -> list[str]:
         if isinstance(naming, dict):
             products.extend(str(link) for link in _recorded_chain(naming))
     return products
+
+
+def _record_shared_variables(shared: dict, chain, run_products) -> None:
+    """Keep in `shared`, as `{variable: {pin_product_key: product}}`, each
+    `SHAPE_PIN_SOURCE_<LINK>` that is SET and that the lookup of `chain`
+    passes over for a holder because another product the guard is asked
+    over shares it (#990). The lookup leaves no row in `tried` for it, so
+    nothing else here says it was there.
+
+    The guard's products are the chain's and, where the library takes
+    `run_products=` (`_library_takes`), the run's (#909): an older library
+    asks over the chain alone and reads a variable a declared pin shares
+    with it, so it is not said to be read for none. Only a holder counts,
+    since the chain's end holds no pin, and an unset or empty variable is
+    read for nobody and stays unsaid. A product keeps its first spelling."""
+    run = run_products if _library_takes("run_products") else ()
+    links = [repo_basename(str(link)) for link in chain]
+    holders = {pin_product_key(link) for link in links[:-1]}
+    groups = pin_source_env_collisions(
+        [*links, *(repo_basename(str(product)) for product in run)])
+    for variable, group in groups.items():
+        by_key = {pin_product_key(product): product for product in group}
+        if os.environ.get(variable) and holders.intersection(by_key):
+            named = shared.setdefault(variable, {})
+            for key, product in by_key.items():
+                named.setdefault(key, product)
+
+
+def _shared_variable_notes(shared: dict) -> list[str]:
+    """One `link-source-collides` note for each variable
+    `_record_shared_variables` kept (#990): it is set, the products this
+    run reads that share it, that it is read for none of them, and what
+    reads a link's own tree here instead, a checkout beside this root, as
+    `_link_remedies` offers one.
+
+    A NOTE, AS `validate-pins.py` PRINTS ONE (`  note `), which `main`
+    counts as no finding: it changes no exit code, and `--quiet` prints it
+    as it prints the WARNINGs. The doctor reads it as a note on the
+    `manifest` row, as it reads `neutral-pin-source-collides` on the
+    `pins` row; a line it does not know as an item it would read as the
+    tail of the WARNING before it. The products are names `_not_a_name`
+    has held to printable text, so the note is one line."""
+    notes = []
+    for variable, named in shared.items():
+        products = list(named.values())
+        notes.append(
+            f"  note link-source-collides: {variable} is set, but "
+            + ", ".join(products[:-1]) + f" and {products[-1]}, products "
+            "this run reads, share it: it cannot say which it holds, so it "
+            "is read for none of them. A link's own tree is read from a "
+            "checkout of it beside this root.")
+    return notes
 
 
 #: Why the lookup passed over a source with nothing at its path:
@@ -931,7 +992,7 @@ def _leg_path_findings(role, path, paths: dict[str, str]) -> list[str]:
 
 def _leg_findings(leg, policy: NamingPolicy, pins: set[str], root,
                   owners: set[str], paths: dict[str, str],
-                  run_products=()) -> list[str]:
+                  run_products=(), shared: dict | None = None) -> list[str]:
     """One `legs:` entry, start to finish: its repository name against the
     naming policy, its optional `naming:` record, and its path.
 
@@ -940,7 +1001,8 @@ def _leg_findings(leg, policy: NamingPolicy, pins: set[str], root,
     loop body did, so the path-collision check and the owners-span check
     after the loop see the same accumulated state; every `continue` in the
     original loop is a `return` here. `run_products` is every product the
-    run reads (`_run_products`, #909).
+    run reads (`_run_products`, #909), and `shared` gathers the variables
+    the lookup passes over for the note after the loop (#990).
     """
     if not isinstance(leg, dict):
         return [_finding("manifest-leg", f"a leg is not a mapping: {leg!r}")]
@@ -960,7 +1022,7 @@ def _leg_findings(leg, policy: NamingPolicy, pins: set[str], root,
     # declaring `assembly` over `<Project>-spec` still lands in
     # naming-role-mismatch below.
     naming = leg.get("naming")
-    chain, link_pins = _chain_and_links(naming, root, run_products)
+    chain, link_pins = _chain_and_links(naming, root, run_products, shared)
     found = policy.classify(name, str(role) if role else None, pins,
                             chain, link_pins)
     out = list(_leg_role_classification_finding(role, name, found))
@@ -1169,10 +1231,13 @@ def _findings(manifest: dict, policy: NamingPolicy, root=None) -> list[str]:
     owners: set[str] = set()
     paths: dict[str, str] = {}
     run_products = _run_products(pins, legs)
+    # Said once for the run, after every leg's lines (#990).
+    shared: dict[str, dict[str, str]] = {}
     for leg in legs:
         out.extend(_leg_findings(leg, policy, pins, root, owners, paths,
-                                 run_products))
+                                 run_products, shared))
     out.extend(_owners_span_finding(owners))
+    out.extend(_shared_variable_notes(shared))
     return out
 
 
@@ -1206,7 +1271,9 @@ def main(argv: list[str] | None = None) -> int:
     # A WARNING is a note about what could not be CHECKED here (a chain link
     # whose tree is not on this disk), never about what is wrong. It is
     # printed and then forgotten by the exit code, deliberately.
-    findings = [note for note in notes if not note.startswith("WARNING")]
+    # A `  note` is forgotten too: it is said, and is no fault (#990).
+    findings = [note for note in notes
+                if not note.startswith(("WARNING", "  note "))]
     for note in notes:
         print(note, file=sys.stderr)
     if findings:
