@@ -158,7 +158,11 @@ both legs and the split were pushed; and an `org:` holding a character GitHub
 gives no organisation (`.`), ending in a hyphen or holding two in a row
 (`adopt-bad-org`, #863). `check` finds each of these, the disk's included,
 under the same code: `execute` passed what `check` had called `plan ok`
-(#863). Both read one list, `_what_cannot_be_held`.
+(#863). Both read one list, `_what_cannot_be_held`. Its first question is
+the one the scaffold asks of its `--project` (#989): an assembly root no
+Windows disk can make a folder of (`NUL`, `Con`, `com1`, `Lpt9`), which
+`plan` refuses as `--project` before anything exists, and `check` and
+`execute` find in `legs.assembly` (`adopt-bad-project-name`, #1014).
 
 WHY `git filter-repo` AND NOT A VENDORED COPY. Extracting history correctly is
 a solved problem with one correct implementation, and a vendored copy of it
@@ -287,6 +291,9 @@ from shape_materialize import (  # noqa: E402
 )
 # And the characters GitHub gives an organisation's name (#863).
 from shape_materialize import refuse_an_owner_github_cannot_spell  # noqa: E402
+# Whether a Windows disk can make a folder of a name (#1014): the one question
+# the scaffold asks of its `--project` and `family.py init` of `--family`.
+from shape_materialize import refuse_an_unholdable_name  # noqa: E402
 # Whether a value this tool writes into a file is text a file can hold
 # (#255), asked beside `one_printable_line`, the trailer's question.
 from shape_materialize import unwritable_reason  # noqa: E402
@@ -4854,6 +4861,54 @@ def _names_held(naming: NamingPolicy, project: str, pins: set[str]) -> bool:
     return True
 
 
+#: `adopt-bad-project-name` (#1014): an assembly root no Windows disk can make
+#: a folder of. One code for the three subcommands, as `adopt-name-too-long`
+#: is: `plan` asks it of `--project`, and `check` and `execute` of the plan's
+#: `legs.assembly`, the name `execute` clones the root into a folder of.
+BAD_PROJECT_NAME = "adopt-bad-project-name"
+#: What the refusal's sentence says the name names, after "which names".
+PROJECT_NAMES = "the assembly root and the folder `execute` clones it into"
+#: And what it is told to do, in the words the scaffold gives
+#: `scaffold-bad-project-name` and `family.py init` `family-bad-holder-name`
+#: (#989), of what `--project` names here. A plan's name is mended by `plan`
+#: again, which writes `project:`, `id:` and the three `legs:` from one
+#: `--project`. Where the name is the source's own, adopted in place, it is
+#: `_rename_first`'s way out, in its words: `plan` asks before it has read
+#: the source, so it cannot yet say which of the two it is.
+PROJECT_NAME_FIX = (
+    "Run `plan` again with another --project. It names the assembly root, "
+    "and so the folder `execute` clones the root into and the folder every "
+    "clone of it is made in; and a root is cloned on Windows too, where no "
+    "file or folder can be called a device name (`CON`, `PRN`, `AUX`, "
+    "`NUL`, `COM1`-`COM9`, `LPT1`-`LPT9`, in any case, with or without an "
+    "extension), and a name ending in a dot or a space is made under another "
+    "name. Where --project is the source's own name, it cannot be changed "
+    "here: an in-place adoption keeps the source's own name, and whether to "
+    "rename the source is a human's decision, made first on GitHub (`gh "
+    "repo rename`); then run `plan` again against the renamed repository, "
+    "with its new name as --project.")
+
+
+def _refuse_a_root_no_disk_holds(name: str, flag: str, made: str) -> None:
+    """`adopt-bad-project-name`: `name`, the assembly root's, as `flag`
+    names it, is one a Windows disk can make a folder of, or this refuses
+    it, saying `made` (what was not made) before `PROJECT_NAME_FIX` (#1014).
+
+    The question is `shape_materialize.refuse_an_unholdable_name`, the one
+    the scaffold asks of its `--project` and `family.py init` of `--family`
+    (#989): a Windows device name, with or without an extension, in any case
+    (`NUL`, `Con`, `com1`, `Lpt9`), a name ending in a dot or a space, or one
+    of Git's own names. `plan --project NUL` wrote a plan, and `check` said
+    `plan ok` over it, for a root those two refuse. A device name is the
+    WHOLE name: `Nullable`, and the legs `NUL-spec` and `NUL-code`, are
+    folders Windows makes, so only the root's name is asked. It starts no
+    process."""
+    refuse_an_unholdable_name(BAD_PROJECT_NAME, flag, name,
+                              names=PROJECT_NAMES,
+                              remediation=f"Remediation: {made} "
+                                          f"{PROJECT_NAME_FIX}")
+
+
 #: What `plan` says after `checked_value`'s remedy when the value refused is
 #: the source's own branch, which nobody passed (#797, L1-71's first case on
 #: #457). The alphabet alone said nothing of the way past it, which works.
@@ -5068,6 +5123,18 @@ def _checked_flag_inputs(args, naming: NamingPolicy) -> None:
                       _leg_collision_remediation(products))
     args.spec_path = checked_value(*spec)
     args.code_path = checked_value(*code)
+    # A `--project` NO WINDOWS DISK CAN MAKE A FOLDER OF (#1014), in the
+    # order #972 set for the scaffold and `init`: the naming refusal first,
+    # then this one, then a passed `--id`'s sentence. The naming policy is
+    # asked after the source is read, its remedy needing the source, so this
+    # is asked only of names it holds (`_names_held`): one it refuses too
+    # (`NUL.git`, `Nul.`) is left to the refusals asked after the source, as
+    # on main. Before the work directory, the source, `gh` and the plan
+    # file, as the scaffold asks it before anything exists.
+    held = _names_held(naming, args.project, set(products))
+    if held:
+        _refuse_a_root_no_disk_holds(args.project, "--project",
+                                     PLAN_NOT_WRITTEN)
     # An `--id` that was passed is held to its rule here, named as the flag
     # (#601): that branch of `_refuse_bad_id` reads no source, so it is
     # given none. One derived from `--project` is refused where the source's
@@ -5078,8 +5145,7 @@ def _checked_flag_inputs(args, naming: NamingPolicy) -> None:
     # and its remedy names the source where `--project` is the source's own
     # name, so a passed id beside such a name is refused where the source
     # is known, as the derived one is (`_refuse_bad_id`).
-    if args.id is not None and _names_held(naming, args.project,
-                                           set(products)):
+    if args.id is not None and held:
         _refuse_bad_id(args.id, args.project, {"id"}, None, naming,
                        set(products))
     # An `--org` that was passed, as `_planned_org` holds it, `''` included
@@ -12507,12 +12573,13 @@ def _leg_remote_findings(plan: Plan, names: dict,
 #: The codes of `_what_cannot_be_held` whose fix changes the names the two
 #: leg repositories are asked under, `<org>/<Project>-spec` and
 #: `<org>/<Project>-code` (#871's review, S1): `adopt-name-too-long` is
-#: mended with a shorter --project, `adopt-org-too-long` and `adopt-bad-org`
-#: with another `org:`. `check` asks #861's leg question only where none of
-#: them is found. `adopt-topic-too-long` is not one: it is mended with
-#: another `id:`, and an id names no repository.
-RENAMES_THE_LEGS = frozenset({"adopt-name-too-long", "adopt-org-too-long",
-                              "adopt-bad-org"})
+#: mended with a shorter --project, `adopt-bad-project-name` with another
+#: (#1014), `adopt-org-too-long` and `adopt-bad-org` with another `org:`.
+#: `check` asks #861's leg question only where none of them is found.
+#: `adopt-topic-too-long` is not one: it is mended with another `id:`, and an
+#: id names no repository.
+RENAMES_THE_LEGS = frozenset({"adopt-name-too-long", BAD_PROJECT_NAME,
+                              "adopt-org-too-long", "adopt-bad-org"})
 
 
 def _held_findings(plan: Plan, names: dict, local_remote_dir: Path | None,
@@ -13150,8 +13217,10 @@ def _what_cannot_be_held(plan: Plan, names: dict, org: str, local: bool,
                          naming: NamingPolicy | None = None):
     """Each `Refusal` of what the disk or GitHub will not hold of the three
     names, the organisation and the topic, in the order `execute` asks them,
-    one at a time: the names, and without `--local-remote-dir` the `org:`,
-    its length and then its characters, and the topic.
+    one at a time: the assembly root's name, of which a Windows disk must be
+    able to make a folder (`adopt-bad-project-name`, #1014), the names'
+    lengths, and without `--local-remote-dir` the `org:`, its length and
+    then its characters, and the topic.
 
     ONE LIST, TWO READERS (#863). `execute` refuses the first one
     (`_repository_urls`), before either leg exists; `check` finds every one,
@@ -13161,7 +13230,10 @@ def _what_cannot_be_held(plan: Plan, names: dict, org: str, local: bool,
     `_refuse_what_check_finds` makes `check` and `execute` read one list of
     the manifest's values, means the two cannot disagree again. It is a
     generator, so `execute` asks nothing after the first refusal."""
-    asked = [lambda: _refuse_names_nothing_keeps(names, org, local)]
+    asked = [lambda: _refuse_a_root_no_disk_holds(
+                 names["assembly"], f"{plan.path}: `legs.assembly`",
+                 "no repository was created."),
+             lambda: _refuse_names_nothing_keeps(names, org, local)]
     if not local:
         named = f"{plan.path}: `org:`"
         asked += [
