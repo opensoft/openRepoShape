@@ -5018,6 +5018,17 @@ _VALIDATORS: dict = {}
 #: Which placeholder carries the value a finding of the validator is about,
 #: for the ones a tool is handed a value for. A finding with no row is still
 #: refused, in the validator's words and without a flag to point at.
+#:
+#: THE TWO RECORDS' CODES HAVE NO ROW, ON PURPOSE (#914): #189's
+#: `submodules:` (`manifest-submodules`, `manifest-submodule-*`) and #525's
+#: `answered_paths:` (`manifest-answered-paths`, `manifest-answered-*`),
+#: which the validator spells from its `_Record`s. No placeholder carries a row
+#: of either: `adopt-project.py execute` appends both to `project.yaml` after
+#: the render its gate asks, so no tool is handed a value of theirs and no
+#: such finding can arise there today. Should a caller render a record into
+#: that question, a finding about one is about no placeholder, and
+#: `manifest_judged` answers None: every value is left to the validator, the
+#: safe direction, and none is named as one a flag carries.
 FINDING_PLACEHOLDER = {
     "manifest-id": "PROJECT_ID", "manifest-topic": "PROJECT_ID",
     "manifest-name": "PROJECT_NAME", "manifest-elected-by": "ELECTED_BY",

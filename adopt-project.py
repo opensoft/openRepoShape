@@ -7115,13 +7115,26 @@ def _answered_legs(entries: list, paths: list[str]) -> dict:
     yet cannot have been answered inconsistently. `execute` refuses all four
     too: the null one in `_refuse_an_unrunnable_plan`, the other three in
     #168's `_refuse_what_check_finds`.
+
+    EACH PATH LOOKS UP ITS OWN NAMES (#914), as the doctor's
+    `answered_questions` does: the entries `_covering` could find covering
+    it are the names `_covering_names` lists, and one entry covers it where
+    exactly one of those names is a plan entry's, spelled by one entry. So a
+    path costs its depth and not the plan's length, with the answer holding
+    every entry against every path gave.
     """
-    entry_paths = [str(e.get("path")) for e in entries]
-    legs = {str(e.get("path")): str(e.get("leg")) for e in entries}
+    spelled: dict[str, int] = {}
+    legs: dict[str, str] = {}
+    for entry in entries:
+        name = str(entry.get("path"))
+        spelled[name] = spelled.get(name, 0) + 1
+        legs[name] = str(entry.get("leg"))
     out: dict[str, tuple[str, str]] = {}
     for path in paths:
-        covering = _covering(entry_paths, path)
-        if len(covering) == 1 and legs[covering[0]] in LEG_VALUES:
+        covering = [name for name in dict.fromkeys(_covering_names(path))
+                    if name in spelled]
+        if (len(covering) == 1 and spelled[covering[0]] == 1
+                and legs[covering[0]] in LEG_VALUES):
             out[path] = (legs[covering[0]], covering[0])
     return out
 
@@ -15118,6 +15131,12 @@ def _account_for(before: dict, after: dict, drops: list[str]) -> tuple[dict, lis
 
     A path in TWO places is as much a finding as a path in none — the second
     is data loss and the first is two repositories owning one file.
+
+    THE DROP IS ASKED BEFORE THE ROOT IS (#914). A path the plan dropped is
+    gone from the split before the shape writes, so a blob the root holds
+    at it is the shape's, which happens to be the same bytes: the path is
+    counted `drop`, as the plan says, and not `root`. Only the count moves;
+    a dropped path in a leg is counted, or found, as before.
     """
     dropped = {p.rstrip("/") for p in drops}
     counts = {"spec": 0, "code": 0, "root": 0, "drop": 0}
@@ -15125,13 +15144,14 @@ def _account_for(before: dict, after: dict, drops: list[str]) -> tuple[dict, lis
     for path, oid in sorted(before.items()):
         landings = [where for where in after.get(path, [])
                     if where.split(":", 1)[1] == oid]
-        if len(landings) == 1:
+        drop = any(path == d or path.startswith(d + "/") for d in dropped)
+        if drop and landings in ([], [f"root:{oid}"]):
+            counts["drop"] += 1
+        elif len(landings) == 1:
             counts[landings[0].split(":", 1)[0]] += 1
         elif landings:
             findings.append(f"FINDING adopt-duplicated: {_spelled(path)} is "
                             "in " + ", ".join(landings))
-        elif any(path == d or path.startswith(d + "/") for d in dropped):
-            counts["drop"] += 1
         else:
             findings.append(f"FINDING adopt-lost: {_spelled(path)} "
                             f"({oid[:12]}) is in no leg, not in the root "

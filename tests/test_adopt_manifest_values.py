@@ -415,6 +415,51 @@ def test_the_flags_and_the_plan_keys_name_the_same_values(adopter):
     assert mapped - {"PROJECT_NAME"} <= set(adopter.MANIFEST_FLAGS)
 
 
+#: A `submodules:` and an `answered_paths:` row each of whose four keys the
+#: project's validator refuses, and a third record that is not a list, so
+#: that every code the two records' findings can carry is made (#914).
+BAD_RECORDS = (
+    "submodules:\n"
+    "  - path: ../x\n    leg: root\n    resolution: 7\n"
+    "    source_commit: nope\n"
+    "  - 7\n"
+    "answered_paths: 7\n")
+
+
+def test_the_records_codes_have_no_placeholder_row(tmp_path, monkeypatch):
+    """#914's L1-K4, said rather than mapped. No placeholder carries a row
+    of `submodules:` or `answered_paths:` -- `execute` appends both after
+    the render its gate asks -- so the codes the project's validator makes
+    of them have no `FINDING_PLACEHOLDER` row, and a manifest that held one
+    is one `manifest_judged` can name no value of: None, every value left to
+    the validator. Asked of the validator the template ships, over a
+    manifest of nothing but the records, with every other code ignored."""
+    monkeypatch.setattr(shape_materialize, "_VALIDATORS", {})
+    copy = tmp_path / "assembly-root"
+    shutil.copytree(REPO / "templates" / "assembly-root", copy,
+                    ignore=shutil.ignore_patterns("__pycache__", "*.pyc"))
+    policy = shape_materialize.NamingPolicy.load(
+        REPO / shape_materialize.NAMING_POLICY_YAML)
+    stems = ("manifest-submodule", "manifest-answered")
+    made = set()
+    for record in ("submodules", "answered_paths"):
+        body = BAD_RECORDS if record == "submodules" else BAD_RECORDS.replace(
+            "submodules:", "answered_paths:", 1).replace(
+            "answered_paths: 7", "submodules: 7")
+        (copy / "project.yaml").write_text(body, encoding=UTF8)
+        codes = {shape_materialize._code_of(note) for note in
+                 shape_materialize._validator_notes({}, policy, copy, ())}
+        ours = {code for code in codes if code.startswith(stems)}
+        others = tuple(codes - ours)
+        assert shape_materialize.manifest_judged(
+            {}, policy, copy, ignore=others) is None, ours
+        made |= ours
+    assert made == {f"{stem}{tail}" for stem, plural in (
+        ("manifest-submodule", "s"), ("manifest-answered", "-paths"))
+        for tail in ("-path", "-leg", "-resolution", "-commit", plural)}
+    assert not made & set(shape_materialize.FINDING_PLACEHOLDER)
+
+
 def test_a_value_plan_filled_in_is_named_by_where_it_came_from(adopter):
     """#529 and L1-39: the four values `plan` fills in when its flag is not
     given are named by the default, in the words `_flag_fields` and the

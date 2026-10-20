@@ -1209,7 +1209,7 @@ one verdict, and its exit code:
 | `COMPLIANT` | 0 | no row is a `FINDING`, and the pin names this standard's commit |
 | `COMPLIANT, SHAPE BEHIND (n upstream-changed, m upstream-added)`, or `(pin <a> -> <b>, no copied file differs)` | 1 | valid, and the standard has moved on |
 | `DRIFTED (…)` | 1 | a copy was edited, deleted or no longer maps onto the standard, or a leg (a member, in a holder) is off its pin |
-| `MISPLACED (n paths)` | 1 | a tracked path sits in a leg the path policy puts elsewhere, or a submodule in a leg other than the one its `submodules:` record names |
+| `MISPLACED (n paths)` | 1 | a tracked path sits in a leg the path policy puts elsewhere (unless `answered_paths:` answers it into that leg), or a submodule in a leg other than the one its `submodules:` record names |
 | `INVALID (<rows>)` | 1 | a validator went red, or (`merge`) the index holds an unmerged path |
 | `NOT A SHAPE ROOT` | 2 | neither manifest is there — adopt, or scaffold |
 

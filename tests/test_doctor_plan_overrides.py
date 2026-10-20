@@ -40,13 +40,13 @@ import pytest
 
 from conftest import REPO, git
 from test_doctor_recorded_answers import (
-    EXAMPLES, EXAMPLES_ANSWER, GITMODULES, RULES_IN_CODE, RULES_PATH,
+    EXAMPLES, EXAMPLES_ANSWER, GITMODULES, GOLDEN, RULES_IN_CODE, RULES_PATH,
     adopt_source, edit_manifest, golden_run, placement, record_answers,
     the_rules_row, tree_of,
 )
 from test_shape_doctor import (  # noqa: F401
-    adoption_module, needs_filter_repo, project, scaffolded_here, stage,
-    standard,
+    adoption_module, needs_filter_repo, project, record_submodules,
+    scaffolded_here, stage, stage_gitlink, standard,
 )
 
 sys.path.insert(0, str(REPO / "scripts"))
@@ -248,17 +248,72 @@ def test_an_adoption_answered_against_a_rule_is_compliant_on_first_run(
 
 # --- L1-56: an emptied `.gitmodules` asks nothing ---------------------------
 
-@pytest.mark.parametrize("body, asked", [
-    ("", False), ("\n", True), ("# no submodule here\n", True)],
-    ids=["no-byte", "a-blank-line", "a-comment"])
+#: `(body, asked)`: a leg's `.gitmodules` in bytes, and whether the policy
+#: still asks of it (#914's L1-84). Every one that is not asked holds no
+#: section: no byte, or only what git's own config reader passes over -- a
+#: whole UTF-8 byte-order mark at the start, blank lines (space, tab, CR,
+#: LF) and comments. A section, even one with no key, and a byte git's
+#: reader refuses (part of a byte-order mark, a vertical tab) stay asked.
+GITMODULES_BODIES = [
+    pytest.param(b"", False, id="no-byte"),
+    pytest.param(b"\n", False, id="a-blank-line"),
+    pytest.param(b"\r\n", False, id="a-crlf-line"),
+    pytest.param(b"\xef\xbb\xbf", False, id="a-byte-order-mark"),
+    pytest.param(b"  \t \n\n", False, id="spaces-and-tabs"),
+    pytest.param(b"# no submodule here\n", False, id="a-comment"),
+    pytest.param(b"  ; nor here\r\n", False, id="a-semicolon-comment"),
+    pytest.param(b"\xef\xbb\xbf# saved by Notepad\r\n\r\n", False,
+                 id="a-mark-and-a-comment"),
+    pytest.param(b'[submodule "x"]\n', True, id="a-section-with-no-key"),
+    pytest.param(b"\xef\xbb", True, id="part-of-a-byte-order-mark"),
+    pytest.param(b"\x0b\n", True, id="a-vertical-tab"),
+]
+#: What the row says of the code leg's `.gitmodules` when it is not asked.
+EMPTY_CLAUSE = ("the policy asks nothing of 1 `.gitmodules` that hold(s) no "
+                "section and so register(s) no submodule, in a leg that "
+                "holds none (#655, #914): code/.gitmodules; nothing needs "
+                "one, and `git rm .gitmodules` in its leg removes it")
+#: A submodule the code leg holds, which no `.gitmodules` section registers.
+GITLINK_PATH = "vendor/lib"
+#: What the row says of it beside a `.gitmodules` that holds no section.
+UNREGISTERED_CLAUSE = (
+    "1 submodule(s) sit beside a `.gitmodules` of their leg that holds no "
+    "section, so nothing registers them and a recursive clone of the leg "
+    "leaves each empty (#914): code/vendor/lib; give each a section with "
+    "its `path` and `url` in that `.gitmodules`, or remove its gitlink "
+    "with `git rm --cached <path>` in its leg")
+
+
+def stage_bytes(leg: Path, name: str, body: bytes) -> None:
+    """`stage`, with the file's bytes as given: a byte-order mark and a CR
+    are what is under test, so no text layer may add or drop one."""
+    (leg / name).write_bytes(body)
+    git("add", "--", name, cwd=leg)
+
+
+def git_lists_nothing(leg: Path) -> bool:
+    """Does git's own config reader read the leg's `.gitmodules` cleanly
+    and find no key in it?"""
+    listed = git("config", "--file", GITMODULES, "--list", cwd=leg,
+                 check=False)
+    return listed.returncode == 0 and listed.stdout == ""
+
+
+@pytest.mark.parametrize("body, asked", GITMODULES_BODIES)
 def test_an_empty_gitmodules_is_asked_nothing(standard, project, body,
                                               asked):
-    """A `.gitmodules` that holds no byte registers no submodule, so the
-    policy's question of it -- which leg owns the submodules it registers
-    -- has nothing to ask: no question, the row `ok`, and said. One holding
-    anything at all is a file only git's own reader can say registers
-    nothing, and it stays the question it was."""
-    stage(project / "code", GITMODULES, body)
+    """A `.gitmodules` that holds no section registers no submodule, so in a
+    leg that holds none the policy's question of it -- which leg owns the
+    submodules it registers -- has nothing to ask: no question, the row
+    `ok`, and said with how to remove it, since no record can answer it
+    (#914's L1-84; #655 asked nothing only of one that holds no byte). Empty
+    as git's own reader reads it: each body not asked lists no key and
+    exits 0 under `git config --file`. One holding a section, or a byte git
+    refuses, stays the question it was."""
+    leg = project / "code"
+    stage_bytes(leg, GITMODULES, body)
+    if not asked:
+        assert git_lists_nothing(leg), body
     result, verdict, row = placement(standard, project)
     assert result.returncode == 0, result.stdout + result.stderr
     assert verdict == COMPLIANT
@@ -267,9 +322,55 @@ def test_an_empty_gitmodules_is_asked_nothing(standard, project, body,
     assert row["status"] == ("note" if asked else "ok"), row
     assert leg_entry(row, "code").get("empty_gitmodules") == (
         None if asked else ["code/.gitmodules"]), leg_entry(row, "code")
-    clause = ("the policy asks nothing of 1 `.gitmodules` that hold(s) no "
-              "byte and so register(s) no submodule (#655): code/.gitmodules")
-    assert (clause in row["reason"]) != asked, row["reason"]
+    assert (EMPTY_CLAUSE in row["reason"]) != asked, row["reason"]
+    assert "unregistered_submodules" not in leg_entry(row, "code")
+
+
+@pytest.mark.parametrize("body, recorded", [
+    (b"", False), (b"\n", False), (b"# none\n", False), (b"", True),
+], ids=["no-byte", "a-blank-line", "a-comment", "no-byte-and-recorded"])
+def test_a_sectionless_gitmodules_beside_a_submodule_is_said(
+        standard, project, body, recorded):
+    """#914's L1-84, its second case. Beside a submodule of its leg, a
+    `.gitmodules` that holds no section is no emptied file: it registers
+    none of the leg's submodules, and on main it was set aside as if it
+    were, with no row naming the submodule nothing registers. Now it stays
+    the question it was -- asked, or answered where `submodules:` places
+    every submodule of the leg -- and the row names the submodule with what
+    to do: a section for it, or its gitlink removed."""
+    leg = project / "code"
+    stage_bytes(leg, GITMODULES, body)
+    stage_gitlink(leg, GITLINK_PATH)
+    if recorded:
+        record_submodules(project, (GITLINK_PATH, "code"))
+    result, verdict, row = placement(standard, project)
+    assert result.returncode == 0, result.stdout + result.stderr
+    assert verdict == COMPLIANT
+    code = leg_entry(row, "code")
+    questions = [item["path"] for item in row["detail"]["review_required"]]
+    assert questions == ([] if recorded else ["code/.gitmodules"]), row
+    assert code.get("answered") == (
+        ["code/.gitmodules"] if recorded else None), code
+    assert "empty_gitmodules" not in code, code
+    assert code["unregistered_submodules"] == ["code/vendor/lib"], code
+    assert UNREGISTERED_CLAUSE in row["reason"], row["reason"]
+    assert "the policy asks nothing of" not in row["reason"], row["reason"]
+
+
+def test_a_gitmodules_that_registers_its_submodule_names_none(standard,
+                                                              project):
+    """The control: a `.gitmodules` with a section for the leg's submodule
+    is the question it always was, and nothing is named unregistered."""
+    leg = project / "code"
+    stage_bytes(leg, GITMODULES, (
+        f'[submodule "{GITLINK_PATH}"]\n\tpath = {GITLINK_PATH}\n'
+        "\turl = https://example.invalid/lib.git\n").encode("utf-8"))
+    stage_gitlink(leg, GITLINK_PATH)
+    row = placement(standard, project)[2]
+    assert [item["path"] for item in row["detail"]["review_required"]] == [
+        "code/.gitmodules"], row
+    assert "unregistered_submodules" not in leg_entry(row, "code")
+    assert "nothing registers them" not in row["reason"], row["reason"]
 
 
 @pytest.fixture
@@ -339,6 +440,42 @@ def test_a_directory_row_without_its_slash_is_said(standard, project, golden,
     assert ("without the `/`" in row["reason"]) == bool(named), row["reason"]
 
 
+# --- #914's L1-85: a file's row with a `/` ----------------------------------
+
+@pytest.mark.parametrize("rows, named, status", [
+    (((f"{GOLDEN[0]}/", "spec"), (GOLDEN[1], "spec")),
+     [f"spec/{GOLDEN[0]}/"], "note"),
+    (((GOLDEN[0], "spec"), (GOLDEN[1], "spec")), [], "ok"),
+    (((f"{GOLDEN[0]}/", "code"),), [], "note"),
+    ((("examples/golden/", "spec"),), [], "ok"),
+], ids=["a-file-row-with-a-slash", "file-rows", "a-row-for-the-other-leg",
+        "a-directory-row"])
+def test_a_file_row_with_a_slash_is_said(standard, project, rows, named,
+                                         status):
+    """`_covering` reads a row with its `/` as a directory's, and no file is
+    under a file, so `examples/golden/case.json/` answers nothing and the
+    file's question stays (#914's L1-85: on main nothing said so). The
+    leg's entry and the row now say why, as for a directory's row without
+    its `/`: said, never read as the file's row, never a finding. A row for
+    a leg that holds no such file is not named, nor is a directory's row."""
+    golden_run(project)
+    record_answers(project, *rows)
+    result, verdict, row = placement(standard, project)
+    assert result.returncode == 0, result.stdout + result.stderr
+    assert verdict == COMPLIANT
+    named_here = [path for leg in row["detail"]["legs"]
+                  for path in leg.get("slashed") or []]
+    assert named_here == named, row["detail"]["legs"]
+    assert row["status"] == status, row
+    clause = [f"1 row(s) of project.yaml's `answered_paths:` name a file "
+              f"with the `/` only a directory's row ends with, so each "
+              f"answers nothing (#914): {path}" for path in named]
+    assert [text for text in clause if text in row["reason"]] == clause, \
+        row["reason"]
+    assert ("name a file with the `/`" in row["reason"]) == bool(named), \
+        row["reason"]
+
+
 # --- L1-59: what a directory's row answers is said where it is read ---------
 
 def test_a_directory_row_answers_a_file_added_later_and_says_so(standard,
@@ -362,6 +499,20 @@ def test_a_directory_row_answers_a_file_added_later_and_says_so(standard,
     validator = (REPO / "templates" / "assembly-root" / "scripts"
                  / "validate-manifest.py").read_text(encoding="utf-8")
     assert LATER in said(validator)
+
+
+def test_the_verdict_table_names_the_records_exception():
+    """#914's L1-85: README.md's verdict table, and the handbook's copy of
+    it, say that `answered_paths:` keeps a path off MISPLACED, which they
+    did not."""
+    readme = (REPO / "README.md").read_text(encoding="utf-8")
+    [row] = [line for line in readme.splitlines()
+             if line.startswith("| `MISPLACED (n paths)` |")]
+    assert ("puts elsewhere (unless `answered_paths:` answers it into that "
+            "leg), or a submodule") in row, row
+    page = (REPO / "docs" / "handbook.html").read_text(encoding="utf-8")
+    assert ("puts elsewhere (unless <code>answered_paths:</code> answers it "
+            "into that leg), or a submodule") in page
 
 
 def test_agents_md_says_the_record_holds_answers_against_a_rule():
