@@ -521,8 +521,12 @@ def test_a_pinned_product_passes_the_adopted_roots_own_gate(adopted_as_text):
 NUMBERS = ("007", "2026", "1.5", "-1", "-0.5", "20261011")
 KEYWORDS = ("true", "True", "TRUE", "false", "False", "FALSE", "null",
             "Null", "NULL")
-PLAIN = ("openGlass", "open-glass", "open_glass", "openGlass2", ".5", "x.y",
-         "_x", "Openglass")
+PLAIN = ("openGlass", "open-glass", "open_glass", "openGlass2", "x.y", "_x",
+         "Openglass")
+#: Text to the reader bare, and quoted all the same (#912): YAML 1.1 or
+#: 1.2's core schema reads each as a float or a bool, as PyYAML's
+#: `safe_load` reads the manifest.
+STOCK_MISREAD = (".5", ".inf", "yes", "off")
 #: Text to the reader bare, and quoted all the same, as `plan` quotes them in
 #: `product:`: `y` writes bare only a name that begins with a letter, `_` or
 #: `.`, and a YAML reader other than the project's takes `0x1F` and `1e3`
@@ -546,6 +550,8 @@ def entries_read_back(entries: str) -> object:
     *(pytest.param(name, id=f"keyword-{name}") for name in KEYWORDS),
     *(pytest.param(name, id=f"plain-{name}") for name in PLAIN),
     *(pytest.param(name, id=f"quoted-by-y-{name}") for name in QUOTED_BY_Y),
+    *(pytest.param(name, id=f"stock-misread-{name}")
+      for name in STOCK_MISREAD),
 ])
 def test_each_entry_reads_back_as_the_product(adopter, product):
     """Every product reads back as its text. A name `y` writes bare and the
@@ -555,7 +561,9 @@ def test_each_entry_reads_back_as_the_product(adopter, product):
     reader takes for a bool or None (#181). It reaches `execute` only from a
     plan edited by hand, because `plan` writes `product: true` bare and
     `check` then refuses it, but the manifest reads back as the plan does,
-    edited or not."""
+    edited or not. A name `y` writes bare that YAML 1.1 or 1.2 reads as no
+    text, `.5` or `yes`, is double-quoted in the manifest though not in the
+    plan (#912)."""
     entries = adopter._neutral_product_pins({product})
     assert entries_read_back(entries) == [product]
     if product in PLAIN:
@@ -567,7 +575,7 @@ def test_each_entry_reads_back_as_the_product(adopter, product):
 def test_every_entry_together_reads_back_in_order(adopter):
     """All of them in one list, as a plan with many pins writes it: one line
     each, sorted, and each read back as its text."""
-    every = {*NUMBERS, *KEYWORDS, *PLAIN, *QUOTED_BY_Y}
+    every = {*NUMBERS, *KEYWORDS, *PLAIN, *QUOTED_BY_Y, *STOCK_MISREAD}
     entries = adopter._neutral_product_pins(every)
     assert len(entries.splitlines()) == len(every) + 1
     assert entries_read_back(entries) == sorted(every)
@@ -1378,10 +1386,13 @@ PIN_DIGEST_MISMATCH = "plan-pin-digest-mismatch"
 PIN_SOURCE_UNREADABLE = "plan-pin-source-unreadable"
 #: How `check` names the one pin these plans hold.
 ENTRY = "`pins:` entry 1 ('openGlass')"
-#: Where every NOTE about a pin `check` did not recheck says it is.
-NOT_RECHECKED = f"NOTE {ENTRY}: digest NOT rechecked here: "
-GATE_RECOMPUTES = ("The root's own `validate-pins.py` recomputes it wherever "
-                   "it can read the product.")
+#: Where every NOTE about a pin `check` did not recheck says it is, and
+#: that it did not ask what its commit names either (#912).
+NOT_RECHECKED = (f"NOTE {ENTRY}: digest NOT rechecked here, nor its "
+                 "`commit:` asked whether it names a commit: ")
+GATE_RECOMPUTES = ("The root's own `validate-pins.py` recomputes the digest "
+                   "wherever it can read the product; `plan` asks what the "
+                   "commit names where it reads the digest.")
 #: A commit the stand-in does not hold.
 NOT_IN_THE_CLONE = "c0ffee" * 6 + "c0ff"
 #: How `plan-pin-source-unreadable` says both causes and each way out.

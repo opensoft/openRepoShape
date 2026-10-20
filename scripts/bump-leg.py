@@ -1006,6 +1006,13 @@ def peeled_target(submodule: Path, repository: str, target: str) -> str:
     a question asked before it finds nothing and lets the tag's id through to
     the reachability check. An id the leg does not hold at all is not asked
     here: it is the reachability verdict's, `bump-leg-commit-not-on-remote`.
+
+    NOR IS A TAG THE LEG HOLDS WITHOUT WHAT IT NAMES (#912): its peel cannot
+    be read there (git: "missing object referenced by" the tag), so the leg
+    cannot say what the tag names, and its id goes on, as typed, to the
+    same verdict as an id the leg does not hold. It was refused as "an
+    annotated tag that names no commit", which no tag of a commit is, and
+    which sent the person looking at a tag that was never wrong.
     """
     kind = object_kind(submodule, target)
     if kind is None or kind == "commit":
@@ -1019,6 +1026,8 @@ def peeled_target(submodule: Path, repository: str, target: str) -> str:
             encoding="utf-8", errors="replace", check=False)
         peeled = proc.stdout.strip().lower() if proc.returncode == 0 else ""
         names = object_kind(submodule, peeled) if peeled else None
+        if names is None:
+            return target
         if names == "commit":
             return peeled
     if kind != "tag":

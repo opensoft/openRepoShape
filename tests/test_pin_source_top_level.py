@@ -311,8 +311,9 @@ def test_check_asks_a_recorded_top_level_as_it_always_did(
     with_pins(plan, read_from(path, stand_ins.commit, stand_ins.digest))
     checked = check_plan(plan, env=gh_env)
     assert checked.returncode == 0, checked.stdout + checked.stderr
-    said = (f"digest NOT rechecked here: the clone at {path} is a partial "
-            "clone" if where == PARTIAL else
+    said = (f"digest NOT rechecked here, nor its `commit:` asked whether it "
+            f"names a commit: the clone at {path} is a partial clone"
+            if where == PARTIAL else
             f"digest recomputes at {stand_ins.commit[:12]} in the clone "
             f"`plan` read it from, {path}.")
     assert f"NOTE {ENTRY}: {said}" in checked.stdout, checked.stdout
