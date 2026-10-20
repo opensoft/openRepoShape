@@ -4618,6 +4618,38 @@ def _unmountable_reason(text: str) -> str | None:
     return None
 
 
+def refuse_an_unholdable_name(refusal: str, flag: str, name: str, *,
+                              names: str, remediation: str) -> None:
+    """`name`, typed as `flag`, is a name a Windows disk can make a folder
+    of, or this refuses it as `refusal`: before anything exists, under
+    `--dry-run` alike, and with no process started.
+
+    ONE QUESTION FOR EVERY NAME A TOOL MAKES A FOLDER OF (#989). `family.py
+    init` asked it of `--family` since #688 (`family-bad-holder-name`), and
+    the scaffold never asked it of `--project`: `--project NUL` and `Con`,
+    each one CamelCase token, which is all the naming policy asks, made the
+    three repositories, the working trees and, under `--local-remote-dir`,
+    the bare `NUL.git`, a root no Windows disk can clone. Each tool asks it
+    here now, so the two cannot part again.
+
+    THE QUESTION IS THE LEG PATH RULE'S (`_unmountable_reason`), asked of a
+    path of one segment: a Windows device name, with or without an
+    extension, in any case (`CON`, `Nul`, `com1`, `NUL.git`); a name ending
+    in a dot or a space; one of Git's own names. Each tool asks it after its
+    naming policy has said what the name may hold, so in practice a device
+    name is the answer. A device name is the WHOLE name: `Nullable` and
+    `NUL-spec` are folders Windows makes. As `refuse_bad_leg_paths` does,
+    the caller gives its own code, the flag, what the name names (`names`,
+    the sentence's middle: "which names <names>, and <reason>.") and its own
+    remediation, so each tool refuses in its own voice."""
+    reason = _unmountable_reason(name)
+    if reason:
+        raise Refusal(refusal,
+                      f"{flag} is {name!r}, which names {names}, and "
+                      f"{reason}.",
+                      remediation)
+
+
 #: The templates the rule below reads its lines from: the shape's own
 #: `templates/`, which both tools render a project from (`SHAPE_ROOT /
 #: "templates"`, and this file is `SHAPE_ROOT/scripts/`). A test points it
