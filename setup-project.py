@@ -865,6 +865,63 @@ def is_shape_checkout(directory) -> bool:
             and (root / "contracts" / "repository-naming.yaml").is_file())
 
 
+#: THE CHARACTERS A TERMINAL DRAWS AS SOMETHING OTHER THAN THEMSELVES (#837,
+#: #953), by code point, a range as its first and last: the launcher's
+#: `MISDRAWN_CHARACTERS` (`openRepoShape`), entry for entry, where the reason
+#: for each entry, and for each character left out, is written down. A line
+#: that prints a value holding one shows another value: one is invisible, is
+#: drawn as another character, ends a line or reorders the text around it.
+#: A COPY, NOT AN IMPORT, for `checked_value`'s reason: self-bootstrap mode
+#: runs before there is a checkout to read the launcher from.
+#: `tests/test_setup_project_repo_misdrawn.py` holds it equal to the
+#: launcher's list, as `tests/test_openreposhape_package.py` holds the
+#: package's copy. `checked_repo` refuses an `$OPENREPOSHAPE_REPO` holding
+#: one.
+MISDRAWN_CHARACTERS = ("00AD", "061C", "200B", "200E-200F", "2028-202E",
+                       "2060-206F", "FEFF", "FFF9-FFFB", "1D173-1D17A",
+                       "E0001")
+
+
+def misdrawn_characters(value: str) -> str:
+    """Which characters of `MISDRAWN_CHARACTERS` `value` holds, each once, as
+    `U+XXXX`, comma-separated, in code point order; or "" when it holds none.
+
+    The launcher's `misdrawn_characters` looks for each one's UTF-8 bytes;
+    this looks for the character, as `CONTROL_RE` does, and as the package's
+    `standard.misdrawn_characters` does.
+    """
+    named = []
+    for entry in MISDRAWN_CHARACTERS:
+        first, _, last = entry.partition("-")
+        for code in range(int(first, 16), int(last or first, 16) + 1):
+            if chr(code) in value:
+                named.append("U+%04X" % code)
+    return ", ".join(named)
+
+
+def checked_repo(value: str) -> str:
+    """A non-empty `$OPENREPOSHAPE_REPO`, checked before any line names it
+    and before `git clone` is handed it (#953).
+
+    A CHARACTER A TERMINAL DRAWS AS SOMETHING OTHER THAN ITSELF IS REFUSED
+    FIRST, in the launcher's words (its `checked_repo`, and the package's
+    `clone_url`), which name each such character by its code point and say
+    nothing else of the value. `PATH_RE` takes every one of them, so
+    `acme/r`, U+202E, `forged` was printed raw in the clone line
+    `self_bootstrap` prints, and handed to git. Then `checked_value`, as
+    before: a leading `-` is an option to git, and a control character
+    forges a line.
+    """
+    misdrawn = misdrawn_characters(value)
+    if misdrawn:
+        die("OPENREPOSHAPE_REPO holds a character a terminal draws as "
+            "something other than itself (%s): one that is invisible, is "
+            "drawn as another character, ends a line or reorders the text "
+            "around it. This tool will not put it on a `git clone` command "
+            "line. Set it to a URL or a path." % misdrawn)
+    return checked_value("OPENREPOSHAPE_REPO", value, PATH_RE)
+
+
 def self_bootstrap(opts: Options, original_argv, invocation_dir: str) -> int:
     """setup.sh:157-206, in Python: clone, re-run from there, clean up."""
     if not opts.org:
@@ -883,9 +940,14 @@ def self_bootstrap(opts: Options, original_argv, invocation_dir: str) -> int:
     # `checked_value` refuses that (and a control character) by the same rule
     # and in the same words as every flag on the command line; the `--` below
     # guards the argv too, so the refusal is not the only thing standing
-    # between this value and `git`'s own argument parser.
+    # between this value and `git`'s own argument parser. Before it, a
+    # character a terminal draws as something other than itself is refused
+    # by its code point, in the launcher's words (#953): `checked_repo`.
+    # Both come before the first line this run prints and before the clone;
+    # the one git call before them is `is_shape_checkout`'s, which asks
+    # whether this file stands in a checkout and names nothing of the value.
     raw_shape_repo = os.environ.get("OPENREPOSHAPE_REPO")
-    shape_repo = (checked_value("OPENREPOSHAPE_REPO", raw_shape_repo, PATH_RE)
+    shape_repo = (checked_repo(raw_shape_repo)
                   if raw_shape_repo else DEFAULT_SHAPE_REPO)
 
     say("openRepoShape setup")
@@ -2675,12 +2737,13 @@ def as_the_plan_reads_it(shape_root: Path, path: str) -> str:
     (`check_names`), not from the checkout a relative path is read from.
 
     AND THE NAMING CHECK CANNOT READ IT AS `LINK=PATH`. It takes the text
-    before a `--link-source`'s first `=` for a product when that is a link
-    of the chain, so `openXdox=layer`, which the scaffold reads as the one
-    path it is, would be read as `layer` for `openXdox`. An absolute path
-    has a separator or a drive before its first `=`, which no link's name
-    holds (a link is read at its last `/`), so it is one path to the naming
-    check too, as `./openXdox=layer` was.
+    before an `=` of a `--link-source` for a product when that is a link of
+    the chain, the longest such text that leaves a path after it (#980), so
+    `openXdox=layer`, which the scaffold reads as the one path it is, would
+    be read as `layer` for `openXdox`. An absolute path has a separator or a
+    drive before its first `=`, and so before every one, which no link's
+    name holds (a link is read at its last `/`), so it is one path to the
+    naming check too, as `./openXdox=layer` was.
 
     AN EMPTY PATH IS NEVER GIVEN TO IT. Since #570 the scaffold takes
     `--pin-source` as text and refuses an exactly empty value as
