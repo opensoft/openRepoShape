@@ -1538,10 +1538,12 @@ def test_the_credential_helper_is_a_warning_not_a_refusal(monkeypatch, capsys,
 
 def test_a_credential_helper_that_is_not_ghs_is_left_alone(monkeypatch,
                                                            capsys, tmp_path):
-    """osxkeychain, Windows' `manager`, `store`, a devcontainer's own: they
-    all answer git's question for github.com without gh being involved, and
-    warning about them would be this tool disliking somebody's
-    ~/.gitconfig."""
+    """osxkeychain: a helper that is not gh's, and whose logins this cannot
+    read without asking it, which may open a window or ask at a keychain. A
+    configured helper is not a stored login (#992), so nothing is said of
+    what it holds, and it is left alone: warning about it would be this tool
+    disliking somebody's ~/.gitconfig. `store`, whose file can be read, is
+    the one helper looked behind (the rows below)."""
     module = entry_point_module()
     _no_terminal(monkeypatch, module)
     monkeypatch.setattr(module.shutil, "which", _which("git", "gh"))
@@ -1551,6 +1553,258 @@ def test_a_credential_helper_that_is_not_ghs_is_left_alone(monkeypatch,
     opts = module.parse_args([], str(tmp_path))
     assert module.preflight_checks(opts) is True
     assert "credential helper" not in capsys.readouterr().err
+
+
+#: A login for github.com as `store` writes one, with a made-up password: no
+#: test here holds a real login, or reads a file a real one is kept in.
+MADE_UP_LOGIN = "https://tester:made-up-992@github.com\n"
+
+#: Logins `store` keeps and does not give a push to https://github.com: over
+#: plain http, with no password, for another host, and with a port.
+OTHER_LOGINS = ("http://tester:made-up-992@github.com\n"
+                "https://tester@github.com\n"
+                "https://tester:made-up-992@gist.github.com\n"
+                "https://tester:made-up-992@github.com:443\n")
+
+#: The `[??]` for helpers that are all `store` and hold no login for
+#: github.com, around the files they read.
+EMPTY_STORE = ("  [??] git's credential helper for github.com is `store`, and "
+               "no login for github.com is stored in %s, so the first push "
+               "over HTTPS will fail. Fix it once: gh auth setup-git\n")
+
+SETUP_GIT_ASKED = "  Run `gh auth setup-git` now? Type yes to continue: "
+
+
+def _a_credential_store(monkeypatch, tmp_path, machine_wide, scoped=""):
+    """`setup-project.py` as a module on a machine where gh is signed in and
+    git's two helper keys hold these lines, `{own}` in them the test's own
+    folder: the module, its recorder, and the two files `store` alone reads.
+    `HOME` and `XDG_CONFIG_HOME` are folders of the test's, so every file
+    `store` reads is the test's own."""
+    own = tmp_path.resolve().as_posix()
+    module = entry_point_module()
+    _no_terminal(monkeypatch, module)
+    monkeypatch.setattr(module.shutil, "which", _which("git", "gh"))
+    runs = _Runs({"github.com.helper": (0 if scoped else 1, scoped),
+                  "credential.helper": (0, machine_wide.format(own=own))})
+    monkeypatch.setattr(module, "run", runs)
+    home, config_home = tmp_path / "home", tmp_path / "xdg"
+    home.mkdir()
+    monkeypatch.setenv("HOME", str(home))
+    monkeypatch.setenv("XDG_CONFIG_HOME", str(config_home))
+    return (module, runs, home / ".git-credentials",
+            config_home / "git" / "credentials")
+
+
+def test_a_key_holding_only_an_empty_line_is_no_credential_helper(
+        monkeypatch, capsys, tmp_path):
+    """The empty line gh writes before its own helper resets git's list and
+    is no helper itself: a scoped key holding nothing else is a machine with
+    no credential helper, and is told so."""
+    module, _, _, _ = _a_credential_store(monkeypatch, tmp_path, "", "\n")
+    assert module.preflight_checks(module.parse_args([], str(tmp_path)))
+    assert ("  [??] git has no credential helper for github.com, so the first "
+            "push over HTTPS will fail. Fix it once: gh auth setup-git\n"
+            in capsys.readouterr().err)
+
+
+#: Helpers that are all `store`, as the machine-wide key holds them, and
+#: what `~/.git-credentials` holds (None: no file), with no login for
+#: github.com anywhere they read.
+NOTHING_STORED = {
+    "no-file": ("store\n", None),
+    "an-empty-file": ("store\n", ""),
+    "other-logins": ("store\n", OTHER_LOGINS),
+    "store-twice": ("store\nstore\n", None),
+    "its-own-file": ("store --file={own}/own-credentials\n", None),
+    "its-own-file-spelled-apart": ("store --file {own}/own-credentials\n",
+                                   None),
+}
+
+
+@pytest.mark.parametrize("case", NOTHING_STORED)
+def test_a_credential_store_with_no_github_login_is_warned_about(
+        monkeypatch, capsys, tmp_path, case):
+    """`store` answers git's question only with a login stored in it (#992),
+    so helpers that are all `store`, over files holding no login for
+    github.com, get the `[??]` and the offer, naming each file `store` reads
+    once: none there, an empty one, one holding only logins `store` does not
+    give github.com, `store` listed twice, and a `--file` of its own in
+    either spelling. `--preflight` still exits 0: a warning that refuses is
+    a refusal."""
+    helpers, held = NOTHING_STORED[case]
+    module, _, home_file, config_file = _a_credential_store(
+        monkeypatch, tmp_path, helpers)
+    if held is not None:
+        home_file.write_text(held, encoding="utf-8")
+    asked = _answers(monkeypatch, module, "no")
+    assert module.preflight_only(
+        module.parse_args(["--preflight"], str(tmp_path))) == 0
+    files = ([tmp_path.resolve().as_posix() + "/own-credentials"]
+             if "own-file" in case else [str(home_file), str(config_file)])
+    assert EMPTY_STORE % " or ".join(files) in capsys.readouterr().err
+    assert asked == [SETUP_GIT_ASKED]
+
+
+def test_a_dry_run_warns_of_an_empty_credential_store_and_offers_nothing(
+        monkeypatch, capsys, tmp_path):
+    """A dry run says the `[??]` too, and names `gh auth setup-git` as not
+    offered without running it (#857): it would write the person's global
+    git config in a run that ends at the plan."""
+    module, runs, home_file, config_file = _a_credential_store(
+        monkeypatch, tmp_path, "store\n")
+    asked = _answers(monkeypatch, module, "yes")
+    module.preflight(module.parse_args(
+        ["Sample", "--org", "demoorg", "--", "--dry-run"], str(tmp_path)))
+    printed = capsys.readouterr()
+    assert EMPTY_STORE % ("%s or %s" % (home_file, config_file)) in printed.err
+    assert module.NOT_OFFERED + "\n" in printed.out
+    assert asked == []
+    assert ["gh", "auth", "setup-git"] not in runs.calls
+
+
+#: Where a login for github.com is kept for `store` to give it: the helpers,
+#: `XDG_CONFIG_HOME` ("set": the test's folder, "": empty, None: unset), and
+#: the file holding the login, from the test's folder.
+STORED_AT = {
+    "home": ("store\n", "set", "home/.git-credentials"),
+    "xdg-config-home": ("store\n", "set", "xdg/git/credentials"),
+    "dot-config": ("store\n", None, "home/.config/git/credentials"),
+    "dot-config-under-an-empty-xdg": ("store\n", "",
+                                      "home/.config/git/credentials"),
+    "its-own-file": ("store --file={own}/own-credentials\n", "set",
+                     "own-credentials"),
+    "the-second-store": ("store --file={own}/none\nstore\n", "set",
+                         "home/.git-credentials"),
+}
+
+
+@pytest.mark.parametrize("case", STORED_AT)
+def test_a_credential_store_holding_a_github_login_is_left_alone(
+        monkeypatch, capsys, tmp_path, case):
+    """A login for github.com in any file git's `store` reads answers the
+    push, and the machine is left alone: `~/.git-credentials`;
+    `$XDG_CONFIG_HOME/git/credentials`; `~/.config/git/credentials` where
+    `XDG_CONFIG_HOME` is unset or empty; a `--file`; and the file of the
+    second of two `store` lines. git's own `store` reads each of them
+    (measured, #992)."""
+    helpers, config_home, stored = STORED_AT[case]
+    module, _, _, _ = _a_credential_store(monkeypatch, tmp_path, helpers)
+    if config_home is None:
+        monkeypatch.delenv("XDG_CONFIG_HOME")
+    elif not config_home:
+        monkeypatch.setenv("XDG_CONFIG_HOME", "")
+    login = tmp_path / stored
+    login.parent.mkdir(parents=True, exist_ok=True)
+    login.write_text(MADE_UP_LOGIN, encoding="utf-8")
+    assert module.preflight_checks(module.parse_args([], str(tmp_path)))
+    assert "credential helper" not in capsys.readouterr().err
+
+
+#: Helpers whose logins this cannot read, as the scoped key and then the
+#: machine-wide one hold them.
+UNREAD = {
+    "cache": ("", "cache --timeout=3600\n"),
+    "store-beside-another": ("", "store\nosxkeychain\n"),
+    "ghs-over-store": ("\n!/usr/bin/gh auth git-credential\n", "store\n"),
+    "a-file-sh-would-change": ("", "store --file={own}/$NAME\n"),
+    "a-file-in-the-push-folder": ("", "store --file=own-credentials\n"),
+    "a-file-that-cannot-be-read": ("", "store\n"),
+}
+
+
+@pytest.mark.parametrize("case", UNREAD)
+def test_a_credential_helper_whose_logins_this_cannot_read_is_left_alone(
+        monkeypatch, capsys, tmp_path, case):
+    """Beside osxkeychain's row above: `cache`; `store` beside a helper that
+    is not `store`; gh's helper over `store`, the machine `gh auth
+    setup-git` leaves; and a `store` whose file this cannot read as git
+    would - a path `sh` would change, one relative to the folder a push runs
+    in, and a folder where the file should be. What they hold is not
+    something this can read, so nothing is said of it."""
+    scoped, helpers = UNREAD[case]
+    module, _, home_file, _ = _a_credential_store(monkeypatch, tmp_path,
+                                                  helpers, scoped)
+    if case == "a-file-that-cannot-be-read":
+        home_file.mkdir()
+    assert module.preflight_checks(module.parse_args([], str(tmp_path)))
+    assert "credential helper" not in capsys.readouterr().err
+
+
+#: Lines of a `store` file, made up, with what `_a_github_login` reads in
+#: each and whether git's own `store` gives it to a push to
+#: https://github.com (measured with git 2.43, #992). The two differ only
+#: over blanks at either end, and there this reads a login git does not:
+#: silence, never a warning git would contradict.
+STORE_LINES = [
+    ("https://tester:made-up-992@github.com", True, True),
+    ("https://tester:made-up-992@github.com/Northwind/Sample.git", True, True),
+    ("https://tester:made-up-992@github%2Ecom", True, True),
+    ("https://tester:made-up-992@github.com?x", True, True),
+    ("https://tester:made-up[@github.com", True, True),
+    ("https://:@github.com", True, True),
+    ("http://tester:made-up-992@github.com", False, False),
+    ("HTTPS://tester:made-up-992@github.com", False, False),
+    ("https://tester:made-up-992@GitHub.com", False, False),
+    ("https://tester:made-up-992@github.com:443", False, False),
+    ("https://tester@github.com", False, False),
+    ("https://tester:made-up-992@gist.github.com", False, False),
+    ("https://tester:made@up@github.com", False, False),
+    ("github.com", False, False),
+    (" https://tester:made-up-992@github.com", True, False),
+    ("https://tester:made-up-992@github.com\r", True, False),
+]
+
+
+@pytest.mark.parametrize("line, read, given", STORE_LINES)
+def test_a_credential_store_file_is_read_as_git_reads_it(tmp_path, line,
+                                                         read, given):
+    """Each line is read here as git's `store` reads it, and git's `store`
+    itself is asked over a file of the test's own: never `git credential
+    fill`, which would run every helper this machine has."""
+    assert entry_point_module()._a_github_login(line) is read
+    stored = tmp_path / "credentials"
+    stored.write_bytes(line.encode("utf-8") + b"\n")
+    answer = subprocess.run(
+        ["git", "credential-store", "--file", str(stored), "get"],
+        input="protocol=https\nhost=github.com\n\n", capture_output=True,
+        text=True, check=False)
+    assert answer.returncode == 0, answer.stderr
+    assert ("password=" in answer.stdout) is given, (
+        "git's `store` reads this line otherwise")
+    assert read or not given, "a login git gives is read here as none"
+
+
+class _SetsUpGit(_Runs):
+    """`_Runs`, where `gh auth setup-git` writes gh's helper over the scoped
+    key as the real one does, or, where `writes` is False, writes nothing."""
+
+    def __init__(self, answers, writes):
+        super().__init__(answers)
+        self.writes = writes
+
+    def __call__(self, argv, cwd=None, capture=False):
+        if self.writes and list(argv) == ["gh", "auth", "setup-git"]:
+            self.answers["github.com.helper"] = (
+                0, "\n!/usr/bin/gh auth git-credential\n")
+        return super().__call__(argv, cwd, capture)
+
+
+@pytest.mark.parametrize("writes", [True, False])
+def test_an_empty_credential_store_is_asked_about_again_after_setup_git(
+        monkeypatch, capsys, tmp_path, writes):
+    """A `yes` runs `gh auth setup-git`, and the same question is asked
+    again: `[ok]` where gh's helper is now there to answer, and nothing
+    where the command wrote nothing."""
+    module, recorder, _, _ = _a_credential_store(monkeypatch, tmp_path,
+                                                 "store\n")
+    runs = _SetsUpGit(recorder.answers, writes)
+    monkeypatch.setattr(module, "run", runs)
+    _answers(monkeypatch, module, "yes")
+    assert module.preflight_checks(module.parse_args([], str(tmp_path)))
+    assert ["gh", "auth", "setup-git"] in runs.calls
+    assert ("[ok] git will ask gh for github.com credentials"
+            in capsys.readouterr().out) is writes
 
 
 # --- --preflight ------------------------------------------------------------

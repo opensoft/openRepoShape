@@ -216,8 +216,9 @@ from repo_shape import shell_line, shell_quoted  # noqa: E402
 from shape_materialize import unwritable_reason  # noqa: E402
 # Whether `--family` names a folder a Windows disk can make (#688): the rule
 # the scaffold and `adopt-project.py` hold a leg's mount path to, asked of a
-# path of one segment.
-from shape_materialize import _unmountable_reason  # noqa: E402
+# path of one segment, by the one function the scaffold asks of `--project`
+# too (#989).
+from shape_materialize import refuse_an_unholdable_name  # noqa: E402
 # How a refusal quotes the words git echoes of a value it refused (#688): as
 # a path is quoted (#610), as it is when printable and as Python's `repr`
 # spells it when it is not.
@@ -1027,20 +1028,19 @@ def _refuse_an_unholdable_holder_name(family: str) -> None:
 
     THE QUESTION IS THE LEG PATH RULE'S (`_unmountable_reason`), the one the
     scaffold and `adopt-project.py` ask of a leg's mount path, asked of a
-    path of one segment, in its own words. It is asked after
-    `_classify_family_name` on purpose: the policy's token holds no `.`, no
-    `~` and no space, so a device name is the only answer the rule can give
-    here, and the names it also refuses (a trailing dot or space, `.git`,
-    `git~1`, `.gitmodules`) are refused before it, as `unsafe-value`,
-    `family-bad-id` or `naming-unclassified`, as they always were.
+    path of one segment, in its own words, by
+    `shape_materialize.refuse_an_unholdable_name`, which the scaffold asks of
+    `--project` too (#989). It is asked after `_classify_family_name` on
+    purpose: the policy's token holds no `.`, no `~` and no space, so a
+    device name is the only answer the rule can give here, and the names it
+    also refuses (a trailing dot or space, `.git`, `git~1`, `.gitmodules`)
+    are refused before it, as `unsafe-value`, `family-bad-id` or
+    `naming-unclassified`, as they always were.
     """
-    reason = _unmountable_reason(family)
-    if reason:
-        raise Refusal(
-            "family-bad-holder-name",
-            f"--family is {family!r}, which names the holder and the folders "
-            f"`init` makes for it, and {reason}.",
-            HOLDER_NAME_REMEDIATION)
+    refuse_an_unholdable_name(
+        "family-bad-holder-name", "--family", family,
+        names="the holder and the folders `init` makes for it",
+        remediation=HOLDER_NAME_REMEDIATION)
 
 
 def _read_member_project(path: Path, project: str, repository: str,
@@ -10540,18 +10540,25 @@ def build_parser() -> argparse.ArgumentParser:
     # `_folder_flags` makes each a `Path`, refusing an empty one first.
     init.add_argument("--local-remote-dir", default=None,
                       help="create a bare repository here instead of calling "
-                           "`gh repo create` (the TEST path; no network)")
+                           "`gh repo create` (the TEST path; no network). An "
+                           "empty value is refused as "
+                           "`local-remote-dir-no-path`, and `.` means the "
+                           "directory the run stands in.")
     init.add_argument("--into", default=None, metavar="DIR",
                       help="the PARENT directory the family folder is made "
                            "in (default: the directory you are standing in, "
                            "which is refused inside a checkout of "
                            "openRepoShape: from its root, pass `--into ..`). "
                            "The holder lands at <into>/<Family>/<Family>, "
-                           "beside where `make siblings` clones the members.")
+                           "beside where `make siblings` clones the members. "
+                           "An empty value is refused as `into-no-path`, and "
+                           "`.` means the directory the run stands in.")
     init.add_argument("--work-dir", default=None,
                       help="THE OVERRIDE: land the holder at "
                            "<work-dir>/<Family> and make no family folder at "
-                           "all. Mutually exclusive with --into.")
+                           "all. Mutually exclusive with --into. An empty "
+                           "value is refused as `work-dir-no-path`, and `.` "
+                           "means the directory the run stands in.")
     init.add_argument("--no-push", action="store_true")
     init.add_argument("--dry-run", action="store_true",
                       help="print the plan and ask, as the real run does, "

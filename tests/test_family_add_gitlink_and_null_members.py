@@ -465,14 +465,6 @@ def test_a_word_the_reader_refuses_is_no_members_line(tmp_path,
     assert held.rewritten([]) == text
 
 
-#: What `family-members-unrecognised` tells the human to do.
-UNRECOGNISED_REMEDIATION = (
-    "Remediation: the manifest was hand-edited into a shape this tool does "
-    "not recognise. `members:` is the LAST block in the file and everything "
-    "below it belongs to this tool; fix it by hand this once and commit that "
-    "(`git commit -- family.yaml`), then run the same command again.")
-
-
 def a_line_above_the_name(root: Path, line: str) -> None:
     """`line` at the margin above `family.yaml`'s `name:`, with the real
     `members:` block still at the end, committed, as a person commits a
@@ -489,24 +481,28 @@ def a_line_above_the_name(root: Path, line: str) -> None:
 @pytest.mark.parametrize("line", ["members: null", "members: []"])
 def test_a_second_members_line_above_the_block_is_refused(family, holder,
                                                           offline, line):
-    """LANE 5'S REVIEW OF #957, SHOULD 1. The reader takes the last of two
-    `members:` keys, so `Family.open` and the holder's gate both accept this
-    file. The rewrite stopped at the first such line and cut the manifest
-    off there, every key below it gone, with exit 0, for `members: []` on
-    main and for `members: null` with this branch. Every line is counted
-    first now, so both are refused before the mount with a count that is
-    true, and nothing moves."""
+    """LANE 5'S REVIEW OF #957, SHOULD 1, AS #917 (#974) ANSWERED IT. The
+    rewrite once stopped at the first of two `members:` lines and cut the
+    manifest off there, every key below it gone, with exit 0, because the
+    reader took the last of two `members:` keys and so `Family.open` and the
+    holder's gate both accepted the file. Since #974 the reader refuses a key
+    written twice, by the line of the second, so `add` stops at
+    `Family.open`, before the mount and before any line is counted, and
+    the file is untouched. The refusal is the reader's own `yaml-unparsable`:
+    one line, with no remediation of its own."""
     a_line_above_the_name(holder, line)
+    opens = [number for number, text in enumerate(
+        (holder / "family.yaml").read_text(encoding="utf-8").splitlines(), 1)
+        if text.startswith("members:")]
+    assert len(opens) == 2, opens
     before = snapshot(holder)
 
     result = offline.add(holder, SPARE, remotes=family["remotes"])
     assert result.returncode == 2, result.stdout + result.stderr
     assert result.stdout == ""
-    assert refusal(result.stderr) == (
-        "REFUSED family-members-unrecognised: "
-        f"{holder.resolve() / 'family.yaml'} has 2 `members:` line(s) where "
-        "exactly one was expected, so this tool will not rewrite it",
-        UNRECOGNISED_REMEDIATION)
+    assert result.stderr.splitlines() == [
+        f"REFUSED yaml-unparsable: {holder.resolve() / 'family.yaml'}: "
+        f"line {opens[1]}: key 'members' is written twice"], result.stderr
     assert_unchanged(holder, before, SPARE)
     offline.assert_left_nothing()
 

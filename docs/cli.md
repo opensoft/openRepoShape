@@ -351,7 +351,9 @@ options:
                         folder, create no remote and push nothing
   --local-remote-dir LOCAL_REMOTE_DIR
                         create bare repositories here instead of calling `gh
-                        repo create` (the TEST path; no network)
+                        repo create` (the TEST path; no network). An empty
+                        value is refused as `local-remote-dir-no-path`, and
+                        `.` means the directory the run stands in.
   --no-push
   --reuse-empty-repo    if <org>/<Project>, <Project>-spec or <Project>-code
                         already exists and has ZERO commits, use it instead of
@@ -392,7 +394,9 @@ options:
                         top level, or a bare clone's: any other path is
                         refused as `pin-source-not-a-clone`.
   --work-dir WORK_DIR   where the working trees are built (default: a
-                        temporary directory)
+                        temporary directory). An empty value is refused as
+                        `work-dir-no-path`, and `.` means the directory the
+                        run stands in.
   --no-next-steps       leave out the closing NEXT STEPS (the clone, the cd
                         and `make bootstrap`): setup-project.py passes it,
                         because it runs those steps itself next. `Working
@@ -923,16 +927,22 @@ options:
                         slot.
   --local-remote-dir LOCAL_REMOTE_DIR
                         create a bare repository here instead of calling `gh
-                        repo create` (the TEST path; no network)
+                        repo create` (the TEST path; no network). An empty
+                        value is refused as `local-remote-dir-no-path`, and
+                        `.` means the directory the run stands in.
   --into DIR            the PARENT directory the family folder is made in
                         (default: the directory you are standing in, which is
                         refused inside a checkout of openRepoShape: from its
                         root, pass `--into ..`). The holder lands at
                         <into>/<Family>/<Family>, beside where `make siblings`
-                        clones the members.
+                        clones the members. An empty value is refused as
+                        `into-no-path`, and `.` means the directory the run
+                        stands in.
   --work-dir WORK_DIR   THE OVERRIDE: land the holder at <work-dir>/<Family>
                         and make no family folder at all. Mutually exclusive
-                        with --into.
+                        with --into. An empty value is refused as `work-dir-
+                        no-path`, and `.` means the directory the run stands
+                        in.
   --no-push
   --dry-run             print the plan and ask, as the real run does, whether
                         each folder it makes can be made (the family folder or
