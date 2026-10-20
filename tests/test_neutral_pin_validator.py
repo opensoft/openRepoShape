@@ -29,6 +29,7 @@ import pytest
 
 from conftest import (SCAFFOLD, WINDOWS_SKIP, blank_unnamed_pin_sources, git,
                       run_script)
+from repo_shape import tree_digest
 from test_scaffold_pin_and_reuse import (assert_pin_digest_recomputed,
                                          product_repo)
 
@@ -203,10 +204,10 @@ def test_a_neutral_pin_with_no_reachable_source_is_skipped(tmp_path):
 # `--pin-source` is `[PRODUCT=]PATH`, and a path may hold an `=`. Splitting
 # every value at its first `=` made `a=b/openGlass` a source keyed to a
 # product `a` that nothing declares: never consulted, so the digest went to
-# `gh api` and a `skip`, exit 0. Now the text before the first `=` is a
-# product only when it names a declared pin; a source somebody named that
-# cannot answer is a finding, never a traceback; and a value no pin used is
-# said, never silent.
+# `gh api` and a `skip`, exit 0. Now the text before an `=` is a product
+# only when it names a declared pin (the longest that leaves a path, #1053,
+# below); a source somebody named that cannot answer is a finding, never a
+# traceback; and a value no pin used is said, never silent.
 
 def logging_gh(tmp_path, **extra) -> tuple[dict, Path]:
     """`(env, log)`: a `gh` first on PATH that records its arguments in `log`
@@ -518,6 +519,225 @@ def test_a_pin_source_that_is_a_symlink_to_a_checkout_recomputes(tmp_path):
     assert_pin_digest_recomputed(result, "openGlass", commit)
     assert "(--pin-source openGlass=...)" in result.stdout
     assert "  note " not in result.stdout
+    gh_never_ran(log)
+
+
+# --- #1053: a key is the longest declared pin that leaves a path ------------
+#
+# The text before an `=` is a product only where it names a declared pin, and
+# of the texts that do, the longest that leaves a path after it is the key, as
+# the naming gate has read a `--link-source` key since #980. Read at the first
+# `=`, `open=y=<tree>` was a bare PATH where `open=y` alone is declared, and
+# `open`'s where both are. Where no declared pin holds `=`, every value is
+# read as before. No scaffold writes a pin holding `=` (`--pin` names are
+# `[A-Za-z0-9_.-]`), so each row declares its pins by hand.
+
+def declare_by_hand(root: Path, *pins: tuple[str, Path, str],
+                    seed: str = "openGlass") -> None:
+    """`root`'s `neutral_product_pins:` made `pins` BY HAND, each `(name,
+    tree, commit)`, in place of the scaffolded pin on `seed`, and each with
+    a pin file written from `seed`'s: `contracts/<name lowercased>-pin.yaml`,
+    its `source_repository` `opensoft/<name>` and its commit and digest that
+    tree's. `=` is legal in a file name on all three platforms
+    (`standin_at`)."""
+    manifest = root / "project.yaml"
+    text = manifest.read_bytes().decode("utf-8")
+    entry = f"\n  - {seed}\n"
+    assert entry in text, f"fixture drift: no {seed} entry"
+    declared = "".join(f"  - {name}\n" for name, _tree, _commit in pins)
+    manifest.write_bytes(
+        text.replace(entry, f"\n{declared}", 1).encode("utf-8"))
+    seeded = root / "contracts" / f"{seed.lower()}-pin.yaml"
+    written = seeded.read_bytes().decode("utf-8")
+    seeded.unlink()
+    old_commit = written.split('commit: "')[1].split('"')[0]
+    old_digest = written.split('tree_sha256: "')[1].split('"')[0]
+    for name, tree, commit in pins:
+        digest = tree_digest(tree, commit)
+        pin = (written.replace(f'"{old_commit}"', f'"{commit}"', 1)
+               .replace(f'"{old_digest}"', f'"{digest}"', 1)
+               .replace(f'product: "{seed}"', f'product: "{name}"', 1)
+               .replace(f"source_repository: opensoft/{seed}\n",
+                        f"source_repository: opensoft/{name}\n", 1))
+        assert pin.count(commit) == 1, "fixture drift: the pin's commit"
+        assert f"source_repository: opensoft/{name}\n" in pin, (
+            "fixture drift: the pin's source_repository")
+        (root / "contracts" / f"{name.lower()}-pin.yaml").write_bytes(
+            pin.encode("utf-8"))
+
+
+def recomputes_from(result, product: str, commit: str, how: str) -> None:
+    """`product`'s digest recomputed from the source `how` names."""
+    line = (f"{product}: pin commit {commit[:12]} digest recomputes "
+            f"({how})\n")
+    assert line in result.stdout, result.stderr + result.stdout
+
+
+@pytest.mark.parametrize("typed", ["open=y={tree}", "OPEN=Y={tree}"],
+                         ids=["as-declared", "in-capitals"])
+def test_a_declared_pin_holding_an_equals_sign_is_its_own_key(tmp_path,
+                                                              typed):
+    """THE DEFECT. `open=y` is declared, and `--pin-source open=y=<tree>`
+    is typed as `--pin-source openGlass=<tree>` is. It is `open=y`'s source
+    and its digest recomputes from it, in capitals too, by
+    `pin_product_key`. Read at the first `=`, `open` named no pin, so the
+    whole value was a bare PATH that is not there: the
+    `neutral-pin-source-unreadable` FINDING, exit 1, saying `open` is not a
+    declared pin."""
+    root, product, commit = scaffold_with_pin(tmp_path)
+    declare_by_hand(root, ("open=y", product, commit))
+    env, log = logging_gh(tmp_path)
+    result = validate(root, "--pin-source", typed.format(tree=product),
+                      env=env)
+    assert result.returncode == 0, result.stderr + result.stdout
+    assert result.stderr == ""
+    recomputes_from(result, "open=y", commit, "--pin-source open=y=...")
+    assert "  note " not in result.stdout, result.stdout
+    assert result.stdout.endswith("pins ok\n")
+    gh_never_ran(log)
+
+
+@pytest.mark.parametrize("first, then", [
+    pytest.param("open={a}", "open=y={b}", id="open-first"),
+    pytest.param("open=y={b}", "open={a}", id="open=y-first"),
+    pytest.param("open=./y=dir", "open=y={b}",
+                 id="a-path-that-begins-like-the-longer-pin"),
+])
+def test_each_pin_reads_its_own_source_where_one_name_begins_another(
+        tmp_path, first, then):
+    """`open` and `open=y` both declared, each with a tree of its own:
+    `open=y=<b>` is `open=y`'s and `open=<a>` is `open`'s, in either order,
+    and neither replaces the other. A path that begins like the longer
+    pin's name is given after `./`: `open=./y=dir` is `open`'s. Read at the
+    first `=`, both values were `open`'s, the later replaced the earlier,
+    and `open=y` read neither."""
+    root, product, commit = scaffold_with_pin(tmp_path)
+    other, other_commit = product_repo(tmp_path / "second", name="openInk")
+    a = standin_at(product, tmp_path / "y=dir")
+    declare_by_hand(root, ("open", a, commit),
+                    ("open=y", other, other_commit))
+    env, log = logging_gh(tmp_path)
+    result = validate_from(tmp_path, root,
+                           "--pin-source", first.format(a=a, b=other),
+                           "--pin-source", then.format(a=a, b=other),
+                           env=env)
+    assert result.returncode == 0, result.stderr + result.stdout
+    assert result.stderr == ""
+    recomputes_from(result, "open", commit, "--pin-source open=...")
+    recomputes_from(result, "open=y", other_commit, "--pin-source open=y=...")
+    assert "  note " not in result.stdout, result.stdout
+    gh_never_ran(log)
+
+
+def test_a_shorter_pin_that_leaves_a_path_is_the_key(tmp_path):
+    """`open=y=` with `open` declared too: `open=y` leaves no path, `open`
+    leaves `y=`, so the value is `open`'s, with the path `y=`, as the naming
+    gate reads `--link-source open=y=` where a chain names `open`. It is
+    never refused as naming no path: a shorter pin is named, with one."""
+    root, product, commit = scaffold_with_pin(tmp_path)
+    other, other_commit = product_repo(tmp_path / "second", name="openInk")
+    declare_by_hand(root, ("open", product, commit),
+                    ("open=y", other, other_commit))
+    env, log = logging_gh(tmp_path)
+    result = validate(root, "--pin-source", "open=y=",
+                      "--pin-source", f"open=y={other}", env=env)
+    assert result.returncode == 1, result.stderr + result.stdout
+    assert "REFUSED" not in result.stderr, result.stderr
+    assert ("FINDING neutral-pin-source-unreadable: contracts/open-pin.yaml: "
+            f"y= (--pin-source open=...) could not answer for opensoft/open "
+            f"@ {commit}: no such directory\n" in result.stderr), (
+        result.stderr)
+    recomputes_from(result, "open=y", other_commit, "--pin-source open=y=...")
+    gh_never_ran(log)
+
+
+@pytest.mark.parametrize("typed", [" open=y=x", "opensoft/open=y=x",
+                                   "open=z=x"],
+                         ids=["a-blank", "an-owner", "no-declared-pin"])
+def test_a_value_naming_no_declared_pin_is_a_bare_path_whole(tmp_path,
+                                                             typed):
+    """A key is read WHOLE, never stripped and never cut at a `/`: with
+    `open=y` declared, ` open=y=x` and `opensoft/open=y=x` name no pin, and
+    `open=z=x` names none at any of its `=`, so each is a bare PATH, the
+    whole value, and the directory spelled so answers, as it did when every
+    key ended at the first `=`."""
+    root, product, commit = scaffold_with_pin(tmp_path)
+    standin_at(product, tmp_path / typed)
+    declare_by_hand(root, ("open=y", product, commit))
+    env, log = logging_gh(tmp_path)
+    result = validate_from(tmp_path, root, "--pin-source", typed, env=env)
+    assert result.returncode == 0, result.stderr + result.stdout
+    assert result.stderr == ""
+    recomputes_from(result, "open=y", commit, "--pin-source")
+    assert "  note " not in result.stdout, result.stdout
+    gh_never_ran(log)
+
+
+def test_a_value_read_as_a_path_names_the_text_before_its_first_equals(
+        tmp_path):
+    """The note's second sentence for a value no declared pin is named in
+    keeps its words: the text before the first `=`, the shortest that
+    `_read_source` tried, as it named it when that was the only text tried."""
+    root, product, commit = scaffold_with_pin(tmp_path)
+    declare_by_hand(root, ("open=y", product, commit))
+    env, log = logging_gh(tmp_path)
+    result = validate(root, "--pin-source", f"open=y={product}",
+                      "--pin-source", "open=z=x", env=env)
+    assert result.returncode == 0, result.stderr + result.stdout
+    recomputes_from(result, "open=y", commit, "--pin-source open=y=...")
+    assert ("  note --pin-source open=z=x: not used — each declared pin had "
+            "a more specific source (a keyed --pin-source, "
+            "SHAPE_PIN_SOURCE_<PRODUCT>, or a checkout beside this assembly "
+            "root) or was not recomputed. It was read as a PATH: `open` is "
+            "not a declared neutral-product pin (declared: open=y).\n"
+            in result.stdout), result.stdout
+    gh_never_ran(log)
+
+
+def test_a_keyed_pin_is_named_as_the_manifest_spells_it(tmp_path):
+    """A value keyed in capitals names the pin as `project.yaml` spells it,
+    never as the value does: `OPEN=Y=<tree>` is `open=y`'s, and where the
+    pin's recorded digest is malformed, so nothing is ever recomputed, the
+    note says `open=y`'s digest was not recomputed and not `OPEN=Y`'s
+    (#1053, after #712). The pin file is `open=y-pin.yaml`, as written."""
+    root, product, commit = scaffold_with_pin(tmp_path)
+    declare_by_hand(root, ("open=y", product, commit))
+    pin = root / "contracts" / "open=y-pin.yaml"
+    written = pin.read_bytes().decode("utf-8")
+    digest = written.split('tree_sha256: "')[1].split('"')[0]
+    pin.write_bytes(written.replace(f'"{digest}"', '"x"', 1).encode("utf-8"))
+    env, log = logging_gh(tmp_path)
+    typed = f"OPEN=Y={product}"
+    result = validate(root, "--pin-source", typed, env=env)
+    assert result.returncode == 1, result.stderr + result.stdout
+    assert ("FINDING neutral-pin-digest-malformed: contracts/open=y-pin.yaml: "
+            "digests.tree_sha256 is 'x', not 64 hex" in result.stderr), (
+        result.stderr)
+    assert (f"  note --pin-source {typed}: not used — open=y's digest was not "
+            "recomputed from any source.\n" in result.stdout), result.stdout
+    gh_never_ran(log)
+
+
+@pytest.mark.parametrize("typed, path", [
+    pytest.param("openGlass==x", "=x", id="a-path-that-begins-with-equals"),
+    pytest.param("openGlass= ", " ", id="a-blank-path"),
+])
+def test_a_keyed_path_at_the_old_split_s_corners_is_still_keyed(
+        tmp_path, typed, path):
+    """Where no declared pin holds `=`, every value is read as before: a
+    path that begins with `=` and a blank path are still `openGlass`'s,
+    asked and named, and neither is refused as naming no path or said to
+    have been read as a PATH."""
+    root, product, commit = scaffold_with_pin(tmp_path)
+    env, log = logging_gh(tmp_path)
+    result = validate(root, "--pin-source", typed, env=env)
+    assert result.returncode == 1, result.stderr + result.stdout
+    assert ("FINDING neutral-pin-source-unreadable: contracts/openglass-"
+            f"pin.yaml: {path} (--pin-source openGlass=...) could not answer "
+            f"for opensoft/openGlass @ {commit}: no such directory\n"
+            in result.stderr), result.stderr
+    assert "REFUSED" not in result.stderr
+    assert "read as a PATH" not in result.stderr + result.stdout
     gh_never_ran(log)
 
 
