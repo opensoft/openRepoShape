@@ -26,18 +26,19 @@ and exits 97, `GH_TOKEN=bogus`, an empty `GH_CONFIG_DIR` and `GIT_TRACE`:
 
 Now the refusals of a passed flag's own value are asked first, as
 `--pin-source` and `--out` are: no work directory, no `git` on the source and
-no `gh` before them (a passed `--tracking-branch` is asked of git alone, in a
-throwaway repository). An `org/repo` source is held to its derived id, `--org`
-and `--project` before the clone, and its unwritable folder is refused in
-words about the clone. A local source's folder is still made, since `--out`
-may lie in it (`tests/test_adopt_plan_out_checked.py`), and still refused
-where it cannot be made (`tests/test_adopt_work_dir_refusal.py`); it is no
-longer probed.
+no `gh` before them (a passed `--tracking-branch` is asked of git alone, with
+an empty temporary directory as its `--git-dir`, which `plan` removes). An
+`org/repo` source is held to its derived id, `--org` and `--project` before
+the clone, and its unwritable folder is refused in words about the clone. A
+local source's folder is still made, since `--out` may lie in it
+(`tests/test_adopt_plan_out_checked.py`), and still refused where it cannot
+be made (`tests/test_adopt_work_dir_refusal.py`); it is no longer probed.
 
 Not every refusal a flag decides is asked first. Still after the source is
-read, for an `org/repo` source as for a local one: `naming-unclassified` and
-`naming-role-mismatch`, an empty `--elected-by` (the manifest validator's
-`adopt-manifest-invalid`) and a missing `--path-policy` (`yaml-unreadable`).
+read, for an `org/repo` source as for a local one, among them:
+`naming-unclassified` and `naming-role-mismatch`, an empty `--elected-by`
+(the manifest validator's `adopt-manifest-invalid`) and a missing
+`--path-policy` (`yaml-unreadable`).
 
 The runs here are given a fresh `TMPDIR`, a `GIT_TRACE` file that any `git`
 process would write, a `--work-dir` that is not there, and a `gh` that logs
@@ -240,9 +241,10 @@ def test_a_refusal_the_flags_alone_decide_is_asked_before_anything_exists(
 
 def test_the_branch_a_tracking_branch_names_is_asked_before_the_source(
         harness, source):
-    """`--tracking-branch a..b` is git's to refuse, and is asked of a
-    throwaway repository in the temp folder, never of the source: the only
-    `git` that ran is `check-ref-format`, and it removed what it made."""
+    """`--tracking-branch a..b` is git's to refuse, and is asked of git
+    with an empty temporary directory as its `--git-dir`, never of the
+    source: the only `git` that ran is `check-ref-format`, and the
+    directory was removed."""
     for given in (REPOSITORY, str(source)):
         result = harness.plan(given, "--tracking-branch", "a..b", work=True)
         assert result.returncode == 2, result.stdout + result.stderr

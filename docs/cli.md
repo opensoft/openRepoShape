@@ -956,8 +956,14 @@ options:
                         --work-dir, the holder in it, --local-remote-dir) and
                         whether <org>/<Family> already exists (`gh repo view`
                         and its commit listing; with --local-remote-dir, the
-                        bare repository), refusing what it refuses; make no
-                        folder, remote or repository
+                        bare repository), refusing what it refuses. Whether
+                        each folder can be written in is asked of `os.access`,
+                        which reads the mode bits and on Windows says yes for
+                        every folder, so a quota, a Windows ACL or a read-only
+                        drive on Windows can pass here and be refused by the
+                        real run. It leaves nothing that stays: it makes and
+                        removes temporary folders, creates no remote or
+                        repository and pushes nothing
 ```
 
 #### `scripts/family.py add`
@@ -1208,18 +1214,19 @@ options:
   --pin-source [PRODUCT=]PATH
                         a local checkout to recompute a neutral-product pin's
                         digest from, instead of `gh api` — e.g. --pin-source
-                        openGlass=../openGlass. The text before the first `=`
-                        is a PRODUCT only when it names a pin project.yaml
-                        declares, and then that reading wins even over a
-                        directory spelled like the whole value (./PATH reads
-                        that directory); any other value is a bare PATH, which
-                        applies to whichever declared pin has no more specific
-                        answer (the common case is exactly one). Repeatable; a
-                        value no pin used is noted, and one that cannot be
-                        read is a finding. SHAPE_PIN_SOURCE_<PRODUCT> (env)
-                        and a checkout sitting beside this assembly root are
-                        also tried, before `gh api` and before this flag's
-                        bare form.
+                        openGlass=../openGlass. The text before an `=` is a
+                        PRODUCT only when it names a pin project.yaml
+                        declares, and the longest such text that leaves a path
+                        after it is the one read, so a pin may hold `=`; that
+                        reading wins even over a directory spelled like the
+                        whole value (./PATH reads that directory); any other
+                        value is a bare PATH, which applies to whichever
+                        declared pin has no more specific answer (the common
+                        case is exactly one). Repeatable; a value no pin used
+                        is noted, and one that cannot be read is a finding.
+                        SHAPE_PIN_SOURCE_<PRODUCT> (env) and a checkout
+                        sitting beside this assembly root are also tried,
+                        before `gh api` and before this flag's bare form.
 ```
 
 ### `templates/family-root/scripts/bootstrap.py`

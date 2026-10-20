@@ -2574,7 +2574,11 @@ def _check_gitlinks_named(root: Path, gitlinks: dict[str, str],
     A hand mount's plain `git rm` takes its section out of the work tree's
     `.gitmodules`, as the move's lines write one (`_move_section`): each is
     recorded as a write (`Report.wrote`), so a staged removal's finding
-    after it puts no file back over it (lane 1's SHOULD 1 on #889).
+    after it puts no file back over it (lane 1's SHOULD 1 on #889). Where
+    a plain `git rm` dies or refuses for a reason other than changes in
+    the checkout, the line is `git rm --cached`, and where the work tree's
+    `.gitmodules` is gone, it is put back before the `git rm` that takes
+    a section out of it (`_mounted_by_hand`, #936).
     """
     unnamed = [path for path in sorted(gitlinks)
                if path not in named and _in_members(path)]
@@ -2599,8 +2603,7 @@ def _check_gitlinks_named(root: Path, gitlinks: dict[str, str],
             "member-gitlink-unnamed",
             f"{said} " + _mounted_by_hand(
                 root, path, _hand_project(path), path in removed, stage,
-                _staged_over(root, path, gitlinks[path])))
-        report.wrote = report.wrote or path not in removed
+                gitlinks[path], report))
 
 
 def _gitlink_unnamed_said(path: str, commit: str, fetched: bool) -> str:
@@ -2842,21 +2845,127 @@ def _given_as_git_reads(root: Path) -> set[str]:
     return _blob_paths(root, spec) if spec else set()
 
 
-#: What a hand mount's text says its `git rm` meets where the index stages
-#: the gitlink at a commit HEAD does not record there (`_mounted_by_hand`,
-#: lane 1's SHOULD on #889, round 2): git's two refusals, each exit 1, the
+#: Why a plain `git rm` of a hand mount's gitlink refuses it where the
+#: index stages it at a commit HEAD does not record there, with something
+#: on disk at it (`_staged_over`): git's two refusals, each exit 1, the
 #: second where what is on disk differs from what is staged too, as git
-#: 2.43 gave them (`_staged_over`; lane 1's NIT 1 on #889, round 3).
-STAGED_AT = (", and while the index stages it at a commit HEAD does not "
-             "record there, as it does here (the following file has changes "
+#: 2.43 gave them (lane 1's SHOULD on #889, round 2, and its NIT 1, round
+#: 3), said where its text takes the gitlink out of the index alone (#936).
+STAGED_AT = ("the index stages it at a commit HEAD does not record there, "
+             "with something on disk at it (the following file has changes "
              "staged in the index, or, where what is on disk differs too, "
              "has staged content different from both the file and the HEAD, "
-             "exit 1),")
+             "exit 1)")
+
+#: Why a hand mount's text takes its gitlink out of the index alone, where
+#: a plain `git rm` of it dies or refuses for a reason other than changes
+#: in its checkout (`_hand_cached`, #936), as git 2.43 was measured to.
+CACHED_WHY = {
+    "clone": (f"its .git is a directory and no section of {GITMODULES} "
+              "gives its path, so git rm cannot move that directory into "
+              "this holder's store first (could not lookup name for "
+              "submodule, exit 128)"),
+    "staged": STAGED_AT,
+    "no checkout": ("what is on disk there is no checkout (the following "
+                    "file has local modifications, exit 1)"),
+}
+
+
+def _hand_cached(root: Path, path: str, commit: str) -> str | None:
+    """Why the hand mount's `git rm` takes the gitlink at `path`, which
+    `_member_gitlinks` reads at `commit`, out of the index alone, a key
+    of `CACHED_WHY`, or None where a plain `git rm -- <path>` takes it,
+    refusing only while its checkout holds changes (#936).
+
+    Asked as git's rm.c asks it, of git's own records and of what is on
+    disk, and never of its words:
+    - "clone": a `.git` DIRECTORY at `path`, a clone of its own, which a
+      plain `git rm` first moves into this holder's store under the name
+      a section of the file git reads gives the path
+      (`submodules_absorb_gitdir_if_needed`); where none gives it, git
+      dies there (`could not lookup name for submodule`, exit 128), as
+      after `git clone` and `git add`;
+    - "staged": the index stages it at a commit HEAD does not record
+      there and anything is on disk at it (`_staged_over`), as after
+      `git mv members/<P> members/<P>2`, staged, a `git submodule add`
+      not committed, or a checkout moved to another commit and `git
+      add`-ed: git refuses it, exit 1, in one of two words (`STAGED_AT`),
+      and `-f` would take the checkout's changes with it;
+    - "no checkout": what is on disk at it holds no `.git` entry and is
+      no empty directory (`_on_disk`), a directory holding files or a
+      file: git refuses it as modified (exit 1).
+    `git rm --cached` takes each out and touches no file, with `-f` where
+    `_forced` says, and what it leaves is said with what to do with it
+    (`_cached_left`); the `.gitmodules` section it leaves, where one gives
+    the path, `gitmodules-path-unnamed` takes out by key
+    (`_check_gitmodules_named`).
+
+    WHAT IS ON DISK IS ASKED AS #430 ASKS IT (`_anything_at`, `_asked`): a
+    `stat` the operating system refuses is `member-unreadable` by name,
+    never nothing there and never a traceback. The path itself is asked
+    first, so a folder this user cannot search above it is refused at the
+    path, as `_staged_over` refuses it, and nothing there is the plain
+    line. Where HEAD records the gitlink at the index's own commit too,
+    the disk is asked: whether a plain `git rm` takes it turns on what is
+    there, a clone no section names or what is no checkout, and under a
+    folder this user cannot search it exits 128 (`failed to stat`, `could
+    not remove`), so the line it printed there was no line that works."""
+    if not _anything_at(root / path, path):
+        return None
+    git = root / path / ".git"
+    if (path not in _given_as_git_reads(root)
+            and _asked(git, stat.S_ISDIR, MEMBER_UNREADABLE, f"{path}/.git")):
+        return "clone"
+    if _staged_over(root, path, commit):
+        return "staged"
+    if _on_disk(root, path) and not _anything_at(git, f"{path}/.git"):
+        return "no checkout"
+    return None
+
+
+#: What the text says before the add of what is on disk at a path whose
+#: gitlink `git rm --cached` took out: `family.py add` refuses anything
+#: there (`member-path-taken`).
+ADD_REFUSES = ("before the add, which refuses anything at {path} "
+               "(member-path-taken).")
+
+
+def _cached_left(root: Path, path: str) -> str:
+    """What a hand mount's text says of what its `git rm --cached` leaves
+    at `path`, untracked, and what to do with it (#936): a clone of its
+    own holds its commits there and nowhere else, so it is moved out
+    whole, as `member-gitlink-removal-staged` says of one (`_moved_said`);
+    a checkout whose `.git` file names a store keeps its commits there, so
+    only what is not committed is lost with it; anything else is moved or
+    deleted, and an empty directory deleted. Its `.git` is asked as #430
+    asks it (`_asked`, `_anything_at`): one whose `stat` is refused is
+    `member-unreadable` by name, never no checkout."""
+    git = root / path / ".git"
+    named = f"{path}/.git"
+    then = ADD_REFUSES.format(path=path)
+    if _asked(git, stat.S_ISDIR, MEMBER_UNREADABLE, named):
+        return (f" The clone at {path}, whose .git is a directory, stays "
+                "there, untracked: it holds its commits there and nowhere "
+                f"else, and {_unpushed([path])} lists the ones not pushed, "
+                "so move it out of the holder whole, by hand, rather than "
+                f"delete it, {then}")
+    if _anything_at(git, named):
+        return (f" The checkout at {path} stays there, untracked: its .git "
+                "file names the store that keeps its commits whatever "
+                "becomes of the checkout, so only what is not committed is "
+                f"in the checkout alone, which {_statuses([path])} shows. "
+                "Delete it by hand once nothing only it holds is needed, "
+                f"{then}")
+    if _on_disk(root, path):
+        return (f" What is on disk at {path}, which is no checkout, stays "
+                "there, untracked: move it out of the holder, or delete it "
+                f"by hand once nothing in it is needed, {then}")
+    return f" The empty directory at {path} stays there: delete it {then}"
 
 
 def _mounted_by_hand(root: Path, path: str, project: str | None,
                      staged: bool, stage_first: bool = False,
-                     staged_at: bool = False) -> str:
+                     commit: str = "", report: Report | None = None) -> str:
     """What a gitlink no row names, in no case, says to do after what it is:
     put its row back, or take a hand mount out, commit that, and mount it
     with `family.py add`, on a branch (`_check_gitlinks_named`). Where its
@@ -2865,12 +2974,27 @@ def _mounted_by_hand(root: Path, path: str, project: str | None,
     refuses (`member-path-taken`), deleted by hand first (rv681's S1).
     Its `git rm` comes after `git add -- .gitmodules` where `stage_first`
     (`_stage_first`): after a value finding's lines it exited 128 (#879's
-    C3). Where that `git rm` refuses the gitlink as staged (`staged_at`,
-    as `_staged_over` reads it), as after `git mv members/<P>
-    members/<P>2`, staged, the text says so (`STAGED_AT`), where it said
-    only that the line refuses while the checkout holds changes (lane 1's
-    SHOULD on #889, round 2). No line here takes such a gitlink out:
-    `-f` would take the checkout's changes with it."""
+    C3).
+
+    EVERY LINE WORKS TYPED (#936). Where a plain `git rm` of the gitlink,
+    which `_member_gitlinks` reads at `commit`, dies or refuses for a
+    reason other than changes in its checkout (`_hand_cached`), the line
+    is `git rm --cached`, with `-f` where `_forced` says, which touches no
+    file: it said `git rm --` there, which exited 1 or 128, and the text
+    said why after lane 1's SHOULD on #889 and printed no line that
+    worked. Where HEAD records nothing at the path, nothing of it is left
+    to commit. What it leaves on disk is said, with what to do with it
+    (`_cached_left`).
+
+    A `.gitmodules` GONE FROM THE WORK TREE, where the file git reads in
+    its place gives the path, is put back first, from where git reads it,
+    unless a finding printed before did (`_file_put_back`, recorded in
+    `report`): the plain `git rm` takes the section out of the work tree's
+    file alone, so with none there it took nothing out, and the staged
+    removal's put-back after it brought the section back, which the gate
+    then found (`gitmodules-path-unnamed`, #936). The plain line takes the
+    section out and is recorded as a write (`Report.wrote`, lane 1's
+    SHOULD 1 on #889); `--cached` writes nothing."""
     member = (PROJECT_PLACEHOLDER if project is None
               else shlex.quote(project))
     add = (f"    {PYTHON} scripts/family.py add --family-root "
@@ -2891,27 +3015,91 @@ def _mounted_by_hand(root: Path, path: str, project: str | None,
             "one commit, and names the object store git rm leaves under "
             f".git/modules if one is still there. {BRANCH_LEFT}\n"
             f"    {_switch_line(root, 'add', project)}\n{add}")
-    staging, rm_at, add_at = ((f"stage {GITMODULES} with the second, "
-                               f"{STAGE_TOO}, {STAGE_WHY}, ", "third",
-                               "fourth")
-                              if stage_first else ("", "second", "third"))
+    why = _hand_cached(root, path, commit)
+    # The lines after the switch line, which is the first and is written
+    # in the text itself, so that the prose it stands under is seen to end
+    # with `BRANCH_LEFT` (`_switch_line`): the one at `lines[i]` is the
+    # `_ordinal(i + 1)`.
+    lines: list[str] = []
+    said = (_plain_rm_said(root, path, stage_first, report, lines)
+            if why is None else
+            _cached_rm_said(root, path, commit, why, stage_first, lines))
     return (
         f"{RESTORE_ROW} If it was mounted by hand, make a branch "
         "with the first command below, since family.py add refuses the "
-        f"holder's tracking branch, {staging}take it out with the "
-        f"{rm_at}, which refuses while its checkout holds changes"
-        + (STAGED_AT if staged_at else "")
-        + f" and takes its {GITMODULES} section out too, and commit that "
-        "removal, since "
-        "family.py add refuses a path under another spelling of members/ "
-        "that HEAD holds and the index no longer does, then mount it "
-        f"with the {add_at}, from a checkout of openRepoShape: family.py "
-        "add writes its row and its gitlink in one commit, and names the "
-        "object store git rm leaves under .git/modules if one is still "
-        f"there. {BRANCH_LEFT}\n"
+        f"holder's tracking branch, {said}, then mount it with the "
+        f"{_ordinal(len(lines) + 1)}, from a checkout of openRepoShape: "
+        "family.py add writes its row and its gitlink in one commit, and "
+        "names the object store git rm leaves under .git/modules if one is "
+        f"still there.{_cached_left(root, path) if why else ''} "
+        f"{BRANCH_LEFT}\n"
         f"    {_switch_line(root, 'add', project)}\n"
-        + (f"    {STAGE_LINE}\n" if stage_first else "")
-        + f"    git rm -- {shlex.quote(path)}\n{add}")
+        + "".join(f"    {line}\n" for line in lines) + add)
+
+
+#: Why the removal of a hand mount is committed before `family.py add`.
+COMMIT_WHY = ("since family.py add refuses a path under another spelling of "
+              "members/ that HEAD holds and the index no longer does")
+
+
+def _staging_said(stage_first: bool, lines: list[str]) -> str:
+    """What the text says of `git add -- .gitmodules`, appended to `lines`,
+    the lines after the switch line (`_mounted_by_hand`), where
+    `stage_first` (#879's C3), else nothing."""
+    if not stage_first:
+        return ""
+    lines.append(STAGE_LINE)
+    return (f"stage {GITMODULES} with the {_ordinal(len(lines))}, "
+            f"{STAGE_TOO}, {STAGE_WHY}, ")
+
+
+def _plain_rm_said(root: Path, path: str, stage_first: bool,
+                   report: Report | None, lines: list[str]) -> str:
+    """What the text says of a hand mount's plain `git rm`, from "take it
+    out" to "commit that removal", its lines appended to `lines`, the lines
+    after the switch line (`_mounted_by_hand`): the work tree's
+    `.gitmodules` put back first where it is gone and the file git reads
+    in its place gives `path` (`_file_put_back`, #936)."""
+    put = ""
+    if (not os.path.lexists(root / GITMODULES)
+            and path in _given_as_git_reads(root)):
+        line, whose = _file_put_back(root, report)
+        if line:
+            lines.append(line)
+            put = (f"put {GITMODULES}, gone from the work tree, back from "
+                   f"{whose} with the {_ordinal(len(lines))}, so that "
+                   "the git rm takes its section out of that file and every "
+                   "other section stays, ")
+    staging = _staging_said(stage_first, lines)
+    lines.append(f"git rm -- {shlex.quote(path)}")
+    if report is not None:
+        report.wrote = True
+    return (f"{put}{staging}take it out with the "
+            f"{_ordinal(len(lines))}, which refuses while its checkout "
+            f"holds changes and takes its {GITMODULES} section out too, and "
+            f"commit that removal, {COMMIT_WHY}")
+
+
+def _cached_rm_said(root: Path, path: str, commit: str, why: str,
+                    stage_first: bool, lines: list[str]) -> str:
+    """What the text says of a hand mount's `git rm --cached` (#936),
+    from "take it out" to the commit, its lines appended to `lines`, the
+    lines after the switch line (`_mounted_by_hand`): why a plain `git rm`
+    is not printed (`CACHED_WHY`), `-f` where `_forced` says, with what it
+    does (`FORCED_SAID`), and no commit of it where HEAD records nothing
+    at `path`."""
+    staging = _staging_said(stage_first, lines)
+    head = _forced(root, path, commit)
+    lines.append(_cached_removal(path, head))
+    forced = "" if head is None else f" ({FORCED_SAID})"
+    commit_said = (", and commit that removal, " + COMMIT_WHY
+                   if _head_records(root, path) else
+                   "; HEAD records nothing there, so nothing of it is left "
+                   "to commit")
+    return (f"{staging}take it out of the index alone with the "
+            f"{_ordinal(len(lines))}, which touches no file{forced}, "
+            f"since a plain git rm refuses it here: {CACHED_WHY[why]}"
+            f"{commit_said}")
 
 
 def _check_gitmodules_named(root: Path, sections: dict[str, dict[str, str]],
@@ -2938,7 +3126,9 @@ def _check_gitmodules_named(root: Path, sections: dict[str, dict[str, str]],
 
     A section at the path of a gitlink whose finding says to `git rm` it
     prints no command: that `git rm` takes the section out too, and a
-    `--unset-all` run after it exits 5, the key being gone. A gitlink whose
+    `--unset-all` run after it exits 5, the key being gone. Where that
+    finding's line is `git rm --cached` (`_hand_cached`, #936), which
+    leaves the section, the section prints its own lines. A gitlink whose
     removal is staged (`removed`, #681) prints no `git rm`, so its section,
     which `git rm --cached` leaves, keeps its own commands. Where two
     sections give the path (`gitmodules-path-twice`) it takes out only the
@@ -2986,7 +3176,8 @@ def _check_gitmodules_named(root: Path, sections: dict[str, dict[str, str]],
             said += _variant_said(*variant) + _section_out(
                 name, keys, "Take", f"then commit {GITMODULES}")
         elif (path in gitlinks and path not in removed and given[path] == 1
-              and _in_members(path)):
+              and _in_members(path)
+              and _hand_cached(root, path, gitlinks[path]) is None):
             report.finding(
                 "gitmodules-path-unnamed",
                 f"{said}{SECTION_ROW_BACK} Otherwise the git rm printed above "

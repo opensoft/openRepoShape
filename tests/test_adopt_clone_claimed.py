@@ -39,7 +39,8 @@ from pathlib import Path
 import pytest
 
 from conftest import ADOPT, WINDOWS_SKIP, make_source_repo, rmtree, spelled
-from test_adopt_work_dir_refusal import refused_alike
+from test_adopt_work_dir_refusal import (refused_alike, refused_for_a_link,
+                                         through_a_loop)
 from test_adopt_source_clone_record import (  # noqa: F401
     MINE, OCCUPIED, SOURCE_READONLY, WORK, WORK_FLAG, clone_dir, modes_hold,
     on_github, plan_args, run, symlinks_are_made,
@@ -731,9 +732,11 @@ def test_a_loop_or_a_file_above_the_work_dir_keeps_its_650_refusal(
         tmp_path, command, above):
     """`--work-dir <T>/loop/W` (`loop -> loop`) and `<T>/notes.txt/W`, a
     file every user can write: no directory can be made there, and each
-    command refuses it as #650 does, in main's words. On `bba7e445` each was
-    `adopt-work-dir-shared`, naming the link or the file as a directory
-    every user can write in: a symlink always reads as mode 0777."""
+    command refuses it as #650 does, `adopt-work-dir-unwritable`: the file
+    in the system's words, and the loop in #978's, which name the link. On
+    `bba7e445` each was `adopt-work-dir-shared`, naming the link or the
+    file as a directory every user can write in: a symlink always reads as
+    mode 0777."""
     planned_locally(tmp_path, {}, {}, {})
     if above == "a-symlink-loop":
         in_the_way = tmp_path / "loop"
@@ -741,10 +744,13 @@ def test_a_loop_or_a_file_above_the_work_dir_keeps_its_650_refusal(
             in_the_way.symlink_to(in_the_way.name)
         except OSError:
             pytest.skip("this machine cannot make a symlink")
-    else:
-        in_the_way = tmp_path / "notes.txt"
-        in_the_way.write_text(MINE, encoding="utf-8")
-        os.chmod(in_the_way, 0o666)
+        loop = real(tmp_path) / in_the_way.name
+        refused_for_a_link(command, tmp_path, in_the_way / WORK,
+                           through_a_loop(loop), loop)
+        return
+    in_the_way = tmp_path / "notes.txt"
+    in_the_way.write_text(MINE, encoding="utf-8")
+    os.chmod(in_the_way, 0o666)
     refused_alike(command, tmp_path, in_the_way / WORK)
 
 
