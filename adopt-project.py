@@ -5058,16 +5058,17 @@ def _checked_flag_inputs(args, naming: NamingPolicy) -> None:
     source.
 
     NOT EVERY REFUSAL A FLAG DECIDES IS HERE. Still after the source, for
-    an `org/repo` source as for a local one: `naming-unclassified` and
-    `naming-role-mismatch`, which `_check_names` asks of the names
-    `--project` makes, with a remedy about the source; an empty
-    `--elected-by`, which is a value `unwritable_values` holds and the
-    manifest validator refuses (`adopt-manifest-invalid`, in
-    `_refuse_unholdable_values`), and an empty `--reference` with it
-    (#902); and a missing `--path-policy` (`yaml-unreadable`). A passed
-    `--id` that is no id is here only where `naming` holds the names
-    `--project` makes (`_names_held`, #902): beside a name it refuses, the
-    naming refusal speaks first, and its remedy needs the source.
+    an `org/repo` source as for a local one, among them:
+    `naming-unclassified` and `naming-role-mismatch`, which `_check_names`
+    asks of the names `--project` makes, with a remedy about the source
+    where it names a repository; an empty `--elected-by`, which is a value
+    `unwritable_values` holds and the manifest validator refuses
+    (`adopt-manifest-invalid`, in `_refuse_unholdable_values`), and an
+    empty `--reference` with it (#902); and a missing `--path-policy`
+    (`yaml-unreadable`). A passed `--id` that is no id is here only where
+    `naming` holds the names `--project` makes (`_names_held`, #902):
+    beside a name it refuses, the naming refusal speaks first, and its
+    remedy needs the source.
     """
     args.project = checked_value("--project", args.project)
     # A `--tracking-branch` that was passed: PASSED IS ON THE COMMAND LINE,
@@ -5075,9 +5076,9 @@ def _checked_flag_inputs(args, naming: NamingPolicy) -> None:
     # `checked_value` (#420): a name inside its alphabet that git will not
     # create (`a..b`, `~`, `x.lock`, `a/`) is refused here, in git's words,
     # and is not written for `check` to find it no branch of the source and
-    # the plan to be written again. That question is asked of a throwaway
-    # repository in the system temp folder, which it removes, and never of
-    # the source.
+    # the plan to be written again. That question is asked with an empty
+    # temporary directory as its `--git-dir`, which `plan` removes, and
+    # never of the source.
     if args.tracking_branch is not None:
         tracking = _flag_named(TRACKING_KEY, {TRACKING_KEY})
         args.tracking_branch = checked_value(tracking, args.tracking_branch)
@@ -5894,8 +5895,9 @@ def cmd_plan(args) -> int:
     # made, git had read the source and an `org/repo` one was cloned, and
     # with a clone that failed they were never reached: no work directory
     # is made, git reads nothing of the source and no `gh` runs before
-    # them. A passed `--tracking-branch` runs `git check-ref-format` in a
-    # throwaway repository first, and never touches the source.
+    # them. A passed `--tracking-branch` runs `git check-ref-format` first,
+    # with an empty temporary directory as its `--git-dir`, which `plan`
+    # removes, and never touches the source.
     # The naming policy is read first, a file of this checkout: a passed
     # `--id` is refused with the flags only where the names `--project`
     # makes are ones it holds (#902).
@@ -12148,13 +12150,14 @@ WORK_DIR_FIX = ("Pass a --work-dir this user can write in, or none: without "
 NO_LEG_YET = "no leg repository was created and nothing was pushed. "
 
 
-def _work_dir_refusal(detail: str, done: str = "") -> Refusal:
+def _work_dir_refusal(detail: str, done: str = "",
+                      fix: str = WORK_DIR_FIX) -> Refusal:
     """`adopt-work-dir-unwritable` for `detail`, why the `--work-dir`
     cannot be used: `_work_root`'s or `_unwritable_work_dir`'s. The one
     refusal of a work directory, in all three commands (#650); `done` is
-    what the refusing command left as it was, said first."""
-    return Refusal(WORK_DIR_UNWRITABLE, detail,
-                   f"Remediation: {done}{WORK_DIR_FIX}")
+    what the refusing command left as it was, said first, and `fix` the way
+    out, which is #524's but for a symlink in the way (#978)."""
+    return Refusal(WORK_DIR_UNWRITABLE, detail, f"Remediation: {done}{fix}")
 
 
 def _unwritable_work_dir(args, work_root: Path,
@@ -15908,8 +15911,11 @@ def _work_root(args, done: str = "") -> Path:
     FileExistsError, NotADirectoryError or PermissionError traceback, exit
     1, and on a loop Python 3.12's `Path.resolve` raised RuntimeError
     first; `os.path.realpath` is the same reading without that raise. The
-    code and the way out are #524's, for one this user cannot write in;
-    `done` is what the refusing command left as it was, said first.
+    code and the way out are #524's, for one this user cannot write in, but
+    a symlink in the way is named, with a way out of its own: one at the
+    `--work-dir` or on the way to it that leads round a loop, or one at it
+    that leads to what is no directory (`_unmade_work_dir`, #978); `done`
+    is what the refusing command left as it was, said first.
 
     A `--work-dir` ANOTHER USER CAN RENAME IN IS REFUSED NEXT, before
     anything is made in it (#803): one another user owns, or one every user
@@ -15933,9 +15939,8 @@ def _work_root(args, done: str = "") -> Path:
         _made_0755(root)
         status = os.lstat(root)
     except OSError as exc:
-        raise _work_dir_refusal(
-            f"--work-dir {_spelled(str(root))} cannot be made: making it a "
-            f"directory failed ({exc.strerror or exc})", done) from None
+        detail, fix = _unmade_work_dir(args.work_dir, root, exc)
+        raise _work_dir_refusal(detail, done, fix) from None
     _refuse_a_shared_chain(root, done)
     shared = _shared_with_another_user(status)
     if shared:
@@ -15944,6 +15949,89 @@ def _work_root(args, done: str = "") -> Path:
             "could rename or replace what this run makes in it", done,
             WORK_DIR_OWN)
     return root
+
+
+#: Why a `--work-dir` that is a symlink round a loop cannot be made (#978).
+SYMLINK_LOOP = "it is a symbolic link that leads round a loop"
+
+
+def _unmade_work_dir(work_dir: Path, root: Path,
+                     exc: OSError) -> tuple[str, str]:
+    """Why the `--work-dir` `work_dir`, which `_work_root` read as `root`
+    (`os.path.realpath`), could not be made, where making it failed with
+    `exc`, and the way out: `_work_root`'s refusal (#650).
+
+    A SYMLINK IN THE WAY IS NAMED AS ONE (#978). `os.mkdir` of a symlink
+    that leads round a loop fails with EEXIST, the error a file in the way
+    gets, so the reason was "(File exists)": the person was told a file is
+    there, and found a link, and the way out was for a folder this user
+    cannot write in. Where the `--work-dir` is a symlink, or the way to it
+    runs through one, that leads round a loop, the reason says so and names
+    the link, and the link in the loop where that is another; where it is a
+    symlink that leads to a file, or to anything else that is no directory,
+    the reason names the link and what it leads to. The way out is to
+    remove the link or make it lead to a directory: the `--work-dir` itself
+    where it is a symlink, else the link in the loop. The `--work-dir` is
+    named as given, made absolute and not resolved, since
+    `os.path.realpath` stops at a loop on a path the person may never have
+    typed.
+
+    A DANGLING SYMLINK IS NO LOOP: `os.path.realpath` reads it as the path
+    it leads to, which `_made_0755` makes, and only where that fails does
+    it get here. That failure, and every other, a file at the `--work-dir`
+    or above it among them, is said in the system's own words, of `root`,
+    as before."""
+    given = work_dir.absolute()
+    link = given if os.path.islink(given) else None
+    looped = (_the_loop_in(root)
+              if exc.errno in (errno.EEXIST, errno.ELOOP) else None)
+    if looped is not None:
+        if link is None:
+            why = ("the way to it leads round a loop, at the symbolic link "
+                   f"{_spelled(str(looped))}")
+            link = looped
+        elif _same_entry(link, looped):
+            why = SYMLINK_LOOP
+        else:
+            why = (f"{SYMLINK_LOOP}, at the symbolic link "
+                   f"{_spelled(str(looped))}")
+    elif link is not None and exc.errno == errno.EEXIST:
+        why = (f"it is a symbolic link that leads to {_spelled(str(root))}, "
+               "which is not a directory")
+    else:
+        return (f"--work-dir {_spelled(str(root))} cannot be made: making it "
+                f"a directory failed ({exc.strerror or exc})", WORK_DIR_FIX)
+    return (f"--work-dir {_spelled(str(given))} cannot be made: {why}",
+            f"Remove the symbolic link {_spelled(str(link))}, or make it "
+            "lead to a directory, or pass another --work-dir, or none: "
+            "without one, each run makes a new one.")
+
+
+def _the_loop_in(root: Path) -> Path | None:
+    """The symlink in `root`, a `--work-dir` as `os.path.realpath` read it,
+    that leads round a loop; None where there is none (#978).
+    `os.path.realpath` follows every symlink but one it meets again before
+    it has resolved it, which it leaves in the path as it found it, with
+    the rest of the path unread after it. So the first symlink in `root`,
+    from `/` down, is that one, and the system is asked whether following
+    it loops (ELOOP), so that nothing else is called a loop."""
+    for part in (*reversed(root.parents), root):
+        if os.path.islink(part):
+            try:
+                os.stat(part)
+            except OSError as exc:
+                return part if exc.errno == errno.ELOOP else None
+            return None
+    return None
+
+
+def _same_entry(one: Path, other: Path) -> bool:
+    """Whether `one` and `other` are the same directory entry, a symlink
+    taken as itself and not followed."""
+    try:
+        return os.path.samestat(os.lstat(one), os.lstat(other))
+    except OSError:
+        return False
 
 
 def _holds_a_file(root: Path) -> bool:
