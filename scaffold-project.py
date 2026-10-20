@@ -92,7 +92,7 @@ from pathlib import Path
 SHAPE_ROOT = Path(__file__).resolve().parent
 sys.path.insert(0, str(SHAPE_ROOT / "scripts"))
 from repo_shape import (  # noqa: E402
-    COMMIT_RE, NEUTRAL_PRODUCT_OWNER, PROJECT_ID_RE, TREE_DIGEST_DEFINITION,
+    NEUTRAL_PRODUCT_OWNER, PROJECT_ID_RE, TREE_DIGEST_DEFINITION,
     VISIBILITY_CHOICES, NamingPolicy, Refusal, accepts_role, checked_value,
     git_out, link_pins_from_trees, repo_basename, shell_line, shown_path,
     tree_digest,
@@ -373,8 +373,13 @@ def main(argv: list[str] | None = None) -> int:
                              "three repositories already exists (`gh repo "
                              "view` and its commit listing, or the bare "
                              "repositories with --local-remote-dir), "
-                             "refusing what it refuses; make no folder, "
-                             "create no remote and push nothing")
+                             "refusing what it refuses. The answer about "
+                             "each folder is its mode bits' (`os.access`), "
+                             "so a quota or a Windows ACL the bits do not "
+                             "show can pass here and be refused by the real "
+                             "run. It leaves nothing that stays: it makes "
+                             "and removes temporary folders, creates no "
+                             "remote and pushes nothing")
     # TEXT, not `type=Path`, as `--pin-source` and `--work-dir` are: `Path("")`
     # is `.`, so an empty value could not be told from a typed `.` once
     # parsed (`folder_flag_path`).
@@ -523,9 +528,12 @@ PROBE_ENV = {**REMOTE_ENV, "LC_ALL": "C"}
 PUSH_ENV = {**REMOTE_ENV, "LC_ALL": "C"}
 
 
-def only_commit(url: str, scratch: Path) -> tuple[str, str] | None:
-    """`(commit, tree)` when the repository at `url` holds exactly ONE commit
-    and every ref it has names it, else None (#462).
+def only_commit(url: str,
+                scratch: Path) -> tuple[str, str, tuple[str, ...]] | None:
+    """`(commit, tree, refs)` when the repository at `url` holds exactly ONE
+    commit and every ref it has names it, else None (#462). `refs` is the
+    name of each ref the listing gave, `HEAD` among them, and says which
+    branch the commit was found on (#921).
 
     `git ls-remote` lists every ref, `HEAD`, a `seed/*` branch and a pull
     request's included, and one object name across all of them is the first
@@ -537,10 +545,11 @@ def only_commit(url: str, scratch: Path) -> tuple[str, str] | None:
     Both commands that reach `url` run under `PROBE_ENV`, and a `url` git
     cannot read raises `CommandFailed` for `_held_seed` to answer (#542).
     """
-    tips = {line.split()[0].lower()
-            for line in run(["git", "ls-remote", url],
-                            env=PROBE_ENV).splitlines()
-            if line.strip()}
+    listed = [line.split(None, 1)
+              for line in run(["git", "ls-remote", url],
+                              env=PROBE_ENV).splitlines()
+              if line.strip()]
+    tips = {fields[0].lower() for fields in listed}
     if len(tips) != 1:
         return None
     commit = tips.pop()
@@ -555,15 +564,18 @@ def only_commit(url: str, scratch: Path) -> tuple[str, str] | None:
     if any(line.startswith("parent ") for line in header):
         return None
     tree = next(line.split()[1] for line in header if line.startswith("tree "))
-    return commit, tree.lower()
+    return commit, tree.lower(), tuple(fields[1].strip() for fields in listed
+                                       if len(fields) > 1)
 
 
 def _held_seed(role: str, url: str, values: dict, tracking: str,
-               scratch: Path) -> tuple[str | None, str | None]:
-    """`(commit, None)` when a leg that is not empty holds ONE commit and its
-    tree is the one this run would seed the leg with (#462); `(None, None)`
-    when it holds anything else; `(None, why)` when git cannot read it
-    (#542).
+               scratch: Path) -> tuple[str | None, str | None,
+                                       tuple[str, ...]]:
+    """`(commit, None, found_on)` when a leg that is not empty holds ONE
+    commit and its tree is the one this run would seed the leg with (#462);
+    `(None, None, ())` when it holds anything else; `(None, why, ())` when
+    git cannot read it (#542). `found_on` is each branch the commit was
+    found on, or `()` when `tracking` is one of them (`_seed_branches`, #921).
 
     That is a leg a run of this scaffold pushed before a later push was
     refused, by an organisation's ruleset or anything else, or one an
@@ -586,12 +598,53 @@ def _held_seed(role: str, url: str, values: dict, tracking: str,
     try:
         held = only_commit(url, scratch)
     except CommandFailed as exc:
-        return None, _unread_because(exc)
+        return None, _unread_because(exc), ()
     if held is None:
-        return None, None
-    commit, tree = held
-    seeded = tree == seed_tree(role, values, tracking, scratch)
-    return (commit if seeded else None), None
+        return None, None, ()
+    commit, tree, refs = held
+    if tree != seed_tree(role, values, tracking, scratch):
+        return None, None, ()
+    return commit, None, _seed_branches(refs, tracking)
+
+
+#: What git's listing puts before a branch's name.
+HEADS = "refs/heads/"
+
+
+def _seed_branches(refs: tuple[str, ...], tracking: str) -> tuple[str, ...]:
+    """Each branch a leg's seed was found on, by name, when `tracking`, the
+    branch this run creates at it, is NOT one of them, else `()` (#921).
+
+    A leg whose seed sits on a branch of another name, `seed/scaffold` above
+    all (the branch the ruleset hint made before #506), is taken all the
+    same, and the re-run creates `tracking` at it and leaves that branch as
+    it is (`_take_held_seed`). A tag or a pull request's ref is no branch,
+    and `HEAD` is the leg's default branch under another name, so neither
+    counts."""
+    branches = sorted(ref[len(HEADS):] for ref in refs
+                      if ref.startswith(HEADS))
+    return () if tracking in branches else tuple(branches)
+
+
+def _seed_branch_note(target, branches: tuple[str, ...],
+                      tracking: str) -> str:
+    """The NOTE for a seed found only on `branches`, not on `tracking`
+    (#921): the re-run creates `tracking` at it and touches none of them, so
+    each remains, and on GitHub one may be the leg's default branch (#921
+    did not verify that there: it says "may"). The names come from the
+    remote, so each is spelt as `shown_path` spells a path: as it is, or as
+    `repr` where a character in it is not printable.
+    """
+    names = [f"`{shown_path(branch)}`" for branch in branches]
+    if len(names) > 1:
+        found = f"branches {', '.join(names[:-1])} and {names[-1]}"
+        left = "them, so they remain, and on GitHub one of them may be"
+    else:
+        found = f"branch {names[0]}"
+        left = f"{names[0]}, so that branch remains, and on GitHub it may be"
+    return (f"NOTE the seed in {target} was found only on its {found}: this "
+            f"run creates `{tracking}` at it and does not touch {left} the "
+            "leg's default branch.")
 
 
 #: The `fatal:` line git prints when the program it reaches a remote through
@@ -657,6 +710,13 @@ def _reusable_remotes(names: dict, urls: dict, repositories: dict,
     asked only of a leg that is not empty, and a leg git cannot read is
     refused as one with commits, saying so (#542).
 
+    A SEED FOUND ONLY ON ANOTHER BRANCH is taken, and said (#921). Where the
+    leg's one commit is on no branch named `tracking`, `seed/scaffold`
+    above all, the re-run creates `tracking` at it and leaves the branch it
+    was found on, which remains and may be the leg's default branch on
+    GitHub (`_seed_branch_note`). The one NOTE is printed after the `reuse`
+    line, by a dry run as by the real run.
+
     A LOCAL REMOTE IS NAMED AS `shown_path` NAMES A PATH (#766), as
     `family.py init` names its holder's: it is a path under
     `--local-remote-dir`, where `scaffold-unwritable-value` refuses a
@@ -670,15 +730,18 @@ def _reusable_remotes(names: dict, urls: dict, repositories: dict,
                      else remote_is_empty(target))
             if empty is None:
                 continue
-            seed, unread = ((None, None) if role == "assembly" or empty else
-                            _held_seed(role, urls[role], values, tracking,
-                                       Path(scratch) / role))
+            seed, unread, found_on = (
+                (None, None, ()) if role == "assembly" or empty else
+                _held_seed(role, urls[role], values, tracking,
+                           Path(scratch) / role))
             if reuse_flag and (empty or seed):
                 reused[role] = seed
                 print(f"  reuse {target} " + (
                     "(zero commits)" if empty else
                     f"(one commit, {seed[:12]}: the seed this scaffold "
                     "pushes)"))
+                if found_on:
+                    print(_seed_branch_note(target, found_on, tracking))
                 continue
             raise Refusal(
                 "scaffold-remote-exists",
@@ -1956,8 +2019,10 @@ def _take_held_seed(work: Path, url: str, seed: str, tracking: str) -> str:
     `seed_tree` built from these values, which is what was just written. The
     pin, the gitlink and the push that follows are then about the commit the
     remote already has, and that push changes nothing where the tracking
-    branch already holds it. The fetch reaches the remote, so it runs under
-    `REMOTE_ENV`, the prompt rule every such command runs under (#915).
+    branch already holds it. A branch the seed was found on instead
+    (`seed/scaffold`) is not touched, and `_reusable_remotes` has said so
+    (#921). The fetch reaches the remote, so it runs under `REMOTE_ENV`, the
+    prompt rule every such command runs under (#915).
     """
     run(["git", "init", "-q", "-b", tracking, str(work)])
     run(["git", "remote", "add", "origin", url], cwd=work)
