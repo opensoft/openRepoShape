@@ -57,6 +57,16 @@ with what the text says to delete or move out, commits, then asks the gate
 in every mode, and a plain clone's `git submodule update --init
 --recursive` must check out both members. The helpers are #879's
 (`tests/test_family_holder_remedies_compose.py`) and those it imports.
+
+#1036, RV1025'S SHOULD 1 ON #1025: state 1's `git submodule add`, not
+committed, with the work tree's `.gitmodules` then deleted. The section
+the add staged is in the index's file alone, which git reads in place of
+the one gone (`git submodule status members/IRQS` maps it, git 2.43), but
+`gitmodules-path-unnamed` read the work tree's alone and named nothing:
+every line typed exited 0, the gate passed, and the commit of what was
+staged recorded the section. It reads the file git reads now, the index's,
+then HEAD's, and its lines put that file back first (`git config -f`
+on no file exits 5 and makes none). Its rows are at the end of this file.
 """
 
 from __future__ import annotations
@@ -75,15 +85,20 @@ from test_family_head_lost_gitmodules import (  # noqa: F401
     commit_all, staged_and_committed,
 )
 from test_family_holder_remedies_compose import (
-    MODES, OTHER_ROW, a_file_at, cloning, committed_with_its_checkout,
-    ends_well, files_at, found_alike, head_paths, holding_a_file,
-    moved_back_and_added, moved_by_git_mv, moved_with_a_commit,
-    staged_by_hand, typed_in_order,
+    MODES, OTHER_ROW, PUT_BACK_THEN, a_file_at, cloning, codes_of,
+    committed_with_its_checkout, ends_well, files_at, found_alike,
+    head_paths, holding_a_file, moved_back_and_added, moved_by_git_mv,
+    moved_with_a_commit, staged_by_hand, typed_in_order, value_committed,
 )
 from test_family_member_path import raw
-from test_family_unnamed_gitlink import submodule_added
-from test_validate_family_typed_states import GONE, ROW
-from test_validate_family_unnamed_mounts import commands
+from test_family_unnamed_gitlink import (
+    FORCED_NO_HEAD, THEN_STAGE, TOOLS, section_first, submodule_added,
+)
+from test_validate_family_typed_states import GONE, ROW, gone
+from test_validate_family_unnamed_mounts import (
+    SECTION_REMEDY, SECTION_SAID, SECTION_UNDER_GIT_RM, VARIANT, commands,
+    removal, with_section,
+)
 
 HAND = f"members/{SPARE}"
 
@@ -531,3 +546,199 @@ def test_a_hand_mount_s_git_this_user_cannot_reach_is_refused_by_name(
         assert "Traceback" not in result.stderr
         assert "chmod u+rx" in result.stderr
     assert found_alike(holder, *MODES) == before
+
+
+# --- #1036: a section the file git reads gives, the work tree's gone ---------
+
+def put_back_said(how: str) -> str:
+    """What `gitmodules-path-unnamed` says of the line it prints before a
+    section's keys where the work tree's `.gitmodules` is gone, as `how`
+    (`GONE`) says, ahead of what it says last (#1036)."""
+    whose = GONE[how][0]
+    return f"after the line that puts {PUT_BACK_THEN.format(whose=whose)}, "
+
+
+def index_url(root: Path, env: dict, name: str) -> str:
+    """The url the section `name` of the index's `.gitmodules` gives."""
+    return raw(root, env, "config", "--blob", ":.gitmodules",
+               f"submodule.{name}.url").stdout.decode("utf-8").strip()
+
+
+def lines_of(*lines: str) -> str:
+    """`lines` as a finding prints them, one to an indented line."""
+    return "".join(f"\n    {line}" for line in lines)
+
+
+def test_1036_a_section_the_index_alone_gives_comes_out_of_the_file_put_back(
+        family, holder, offline, tmp_path):
+    """#1036, RV1025's SHOULD 1 on #1025: `git submodule add` at
+    `members/IRQS`, not committed, then the work tree's `.gitmodules`
+    deleted, not staged (`MD .gitmodules`). The index's file, which git
+    reads in its place, gives IRQS's section, and `gitmodules-path-unnamed`
+    read the work tree's alone: the hand mount's `git rm --cached -f` exited
+    0, the gate passed, and the commit of what was staged recorded the
+    section. The section is a finding now, in every mode, whose lines put
+    the index's file back first, then take every key out. Typed in order,
+    the checkout deleted as the text says, `.gitmodules` staged as the
+    section's text says, then what is staged committed: HEAD's `.gitmodules`
+    gives the two members alone, nothing is left, the gate passes in every
+    mode and a plain clone checks both out."""
+    env = cloning(offline, tmp_path, family)
+    path = added_not_committed(holder, env, family)
+    url = index_url(holder, env, path)
+    gone(holder, env, "deleted")
+
+    found = found_alike(holder, *MODES)
+
+    typed_around(holder, env, found, lambda: deleted(holder / path))
+    if "gitmodules-path-unnamed" in codes_of(found):
+        raw(holder, env, "add", "--", ".gitmodules")
+    if raw(holder, env, "diff", "--cached", "--quiet",
+           check=False).returncode:
+        commit_all(holder, env, "What is staged")
+    assert head_paths(holder, env) == {ROW, OTHER_ROW}
+    assert raw(holder, env, "status", "--porcelain").stdout == b""
+    ends_well(holder, env, family, tmp_path)
+    assert codes_of(found) == ["member-gitlink-unnamed",
+                               "gitmodules-path-unnamed"]
+    assert (commands(mount_of(found, path))[1]
+            == f"git rm --cached -f -- {path}")
+    whose, put_back = GONE["deleted"]
+    assert found[1] == (
+        SECTION_SAID.format(path=path, name=path, url=f"url {url}")
+        + SECTION_REMEDY.replace("then commit .gitmodules:",
+                                 put_back_said("deleted")
+                                 + "then commit .gitmodules:")
+        + lines_of(put_back, *removal(path, "path", "url")))
+
+
+def test_1036_outside_members_the_gitlink_goes_first_then_the_put_back(
+        family, holder, offline, tmp_path):
+    """#1036 outside `members/`: `git submodule add` at tools/x, not
+    committed, then the work tree's `.gitmodules` deleted. The index's file
+    gives tools/x its section, so `gitlink-unnamed` rightly says nothing,
+    and `gitmodules-path-unnamed` read the work tree's alone: the gate
+    passed, and the next commit recorded a gitlink and a section no row can
+    name. The section's finding takes the gitlink out of the index first,
+    then puts the index's file back, then takes every key out. Typed in
+    order and staged as it says, nothing is left to commit, the checkout
+    stays untracked, the gate passes in every mode and a plain clone checks
+    both out."""
+    env = cloning(offline, tmp_path, family)
+    submodule_added(holder, env, family, TOOLS)
+    url = index_url(holder, env, TOOLS)
+    gone(holder, env, "deleted")
+
+    found = found_alike(holder, *MODES)
+
+    whose, put_back = GONE["deleted"]
+    removed = f"\n    git rm --cached -f -- {TOOLS}"
+    assert found == [section_first(
+        TOOLS, TOOLS, url, FORCED_NO_HEAD,
+        put_back_said("deleted") + THEN_STAGE, " -f").replace(
+            removed, removed + lines_of(put_back))]
+    typed_in_order(holder, env, validate(holder, "--no-members"))
+    raw(holder, env, "add", "--", ".gitmodules")
+    assert raw(holder, env, "status", "--porcelain").stdout == b"?? tools/\n"
+    ends_well(holder, env, family, tmp_path)
+
+
+@pytest.mark.parametrize("how", GONE)
+def test_1036_a_stray_section_comes_out_of_the_file_put_back(
+        family, holder, offline, tmp_path, how):
+    """#1036 in the case-variant branch: a section named `ghost` giving
+    `Members/IRRS`, a second path to MEMBER's directory on macOS and
+    Windows, committed, then the work tree's `.gitmodules` deleted or its
+    deletion staged. Git reads the index's file, or HEAD's, both of which
+    give it, and the gate passed. Its lines put that file back first now,
+    then take every key out. Typed in order, staged and committed as it
+    says, HEAD's `.gitmodules` gives the two members alone, the gate
+    passes in every mode and a plain clone checks both out."""
+    env = cloning(offline, tmp_path, family)
+    with_section(holder, tmp_path, "ghost", "Members/IRRS",
+                 "/nowhere/ghost.git")
+    gone(holder, env, how)
+
+    found = found_alike(holder, *MODES)
+
+    assert found == [
+        SECTION_SAID.format(path="Members/IRRS", name="ghost",
+                            url="url /nowhere/ghost.git")
+        + VARIANT.format(row_path=ROW, project="IRRS")
+        + " Take the section out by hand, in a POSIX shell, every key it "
+        "holds, so a submodule later given its name inherits none of them, "
+        + put_back_said(how) + "then commit .gitmodules:"
+        + lines_of(GONE[how][1], *removal("ghost", "path", "url"))]
+    typed_in_order(holder, env, validate(holder, "--no-members"))
+    staged_and_committed(holder, env, "Typed in order")
+    assert raw(holder, env, "status", "--porcelain").stdout == b""
+    assert head_paths(holder, env) == {ROW, OTHER_ROW}
+    ends_well(holder, env, family, tmp_path)
+
+
+@pytest.mark.parametrize("how", GONE)
+def test_1036_a_hand_mount_s_section_under_its_plain_git_rm_prints_nothing(
+        family, holder, offline, tmp_path, how):
+    """#1036 where the hand mount's plain `git rm` takes the section out: a
+    member mounted by hand with its checkout and its section, committed,
+    then the work tree's `.gitmodules` deleted or its deletion staged. The
+    section, which the file git reads gives, is named now, as with the file
+    on disk, and prints no command: the hand mount's text puts that file
+    back first and its `git rm` takes the section out of it (#936). Typed in
+    order and committed, nothing is left, HEAD's `.gitmodules` gives the two
+    members alone, the gate passes in every mode and a plain clone checks
+    both out."""
+    env = cloning(offline, tmp_path, family)
+    path = committed_with_its_checkout(holder, env, family)
+    url = index_url(holder, env, path)
+    gone(holder, env, how)
+
+    found = found_alike(holder, *MODES)
+
+    assert codes_of(found) == ["member-gitlink-unnamed",
+                               "gitmodules-path-unnamed"]
+    assert commands(mount_of(found, path))[1:3] == [GONE[how][1],
+                                                    f"git rm -- {path}"]
+    assert found[1] == (
+        SECTION_SAID.format(path=path, name=path, url=f"url {url}")
+        + SECTION_UNDER_GIT_RM.format(path=path))
+    typed_in_order(holder, env, validate(holder, "--no-members"))
+    commit_all(holder, env, "Typed in order")
+    assert raw(holder, env, "status", "--porcelain").stdout == b""
+    assert head_paths(holder, env) == {ROW, OTHER_ROW}
+    ends_well(holder, env, family, tmp_path)
+
+
+def test_1036_control_a_value_git_dies_on_keeps_what_it_read(
+        family, holder, offline, tmp_path):
+    """#1036's control: `update = None` committed in IRSS's section, a value
+    git dies on, then IRQS's gitlink staged over a directory holding a file,
+    its section staged in the index's `.gitmodules` alone, and the work
+    tree's file deleted. The value's lines put HEAD's file back and stage
+    it, which drops that section, so `gitmodules-path-unnamed` reads nothing
+    from the file git reads there, as before: its `--unset-all` of a key the
+    file put back does not hold exited 5. Typed in order, what is on disk
+    deleted as the text says, then staged and committed as the value's
+    finding says, nothing is left, the gate passes in every mode and a
+    plain clone checks both out."""
+    env = cloning(offline, tmp_path, family)
+    value_committed(holder, env, OTHER_ROW)
+    path = staged_by_hand(holding_a_file)(holder, env, family)
+    data = (holder / ".gitmodules").read_bytes() + (
+        f'[submodule "{path}"]\n\tpath = {path}\n'
+        f"\turl = https://github.com/InkRouter/{SPARE}.git\n").encode()
+    blob = raw(holder, env, "hash-object", "-w", "--stdin",
+               stdin=data).stdout.decode("ascii").strip()
+    raw(holder, env, "update-index", "--cacheinfo",
+        f"100644,{blob},.gitmodules")
+    gone(holder, env, "deleted")
+
+    found = found_alike(holder, *MODES)
+
+    assert codes_of(found) == ["gitmodules-value-refused",
+                               "member-gitlink-unnamed"]
+    typed_around(holder, env, found, lambda: deleted(holder / path))
+    staged_and_committed(holder, env, "Typed in order")
+    assert raw(holder, env, "status", "--porcelain").stdout == b""
+    assert head_paths(holder, env) == {ROW, OTHER_ROW}
+    ends_well(holder, env, family, tmp_path)
