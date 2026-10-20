@@ -77,7 +77,7 @@ from test_update_shape_partial_rollback import (  # noqa: F401
 )
 
 sys.path.insert(0, str(REPO / "scripts"))
-from repo_shape import Refusal, parse_yaml  # noqa: E402
+from repo_shape import Refusal, YamlError, parse_yaml  # noqa: E402
 
 UPDATE = REPO / "update-shape.py"
 
@@ -179,8 +179,8 @@ def test_a_shape_header_the_reader_takes_is_found_and_kept(
                          ids=["quoted-first", "quoted-last"])
 def test_a_quoted_shape_header_beside_a_bare_one_is_the_key_written_twice(
         update_shape, quoted_first):
-    """The reader reads `"shape":` and `shape:` as ONE key written twice and
-    keeps the last block, so this finder, asking the reader's question, sees
+    """The reader reads `"shape":` and `shape:` as ONE key written twice,
+    refused since #917, so this finder, asking the reader's question, sees
     two headers and refuses by name, as #558 refuses a bare `shape:` twice.
     The bare-only finder saw one: with the bare header first it rewrote a
     block nobody reads, and the read-back blamed "this tool's line
@@ -194,7 +194,8 @@ def test_a_quoted_shape_header_beside_a_bare_one_is_the_key_written_twice(
     quoted = first if quoted_first else last
     lines[quoted] = '"shape":'
     text = "\n".join(lines) + "\n"
-    assert parse_yaml(text)["shape"]["commit"] == OLD_COMMIT
+    with pytest.raises(YamlError, match="key 'shape' is written twice"):
+        parse_yaml(text)
 
     with pytest.raises(Refusal) as caught:
         update_shape.rewrite_manifest(text, NEW_COMMIT, NEW_TREE,
@@ -203,8 +204,8 @@ def test_a_quoted_shape_header_beside_a_bare_one_is_the_key_written_twice(
     assert caught.value.code == "update-manifest-unrecognised"
     assert caught.value.detail.startswith(
         f"project.yaml holds the `shape:` key twice, at lines {first + 1} "
-        f"and {last + 1}, where exactly one was expected: the reader keeps "
-        "the last block"), caught.value.detail
+        f"and {last + 1}, where exactly one was expected: the reader "
+        "refuses a key written twice"), caught.value.detail
     assert "line rewrite" not in caught.value.detail + caught.value.remediation
 
 
