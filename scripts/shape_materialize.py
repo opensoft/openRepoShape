@@ -4618,6 +4618,38 @@ def _unmountable_reason(text: str) -> str | None:
     return None
 
 
+def refuse_an_unholdable_name(refusal: str, flag: str, name: str, *,
+                              names: str, remediation: str) -> None:
+    """`name`, typed as `flag`, is a name a Windows disk can make a folder
+    of, or this refuses it as `refusal`: before anything exists, under
+    `--dry-run` alike, and with no process started.
+
+    ONE QUESTION FOR EVERY NAME A TOOL MAKES A FOLDER OF (#989). `family.py
+    init` asked it of `--family` since #688 (`family-bad-holder-name`), and
+    the scaffold never asked it of `--project`: `--project NUL` and `Con`,
+    each one CamelCase token, which is all the naming policy asks, made the
+    three repositories, the working trees and, under `--local-remote-dir`,
+    the bare `NUL.git`, a root no Windows disk can clone. Each tool asks it
+    here now, so the two cannot part again.
+
+    THE QUESTION IS THE LEG PATH RULE'S (`_unmountable_reason`), asked of a
+    path of one segment: a Windows device name, with or without an
+    extension, in any case (`CON`, `Nul`, `com1`, `NUL.git`); a name ending
+    in a dot or a space; one of Git's own names. Each tool asks it after its
+    naming policy has said what the name may hold, so in practice a device
+    name is the answer. A device name is the WHOLE name: `Nullable` and
+    `NUL-spec` are folders Windows makes. As `refuse_bad_leg_paths` does,
+    the caller gives its own code, the flag, what the name names (`names`,
+    the sentence's middle: "which names <names>, and <reason>.") and its own
+    remediation, so each tool refuses in its own voice."""
+    reason = _unmountable_reason(name)
+    if reason:
+        raise Refusal(refusal,
+                      f"{flag} is {name!r}, which names {names}, and "
+                      f"{reason}.",
+                      remediation)
+
+
 #: The templates the rule below reads its lines from: the shape's own
 #: `templates/`, which both tools render a project from (`SHAPE_ROOT /
 #: "templates"`, and this file is `SHAPE_ROOT/scripts/`). A test points it
@@ -5187,10 +5219,11 @@ def manifest_invalid(values: dict, policy: NamingPolicy, what: dict,
     asked as the project asks it. `values` must be the complete table;
     `policy` is the naming policy the project carries a copy of. A WARNING of
     the validator (a chain link it cannot check offline) is a note and never
-    a refusal, exactly as the project's own exit code treats it. Where the
-    project's own YAML reader refuses the file before the validator can be
-    asked, each sentence is the reader's, naming the value on the line it
-    refuses (`_unread_sentences`, #708).
+    a refusal, exactly as the project's own exit code treats it, and so is
+    its `  note` (a `SHAPE_PIN_SOURCE_<LINK>` the run guard passed over,
+    #990). Where the project's own YAML reader refuses the file before the
+    validator can be asked, each sentence is the reader's, naming the value
+    on the line it refuses (`_unread_sentences`, #708).
     """
     return [sentence for _, sentence in _invalid_problems(
         values, policy, what, template_dir, ignore, not_text)]
@@ -5277,8 +5310,12 @@ def _unread_sentences(values: dict, what: dict, template_dir: Path,
 def _validator_notes(values: dict, policy: NamingPolicy, template_dir: Path,
                      ignore: tuple) -> list[str] | YamlError:
     """The FINDINGs the project's own validator makes of the `project.yaml`
-    these `values` render, less its WARNINGs and the codes in `ignore`; or
-    the `YamlError` its reader raised, where it cannot read that file."""
+    these `values` render, less its WARNINGs, its `  note`s and the codes
+    in `ignore`; or the `YamlError` its reader raised, where it cannot read
+    that file. A `  note` is no finding, as the validator's own `main`
+    counts it (#990): `_findings` returns its `link-source-collides` note
+    beside the findings, and read as one, `manifest_invalid` gave it as a
+    refusal and `manifest_judged` said None (RV1011's SHOULD-1)."""
     template = (Path(template_dir) / MANIFEST_TEMPLATE).read_text(
         encoding="utf-8")
     try:
@@ -5292,7 +5329,8 @@ def _validator_notes(values: dict, policy: NamingPolicy, template_dir: Path,
         raise _validator_unusable(
             "raised when it was asked", f"{type(exc).__name__}: {exc}"
         ) from exc
-    return [note for note in notes if not note.startswith("WARNING")
+    return [note for note in notes
+            if not note.startswith(("WARNING", "  note "))
             and _code_of(note) not in ignore]
 
 

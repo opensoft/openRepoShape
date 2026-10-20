@@ -211,8 +211,13 @@ FLAG_REFUSALS = [
                  id="id"),
     pytest.param(("--id", ""), "adopt-bad-id", "--id", id="id-empty"),
     pytest.param(("--org=-evil",), "unsafe-value", "--org", id="org"),
+    # A flag passed empty is a value passed (#902): refused by name here.
+    pytest.param(("--org", ""), "unsafe-value", "--org is ''",
+                 id="org-empty"),
     pytest.param(("--elected-on", "2026-9-2"), "election-date-malformed",
                  "--elected-on", id="elected-on"),
+    pytest.param(("--elected-on", ""), "election-date-malformed",
+                 "--elected-on ''", id="elected-on-empty"),
     pytest.param(("--reference", "ref\nx"), "adopt-unwritable-value",
                  "--reference", id="reference"),
     pytest.param(("--elected-by", "a\nb"), "adopt-unwritable-value",
@@ -423,18 +428,15 @@ def test_control_the_sources_own_name_still_reaches_the_clone(
     assert calls[0].startswith(f"repo clone {cloned} "), calls
 
 
-def test_control_an_empty_org_is_none_given_and_reaches_the_clone(harness):
-    """`--org ''` is read as no `--org` (`_planned_org`), so it is the
-    organisation of `--source` and no value refused for its text: `plan`
-    goes on to `gh repo clone`, which the stub refuses, once. Passes on
-    main as well."""
+def test_an_empty_org_is_a_value_passed_and_never_reaches_the_clone(
+        harness):
+    """`--org ''` was read as no `--org` (`_planned_org`), so it was the
+    organisation of `--source`, and `plan` went on to `gh repo clone`,
+    while `flags_given` counted it passed (L2-86 on #457). Since #902 it is
+    a value passed, refused by name with the other flags, and no `gh`
+    runs."""
     result = harness.plan(REPOSITORY, "--org", "", work=True)
-    assert result.returncode == 2, result.stdout + result.stderr
-    assert result.stderr.startswith("REFUSED source-unclonable: "), \
-        result.stderr
-    calls = harness.gh_calls()
-    assert len(calls) == 1, calls
-    assert calls[0].startswith(f"repo clone {REPOSITORY} "), calls
+    refused_first(harness, result, "unsafe-value", "--org is ''", True)
 
 
 def test_control_a_local_source_is_held_to_its_name_after_git_reads_it(

@@ -53,8 +53,8 @@ import pytest
 
 from conftest import ADOPT, git, run_script
 from test_adopt_project_is_the_source import (  # noqa: F401 - a fixture
-    PLAN, PLAN_NOT_THE_SOURCE, RENAME_FIRST, RETYPE, adopter, check, edited,
-    findings, plan, refused_before_any_remote, source_of)
+    PLAN, PLAN_NOT_THE_SOURCE, RETYPE, adopter, check, edited, findings,
+    in_place_remedy, plan, refused_before_any_remote, source_of)
 from test_adopt_relative_submodule_url import (
     HTTPS_ORIGIN, SIBLING, THING, planned as planned_with_submodule,
     source_with as source_with_submodule)
@@ -140,7 +140,7 @@ def test_check_and_execute_say_the_same_remedy_of_the_sources_own_name(
     assert [line.split(":")[0] for line in findings(checked.stderr)] == [
         f"FINDING {code}"], checked.stderr
     assert refusal.code == code
-    assert refusal.remediation == f"Remediation: {repository} {RENAME_FIRST}"
+    assert refusal.remediation == in_place_remedy(repository, code)
     # Said as `execute` says it, as a line of its own, after the findings.
     assert checked.stderr.splitlines().count(refusal.remediation) == 1, \
         checked.stderr

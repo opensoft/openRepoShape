@@ -314,6 +314,22 @@ def test_init_refuses_a_long_family_before_a_passed_bad_id(
     assert "family-bad-id" not in err
 
 
+def test_init_asks_no_length_of_a_local_run_before_a_passed_bad_id(
+        family, only_the_branch_question, capsys, tmp_path):
+    """Lane 4's SHOULD-1 on #972: under `--local-remote-dir` a bare
+    repository's name is the disk's, so a `--family` over GitHub's 100 with
+    a passed id that is no id is told the id, never `family-name-too-long`.
+    Only this branch reaches `_refuse_a_holder_name_github_cannot_hold`'s
+    own skip: `_refuse_what_github_cannot_hold` returns before it asks."""
+    err = refused_init(family, capsys, tmp_path, "--family",
+                       a_name(NAME_MAX + 1), "--id", "foo_bar",
+                       "--local-remote-dir", str(tmp_path / "remotes"))
+    assert err.startswith("REFUSED family-bad-id: --id 'foo_bar' must match"
+                          ), err
+    assert "family-name-too-long" not in err
+    assert not (tmp_path / "remotes").exists()
+
+
 def test_init_names_a_passed_id_as_passed(family, only_the_branch_question,
                                           capsys, tmp_path):
     err = refused_init(family, capsys, tmp_path, "--id", an_id(ID_MAX + 1))

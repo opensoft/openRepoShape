@@ -203,11 +203,36 @@ fi
 # forged line on stdout or stderr before this script has said a word of its
 # own, which is why the refusal below does not echo the value back. The `--`
 # below guards the argv too; this is what names the fault instead of leaving
-# a confusing git error.
-case "$SHAPE_REPO" in
--*|*[![:print:]]*) die "OPENREPOSHAPE_REPO is not a value this tool will put on a \`git clone\` command line: it starts with '-' or carries a control character. Set it to a URL or a path." ;;
-*) ;;  # a well-formed value; passed to `git clone` unchanged below.
-esac
+# a confusing git error. A value that passes goes to `git clone` unchanged.
+#
+# A CONTROL CHARACTER IS #760's, THE LAUNCHER'S RULE (#940): under
+# `LC_ALL=C`, in a subshell, `[[:cntrl:]]` or U+0080 to U+009F's two bytes
+# (`\302`, then `\200` to `\237`), so the answer is the same in every
+# locale, and the launcher, which hands this script its clone URL as
+# `$OPENREPOSHAPE_REPO`, and this script give one answer for one value. It
+# was `[![:print:]]`, which under `C` and POSIX matches every byte past
+# ASCII, so a URL or a path with a letter past ASCII
+# (`/srv/café/openRepoShape.git`) was refused there as carrying a control
+# character, where a UTF-8 locale cloned it. The trade is the launcher's
+# (#867): a byte that is not UTF-8, as a lone `0x9B` or an overlong form of
+# a control, passes, in every locale, and the clone line below prints it:
+# a terminal that reads UTF-8 draws it as a character it cannot read, and
+# only one set to an 8-bit charset acts on it.
+#
+# AND U+2028 AND U+2029, BY THEIR THREE BYTES (`\342\200`, then `\250` or
+# `\251`), which the launcher leaves to its check of the characters a
+# terminal draws as something other than themselves (#837), and which this
+# script has no copy of. They are the line and paragraph separators, which
+# end a line for a reader that keeps Unicode's line breaks, and both were
+# refused here in every locale: by `C`'s `[![:print:]]` with every byte past
+# ASCII, and by a UTF-8 locale's, as glibc counts them among its controls.
+# So they still are, in the same words, and the launcher and this script
+# still refuse them both. The rest of #837's characters (U+202E among them)
+# pass here in every locale, as they passed under a UTF-8 locale before;
+# the launcher refuses each first where it is the way in.
+if (LC_ALL=C; case "$SHAPE_REPO" in -* | *[[:cntrl:]]* | *$'\302'[$'\200'-$'\237']* | *$'\342\200'[$'\250'$'\251']*) exit 0 ;; *) exit 1 ;; esac); then
+	die "OPENREPOSHAPE_REPO is not a value this tool will put on a \`git clone\` command line: it starts with '-' or carries a control character. Set it to a URL or a path."
+fi
 
 # Mirrors `setup-project.py`'s `checked_ref`, which asks `REF_RE` and then
 # `why_not_a_ref`: a ref starts with an ASCII letter or digit, holds only ASCII
@@ -232,17 +257,20 @@ esac
 # own guard above: (1) LENGTH first, because an over-long ref would put
 # 255+ characters of noise on stderr if named; (2) a CONTROL CHARACTER next
 # - a newline in the value could forge an extra line onto stdout or stderr
-# the way the comment above OPENREPOSHAPE_REPO's guard explains. Only once
-# a ref has passed both - so it is at most 255 characters and entirely
-# printable - does (3) the shape `case` below echo it back, which is by
-# then safe to read.
+# the way the comment above OPENREPOSHAPE_REPO's guard explains, and the
+# control character is that guard's rule, with its trade (a byte that is
+# not UTF-8, as a lone `0x9B` or an overlong form of a control, passes)
+# and its two separators (#940). Only once a ref has passed both - so it
+# is at most 255 characters and holds no control character - does (3) the
+# shape `case` below echo it back, which is by then safe to read. A ref
+# with a letter past ASCII (`café`) is the shape's to refuse, in its
+# words, under `C` as under a UTF-8 locale.
 if [[ "${#SHAPE_REF}" -gt 255 ]]; then
 	die "--shape-ref is ${#SHAPE_REF} characters long; a branch, tag or commit this tool will pass to \`git checkout\` is at most 255 characters."
 fi
-case "$SHAPE_REF" in
-*[![:print:]]*) die "--shape-ref carries a control character, which is not a branch, tag or commit this tool will pass to \`git checkout\`." ;;
-*) ;;  # printable; the ref-syntax check below still has to pass.
-esac
+if (LC_ALL=C; case "$SHAPE_REF" in *[[:cntrl:]]* | *$'\302'[$'\200'-$'\237']* | *$'\342\200'[$'\250'$'\251']*) exit 0 ;; *) exit 1 ;; esac); then
+	die "--shape-ref carries a control character, which is not a branch, tag or commit this tool will pass to \`git checkout\`."
+fi
 case "$SHAPE_REF" in
 [!A-Za-z0-9]*|*..*|*/.*|*.lock|*.lock/*|*//*|*/|*.|*[!A-Za-z0-9._/-]*) die "--shape-ref is '$SHAPE_REF', which is not a branch, tag or commit this tool will pass to \`git checkout\`: a ref starts with an ASCII letter or digit, uses only ASCII letters, digits, '.', '_', '/', '-', has no '..' (git reads it as a revision range), no empty part between slashes ('//', or a '/' at the end), no part that starts with '.' or ends in '.lock' (the name git gives the lock file it writes beside a ref), and does not end in '.'." ;;
 *) ;;  # a valid ref shape; $SHAPE_REF is safe to echo back and check out.
