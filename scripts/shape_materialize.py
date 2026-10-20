@@ -1618,7 +1618,8 @@ def folder_in_the_way(path: Path) -> tuple[Path, str] | None:
     `path` and the folders above it that exists is the one that answers. A
     file there, or above it, is named, and so is a folder this user cannot
     write in (the system's own answer, `os.access`, where it has one; it
-    says yes for root, and for any folder on Windows, as `mkdir` would). A
+    says yes for root, and for any folder on Windows, where the real `mkdir`
+    can still be refused: an ACL, a quota). A
     `path` nothing stands at is asked of the folder above it.
 
     `folder_cannot_be_made` says it as one sentence, naming the folder as

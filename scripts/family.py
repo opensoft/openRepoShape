@@ -90,7 +90,7 @@ with; it never runs `git submodule add` and writes nothing of the holder's.
 question the real run asks before it creates the holder (#537): `gh repo
 view` and the commit listing, or the bare repository with
 `--local-remote-dir`. It refuses `family-remote-exists` as the real run does,
-and makes no folder, remote or repository. Both runs ask it after whether
+and creates no remote or repository. Both runs ask it after whether
 each folder `init` makes can be made and the holder written (#609), and
 before the real run makes the family folder, so a refusal leaves none: a file
 where a folder must go, or a folder this user cannot write in, is
@@ -98,6 +98,23 @@ where a folder must go, or a folder this user cannot write in, is
 Only gh's own not-found answer says the holder does not exist; any other
 `gh repo view` failure (a bad login, a rate limit, no network) is refused as
 `remote-unreadable`.
+
+`init --dry-run` LEAVES NOTHING THAT STAYS, which is not the same as making
+no folder (#921). It makes and removes temporary folders, as the real run
+does: `openreposhape-branch-*`, where git is asked whether the tracking
+branch is a name it will create, and `openreposhape-ident-*`, one for the
+author when GIT_AUTHOR_NAME, _EMAIL or _DATE is set and not empty, and one
+for the committer when a GIT_COMMITTER_ one is. Each is empty, and a removal
+that fails is not reported. It creates no remote or repository and pushes
+nothing: the only `gh` calls it makes read (`gh repo view`, the commit
+listing).
+
+WHETHER EACH FOLDER CAN BE WRITTEN IN IS THE MODE BITS' ANSWER (#923). The
+family folder or `--work-dir`, the holder in it and `--local-remote-dir` are
+asked of `os.access`, which reads the mode bits and on Windows says yes for
+every folder, and a dry run makes none of them to ask. So a quota, a Windows
+ACL or a read-only drive on Windows can pass the dry run and be refused by the
+real run.
 
 `init` ASKS GITHUB'S LIMITS FIRST, WHERE GITHUB IS (#863), as the scaffold
 and `adopt-project.py` ask theirs (#838), before `_creator_name` and before
@@ -10452,8 +10469,15 @@ def build_parser() -> argparse.ArgumentParser:
                            "--local-remote-dir) and whether <org>/<Family> "
                            "already exists (`gh repo view` and its commit "
                            "listing; with --local-remote-dir, the bare "
-                           "repository), refusing what it refuses; make no "
-                           "folder, remote or repository")
+                           "repository), refusing what it refuses. Whether "
+                           "each folder can be written in is asked of "
+                           "`os.access`, which reads the mode bits and on "
+                           "Windows says yes for every folder, so a quota, "
+                           "a Windows ACL or a read-only drive on Windows "
+                           "can pass here and be refused by the real run. "
+                           "It leaves nothing that stays: it makes and "
+                           "removes temporary folders, creates no remote or "
+                           "repository and pushes nothing")
     init.set_defaults(func=cmd_init)
 
     add = subparsers.add_parser(
