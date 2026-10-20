@@ -25,6 +25,12 @@ WHAT WAS WRONG, three lines of #459's review of #573:
   the family raised `PermissionError` for a holder with no search bit before
   any question was asked, and a folder that is only unwritable was told to
   "move what stands in the way aside".
+- #930 (#459's U129). An EXISTING EMPTY working tree or holder this user
+  cannot LIST (mode 000, 100, 200 or 300) was refused as `cannot be read:
+  Permission denied`, and told the held-tree remedy, "choose an empty
+  --work-dir. There is no --force", a cause the run cannot see: it cannot
+  tell an empty folder from a live tree there. It is told the permission
+  now, and the flag that chooses another folder.
 
 THE CURE. One question, asked by both runs before anything is made: every
 folder the run makes (`shape_materialize.folder_cannot_be_made`), each
@@ -50,6 +56,7 @@ and a name like that is a POSIX file name only (`POSIX_NAMES`).
 
 from __future__ import annotations
 
+import errno
 import os
 import stat
 import subprocess
@@ -702,14 +709,96 @@ def test_a_working_tree_this_user_cannot_write_in_is_named_last(
 
 
 def test_the_remediation_is_chosen_by_what_stands_in_the_way():
-    """`target_remediation`: the permissions sentence for the one answer
-    that says so, and the tool's own sentence, unchanged, for every other."""
+    """`target_remediation`: a permissions sentence for each of the two
+    answers that are about this user's permissions, and the tool's own
+    sentence, unchanged, for every other: a tree that holds something, a
+    file, and a path that is no folder to use (#930)."""
     pick = shape_materialize.target_remediation
     assert pick(shape_materialize.CANNOT_WRITE_IN, "holds", "--x") == (
         unwritable_remediation("--x"))
-    for why in ("is not empty", "is a file, not a folder",
-                "cannot be read: Permission denied"):
+    assert pick("cannot be read: Permission denied", "holds", "--x") == (
+        unreadable_remediation("--x"))
+    for why in ("is not empty", "is a file, not a folder", "is not a folder",
+                "cannot be used as a folder: Permission denied"):
         assert pick(why, "holds", "--x") == "holds"
+
+
+# --- #930: an EMPTY working tree this user cannot list -----------------------
+
+#: The modes #930 measured, as `(name, mode)`: none has `r`, so the folder
+#: cannot be listed, whatever its `w` and `x`, and whether it is empty
+#: cannot be asked.
+CANNOT_LIST = {"000": 0o000, "100": 0o100, "200": 0o200, "300": 0o300}
+
+
+def unreadable_remediation(flag: str) -> str:
+    """What the refusal of a working tree this user cannot list says to do
+    (#930): the permission, and that the run cannot tell whether it holds a
+    tree, not "choose an empty folder", which is about a tree that holds
+    something."""
+    return ("Remediation: nothing was created, and `--dry-run` refuses the "
+            "same. This user cannot list that folder, so whether it holds a "
+            "tree cannot be asked: give this user read, write and search "
+            f"permission on it, or choose another {flag}, and run this "
+            "again.")
+
+
+def cannot_list_says() -> str:
+    """The system's own words for listing a folder this user may not read,
+    as `target_in_the_way` quotes them: EACCES's `strerror` (L2-67)."""
+    return os.strerror(errno.EACCES)
+
+
+@pytest.mark.parametrize("dry_run", [True, False], ids=["dry-run", "real-run"])
+@pytest.mark.parametrize("mode", list(CANNOT_LIST))
+@pytest.mark.parametrize("tool", list(TREE_AT))
+def test_an_empty_working_tree_this_user_cannot_list_is_told_the_permission(
+        tmp_path, unwritable_folder, tool, mode, dry_run):
+    """#930, one row per tool and mode, by the dry run and the real run: an
+    existing EMPTY working tree (the scaffold's root, `init`'s holder under
+    `--into`) this user cannot list is refused by name before anything is
+    made, and told to give this user read, write and search permission on
+    it or to choose another folder by the flag the person met it by. On main
+    01a2b016 each was told "choose an empty --work-dir. There is no
+    --force" or `init`'s "if that IS the holder, it is already a family"."""
+    put, lands, code, flag = TREE_AT[tool]
+    tree = unwritable_folder(put, CANNOT_LIST[mode])
+    scratch_env(tmp_path)
+    before = snapshot(tmp_path)
+    result = lands(tmp_path)(dry_run=dry_run)
+    assert_refused(result, f"REFUSED {code}: {tree.resolve()} already exists "
+                           f"and cannot be read: {cannot_list_says()}")
+    assert remediation_line(result) == unreadable_remediation(flag)
+    assert HOLDS_REMEDIATION[tool] not in result.stderr
+    assert snapshot(tmp_path) == before, "the run made something"
+    assert not list(tmp_path.rglob("*.git")), "a remote was made"
+
+
+@pytest.mark.parametrize("dry_run", [True, False], ids=["dry-run", "real-run"])
+def test_an_unlistable_holder_under_work_dir_says_to_choose_another_work_dir(
+        tmp_path, unwritable_folder, dry_run):
+    """The remediation names the flag the person landed by, as L2-60's
+    does: with `--work-dir` there is no family folder."""
+    tree = unwritable_folder("wd/Orbit", CANNOT_LIST["300"])
+    result = init_in(tmp_path, "--work-dir", "wd")(dry_run=dry_run)
+    assert_refused(result, f"REFUSED family-target-exists: {tree.resolve()} "
+                           "already exists and cannot be read: "
+                           f"{cannot_list_says()}")
+    assert remediation_line(result) == unreadable_remediation("--work-dir")
+
+
+def test_a_working_tree_this_user_cannot_list_is_said_to_be_unread(
+        unwritable_folder):
+    """`target_in_the_way`: a folder with no `r` is `cannot be read`, in the
+    system's words, whether it holds anything or not, because listing it is
+    the question that fails; `target_remediation` keys on those words."""
+    ask = shape_materialize.target_in_the_way
+    for name, mode in CANNOT_LIST.items():
+        for holding in (None, "f"):
+            folder = unwritable_folder(f"{name}-{holding}", mode,
+                                       holding=holding)
+            assert ask(folder) == (f"{shape_materialize.CANNOT_READ}: "
+                                   f"{cannot_list_says()}")
 
 
 # --- L2-35, and the scaffold's own: a refused real run leaves no folder -------

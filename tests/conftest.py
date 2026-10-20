@@ -10,9 +10,11 @@ AND THAT IS ENFORCED, NOT HOPED FOR (#296). A session fixture at the end of
 this file puts a GUARD `gh` (`tests/gh_guard.py`) first on PATH for every
 child of every test: it answers the two questions the doctor's `machine` row
 and the installed command's machine report ask -- `gh --version` and `gh
-auth status` -- as an installed `gh` with no login, and refuses and logs
-anything else, and a check after each test fails that test by name if the
-guard refused one of its calls. A test that means to run `gh` puts a stub
+auth status` -- as an installed `gh` with no login, and one more, which
+`adopt-project.py check` asks of each leg repository (#798), `gh repo view
+<owner>/<name> --json nameWithOwner`, as a `gh` with no login does; it refuses
+and logs anything else, and a check after each test fails that test by name if
+the guard refused one of its calls. A test that means to run `gh` puts a stub
 of its own ahead of the guard, as the existing ones do.
 
 The scaffold and the recursive clone happen ONCE per session because they are
@@ -2540,3 +2542,108 @@ def assert_the_refusal_states_the_ref_rule(said: str, opening: str) -> None:
     goes on to `REF_RULE_WORDS`, the whole rule it applied."""
     assert opening in said, said
     assert REF_RULE_WORDS in said, said
+
+
+# --- a control character in a repository or a ref, in the shell copies (#940)
+
+#: What a check for a control character says of a value: it takes it, and
+#: hands it to the check after it, or it refuses it as a control character.
+#: A third answer is a code point, `U+XXXX`, which `misdrawn_characters`
+#: names where it refuses the value first (#837).
+TAKEN = "taken"
+CONTROL = "a control character"
+
+#: How a value with a letter past ASCII ends, the row of the table a person
+#: meets: a mirror at `/srv/café/...`, a ref named after one (#940).
+A_LETTER_PAST_ASCII = "caf" + chr(0xE9)
+
+#: THE TABLE the seven checks for a control character in a repository or a
+#: ref are held to, one answer each, under `C` and `C.UTF-8` alike (#940):
+#: `openRepoShape`'s `checked_repo` and `ref_character_fault`, `setup.sh`'s
+#: guards on `$OPENREPOSHAPE_REPO` and `--shape-ref`, and `install.sh`'s
+#: `checked_repo`, `checked_version` and option check
+#: (`tests/test_openreposhape_command.py`, `tests/test_setup_sh.py` and
+#: `tests/test_install_sh.py` read it). Each is #760's rule, the one the
+#: launcher holds `$OPENREPOSHAPE_BIN_DIR` to: under `LC_ALL=C`,
+#: `[[:cntrl:]]` or U+0080 to U+009F's two bytes. Each row is how a value
+#: ends, and what the checks say of it:
+#:   * `TAKEN`: an e with an acute accent, which `[![:print:]]` refused
+#:     under `C` as a control character, so a URL, a path or a ref with a
+#:     letter past ASCII was refused there and taken under `C.UTF-8`; a
+#:     lone `0x9B` byte, which is not UTF-8 and which a UTF-8 locale's
+#:     `[![:print:]]` refused too, the trade #867 made for the directory
+#:     (a terminal that reads UTF-8 draws it as a character it cannot
+#:     read); a lone `0xE9` byte, Latin-1's e with an acute accent; and an
+#:     escape in an overlong form (`0xC0 0x9B`), no UTF-8 either and the
+#:     same trade, as is every overlong form of a control;
+#:   * `CONTROL`: an escape, U+009B, DEL, a tab, U+0085, the first and the
+#:     last C1 control, so that an arm that stops one short at either end
+#:     is caught, a newline at the end, and a lone `0xE9` byte before
+#:     U+009B, which makes a UTF-8 locale's `[[:cntrl:]]` match byte by
+#:     byte and miss the control (as `C1_BIN_DIRS` has it);
+#:   * a code point: U+202E and U+200B, which no control check matches in
+#:     any locale, and U+2028 and U+2029, which a UTF-8 locale's
+#:     `[[:cntrl:]]` matched, each refused first by the launcher and
+#:     `install.sh`, by its code point (#837). `setup.sh` has no such
+#:     check: it refuses the two separators as control characters, by
+#:     their bytes, as it did in every locale before (`SEPARATORS`), and
+#:     reads no other such row.
+#: A lone byte is spelled as Python hands one to a child: a surrogate that
+#: `surrogateescape` turns back into the byte. A refused value ends in
+#: `forged`, or in a newline after it, which no refusal may echo.
+CONTROL_RULE = [pytest.param(end, said, id=name) for name, end, said in (
+    ("an-e-acute", A_LETTER_PAST_ASCII, TAKEN),
+    ("a-lone-0x9b-byte", "a" + chr(0xDC9B) + "b", TAKEN),
+    ("a-lone-0xe9-byte", "caf" + chr(0xDCE9), TAKEN),
+    ("an-overlong-escape", "a" + chr(0xDCC0) + chr(0xDC9B) + "b", TAKEN),
+    ("an-escape", "a" + chr(0x1B) + "[31mforged", CONTROL),
+    ("u+009b", "a" + chr(0x9B) + "31mforged", CONTROL),
+    ("a-delete", "a" + chr(0x7F) + "forged", CONTROL),
+    ("a-tab", "a" + chr(0x09) + "forged", CONTROL),
+    ("u+0085", "a" + chr(0x85) + "forged", CONTROL),
+    ("u+0080", "a" + chr(0x80) + "forged", CONTROL),
+    ("u+009f", "a" + chr(0x9F) + "forged", CONTROL),
+    ("a-newline-at-the-end", "forged" + chr(0x0A), CONTROL),
+    ("a-lone-0xe9-byte-then-u+009b",
+     "caf" + chr(0xDCE9) + chr(0x9B) + "31mforged", CONTROL),
+    ("u+202e", "a" + chr(0x202E) + "forged", "U+202E"),
+    ("u+200b", "a" + chr(0x200B) + "forged", "U+200B"),
+    ("u+2028", "a" + chr(0x2028) + "forged", "U+2028"),
+    ("u+2029", "a" + chr(0x2029) + "forged", "U+2029"),
+)]
+
+#: The line and paragraph separators, which `setup.sh` refuses as control
+#: characters where the launcher and `install.sh` name them (#940).
+SEPARATORS = ("U+2028", "U+2029")
+
+#: A repository the launcher's `checked_repo` and `setup.sh`'s guard both
+#: refuse for its leading `-`, in the words they refuse a control character
+#: in: a URL, which the launcher hands a clone as it is (`shape_clone_url`),
+#: so the `-` is still first there.
+REPO_WITH_A_LEADING_DASH = "-forged://acme/r"
+
+
+def the_rules_answer(stderr: str, took: bool) -> str:
+    """What a check answered (#940): `TAKEN` where the run `took` the value
+    on to the check after it, else `CONTROL` where the refusal says it
+    carries a control character, else the code points the refusal names
+    (#837), else the refusal itself, which the table has no answer for."""
+    if took:
+        return TAKEN
+    words = " ".join(stderr.split())
+    named = re.search(r"draws as something other than itself \(([^)]*)\)",
+                      words)
+    if named:
+        return named.group(1)
+    if "carries a control character" in words:
+        return CONTROL
+    return words
+
+
+def assert_a_copy_answers_as_the_rule_does(copy: str, end: str, said: str,
+                                           answered: str) -> None:
+    """THE ONE ANSWER (#940): the check `copy` says of a value that ends in
+    `end` what `CONTROL_RULE` says of it."""
+    assert answered == said, (
+        f"{copy} answers {answered!r} for a value that ends in {end!r}, and "
+        f"the table says {said!r}")
