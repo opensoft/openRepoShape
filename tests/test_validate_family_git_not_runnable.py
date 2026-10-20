@@ -36,11 +36,12 @@ nameless `OSError` whose `winerror` is 193, with the words, the remedy and
 the exit of a missing git; here each copy's own script is run with git
 raising it, as Windows would. So it is with the rest of Windows' nameless
 failures to start a program (#1040): 216, a `git.exe` built for another
-architecture, 1260, one a policy blocks, and the rest of 193's `ENOEXEC`
-family, 11 and 188 to 202. Each is a plain `OSError` (`PC/errmap.h`), each
-copy counts each, and each script is run with git raising 216 too. A
-nameless `[WinError 267]`, a `cwd` that is not a folder, still passes
-through.
+architecture, 1260 and 4551, one a policy blocks, and the rest of 193's
+`ENOEXEC` family, 11 and 188 to 202. Each is a plain `OSError`
+(`PC/errmap.h`), each copy counts each, and each script is run with git
+raising 216 too. The set is exact: a nameless `[WinError 267]`, a `cwd`
+that is not a folder, still passes through, and so do a nameless
+`[WinError 87]` and `[WinError 8]`, which say nothing of git (RV1062's S2).
 
 THE REST RUNS THE HOLDER'S OWN VALIDATOR IN THIS PROCESS, with git failing
 at one of the three calls that are still wrapped (the gitlink, the pinned
@@ -72,7 +73,7 @@ from test_validate_pins_without_git import (CANNOT_EXECUTE, NO_FILE_NAMED,
                                             NOT_EXECUTABLE_NO_FILE_NAMED,
                                             NOT_GIT, WIN_ERROR_193,
                                             WIN_ERROR_216, WIN_ERROR_1260,
-                                            win_error)
+                                            WIN_ERROR_4551, win_error)
 from test_validate_pins_without_git import REMEDIATION as PINS_REMEDIATION
 
 FAMILY_TEMPLATE = (REPO / "templates" / "family-root" / "scripts" /
@@ -115,8 +116,8 @@ def win_error_193_naming(path: Path) -> OSError:
 
 #: The errors git raises when it will not start, each named `git` or naming
 #: nothing (`tests/test_validate_pins_without_git.py`'s): every copy counts
-#: them, Windows' `[WinError 193]` too (#1001), and its `[WinError 216]` and
-#: `[WinError 1260]` (#1040).
+#: them, Windows' `[WinError 193]` too (#1001), and its `[WinError 216]`,
+#: `[WinError 1260]` and `[WinError 4551]` (#1040).
 WILL_NOT_START = {
     "no-git": NO_GIT,
     "git-not-executable": NOT_EXECUTABLE,
@@ -126,6 +127,7 @@ WILL_NOT_START = {
     "winerror-193": WIN_ERROR_193,
     "winerror-216": WIN_ERROR_216,
     "winerror-1260": WIN_ERROR_1260,
+    "winerror-4551": WIN_ERROR_4551,
 }
 
 #: What Windows says of a program it cannot run, for most of `NOT_LOADABLE`.
@@ -154,10 +156,11 @@ NOT_LOADABLE = {
 }
 
 #: The errors that are not a git that will not start, each built from a
-#: root: `validate-pins.py`'s `NOT_GIT`, a nameless `[WinError 267]` among
-#: them (#1040), the member's checkout git could not enter, which
-#: `subprocess` names in `filename`, as #928 names it, and a `[WinError 193]`
-#: that names it.
+#: root: `validate-pins.py`'s `NOT_GIT`, a nameless `[WinError 267]`,
+#: `[WinError 87]` and `[WinError 8]` among them (#1040; the last two hold
+#: the set exact, RV1062's S2), the member's checkout git could not enter,
+#: which `subprocess` names in `filename`, as #928 names it, and a
+#: `[WinError 193]` that names it.
 NOT_GITS = {
     **NOT_GIT,
     "member-checkout-not-entered": lambda root: PermissionError(

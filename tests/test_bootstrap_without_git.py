@@ -22,9 +22,10 @@ as `validate-pins.py` reads it: `filename` `git`, or none on a
 them, or on an `OSError` whose `winerror` says Windows could not start the
 program itself: 193, a `git.exe` it cannot execute (#1001), the rest of
 193's `ENOEXEC` family (11, 188 to 202), 216, one built for another
-architecture, and 1260, one a policy blocks (#1040). An error naming a
-directory goes on as it did, and so does a nameless `[WinError 267]`, a
-`cwd` that is not a folder.
+architecture, and 1260 and 4551, one a policy blocks (#1040). An error
+naming a directory goes on as it did, and so does a nameless `[WinError
+267]`, a `cwd` that is not a folder, and any other `winerror`, such as 87
+or 8 (RV1062's S2).
 
 The end-to-end runs are a person's: a scaffold's recursive clone, a plain
 clone, and a family holder, each run with no git on `PATH`. The rule's other
@@ -43,7 +44,8 @@ from conftest import (PROJECT, REPO, clone_just_pushed, load_without_bytecode,
                       run_script)
 from test_family import family, holder  # noqa: F401
 from test_validate_pins_without_git import (WIN_ERROR_193, WIN_ERROR_216,
-                                            WIN_ERROR_1260, win_error)
+                                            WIN_ERROR_1260, WIN_ERROR_4551,
+                                            win_error)
 
 #: What `subprocess` says when there is no git to start, here.
 NO_GIT = ("The system cannot find the file specified" if os.name == "nt"
@@ -222,9 +224,10 @@ def made_of(module, error: OSError):
     WIN_ERROR_193,
     WIN_ERROR_216,
     WIN_ERROR_1260,
+    WIN_ERROR_4551,
 ], ids=["no git", "git not executable", "git no program", "windows",
         "windows winerror 193", "windows winerror 216",
-        "windows winerror 1260"])
+        "windows winerror 1260", "windows winerror 4551"])
 def test_each_way_git_cannot_start_is_git_not_runnable(root_module, error):
     made = made_of(root_module, error)
     assert made.code == "git-not-runnable", made
@@ -239,7 +242,11 @@ def test_each_way_git_cannot_start_is_git_not_runnable(root_module, error):
     PermissionError(errno.EACCES, "Permission denied", "/a/leg"),
     OSError(errno.EIO, "Input/output error"),
     win_error(267, errno.ENOTDIR, "The directory name is invalid"),
+    win_error(87, errno.EINVAL, "The parameter is incorrect"),
+    win_error(8, errno.ENOMEM, "Not enough memory resources are available "
+              "to process this command"),
 ], ids=["a directory not there", "a directory not entered", "nameless",
-        "nameless windows winerror 267"])
+        "nameless windows winerror 267", "nameless windows winerror 87",
+        "nameless windows winerror 8"])
 def test_an_error_that_is_not_gits_goes_on_as_it_did(root_module, error):
     assert made_of(root_module, error) is error

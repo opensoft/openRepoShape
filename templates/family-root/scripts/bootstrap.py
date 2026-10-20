@@ -792,14 +792,15 @@ def git_not_started(exc: OSError) -> Refusal | None:
     on an `OSError` whose `winerror` says Windows could not start the
     program itself: 193, a `git.exe` it cannot execute (#1001), the rest of
     193's `ENOEXEC` family (11, 188 to 202), 216, one built for another
-    architecture, and 1260, one a policy blocks (#1040). One naming a
-    directory is not git's, nor is a nameless `[WinError 267]`, a `cwd`
-    that is not a folder. The code, and the remedy's first sentence, are
-    `validate-family.py`'s."""
+    architecture, 1260, one AppLocker or a software restriction policy
+    blocks, and 4551, one App Control for Business blocks (#1040). One
+    naming a directory is not git's, nor is a nameless `[WinError 267]`, a
+    `cwd` that is not a folder, nor any other `winerror`. The code, and the
+    remedy's first sentence, are `validate-family.py`'s."""
     nameless = (exc.filename is None
                 and (isinstance(exc, (FileNotFoundError, PermissionError))
                      or getattr(exc, "winerror", None)
-                     in (11, *range(188, 203), 216, 1260)))
+                     in (11, *range(188, 203), 216, 1260, 4551)))
     if exc.filename != "git" and not nameless:
         return None
     return Refusal(

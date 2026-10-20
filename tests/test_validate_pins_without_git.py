@@ -22,10 +22,10 @@ a binary for another architecture or a script with no shebang), a
 `CreateProcess` failures carry none), and an `OSError` that names none whose
 `winerror` says Windows could not start the program itself: 193, a `git.exe`
 it cannot execute (#1001), the rest of 193's `ENOEXEC` family, 11 and 188 to
-202, 216, one built for another architecture, and 1260, one a policy blocks
-(#1040). `subprocess` raises the same two classes when the directory it was to
-run git in cannot be entered, and names that directory in `filename`; a
-program that will not start names `git`.
+202, 216, one built for another architecture, and 1260 and 4551, one a policy
+blocks (#1040); no other `winerror`. `subprocess` raises the same two classes
+when the directory it was to run git in cannot be entered, and names that
+directory in `filename`; a program that will not start names `git`.
 
 THE ROOT'S OWN VALIDATOR, RUN IN THIS PROCESS, with git failing as a missing
 program does, and no PATH changed for anything else, so each test means the
@@ -111,6 +111,14 @@ WIN_ERROR_1260 = win_error(
     1260, errno.EINVAL,
     "This program is blocked by group policy. For more information, contact "
     "your system administrator")
+#: A `git.exe` that App Control for Business (WDAC) or Smart App Control
+#: blocks (`ERROR_SYSTEM_INTEGRITY_POLICY_VIOLATION`, RV1062's S1): no
+#: case in `PC/errmap.h` either, so `EINVAL`, a plain `OSError`. CPython
+#: 3.12.10 raised exactly this from `_winapi.CreateProcess` (ROCm/TheRock
+#: issue 2607), naming no file. It counts by its `winerror` (#1040).
+WIN_ERROR_4551 = win_error(
+    4551, errno.EINVAL,
+    "An Application Control policy has blocked this file")
 
 #: The run options. The validator has one mode of work and these three
 #: spellings of asking it: plain, without the `ok` notes, and with a source
@@ -244,10 +252,10 @@ def test_each_call_is_picked_by_its_subcommand_wherever_it_sits(before):
 @pytest.mark.parametrize(
     "error", [NO_GIT, NOT_EXECUTABLE, CANNOT_EXECUTE, NO_FILE_NAMED,
               NOT_EXECUTABLE_NO_FILE_NAMED, WIN_ERROR_193, WIN_ERROR_216,
-              WIN_ERROR_1260],
+              WIN_ERROR_1260, WIN_ERROR_4551],
     ids=["no-git", "git-not-executable", "git-cannot-execute",
          "no-file-named", "not-executable-no-file-named", "winerror-193",
-         "winerror-216", "winerror-1260"])
+         "winerror-216", "winerror-1260", "winerror-4551"])
 def test_no_git_at_all_is_one_refusal_in_every_run(
         validator, project, monkeypatch, capsys, extra, error):
     """A SCAFFOLDED ROOT AND NO GIT: the first check to run git is the first
@@ -372,8 +380,12 @@ def test_with_git_running_the_same_root_says_pins_ok(
 #: says Windows could not start git, as `WIN_ERROR_193`'s does). Among them
 #: is one Windows raises itself, `[WinError 267]` (`ERROR_DIRECTORY`), for a
 #: `cwd` that is not a folder: a `NotADirectoryError` (`PC/errmap.h` maps it
-#: to `ENOTDIR`) that names nothing either (#1040). Built in the test, which
-#: knows the paths.
+#: to `ENOTDIR`) that names nothing either (#1040). And two more that hold
+#: the set exact (RV1062's S2): `[WinError 87]` (`ERROR_INVALID_PARAMETER`,
+#: `EINVAL`, the class 216, 1260 and 4551 arrive in) and `[WinError 8]`
+#: (`ERROR_NOT_ENOUGH_MEMORY`, `ENOMEM`), nameless `CreateProcess` failures
+#: that say nothing of git, so a rule that counted any nameless `winerror`
+#: but 267 would count them. Built in the test, which knows the paths.
 NOT_GIT = {
     "unreadable-directory": lambda root: PermissionError(
         errno.EACCES, "Permission denied", str(root / "spec")),
@@ -390,6 +402,12 @@ NOT_GIT = {
         errno.ENOEXEC, "Exec format error", str(root / "spec")),
     "winerror-267": lambda root: win_error(267, errno.ENOTDIR,
                                            "The directory name is invalid"),
+    "winerror-87": lambda root: win_error(87, errno.EINVAL,
+                                          "The parameter is incorrect"),
+    "winerror-8": lambda root: win_error(
+        8, errno.ENOMEM,
+        "Not enough memory resources are available to process this "
+        "command"),
 }
 
 

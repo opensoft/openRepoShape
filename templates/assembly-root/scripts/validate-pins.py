@@ -807,10 +807,12 @@ def _git_runs(unread: str) -> Iterator[None]:
     the directory, and a `git.exe` it cannot execute is `[WinError 193]`
     (#1001), which is neither class. Nor are the rest of 193's `ENOEXEC`
     family, 11 and 188 to 202, `[WinError 216]`, a `git.exe` built for
-    another architecture, and `[WinError 1260]`, one a policy blocks, each
-    of which says git could not be started too (#1040). A nameless
-    `[WinError 267]`, a `cwd` that is not a folder, says nothing of the
-    kind, and passes through.
+    another architecture, `[WinError 1260]`, one AppLocker or a software
+    restriction policy blocks, and `[WinError 4551]`, one App Control for
+    Business blocks, each of which says git could not be started too
+    (#1040). A nameless `[WinError 267]`, a `cwd` that is not a folder,
+    says nothing of the kind, and passes through, as does any other
+    `winerror`.
 
     `recorded_gitlink`'s `except Refusal` is not in the way: an `OSError` is
     no `Refusal`, so a missing git reaches here instead of reading as "no
@@ -822,7 +824,7 @@ def _git_runs(unread: str) -> Iterator[None]:
         nameless = (exc.filename is None
                     and (isinstance(exc, (FileNotFoundError, PermissionError))
                          or getattr(exc, "winerror", None)
-                         in (11, *range(188, 203), 216, 1260)))
+                         in (11, *range(188, 203), 216, 1260, 4551)))
         if exc.filename != "git" and not nameless:
             raise
         raise Refusal(
