@@ -534,14 +534,17 @@ def test_the_branch_is_spelled_in_the_lines_that_name_it(root):
 
 
 def test_the_branch_and_its_upstream_are_spelled_in_the_move_back(root):
-    """The line that moves a branch back names the branch, its upstream and
-    a command with both in it; each is spelled (#391). The state is built
-    by hand: a commit past the pin, a remote-tracking ref at it, the branch
-    tracking that ref, and the leg detached at the pin. Named with the byte
-    0xff since #715, as the test above is, and read from `tracking_branch:`;
-    the line is asked as the escape it must print, not as `spelled` makes
-    it. Its upstream is read as the system decodes it since #824 (#710), and
-    HEAD is read here as bytes, which git's answer is."""
+    """The line that moves a branch back names the branch and its upstream,
+    and holds a command with both in it. Each is spelled where the line
+    names it (#391); the command is not spelled: `_paste_word` words each
+    for a shell (#932), and a byte that is not UTF-8 is a `printf` that
+    prints it again. The state is built by hand: a commit past the pin, a
+    remote-tracking ref at it, the branch tracking that ref, and the leg
+    detached at the pin. Named with the byte 0xff since #715, as the test
+    above is, and read from `tracking_branch:`; the line is asked as the
+    escape it must print, not as `spelled` makes it. Its upstream is read
+    as the system decodes it since #824 (#710), and HEAD is read here as
+    bytes, which git's answer is."""
     needs_a_byte_name(root.parent)
     manifest = root / "project.yaml"
     text = manifest.read_bytes()

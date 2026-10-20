@@ -2036,13 +2036,14 @@ def free_plan_secrets_note(org: str, root: str,
     - Unread: `ROOT_VISIBILITY_UNREAD`, and the plan is not asked: that NOTE
       names both conditions, so it holds whatever the plan is.
     - Public: None. An organisation secret reaches it on every plan.
-    - Private or internal: the plan is asked. On `free` it is
-      `FREE_PLAN_HINT`, with `root` alone as the repository that is private,
-      as the scaffold and adopt name it since #602 and `family.py init` since
-      #660; where the plan is unread, `FREE_PLAN_UNREAD`, or for an internal
+    - Private or internal: the plan is asked. On `free` it is `FREE_PLAN_HINT`,
+      with `root` alone as the repository that is private, as the scaffold and
+      adopt name it since #602 and `family.py init` since #660, and for an
+      internal root saying it is internal, which the hint treats as private
+      (#994); where the plan is unread, `FREE_PLAN_UNREAD`, or for an internal
       root `FREE_PLAN_UNREAD_INTERNAL`, which says the plan cannot be what
-      makes the hint apply to it (#913); on any other plan, and where the
-      owner is not an organisation, None.
+      makes the hint apply to it (#913); on any other plan, and where the owner
+      is not an organisation, None.
 
     The scaffold passes the run's visibility for a root it created and
     GitHub's for one it reused, adopt GitHub's for the root it adopted, and
@@ -2055,7 +2056,17 @@ def free_plan_secrets_note(org: str, root: str,
         return None
     plan = organisation_plan(org)
     if plan == "free":
-        return FREE_PLAN_HINT.format(org=org, repo=root, what=f"{root} is")
+        # GitHub gives internal visibility only to an organisation an
+        # enterprise account owns, which is not on Free (see
+        # `FREE_PLAN_UNREAD_INTERNAL`), so an internal root on a plan read as
+        # `free` should not arise. If it does, the hint holds of it as of a
+        # private one (an organisation secret is delivered only to a public
+        # repository), but `FREE_PLAN_HINT` reads "{what} private, so ...",
+        # so `what` says the root is internal rather than calling it private
+        # (#994); `repo_shape.py`'s pinned text is not touched.
+        what = (f"{root} is internal, which this hint treats as"
+                if visibility == "internal" else f"{root} is")
+        return FREE_PLAN_HINT.format(org=org, repo=root, what=what)
     if plan is None and visibility == "internal":
         return FREE_PLAN_UNREAD_INTERNAL.format(org=org, root=root)
     if plan is None:
@@ -5219,10 +5230,11 @@ def manifest_invalid(values: dict, policy: NamingPolicy, what: dict,
     asked as the project asks it. `values` must be the complete table;
     `policy` is the naming policy the project carries a copy of. A WARNING of
     the validator (a chain link it cannot check offline) is a note and never
-    a refusal, exactly as the project's own exit code treats it. Where the
-    project's own YAML reader refuses the file before the validator can be
-    asked, each sentence is the reader's, naming the value on the line it
-    refuses (`_unread_sentences`, #708).
+    a refusal, exactly as the project's own exit code treats it, and so is
+    its `  note` (a `SHAPE_PIN_SOURCE_<LINK>` the run guard passed over,
+    #990). Where the project's own YAML reader refuses the file before the
+    validator can be asked, each sentence is the reader's, naming the value
+    on the line it refuses (`_unread_sentences`, #708).
     """
     return [sentence for _, sentence in _invalid_problems(
         values, policy, what, template_dir, ignore, not_text)]
@@ -5309,8 +5321,12 @@ def _unread_sentences(values: dict, what: dict, template_dir: Path,
 def _validator_notes(values: dict, policy: NamingPolicy, template_dir: Path,
                      ignore: tuple) -> list[str] | YamlError:
     """The FINDINGs the project's own validator makes of the `project.yaml`
-    these `values` render, less its WARNINGs and the codes in `ignore`; or
-    the `YamlError` its reader raised, where it cannot read that file."""
+    these `values` render, less its WARNINGs, its `  note`s and the codes
+    in `ignore`; or the `YamlError` its reader raised, where it cannot read
+    that file. A `  note` is no finding, as the validator's own `main`
+    counts it (#990): `_findings` returns its `link-source-collides` note
+    beside the findings, and read as one, `manifest_invalid` gave it as a
+    refusal and `manifest_judged` said None (RV1011's SHOULD-1)."""
     template = (Path(template_dir) / MANIFEST_TEMPLATE).read_text(
         encoding="utf-8")
     try:
@@ -5324,7 +5340,8 @@ def _validator_notes(values: dict, policy: NamingPolicy, template_dir: Path,
         raise _validator_unusable(
             "raised when it was asked", f"{type(exc).__name__}: {exc}"
         ) from exc
-    return [note for note in notes if not note.startswith("WARNING")
+    return [note for note in notes
+            if not note.startswith(("WARNING", "  note "))
             and _code_of(note) not in ignore]
 
 

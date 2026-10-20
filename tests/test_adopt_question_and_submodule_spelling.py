@@ -161,9 +161,11 @@ def test_a_question_holding_a_byte_that_is_not_utf8_is_spelled_as_a_path_is(
 def test_a_backtick_and_a_backslash_beside_a_line_feed_are_escaped(adopter):
     """The spelling reads one way only, and the backticks that wrap it still
     delimit it: a question that says `\\n` and one that holds a line feed are
-    not the same text."""
+    not the same text. A backtick is `\\x60`, which holds no backtick
+    (#900)."""
     [finding] = asked(adopter, "A `tick`, a \\n and\n a line feed")
-    assert finding == f"{ASKED}`A \\`tick\\`, a \\\\n and\\n a line feed`"
+    assert finding == (
+        f"{ASKED}`A \\x60tick\\x60, a \\\\n and\\n a line feed`")
 
 
 def test_every_unsafe_character_at_once_is_one_spelled_question(adopter):
@@ -298,9 +300,10 @@ def test_a_name_git_ignores_is_still_not_a_finding(adopter):
 # --- the submodule's name: what is not -------------------------------------
 
 #: Names `_spelled` leaves as they are: the finding keeps git's single
-#: quotes and reads byte for byte as it did.
+#: quotes and reads byte for byte as it did. A double quote left them in
+#: #900, which spells it `\\"`, as the plan does.
 UNCHANGED_NAMES = ["b", "my dep", "a.b", "vendor/b-c_d", "café", "名前",
-                   "it's", 'say "hi"']
+                   "it's"]
 
 
 @pytest.mark.parametrize("name", UNCHANGED_NAMES)
@@ -311,13 +314,15 @@ def test_a_printable_name_keeps_gits_quotes(adopter, name, var):
 
 
 @pytest.mark.parametrize("name, spelled", [
-    ("b`x", "`submodule.b\\`x.update`"),
+    ("b`x", "`submodule.b\\x60x.update`"),
     ("b\\x", "`submodule.b\\\\x.update`"),
-], ids=["a-backtick", "a-backslash"])
+    ('say "hi"', '`submodule.say \\"hi\\".update`'),
+], ids=["a-backtick", "a-backslash", "a-double-quote"])
 def test_a_backtick_or_a_backslash_in_the_name_is_spelled_as_a_path_is(
         adopter, name, spelled):
-    """The one printable name whose finding changes, because `_spelled`
-    writes a backslash and a backtick with a backslash, as `_refused_value`
+    """The printable names whose finding changes, because `_spelled` writes
+    a backslash, a backtick and a double quote with a backslash -- `\\\\`,
+    `\\x60` and `\\"`, as the plan does (#900) -- as `_refused_value`
     already does for the same key, so that the spelling reads one way only."""
     assert adopter._registrations(listed(f"submodule.{name}.update")) == (
         f"missing value for {spelled}")
@@ -499,7 +504,7 @@ NAMES = {
                        "`submodule.b\\u2028x.update`"),
     "a-byte-that-is-not-utf8": (b"b\xe9x", f"submodule.b{BYTE}x.update", None),
     "a-backtick": (b"b`x", "submodule.b`x.update",
-                   "`submodule.b\\`x.update`"),
+                   "`submodule.b\\x60x.update`"),
     "an-ordinary-name": (b"b", "submodule.b.update", "'submodule.b.update'"),
 }
 

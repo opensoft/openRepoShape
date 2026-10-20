@@ -219,7 +219,8 @@ class Project:
                 "Remediation: --root takes the ASSEMBLY ROOT — the repository "
                 "an engineer clones — not a leg and not a family holder. A "
                 "family's member pins are moved with `scripts/family.py "
-                "bump`; a leg has no legs of its own to move.")
+                "bump --family-root <holder> --member <Project> --to "
+                "<sha>`; a leg has no legs of its own to move.")
         data = load_yaml(path)
         if not isinstance(data, dict):
             raise Refusal("bump-leg-manifest-unreadable",
@@ -231,7 +232,8 @@ class Project:
                 "'project-manifest'",
                 "Remediation: a family holder declares `kind: "
                 "family-manifest` and its members move with `scripts/"
-                "family.py bump`.")
+                "family.py bump --family-root <holder> --member <Project> "
+                "--to <sha>`.")
         return cls(root, data)
 
     @property
@@ -276,6 +278,9 @@ class Project:
         # branch would never be reached, and the root is not a submodule of
         # itself to advance.
         if role == "assembly":
+            # `<holder>` IS A PLACEHOLDER (#927): `family.py bump` requires
+            # `--family-root`, and this tool is pointed at a root, which
+            # knows no holder, so it is said as `<Project>` and `<sha>` are.
             raise Refusal(
                 "bump-leg-assembly-is-not-a-leg",
                 "the assembly root is THIS repository, mounted at `.`, and it "
@@ -283,7 +288,8 @@ class Project:
                 "Remediation: --leg takes `spec` or `code`. The assembly "
                 "root advances by its own commits; if you meant to move the "
                 "project's pin inside a FAMILY, that is `scripts/family.py "
-                "bump --member <Project> --to <sha>`.")
+                "bump --family-root <holder> --member <Project> --to "
+                "<sha>`.")
         for row in self.legs:
             if str(row.get("role")) == role:
                 return row
