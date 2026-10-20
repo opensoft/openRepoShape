@@ -799,11 +799,12 @@ def _git_runs(unread: str) -> Iterator[None]:
     `filename` where a program that will not start names `git`. So the rule
     is the NAME: any `OSError` whose `filename` is `git` counts, `ENOEXEC`'s
     included, and an error that names a directory or any other file passes
-    through unchanged, and so does any `OSError` that names none. The one
-    nameless error that counts is a `FileNotFoundError` or a
-    `PermissionError`: Windows' `CreateProcess` failures carry no filename,
-    so a missing git there is `[WinError 2]` with `filename` None, and
-    nothing says it was the directory.
+    through unchanged. Of the errors that name none, only a
+    `FileNotFoundError` or a `PermissionError` counts, and an `OSError`
+    whose `winerror` is 193: Windows' `CreateProcess` failures carry no
+    filename, so a missing git there is `[WinError 2]` with `filename` None,
+    and nothing says it was the directory, and a `git.exe` it cannot
+    execute is `[WinError 193]`, which is neither class (#1001).
 
     `recorded_gitlink`'s `except Refusal` is not in the way: an `OSError` is
     no `Refusal`, so a missing git reaches here instead of reading as "no
@@ -813,7 +814,8 @@ def _git_runs(unread: str) -> Iterator[None]:
         yield
     except OSError as exc:
         nameless = (exc.filename is None
-                    and isinstance(exc, (FileNotFoundError, PermissionError)))
+                    and (isinstance(exc, (FileNotFoundError, PermissionError))
+                         or getattr(exc, "winerror", None) == 193))
         if exc.filename != "git" and not nameless:
             raise
         raise Refusal(

@@ -655,10 +655,20 @@ class Family:
         EVERY SUCH LINE IS COUNTED FIRST, and anything but one is refused
         (#920, lane 5's review of #957, SHOULD 1). The rewrite stopped at the
         first and never counted a second, so a `members: []` above `name:`,
-        with the real block still at the end, which the reader takes as the
-        last of two keys and the holder's gate passes, was cut off there with
-        exit 0: every key below it went, and the gate then failed the
+        with the real block still at the end, which the reader then took as
+        the last of two keys and the holder's gate passed, was cut off there
+        with exit 0: every key below it went, and the gate then failed the
         commit. With the null words found, `members: null` did the same.
+
+        NO VERB REACHES A COUNT OF TWO since #974 (#1029). The reader refuses
+        a key written twice, by the line of the second, so `Family.open`
+        stops such a manifest as `yaml-unparsable` before any verb asks this.
+        The count stays as defence in depth, for a `family.yaml` changed
+        between the open and the rewrite, a caller of this method, or a
+        reader relaxed later, and it is asked of the method itself
+        (`test_two_members_lines_are_refused_by_the_rewrite_itself`). A
+        count of none is still reached through a verb: a comment on the
+        line, or no block at all.
         """
         text = self.path.read_text(encoding="utf-8")
         lines = text.splitlines()
