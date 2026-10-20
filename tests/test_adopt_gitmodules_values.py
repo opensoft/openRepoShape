@@ -262,8 +262,8 @@ def test_the_finding_names_the_key_git_dies_on(adopter, tmp_path, gitmodules,
      "bad boolean config value `caf\\udce9` for `submodule.b.shallow`"),
     (b'[submodule "b\x1bc"]\n\tpath = vendor/b\n\turl = ../b\n'
      b"\tfetchRecurseSubmodules = `x`\n",
-     "bad `submodule.b\\x1bc.fetchrecursesubmodules` argument: `\\`x\\``, "
-     "which is neither a boolean nor `on-demand`"),
+     "bad `submodule.b\\x1bc.fetchrecursesubmodules` argument: "
+     "`\\x60x\\x60`, which is neither a boolean nor `on-demand`"),
 ], ids=["a-newline-in-the-value", "a-byte-that-is-not-utf-8",
         "an-escape-in-the-name-and-backticks-in-the-value"])
 def test_the_key_and_the_value_are_spelled_on_one_line(adopter, tmp_path,

@@ -527,6 +527,9 @@ def test_the_visibility_text_follows_each_leg_as_it_stands(
 #: the repository it names as the reason, as `FREE_PLAN_HINT` puts it before
 #: " private, so": the root (#602), where it named the closed legs.
 ROOT_IS = f"{ORG}/{PROJECT} is"
+#: An INTERNAL root is not called private (#994): the hint's `what` says it is
+#: internal, which the hint treats as private.
+INTERNAL_ROOT_IS = f"{ROOT_IS} internal, which this hint treats as"
 #: What the hint named as its reason before #602, which no row may print.
 LEG_SUBJECTS = (f"{SPEC_REPO} is", f"{CODE_REPO} is",
                 f"{SPEC_REPO} and {CODE_REPO} are")
@@ -553,9 +556,9 @@ LEG_SUBJECTS = (f"{SPEC_REPO} is", f"{CODE_REPO} is",
     ({PROJECT: "PRIVATE", f"{PROJECT}-code": "PRIVATE"},
      ("--visibility", "public"), "free", ROOT_IS),
     # An internal root is closed too, and its run creates the spec leg
-    # internal.
+    # internal. The hint does not call it private (#994).
     ({PROJECT: "INTERNAL", f"{PROJECT}-code": "PRIVATE"}, (), "free",
-     ROOT_IS),
+     INTERNAL_ROOT_IS),
     # Controls: a private root with both legs private, reused and created
     # new, gets the hint as before, with the root as its subject (#602 moved
     # only that); and a paid plan says nothing.
@@ -591,6 +594,8 @@ def test_the_free_plan_hint_goes_by_the_root_as_it_stands(
     else:
         assert f"NOTE {ORG} is on the GitHub FREE plan" in printed, printed
         assert f"{named} private, so org-level" in printed, printed
+        assert (f"{ROOT_IS} private, so" in printed) == (named == ROOT_IS), \
+            printed
         assert printed.count("resolve to EMPTY") == 1, printed
     for subject in LEG_SUBJECTS:
         assert f"{subject} private, so" not in printed, printed

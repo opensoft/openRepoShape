@@ -665,8 +665,8 @@ NOT_UTF8_FINDING = (
     "will not extract it into a leg: it holds `\\udce9`, which is not UTF-8 "
     "and which `execute` refuses as policy, though git and `git filter-repo` "
     "would take it literally: a name that holds one prints as an escape and "
-    "never as itself, the split commit's message would list it with a `?` "
-    "for that byte, and adopting one is not yet measured on macOS or Windows")
+    "never as itself, the split commit's message included, and adopting one "
+    "is not yet measured on macOS or Windows")
 
 
 def test_a_byte_that_is_not_utf8_is_found_and_refused_before_any_leg(
