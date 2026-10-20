@@ -487,7 +487,7 @@ def test_two_members_lines_are_refused_by_the_rewrite_itself(
         f"{path}: line 4: key 'members' is written twice"), "premise"
     held = family_module.Family(tmp_path, {"members": []})
     with pytest.raises(family_module.Refusal) as caught:
-        held.rewritten([])
+        held.write_members([])
     assert caught.value.code == "family-members-unrecognised"
     assert caught.value.detail == (
         f"{path} has 2 `members:` line(s) where exactly one was expected, "
