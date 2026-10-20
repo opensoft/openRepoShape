@@ -96,11 +96,12 @@ over <path> (default `.`) and prints one row per check and ONE verdict:
 `COMPLIANT`, `COMPLIANT, SHAPE BEHIND`, `DRIFTED`, `MISPLACED`, `INVALID`,
 `NOT A SHAPE ROOT` or `CANNOT ANSWER`. Every finding names the command that
 fixes it. Exit 0 compliant, 1 findings, 2 not a shape root, 3 when it cannot
-answer (`CANNOT ANSWER`, no such <path>, a `--placement-plan` it cannot
-write); this command's own refusals exit 2. `--json` is the same report as
-one JSON object. The doctor writes no file but the `--placement-plan <file>`
-you name, at the path you give (a relative <file> lands in the directory you
-ran this from, even inside the repository), and moves nothing.
+answer (`CANNOT ANSWER`, no such <path>, a <path> this user cannot search, a
+`--placement-plan` it cannot write); this command's own refusals exit 2.
+`--json` is the same report as one JSON object. The doctor writes no file but
+the `--placement-plan <file>` you name, at the path you give (a relative
+<file> lands in the directory you ran this from, even inside the repository),
+and moves nothing.
 
 It runs from the package's clone of the standard, which is KEPT for the NEXT
 lines that name files in it; the report's last line names that clone (under
