@@ -147,7 +147,16 @@ def snapshot(root: Path, *, status: bool = True) -> dict:
     """Everything a refused `add` must leave exactly as it found it.
 
     `status=False` for a holder with no `git status` to ask: one whose HEAD
-    names a missing object answers `fatal: bad object HEAD`."""
+    names a missing object answers `fatal: bad object HEAD`.
+
+    EVERY REF, NOT HEAD ALONE (#1029, lane 4's RV1026, NIT 2). A refusal
+    that left a branch behind, made before a later step refused, kept every
+    test built on `assert_unchanged` green: RV1026's mutant that makes
+    `refs/heads/rv-mutant` in `Family.open`'s refused parse passed all 25
+    rows of `test_family_add_gitlink_and_null_members.py`. Each ref is
+    recorded by name and object, and only those two fields, so a ref whose
+    object is missing is recorded as it is rather than failing the
+    snapshot."""
     def read(name: str) -> bytes | None:
         target = root / name
         return target.read_bytes() if target.is_file() else None
@@ -160,6 +169,8 @@ def snapshot(root: Path, *, status: bool = True) -> dict:
         # rather than failing the snapshot.
         "HEAD": git("rev-parse", "-q", "--verify", "HEAD", cwd=root,
                     check=False).stdout,
+        "refs": git("for-each-ref", "--format=%(refname) %(objectname)",
+                    cwd=root).stdout,
         "index": git("ls-files", "-s", cwd=root).stdout,
         "status": (git("status", "--porcelain", "--ignored", cwd=root).stdout
                    if status else None),
