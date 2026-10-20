@@ -77,6 +77,7 @@ import subprocess
 import sys
 import tempfile
 from pathlib import Path
+from urllib.parse import unquote
 
 UPSTREAM_ORG = "opensoft"
 DEFAULT_SHAPE_REPO = "https://github.com/opensoft/openRepoShape.git"
@@ -1285,37 +1286,153 @@ def _offer_login(offering: bool = True) -> bool:
     return True
 
 
-def _credential_helper_configured() -> bool:
-    """Will ANYTHING answer git's credential question for github.com?
+def _credential_helpers() -> list:
+    """Which credential helpers is git configured with for github.com?
+
+    CONFIGURED IS NOT STORED (#992). A helper answers git's question for
+    github.com only with a login it holds, so this list says whom git will
+    ask and never what they will answer: `_why_no_login` asks that, where it
+    can.
 
     The scoped key first, because that is where gh writes its own helper -
     and it writes an empty line before it, to reset the list, which is why
-    this reads the whole answer and strips it rather than counting lines.
-    The machine-wide key can hold something else entirely at the same time,
-    and either of them answering is enough.
+    each line is stripped and the empty ones dropped rather than counted.
+    The machine-wide key can hold something else entirely at the same time.
     """
+    helpers = []
     for key in ("credential.https://github.com.helper", "credential.helper"):
         configured = run(["git", "config", "--get-all", key], capture=True)
-        if (configured.stdout or "").strip():
-            return True
-    return False
+        helpers += [line.strip() for line in
+                    (configured.stdout or "").splitlines() if line.strip()]
+    return helpers
+
+
+def _store_files(helper: str):
+    """The files git's `store` helper reads, or None where `helper` is not
+    `store` as this can read it.
+
+    `store` alone reads `~/.git-credentials`, then
+    `$XDG_CONFIG_HOME/git/credentials`, or `~/.config/git/credentials` where
+    that is unset or empty: `~` is the `HOME` git is given, and this user's
+    home where there is none. `store --file=<path>`, or `--file <path>`,
+    reads that one file. git runs a helper through `sh`, in the folder it is
+    pushing from, so a path is taken only where `sh` reads it as itself
+    (`SHELL_BARE_POSIX`: no `~`, `$`, quote or blank) and it is absolute.
+    Any other helper, or any other spelling of this one, holds what this
+    cannot read: None.
+    """
+    words = helper.split()
+    if words == ["store"]:
+        home = os.environ.get("HOME") or os.path.expanduser("~")
+        config_home = (os.environ.get("XDG_CONFIG_HOME")
+                       or os.path.join(home, ".config"))
+        return [os.path.join(home, ".git-credentials"),
+                os.path.join(config_home, "git", "credentials")]
+    if len(words) == 3 and words[:2] == ["store", "--file"]:
+        path = words[2]
+    elif (len(words) == 2 and words[0] == "store"
+          and words[1].startswith("--file=")):
+        path = words[1][len("--file="):]
+    else:
+        return None
+    if SHELL_BARE_POSIX.fullmatch(path) and Path(path).is_absolute():
+        return [path]
+    return None
+
+
+def _a_github_login(line: str) -> bool:
+    """Is this line of a `store` file a login `store` gives a push to
+    https://github.com?
+
+    Read as git reads it (`credential_from_url`), and measured against git's
+    own `store` (#992): the scheme exactly `https`; before the first `@`, a
+    user and a password, which a `:` between them shows; after it, up to the
+    first `/`, `?` or `#`, the host `github.com` once its `%XX` escapes are
+    decoded, in that case and with no port. Any path: git's question for a
+    push names none unless `credential.useHttpPath` is set. Blanks at either
+    end are set aside here and kept by git, which then finds nothing: the
+    one place this reads a login git does not, so what it costs is silence,
+    never a warning git would contradict.
+    """
+    scheme, separator, rest = line.strip().partition("://")
+    if scheme != "https" or not separator:
+        return False
+    user, at, host = re.split(r"[/?#]", rest, maxsplit=1)[0].partition("@")
+    return bool(at) and ":" in user and unquote(host) == "github.com"
+
+
+def _holds_a_github_login(path: str):
+    """True where the file at `path` holds a login `_a_github_login` reads,
+    False where it holds none or is not there (git's `store` reads an absent
+    file as an empty one), and None where it cannot be read here: a file
+    this can say nothing about. Its lines are read for that one question
+    and never printed.
+    """
+    try:
+        text = Path(path).read_bytes().decode("utf-8", errors="replace")
+    except FileNotFoundError:
+        return False
+    except OSError:
+        return None
+    return any(_a_github_login(line) for line in text.split("\n"))
+
+
+def _why_no_login() -> str:
+    """Why git has no login to give a push to github.com, or "" where it may
+    have one: what `_check_credential_helper` warns of.
+
+    NO HELPER AT ALL, and git has nobody to ask. EVERY HELPER `store`
+    (`_store_files`), AND NO FILE OF THEIRS HOLDING A LOGIN FOR github.com
+    (`_holds_a_github_login`): measured, `store` over an empty
+    `~/.git-credentials` answers nothing, and with its prompt off git could
+    not read a username (#992). Every push the scaffold makes runs with that
+    prompt off (#915), so either way its first push fails. Any other helper
+    beside them, or a file this cannot read, may answer: "".
+    """
+    helpers = _credential_helpers()
+    if not helpers:
+        return ("git has no credential helper for github.com, so the first "
+                "push over HTTPS will fail.")
+    files = []
+    for helper in helpers:
+        read = _store_files(helper)
+        if read is None:
+            return ""
+        files += [path for path in read if path not in files]
+    if any(_holds_a_github_login(path) is not False for path in files):
+        return ""
+    return ("git's credential helper for github.com is `store`, and no login "
+            "for github.com is stored in %s, so the first push over HTTPS "
+            "will fail." % " or ".join(files))
 
 
 def _check_credential_helper(opts: Options, offering: bool = True) -> None:
     """WARN, DO NOT REFUSE - the class `_warn_autocrlf` belongs to.
 
     The scaffold clones and pushes over HTTPS (`clone_and_bootstrap`), so a
-    machine with NO credential helper at all creates three repositories and
-    then fails on the first push. That is worth a `[??]` while nothing has
-    been created yet, and an offer of the one command that fixes it.
+    machine whose git has no login for github.com creates three repositories
+    and then fails on the first push, which runs with git's prompt off
+    (#915). That is worth a `[??]` while nothing has been created yet, and
+    an offer of the one command that fixes it. `_why_no_login` names the two such machines it can see: one
+    with NO credential helper at all, and one whose helpers are all `store`
+    with no login for github.com stored in them.
 
-    A machine that HAS a helper is left alone, whatever it is. `osxkeychain`,
-    Windows' `manager`, `store`, a devcontainer's own: they all answer git's
-    question for github.com without gh being involved, and warning about them
-    would be this tool disliking somebody's ~/.gitconfig - the objection
-    `_warn_autocrlf` records. That is also why gh's own test for ITS helper
-    (`isOurCredentialHelper`: a line starting `!` whose first word's basename
-    is gh) is not transcribed here. A helper that is not gh's still pushes.
+    A CONFIGURED HELPER IS NOT A STORED LOGIN (#992). A helper answers git's
+    question for github.com only with a login it holds. `store`, the one
+    kind measured, answers it only with a login stored in it: over none it
+    answers nothing, and git then asks at the terminal where it may and
+    fails where it may not, as at every push the scaffold makes. `store`
+    keeps its logins in a file, and the file is read; no helper is ever
+    ASKED, because asking is `git credential fill`, which runs every helper
+    configured, and one may open a window or ask at a keychain.
+
+    ANY OTHER HELPER IS LEFT ALONE, whatever it is: `osxkeychain`, Windows'
+    `manager`, `cache`, a devcontainer's own. What they hold is not
+    something this can read, and warning about them anyway would be this
+    tool disliking somebody's ~/.gitconfig - the objection `_warn_autocrlf`
+    records. That is also why gh's own test for ITS helper
+    (`isOurCredentialHelper`: a line starting `!` whose first word's
+    basename is gh) is not transcribed here.
 
     NEVER IN THE `checked` LIST. It cannot fail the run and it cannot fail
     `--preflight`: a warning that refuses is a refusal, and this one would
@@ -1328,15 +1445,15 @@ def _check_credential_helper(opts: Options, offering: bool = True) -> None:
     """
     if opts.local_mode:
         return
-    if _credential_helper_configured():
+    why = _why_no_login()
+    if not why:
         return
-    warn("git has no credential helper for github.com, so the first push "
-         "over HTTPS will fail. Fix it once: gh auth setup-git")
+    warn(why + " Fix it once: gh auth setup-git")
     if not offer("gh auth setup-git", offering):
         return
     if run_at_the_terminal(["gh", "auth", "setup-git"]).returncode != 0:
         return
-    if _credential_helper_configured():
+    if not _why_no_login():
         ok("git will ask gh for github.com credentials")
 
 
