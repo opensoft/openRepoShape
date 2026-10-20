@@ -1613,7 +1613,13 @@ def _exported_gitlink(source: "Source") -> str | None:
     rewrites: measured here, 100,001 commits in 4.9 to 5.2 s against 4.2 to
     4.5 s for that export, and 5010 commits in 0.15 s. A scan git cannot
     finish is refused as `git-failed`, as `git_out` refuses: a history that
-    could not be read has not been shown to hold no gitlink.
+    could not be read has not been shown to hold no gitlink. Its two
+    untrusted parts are spelled as `git_out` spells them (#900): the source
+    folder with `shown_path`, and what git printed `spelled`, as one line.
+    Raw, a folder named with a line break began a line the tool never
+    printed and an ESC in its name reached the terminal, and git, which
+    echoes the folder (`invalid gitfile format: <folder>/.git`), passes a
+    line break and a C1 control through.
     """
     command = ["git", *EXPORTED_DIFFS, source.commit, "--branches", "--tags",
                "--"]
@@ -1629,8 +1635,9 @@ def _exported_gitlink(source: "Source") -> str | None:
             elif log.wait():
                 said.seek(0)
                 raise Refusal("git-failed", "`{}` in {} exited {}: {}".format(
-                    " ".join(command[1:]), source.path, log.returncode,
-                    said.read().decode("utf-8", "replace").strip()))
+                    " ".join(command[1:]), shown_path(source.path),
+                    log.returncode, spelled_as_git_out(
+                        said.read().decode("utf-8", "replace").strip())))
     return found
 
 
@@ -3102,9 +3109,12 @@ def _asked_about(entry: Entry, held: list[str], asked: Verdict,
     as it is written: `Verdict` folds each run of spaces in a question to
     one, and a name holding two, `src/a  b.md`, was named `src/a b.md`, an
     entry that covers nothing."""
+    # The rule id is a path policy's, which nothing asks to be printable:
+    # `_spelled`, as a path is (#900).
     question = (f"{asked.question} " if asked.question else "") + (
         f"This entry holds the submodule(s) {_listed(held)}: it is asked "
-        f"this question, not classified by its rule `{entry.rule}`.")
+        f"this question, not classified by its rule "
+        f"{_spelled(str(entry.rule))}.")
     if len(own) > 1:
         question += (" Split the entry if its paths do not all belong in one "
                      f"leg: replace it with "
@@ -3209,8 +3219,10 @@ def _refused_as_named(entry: Entry, problem: str, held: bool) -> Entry:
     """`entry` as `ask_about_refused_paths` writes it: `leg: null`, its rule
     and reason, and the question, after any it carries already."""
     if entry.leg is not None:
+        # The rule id `_spelled`, as `_asked_about` names it (#900).
         lead = (f"The rules put this path in the {entry.leg} leg (rule "
-                f"`{entry.rule}`), but `execute` will not extract it")
+                f"{_spelled(str(entry.rule))}), but `execute` will not "
+                "extract it")
     else:
         lead = (f"{entry.question} But " if entry.question else "") \
             + "`execute` will not extract this path"
@@ -3257,8 +3269,8 @@ def _spelled(path: str) -> str:
     file can hold -- written raw, it raised mid-write and left `--out` empty
     (#166's NEW-2) -- and a name may hold a newline, which would end the
     line. So a character that is not printable is spelled with a backslash,
-    and so are a backslash and a backtick, so that the spelling reads one way
-    only and the backticks still delimit it.
+    and so are a backslash, a double quote and a backtick, so that the
+    spelling reads one way only and the backticks still delimit it.
 
     THE SPELLING IS THE PLAN'S OWN (`_spelled_character`): the byte 0xE9 is
     `\\udce9` and the character U+0085 is `\\x85`, as `path:` writes them
@@ -3270,6 +3282,15 @@ def _spelled(path: str) -> str:
     value, 34 pairs of different names that read alike (#329). A spelling is
     only printed, in a finding, a refusal or a question the plan carries;
     none is read back or handed to git.
+
+    A BACKTICK IS `\\x60` AND A DOUBLE QUOTE `\\"` (#900), the plan's own
+    escapes for them, so that EVERY spelled name, copied between the plan's
+    double quotes, is that entry. A backtick was written after a
+    backslash, which is no escape the plan's reader resolves: it kept the
+    backslash, and so read another entry. A double quote was written as it
+    is, which ended the quoting, and the plan no longer read at all.
+    `\\x60` holds no backtick, so the two that wrap the name are still the
+    only ones.
     """
     return "`" + "".join(map(_spelled_character, path)) + "`"
 
@@ -3284,21 +3305,40 @@ def _shown(path: str) -> str:
     encoding -- macOS, a UTF-8 Linux locale, a Windows code page -- after the
     plan was written (#199). The same holds for the source directory a local
     `--source` names, which the report prints too. Every other name prints
-    exactly as it did."""
-    return path if path.isprintable() else _spelled(path)
+    exactly as it did.
+
+    SO IS A PRINTABLE TEXT THAT BEGINS AND ENDS WITH A BACKTICK (#900).
+    `_spelled` writes every name between two backticks and none inside
+    them, so the name `` `x` ``, printed as it is, read exactly as the
+    spelling of the name `x`: spelled, it is `` `\\x60x\\x60` ``. A text
+    printed as it is now never begins and ends with a backtick, and a
+    spelling always does, so no two texts print alike. AND SO IS ONE THAT
+    ENDS IN A SPACE, which reads as nothing: `git commit` strips it from
+    the end of each line of the split commit's message, which lists names
+    `_shown`, so `trail.md ` was listed as `trail.md`, and `plan`'s table
+    pads `trail.md ` and `trail.md` to the same row."""
+    if (path.isprintable() and not path.endswith(" ")
+            and not (path.startswith("`") and path.endswith("`"))):
+        return path
+    return _spelled(path)
+
+
+#: How `_spelled` writes a backtick: the plan's code-point escape for one,
+#: which holds no backtick itself (#900).
+SPELLED_BACKTICK = "\\x60"
 
 
 def _spelled_character(char: str) -> str:
-    """One character of `_spelled`: itself when it is printable, a backslash
-    before a backslash or a backtick, and otherwise the escape
-    `repo_shape.double_quoted` writes for it in the plan, so the plan's one
-    table and not a second one: `\\n` for a line feed, `\\x85` for U+0085,
-    `\\u2028` for U+2028, and `\\udc85` for the byte 0x85, which
-    `Source.tree` keeps as the surrogate U+DC00 plus the byte."""
-    if char in "\\`":
-        return "\\" + char
-    if char.isprintable():
-        return char
+    """One character of `_spelled`: the escape `repo_shape.double_quoted`
+    writes for it in the plan, so the plan's one table and not a second
+    one -- itself when it is printable, `\\\\` for a backslash, `\\"` for a
+    double quote, `\\n` for a line feed, `\\x85` for U+0085, `\\u2028` for
+    U+2028, and `\\udc85` for the byte 0x85, which `Source.tree` keeps as
+    the surrogate U+DC00 plus the byte -- except a backtick, which the plan
+    holds as it is and `_spelled` wraps a name in: `SPELLED_BACKTICK`, the
+    escape the plan's reader takes for one (#900)."""
+    if char == "`":
+        return SPELLED_BACKTICK
     return double_quoted(char)[1:-1]
 
 
@@ -3340,9 +3380,10 @@ def cross_leg_references(source: "Source",
     `:cache` read as the pathspec `cache` and `*` matched files in the spec
     leg, so `--literal-pathspecs`. `-l` C-quoted a name outside printable
     ASCII (`"src/\\303\\234bersicht.py"`), so `-z`, read as `Source.tree`
-    reads names, and each hit is spelled as a question spells a path, with
-    no backticks: one line of UTF-8 whatever its bytes; so is the spec
-    directory's own name. `--no-color`, because `color.grep=always` wraps
+    reads names, and each hit is named as `plan`'s table and the split
+    message's listing name it (`_shown`, #900), and the spec directory as a
+    sentence names a path, between backticks: one line of UTF-8 whatever
+    its bytes. `--no-color`, because `color.grep=always` wraps
     each name in escapes. A grep that FAILS is said, never read as "no file
     names it", and so is one that cannot be asked: `-F` splits a pattern at
     a line feed.
@@ -3386,7 +3427,7 @@ def cross_leg_references(source: "Source",
         # being read at all.
         hits.sort(key=lambda h: ("fixture" in h or h.startswith("tests/"), h))
         for hit in hits[:8]:
-            shown = "".join(map(_spelled_character, hit))
+            shown = _shown(hit)
             out.append(
                 f"{shown} in the code leg names `{named}`, which moves to "
                 "the spec leg: it must read across the assembly root — from "
@@ -5609,7 +5650,7 @@ def _print_plan_report(args, source: Source, tree: list, entries: list,
     _print_summary(entries)
     print(f"\nfollow-ups ({len(follow_ups)}):")
     for item in follow_ups:
-        print(f"  - {item}")
+        print(f"  - {_shown(item)}")
     for line in seeding_warnings(seeded, set(args.allow_empty_leg or [])):
         print(line)
     for line in _kept_collision_notes(args, entries, tree):
@@ -5622,7 +5663,10 @@ def _print_plan_report(args, source: Source, tree: list, entries: list,
         print(line)
     unresolved = [e for e in entries if e.leg is None]
     # A default is still a question (#528): it is printed with the question,
-    # before the paths `execute` refuses over, which stay last.
+    # before the paths `execute` refuses over, which stay last. The question
+    # is a path policy's, which `--path-policy` may name and which nothing
+    # asks to be printable, so it is `_shown`, as `check`'s `plan-unresolved`
+    # prints it (#900).
     proposed = [e for e in entries if e.leg is not None and e.review_required]
     if proposed or unresolved:
         print()
@@ -5631,12 +5675,13 @@ def _print_plan_report(args, source: Source, tree: list, entries: list,
               "which `execute` takes as written unless it is changed:")
         for entry in proposed:
             print(f"  {_shown(entry.path)} (leg: {entry.leg})\n"
-                  f"      {entry.question}")
+                  f"      {_shown(str(entry.question))}")
     if unresolved:
         print(f"{len(unresolved)} path(s) need a human or an AI to answer a "
               "question before `execute` will run:")
         for entry in unresolved:
-            print(f"  {_shown(entry.path)}\n      {entry.question}")
+            print(f"  {_shown(entry.path)}\n"
+                  f"      {_shown(str(entry.question))}")
 
 
 def _source_named(source: Source) -> str:
@@ -5978,10 +6023,38 @@ def seeding_warnings(seeded: list[str], allowed: set) -> list[str]:
 
 
 def _print_entries(entries: list[Entry]) -> None:
+    """`plan`'s table, one row to an entry.
+
+    THE PATH IS PADDED AS IT IS PRINTED (#900): `_shown`, then as stdout
+    writes it (`_printed`). Padded before stdout escaped it, `caf\\u00e9.md`
+    was padded as the 7 characters it holds and printed as the 10 of
+    `caf\\xe9.md` under `LC_ALL=C PYTHONUTF8=0`, so every column after it
+    stood 3 characters right of its heading. The rule id is a path
+    policy's, which `--path-policy` may name and nothing asks to be
+    printable, so it is `_shown` as a question is.
+    """
     print(f"\n{'path':<34} {'leg':<10} {'conf':<7} {'files':>6} {'rule'}")
     for entry in entries:
-        print(f"{_shown(entry.path):<34} {(entry.leg or 'REVIEW'):<10} "
-              f"{entry.confidence:<7} {entry.files:>6} {entry.rule}")
+        print(f"{_printed(_shown(entry.path)):<34} "
+              f"{(entry.leg or 'REVIEW'):<10} "
+              f"{entry.confidence:<7} {entry.files:>6} "
+              f"{_shown(str(entry.rule))}")
+
+
+def _printed(text: str) -> str:
+    """`text` as stdout writes it: each character its encoding cannot hold
+    escaped, as `escape_what_stdout_cannot_encode` has it write one, so
+    `caf\\u00e9.md` is the 10 characters of `caf\\xe9.md` on an ASCII
+    stdout and the 7 of `caf\\u00e9.md` on a UTF-8 one (#900). It is asked
+    of a text `_shown` returned, which holds no surrogate; where stdout
+    names no encoding, or cannot encode `text` with its own handler, it is
+    `text` as it is."""
+    encoding = getattr(sys.stdout, "encoding", None) or "utf-8"
+    errors = getattr(sys.stdout, "errors", None) or "strict"
+    try:
+        return text.encode(encoding, errors).decode(encoding)
+    except (LookupError, UnicodeError):
+        return text
 
 
 def _print_summary(entries: list[Entry]) -> None:
@@ -7799,8 +7872,8 @@ def _refused_by_policy(path: str) -> str | None:
         disabled a source holding `caf\\udce9.md` was extracted and verified,
         the byte in the leg, measured. It is held until adopting such a name
         end to end is measured on macOS and Windows: a name that holds one
-        prints as an escape, never as itself, and the split commit's message
-        lists it with a `?` for the byte (`env_commit`);
+        prints as an escape, never as itself, the split commit's message
+        included, which lists it as `_shown` does (#900);
       * a leading `-`, the threat model's first rule
         (`repo_shape.checked_value`), held although neither place in
         `entry_path_problem` takes it as an option: a line of the filter's
@@ -7826,8 +7899,8 @@ def _refused_by_policy(path: str) -> str | None:
                     "UTF-8 and which `execute` refuses as policy, "
                     f"{TAKEN_LITERALLY}: a name that holds one prints as an "
                     "escape and never as itself, the split commit's message "
-                    "would list it with a `?` for that byte, and adopting "
-                    "one is not yet measured on macOS or Windows")
+                    "included, and adopting one is not yet measured on "
+                    "macOS or Windows")
     if path.startswith("-"):
         return ("it begins with `-`, which `execute` refuses as policy, "
                 f"{TAKEN_LITERALLY} (a line of the filter's path list is no "
@@ -14538,6 +14611,17 @@ def _template_table(plan: Plan, names, repositories, urls, spec_path,
 
 def _split_message(names, paths_for, leg_commits, spec_path, code_path,
                    follow_ups, collisions, seeded=(), *, appended=()) -> str:
+    """The split commit's message, which is also the pull request's body.
+
+    EACH PATH IS NAMED AS `plan`'S REPORT NAMES IT (`_shown`, #900): as it
+    is, unless it is not printable, begins and ends with a backtick or
+    ends in a space, and then `_spelled`. Written as it is, a name read as
+    another path: `git commit` strips the whitespace that ends a line, so
+    `cr\\r` was `cr`, and `env_commit` writes a character UTF-8 cannot
+    carry as `?`, so `caf\\udce9.md`, the byte 0xE9 that is not UTF-8, was
+    `caf?.md`. A follow-up, which a person may edit in the plan, is
+    `_shown` too, as `execute` prints it before it begins.
+    """
     def none_line(role: str) -> list[str]:
         if role not in seeded:
             return ["  (none)"]
@@ -14564,18 +14648,16 @@ def _split_message(names, paths_for, leg_commits, spec_path, code_path,
         "",
         f"MOVED TO THE SPEC LEG ({names['spec']} @ {leg_commits['spec'][:12]}):",
     ]
-    lines += [f"  {path}" for path in sorted(paths_for["spec"])] \
-        or none_line("spec")
+    lines += _listed_lines(paths_for["spec"]) or none_line("spec")
     lines += ["",
               f"MOVED TO THE CODE LEG ({names['code']} @ "
               f"{leg_commits['code'][:12]}):"]
-    lines += [f"  {path}" for path in sorted(paths_for["code"])] \
-        or none_line("code")
+    lines += _listed_lines(paths_for["code"]) or none_line("code")
     if paths_for["drop"]:
         lines += ["", "DROPPED (in no leg and no longer here):"]
-        lines += [f"  {path}" for path in sorted(paths_for["drop"])]
+        lines += _listed_lines(paths_for["drop"])
     lines += ["", "STAYS IN THE ASSEMBLY ROOT:"]
-    lines += [f"  {path}" for path in sorted(paths_for["root"])]
+    lines += _listed_lines(paths_for["root"])
     if collisions:
         lines += ["", "WRITTEN BESIDE, NOT OVER (this repository had the name "
                   "first):"]
@@ -14591,8 +14673,14 @@ def _split_message(names, paths_for, leg_commits, spec_path, code_path,
         lines += [f"  {eol_line(path)}" for path in appended]
     if follow_ups:
         lines += ["", "FOLLOW-UPS, which this commit does NOT do:"]
-        lines += [f"  - {item}" for item in follow_ups]
+        lines += [f"  - {_shown(item)}" for item in follow_ups]
     return "\n".join(lines) + "\n"
+
+
+def _listed_lines(paths) -> list[str]:
+    """`paths`, sorted, one to a line of the split commit's message, each as
+    `plan`'s report names it (`_shown`, #900)."""
+    return [f"  {_shown(path)}" for path in sorted(paths)]
 
 
 def _verify(source: Source, assembly: Path, work_root: Path, names,

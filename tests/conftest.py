@@ -1767,11 +1767,13 @@ def run_in_a_terminal(argv: list, *, cwd: Path, env: dict, answers=(),
 
 def spelled(path) -> str:
     """`path` as `adopt-project.py` names one in a finding, a refusal or the
-    late-failure notice (#212): between backticks, with a backslash or a
-    backtick escaped. A path a test builds is otherwise printable, which
-    `_spelled` writes as it is; a Windows path keeps its separators, each
-    one escaped."""
-    return "`" + str(path).replace("\\", "\\\\").replace("`", "\\`") + "`"
+    late-failure notice (#212): between backticks, with a backslash, a
+    double quote and a backtick escaped as the plan escapes them: `\\\\`,
+    `\\"` and `\\x60` (#900). A path a test builds is otherwise printable,
+    which `_spelled` writes as it is; a Windows path keeps its separators,
+    each one escaped."""
+    return "`" + (str(path).replace("\\", "\\\\").replace('"', '\\"')
+                  .replace("`", "\\x60")) + "`"
 
 
 # --- setup's paste lines, its step checks and the upstream guard (#538) ------
