@@ -411,7 +411,7 @@ def test_the_note_a_re_run_prints_says_github_only_for_a_github_leg(
     assert reused == {"spec": seed}
     notes = [line for line in capsys.readouterr().out.splitlines()
              if line.startswith("NOTE the seed in")]
-    target = "/remotes/Atlas-spec.git" if local else "o/Atlas-spec"
+    target = str(Path("/remotes/Atlas-spec.git")) if local else "o/Atlas-spec"
     assert notes == [
         f"NOTE the seed in {target} was found only on its branch "
         "`seed/scaffold`: this run creates `main` at it and does not touch "

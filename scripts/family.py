@@ -102,11 +102,12 @@ Only gh's own not-found answer says the holder does not exist; any other
 `init --dry-run` LEAVES NOTHING THAT STAYS, which is not the same as making
 no folder (#921). It makes and removes temporary folders, as the real run
 does: `openreposhape-branch-*`, where git is asked whether the tracking
-branch is a name it will create, and `openreposhape-ident-*`, one each for
-the author and the committer when a GIT_AUTHOR_* or GIT_COMMITTER_* variable
-is set and not empty. Each is empty, and a removal that fails is not
-reported. It creates no remote or repository and pushes nothing: the only
-`gh` calls it makes read (`gh repo view`, the commit listing).
+branch is a name it will create, and `openreposhape-ident-*`, one for the
+author when GIT_AUTHOR_NAME, _EMAIL or _DATE is set and not empty, and one
+for the committer when a GIT_COMMITTER_ one is. Each is empty, and a removal
+that fails is not reported. It creates no remote or repository and pushes
+nothing: the only `gh` calls it makes read (`gh repo view`, the commit
+listing).
 
 WHETHER EACH FOLDER CAN BE WRITTEN IN IS THE MODE BITS' ANSWER (#923). The
 family folder or `--work-dir`, the holder in it and `--local-remote-dir` are
