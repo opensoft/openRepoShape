@@ -19,7 +19,9 @@ and no traceback. The run STOPS there: every later step runs git too, so
 going on would only say it again. Which `OSError` is git's is read by NAME,
 as `validate-pins.py` reads it: `filename` `git`, or none on a
 `FileNotFoundError` or a `PermissionError`, which is how Windows raises
-them; an error naming a directory goes on as it did.
+them, or on an `OSError` whose `winerror` is 193, Windows' `[WinError 193]`
+for a `git.exe` it cannot execute (#1001); an error naming a directory goes
+on as it did.
 
 The end-to-end runs are a person's: a scaffold's recursive clone, a plain
 clone, and a family holder, each run with no git on `PATH`. The rule's other
@@ -37,6 +39,7 @@ import pytest
 from conftest import (PROJECT, REPO, clone_just_pushed, load_without_bytecode,
                       run_script)
 from test_family import family, holder  # noqa: F401
+from test_validate_pins_without_git import WIN_ERROR_193
 
 #: What `subprocess` says when there is no git to start, here.
 NO_GIT = ("The system cannot find the file specified" if os.name == "nt"
@@ -157,12 +160,16 @@ def made_of(module, error: OSError):
     PermissionError(errno.EACCES, "Permission denied", "git"),
     OSError(errno.ENOEXEC, "Exec format error", "git"),
     FileNotFoundError(2, "The system cannot find the file specified"),
-], ids=["no git", "git not executable", "git no program", "windows"])
+    WIN_ERROR_193,
+], ids=["no git", "git not executable", "git no program", "windows",
+        "windows winerror 193"])
 def test_each_way_git_cannot_start_is_git_not_runnable(root_module, error):
     made = made_of(root_module, error)
     assert made.code == "git-not-runnable", made
     assert made.detail.endswith(
         f": git could not be run ({error.strerror})"), made.detail
+    assert made.remediation.startswith(
+        "Remediation: put git on PATH and run this again. "), made
 
 
 @pytest.mark.parametrize("error", [

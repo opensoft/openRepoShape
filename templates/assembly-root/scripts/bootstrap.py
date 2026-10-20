@@ -311,15 +311,18 @@ def _git_runs(unread: str) -> Iterator[None]:
     words are the validators'. Which `OSError` is git's is read as
     `validate-pins.py` reads it, by NAME: one whose `filename` is `git`, or
     a nameless `FileNotFoundError` or `PermissionError`, which is what
-    Windows raises for a program it cannot start. An error that names a
-    directory, which `subprocess` raises for a `cwd` it cannot enter, is
-    not git's, and goes on as it did.
+    Windows raises for a program it cannot start, or a nameless `OSError`
+    whose `winerror` is 193, which it raises for a `git.exe` it cannot
+    execute (#1001). An error that names a directory, which `subprocess`
+    raises for a `cwd` it cannot enter, is not git's, and goes on as it did.
     """
     try:
         yield
     except OSError as exc:
-        if exc.filename != "git" and (exc.filename is not None or not (
-                isinstance(exc, (FileNotFoundError, PermissionError)))):
+        nameless = (exc.filename is None
+                    and (isinstance(exc, (FileNotFoundError, PermissionError))
+                         or getattr(exc, "winerror", None) == 193))
+        if exc.filename != "git" and not nameless:
             raise
         raise Refusal("git-not-runnable",
                       f"{unread}: git could not be run "
