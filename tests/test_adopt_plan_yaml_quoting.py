@@ -1253,6 +1253,100 @@ def test_the_misread_rule_asks_nothing_of_a_value_execute_never_writes(
     assert adopter._misread_findings(adopter.Plan.load(plan)) == []
 
 
+# --- #916's L1-K6: the two clauses that keep a value out of the misread rule,
+# --- each reached with the other out of the way ------------------------------
+#
+# `_execute_gets_to_write` (a visibility outside the three choices is not
+# written in every mode) and `left = judged | ...` in `_misread_findings` (a
+# value the project's own validator judges is its alone) keep the SAME
+# visibilities out, so reverting either one alone failed no test: the first
+# test above asks both at once. Each of these asks one.
+
+
+@pytest.mark.parametrize(KEY_SPELLED, NEVER_WRITTEN)
+def test_what_execute_writes_alone_keeps_a_value_it_never_writes_out(
+        adopter, answered, bare_template, tmp_path, monkeypatch, key, spelled):
+    """`_execute_gets_to_write` with no help from the validator's clause: the
+    validator is made to judge no value (`_validator_judged` answers an empty
+    set, not None), so a visibility outside the three choices that the loader
+    misreads on a bare line (`bare_template`) stays out of the rule only
+    because `_plan_fields` leaves it out. A rule that asked about it would
+    name it misread, with a remediation saying the run ends `adoption
+    verified`, where `execute` refuses it before any leg exists."""
+    monkeypatch.setattr(adopter, "_validator_judged",
+                        lambda _plan: frozenset())
+    _, text = answered
+    plan = tmp_path / PLAN_FILE
+    carrying(plan, text, key, spelled)
+    assert adopter._misread_findings(adopter.Plan.load(plan)) == []
+
+
+@pytest.fixture
+def bare_elector(adopter, bare_template) -> None:
+    """`bare_template` with the manifest's `elected_by:` and `reference:`
+    lines written bare too. Neither was bare before #259 (the elector was
+    quoted by #284 and `reference:` from the start), so `bare_template`
+    leaves both between quotes, where no value is misread. Bare, a blank one
+    reads as no value, and nothing but the validator's clause then keeps the
+    rule from naming what the validator names."""
+    written = ""
+    for rel in adopter.TEMPLATED_YAML:
+        path = bare_template / rel
+        text = path.read_text(encoding=UTF8)
+        for placeholder in (ELECTED_BY_PLACEHOLDER, REFERENCE_PLACEHOLDER):
+            text = text.replace(f'"{{{{{placeholder}}}}}"',
+                                f"{{{{{placeholder}}}}}")
+        path.write_text(text, encoding=UTF8)
+        written += text
+    for key, placeholder in ((ELECTED_BY_KEY, ELECTED_BY_PLACEHOLDER),
+                             (REFERENCE_KEY, REFERENCE_PLACEHOLDER)):
+        assert f"{key}: {{{{{placeholder}}}}}\n" in written, key
+
+
+#: `(plan key, as a plan edited by hand spells it, its placeholder)`: a blank
+#: value on a line written bare reads as no value, which the validator refuses
+#: (`manifest-elected-by`, `manifest-reference`). `_execute_gets_to_write`
+#: leaves out only a visibility and a tracking branch, so these are asked.
+JUDGED_AND_MISREAD = [
+    pytest.param(ELECTED_BY_KEY, '" "', ELECTED_BY_PLACEHOLDER,
+                 id="elector-blank"),
+    pytest.param(ELECTED_BY_KEY, '""', ELECTED_BY_PLACEHOLDER,
+                 id="elector-empty"),
+    pytest.param(REFERENCE_KEY, '" "', REFERENCE_PLACEHOLDER,
+                 id="reference-blank"),
+    pytest.param(REFERENCE_KEY, '""', REFERENCE_PLACEHOLDER,
+                 id="reference-empty"),
+]
+
+
+@pytest.mark.parametrize("key, spelled, placeholder", JUDGED_AND_MISREAD)
+def test_the_validators_judgement_alone_keeps_a_value_it_judges_out(
+        adopter, answered, bare_elector, tmp_path, capsys, key, spelled,
+        placeholder):
+    """`left = judged | ...` with no help from `_execute_gets_to_write`: these
+    values are asked about (it leaves out only a visibility outside the three
+    choices and a tracking branch `execute` never writes), the loader misreads
+    each on its bare line, and the validator judges it, so the validator's
+    finding is the only one, as `JUDGED_ONCE` has it on the shipped
+    templates. Both the rule and `check` in this process are asked: a rule
+    that did not leave the value to the validator would print it twice."""
+    _, text = answered
+    plan = tmp_path / PLAN_FILE
+    carrying(plan, text, key, spelled)
+    loaded = adopter.Plan.load(plan)
+    asked = dict(adopter._plan_fields(loaded))
+    assert placeholder in asked, "`_execute_gets_to_write` left it out"
+    assert adopter.manifest_misreads([asked[placeholder]]), (
+        "the loader reads the bare line back, so it is nobody's to judge")
+    assert placeholder in adopter._validator_judged(loaded)
+    assert adopter._misread_findings(loaded) == []
+    code, _, stderr = run_here(adopter, capsys, "check", PLAN_OPTION,
+                               str(plan))
+    assert code == 1, stderr
+    (line,) = judged_lines(stderr)
+    assert line.startswith(INVALID_FINDING), stderr
+
+
 #: A tracking branch the loader reads as no value, and git will not create.
 BRANCH_GIT_REFUSES = "~"
 
@@ -1525,6 +1619,32 @@ def test_the_source_says_whether_execute_pushes_the_legs_to_a_branch(
     opened = adopter.Source.open(str(branch_source(tmp_path, own, origin)),
                                  tmp_path / "work")
     assert adopter._pushed_in_every_mode(opened, "true") is pushed
+
+
+@pytest.mark.parametrize("own, origin, clone_says_no, source_says_no", [
+    pytest.param(True, False, True, False, id="the-clones-memory-alone"),
+    pytest.param(False, True, False, True, id="the-sources-own-alone"),
+])
+def test_each_question_pushed_in_every_mode_asks_is_asked_alone(
+        adopter, tmp_path, own, origin, clone_says_no, source_says_no):
+    """#916's L1-K6: `_pushed_in_every_mode` says no where EITHER of its two
+    questions does, so a branch both refuse (`the-source-lacks-it` in
+    `BRANCH_CASES`) is no test of one: take either question out and the
+    other still says no. These are the two branches ONE question refuses,
+    with the other's answer stated as a premise, so that taking out either
+    question alone fails here. The first is what the source's clone
+    remembers of `origin` (`_tracking_branch_problem`, gh mode): the source
+    has `true` and `origin` lacks it. The second is the source's own
+    branches as `git ls-remote` lists them (`--local-remote-dir`): `origin`
+    has `true` and the source lacks it."""
+    opened = adopter.Source.open(str(branch_source(tmp_path, own, origin)),
+                                 tmp_path / "work")
+    problem = adopter._tracking_branch_problem(
+        opened, adopter.TRACKING_KEY, "true")
+    listed = adopter._branches_a_clone_gets(str(opened.path), opened.path)
+    assert (problem is not None) is clone_says_no, problem
+    assert ("true" not in listed) is source_says_no, listed
+    assert adopter._pushed_in_every_mode(opened, "true") is False
 
 
 def test_plan_asks_the_validator_before_the_misread_rule(

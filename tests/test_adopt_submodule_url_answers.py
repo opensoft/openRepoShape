@@ -303,8 +303,12 @@ def test_git_is_held_to_the_disk_when_it_asks(adopter, tmp_path, monkeypatch):
     `_on_this_disk` were wrong about still reaches no network: with that
     judgement forced for an `ssh://` url, git itself refuses the transport,
     the answer is what git said, and the `ssh` git would start is never
-    started. No global config rewrites the url on the way."""
+    started. No global config rewrites the url on the way, and the caller's
+    own `GIT_ALLOW_PROTOCOL` is cleared (#916's L1-62): were it `file`, git
+    would refuse the transport for the test and hide a guard `_answers`
+    had lost."""
     started = a_recording_ssh(tmp_path, monkeypatch)
+    monkeypatch.delenv("GIT_ALLOW_PROTOCOL", raising=False)
     empty = tmp_path / "gitconfig"
     empty.write_text("", encoding="utf-8")
     monkeypatch.setenv("GIT_CONFIG_GLOBAL", str(empty))
