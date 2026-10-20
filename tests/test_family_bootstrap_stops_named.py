@@ -41,6 +41,15 @@ false`) is passed as git passes it, and a stop past it is named. B5 and B4
 a level down, in a leg, are named up to the holder, and B5 is named before
 a leg git never fetched.
 
+GIT'S UPDATE ENDED ON A SIGNAL (#998), lane 5's P3 on #954: IRRS's own
+`.gitmodules` gives its `code` leg a `branch` with no value, git 2.43.0's
+update crashes in IRRS (`submodule--helper died of signal 11`), goes on
+and exits 139, and bootstrap said `ok` with the credential advice. It
+names the signal and the code now, gives no advice, and fails. P3 is
+skipped where git does not crash; a wrapper `git` that answers (a)'s
+update with 139, or is killed by SIGSEGV, holds both shapes on every git.
+A code no signal gives, 128 or 255, reads as before.
+
 THE SAME FAMILY, OFFLINE RULES AND HELPERS as
 `tests/test_family_holder_remedies_compose.py` (#879). A missing credential
 is git's refusal of the file transport to the fixture's local remotes, as
@@ -53,7 +62,10 @@ other row's push puts it on a remote (`unpushed`).
 
 from __future__ import annotations
 
+import os
 import re
+import shlex
+import shutil
 from pathlib import Path
 
 import pytest
@@ -82,6 +94,22 @@ from test_validate_family_unnamed_mounts import spare_commits, stage_gitlink
 #: How (a)'s line begins where git's update died past the holder's own
 #: records.
 LEAD = "  UPDATE STOPPED, and not for want of a credential: "
+
+#: How it begins where git's update ended on a signal (#998).
+KILLED_LEAD = "  UPDATE KILLED, and not for want of a credential: "
+
+#: What it says of a signal a git that git's update ran died of, which
+#: git's code past 128 gives, and of one that killed git itself, which
+#: Python gives as a negative code.
+DIED_OF = ("git's update ended on signal {signum} ({name}, exit {code}), "
+           "which a git it ran died of. Git's own words above say which git "
+           "and where.")
+KILLED_IT = ("git's update ended on signal {signum} ({name}, exit {code}), "
+             "which killed it.")
+
+#: The failure a run whose update ended on a signal ends on.
+KILLED_FAILED = ("family bootstrap FAILED: git's update (ended on signal "
+                 "{signum})")
 
 #: What it says of a gitlink an `owner`'s own index records with no url
 #: (B5), and what cures it, up to the gitlink `above` records for `owner`.
@@ -121,9 +149,9 @@ def said_after_the_fetch(result, source: str = "none") -> list[str]:
     credential's `source`, as `after_fetch_line` reads them, the line this
     change adds included."""
     ours = [line for line in result.stderr.splitlines()
-            if line.startswith((*OURS, LEAD))]
+            if line.startswith((*OURS, LEAD, KILLED_LEAD))]
     assert ours, result.stderr
-    assert re.fullmatch(r"  FETCH INCOMPLETE \(git exit \d+\) using "
+    assert re.fullmatch(r"  FETCH INCOMPLETE \(git exit -?\d+\) using "
                         rf"credential source '{source}':", ours[0]), (
         result.stderr)
     return ours[1:]
@@ -732,6 +760,125 @@ def test_a_member_s_gitmodules_read_up_to_a_bad_line_is_read_as_before(
     assert result.returncode == 0, result.stdout + result.stderr
     assert said_after_the_fetch(result) == [ALONE]
     assert git_update(holder, env).returncode == 128
+
+
+# --- git's update ended on a signal (#998) ----------------------------------
+
+def test_p3_a_member_s_gitmodules_git_crashes_on_fails_naming_the_signal(
+        family, holder, offline, tmp_path):
+    """Lane 5's P3 on #954: IRRS's own `.gitmodules` gives its `code` leg
+    a `branch` with no value, committed there and recorded by hand, as
+    `family.py bump`'s own git reads that file too. Git 2.43.0's update
+    crashes in IRRS (`submodule--helper died of signal 11`), goes on to
+    IRSS, and exits 139; bootstrap said ok with the credential advice. It
+    names the signal and the code now, gives no advice, and fails on git's
+    update. Skipped where git does not crash so: from 2.43.1 git refuses
+    that line as it refuses a `url` with none, and dies (128)."""
+    env = cloning(offline, tmp_path, family)
+    member = holder / ROW
+    data = (member / GITMODULES).read_bytes()
+    line = (chr(9) + "path = code" + chr(10)).encode()
+    assert data.count(line) == 1, data
+    bare = (chr(9) + "branch" + chr(10)).encode()
+    (member / GITMODULES).write_bytes(data.replace(line, line + bare))
+    raw(member, env, "add", "--", GITMODULES)
+    moved_by_hand(holder, env, MEMBER,
+                  committed(member, env, "A branch with no value"))
+
+    result = bootstrap(holder, env, "--skip-members")
+    update = git_update(holder, env)
+
+    if update.returncode != 139:
+        pytest.skip(f"this git's update exits {update.returncode} here, "
+                    "where git 2.43.0's crashes (exit 139)")
+    assert result.returncode == 1, result.stdout + result.stderr
+    assert said_after_the_fetch(result) == [
+        KILLED_LEAD + DIED_OF.format(signum=11, name="SIGSEGV", code=139),
+        KILLED_FAILED.format(signum=11)]
+
+
+#: A wrapper `git` here is a POSIX shell script, which Windows does not run
+#: by its `#!` line.
+POSIX_WRAPPER = pytest.mark.skipif(
+    os.name == "nt", reason="a wrapper `git` here is a POSIX shell script, "
+    "which Windows does not execute by its `#!` line")
+
+
+def wrapped(env: dict, tmp_path: Path, action: str) -> dict:
+    """`env` with a wrapper `git` first on PATH, which runs `action`, a
+    shell command, for the `git submodule update --init --recursive` that
+    (a) runs, and the real git, by its absolute path, for every other
+    command, bootstrap's own and the walk's."""
+    real = shutil.which("git", path=env["PATH"])
+    assert real, env["PATH"]
+    shim = tmp_path / "wrapper"
+    shim.mkdir()
+    script = shim / "git"
+    script.write_bytes(chr(10).join([
+        "#!/bin/sh",
+        'case " $* " in',
+        f'*" submodule update --init --recursive "*) {action} ;;',
+        "esac",
+        f'exec {shlex.quote(real)} "$@"', ""]).encode())
+    script.chmod(0o755)
+    return {**env, "PATH": str(shim) + os.pathsep + env["PATH"]}
+
+
+#: `(what the wrapper answers (a)'s update with, what (a)'s line says of
+#: it)`: 139, the code git's update ends with where a git it ran died of
+#: SIGSEGV, as git 2.43.0's in P3; and the wrapper killed by SIGSEGV itself,
+#: with no core file, whose code Python gives as -11.
+KILLED_BY = {
+    "exit-139": ("exit 139",
+                 DIED_OF.format(signum=11, name="SIGSEGV", code=139)),
+    "sigsegv": ("ulimit -c 0; kill -s SEGV $$",
+                KILLED_IT.format(signum=11, name="SIGSEGV", code=-11)),
+}
+
+
+@POSIX_WRAPPER
+@pytest.mark.parametrize("action, said", KILLED_BY.values(), ids=KILLED_BY)
+def test_an_update_ended_on_a_signal_fails_naming_it(family, holder, offline,
+                                                     tmp_path, action, said):
+    """#998's two shapes on any git, every member checked out at its pin:
+    git's update ended on SIGSEGV, a git it ran dead of it (139) or git
+    itself killed by it (-11). Bootstrap said ok with the credential
+    advice for both. It names the signal and the code now, gives no
+    advice, and fails on git's update. The credential's own 128 keeps the
+    advice and ok (`test_the_credential_s_skip_is_as_it_was`)."""
+    env = cloning(offline, tmp_path, family)
+
+    result = bootstrap(holder, wrapped(env, tmp_path, action),
+                       "--skip-members")
+
+    assert result.returncode == 1, result.stdout + result.stderr
+    assert said_after_the_fetch(result) == [KILLED_LEAD + said,
+                                            KILLED_FAILED.format(signum=11)]
+
+
+#: What the wrapper answers (a)'s update with, where no signal gives the
+#: code: git's own `die`, 128, which the walk past the holder's records
+#: asks, and finds nothing in with every member checked out at its pin;
+#: and 255, past every signal's `128 + N`, which git exits with where a
+#: command of its returns -1.
+NO_SIGNAL = {"exit-128": "exit 128", "exit-255": "exit 255"}
+
+
+@POSIX_WRAPPER
+@pytest.mark.parametrize("action", NO_SIGNAL.values(), ids=NO_SIGNAL)
+def test_a_code_no_signal_gives_is_read_as_before(family, holder, offline,
+                                                  tmp_path, action):
+    """No misfire: where git's update exits with a code no signal gives,
+    nothing is said of a signal, and the run reads as before, the advice
+    and ok."""
+    env = cloning(offline, tmp_path, family)
+
+    result = bootstrap(holder, wrapped(env, tmp_path, action),
+                       "--skip-members")
+
+    assert result.returncode == 0, result.stdout + result.stderr
+    assert said_after_the_fetch(result) == [ALONE]
+    assert result.stdout.endswith("\nfamily bootstrap ok\n"), result.stdout
 
 
 # --- a credential in use -----------------------------------------------------

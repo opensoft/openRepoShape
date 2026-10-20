@@ -65,6 +65,13 @@ WHAT IT DOES, in order:
       set the token that is set, and `ok` (lane 1's SHOULD 4 on #889,
       lane 5's SHOULD 4 on #954, a known limit).
 
+      Where git's update ends on a signal, read from its exit code alone,
+      `128 + N` where a git it ran died of signal N and `-N` where it was
+      itself killed, the run fails naming the signal and the code, with
+      no advice (`ended_on`, #998): no credential crashes git or kills
+      it. It said `ok` there, with the advice, beside the 139 of git
+      2.43.0 crashing on a member's own `.gitmodules`.
+
       "every member and leg fetched" is said only where git exited 0 AND
       every row's member is checked out (#648). A member left NOT CHECKED
       OUT where no credential would check it out is said here instead, with
@@ -139,8 +146,9 @@ WHAT IT DOES, in order:
       gitlink this holder records with no url or at an unmerged
       `.gitmodules` (#879), or found where git's update died past this
       holder's own records, in a member's own index or at a member's
-      commit no fetch brought (#892); an exit 128 none of those shows is
-      no failure here, as (a) says. Any
+      commit no fetch brought (#892), or found that git's update ended
+      on a signal (#998); an exit 128 none of those shows is no failure
+      here, as (a) says. Any
       other member that is not checked out is REPORTED and skipped, not a
       failure: it is the state a missing credential leaves, and it is
       already reported in (a).
@@ -171,6 +179,7 @@ import os
 import re
 import shlex
 import shutil
+import signal
 import stat
 import subprocess
 import sys
@@ -218,8 +227,13 @@ UPDATE_STOPPED = "UPDATE STOPPED"
 #: that fails ends git's update 1, before it checks out or enters any
 #: member, and a checkout that refuses is passed with `git checkout`'s own
 #: 1, so no other code is asked past this holder's records
-#: (`stopped_below`, #892).
+#: (`stopped_below`, #892). A code past it that a signal gives is read
+#: apart (`ended_on`, #998).
 GIT_DIED = 128
+#: What (a)'s line says where git's update ended on a signal (`ended_on`,
+#: #998): a git it ran crashed, or it was killed, and no credential does
+#: either.
+UPDATE_KILLED = "UPDATE KILLED"
 #: The trace2 target git's update is run with where no credential is in
 #: use, a directory, so each git it starts writes its events to a file of
 #: its own there (`fetched_in`, #892).
@@ -386,7 +400,9 @@ def fetch_members(root: Path, rows: list[dict]) -> list[str]:
     records with no url, it is for that gitlink (`updated_none`, #879).
     Its line says no member was updated, or, where `rows` names none,
     nothing was (lane 1's NIT 5 on #889). Where none of that is so and
-    git's update died past this holder's own records, in a member's own
+    git's update ended on a signal (`ended_on`, #998), the one failure
+    line is for git's update, and its line names the signal and the code;
+    where it died past this holder's own records, in a member's own
     index or at a member's commit no fetch brought (`stopped_below`,
     #892), the one failure line is for the gitlink git stopped at, and
     its line says the update stopped there.
@@ -412,12 +428,13 @@ def fetch_members(root: Path, rows: list[dict]) -> list[str]:
     proc, fetched = run_update(args, root, traced=not token)
     left, stopper, modules = unfetched(root, rows, proc, source, token)
     whole = updated_none(stopper, modules)
+    signum = ended_on(proc.returncode)
     below = (None if left or whole or proc.returncode != GIT_DIED
              else stopped_below(root, fetched))
     if proc.returncode != 0:
         fetch_incomplete(proc, source, token,
                          credential_advice(bool(left), stopper, modules,
-                                           below))
+                                           below, signum))
     if left:
         print("  NOT CHECKED OUT, and not for want of a credential: "
               + ", ".join(f"{spelled(path)} ({reason(why, stopper, modules)})"
@@ -432,6 +449,10 @@ def fetch_members(root: Path, rows: list[dict]) -> list[str]:
               file=sys.stderr)
         return [f"{spelled(stopper)} (git stopped at it)" if whole == STOPPED
                 else f"{GITMODULES} (git cannot read it)"]
+    if signum is not None:
+        print(f"  {UPDATE_KILLED}, and not for want of a credential: "
+              + killed_said(signum, proc.returncode), file=sys.stderr)
+        return [f"git's update (ended on signal {signum})"]
     if below is not None:
         print(f"  {UPDATE_STOPPED}, and not for want of a credential: "
               + below_said(below), file=sys.stderr)
@@ -590,7 +611,8 @@ def fetch_incomplete(proc: subprocess.CompletedProcess, source: str,
 
 
 def credential_advice(denied: bool, stopper: str | None,
-                      modules: Gitmodules, below: Below | None = None) -> str:
+                      modules: Gitmodules, below: Below | None = None,
+                      signum: int | None = None) -> str:
     """(a)'s advice to set a credential, or nothing where git asked for none
     (#839): where its init died at a gitlink it has no url for (`stopper`),
     or it read nothing from `.gitmodules`, a merge leaving it unmerged, a
@@ -600,12 +622,15 @@ def credential_advice(denied: bool, stopper: str | None,
     Nor where git's update died past this holder's own records at what no
     credential cures (`below`, `stopped_below`, #892): a gitlink a member
     gives no url, or a member's commit a fetch that reached its remote did
-    not bring. Anywhere else a fetch git made failed, a member's, or a
-    leg's in a member checked out, and the advice stands; where a row is
-    said to be no credential's beside it (`denied`), it is for the members
-    that line does not name."""
-    if (stopper is not None or below is not None or modules.unmerged
-            or modules.refused or modules.unreadable):
+    not bring. Nor where it ended on a signal (`signum`, `ended_on`,
+    #998): a crash or a kill is no want of a credential, and a fetch git
+    could not make ends git's update there with 128, so an update that
+    ends `128 + N` met none. Anywhere else a fetch git made failed, a
+    member's, or a leg's in a member checked out, and the advice stands;
+    where a row is said to be no credential's beside it (`denied`), it is
+    for the members that line does not name."""
+    if (stopper is not None or below is not None or signum is not None
+            or modules.unmerged or modules.refused or modules.unreadable):
         return ""
     which = ("the members the next line does not name" if denied
              else "the members")
@@ -613,6 +638,44 @@ def credential_advice(denied: bool, stopper: str | None,
             "PAT with contents:read on them) or export an App-minted "
             "SHAPE_LEGS_APP_TOKEN, then re-run. What did arrive is "
             "bootstrapped below.")
+
+
+def ended_on(returncode: int) -> int | None:
+    """The signal git's update ended on, or None (#998). TOLD BY THE EXIT
+    CODE ALONE, never git's words, as `stopped_below` tells a 128:
+    - `128 + N`, where a git it ran died of signal N, as `run_command`
+      gives a child's signal, and git's update goes on past that gitlink
+      and ends with that code (measured, git 2.43.0: `submodule--helper
+      died of signal 11` on a member's own `.gitmodules` giving a `branch`
+      no value, exit 139);
+    - `-N`, where git itself was killed by signal N, as Python gives it.
+    Not 128, git's `die`, which `stopped_below` asks about, nor a code from
+    `128 + signal.NSIG` on, which numbers no signal this system has, as
+    255, which git exits with where a command of its returns -1: those are
+    read as before, the advice and `ok` where nothing else is told."""
+    if returncode < 0:
+        return -returncode
+    if GIT_DIED < returncode < GIT_DIED + signal.NSIG:
+        return returncode - GIT_DIED
+    return None
+
+
+def killed_said(signum: int, returncode: int) -> str:
+    """(a)'s line, after its lead, where git's update ended on `signum`
+    with `returncode` (`ended_on`, #998): the signal by its number and,
+    where this system names it, its name, then the code; a code past 128
+    is a git it ran that died of it, whose own words git printed above,
+    and a negative one is git itself killed."""
+    try:
+        name = f"{signal.Signals(signum).name}, "
+    except ValueError:
+        name = ""
+    said = (f"git's update ended on signal {signum} ({name}exit "
+            f"{returncode}), ")
+    if returncode < 0:
+        return said + "which killed it."
+    return (said + "which a git it ran died of. Git's own words above say "
+            "which git and where.")
 
 
 def git_not_started(exc: OSError) -> Refusal | None:
