@@ -1060,9 +1060,10 @@ def _shallower_line_refusal(rest: str, line: int, spaces: int,
     `rest`, which is less than the block's column, deeper than the key, and
     no comment. Split out of `_block_scalar_body` for its length (#1004).
 
-    A line that holds a tab and nothing else is refused as any other tab in
-    a line's indentation is (#1004); a line with text in it, a tab or no
-    tab before the text, is #917's line indented less than its block.
+    A line that holds nothing but tabs and spaces, at least one of them a
+    tab, is refused as any other tab in a line's indentation is (#1004); a
+    line with text in it, a tab or no tab before the text, is #917's line
+    indented less than its block.
     """
     if rest.strip(_YAML_WHITE) == "":
         return YamlError(f"line {line}: tab used for indentation")
