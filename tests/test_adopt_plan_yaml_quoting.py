@@ -1788,7 +1788,8 @@ def test_a_manifest_its_reader_refuses_is_the_validators_alone(
                            "refuses: "), stderr
     assert stderr.count("Remediation: ") == 1, stderr
     # The words are the reader's, and since #708 so is the remedy.
-    assert adopter.MANIFEST_UNREADABLE_REMEDIATION in stderr, stderr
+    assert sys.modules["shape_materialize"].MANIFEST_UNREADABLE_REMEDIATION \
+        in stderr, stderr
     assert VALIDATOR_REMEDIATION_START not in stderr, stderr
 
 
