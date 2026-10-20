@@ -1640,18 +1640,15 @@ def test_a_pin_whose_product_is_not_text_is_273s_finding_alone(
 UNWRITABLE_DATE = '"2026-09-02\\nx"'
 #: `(plan key, as a plan edited by hand spells it)`: values no file
 #: `execute` writes can hold, which #255 names as `plan-unwritable-value`:
-#: a line break, in a value read back as one line, and a control character
-#: such as a tab. Where the date and the pins were written bare, the
-#: project's loader would read each as something else too; the visibility
-#: is not one #181 judges (`NEVER_WRITTEN`). Beside a line break, the
-#: project's own validator lists the manifest such a value makes, as main
-#: has it (#255 before #261, `_entry_findings`); a pin holding a tab is
-#: #255's finding alone.
+#: a line break, in a value read back as one line. Where the date was
+#: written bare, the project's loader would read it as something else too;
+#: the visibility is not one #181 judges (`NEVER_WRITTEN`). Beside a line
+#: break, the project's own validator lists the manifest such a value
+#: makes, as main has it (#255 before #261, `_entry_findings`). A pin no
+#: file can hold is #273's finding alone (#901): `UNHELD_PINS`, below.
 UNWRITABLE = [
     pytest.param(ELECTED_ON_KEY, UNWRITABLE_DATE, id=ELECTED_ON_KEY),
     pytest.param(VISIBILITY_KEY, '"private\\nx"', id=VISIBILITY_KEY),
-    pytest.param(PINS_KEY, '"a\\nb"', id="pins-line-break"),
-    pytest.param(PINS_KEY, '"openGlass\\t"', id="pins-tab"),
 ]
 
 
@@ -1669,6 +1666,34 @@ def test_check_names_a_value_no_file_can_hold_once_as_unwritable(
     result = checked(plan)
     assert result.returncode == 1, result.stdout + result.stderr
     assert result.stderr.count(UNWRITABLE_FINDING) == 1, result.stderr
+    assert MISREAD_FINDING not in result.stderr, result.stderr
+    assert adopter.MANIFEST_MISREAD_REMEDIATION not in result.stderr
+
+
+#: A pin's product as a plan edited by hand spells it, holding a line break
+#: or a tab: no name `plan --pin` records, which `_read_pins` names.
+UNHELD_PINS = [
+    pytest.param('"a\\nb"', id="pins-line-break"),
+    pytest.param('"openGlass\\t"', id="pins-tab"),
+]
+
+
+@pytest.mark.parametrize("spelled", UNHELD_PINS)
+def test_check_names_a_pin_no_file_can_hold_once_as_malformed(
+        adopter, answered, tmp_path, spelled):
+    """On main at c7a3ff16 such a pin was three findings about one value:
+    `plan-pin-malformed`, then #255's `plan-unwritable-value` and the
+    validator's `plan-manifest-invalid` (#901). It is #273's finding, once,
+    which names the `plan` that records the pin whole, and never #181's."""
+    _, text = answered
+    plan = tmp_path / PLAN_FILE
+    carrying(plan, text, PINS_KEY, spelled)
+    result = checked(plan)
+    assert result.returncode == 1, result.stdout + result.stderr
+    found = [line for line in result.stderr.splitlines()
+             if line.startswith("FINDING ")]
+    assert len(found) == 1, result.stderr
+    assert found[0].startswith("FINDING plan-pin-malformed: "), found[0]
     assert MISREAD_FINDING not in result.stderr, result.stderr
     assert adopter.MANIFEST_MISREAD_REMEDIATION not in result.stderr
 

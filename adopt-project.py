@@ -450,9 +450,30 @@ def _pin_products(rows) -> list[str]:
     return products
 
 
-def _pin_row_problem(row: dict) -> tuple[str, str] | None:
-    """`(code, why)` for a `pins:` mapping `execute` cannot write a pin file
-    from, or None. `why` finishes a sentence about the entry.
+#: What a finding about a `pins:` mapping says `execute` writes the pin
+#: file from, and nothing else; and what one says that names the entry's
+#: `digest_source:`, which the pin file says too, as `local-clone` or
+#: `gh-api-tree-recursive` (`_digest_source_written`, #901).
+PIN_WRITTEN_FROM = "the commit and the digest `plan` records"
+PIN_WRITTEN_FROM_AND_HOW = f"{PIN_WRITTEN_FROM}, and how it was read"
+
+
+def _pin_written_from(keys) -> str:
+    """What a finding about the `pins:` keys `keys` says `execute` writes
+    the pin file from: `PIN_WRITTEN_FROM_AND_HOW` where one of them is
+    `digest_source:`, and `PIN_WRITTEN_FROM` otherwise. A finding about
+    the digest's source ended "from the commit and the digest `plan`
+    records, and nothing else", though `execute` writes the field it is
+    about into the pin file as well (#901)."""
+    return (PIN_WRITTEN_FROM_AND_HOW if "digest_source" in keys
+            else PIN_WRITTEN_FROM)
+
+
+def _pin_row_problem(row: dict) -> tuple[str, str, str] | None:
+    """`(code, why, written_from)` for a `pins:` mapping `execute` cannot
+    write a pin file from, or None. `why` finishes a sentence about the
+    entry, and `written_from` says what `execute` writes the pin file from
+    (`_pin_written_from`), for the sentence after it.
 
     Each value is held to what `plan` writes there: the commit to
     `COMMIT_RE`, the repository and the commit together to the scaffold's own
@@ -474,35 +495,41 @@ def _pin_row_problem(row: dict) -> tuple[str, str] | None:
     missing = [key for key, _ in PIN_FIELDS if row.get(key) in (None, "")]
     unrecorded = [key for key in PIN_RECORDED if key in missing]
     if unrecorded or missing:
+        named = unrecorded or missing
         return ((PIN_UNRECORDED if unrecorded else PIN_MALFORMED),
-                "records no " + " and no ".join(
-                    f"`{key}:`" for key in (unrecorded or missing)))
+                "records no " + " and no ".join(f"`{key}:`" for key in named),
+                _pin_written_from(named))
     not_text = [key for key, _ in PIN_FIELDS
                 if not isinstance(row.get(key), str)]
     if not_text:
-        return PIN_MALFORMED, "records " + ", ".join(
+        why = "records " + ", ".join(
             f"`{key}: {row[key]!r}`" for key in not_text) + ", which " + (
             "is" if len(not_text) == 1 else "are") + " not text"
+        return PIN_MALFORMED, why, _pin_written_from(not_text)
     product, repository, commit, digest, how = (
         row[key] for key, _ in PIN_FIELDS)
     if not COMMIT_RE.match(commit):
         return PIN_MALFORMED, (
             f"records `commit: {commit!r}`, which is not 40 hex: a tag, a "
-            "branch or an abbreviated oid can be moved, and a commit cannot")
+            "branch or an abbreviated oid can be moved, and a commit cannot"
+        ), PIN_WRITTEN_FROM
     if not (PIN_ARG_RE.match(f"{repository}@{commit}") and "/" in repository
             and repo_basename(repository) == product):
         return PIN_MALFORMED, (
             f"records `product: {product!r}` and `repository: "
             f"{repository!r}`, and `plan` records the repository as "
-            "`<owner>/<openProduct>`, its name the product's")
+            "`<owner>/<openProduct>`, its name the product's"
+        ), PIN_WRITTEN_FROM
     if not SHA256_RE.match(digest):
-        return PIN_MALFORMED, (f"records `tree_sha256: {digest!r}`, which is "
-                               "not 64 hex")
+        return PIN_MALFORMED, (
+            f"records `tree_sha256: {digest!r}`, which is not 64 hex"
+        ), PIN_WRITTEN_FROM
     if not _a_digest_source(how):
         return PIN_MALFORMED, (
             f"records `digest_source: {how!r}`, and `plan` records "
             f"`{DIGEST_FROM_GH}`, or `{DIGEST_FROM_CLONE} (<the clone's "
-            "path>)` on one printable line, and nothing else")
+            "path>)` on one printable line, and nothing else"
+        ), PIN_WRITTEN_FROM_AND_HOW
     return None
 
 
@@ -552,13 +579,16 @@ def _read_pins(plan: "Plan") -> tuple[list, list[str]]:
     `findings` is one FINDING for each entry it cannot: a name alone (an old
     plan's, or an edit's) or a mapping missing its commit or digest is
     `plan-pin-unrecorded`, and anything else `plan` never writes there is
-    `plan-pin-malformed`."""
+    `plan-pin-malformed`. A `pins:` that is no list is said as `_read_as`
+    says what the plan's reader read, as each other key a plan is opened by
+    is (`_plan_key_findings`, #901): `pins: true` is the boolean true, and
+    not Python's `True`."""
     rows = plan.get("pins")
     if rows is None:
         return [], []
     if not isinstance(rows, list):
-        return [], [f"FINDING {PIN_MALFORMED}: `pins:` is {rows!r}, not a "
-                    f"list of pins: {_pin_fix()}."]
+        return [], [f"FINDING {PIN_MALFORMED}: `pins:` is {_read_as(rows)}, "
+                    f"not a list of pins: {_pin_fix()}."]
     pins, findings = [], []
     for number, row in enumerate(rows, 1):
         if isinstance(row, str):
@@ -585,11 +615,11 @@ def _read_pins(plan: "Plan") -> tuple[list, list[str]]:
             f" ({product!r})" if isinstance(product, str) and product else "")
         problem = _pin_row_problem(row)
         if problem:
-            code, why = problem
+            code, why, written_from = problem
             findings.append(
                 f"FINDING {code}: {said} {why}. `execute` writes the pin file "
-                "from the commit and the digest `plan` records, and nothing "
-                f"else: {_pin_fix(row.get('repository') or product)}.")
+                f"from {written_from}, and nothing else: "
+                f"{_pin_fix(row.get('repository') or product)}.")
             continue
         pins.append((said, product, {
             placeholder: (row[key].lower() if key in PIN_RECORDED
@@ -4435,11 +4465,11 @@ def _plan_fields(plan: Plan) -> list[tuple[str, tuple]]:
         if isinstance(value, str) and leg_path_problem(what, value) is None:
             fields.append((placeholder, _field(what, placeholder, value)))
     # Each pin `execute` writes, by the product it lists in the manifest
-    # (`_template_table`), less one no file can hold, which is #255's
-    # finding alone. None at all where the plan's `pins:` has a finding of
-    # its own (`_read_pins`, #273): `execute` refuses such a plan before any
-    # leg exists, and one wrong pin is one finding. A product given twice is
-    # one such finding (`plan-pin-collides`), so each is asked about once.
+    # (`_template_table`). None at all where the plan's `pins:` has a
+    # finding of its own (`_read_pins`, #273): `execute` refuses such a plan
+    # before any leg exists, and one wrong pin is one finding. A product
+    # given twice is one such finding (`plan-pin-collides`), so each is
+    # asked about once.
     recorded, pin_findings = _read_pins(plan)
     naming = NamingPolicy.load(NAMING_POLICY)
     return fields + [(PINS_PLACEHOLDER,
@@ -5322,7 +5352,11 @@ def _manifest_values(plan: Plan, naming: NamingPolicy) -> dict | None:
     same question as any other. A refusal of the plan's own names, id,
     organisation or leg paths is raised here as it is by `check` and `execute`
     a few lines later. The organisation and the id are asked BEFORE the date
-    is: a bad date does not change which problem either command names first.
+    is, by the function `execute` asks after the plan's three repository
+    names, which both commands ask earlier (`plan.names()`), and before the
+    plan's leg paths and branch names (`_checked_org_and_id`, #901), so a bad
+    date beside a bad organisation or id does not make `check` and `execute`
+    name different problems first.
     """
     if not isinstance(plan.legs, dict):
         # The doctor's PLACEMENT plan writes `legs:` as a list (see
@@ -5335,16 +5369,16 @@ def _manifest_values(plan: Plan, naming: NamingPolicy) -> dict | None:
         _check_names(naming, names, pins)
     except Refusal:
         return None
-    # The organisation and the id are asked BEFORE the date's guard below.
-    # `checked_value` refuses an `org:` this tool will not put on a command
-    # line (`unsafe-value`; `execute` meets it first, in `_repository_urls`),
-    # and `Plan.project_id` refuses an `id:` that is not a project id
-    # (`plan-bad-id`; `_template_table` reads it again). After the guard,
-    # neither was asked of a plan whose date is a finding: `check` listed the
-    # date where `execute` refused the organisation, and refused the id where
-    # `execute` refused the date.
-    org = checked_value("org", plan.get("org"))
-    _ = plan.project_id
+    # The organisation and the id are asked BEFORE the date's guard below,
+    # and as `execute` asks them, after the three repository names above
+    # and before the leg paths and the branch names (#901): `unsafe-value`
+    # for an `org:` this tool will not put on a command line, and
+    # `plan-bad-id` for an `id:` that is not a project id
+    # (`_template_table` reads it again). After the guard, neither was asked
+    # of a plan whose date is a finding: `check` listed the date where
+    # `execute` refused the organisation, and refused the id where `execute`
+    # refused the date.
+    org = _checked_org_and_id(plan)
     if _elected_on_findings(plan):
         # Reported in the plan key's own words (#294), and the reference the
         # manifest records is chosen BY that date when the plan names none:
@@ -5413,14 +5447,18 @@ def _validator_judged(plan: Plan) -> frozenset[str] | None:
 #: The validator's finding about `tracking_branch:` (#455), which `check`
 #: leaves to `unsafe-value` wherever that names the branch (#708).
 TRACKING_BRANCH_CODES = ("manifest-tracking-branch",)
+#: The validator's finding about a `neutral_product_pins:` entry (#714),
+#: which `check` leaves to `_read_pins` wherever that names an entry (#901).
+PIN_ENTRY_CODES = ("manifest-neutral-product-pins",)
 
 
 def _validator_ignores(plan: Plan) -> tuple:
     """The codes of the validator's findings `check` leaves out, because a
     rule of its own names the same value: a leg path's always
-    (`LEG_PATH_CODES`), and the tracking branch's where `checked_value`
+    (`LEG_PATH_CODES`), the tracking branch's where `checked_value`
     refuses that branch, which `_branch_name_findings` reports as
-    `unsafe-value` (#708).
+    `unsafe-value` (#708), and a pin's where `_read_pins` finds the plan's
+    `pins:` (#901).
 
     ONE BAD `tracking_branch` IS ONE FINDING. Since #644 (#455) the
     validator finds a NUL or a lone surrogate in it, and `check` asks the
@@ -5432,12 +5470,27 @@ def _validator_ignores(plan: Plan) -> tuple:
     alone is asked, the value `execute` reads (`_branch_name_refusal`'s),
     because the validator's question starts no process (git's verdict on
     a name is `_branch_name_findings`' own).
+
+    ONE BAD PIN IS ONE FINDING TOO (#901). A pin edited to `product:
+    "a\\t"` was `plan-pin-malformed`, `plan-unwritable-value` and then
+    `plan-manifest-invalid` in the validator's words, three findings about
+    one value. The validator refuses a `neutral_product_pins:` entry that
+    is blank or holds a character that is not printable, and `_read_pins`
+    passes no such product, for it holds each to `PIN_ARG_RE`'s alphabet:
+    every entry the validator refuses is one `_read_pins` names, with the
+    `plan` that records the pin whole, the remedy, and `execute` refuses a
+    plan holding it before any leg exists. So wherever `_read_pins` finds
+    the plan's `pins:`, the validator's sentence about an entry is left
+    out, as #181 leaves such a plan's pins (`_plan_fields`) and #255 asks
+    only the pins `execute` writes (`_plan_values`).
     """
+    ignored = LEG_PATH_CODES + (PIN_ENTRY_CODES if _read_pins(plan)[1]
+                                else ())
     try:
         checked_value(TRACKING_KEY, plan.get(TRACKING_KEY, "main"))
     except Refusal:
-        return LEG_PATH_CODES + TRACKING_BRANCH_CODES
-    return LEG_PATH_CODES
+        return ignored + TRACKING_BRANCH_CODES
+    return ignored
 
 
 def _named_as_read(plan: Plan) -> dict[str, str]:
@@ -8871,7 +8924,10 @@ def _entry_findings(plan: Plan, source: Source,
     `plan-tracking-branch-missing` alone (#479), and one only the source's
     remote `origin` has, which `execute --local-remote-dir` refuses, is
     named by neither (`_a_branch_execute_writes`); and a pin is named only
-    where the plan's `pins:` has no finding of #273's (`_plan_fields`).
+    where the plan's `pins:` has no finding of #273's (`_plan_fields`). A
+    `pins:` entry #273 names is that finding alone (#901): #255 asks only
+    the pins `execute` writes (`_plan_values`), and the validator's word on
+    such an entry is left out (`_validator_ignores`).
     And a tracking branch whose NAME is wrong is that finding alone (#520):
     one outside the alphabet or one git will not create is no branch of any
     source, and is not also said to be missing from this one.
@@ -12468,7 +12524,7 @@ def _held_findings(plan: Plan, names: dict, local_remote_dir: Path | None,
     first of (#863), each as a FINDING under its code, and the codes, which
     say whether the leg question is still asked (`RENAMES_THE_LEGS`). Asked
     only of an `org:` `execute` would get that far with: another is
-    `unsafe-value`, refused first in `_repository_urls`."""
+    `unsafe-value`, refused first in `_checked_plan_values` (#901)."""
     try:
         org = checked_value("org", _plan_org(plan))
     except Refusal:
@@ -12975,11 +13031,49 @@ def _mount_the_legs(assembly: Path, work_root: Path, names: dict, urls: dict,
     run(["git", "submodule", "sync", "-q"], cwd=assembly)
 
 
+def _checked_org_and_id(plan: Plan) -> str:
+    """The plan's `org:` as `checked_value` hands it back, once its `id:`
+    is asked too. Both commands ask the two BEFORE THE PLAN'S LEG PATHS AND
+    BRANCH NAMES, and after its three repository names, which they ask
+    earlier (`plan.names()`, then `_check_names`): `check` in
+    `_manifest_values` and `execute` in `_checked_plan_values`.
+    `checked_value` refuses an `org:` this tool will not put on a `git` or
+    `gh` command line as `unsafe-value`, and `Plan.project_id` an `id:`
+    that is no project id as `plan-bad-id`.
+
+    ONE ORDER, THE MORE BASIC PROBLEM FIRST (#901). `execute` asked the two
+    leg paths and the two branch names first, the organisation after them
+    (`_repository_urls`) and the id last, in `_refuse_what_check_finds`,
+    where the manifest is built (`_manifest_values`), so a plan edited to
+    `id: "North Wind"` and `legs.spec_path: "../spec"` was `plan-bad-id` to
+    `check` and `plan-bad-leg-path` to `execute`, and one edited to `org:
+    "-evil"` with the same path was `unsafe-value` to one and
+    `plan-bad-leg-path` to the other. The organisation and the id come
+    before the leg paths and the branches because they say which project
+    the plan is about: every repository the plan names is `<org>/<name>`,
+    on GitHub and in the manifest, and the topic `execute` sets and the
+    manifest's `id:` are made from the id, where a leg path or a branch is
+    a value inside that project. And `check` holds the manifest built from
+    both to the project's own validator before it lists a finding, so it
+    refuses either outright, exit 2, where a leg path or a branch name is
+    one finding of the many it lists: asked before the leg paths and the
+    branches by both commands, this is the one order they can share.
+    """
+    org = checked_value("org", _plan_org(plan))
+    _ = plan.project_id
+    return org
+
+
 def _checked_plan_values(plan: Plan) -> tuple[str, str, str, str]:
-    """The four plan values that reach a `git` command line as arguments:
+    """The plan's options, in the order `check` asks them (#901): its
+    `org:` and `id:` (`_checked_org_and_id`), after the three repository
+    names both commands ask earlier (`plan.names()`), then the four values
+    that reach a `git` command line as arguments, which it returns:
     `(spec_path, code_path, branch, tracking)`.
 
-    Split out of `cmd_execute` for #138, in the order the refusals came in.
+    Split out of `cmd_execute` for #138, in the order the refusals came in
+    there, the leg paths first; #901 asks the organisation and the id
+    before them, as `check` does, so the two name one problem first.
     A branch name `checked_value` refuses is `check`'s finding too, in the
     same words (`_branch_name_refusal`, #520), and so is a branch the plan's
     reader read as a number or a boolean, which is asked first
@@ -12989,6 +13083,7 @@ def _checked_plan_values(plan: Plan) -> tuple[str, str, str, str]:
     git will not create is refused with `check`'s other findings, by
     `_refuse_what_check_finds`, and before any leg exists as well.
     """
+    _checked_org_and_id(plan)
     spec_leg, code_leg = _plan_leg_paths(plan)
     # Before ANY leg exists: `check` finds a bad path and `execute` refuses it
     # on its own account, not because `check` happened to be run first (#169).
@@ -14277,11 +14372,15 @@ def _plan_values(plan: Plan) -> list[tuple[str, str, str]]:
     by this tool (`private`, today's date) and is left out. The follow-ups
     are `_plan_follow_ups`', the items of text `_commit_the_split` writes; a
     `follow_ups:` that is not a list of text is `plan-bad-follow-ups` (#293),
-    and is never iterated here."""
+    and is never iterated here. The pins are the products of the pins
+    `execute` writes (`_declared_pins`): a `pins:` entry `_read_pins` names
+    is that finding alone (#901), and `execute` writes none of a plan
+    holding one."""
     fields = [(key, str(plan.get(key)), where)
               for key, where in WRITTEN_PLAN_VALUES.items()
               if plan.get(key) is not None]
-    fields += [("a `pins:` item", pin, ROOT_MANIFEST) for pin in plan.pins]
+    fields += [("a `pins:` item", pin, ROOT_MANIFEST)
+               for pin in _declared_pins(plan)]
     return fields + [("a `follow_ups:` item", item, SPLIT_MESSAGE)
                      for item in _plan_follow_ups(plan)]
 
@@ -15630,8 +15729,8 @@ def _not_the_source(plan: Plan, source: Source,
     a leading `-` or a character outside ASCII. `execute` asks this first,
     so it refuses such an `org:` as `plan-not-the-source` where the plan is
     held to a repository (`_held_repository`, and the `org:` is not that
-    repository's own), and as `unsafe-value`, from `_repository_urls`,
-    where it is held to none. `check` asks
+    repository's own), and as `unsafe-value`, from `_checked_plan_values`
+    (#901), where it is held to none. `check` asks
     `checked_value` of `org:` first (`_manifest_values`, and
     `_submodule_findings` where a kept submodule url is relative) and ends
     in `unsafe-value`, exit 2, before it compares anything; only where the
