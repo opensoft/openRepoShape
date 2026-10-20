@@ -8132,7 +8132,7 @@ class PinRollback:
     def _head_said(self) -> str:
         at = (self.at or "")[:12]
         if self.branch is not None:
-            return f"{self.path} back on {self.branch} at {at}"
+            return f"{self.path} back on {_shown(self.branch)} at {at}"
         return f"{self.path} checked out at {at} again"
 
     def _work_tree_said(self) -> str:
@@ -8141,7 +8141,7 @@ class PinRollback:
         if self.at is None:
             return f"{self.path} checked out again"
         said = (f"{self.path} checked out again at {self.at[:12]}"
-                + (f" on {self.branch}" if self.branch else "")
+                + (f" on {_shown(self.branch)}" if self.branch else "")
                 + " from the object store `git rm` keeps")
         if self.legs:
             said += (", and " + " and ".join(leg for leg, _, _, _ in self.legs)

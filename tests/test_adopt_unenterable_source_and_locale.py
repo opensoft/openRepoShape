@@ -34,6 +34,7 @@ locale's tests skip where `c_locale_or_skip` finds none.
 from __future__ import annotations
 
 import errno
+import json
 import os
 import subprocess
 import sys
@@ -43,7 +44,7 @@ import pytest
 
 from conftest import ADOPT, git, make_source_repo, run_script, spelled
 from test_adopt_c_locale_bytes import in_the_locale
-from test_adopt_git_rm_bytes import C_LOCALE
+from test_adopt_git_rm_bytes import C_LOCALE, c_locale_or_skip
 from test_adopt_temp_work_roots import (PLANNED, PROJECT, SMALL_TREE,
                                         planned_from_github, recorded)
 from test_adopt_unsearchable_source import (  # noqa: F401
@@ -65,6 +66,37 @@ UNTOLD = {False: "whether the source is still there",
 ACCENTED = "Thing\u00e9"
 #: UTF-8 mode under the C locale: how the plan is written.
 UTF8_MODE = {"LC_ALL": "C", "PYTHONUTF8": "1"}
+
+#: The child of `test_the_clone_at_the_record_is_kept_under_the_c_locale`:
+#: `Plan._keep_the_clone_at_the_record` of a plan recording argv[2], a JSON
+#: string, for the clones whose paths are the hex of their bytes in argv[3:]
+#: (every argument is ASCII, as the locale under test spells nothing else).
+#: It prints one line of ASCII JSON: whether this locale spells the record,
+#: and the hex of each clone left.
+KEEP_THE_CLONE = r"""
+import importlib.util, json, os, sys
+from pathlib import Path
+from types import SimpleNamespace
+sys.dont_write_bytecode = True
+spec = importlib.util.spec_from_file_location(
+    "adopt_keep_the_clone", os.fsdecode(bytes.fromhex(sys.argv[1])))
+adopter = importlib.util.module_from_spec(spec)
+spec.loader.exec_module(adopter)
+record = json.loads(sys.argv[2])
+made = []
+for spelled in sys.argv[3:]:
+    at = os.fsdecode(bytes.fromhex(spelled))
+    made.append(adopter._Claim(Path(at), at, (0, 0), (0, 0), False))
+try:
+    os.fsencode(record)
+    spells = True
+except UnicodeEncodeError:
+    spells = False
+adopter.Plan._keep_the_clone_at_the_record(
+    SimpleNamespace(source={"local_path": record}), made)
+print(json.dumps({"spells": spells,
+                  "left": [os.fsencode(c.made_at).hex() for c in made]}))
+"""
 
 
 def refused_cwd(adopter, monkeypatch, directory: str,
@@ -309,3 +341,35 @@ def test_a_surrogate_no_byte_is_read_as_is_asked_as_written(adopter):
     in a plan, is no byte `surrogateescape` reads: no name on the disk holds
     it, and it is asked as written, as `Path.exists()` asked it."""
     assert adopter._recorded_spelling("Thing\ud800") == ("Thing\ud800", "")
+
+
+def test_the_clone_at_the_record_is_kept_under_the_c_locale(tmp_path):
+    """`_keep_the_clone_at_the_record` (#803, #918): `check --source` takes
+    the clone this run made off its list of clones to remove where it is at
+    the plan's own `source.local_path`. A plan written in UTF-8 mode records
+    `Thing\\u00e9` as itself, which `LC_ALL=C PYTHONUTF8=0` cannot spell: if
+    the record is asked as written, `os.path.realpath` meets the
+    `UnicodeEncodeError` and the method returns, the clone at the record
+    stays on the list and `check` removes it, #803's bug again under the C
+    locale. Asked as the UTF-8 bytes the plan holds, that one clone is taken
+    off, and a clone made elsewhere stays. The method runs in a child that
+    is the C locale itself, with a real directory at the record."""
+    env = c_locale_or_skip()
+    base = Path(os.path.realpath(tmp_path))
+    clone = base / ACCENTED / "source-readonly" / "Thing"
+    elsewhere = base / "work" / "source-readonly" / "Thing"
+    for directory in (clone, elsewhere):
+        directory.mkdir(parents=True)
+
+    child = subprocess.run(
+        [sys.executable, "-c", KEEP_THE_CLONE, os.fsencode(ADOPT).hex(),
+         json.dumps(str(clone)), os.fsencode(clone).hex(),
+         os.fsencode(elsewhere).hex()],
+        capture_output=True, env=env, stdin=subprocess.DEVNULL, check=False)
+
+    assert child.returncode == 0, child.stderr.decode("utf-8", "replace")
+    answer = json.loads(child.stdout.decode("ascii"))
+    assert answer["spells"] is False, "premise: this locale cannot spell it"
+    left = [os.fsdecode(bytes.fromhex(held)) for held in answer["left"]]
+    assert left == [str(elsewhere)], (
+        f"the clone at the record is not taken off: {left}")

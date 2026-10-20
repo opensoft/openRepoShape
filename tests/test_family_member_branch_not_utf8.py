@@ -58,7 +58,9 @@ def test_a_member_on_a_branch_that_is_not_utf8_is_put_back_on_it(
     `UnicodeDecodeError` traceback, exit 1. Now each verb runs to the
     commit the hook refuses, exit 2, and its rollback puts the holder back
     as it was and the member back on `caf<0xE9>`, attached, at its
-    commit."""
+    commit; and the sentence names the branch as `_shown` does, U+FFFD for
+    the byte, not as the lone surrogate stderr writes with
+    `backslashreplace`."""
     env = isolated(offline, tmp_path)
     mount = holder / PATH
     on_a_branch_that_is_not_utf_8(mount)
@@ -75,6 +77,11 @@ def test_a_member_on_a_branch_that_is_not_utf8_is_put_back_on_it(
     sentence = result.stderr.splitlines()[-1]
     assert sentence.startswith(begins), sentence
     assert " on caf" in sentence and at[:12] in sentence, sentence
+    # The branch as a refusal shows a name read with `surrogateescape`
+    # (`_shown`, U+FFFD), never as the lone surrogate `backslashreplace`
+    # writes to stderr, `caf` and a backslash and `udce9`.
+    assert " on caf\ufffd" in sentence, sentence
+    assert "\\udce9" not in sentence, sentence
     assert git_answer_bytes(mount, "symbolic-ref", "-q", "HEAD") == ATTACHED
     assert git_answer_bytes(mount, "rev-parse", "HEAD").decode(
         "ascii").strip() == at
