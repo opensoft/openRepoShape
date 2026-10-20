@@ -448,10 +448,11 @@ def test_an_ordinary_mount_fetches_the_branch_and_moves_nothing_else(
 #: Each refspec a mount may keep, and whether `bump`'s fetch carries it. The
 #: id names the clause of `_origin_fetch_refspecs` that leaves it out, the
 #: first that matches in its order: OUTSIDE `origin/`; A SOURCE THAT CAN NAME
-#: A TAG, by one of its three ways (`tag-source` under `refs/tags/`,
-#: `tag-pattern` a pattern that takes the tags too, `tag-short-name` a name
-#: git completes, as a tag first); THE BRANCHES' GLOB; `carried` where none
-#: does.
+#: A TAG, by one of the three ways of `_can_name_a_tag` (`tag-source` under
+#: `refs/tags/`, `tag-pattern` a pattern that takes the tags too, and, no
+#: pattern and not under `refs/`, `tag-short-name` a name git completes,
+#: trying a tag before a branch, and `tag-object-id` an exact object id);
+#: THE BRANCHES' GLOB; `carried` where none does.
 WHICH_CLAUSE = pytest.mark.parametrize("refspec, carried", [
     pytest.param("+refs/heads/*:refs/heads/*", False, id="outside-heads"),
     pytest.param("+refs/*:refs/*", False, id="outside-mirror"),
@@ -471,6 +472,10 @@ WHICH_CLAUSE = pytest.mark.parametrize("refspec, carried", [
     pytest.param("+v1:refs/remotes/origin/v1", False, id="tag-short-name"),
     pytest.param("+tags/v1:refs/remotes/origin/tags/v1", False,
                  id="tag-short-name-in-tags"),
+    pytest.param("+heads/main:refs/remotes/origin/hm", False,
+                 id="tag-short-name-heads-main"),
+    pytest.param(f"+{'a1' * 20}:refs/remotes/origin/pinned", False,
+                 id="tag-object-id"),
     pytest.param("+refs/pull/*/head:refs/remotes/origin/*", False,
                  id="branches-glob-pull-requests"),
     pytest.param(PULLS, True, id="carried-pull-requests-in-a-folder"),
@@ -500,10 +505,13 @@ def test_which_clause_leaves_each_refspec_out(
     `tag-source-one-tag` the source under `refs/tags/` (the pattern
     `refs/tags/*` is the next way's too), `tag-pattern-mirror-in-a-folder` and
     `tag-pattern-refs-t` the pattern, the `tag-short-name` rows the short
-    name, and `branches-glob-pull-requests` THE BRANCHES' GLOB, which alone
-    leaves out a source that can name no tag. A `carried` row fails a clause
-    that takes too much: the pull requests in a folder and a branch, which
-    #946 carries, and `refs/tagsx/`, which no tag is under."""
+    name (`heads/main`, which git completes to the branch first, holds that
+    every short name is left out, as a tag may answer for any of them where
+    the remote lacks the names git tries first), `tag-object-id` the exact
+    object id, and `branches-glob-pull-requests` THE BRANCHES' GLOB, which
+    alone leaves out a source that can name no tag. A `carried` row fails a
+    clause that takes too much: the pull requests in a folder and a branch,
+    which #946 carries, and `refs/tagsx/`, which no tag is under."""
     env = isolated(offline, tmp_path)
     for key, value in env.items():
         monkeypatch.setenv(key, value)

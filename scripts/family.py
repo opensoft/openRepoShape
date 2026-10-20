@@ -8850,13 +8850,56 @@ _ORIGIN_BRANCHES = "+refs/heads/*:refs/remotes/origin/*"
 #: is not carried (`_origin_fetch_refspecs`).
 _ORIGIN_BRANCH_NAMES = _ORIGIN_BRANCHES.partition(":")[2]
 
+#: Where a repository keeps its tags: a refspec of the mount's own whose
+#: source can name a ref here is not carried (`_can_name_a_tag`, #1009).
+_TAGS_PREFIX = "refs/tags/"
+
+
+def _can_name_a_tag(source: str) -> bool:
+    """Whether a fetch refspec's `source` can name a tag of `origin`, so that
+    `bump`'s fetch does not carry the mount's refspec that has it
+    (`_origin_fetch_refspecs`; #905, RV946's S1, #1009). Three ways, each
+    measured on git 2.43:
+
+    UNDER `refs/tags/`: `+refs/tags/*:refs/remotes/origin/*`, onto the
+    branches' names, `+refs/tags/*:refs/remotes/origin/tags/*`, or one tag.
+
+    A PATTERN WHOSE PART BEFORE THE `*` IS A START OF `refs/tags/`, `refs/*`
+    or `*`: git matches a pattern against each ref's whole name and never
+    completes it, so it takes the tags too, and a mirror into `origin/`
+    (`+refs/*:refs/remotes/origin/*`) or into a folder there
+    (`+refs/*:refs/remotes/origin/all/*`) brings every tag.
+
+    NO PATTERN, AND NOT UNDER `refs/`: a short name, which git completes,
+    trying the name itself, then `refs/<name>`, then `refs/tags/<name>`
+    before `refs/heads/<name>`. With a branch and a tag `x`,
+    `+x:refs/remotes/origin/x` took the tag; `+heads/main:` took the branch
+    `main`, as `refs/heads/main` comes first, and names a tag only where the
+    remote has none of the names before it. An exact object id
+    (`+<40 hex>:refs/remotes/origin/pinned`) is no pattern and not under
+    `refs/` either, and is left out with them: it names a commit and no
+    branch, and under `origin/` it answered for one.
+
+    A FULL NAME THAT IS NO PATTERN IS NOT LEFT OUT, though git falls back to
+    a tag for it too: `+refs/heads/zz:refs/remotes/origin/zz` took the tag
+    `refs/tags/refs/heads/zz` where the remote had no branch `zz`. Leaving
+    out every full name would leave out the pull requests and the review
+    refs this fetch keeps (#946's U184 rows).
+    """
+    fixed, star, _ = source.partition("*")
+    if source.startswith(_TAGS_PREFIX):
+        return True
+    if star:
+        return _TAGS_PREFIX.startswith(fixed)
+    return not source.startswith("refs/")
+
 
 def _origin_fetch_refspecs(member: Path) -> list[str]:
     """The refspecs `bump`'s fetch of `origin` carries (#686): every branch of
     `origin`, then what the mount's own `remote.origin.fetch` keeps under
-    `refs/remotes/origin/`, and none of what it excludes, nor one that can
-    bring a tag, nor what gives another namespace the names the branches
-    take there (#905, #1009).
+    `refs/remotes/origin/`, and none of what it excludes, nor one whose
+    source `_can_name_a_tag`, nor what gives another namespace the names the
+    branches take there (#905, #1009).
 
     WHY THE MOUNT'S OWN ARE ADDED. `--prune` deletes every ref under
     `refs/remotes/origin/` that no refspec on the command line maps a ref of
@@ -8897,34 +8940,31 @@ def _origin_fetch_refspecs(member: Path) -> list[str]:
 
     A SOURCE THAT CAN NAME A TAG IS LEFT OUT, wherever under `origin/` it
     writes (#905, #459's U183, RV946's S1, #1009): a tag is not a branch,
-    and under `origin/` it answers for one. A source can name a tag three
-    ways. It is under `refs/tags/`: `+refs/tags/*:refs/remotes/origin/*`,
-    onto the branches' names, or `+refs/tags/*:refs/remotes/origin/tags/*`.
-    It is a pattern whose part before the `*` is a start of `refs/tags/`,
-    `refs/*` or `*`: git matches a pattern against each ref's whole name,
-    tags too, so a mirror into `origin/` (`+refs/*:refs/remotes/origin/*`)
-    or into a folder there (`+refs/*:refs/remotes/origin/all/*`) brings
-    every tag. Or it is no pattern and does not start with `refs/`: a short
-    name, which git completes, trying `refs/tags/<name>` before
-    `refs/heads/<name>` (with a branch and a tag `x`,
-    `+x:refs/remotes/origin/x` took the tag). Carried, it clashed with the
-    first refspec wherever it put a tag on a branch's name: this fetch
-    exited 128 ("Cannot fetch both refs/heads/feat and refs/tags/feat to
+    and under `origin/` it answers for one. `_can_name_a_tag` says which
+    sources can, three ways: one under `refs/tags/`; a pattern that takes the
+    tags too, such as the mirror into `origin/`
+    (`+refs/*:refs/remotes/origin/*`) or into a folder there
+    (`+refs/*:refs/remotes/origin/all/*`); and one that is no pattern and
+    not under `refs/`, a short name or an exact object id. A full name that
+    is no pattern is not asked, though git falls back to a tag for it too
+    (`_can_name_a_tag` says why). Carried, it clashed with the first
+    refspec wherever it put a tag on a branch's name: this fetch exited 128
+    ("Cannot fetch both refs/heads/feat and refs/tags/feat to
     refs/remotes/origin/feat"; for the mirror in a folder, a branch
     `all/tags/v1` and a tag `v1`) where `git fetch origin` exits 0, and
     `bump` said it could not fetch the member, then told the person to fix
     the network or the credential. Where no name was shared, the tags it
-    put there answered for branches:
-    `_on_a_remote_branch` reads every ref under `refs/remotes/origin/`, so a
-    commit only a tag of `origin` reaches was pinned, against the rule
-    (#613) that a tag is not a branch (measured on git 2.43, each). #946
-    left out a source under `refs/tags/` and a mirror onto the branches'
-    glob, so a mirror in a folder was still carried and failed both ways
-    (#1009). Left out, the fetch works and a tag there answers for nothing:
-    the prune drops such a ref, as any ref under `origin/` no refspec of
-    this fetch maps, and the mount's own next `git fetch origin` writes it
-    back. A refspec that can name no tag and writes a folder of its own
-    under `origin/` (the pull requests above, `pr/*`) still rides along.
+    put there answered for branches: `_on_a_remote_branch` reads every ref
+    under `refs/remotes/origin/`, so a commit only a tag of `origin` reaches
+    was pinned, against the rule (#613) that a tag is not a branch
+    (measured on git 2.43, each). #946 left out a source under `refs/tags/`
+    and a mirror onto the branches' glob, so a mirror in a folder was still
+    carried and failed both ways (#1009). Left out, the fetch works and a
+    tag there answers for nothing: the prune drops such a ref, as any ref
+    under `origin/` no refspec of this fetch maps, and the mount's own next
+    `git fetch origin` writes it back. A refspec that can name no tag and
+    writes a folder of its own under `origin/` (the pull requests above,
+    `pr/*`) still rides along.
 
     THE BRANCHES' GLOB: ONE THAT GIVES ANOTHER NAMESPACE THE BRANCHES' NAMES
     IS LEFT OUT (#905, #459's U183), a refspec whose destination is the
@@ -8966,13 +9006,8 @@ def _origin_fetch_refspecs(member: Path) -> list[str]:
         source, _, destination = spec[1:].partition(":")
         if not destination.startswith("refs/remotes/origin/"):
             continue
-        fixed, star, _ = source.partition("*")
-        if source.startswith("refs/tags/"):
-            continue  # a tag is not a branch (RV946's S1)
-        if star and "refs/tags/".startswith(fixed):
-            continue  # a pattern that takes the tags too (#1009)
-        if not star and not source.startswith("refs/"):
-            continue  # a short name, which git tries as a tag first (#1009)
+        if _can_name_a_tag(source):
+            continue  # a tag is not a branch (RV946's S1, #1009)
         if (destination == _ORIGIN_BRANCH_NAMES
                 and not source.startswith("refs/heads/")):
             continue  # it gives other refs the branches' names (U183)
