@@ -1555,6 +1555,165 @@ def readable_branch(what: str, value) -> str:
 
 
 # ---------------------------------------------------------------------------
+# What a fetch for a branch's answer carries (#686, #898, #1037)
+# ---------------------------------------------------------------------------
+#
+# `family.py bump` fetches a member's `origin` (#686), and `bump-leg.py` a
+# leg's (#898), and each then asks one question of what is under
+# `refs/remotes/origin/`: does a BRANCH of the remote reach the commit? So
+# each fetch carries every branch and, so that `--prune` keeps what they
+# keep, the repository's own refspecs that write there. Which of those it
+# carries is ONE RULE, asked by both (#1037): #946 and #1027 wrote it in
+# `family.py` alone, and the leg's fetch went on carrying every refspec of
+# the leg's own that can bring a tag under `origin/`.
+#
+# IT LIVES HERE AND NOT IN `scripts/repo_shape.py`, which is a SHAPE COPY
+# every root digest-pins, and no root's own copy fetches for a pin (see
+# "Commit trailers" below for the same argument). This module is in no copy
+# list and both tools already import it. Each tool still reads the
+# repository's `remote.origin.fetch` its own way, and says why its own
+# refspecs ride along.
+
+#: What the fetch always asks of the remote: every branch, into the
+#: namespace both tools read branches from, forced as a remote-tracking ref
+#: is.
+ORIGIN_BRANCHES = "+refs/heads/*:refs/remotes/origin/*"
+
+#: The names `ORIGIN_BRANCHES` gives the branches (#905): a refspec of the
+#: repository's own that gives another namespace these very names is not
+#: carried (`origin_fetch_refspecs`).
+ORIGIN_BRANCH_NAMES = ORIGIN_BRANCHES.partition(":")[2]
+
+#: Where a repository keeps its tags: a refspec of the repository's own
+#: whose source can name a ref here is not carried (`can_name_a_tag`,
+#: #1009).
+TAGS_PREFIX = "refs/tags/"
+
+
+def can_name_a_tag(source: str) -> bool:
+    """Whether a fetch refspec's `source` can name a tag of the remote, so
+    that the fetch does not carry the repository's refspec that has it
+    (`origin_fetch_refspecs`; #905, RV946's S1, #1009, #1037). Three ways,
+    each measured on git 2.43:
+
+    UNDER `refs/tags/`: `+refs/tags/*:refs/remotes/origin/*`, onto the
+    branches' names, `+refs/tags/*:refs/remotes/origin/tags/*`, or one tag.
+
+    A PATTERN WHOSE PART BEFORE THE `*` IS A START OF `refs/tags/`, `refs/*`
+    or `*`: git matches a pattern against each ref's whole name and never
+    completes it, so it takes the tags too, and a mirror into `origin/`
+    (`+refs/*:refs/remotes/origin/*`) or into a folder there
+    (`+refs/*:refs/remotes/origin/all/*`) brings every tag.
+
+    NO PATTERN, AND NOT UNDER `refs/`: a short name, which git completes,
+    trying the name itself, then `refs/<name>`, then `refs/tags/<name>`
+    before `refs/heads/<name>`. With a branch and a tag `x`,
+    `+x:refs/remotes/origin/x` took the tag; `+heads/main:` took the branch
+    `main`, as `refs/heads/main` comes first, and names a tag only where the
+    remote has none of the names before it. An exact object id
+    (`+<40 hex>:refs/remotes/origin/pinned`) is no pattern and not under
+    `refs/` either, and is left out with them: it names a commit and no
+    branch, and under `origin/` it answered for one.
+
+    A FULL NAME THAT IS NO PATTERN IS NOT LEFT OUT, though git falls back to
+    a tag for it too: `+refs/heads/zz:refs/remotes/origin/zz` took the tag
+    `refs/tags/refs/heads/zz` where the remote had no branch `zz`. Leaving
+    out every full name would leave out the pull requests and the review
+    refs the fetch keeps (#946's U184 rows).
+    """
+    fixed, star, _ = source.partition("*")
+    if source.startswith(TAGS_PREFIX):
+        return True
+    if star:
+        return TAGS_PREFIX.startswith(fixed)
+    return not source.startswith("refs/")
+
+
+def origin_fetch_refspecs(configured: list[str]) -> list[str]:
+    """The refspecs a fetch for a branch's answer carries: `ORIGIN_BRANCHES`,
+    then each value of the repository's own `remote.origin.fetch` in
+    `configured` that no clause below leaves out, forced, in its order and
+    without duplicates. `family.py`'s `_origin_fetch_refspecs` asks it of a
+    member's mount (#686) and `bump-leg.py`'s `_leg_fetch_refspecs` of a leg
+    (#898, #1037), each with `configured` read its own way.
+
+    A NEGATIVE REFSPEC (`^refs/heads/wip`) IS SKIPPED: a narrowing refspec
+    never decides reachability, and git applies a configured negative one
+    only to a fetch with none on its command line (measured, git 2.43). A
+    POSITIVE ONE IS FORCED, whether or not it was written with its `+`: a
+    remote-tracking ref only mirrors the remote, and a refspec without it
+    would fail the fetch on a ref force-pushed.
+
+    THREE CLAUSES LEAVE A REFSPEC OUT, asked in this order, and the first
+    that matches is the one that leaves it out: a destination OUTSIDE
+    `refs/remotes/origin/`, A SOURCE THAT CAN NAME A TAG, and THE BRANCHES'
+    GLOB.
+
+    A DESTINATION OUTSIDE `refs/remotes/origin/`, a mirror's `+refs/*:refs/*`
+    or `+refs/heads/*:refs/heads/*`, is never carried, so no refspec the
+    fetch names writes outside it.
+
+    A SOURCE THAT CAN NAME A TAG IS LEFT OUT, wherever under `origin/` it
+    writes (#905, #459's U183, RV946's S1, #1009, #1037): a tag is not a
+    branch, and under `origin/` it answers for one. `can_name_a_tag` says
+    which sources can, three ways: one under `refs/tags/`; a pattern that
+    takes the tags too, such as the mirror into `origin/`
+    (`+refs/*:refs/remotes/origin/*`) or into a folder there
+    (`+refs/*:refs/remotes/origin/all/*`); and one that is no pattern and
+    not under `refs/`, a short name or an exact object id. A full name that
+    is no pattern is not asked, though git falls back to a tag for it too
+    (`can_name_a_tag` says why). Carried, it clashed with the first refspec
+    wherever it put a tag on a branch's name: the fetch exited 128 ("Cannot
+    fetch both refs/heads/feat and refs/tags/feat to
+    refs/remotes/origin/feat"; for the mirror in a folder, a branch
+    `all/tags/v1` and a tag `v1`) where `git fetch origin` exits 0, and the
+    tool said its fetch had failed and sent the person to the network or
+    the credential. Where no name was shared, the tags it put there
+    answered for branches: both tools read every ref under
+    `refs/remotes/origin/`, so a commit only a tag of the remote reaches was
+    pinned, against the rule (#613) that a tag is not a branch (measured on
+    git 2.43, each). #946 left out a source under `refs/tags/` and a mirror
+    onto the branches' glob, so a mirror in a folder was still carried and
+    failed both ways (#1009), and a leg's fetch left out neither until
+    #1037. Left out, the fetch works and a tag there answers for nothing:
+    the prune drops such a ref, as any ref under `origin/` no refspec of the
+    fetch maps, and the repository's own next `git fetch origin` writes it
+    back. A refspec that can name no tag and writes a folder of its own
+    under `origin/` (pull requests, `+refs/pull/*/head:
+    refs/remotes/origin/pr/*`) still rides along.
+
+    THE BRANCHES' GLOB: ONE THAT GIVES ANOTHER NAMESPACE THE BRANCHES' NAMES
+    IS LEFT OUT (#905, #459's U183), a refspec whose destination is the
+    first refspec's own, `refs/remotes/origin/*`, and whose source is not
+    under `refs/heads/`. The tags onto the branches' names and the mirror
+    into `origin/` meet it too, and the clause before has left them out
+    already; this one alone leaves out a source that can name no tag, such
+    as pull requests onto the branches' names
+    (`+refs/pull/*/head:refs/remotes/origin/*`). Carried, that clashed with
+    the first refspec wherever a pull request and a branch share a name
+    ("Cannot fetch both refs/heads/7 and refs/pull/7/head to
+    refs/remotes/origin/7") where `git fetch origin` exits 0 (measured, git
+    2.43).
+    """
+    refspecs = [ORIGIN_BRANCHES]
+    for spec in (value.strip() for value in configured):
+        if spec.startswith("^"):
+            continue  # a narrowing refspec never decides reachability (p07)
+        spec = spec if spec.startswith("+") else "+" + spec
+        source, _, destination = spec[1:].partition(":")
+        if not destination.startswith("refs/remotes/origin/"):
+            continue
+        if can_name_a_tag(source):
+            continue  # a tag is not a branch (RV946's S1, #1009, #1037)
+        if (destination == ORIGIN_BRANCH_NAMES
+                and not source.startswith("refs/heads/")):
+            continue  # it gives other refs the branches' names (U183)
+        if spec not in refspecs:
+            refspecs.append(spec)
+    return refspecs
+
+
+# ---------------------------------------------------------------------------
 # What a run asks before its first write: the folders it makes (#609)
 # ---------------------------------------------------------------------------
 #
