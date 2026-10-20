@@ -374,23 +374,29 @@ def test_a_legs_role_is_spelled(project, tmp_path):
     assert "\x1b" not in out, out
 
 
-@pytest.mark.parametrize("path, spelling", [
-    (r'"sp\x1bec"', r"sp\x1bec"),
-    (r'"sp\ud83dec"', r"sp\ud83dec"),
-    (r'"sp\u2028ec"', r"sp\u2028ec"),
+@pytest.mark.parametrize("path, spelling, word", [
+    (r'"sp\x1bec"', r"sp\x1bec", r'''"$(printf -- 'sp\033ec')"'''),
+    (r'"sp\ud83dec"', r"sp\ud83dec", r"'sp\ud83dec'"),
+    (r'"sp\u2028ec"', r"sp\u2028ec",
+     r'''"$(printf -- 'sp\342\200\250ec')"'''),
 ])
 def test_a_legs_path_is_spelled_where_it_is_not_initialized(
-        project, tmp_path, path, spelling):
+        project, tmp_path, path, spelling, word):
     """A path the manifest holds that is no directory: step (a) says so, and
     says what to run, before any validator has had its say. A lone surrogate
-    here raised from the `print`."""
+    here raised from the `print`. The line names the leg spelled; the
+    command to paste holds the path as `_paste_word` words it (#961): the
+    bytes as a `printf`, and a lone surrogate, which has none, as its
+    escape text in quotes. The child runs in UTF-8 mode, so that its
+    filesystem encoding is the one the words are made of."""
     edit(project, "project.yaml", '    path: "spec"', f"    path: {path}")
     code, out, err = run(bootstrap_of(project), "--skip-validators",
                          encoding="utf-8:strict", tmp_path=tmp_path,
-                         cwd=project)
-    assert code == 0 and "Traceback" not in err, out + err
+                         cwd=project, changes={"PYTHONUTF8": "1"})
+    assert code == 0, out + err
+    assert "Traceback" not in err, out + err
     assert (f"  [spec] {spelling}: NOT INITIALIZED. Run `git submodule update "
-            f"--init {spelling}` {DASH} the validators below will refuse "
+            f"--init -- {word}` {DASH} the validators below will refuse "
             "until you do.") in out.split("\n"), out
     assert not {"\x1b", "\u2028"} & set(out), out
 

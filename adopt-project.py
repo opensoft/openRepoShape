@@ -450,9 +450,30 @@ def _pin_products(rows) -> list[str]:
     return products
 
 
-def _pin_row_problem(row: dict) -> tuple[str, str] | None:
-    """`(code, why)` for a `pins:` mapping `execute` cannot write a pin file
-    from, or None. `why` finishes a sentence about the entry.
+#: What a finding about a `pins:` mapping says `execute` writes the pin
+#: file from, and nothing else; and what one says that names the entry's
+#: `digest_source:`, which the pin file says too, as `local-clone` or
+#: `gh-api-tree-recursive` (`_digest_source_written`, #901).
+PIN_WRITTEN_FROM = "the commit and the digest `plan` records"
+PIN_WRITTEN_FROM_AND_HOW = f"{PIN_WRITTEN_FROM}, and how it was read"
+
+
+def _pin_written_from(keys) -> str:
+    """What a finding about the `pins:` keys `keys` says `execute` writes
+    the pin file from: `PIN_WRITTEN_FROM_AND_HOW` where one of them is
+    `digest_source:`, and `PIN_WRITTEN_FROM` otherwise. A finding about
+    the digest's source ended "from the commit and the digest `plan`
+    records, and nothing else", though `execute` writes the field it is
+    about into the pin file as well (#901)."""
+    return (PIN_WRITTEN_FROM_AND_HOW if "digest_source" in keys
+            else PIN_WRITTEN_FROM)
+
+
+def _pin_row_problem(row: dict) -> tuple[str, str, str] | None:
+    """`(code, why, written_from)` for a `pins:` mapping `execute` cannot
+    write a pin file from, or None. `why` finishes a sentence about the
+    entry, and `written_from` says what `execute` writes the pin file from
+    (`_pin_written_from`), for the sentence after it.
 
     Each value is held to what `plan` writes there: the commit to
     `COMMIT_RE`, the repository and the commit together to the scaffold's own
@@ -474,35 +495,41 @@ def _pin_row_problem(row: dict) -> tuple[str, str] | None:
     missing = [key for key, _ in PIN_FIELDS if row.get(key) in (None, "")]
     unrecorded = [key for key in PIN_RECORDED if key in missing]
     if unrecorded or missing:
+        named = unrecorded or missing
         return ((PIN_UNRECORDED if unrecorded else PIN_MALFORMED),
-                "records no " + " and no ".join(
-                    f"`{key}:`" for key in (unrecorded or missing)))
+                "records no " + " and no ".join(f"`{key}:`" for key in named),
+                _pin_written_from(named))
     not_text = [key for key, _ in PIN_FIELDS
                 if not isinstance(row.get(key), str)]
     if not_text:
-        return PIN_MALFORMED, "records " + ", ".join(
+        why = "records " + ", ".join(
             f"`{key}: {row[key]!r}`" for key in not_text) + ", which " + (
             "is" if len(not_text) == 1 else "are") + " not text"
+        return PIN_MALFORMED, why, _pin_written_from(not_text)
     product, repository, commit, digest, how = (
         row[key] for key, _ in PIN_FIELDS)
     if not COMMIT_RE.match(commit):
         return PIN_MALFORMED, (
             f"records `commit: {commit!r}`, which is not 40 hex: a tag, a "
-            "branch or an abbreviated oid can be moved, and a commit cannot")
+            "branch or an abbreviated oid can be moved, and a commit cannot"
+        ), PIN_WRITTEN_FROM
     if not (PIN_ARG_RE.match(f"{repository}@{commit}") and "/" in repository
             and repo_basename(repository) == product):
         return PIN_MALFORMED, (
             f"records `product: {product!r}` and `repository: "
             f"{repository!r}`, and `plan` records the repository as "
-            "`<owner>/<openProduct>`, its name the product's")
+            "`<owner>/<openProduct>`, its name the product's"
+        ), PIN_WRITTEN_FROM
     if not SHA256_RE.match(digest):
-        return PIN_MALFORMED, (f"records `tree_sha256: {digest!r}`, which is "
-                               "not 64 hex")
+        return PIN_MALFORMED, (
+            f"records `tree_sha256: {digest!r}`, which is not 64 hex"
+        ), PIN_WRITTEN_FROM
     if not _a_digest_source(how):
         return PIN_MALFORMED, (
             f"records `digest_source: {how!r}`, and `plan` records "
             f"`{DIGEST_FROM_GH}`, or `{DIGEST_FROM_CLONE} (<the clone's "
-            "path>)` on one printable line, and nothing else")
+            "path>)` on one printable line, and nothing else"
+        ), PIN_WRITTEN_FROM_AND_HOW
     return None
 
 
@@ -552,13 +579,16 @@ def _read_pins(plan: "Plan") -> tuple[list, list[str]]:
     `findings` is one FINDING for each entry it cannot: a name alone (an old
     plan's, or an edit's) or a mapping missing its commit or digest is
     `plan-pin-unrecorded`, and anything else `plan` never writes there is
-    `plan-pin-malformed`."""
+    `plan-pin-malformed`. A `pins:` that is no list is said as `_read_as`
+    says what the plan's reader read, as each other key a plan is opened by
+    is (`_plan_key_findings`, #901): `pins: true` is the boolean true, and
+    not Python's `True`."""
     rows = plan.get("pins")
     if rows is None:
         return [], []
     if not isinstance(rows, list):
-        return [], [f"FINDING {PIN_MALFORMED}: `pins:` is {rows!r}, not a "
-                    f"list of pins: {_pin_fix()}."]
+        return [], [f"FINDING {PIN_MALFORMED}: `pins:` is {_read_as(rows)}, "
+                    f"not a list of pins: {_pin_fix()}."]
     pins, findings = [], []
     for number, row in enumerate(rows, 1):
         if isinstance(row, str):
@@ -585,11 +615,11 @@ def _read_pins(plan: "Plan") -> tuple[list, list[str]]:
             f" ({product!r})" if isinstance(product, str) and product else "")
         problem = _pin_row_problem(row)
         if problem:
-            code, why = problem
+            code, why, written_from = problem
             findings.append(
                 f"FINDING {code}: {said} {why}. `execute` writes the pin file "
-                "from the commit and the digest `plan` records, and nothing "
-                f"else: {_pin_fix(row.get('repository') or product)}.")
+                f"from {written_from}, and nothing else: "
+                f"{_pin_fix(row.get('repository') or product)}.")
             continue
         pins.append((said, product, {
             placeholder: (row[key].lower() if key in PIN_RECORDED
@@ -4435,11 +4465,11 @@ def _plan_fields(plan: Plan) -> list[tuple[str, tuple]]:
         if isinstance(value, str) and leg_path_problem(what, value) is None:
             fields.append((placeholder, _field(what, placeholder, value)))
     # Each pin `execute` writes, by the product it lists in the manifest
-    # (`_template_table`), less one no file can hold, which is #255's
-    # finding alone. None at all where the plan's `pins:` has a finding of
-    # its own (`_read_pins`, #273): `execute` refuses such a plan before any
-    # leg exists, and one wrong pin is one finding. A product given twice is
-    # one such finding (`plan-pin-collides`), so each is asked about once.
+    # (`_template_table`). None at all where the plan's `pins:` has a
+    # finding of its own (`_read_pins`, #273): `execute` refuses such a plan
+    # before any leg exists, and one wrong pin is one finding. A product
+    # given twice is one such finding (`plan-pin-collides`), so each is
+    # asked about once.
     recorded, pin_findings = _read_pins(plan)
     naming = NamingPolicy.load(NAMING_POLICY)
     return fields + [(PINS_PLACEHOLDER,
@@ -4696,18 +4726,85 @@ def _refuse_a_tracking_branch_the_remote_lacks(urls: dict, tracking: str,
 #: `North-Wind`, which `naming-unclassified` then refused.
 PROJECT_NAME_RULE = ("one CamelCase token with no hyphen, underscore, dot or "
                      "space")
+#: What a refusal says first where `--project` is the source's own name,
+#: adopted in place, before `_rename_first`'s way out: the rule the new name
+#: is held to. The derived id's remedy says it (L2-54), and so does
+#: `_check_names`' refusal of that name (L2-89 on #457).
+OWN_NAME_RULE = ("--project is the source's own name, which must be "
+                 f"{PROJECT_NAME_RULE}. ")
+#: What a passed `--id` the project's validators would not take is told
+#: (#902): `PROJECT_ID_RE` in words. "Pass an explicit lowercase --id" was
+#: said to `--id foo_bar`, which is both, and whose fault is the underscore
+#: (L2-82 on #459). The scaffold's `scaffold-bad-id` and `family.py init`'s
+#: `family-bad-id` say the same sentence (#911).
+PASSED_ID_REMEDIATION = ("Remediation: pass an --id of lowercase letters, "
+                         "digits and hyphens, starting with a letter or "
+                         "digit.")
+#: And what `check` and `execute` say of a plan's `id:` the pattern refuses
+#: (`plan-bad-id`, #902), in the same words.
+PLAN_ID_REMEDIATION = (
+    "Remediation: set `id:` in the plan to lowercase letters, digits and "
+    "hyphens, starting with a letter or digit, or re-run `plan` with an --id "
+    "of that form. The GitHub topic is derived from it.")
+#: What `plan-bad-id` says of an id derived from `legs.assembly` (#902, L2-88
+#: on #457), as `plan` words the id it derives from `--project` (L2-54): the
+#: name it comes from, and the rule the naming policy holds that name to.
+DERIVED_PLAN_ID_REMEDIATION = (
+    f"Remediation: change `legs.assembly` in the plan to {PROJECT_NAME_RULE}, "
+    "or re-run `plan` with a --project of that form. The id is "
+    "legs.assembly lowercased, and an `id:` would leave `legs.assembly`, the "
+    "assembly root's name, as it is. The GitHub topic is derived from the id.")
+#: What `check` and `execute` say of a plan value the plan's reader read as a
+#: number or a boolean where `execute` takes text (#902, L1-K3 on #457):
+#: `_not_text` says what was read, and this how to write what was meant.
+NOT_TEXT_REMEDIATION = (
+    "Remediation: write each value named between double quotes in the plan, "
+    "as typed (`\"007\"`, `\"true\"`), so that the plan's reader takes it as "
+    "text, and run `check` again; or re-run `plan`, which writes every value "
+    "so that it is read back as typed.")
+
+
+def _a_number_or_boolean(value) -> bool:
+    """Whether the plan's reader read `value` as a number or a boolean, which
+    `execute` would turn into text with `str`: `007` into `7`, `true` into
+    `True` and `1.50` into `1.5` (#902, L1-K3 on #457)."""
+    return isinstance(value, (bool, int, float))
+
+
+def _not_text(key: str, value) -> str:
+    """A sentence about the plan's `key:`, which the plan's reader read as
+    `value`, a number or a boolean, where `execute` takes text: what was
+    read, and the text `execute` would take in its place (#902). The kind
+    is the one `_the_loader_made` names, as #181's misread rule names it."""
+    return (f"`{key}:` was read out of the plan as {_the_loader_made(value)}, "
+            f"not as text, so `execute` would take it as the text "
+            f"{_worded(str(value))}")
 
 
 def _refuse_bad_id(project_id: str, project: str, given: set,
-                   source: Source) -> None:
+                   source: Source | None, naming: NamingPolicy,
+                   pins: set[str]) -> None:
     """`plan`'s refusal of an id the project's validators would not take
     (`PROJECT_ID_RE`), in the words of where it came from. `given` is
     `flags_given`. A `--id` the person passed, `''` among them (L2-53), is
-    named as the flag they typed, with the value as typed, and the remedy is
-    another `--id`. One `plan` derived from `--project` is named by
-    `_flag_named` from `FLAG_DEFAULTS`, as the tracking branch and the
-    elector it fills in are (#529): `--id 'north_wind' must match` named a
-    flag nobody had passed (#601). The finding's code is the same for both.
+    named as the flag they typed, with the value as typed, and is told what
+    an id may hold (`PASSED_ID_REMEDIATION`, #902). One `plan` derived from
+    `--project` is named by `_flag_named` from `FLAG_DEFAULTS`, as the
+    tracking branch and the elector it fills in are (#529): `--id
+    'north_wind' must match` named a flag nobody had passed (#601). The
+    finding's code is the same for both.
+
+    A REFUSED NAME SPEAKS BEFORE A PASSED ID (#902, L2-90 on #457). `--project
+    North_Wind --id north_wind` was refused for its id, and typing the
+    remedy's `--id north-wind` then met `naming-unclassified`, which no
+    `--id` mends. So a passed id is refused only once the names `--project`
+    makes are ones the naming policy holds: `_check_names` is asked of them
+    first, with `pins`, the products `--pin` declares, which are all it
+    reads, so it answers here as it answers after the pins' digests are
+    read. It is handed `source` only where `--project` is the source's own
+    name, as below, since the names are not yet held to the source
+    (`_refuse_another_repository`). The scaffold and `family.py init` ask
+    their names first too (#911).
 
     A DERIVED ID IS MENDED IN `--project`, NOT WITH `--id` (L2-54). It is
     refused only for a `--project` holding a character no id takes, and the
@@ -4722,17 +4819,19 @@ def _refuse_bad_id(project_id: str, project: str, given: set,
     if PROJECT_ID_RE.match(project_id):
         return
     flag, pattern = _flag_named("id", given), PROJECT_ID_RE.pattern
+    repository = None if source is None else source.repository
+    in_place = repository is not None and _is_the_source(
+        repository, repository.partition("/")[0], project)
     if "id" in given:
+        _check_names(naming, _names(project), pins,
+                     source if in_place else None)
         raise Refusal("adopt-bad-id",
                       f"{flag} {project_id!r} must match {pattern}",
-                      "Remediation: pass an explicit lowercase --id.")
+                      PASSED_ID_REMEDIATION)
     derived = FLAG_DEFAULTS["id"]
-    repository = source.repository
-    if repository is not None and _is_the_source(
-            repository, repository.partition("/")[0], project):
-        remedy = _rename_first(repository, f"the id is {derived}, and "
-                               "--project is the source's own name, which "
-                               f"must be {PROJECT_NAME_RULE}. ")
+    if in_place:
+        remedy = _rename_first(repository,
+                               f"the id is {derived}, and {OWN_NAME_RULE}")
     else:
         remedy = (f"Remediation: change --project to {PROJECT_NAME_RULE}. "
                   f"The id is {derived}, and an explicit --id would not "
@@ -4741,6 +4840,18 @@ def _refuse_bad_id(project_id: str, project: str, given: set,
     raise Refusal("adopt-bad-id",
                   f"{flag} is {project_id!r}, which must match {pattern}",
                   remedy)
+
+
+def _names_held(naming: NamingPolicy, project: str, pins: set[str]) -> bool:
+    """Whether the naming policy holds the three names `--project` makes, as
+    `_check_names` asks it of `pins`, the products `--pin` declares (#902).
+    `_checked_flag_inputs` refuses a passed `--id` that is no id only where
+    it does; beside a name it refuses, the naming refusal speaks first."""
+    try:
+        _check_names(naming, _names(project), pins)
+    except Refusal:
+        return False
+    return True
 
 
 #: What `plan` says after `checked_value`'s remedy when the value refused is
@@ -4790,8 +4901,10 @@ def _checked_plan_inputs(args, source: Source,
     # passed, so `--id "$ID"` with `ID` unset planned the derived id, and an
     # empty elector became `git config user.name` though `--help` says "not
     # blank". Each is a value typed, held to its flag's own rule below and
-    # refused there by name. (`_planned_org` still reads `--org ''` as no
-    # `--org`, as it did.)
+    # refused there by name. So is `--org ''` since #902 (L2-86 on #457):
+    # this set counted it passed while `_planned_org` read it as no `--org`,
+    # so one refusal named `--org is '~x'`, a value nobody typed, and
+    # another said `--org` was not given.
     flags_given = {key for key in FLAG_DEFAULTS
                    if getattr(args, key) is not None}
     products = set(declared_pin_products(args))
@@ -4812,11 +4925,16 @@ def _checked_plan_inputs(args, source: Source,
     # Whether `--id` was passed is read BEFORE it is filled in: a refusal of
     # the id names where it came from (#601), and says what to change. An
     # `org/repo` source was asked it before it was cloned, and passes here.
+    # A passed one that is no id reaches here only beside a name the naming
+    # policy refuses, which is refused first (#902), as `_check_names` asks
+    # it below, with the source.
     args.id = args.id if "id" in flags_given else args.project.lower()
-    _refuse_bad_id(args.id, args.project, flags_given, source)
+    _refuse_bad_id(args.id, args.project, flags_given, source, naming,
+                   products)
     # The organisation, given or read from the source's `origin`, and named
-    # by which of the two it is should it be refused (#292, #427).
-    org_given = bool(args.org)
+    # by which of the two it is should it be refused (#292, #427). Given is
+    # on the command line, `''` included (#902), as `flags_given` reads it.
+    org_given = args.org is not None
     args.org = _planned_org(args.org, source)
     # IN PLACE, THE SOURCE'S OWN NAME (#499), as soon as both halves are
     # known and before any pin's digest is read: `execute` acts on the
@@ -4824,8 +4942,17 @@ def _checked_plan_inputs(args, source: Source,
     # An `org/repo` source was asked before it was cloned
     # (`_refuse_a_clone_of_another_repository`) and passes here again.
     _refuse_another_repository(args, source, naming, products, org_given)
-    args.elected_on = args.elected_on or _dt.date.today().isoformat()
-    args.reference = args.reference or default_reference(args.elected_on)
+    # A DATE OR A REFERENCE PASSED EMPTY IS A VALUE (#902, L2-87 on #457):
+    # read by its truth, `--elected-on ''` recorded today's date and
+    # `--reference ''` the default reference, exit 0, where `--tracking-branch
+    # ''` is refused. Each is read by `is not None`, as `--id` and
+    # `--elected-by` are (L2-53): an empty date was refused with the flags
+    # (`_checked_flag_inputs`), and an empty reference is the project's own
+    # validator's to refuse (`_refuse_unholdable_values`).
+    args.elected_on = (args.elected_on if args.elected_on is not None
+                       else _dt.date.today().isoformat())
+    args.reference = (args.reference if args.reference is not None
+                      else default_reference(args.elected_on))
     # A value `plan` filled in by itself is named by where it came from, as
     # #181 names one, and not as a flag the person never passed. A passed
     # `--elected-by` was asked with the other flags' values already.
@@ -4868,7 +4995,7 @@ def _refuse_unwritable_flag_values(fields) -> None:
                       "the flag or correct that. " + WRITTEN_AS_TEXT)
 
 
-def _checked_flag_inputs(args) -> None:
+def _checked_flag_inputs(args, naming: NamingPolicy) -> None:
     """The refusals of a passed flag's own value, which `plan` makes from
     its flags ALONE, in the order `_checked_plan_inputs` asked them, before
     anything exists (#903): no work directory is made, no `git` reads the
@@ -4895,8 +5022,11 @@ def _checked_flag_inputs(args) -> None:
     `--project` makes, with a remedy about the source; an empty
     `--elected-by`, which is a value `unwritable_values` holds and the
     manifest validator refuses (`adopt-manifest-invalid`, in
-    `_refuse_unholdable_values`); and a missing `--path-policy`
-    (`yaml-unreadable`).
+    `_refuse_unholdable_values`), and an empty `--reference` with it
+    (#902); and a missing `--path-policy` (`yaml-unreadable`). A passed
+    `--id` that is no id is here only where `naming` holds the names
+    `--project` makes (`_names_held`, #902): beside a name it refuses, the
+    naming refusal speaks first, and its remedy needs the source.
     """
     args.project = checked_value("--project", args.project)
     # A `--tracking-branch` that was passed: PASSED IS ON THE COMMAND LINE,
@@ -4943,30 +5073,37 @@ def _checked_flag_inputs(args) -> None:
     # given none. One derived from `--project` is refused where the source's
     # own name is known, for its remedy names that: right after `--source`
     # is read, for an `org/repo` one, and after git has read the `origin`
-    # of a local one.
-    if args.id is not None:
-        _refuse_bad_id(args.id, args.project, {"id"}, None)
-    # An `--org` that was passed, as `_planned_org` holds it. One that was
+    # of a local one. AND ONLY WHERE THE NAMING POLICY HOLDS THE NAMES
+    # `--project` MAKES (#902): a refused name speaks before a passed id,
+    # and its remedy names the source where `--project` is the source's own
+    # name, so a passed id beside such a name is refused where the source
+    # is known, as the derived one is (`_refuse_bad_id`).
+    if args.id is not None and _names_held(naming, args.project,
+                                           set(products)):
+        _refuse_bad_id(args.id, args.project, {"id"}, None, naming,
+                       set(products))
+    # An `--org` that was passed, as `_planned_org` holds it, `''` included
+    # (#902): an empty one is a value passed, refused by name. One that was
     # not is the organisation of the source's name, read there.
-    if args.org:
+    if args.org is not None:
         checked_value(_flag_named("org", {"org"}), args.org)
     # Read before the plan is written, whether or not it is what chooses the
     # reference: a date the tools cannot parse would reach `execute` as a
     # manifest field instead of as a question. One nobody passed is today's,
-    # which `_checked_plan_inputs` fills in.
-    if args.elected_on:
+    # which `_checked_plan_inputs` fills in; `''` was passed (#902).
+    if args.elected_on is not None:
         election_date(args.elected_on)
     # Before the plan is written, in the words `check` would use (#255): a
     # value `execute` writes into a file must be text one can hold. Of the
     # values that were passed alone: an elector `plan` reads from `git
     # config user.name` is asked in `_checked_plan_inputs`, after the
     # source, and a reference it chooses is text it holds. An `--elected-by
-    # ''` is a value typed and is text one can hold, so it passes here and
-    # is refused by the manifest validator, after the source
-    # (`adopt-manifest-invalid`); a `--reference ''` is none.
+    # ''` and a `--reference ''` are values typed (#902) and text one can
+    # hold, so each passes here and is refused by the manifest validator,
+    # after the source (`adopt-manifest-invalid`).
     passed = [(_flag_named(key, {key}), value, ROOT_MANIFEST_AND_README)
               for key, value in ((ELECTED_BY_KEY, args.elected_by),
-                                 (REFERENCE_KEY, args.reference or None))
+                                 (REFERENCE_KEY, args.reference))
               if value is not None]
     _refuse_unwritable_flag_values(passed)
 
@@ -5000,8 +5137,14 @@ def _planned_org(org: str | None, source: Source) -> str:
     `--elected-by` is named when `git config user.name` filled it in, and
     the remedy says first to pass `--org`. The refusal and its exit code
     stay: `plan` never puts such a value on a command line.
+
+    AN `--org ''` IS A VALUE PASSED (#902, L2-86 on #457). Read by its truth,
+    it was taken for no `--org`, so the organisation of the source's
+    `origin` was planned, and named as `--org is '~x'` by one refusal and as
+    `--org` not given by another. It is held to `checked_value` as passed,
+    which refuses it by name, as it refuses `--tracking-branch ''`.
     """
-    if org:
+    if org is not None:
         return checked_value("--org", org)
     read = (source.repository or "/").split("/")[0]
     if not read:
@@ -5209,7 +5352,11 @@ def _manifest_values(plan: Plan, naming: NamingPolicy) -> dict | None:
     same question as any other. A refusal of the plan's own names, id,
     organisation or leg paths is raised here as it is by `check` and `execute`
     a few lines later. The organisation and the id are asked BEFORE the date
-    is: a bad date does not change which problem either command names first.
+    is, by the function `execute` asks after the plan's three repository
+    names, which both commands ask earlier (`plan.names()`), and before the
+    plan's leg paths and branch names (`_checked_org_and_id`, #901), so a bad
+    date beside a bad organisation or id does not make `check` and `execute`
+    name different problems first.
     """
     if not isinstance(plan.legs, dict):
         # The doctor's PLACEMENT plan writes `legs:` as a list (see
@@ -5222,16 +5369,16 @@ def _manifest_values(plan: Plan, naming: NamingPolicy) -> dict | None:
         _check_names(naming, names, pins)
     except Refusal:
         return None
-    # The organisation and the id are asked BEFORE the date's guard below.
-    # `checked_value` refuses an `org:` this tool will not put on a command
-    # line (`unsafe-value`; `execute` meets it first, in `_repository_urls`),
-    # and `Plan.project_id` refuses an `id:` that is not a project id
-    # (`plan-bad-id`; `_template_table` reads it again). After the guard,
-    # neither was asked of a plan whose date is a finding: `check` listed the
-    # date where `execute` refused the organisation, and refused the id where
-    # `execute` refused the date.
-    org = checked_value("org", plan.get("org"))
-    _ = plan.project_id
+    # The organisation and the id are asked BEFORE the date's guard below,
+    # and as `execute` asks them, after the three repository names above
+    # and before the leg paths and the branch names (#901): `unsafe-value`
+    # for an `org:` this tool will not put on a command line, and
+    # `plan-bad-id` for an `id:` that is not a project id
+    # (`_template_table` reads it again). After the guard, neither was asked
+    # of a plan whose date is a finding: `check` listed the date where
+    # `execute` refused the organisation, and refused the id where `execute`
+    # refused the date.
+    org = _checked_org_and_id(plan)
     if _elected_on_findings(plan):
         # Reported in the plan key's own words (#294), and the reference the
         # manifest records is chosen BY that date when the plan names none:
@@ -5300,14 +5447,18 @@ def _validator_judged(plan: Plan) -> frozenset[str] | None:
 #: The validator's finding about `tracking_branch:` (#455), which `check`
 #: leaves to `unsafe-value` wherever that names the branch (#708).
 TRACKING_BRANCH_CODES = ("manifest-tracking-branch",)
+#: The validator's finding about a `neutral_product_pins:` entry (#714),
+#: which `check` leaves to `_read_pins` wherever that names an entry (#901).
+PIN_ENTRY_CODES = ("manifest-neutral-product-pins",)
 
 
 def _validator_ignores(plan: Plan) -> tuple:
     """The codes of the validator's findings `check` leaves out, because a
     rule of its own names the same value: a leg path's always
-    (`LEG_PATH_CODES`), and the tracking branch's where `checked_value`
+    (`LEG_PATH_CODES`), the tracking branch's where `checked_value`
     refuses that branch, which `_branch_name_findings` reports as
-    `unsafe-value` (#708).
+    `unsafe-value` (#708), and a pin's where `_read_pins` finds the plan's
+    `pins:` (#901).
 
     ONE BAD `tracking_branch` IS ONE FINDING. Since #644 (#455) the
     validator finds a NUL or a lone surrogate in it, and `check` asks the
@@ -5319,12 +5470,27 @@ def _validator_ignores(plan: Plan) -> tuple:
     alone is asked, the value `execute` reads (`_branch_name_refusal`'s),
     because the validator's question starts no process (git's verdict on
     a name is `_branch_name_findings`' own).
+
+    ONE BAD PIN IS ONE FINDING TOO (#901). A pin edited to `product:
+    "a\\t"` was `plan-pin-malformed`, `plan-unwritable-value` and then
+    `plan-manifest-invalid` in the validator's words, three findings about
+    one value. The validator refuses a `neutral_product_pins:` entry that
+    is blank or holds a character that is not printable, and `_read_pins`
+    passes no such product, for it holds each to `PIN_ARG_RE`'s alphabet:
+    every entry the validator refuses is one `_read_pins` names, with the
+    `plan` that records the pin whole, the remedy, and `execute` refuses a
+    plan holding it before any leg exists. So wherever `_read_pins` finds
+    the plan's `pins:`, the validator's sentence about an entry is left
+    out, as #181 leaves such a plan's pins (`_plan_fields`) and #255 asks
+    only the pins `execute` writes (`_plan_values`).
     """
+    ignored = LEG_PATH_CODES + (PIN_ENTRY_CODES if _read_pins(plan)[1]
+                                else ())
     try:
         checked_value(TRACKING_KEY, plan.get(TRACKING_KEY, "main"))
     except Refusal:
-        return LEG_PATH_CODES + TRACKING_BRANCH_CODES
-    return LEG_PATH_CODES
+        return ignored + TRACKING_BRANCH_CODES
+    return ignored
 
 
 def _named_as_read(plan: Plan) -> dict[str, str]:
@@ -5685,7 +5851,11 @@ def cmd_plan(args) -> int:
     # is made, git reads nothing of the source and no `gh` runs before
     # them. A passed `--tracking-branch` runs `git check-ref-format` in a
     # throwaway repository first, and never touches the source.
-    _checked_flag_inputs(args)
+    # The naming policy is read first, a file of this checkout: a passed
+    # `--id` is refused with the flags only where the names `--project`
+    # makes are ones it holds (#902).
+    naming = NamingPolicy.load(NAMING_POLICY)
+    _checked_flag_inputs(args, naming)
     # What `--source` names, next, before the work directory is made
     # (#796): every refusal of it that needs none -- an empty value, a path
     # that is no repository's top level, a name `gh` cannot clone -- is
@@ -5693,7 +5863,6 @@ def cmd_plan(args) -> int:
     # main a file ended `plan` in a traceback after the `--work-dir` it was
     # given had been made, and that directory stayed.
     named = _source_spec(args.source)
-    naming = NamingPolicy.load(NAMING_POLICY)
     # An `org/repo` source names its repository before it is cloned, so
     # `--org` and `--project` are held to it here (#903). A local source
     # names it by its `origin`, which `_checked_plan_inputs` reads.
@@ -6148,15 +6317,38 @@ class Plan:
         command line and a written manifest, and a topic that does not match
         `contracts/repository-naming.yaml` is one `validate-repository-naming.py`
         will refuse in the project's own gate, long after the run that set it.
+
+        EACH REFUSAL NAMES WHAT THE PLAN HOLDS (#902). With no `id:`, the id
+        is `legs.assembly` lowercased, and it is named so (`DERIVED_ID`), with
+        `legs.assembly` as the remedy: the refusal said "`id:` is
+        'north_wind'" of a plan with no `id:`, and sent the person to `--id`,
+        though only a character no id takes makes a derived id bad, and the
+        naming policy refuses that in `legs.assembly` whatever `id:` says
+        (L2-88 on #457). An `id:` the plan's reader read as a number or a
+        boolean (`id: 007`) was `str` of what was read, `7`, which the
+        pattern takes: it is refused by what was read (L1-K3). And an `id:`
+        the pattern refuses is told what an id may hold, as `plan` tells a
+        passed `--id` (`PASSED_ID_REMEDIATION`).
         """
-        project_id = str(self.get("id", self.names()["assembly"].lower()))
+        set_id, pattern = self.get("id"), PROJECT_ID_RE.pattern
+        if set_id is None:
+            project_id = self.names()["assembly"].lower()
+            if not PROJECT_ID_RE.match(project_id):
+                raise Refusal(
+                    "plan-bad-id",
+                    f"{self.path}: {DERIVED_ID} is {project_id!r}, which "
+                    f"must match {pattern}", DERIVED_PLAN_ID_REMEDIATION)
+            return project_id
+        if _a_number_or_boolean(set_id):
+            raise Refusal("plan-bad-id",
+                          f"{self.path}: {_not_text('id', set_id)}",
+                          NOT_TEXT_REMEDIATION)
+        project_id = str(set_id)
         if not PROJECT_ID_RE.match(project_id):
             raise Refusal(
                 "plan-bad-id",
                 f"{self.path}: `id:` is {project_id!r} and must match "
-                f"{PROJECT_ID_RE.pattern}",
-                "Remediation: fix `id:` in the plan, or re-run `plan` with an "
-                "explicit lowercase --id. The GitHub topic is derived from it.")
+                f"{pattern}", PLAN_ID_REMEDIATION)
         return project_id
 
     def get(self, key, default=None):
@@ -7782,7 +7974,7 @@ def _elected_on_findings(plan: Plan) -> list[str]:
     except Refusal as refused:
         if refused.code != ELECTION_DATE_MALFORMED:
             raise
-        chosen = ("" if plan.get("reference") else
+        chosen = ("" if plan.get("reference") is not None else
                   ", and, the plan naming no `reference:`, chooses the "
                   "reference by it")
         return [f"FINDING {ELECTION_DATE_MALFORMED}: the plan's `elected_on:` "
@@ -8591,8 +8783,17 @@ def _branch_name_refusal(plan: Plan, key: str, default: str,
     the refusal `check` reports, or None: `checked_value`'s, `execute`'s own,
     for a name outside its alphabet, and otherwise git's verdict under
     `code`. The value is `execute`'s (`_checked_plan_values`): `default`
-    where the key is absent, and `str` of what the file holds."""
+    where the key is absent, and `str` of what the file holds.
+
+    A NUMBER OR A BOOLEAN IS NO BRANCH NAME (#902, L1-K3 on #457). `str` of
+    it is one: `tracking_branch: 007` was the branch `7`, `true` was `True`
+    and `1.50` was `1.5`, and `adopt_branch:` the same, so a plan holding
+    any of them checked ok and was adopted onto that branch without a word.
+    It is refused under the key's own code, saying what was read
+    (`_not_text`), and is not asked of git."""
     value = plan.get(key, default)
+    if _a_number_or_boolean(value):
+        return Refusal(code, _not_text(key, value), NOT_TEXT_REMEDIATION)
     try:
         checked_value(key, value)
         refuse_bad_branch(code, key, value)
@@ -8723,7 +8924,10 @@ def _entry_findings(plan: Plan, source: Source,
     `plan-tracking-branch-missing` alone (#479), and one only the source's
     remote `origin` has, which `execute --local-remote-dir` refuses, is
     named by neither (`_a_branch_execute_writes`); and a pin is named only
-    where the plan's `pins:` has no finding of #273's (`_plan_fields`).
+    where the plan's `pins:` has no finding of #273's (`_plan_fields`). A
+    `pins:` entry #273 names is that finding alone (#901): #255 asks only
+    the pins `execute` writes (`_plan_values`), and the validator's word on
+    such an entry is left out (`_validator_ignores`).
     And a tracking branch whose NAME is wrong is that finding alone (#520):
     one outside the alphabet or one git will not create is no branch of any
     source, and is not also said to be missing from this one.
@@ -11393,8 +11597,7 @@ def cmd_check(args) -> int:
     # `execute` stops at `plan-not-the-source` and never asks the names, and
     # a refusal of the plan's name is then about a name that is not the
     # source's: `_own_name_remediation` has said what to do.
-    renamed = (_rename_first(source.repository)
-               if source.repository is not None and not another else None)
+    in_place = source.repository if not another else None
     try:
         _check_names(naming, names, pins, None if another else source)
         for role, name in names.items():
@@ -11405,9 +11608,11 @@ def cmd_check(args) -> int:
         findings.append(f"FINDING {exc.code}: {exc.detail}")
         # Only the rename-first remedy is printed, once after the findings:
         # it is the one `check` was missing. `--project takes ...` is not,
-        # and `check` never printed it (#716).
-        if renamed is not None and exc.remediation == renamed:
-            remediation.append(renamed)
+        # and `check` never printed it (#716). It says the rule its new name
+        # follows first, as `_check_names` says it (#902).
+        if in_place is not None and exc.remediation == _name_remedy(
+                exc.code, in_place):
+            remediation.append(exc.remediation)
     else:
         # WHAT THE DISK OR GITHUB WILL NOT HOLD (#863): the names, the
         # organisation and the topic, `execute`'s one list, which it refuses
@@ -12319,7 +12524,7 @@ def _held_findings(plan: Plan, names: dict, local_remote_dir: Path | None,
     first of (#863), each as a FINDING under its code, and the codes, which
     say whether the leg question is still asked (`RENAMES_THE_LEGS`). Asked
     only of an `org:` `execute` would get that far with: another is
-    `unsafe-value`, refused first in `_repository_urls`."""
+    `unsafe-value`, refused first in `_checked_plan_values` (#901)."""
     try:
         org = checked_value("org", _plan_org(plan))
     except Refusal:
@@ -12826,26 +13031,85 @@ def _mount_the_legs(assembly: Path, work_root: Path, names: dict, urls: dict,
     run(["git", "submodule", "sync", "-q"], cwd=assembly)
 
 
+def _checked_org_and_id(plan: Plan) -> str:
+    """The plan's `org:` as `checked_value` hands it back, once its `id:`
+    is asked too. Both commands ask the two BEFORE THE PLAN'S LEG PATHS AND
+    BRANCH NAMES, and after its three repository names, which they ask
+    earlier (`plan.names()`, then `_check_names`): `check` in
+    `_manifest_values` and `execute` in `_checked_plan_values`.
+    `checked_value` refuses an `org:` this tool will not put on a `git` or
+    `gh` command line as `unsafe-value`, and `Plan.project_id` an `id:`
+    that is no project id as `plan-bad-id`.
+
+    ONE ORDER, THE MORE BASIC PROBLEM FIRST (#901). `execute` asked the two
+    leg paths and the two branch names first, the organisation after them
+    (`_repository_urls`) and the id last, in `_refuse_what_check_finds`,
+    where the manifest is built (`_manifest_values`), so a plan edited to
+    `id: "North Wind"` and `legs.spec_path: "../spec"` was `plan-bad-id` to
+    `check` and `plan-bad-leg-path` to `execute`, and one edited to `org:
+    "-evil"` with the same path was `unsafe-value` to one and
+    `plan-bad-leg-path` to the other. The organisation and the id come
+    before the leg paths and the branches because they say which project
+    the plan is about: every repository the plan names is `<org>/<name>`,
+    on GitHub and in the manifest, and the topic `execute` sets and the
+    manifest's `id:` are made from the id, where a leg path or a branch is
+    a value inside that project. And `check` holds the manifest built from
+    both to the project's own validator before it lists a finding, so it
+    refuses either outright, exit 2, where a leg path or a branch name is
+    one finding of the many it lists: asked before the leg paths and the
+    branches by both commands, this is the one order they can share.
+    """
+    org = checked_value("org", _plan_org(plan))
+    _ = plan.project_id
+    return org
+
+
 def _checked_plan_values(plan: Plan) -> tuple[str, str, str, str]:
-    """The four plan values that reach a `git` command line as arguments:
+    """The plan's options, in the order `check` asks them (#901): its
+    `org:` and `id:` (`_checked_org_and_id`), after the three repository
+    names both commands ask earlier (`plan.names()`), then the four values
+    that reach a `git` command line as arguments, which it returns:
     `(spec_path, code_path, branch, tracking)`.
 
-    Split out of `cmd_execute` for #138, in the order the refusals came in.
+    Split out of `cmd_execute` for #138, in the order the refusals came in
+    there, the leg paths first; #901 asks the organisation and the id
+    before them, as `check` does, so the two name one problem first.
     A branch name `checked_value` refuses is `check`'s finding too, in the
-    same words (`_branch_name_refusal`, #520); one inside its alphabet that
+    same words (`_branch_name_refusal`, #520), and so is a branch the plan's
+    reader read as a number or a boolean, which is asked first
+    (`_checked_branch_value`, #902), so that `tracking_branch: -007` is
+    `plan-bad-tracking-branch` in `check` and in `execute`, and not
+    `unsafe-value` of the `-7` nobody typed; one inside its alphabet that
     git will not create is refused with `check`'s other findings, by
     `_refuse_what_check_finds`, and before any leg exists as well.
     """
+    _checked_org_and_id(plan)
     spec_leg, code_leg = _plan_leg_paths(plan)
     # Before ANY leg exists: `check` finds a bad path and `execute` refuses it
     # on its own account, not because `check` happened to be run first (#169).
     _refuse_bad_leg_paths("plan-bad-leg-path", spec_leg, code_leg)
     spec_path = checked_value(*spec_leg)
     code_path = checked_value(*code_leg)
-    branch = checked_value("adopt_branch", plan.get("adopt_branch",
-                                                    ADOPT_BRANCH))
-    tracking = checked_value(TRACKING_KEY, plan.get(TRACKING_KEY, "main"))
+    # Each branch asks the number-or-boolean question before `checked_value`,
+    # as `check` does (`_branch_name_refusal`, #902), in `BRANCH_KEYS`' order:
+    # a `tracking_branch: -007` is `plan-bad-tracking-branch` in both, not
+    # `unsafe-value` of the `-7` nobody typed.
+    branch, tracking = [_checked_branch_value(plan, *key)
+                        for key in BRANCH_KEYS]
     return spec_path, code_path, branch, tracking
+
+
+def _checked_branch_value(plan: Plan, key: str, default: str,
+                          code: str) -> str:
+    """The plan's branch `key:` as `execute` hands it to git, or the refusal
+    `check` finds it under (`_branch_name_refusal`, #520): a number or a
+    boolean is refused under `code`, saying what was read, and any other
+    value is `checked_value`'s. `default` is what `execute` reads where the
+    key is absent."""
+    value = plan.get(key, default)
+    if _a_number_or_boolean(value):
+        raise Refusal(code, _not_text(key, value), NOT_TEXT_REMEDIATION)
+    return checked_value(key, value)
 
 
 def _plan_org(plan: Plan) -> str:
@@ -14108,11 +14372,15 @@ def _plan_values(plan: Plan) -> list[tuple[str, str, str]]:
     by this tool (`private`, today's date) and is left out. The follow-ups
     are `_plan_follow_ups`', the items of text `_commit_the_split` writes; a
     `follow_ups:` that is not a list of text is `plan-bad-follow-ups` (#293),
-    and is never iterated here."""
+    and is never iterated here. The pins are the products of the pins
+    `execute` writes (`_declared_pins`): a `pins:` entry `_read_pins` names
+    is that finding alone (#901), and `execute` writes none of a plan
+    holding one."""
     fields = [(key, str(plan.get(key)), where)
               for key, where in WRITTEN_PLAN_VALUES.items()
               if plan.get(key) is not None]
-    fields += [("a `pins:` item", pin, ROOT_MANIFEST) for pin in plan.pins]
+    fields += [("a `pins:` item", pin, ROOT_MANIFEST)
+               for pin in _declared_pins(plan)]
     return fields + [("a `follow_ups:` item", item, SPLIT_MESSAGE)
                      for item in _plan_follow_ups(plan)]
 
@@ -14228,9 +14496,15 @@ def _template_table(plan: Plan, names, repositories, urls, spec_path,
         # A plan that omits `reference:` — one written by hand, or by a tool
         # older than this rule — is resolved from ITS OWN `elected_on`, not
         # from the day `execute` happens to run. The plan carries the human's
-        # act; the calendar of the machine running the split does not.
+        # act; the calendar of the machine running the split does not. An
+        # EMPTY `reference:` is a value, not one omitted (#902): read by its
+        # truth, `reference: ""` was written as the default without a word,
+        # and `plan --reference ''` planned it. The project's own validator
+        # refuses it ("drop the key or name the document"), and `check`,
+        # `execute` and `plan` ask the validator of this table.
         "REFERENCE": str(plan.get(REFERENCE_KEY)
-                         or default_reference(elected_on)),
+                         if plan.get(REFERENCE_KEY) is not None
+                         else default_reference(elected_on)),
         "ELECTED_BY": str(plan.get(ELECTED_BY_KEY, "")),
         "ELECTED_ON": elected_on,
         "TRACKING_BRANCH": tracking,
@@ -15087,34 +15361,62 @@ def _check_names(policy: NamingPolicy, names: dict[str, str],
     that renaming it on GitHub comes first (`_rename_first`), never that
     `--project` takes one CamelCase token. A leg's name is the plan's own to
     edit, and keeps the remediation it had.
+
+    THE RULE IS SAID IN PLACE TOO, of the new name (#902, L2-89 on #457).
+    The way out was `_rename_first`'s alone, which says to rename the source
+    and give its new name as `--project`, and said no rule for that name,
+    where the same refusal of a name that is not the source's says
+    "--project takes one CamelCase token with no hyphen, underscore, dot or
+    space". Both say the rule now, from one table (`_name_remedy`).
     """
     for role, name in names.items():
         found = policy.classify(name, role, pins)
-        renamed = (_rename_first(source.repository)
-                   if role == "assembly" and source is not None
-                   and source.repository is not None else None)
+        in_place = (source.repository if role == "assembly"
+                    and source is not None else None)
         if found is None:
             raise Refusal(
-                "naming-unclassified",
+                UNCLASSIFIED,
                 f"{name!r} matches no family in the naming policy",
-                renamed or
-                f"Remediation: --project takes {PROJECT_NAME_RULE}.")
+                _name_remedy(UNCLASSIFIED, in_place))
         if not accepts_role(found, role):
             raise Refusal(
-                "naming-role-mismatch",
+                ROLE_MISMATCH,
                 f"{name!r} classifies as {found.family}"
                 + (f"/{found.role}" if found.role else "")
                 + f", not as the {role!r} form of a project leg "
                 f"({found.reason})",
-                renamed or
-                "Remediation: --project takes one CamelCase token. Two forms "
-                "beyond the bare one MAY be the assembly root: a declared "
-                "descendant (declare the pin with `--pin "
-                "open<Product>@<40 hex commit>` and it classifies as one, "
-                "2026-09-02), and an `open<Product>` "
-                "neutral product, which may elect the shape and be its own "
-                "root (2026-09-05). Neither may be the spec or code leg, and "
-                "an `<X>-Install` may be no leg at all.")
+                _name_remedy(ROLE_MISMATCH, in_place))
+
+
+#: `_check_names`' two refusals.
+UNCLASSIFIED = "naming-unclassified"
+ROLE_MISMATCH = "naming-role-mismatch"
+#: What each of them says the assembly root's name may be, by its code: the
+#: rule `naming-unclassified` gives (`PROJECT_NAME_RULE`), and the forms an
+#: assembly root may take beyond it, which `naming-role-mismatch` gives.
+NAME_RULES = {
+    UNCLASSIFIED: f"{PROJECT_NAME_RULE}.",
+    ROLE_MISMATCH: (
+        "one CamelCase token. Two forms beyond the bare one MAY be the "
+        "assembly root: a declared descendant (declare the pin with `--pin "
+        "open<Product>@<40 hex commit>` and it classifies as one, "
+        "2026-09-02), and an `open<Product>` neutral product, which may "
+        "elect the shape and be its own root (2026-09-05). Neither may be the "
+        "spec or code leg, and an `<X>-Install` may be no leg at all."),
+}
+
+
+def _name_remedy(code: str, repository: str | None) -> str:
+    """What `_check_names`' refusal `code` says to do: `--project` takes the
+    rule (`NAME_RULES`), or, where `repository` is the source adopted in
+    place, whose own name `--project` is, that rule as the one its new name
+    must follow, then `_rename_first`'s way out (#902). `check` asks it
+    again to know the remedy it prints (#716)."""
+    rule = NAME_RULES[code]
+    if repository is None:
+        return f"Remediation: --project takes {rule}"
+    return _rename_first(repository, "--project is the source's own name, "
+                         f"which must be {rule} ")
 
 
 # ---------------------------------------------------------------------------
@@ -15246,13 +15548,20 @@ def _own_name_remediation(repository: str, naming: NamingPolicy,
     refuses that name, `_rename_first`. `repository` is the one the source
     is held to (`_held_repository`), as text: where the live source names
     none, the plan's record of it, and `str(None)` is no name (#716). `done`
-    is what the refusing command left as it was, said first."""
+    is what the refusing command left as it was, said first.
+
+    Where the naming policy refuses the source's own name, the rule the new
+    name must follow is said before the way out (#902, L2-89 on #457), the
+    rule `_check_names` gives for that refusal (`NAME_RULES`): the way out
+    renames the source, and said nothing of the name to give it."""
     org, _, name = repository.partition("/")
     try:
         _check_names(naming, _names(name), pins)
     except Refusal as exc:
+        rule = NAME_RULES.get(exc.code)
         return _rename_first(repository, f"{done}The source's own name is no "
-                             f"remedy either: {exc.detail}. ")
+                             f"remedy either: {exc.detail}. "
+                             + (f"The name must be {rule} " if rule else ""))
     return (f"Remediation: {done}Run `plan` again with `--project "
             f"{_shown(name)} --org {_shown(org)}`, the source's own name, "
             "which `plan` writes into the plan's `org:`, `project:` and "
@@ -15309,13 +15618,17 @@ def _refuse_a_clone_of_another_repository(args, repository: str,
     named = Source(Path(SOURCE_READONLY), repository, "", "", cloned=True)
     # An `--id` that was passed was asked with the flags. The one derived
     # from `--project` is asked first, as `_checked_plan_inputs` asks it.
-    if args.id is None:
-        _refuse_bad_id(args.project.lower(), args.project, set(), named)
+    # One that was passed and is no id reaches here only beside a name the
+    # naming policy refuses (`_checked_flag_inputs`), which `_refuse_bad_id`
+    # refuses first, in the words it has once the source is known (#902).
+    products = set(declared_pin_products(args))
+    passed = args.id is not None
+    _refuse_bad_id(args.id if passed else args.project.lower(), args.project,
+                   {"id"} if passed else set(), named, naming, products)
     asked = argparse.Namespace(org=_planned_org(args.org, named),
                                project=args.project)
-    _refuse_another_repository(asked, named, naming,
-                               set(declared_pin_products(args)),
-                               bool(args.org))
+    _refuse_another_repository(asked, named, naming, products,
+                               args.org is not None)
 
 
 def _last_two_directories(path: str) -> str | None:
@@ -15416,8 +15729,8 @@ def _not_the_source(plan: Plan, source: Source,
     a leading `-` or a character outside ASCII. `execute` asks this first,
     so it refuses such an `org:` as `plan-not-the-source` where the plan is
     held to a repository (`_held_repository`, and the `org:` is not that
-    repository's own), and as `unsafe-value`, from `_repository_urls`,
-    where it is held to none. `check` asks
+    repository's own), and as `unsafe-value`, from `_checked_plan_values`
+    (#901), where it is held to none. `check` asks
     `checked_value` of `org:` first (`_manifest_values`, and
     `_submodule_findings` where a kept submodule url is relative) and ends
     in `unsafe-value`, exit 2, before it compares anything; only where the

@@ -1106,9 +1106,11 @@ def test_the_misread_rule_names_an_id_it_derived_from_the_assembly(
 #: named the branch by what was READ, with its kind, and then the text
 #: `execute` writes (review181's N2); the validator refused the id as `id is
 #: 7`. Since #259 the line is quoted and `7` reads back as the text `7`, so
-#: nothing names any of them, as on main: `execute` writes `7` for a plan
-#: that says `007`. A date or a visibility read as not text is still
-#: refused (`LATE_DATES`, `NOT_TEXT_INVALID`), and a pin's product is #273's
+#: neither rule named any of them, and `execute` wrote `7` for a plan that
+#: says `007` (L1-K3 on #457). Since #902 `check` refuses each by what was
+#: read: the branch as `plan-bad-tracking-branch`, the id as `plan-bad-id`.
+#: A date or a visibility read as not text is still refused
+#: (`LATE_DATES`, `NOT_TEXT_INVALID`), and a pin's product is #273's
 #: (`test_a_pin_whose_product_is_not_text_is_273s_finding_alone`). The
 #: source has the branch as `execute` takes it, `str` of what was read
 #: (#479).
@@ -1118,31 +1120,45 @@ READ_AS_NOT_TEXT = [
     (TRACKING_KEY, "1.50", "the number 1.5", "1.5"),
     ("id", "007", SEVEN_READ, "7"),
 ]
+#: The ones #181's misread rule is still asked about: an id read as not
+#: text is `plan-bad-id` since #902, refused before any rule is asked.
+MISREAD_AS_NOT_TEXT = [row for row in READ_AS_NOT_TEXT if row[0] != "id"]
 
 
 @pytest.mark.parametrize("key, spelled, read_as, written", READ_AS_NOT_TEXT,
                          ids=ids_of(READ_AS_NOT_TEXT, 0, 1))
-def test_check_passes_a_plan_value_read_as_not_text_as_main_does(
+def test_check_refuses_a_plan_value_read_as_not_text_by_what_was_read(
         answered_copy, tmp_path, key, spelled, read_as, written):
     """`check` named each of these, the branch as #181's misread and the id
     in the validator's words, while the template wrote its line bare. Since
     #259 the line is quoted, the text `execute` writes reads back, and
-    neither rule has a finding: `check` passes the plan, as main does, and
-    `execute` writes `str` of what was read, `7` for `007` (a residual this
-    change shares with main, in its description). `read_as` is the
-    misread rule's answer for a bare line, asked in the test below."""
+    neither rule had a finding: `check` passed the plan and `execute` wrote
+    `str` of what was read, `7` for `007` (L1-K3 on #457). Since #902 each
+    is refused by what the plan's reader made of it, and the text `execute`
+    would have taken: the branch is a finding under its key's code, and the
+    id is `plan-bad-id`, which `check` and `execute` refuse an id as."""
     source, text = answered_copy
     holding(source, key, written)
     plan = tmp_path / PLAN_FILE
     carrying(plan, text, key, spelled)
     result = checked(plan)
-    assert result.returncode == 0, result.stdout + result.stderr
-    assert PLAN_OK in result.stdout, result.stdout
-    assert ANY_FINDING not in result.stderr, result.stderr
+    said = (f"`{key}:` was read out of the plan as {read_as}, not as text, "
+            f"so `execute` would take it as the text `{written}`")
+    assert PLAN_OK not in result.stdout, result.stdout
+    if key == "id":
+        assert result.returncode == 2, result.stdout + result.stderr
+        assert result.stderr.startswith(
+            f"REFUSED plan-bad-id: {plan}: {said}\n"), result.stderr
+    else:
+        assert result.returncode == 1, result.stdout + result.stderr
+        assert [line for line in result.stderr.splitlines()
+                if line.startswith(ANY_FINDING)] == [
+            f"FINDING plan-bad-tracking-branch: {said}"], result.stderr
 
 
-@pytest.mark.parametrize("key, spelled, read_as, written", READ_AS_NOT_TEXT,
-                         ids=ids_of(READ_AS_NOT_TEXT, 0, 1))
+@pytest.mark.parametrize("key, spelled, read_as, written",
+                         MISREAD_AS_NOT_TEXT,
+                         ids=ids_of(MISREAD_AS_NOT_TEXT, 0, 1))
 def test_the_misread_rule_names_a_plan_value_that_is_not_text_by_what_was_read(
         adopter, answered, bare_template, tmp_path, key, spelled, read_as,
         written):
@@ -1624,18 +1640,15 @@ def test_a_pin_whose_product_is_not_text_is_273s_finding_alone(
 UNWRITABLE_DATE = '"2026-09-02\\nx"'
 #: `(plan key, as a plan edited by hand spells it)`: values no file
 #: `execute` writes can hold, which #255 names as `plan-unwritable-value`:
-#: a line break, in a value read back as one line, and a control character
-#: such as a tab. Where the date and the pins were written bare, the
-#: project's loader would read each as something else too; the visibility
-#: is not one #181 judges (`NEVER_WRITTEN`). Beside a line break, the
-#: project's own validator lists the manifest such a value makes, as main
-#: has it (#255 before #261, `_entry_findings`); a pin holding a tab is
-#: #255's finding alone.
+#: a line break, in a value read back as one line. Where the date was
+#: written bare, the project's loader would read it as something else too;
+#: the visibility is not one #181 judges (`NEVER_WRITTEN`). Beside a line
+#: break, the project's own validator lists the manifest such a value
+#: makes, as main has it (#255 before #261, `_entry_findings`). A pin no
+#: file can hold is #273's finding alone (#901): `UNHELD_PINS`, below.
 UNWRITABLE = [
     pytest.param(ELECTED_ON_KEY, UNWRITABLE_DATE, id=ELECTED_ON_KEY),
     pytest.param(VISIBILITY_KEY, '"private\\nx"', id=VISIBILITY_KEY),
-    pytest.param(PINS_KEY, '"a\\nb"', id="pins-line-break"),
-    pytest.param(PINS_KEY, '"openGlass\\t"', id="pins-tab"),
 ]
 
 
@@ -1653,6 +1666,34 @@ def test_check_names_a_value_no_file_can_hold_once_as_unwritable(
     result = checked(plan)
     assert result.returncode == 1, result.stdout + result.stderr
     assert result.stderr.count(UNWRITABLE_FINDING) == 1, result.stderr
+    assert MISREAD_FINDING not in result.stderr, result.stderr
+    assert adopter.MANIFEST_MISREAD_REMEDIATION not in result.stderr
+
+
+#: A pin's product as a plan edited by hand spells it, holding a line break
+#: or a tab: no name `plan --pin` records, which `_read_pins` names.
+UNHELD_PINS = [
+    pytest.param('"a\\nb"', id="pins-line-break"),
+    pytest.param('"openGlass\\t"', id="pins-tab"),
+]
+
+
+@pytest.mark.parametrize("spelled", UNHELD_PINS)
+def test_check_names_a_pin_no_file_can_hold_once_as_malformed(
+        adopter, answered, tmp_path, spelled):
+    """On main at c7a3ff16 such a pin was three findings about one value:
+    `plan-pin-malformed`, then #255's `plan-unwritable-value` and the
+    validator's `plan-manifest-invalid` (#901). It is #273's finding, once,
+    which names the `plan` that records the pin whole, and never #181's."""
+    _, text = answered
+    plan = tmp_path / PLAN_FILE
+    carrying(plan, text, PINS_KEY, spelled)
+    result = checked(plan)
+    assert result.returncode == 1, result.stdout + result.stderr
+    found = [line for line in result.stderr.splitlines()
+             if line.startswith("FINDING ")]
+    assert len(found) == 1, result.stderr
+    assert found[0].startswith("FINDING plan-pin-malformed: "), found[0]
     assert MISREAD_FINDING not in result.stderr, result.stderr
     assert adopter.MANIFEST_MISREAD_REMEDIATION not in result.stderr
 

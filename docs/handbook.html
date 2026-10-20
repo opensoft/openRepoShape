@@ -472,7 +472,7 @@
 
       <!-- reads README.md § preamble: blob ddadd23a162129f7e64fefce899105661440c05c -->
 
-      <!-- reads README.md § Starting a project in a new organisation: blob e0d2b672082068b2df39ebf54801e068343a14c6 -->
+      <!-- reads README.md § Starting a project in a new organisation: blob 3f299067a481b09c78c5b159decc27db02f4d7cb -->
 
       <!-- reads README.md § The three legs: blob 4ec313e8424665e41fc92a4147808e0bd4901d78 -->
 
@@ -612,7 +612,7 @@ openRepoShape &lt;Project&gt; --org &lt;your-org&gt;</code></pre></div>
 
     <section id="start">
 
-      <!-- reads README.md § Starting a project in a new organisation: blob e0d2b672082068b2df39ebf54801e068343a14c6 -->
+      <!-- reads README.md § Starting a project in a new organisation: blob 3f299067a481b09c78c5b159decc27db02f4d7cb -->
 
       <p class="eyebrow">Setup</p>
       <h2>Start here</h2>
@@ -737,11 +737,11 @@ sudo dnf install gh</code></pre></div>
           Printed commands are quoted for a POSIX shell, so paste them into Git Bash. Only
           <code>shape-doctor.py</code>&rsquo;s lines, <code>setup-project.py</code>&rsquo;s family
           lines and <code>family.py</code>&rsquo;s <code>NEXT</code>, <code>switch -c</code>,
-          <code>add</code>, <code>cd</code> and <code>git rm -r --cached</code> lines are quoted for
-          the shell they are printed in, PowerShell or Git Bash, on Windows. A shell started from
-          inside Git Bash inherits its <code>MSYSTEM</code>, which is how a tool tells Git Bash
-          apart, so a PowerShell started there is handed Git Bash&rsquo;s quoting, and a cmd.exe
-          started anywhere else is handed PowerShell&rsquo;s. Off Windows and in Git Bash, a path
+          <code>add</code>, <code>cd</code>, <code>git rm -r --cached</code> and <code>bump</code>
+          lines are quoted for the shell they are printed in, PowerShell or Git Bash, on Windows.
+          A shell started from inside Git Bash inherits its <code>MSYSTEM</code>, which is how a tool
+          tells Git Bash apart, so a PowerShell started there is handed Git Bash&rsquo;s quoting, and a
+          cmd.exe started anywhere else is handed PowerShell&rsquo;s. Off Windows and in Git Bash, a path
           <code>shape-doctor.py</code> cannot print as itself is written <code>$'&hellip;'</code>:
           bash, zsh and ksh read that; dash (<code>/bin/sh</code> on Debian and Ubuntu) does not.</p>
         </div>
@@ -1092,7 +1092,7 @@ cd Atlas &amp;&amp; python3 scripts/bootstrap.py   # what `make bootstrap` runs<
 
     <section id="partway">
 
-      <!-- reads README.md § Starting a project in a new organisation: blob e0d2b672082068b2df39ebf54801e068343a14c6 -->
+      <!-- reads README.md § Starting a project in a new organisation: blob 3f299067a481b09c78c5b159decc27db02f4d7cb -->
 
       <p class="eyebrow">Setup</p>
       <h2>If it fails part-way</h2>
@@ -1129,7 +1129,7 @@ cd Atlas &amp;&amp; python3 scripts/bootstrap.py   # what `make bootstrap` runs<
 
     <section id="ci">
 
-      <!-- reads README.md § Starting a project in a new organisation: blob e0d2b672082068b2df39ebf54801e068343a14c6 -->
+      <!-- reads README.md § Starting a project in a new organisation: blob 3f299067a481b09c78c5b159decc27db02f4d7cb -->
 
       <!-- reads README.md § The three legs: blob 4ec313e8424665e41fc92a4147808e0bd4901d78 -->
 
@@ -1192,7 +1192,7 @@ gh secret set SHAPE_LEGS_APP_PRIVATE_KEY --org &lt;your-org&gt; &lt; app-private
 
     <section id="legs">
 
-      <!-- reads README.md § Starting a project in a new organisation: blob e0d2b672082068b2df39ebf54801e068343a14c6 -->
+      <!-- reads README.md § Starting a project in a new organisation: blob 3f299067a481b09c78c5b159decc27db02f4d7cb -->
 
       <!-- reads README.md § The three legs: blob 4ec313e8424665e41fc92a4147808e0bd4901d78 -->
 
@@ -1448,7 +1448,7 @@ python3 scripts/family.py siblings --family-root ../InkRouter/InkRouter</code></
 
     <section id="doublepin">
 
-      <!-- reads README.md § Starting a project in a new organisation: blob e0d2b672082068b2df39ebf54801e068343a14c6 -->
+      <!-- reads README.md § Starting a project in a new organisation: blob 3f299067a481b09c78c5b159decc27db02f4d7cb -->
 
       <!-- reads README.md § The double pin, and the lockstep invariant: blob 57fffa08ffad5476f8eae73dd3e8494a02e050c9 -->
 
@@ -1548,7 +1548,7 @@ python3 scripts/family.py siblings --family-root ../InkRouter/InkRouter</code></
 
     <section id="current">
 
-      <!-- reads README.md § Keeping a project's shape current: blob df780eb5a96cdcaf9b30a8ac8162bca00f90405b -->
+      <!-- reads README.md § Keeping a project's shape current: blob 5edbfec7e824a4064e9ff5331da208f21cab7423 -->
 
       <p class="eyebrow">Reference</p>
       <h2>Keeping a project&rsquo;s shape current</h2>
@@ -1610,7 +1610,7 @@ python3 scripts/family.py siblings --family-root ../InkRouter/InkRouter</code></
 
     <section id="doctor">
 
-      <!-- reads README.md § Keeping a project's shape current: blob df780eb5a96cdcaf9b30a8ac8162bca00f90405b -->
+      <!-- reads README.md § Keeping a project's shape current: blob 5edbfec7e824a4064e9ff5331da208f21cab7423 -->
 
       <p class="eyebrow">Reference</p>
       <h2>Is this repository compliant? <code>openRepoShape --doctor</code></h2>
@@ -1671,7 +1671,7 @@ openRepoShape --doctor                 # the repository you are standing in
         </tbody>
       </table>
       <p>Exit 3 is usage or environment (a flag argparse rejects is exit 2) &mdash; nothing about
-      it is a statement about the tree you pointed at: no such path, a refused
+      it is a statement about the tree you pointed at: no such path, a path this user cannot search, a refused
       <code>--placement-plan</code>, a <code>shape-doctor.py</code> not in a checkout of the
       standard, or <em>this</em> checkout unable to answer (<code>CANNOT ANSWER</code>): a
       pin&rsquo;s commit it lacks, a partial clone missing what is compared, a read that fails, a
@@ -1747,7 +1747,7 @@ openRepoShape --doctor                 # the repository you are standing in
 
     <section id="park">
 
-      <!-- reads README.md § Starting a project in a new organisation: blob e0d2b672082068b2df39ebf54801e068343a14c6 -->
+      <!-- reads README.md § Starting a project in a new organisation: blob 3f299067a481b09c78c5b159decc27db02f4d7cb -->
 
       <!-- reads README.md § Carrying in-flight work to another workstation: blob b84512ad39c09085dfe6bf7ea694017f5e28c1dd -->
 

@@ -89,8 +89,10 @@ ANSI code page reads it.
 from __future__ import annotations
 
 import datetime as _dt
+import errno
 import os
 import re
+import stat
 import sys
 from pathlib import Path
 
@@ -326,6 +328,41 @@ class Reading:
                 "leg": self.leg}
 
 
+#: The `OSError`s that mean NOTHING IS THERE, where any other is a `stat` the
+#: operating system refused: no such file, a part of the path that is not a
+#: directory, a bad descriptor, a symlink loop, and Windows' "not ready",
+#: "invalid name" and "cannot resolve" -- the ones `Path.is_file()` answered
+#: False to on Python 3.9 to 3.13. The same set as `validate-pins.py`'s
+#: `_ABSENT_ERRNOS` and `shape-doctor.py`'s `ABSENT_ERRNOS` (#430's rule).
+#: Kept here, not in `repo_shape.py`: that file is a shape copy every root
+#: pins, and this one is not.
+_ABSENT_ERRNOS = (errno.ENOENT, errno.ENOTDIR, errno.EBADF, errno.ELOOP)
+_ABSENT_WINERRORS = (21, 123, 1921)
+
+
+def _is_a(path: Path, kind) -> bool:
+    """Whether `path` is there and of `kind` (`stat.S_ISREG`, or any mode),
+    raising the `OSError` of a `stat` the operating system REFUSED, as
+    `validate-pins.py`'s `_is_a` asks it (#430).
+
+    NOT `Path.is_file()` OR `Path.exists()`, whose answer depends on the
+    Python: up to 3.13 they raise a refused `stat`, and from 3.14 they answer
+    False to any `OSError`, so a `single-repository.yaml` in a folder this
+    user cannot search read as no record at all, and the advisory said
+    nothing of a file it could not read. A name no system takes is nothing
+    there, as `is_file()` answered it."""
+    try:
+        mode = path.stat().st_mode
+    except OSError as exc:
+        if (exc.errno in _ABSENT_ERRNOS
+                or getattr(exc, "winerror", None) in _ABSENT_WINERRORS):
+            return False
+        raise
+    except ValueError:
+        return False
+    return kind(mode)
+
+
 class Tree:
     """The files of one repository's root, read from the disk or a commit.
 
@@ -342,7 +379,9 @@ class Tree:
     file, or None when there is no file to read. An undecodable file RAISES
     `UnicodeDecodeError`, because "it is there and could not be read" is a
     different answer from "it is not there", and the record reports the
-    first.
+    first. So does a file whose `stat` the operating system REFUSES: `kind()`
+    raises it (`_is_a`, #430), and every reader's net reads the file as there
+    and unreadable, on every Python.
     """
 
     def __init__(self, root: Path, commit: str | None = None):
@@ -352,9 +391,9 @@ class Tree:
     def kind(self, rel: str) -> str | None:
         if self.commit is None:
             path = self.root / rel
-            if path.is_file():
-                return "file"
-            return "dir" if path.exists() else None
+            if not _is_a(path, lambda _mode: True):
+                return None
+            return "file" if _is_a(path, stat.S_ISREG) else "dir"
         try:
             found = git_out(["cat-file", "-t", f"{self.commit}:{rel}"],
                             cwd=self.root)
