@@ -2698,10 +2698,10 @@ def passed_values(passthrough: list, flag: str) -> list:
     another flag (`--pin --referent-chain x` gives `--pin` none, and the
     scaffold's plan refuses it) and is read again as the flag it is (#608,
     L2-27). Not all of them: argparse takes `-`, a negative number such as
-    `-5` or `-1.5`, and a word with a space in it such as `-x y` as the
-    value, so for those this reads fewer values than the scaffold does and
-    step (4) reports from fewer (#923, U062). The `=` spelling takes
-    whatever follows it."""
+    `-5` or `-1.5`, and a word with a space in it such as `-x y` (but not
+    `-h y`, which it reads as `-h`) as the value, so for those this reads
+    fewer values than the scaffold does and step (4) reports from fewer
+    (#923, U062). The `=` spelling takes whatever follows it."""
     words = scaffold_words(passthrough)
     values = []
     for index, word in enumerate(words):

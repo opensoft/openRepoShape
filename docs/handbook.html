@@ -472,7 +472,7 @@
 
       <!-- reads README.md § preamble: blob ddadd23a162129f7e64fefce899105661440c05c -->
 
-      <!-- reads README.md § Starting a project in a new organisation: blob b72df867cdec5dffcc34d4b4ac04b3d9c0764c9e -->
+      <!-- reads README.md § Starting a project in a new organisation: blob 8f25ef0d24d075f9e7c2f4ed3279079ebe061105 -->
 
       <!-- reads README.md § The three legs: blob 4ec313e8424665e41fc92a4147808e0bd4901d78 -->
 
@@ -612,7 +612,7 @@ openRepoShape &lt;Project&gt; --org &lt;your-org&gt;</code></pre></div>
 
     <section id="start">
 
-      <!-- reads README.md § Starting a project in a new organisation: blob b72df867cdec5dffcc34d4b4ac04b3d9c0764c9e -->
+      <!-- reads README.md § Starting a project in a new organisation: blob 8f25ef0d24d075f9e7c2f4ed3279079ebe061105 -->
 
       <p class="eyebrow">Setup</p>
       <h2>Start here</h2>
@@ -1092,16 +1092,16 @@ cd Atlas &amp;&amp; python3 scripts/bootstrap.py   # what `make bootstrap` runs<
 
     <section id="partway">
 
-      <!-- reads README.md § Starting a project in a new organisation: blob b72df867cdec5dffcc34d4b4ac04b3d9c0764c9e -->
+      <!-- reads README.md § Starting a project in a new organisation: blob 8f25ef0d24d075f9e7c2f4ed3279079ebe061105 -->
 
       <p class="eyebrow">Setup</p>
       <h2>If it fails part-way</h2>
       <p>Nothing that stays is created before the typed <code>yes</code>: the preflight, the naming
       check and the plan only read and print, and the plan is literally a <code>--dry-run</code>.
-      The run makes a few short-lived folders along the way and takes each away again, such as
+      The run makes a few short-lived folders along the way, such as
       <code>.openreposhape-write-probe-*</code> above the clone and
       <code>openreposhape-seed-*</code> and <code>openreposhape-branch-*</code> in the temporary
-      folder.</p>
+      folder, and takes each away again.</p>
       <p>After the <code>yes</code>, <code>scaffold-project.py</code> creates the three
       repositories with <code>gh repo create</code> in the order <code>Atlas-spec</code>,
       <code>Atlas-code</code>, <code>Atlas</code> &mdash; the root LAST &mdash; then seeds and
@@ -1133,7 +1133,7 @@ cd Atlas &amp;&amp; python3 scripts/bootstrap.py   # what `make bootstrap` runs<
 
     <section id="ci">
 
-      <!-- reads README.md § Starting a project in a new organisation: blob b72df867cdec5dffcc34d4b4ac04b3d9c0764c9e -->
+      <!-- reads README.md § Starting a project in a new organisation: blob 8f25ef0d24d075f9e7c2f4ed3279079ebe061105 -->
 
       <!-- reads README.md § The three legs: blob 4ec313e8424665e41fc92a4147808e0bd4901d78 -->
 
@@ -1196,7 +1196,7 @@ gh secret set SHAPE_LEGS_APP_PRIVATE_KEY --org &lt;your-org&gt; &lt; app-private
 
     <section id="legs">
 
-      <!-- reads README.md § Starting a project in a new organisation: blob b72df867cdec5dffcc34d4b4ac04b3d9c0764c9e -->
+      <!-- reads README.md § Starting a project in a new organisation: blob 8f25ef0d24d075f9e7c2f4ed3279079ebe061105 -->
 
       <!-- reads README.md § The three legs: blob 4ec313e8424665e41fc92a4147808e0bd4901d78 -->
 
@@ -1452,7 +1452,7 @@ python3 scripts/family.py siblings --family-root ../InkRouter/InkRouter</code></
 
     <section id="doublepin">
 
-      <!-- reads README.md § Starting a project in a new organisation: blob b72df867cdec5dffcc34d4b4ac04b3d9c0764c9e -->
+      <!-- reads README.md § Starting a project in a new organisation: blob 8f25ef0d24d075f9e7c2f4ed3279079ebe061105 -->
 
       <!-- reads README.md § The double pin, and the lockstep invariant: blob 57fffa08ffad5476f8eae73dd3e8494a02e050c9 -->
 
@@ -1751,7 +1751,7 @@ openRepoShape --doctor                 # the repository you are standing in
 
     <section id="park">
 
-      <!-- reads README.md § Starting a project in a new organisation: blob b72df867cdec5dffcc34d4b4ac04b3d9c0764c9e -->
+      <!-- reads README.md § Starting a project in a new organisation: blob 8f25ef0d24d075f9e7c2f4ed3279079ebe061105 -->
 
       <!-- reads README.md § Carrying in-flight work to another workstation: blob b84512ad39c09085dfe6bf7ea694017f5e28c1dd -->
 
@@ -1998,11 +1998,13 @@ resume InkRouter                # on workstation B, and the estate is back</code
       retrying: each one names what to run instead, or, for some, the VALUE to change &mdash;
       among them a <code>--spec-path</code> or <code>--code-path</code> that is, holds or lies
       inside a file the shape writes, a <code>--pin</code> the shape cannot write, and anything
-      already at the clone path, <code>&lt;into&gt;/&lt;Project&gt;</code> or, under
-      <code>--family</code>, <code>&lt;into&gt;/&lt;Family&gt;/&lt;Project&gt;</code>, for the human
-      to move or delete, all before anything is created &mdash; and there is no
-      <code>--force</code>, deliberately. Relay the finished block &mdash; the clone path, the
-      three repository URLs and the next commands &mdash; and say that the line <code>authority is not wallet-carried in this org</code> is a
+      already at the clone path, <code>&lt;into&gt;/&lt;Project&gt;</code> or, where
+      <code>--family</code> adds the family&rsquo;s folder,
+      <code>&lt;into&gt;/&lt;Family&gt;/&lt;Project&gt;</code>, for the human to move or delete,
+      all before anything that stays is created &mdash; and there is no <code>--force</code>,
+      deliberately. Relay the finished block &mdash; the clone path, the three repository URLs and
+      the next commands &mdash; and say that the line
+      <code>authority is not wallet-carried in this org</code> is a
       report and not a fault. The new project carries <code>AGENTS-shape.md</code> at its assembly
       root, and you read that before touching the project.</p>
       <p><strong>What you must not tell them:</strong> that the shape confers anything &mdash; or

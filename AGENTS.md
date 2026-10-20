@@ -47,7 +47,7 @@ it with `--reuse-empty-repo`). `--admin` is not a remedy.
 | `--id` | the lowercase project id | defaults to the project lowercased |
 | `--visibility` | `private`, `public` or `internal` | defaults to `private` |
 | `--elected-by` | the human electing the shape | defaults to the `gh` login |
-| `--family` | the family HOLDER's name, when the project joins one | optional; lands the clone at `<into>/<Family>/<Project>` and records NOTHING in the project |
+| `--family` | the family HOLDER's name, when the project joins one | optional; lands the clone at `<into>/[<Family>/]<Project>` and records NOTHING in the project |
 
 Electing this shape is a human's decision. If they have not said which
 visibility they want, ask — do not assume. `elected_by` records whose act it was.
@@ -88,7 +88,7 @@ it asks them, the one-liner too: setup reads the answer from that terminal and
 never from the pipe. Never pass `--yes` yourself.
 
 If it refuses, read the refusal: each one names what to run instead, or, for some, the
-VALUE to change. Three you can foresee, all before anything is created:
+VALUE to change. Three you can foresee, all before anything that stays is created:
 `scaffold-leg-path-collides` (a `--spec-path` or `--code-path` that is, holds or lies
 inside a FILE the shape writes into the assembly root: `project.yaml` is one, and
 `contracts` holds `contracts/spec-pin.yaml`; the defaults `spec` and `code` pass) and
