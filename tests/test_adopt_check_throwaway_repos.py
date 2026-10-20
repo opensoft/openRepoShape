@@ -23,10 +23,12 @@ triage of #457 filed four lines against them. Measured on c7a3ff16 with git
   than with an `OSError` (`GIT_DEFAULT_HASH=bogus`) stopped `check` with "a
   git or gh command failed", exit 2, where it printed `plan-root-symlink`.
 
-Now each is made in the work directory with the source's object format and
-no hook of this machine's, a path git refuses is `plan-path-git-refuses`, a
-repository git cannot make or ask there is `adopt-git-unasked`, which says
-why, and the probe's failure stands for its finding, with a NOTE.
+Now each is made in the work directory, each but the symlink probe with the
+source's object format and no hook of this machine's (the probe keeps its
+plain `git init`, which runs none), a path git refuses is
+`plan-path-git-refuses`, a repository git cannot make or ask there is
+`adopt-git-unasked`, which says why, and the probe's failure stands for its
+finding, with a NOTE.
 """
 
 from __future__ import annotations
@@ -221,10 +223,10 @@ def test_a_source_with_nothing_to_find_is_plan_ok_in_its_format(
 
 def one_refused(path: str) -> str:
     return (f"the source commit holds 1 path this machine's git refuses as a "
-            f"path, and holds in no index: `{path}`. Each clone `execute` "
-            "makes of the source stops at it, `unable to checkout working "
-            "tree`, after both leg repositories were created, whatever the "
-            "plan answers for it.")
+            f"path, and holds in no index: `{path}`. Each clone the split "
+            "makes of the source would stop at it, `unable to checkout "
+            "working tree`, so `execute` refuses it before it makes either "
+            "leg, whatever the plan answers for it.")
 
 
 #: `(paths, the plan's entries for them, what `check` says)`.
@@ -238,10 +240,11 @@ REFUSED_PATHS = [
                  {"..": ROOT, ".Git/": ROOT, "notes/": ROOT},
                  "the source commit holds 3 paths this machine's git refuses "
                  "as a path, and holds in no index: `..`, `.Git/x` and "
-                 "`notes/.git/x`. Each clone `execute` makes of the source "
-                 "stops at the first, `unable to checkout working tree`, "
-                 "after both leg repositories were created, whatever the plan "
-                 "answers for them.", id="three-in-the-trees-order"),
+                 "`notes/.git/x`. Each clone the split makes of the source "
+                 "would stop at the first, `unable to checkout working "
+                 "tree`, so `execute` refuses them before it makes either "
+                 "leg, whatever the plan answers for them.",
+                 id="three-in-the-trees-order"),
 ]
 
 
@@ -514,6 +517,41 @@ def test_execute_refuses_it_before_any_leg_exists(adopter, monkeypatch,
     assert caught.value.code == UNASKED
     assert "no leg repository was created" in caught.value.remediation
     assert not remotes.exists()
+
+
+def test_a_step_git_fails_in_the_rehearsal_is_one_finding_in_its_words(
+        adopter, monkeypatch, tmp_path):
+    """A step git fails in the rehearsal's repository once it is made, here
+    its `read-tree` of the source commit, is `adopt-git-unasked` in git's
+    words, in the place of the question asked there, and no `git-failed`
+    refusal stops `check` (`_SplitRehearsal.asked`; r1031's SHOULD-2)."""
+    plan = adopter.Plan.load(planned(
+        a_source(tmp_path, files={ROOT_ATTRIBUTES: TEXT_EOL_LF, NOTES: CRLF}),
+        tmp_path, {NOTES: ROOT}))
+    work = tmp_path / "work"
+    work.mkdir()
+    opened = plan.open_source(None, work)
+    real = adopter._SplitRehearsal.git
+
+    def git(self, args, index, data=b""):
+        if args[0] == "read-tree":
+            return subprocess.CompletedProcess(args, 128, b"",
+                                               b"fatal: r1031")
+        return real(self, args, index, data)
+
+    monkeypatch.setattr(adopter._SplitRehearsal, "git", git)
+    try:
+        found, _, _ = adopter._entry_findings(plan, opened)
+    except adopter.Refusal as refusal:
+        pytest.fail(f"REFUSED {refusal.code}: {refusal.detail}")
+    assert len(found) == 1, found
+    assert found[0].startswith(
+        f"FINDING {UNASKED}: "
+        + UNASKED_OPENS.format(os.path.realpath(work))
+        + f"`git read-tree {opened.commit}` in "), found[0]
+    assert "exited 128: fatal: r1031" in found[0]
+    assert found[0].endswith(UNASKED_ENDS), found[0]
+    assert list(work.iterdir()) == []
 
 
 #: The NOTE `check` prints where no throwaway repository can be made in the

@@ -107,10 +107,13 @@ THREE SUBCOMMANDS, BECAUSE THE MIDDLE ONE IS A HUMAN.
            a topic they are. A path of the source commit git refuses as a
            path, `..` or `.Git/x`, is `plan-path-git-refuses`. Its
            questions to git are asked in throwaway repositories in the work
-           directory, with the source's object format and no hook of this
-           machine's, and one git cannot make or ask there is
-           `adopt-git-unasked`, which says why (#910). It prints what will
-           happen and changes nothing.
+           directory. Each but #183's symlink probe is made with the
+           source's object format and runs no hook of this machine's, and
+           one git cannot make or ask there is `adopt-git-unasked`, which
+           says why (#910). The symlink probe keeps its plain `git init`
+           and asks only `core.symlinks`; where git cannot make it, a
+           symlink is taken to check out as one, and a NOTE says why. It
+           prints what will happen and changes nothing.
   execute  asks about both legs before it makes either (#798), then
            creates the two legs, extracts them with `git filter-repo`, makes
            the one split commit on a branch of the source, sets the
@@ -8556,13 +8559,17 @@ def _entry_findings(plan: Plan, source: Source,
     refuses as a path, `..` or `.Git/x` (#910), as `plan-path-git-refuses`,
     asked of git first, in a throwaway repository of its own.
 
-    `check`'S THROWAWAY REPOSITORIES (#910) are made in the work directory,
-    with the source's object format and no hook of this machine's. Where
-    git cannot make or ask one, `adopt-git-unasked` says why, once, in the
-    place of the questions asked in them, which are not asked; never
-    `git-failed`. Where no directory can be made in the work directory at
-    all, `adopt-work-dir-unwritable` is that cause's one finding (#524), and
-    a NOTE says what went unasked.
+    `check`'S THROWAWAY REPOSITORIES (#910) are made in the work directory.
+    Each but #183's symlink probe is made with the source's object format
+    and runs no hook of this machine's; where git cannot make or ask one,
+    `adopt-git-unasked` says why, once, in the place of the questions asked
+    in them, which are not asked; never `git-failed`. The symlink probe
+    keeps its plain `git init` and `git config --get core.symlinks`,
+    neither of which runs a hook: where git cannot make it, a symlink is
+    taken to check out as one, and a NOTE says why (`_SymlinkProbe`). Where
+    no directory can be made in the work directory at all,
+    `adopt-work-dir-unwritable` is that cause's one finding (#524), and a
+    NOTE says what went unasked.
 
     A VALUE NO FILE CAN HOLD IS SAID BEFORE THE VALIDATOR'S WORD ON IT (#255
     before #261). A lone surrogate, a line break or a bidi control in
@@ -10056,6 +10063,9 @@ def _refuse_symlinks_checked_out_as_files(plan: Plan, source: Source,
 # `git rm` and `git add` make of every file (`_SplitRehearsal`, #654). Each
 # answers as the split will, or `check` says why it cannot (#910, from lane
 # 3's triage of #457: L1-90, L1-92 and L1-94; L1-32 is `_SymlinkProbe`'s).
+# #183's symlink probe, made in the work directory since #183, is not one of
+# them: it keeps its plain `git init` and `git config --get core.symlinks`,
+# neither of which runs a hook, and asks nothing of the source's objects.
 # Measured with git 2.43 on c7a3ff16:
 #
 # * THE SOURCE'S OBJECT FORMAT (L1-90). `git init` takes `GIT_DEFAULT_HASH`,
@@ -10247,14 +10257,15 @@ def _path_git_refuses_findings(paths: list[str]
     if not paths:
         return [], []
     one = len(paths) == 1
+    them = "it" if one else "them"
     return ([f"FINDING {PATH_GIT_REFUSES}: the source commit holds "
              f"{'1 path' if one else f'{len(paths)} paths'} this machine's "
              f"git refuses as a path, and holds in no index: "
-             f"{_named_and_counted(paths)}. Each clone `execute` makes of "
-             f"the source stops at {'it' if one else 'the first'}, `unable "
-             "to checkout working tree`, after both leg repositories were "
-             "created, whatever the plan answers for "
-             f"{'it' if one else 'them'}."],
+             f"{_named_and_counted(paths)}. Each clone the split makes of "
+             f"the source would stop at {'it' if one else 'the first'}, "
+             "`unable to checkout working tree`, so `execute` refuses "
+             f"{them} before it makes either leg, whatever the plan answers "
+             f"for {them}."],
             [PATH_GIT_REFUSES_REMEDIATION])
 
 
