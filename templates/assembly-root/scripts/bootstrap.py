@@ -872,17 +872,44 @@ def _folded_spelling(sub: Path, branch: str) -> str | None:
     return None
 
 
+def _taken(held: set[str], name: str) -> bool:
+    """Whether git would refuse to make a branch `name` beside the branches
+    `held`, each one `_fold`ed (#1000): one of them is `name` under `_fold`,
+    so a name only in another case or form is taken too, or one is stored
+    UNDER it, `name/x`. Git refuses to make `Main-kept` over `Main-kept/x`,
+    a loose ref or a packed one, at any depth, and exits 128:
+    `'refs/heads/Main-kept/x' exists; cannot create 'refs/heads/Main-kept'`.
+    A disk that folds case reads the directory `main-kept/` as the file
+    `Main-kept` too. A name that only STARTS with `name`, `Main-kept-x`, is
+    no bar.
+
+    A branch that is a directory PREFIX of `name` (`team` for
+    `team/main-kept`) is no case for this: `name` has every directory its
+    twin has, and the twin folds to the tracking branch, so that branch
+    stops `checkout -b <tracking branch>` just the same, whatever the twin
+    is renamed to."""
+    folded = _fold(name)
+    return folded in held or any(h.startswith(folded + "/") for h in held)
+
+
 def _kept_name(sub: Path, spelling: str) -> str:
     """A name for the branch `spelling` is renamed to, so the line that says
     to rename it can be pasted as it is: `spelling` and `-kept`, then
-    `-kept-2` and on, the first that no branch of the leg folds to
-    (`_fold`, so a name only in another case or form is taken too). It is
-    longer than `spelling`, so it differs from the tracking branch by more
-    than case or Unicode form, and a suffix of letters and dashes leaves a
-    valid ref name valid (#962)."""
+    `-kept-2` and on, the first that `_taken` does not refuse: no branch of
+    the leg folds to it (`_fold`) and none is stored under it. It is longer
+    than `spelling`, so it differs from the tracking branch by more than
+    case or Unicode form, and a suffix of letters and dashes leaves a valid
+    ref name valid (#962).
+
+    WHAT IT CANNOT SEE. A reflog directory left under the name, which only
+    a ref file removed by hand leaves (git removes a branch's reflog with
+    the branch), is refused by git too (`directory not empty`), and no ref
+    names it, so `for-each-ref` does not list it. Nor does it ask the file
+    system: a name too long once `-kept` and git's `.lock` are added is
+    refused as well."""
     held = {_fold(ref[len("refs/heads/"):]) for ref in _heads(sub)}
     name, turn = f"{spelling}-kept", 1
-    while _fold(name) in held:
+    while _taken(held, name):
         turn += 1
         name = f"{spelling}-kept-{turn}"
     return name

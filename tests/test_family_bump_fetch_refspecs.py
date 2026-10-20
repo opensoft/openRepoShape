@@ -22,7 +22,10 @@ each measured on git 2.43 at the v1.1.1 release commit `5017830`:
   only a tag reaches was pinned. A refspec of the mount's whose source is
   under `refs/tags/`, wherever under `origin/` it writes, and one that gives
   another namespace the branches' names (a mirror into `origin/`), are now
-  left out (RV946's S1 and S2): the fetch works, and a tag is not a branch.
+  left out: the fetch works, and a tag is not a branch. #946's first head
+  left out a tag or mirror refspec only where it wrote the branches' own
+  names, so a tag refspec in a folder is left out now (RV946's S1); the
+  mirror already was, and now has rows (S2).
 - A CONFIG VALUE THAT HOLDS A NEWLINE (U184). `git config --list` was read a
   line at a time, so an alias whose value held the line
   `remote.origin.fetch=+refs/heads/zz:refs/remotes/origin/zz` gave the mount
@@ -240,9 +243,9 @@ def test_a_tag_a_mount_maps_into_origin_does_not_answer_for_a_branch(
     `origin/` and shares no name between a tag and a branch. Carried, the
     refspec put the tag under `origin/`, where `bump` reads branches, and
     both runs pinned the commit: onto the branches' names on main, and in a
-    folder or a mirror (`origin/tags/v-release`) on #946's first head too
-    (RV946's S1 and S2). Left out, both refuse it in #686's words for a
-    commit only a tag of the remote reaches, with nothing in the holder
+    folder (`origin/tags/v-release`) on #946's first head too (RV946's S1);
+    the mirror (S2) had no test. Left out, both refuse it in #686's words for
+    a commit only a tag of the remote reaches, with nothing in the holder
     moved, and no ref of the mount moves."""
     env = isolated(offline, tmp_path)
     mount = holder / PATH
