@@ -3100,8 +3100,9 @@ def as_named_by_the_plan(declared: list) -> list:
     (["--pin", "a", "--", "--pin", "b"], "--pin", ["a"])])
 def test_a_word_that_starts_with_a_dash_is_not_a_value(passthrough, flag,
                                                        values):
-    """#608, L2-27: `passed_values` says a value never starts with `-` in the
-    second spelling, because argparse reads such a word as a flag; on main
+    """#608, L2-27: in the second spelling `passed_values` reads a word that
+    starts with `-` as the next flag, not as this flag's value, as argparse
+    reads most such words (not `-`, `-5` or `-x y`: #923, U062); on main
     `--pin --referent-chain x` gave `--pin` the value `--referent-chain`, and
     step (4) was handed `--pins=--referent-chain`."""
     assert entry_point_module().passed_values(passthrough, flag) == values

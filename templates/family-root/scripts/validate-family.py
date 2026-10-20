@@ -337,23 +337,24 @@ def _git_runs(unread: str) -> Iterator[None]:
     `filename` is `git` counts, `ENOEXEC`'s included (a binary for another
     architecture, a script with no shebang), and so does a
     `FileNotFoundError` or a `PermissionError` that names no file, as
-    Windows' `CreateProcess` raises one for a missing git. Every other
-    `OSError` passes through as it came, and so does Windows' `[WinError
-    193]`, a `git.exe` it cannot execute, which names no file and is
-    neither class: `validate-pins.py` passes it through as well.
+    Windows' `CreateProcess` raises one for a missing git, and so does an
+    `OSError` that names none whose `winerror` is 193, Windows' `[WinError
+    193]` for a `git.exe` it cannot execute, which is neither class (#1001).
+    Every other `OSError` passes through as it came.
 
     `validate-pins.py`'s RULE, COPIED, NOT SHARED. This file is a pinned
     copy, and a holder re-copies its pinned files one row at a time, so it
     may run beside a `repo_shape.py` older than itself: a rule moved there
     would end this run in an `ImportError` (#610's skew rule).
-    `tests/test_validate_family_git_not_runnable.py` holds the two copies to
-    one answer.
+    `tests/test_validate_family_git_not_runnable.py` holds this copy, that
+    one and both `bootstrap.py`s' to one answer and one text.
     """
     try:
         yield
     except OSError as exc:
         nameless = (exc.filename is None
-                    and isinstance(exc, (FileNotFoundError, PermissionError)))
+                    and (isinstance(exc, (FileNotFoundError, PermissionError))
+                         or getattr(exc, "winerror", None) == 193))
         if exc.filename != "git" and not nameless:
             raise
         raise Refusal(

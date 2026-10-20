@@ -178,6 +178,10 @@ from repo_shape import (  # noqa: E402
 # is one to the reader (#437), and with the reader's rule for a key, so a
 # quoted key or a space before the colon is one here too (#674).
 from repo_shape import _split_key, _strip_comment  # noqa: E402
+# U+FEFF by the reader's own name: the two line rewrites take it off line 1
+# as `parse_yaml` does, and put it back (#933). On a line of its own, for the
+# reason the branch rule's import below gives.
+from repo_shape import BYTE_ORDER_MARK  # noqa: E402
 from shape_materialize import (  # noqa: E402
     ATTRIBUTES, COPIED_FROM_SHAPE, COPIED_VERBATIM, FAMILY_COPIED_FROM_SHAPE,
     FAMILY_COPIED_VERBATIM, SHAPE_REPOSITORY, CommandFailed, check_program,
@@ -1707,6 +1711,24 @@ def _header_as_it_was(line: str) -> str:
     return body + (tail if tail.strip() else "")
 
 
+def _marks_off(text: str) -> tuple[str, str]:
+    """The byte-order marks `text` starts with, and the text after them.
+
+    LINE 1 ONLY, AS THE READER TAKES THEM (#933). `parse_yaml` takes off
+    every U+FEFF the text starts with (#855), so a pin whose first line is
+    `commit:` after one, or a manifest whose first line is `shape:`, is
+    read with that key by `check` and both validators. `_repin` reads the
+    two files as `utf-8`, so the finders below met the mark as the first
+    character of the key and refused the file, in words that said the key
+    was not there. They look at the text after the marks now, and each
+    rewrite puts the marks back in front of what it returns, so they are
+    written back byte for byte, as every other line's bytes are. A mark
+    anywhere else is text, to the reader and here.
+    """
+    after = text.lstrip(BYTE_ORDER_MARK)
+    return text[:len(text) - len(after)], after
+
+
 def rewrite_shape_pin(text: str, commit: str, tree: str,
                       rows: list[Row]) -> str:
     """`commit:`, `digests.tree_sha256:` and the whole `files:` block.
@@ -1743,8 +1765,13 @@ def rewrite_shape_pin(text: str, commit: str, tree: str,
     WHAT IS RETURNED HAS BEEN READ BACK, as `rewrite_manifest`'s is
     (`shape_materialize.rewrite_fault`): a layout this line rewrite cannot
     carry is refused HERE as this tool's failure, before any byte is written.
+
+    A BYTE-ORDER MARK IN FRONT OF LINE 1 is taken off before the lines are
+    looked at and put back in front of them (`_marks_off`, #933), so a pin
+    whose first line is `commit:` after one is rewritten, mark and all.
     """
-    lines = text.splitlines()
+    marks, unmarked = _marks_off(text)
+    lines = unmarked.splitlines()
     out: list[str] = []
     seen = {"commit": 0, "tree": 0, "files": 0}
     for index, line in enumerate(lines):
@@ -1772,7 +1799,7 @@ def rewrite_shape_pin(text: str, commit: str, tree: str,
                 "exactly one was expected, so this tool will not rewrite it",
                 "Remediation: the pin was hand-edited into a shape this tool "
                 "does not recognise. Fix it by hand this once, or re-scaffold.")
-    rewritten = "\n".join(out) + "\n"
+    rewritten = marks + "\n".join(out) + "\n"
     why = rewrite_fault(text, rewritten, commit, tree)
     if why is not None:
         raise Refusal(
@@ -1810,8 +1837,15 @@ def rewrite_manifest(text: str, commit: str, tree: str, kind: Kind) -> str:
     carry — a value on the line below its key — is refused HERE, as this
     tool's failure, rather than by a validator after the fact
     (`_refuse_unless_it_reads_back`).
+
+    A BYTE-ORDER MARK IN FRONT OF LINE 1 is taken off before the block is
+    looked for and put back in front of the lines (`_marks_off`, #933), so
+    `_shape_block_bounds` finds a `shape:` header that is line 1 after one,
+    which it refused `update-manifest-no-shape` while the validators read
+    the block.
     """
-    lines = text.splitlines()
+    marks, unmarked = _marks_off(text)
+    lines = unmarked.splitlines()
     start, end = _shape_block_bounds(lines, kind)
     seen = {"commit": 0, "tree": 0}
     for index in range(start + 1, end):
@@ -1831,7 +1865,8 @@ def rewrite_manifest(text: str, commit: str, tree: str, kind: Kind) -> str:
                 "where exactly one was expected",
                 "Remediation: fix the block by hand this once; this tool will "
                 "not guess at a manifest it does not recognise.")
-    rewritten = "\n".join(lines) + ("\n" if text.endswith("\n") else "")
+    rewritten = (marks + "\n".join(lines)
+                 + ("\n" if text.endswith("\n") else ""))
     _refuse_unless_it_reads_back(text, rewritten, commit, tree, kind)
     return rewritten
 
