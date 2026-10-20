@@ -90,7 +90,7 @@ with; it never runs `git submodule add` and writes nothing of the holder's.
 question the real run asks before it creates the holder (#537): `gh repo
 view` and the commit listing, or the bare repository with
 `--local-remote-dir`. It refuses `family-remote-exists` as the real run does,
-and makes no folder, remote or repository. Both runs ask it after whether
+and creates no remote or repository. Both runs ask it after whether
 each folder `init` makes can be made and the holder written (#609), and
 before the real run makes the family folder, so a refusal leaves none: a file
 where a folder must go, or a folder this user cannot write in, is
@@ -98,6 +98,23 @@ where a folder must go, or a folder this user cannot write in, is
 Only gh's own not-found answer says the holder does not exist; any other
 `gh repo view` failure (a bad login, a rate limit, no network) is refused as
 `remote-unreadable`.
+
+`init --dry-run` LEAVES NOTHING THAT STAYS, which is not the same as making
+no folder (#921). It makes and removes temporary folders, as the real run
+does: `openreposhape-branch-*`, where git is asked whether the tracking
+branch is a name it will create, and `openreposhape-ident-*`, one for the
+author when GIT_AUTHOR_NAME, _EMAIL or _DATE is set and not empty, and one
+for the committer when a GIT_COMMITTER_ one is. Each is empty, and a removal
+that fails is not reported. It creates no remote or repository and pushes
+nothing: the only `gh` calls it makes read (`gh repo view`, the commit
+listing).
+
+WHETHER EACH FOLDER CAN BE WRITTEN IN IS THE MODE BITS' ANSWER (#923). The
+family folder or `--work-dir`, the holder in it and `--local-remote-dir` are
+asked of `os.access`, which reads the mode bits and on Windows says yes for
+every folder, and a dry run makes none of them to ask. So a quota, a Windows
+ACL or a read-only drive on Windows can pass the dry run and be refused by the
+real run.
 
 `init` ASKS GITHUB'S LIMITS FIRST, WHERE GITHUB IS (#863), as the scaffold
 and `adopt-project.py` ask theirs (#838), before `_creator_name` and before
@@ -197,9 +214,10 @@ from shape_materialize import (  # noqa: E402
 # `project.yaml`, asked of `family.yaml` (#925), and the first sentence of
 # the remedy where the holder's reader refuses it (#929).
 from shape_materialize import (  # noqa: E402
-    FAMILY_TEMPLATED, KIND_INVALID, KIND_MISREAD, KIND_UNREADABLE,
-    UNREADABLE_CHOICE, TemplateManifest, manifest_invalid, manifest_misreads,
-    manifest_validator, manifest_value_problems, refuse_manifest_problems,
+    FAMILY_TEMPLATED, KIND_INVALID, KIND_MISREAD, KIND_NOT_A_MAPPING,
+    KIND_UNREADABLE, UNREADABLE_CHOICE, TemplateManifest, manifest_invalid,
+    manifest_misreads, manifest_not_a_mapping_remediation, manifest_validator,
+    manifest_value_problems, refuse_manifest_problems,
 )
 # How every command this prints for a person to paste spells its paths
 # (#486), the quoting the holder's `scripts/siblings.py` uses too.
@@ -239,6 +257,9 @@ from shape_materialize import (  # noqa: E402
 # What `init`'s plan says "not found" means against GitHub, in the
 # scaffold's words (#913, L2-61).
 from shape_materialize import NOT_FOUND_WITH_THIS_TOKEN  # noqa: E402
+# Which of a mount's own refspecs `bump`'s fetch carries: one rule, which
+# `bump-leg.py` asks of a leg's fetch too (#1037).
+from shape_materialize import origin_fetch_refspecs  # noqa: E402
 
 NAMING_POLICY = SHAPE_ROOT / "contracts" / "repository-naming.yaml"
 MANIFEST = "family.yaml"
@@ -3554,10 +3575,17 @@ MANIFEST_UNREADABLE_REMEDIATION = (
     "red from its first commit, because `make validate` and the `validate` "
     "workflow run that validator first, and `init` cannot be run again over "
     "a pushed holder: there is no --force.")
+#: Where the holder's own reader reads the template's `family.yaml` as
+#: something other than a mapping (#1059), no value `init` is handed did it,
+#: so the remedy is the defect of the standard, aimed at that file, and it
+#: is the project's sentence (`shape_materialize`), said of the holder's.
+MANIFEST_NOT_A_MAPPING_REMEDIATION = manifest_not_a_mapping_remediation(
+    "family-root", MANIFEST, "the holder's own YAML reader")
 #: The remedy for each kind of problem the questions name.
 KIND_REMEDIATIONS = {KIND_MISREAD: MANIFEST_MISREAD_REMEDIATION,
                      KIND_INVALID: MANIFEST_INVALID_REMEDIATION,
-                     KIND_UNREADABLE: MANIFEST_UNREADABLE_REMEDIATION}
+                     KIND_UNREADABLE: MANIFEST_UNREADABLE_REMEDIATION,
+                     KIND_NOT_A_MAPPING: MANIFEST_NOT_A_MAPPING_REMEDIATION}
 
 
 def _holder_findings(validator, manifest: dict, policy: NamingPolicy):
@@ -7671,6 +7699,18 @@ def _member_head(member: Path) -> tuple[str | None, str | None]:
     #365): the rollback would have taken the holder's commit for the
     member's. A `.git` whose `lstat` is refused is raised (`_is_there`,
     #430), not read as no checkout.
+
+    THE BRANCH IS READ AS THE BYTES GIT WROTE, as `_holder_branch` reads the
+    holder's (#918, #457's L1-70): exactly one newline and exactly
+    `refs/heads/` come off the bytes, and the rest is decoded with
+    `surrogateescape`, as #425 decodes a source's default branch. Read
+    strictly, a member checked out on a branch that is not UTF-8
+    (`caf<0xE9>`) raised `UnicodeDecodeError` out of `PinRollback`, so
+    `bump` and `remove` ended in a traceback before they wrote anything.
+    Kept as a lone surrogate, the name is handed back to git as the byte it
+    is (`_head_target`, `_head_back`), so a rollback puts the member back
+    ON that branch. And `strip()` no longer takes a trailing U+00A0 off a
+    branch's name, which named another branch (#765).
     """
     if not _is_there(member / ".git"):
         return None, None
@@ -7680,11 +7720,13 @@ def _member_head(member: Path) -> tuple[str | None, str | None]:
     except Refusal:
         at = None
     try:
-        ref = git_out(["symbolic-ref", "-q", "HEAD"], cwd=member)
+        ref = git_out(["symbolic-ref", "-q", "HEAD"], cwd=member, binary=True)
     except Refusal:
-        ref = ""
-    return at, (ref[len(HEADS_PREFIX):] if ref.startswith(HEADS_PREFIX)
-                else None)
+        ref = b""
+    ref = ref[:-1] if ref.endswith(b"\n") else ref
+    heads = HEADS_PREFIX.encode("ascii")
+    return at, (ref[len(heads):].decode("utf-8", "surrogateescape")
+                if ref.startswith(heads) else None)
 
 
 def _head_target(member: Path, at: str, branch: str | None) -> list[str]:
@@ -8118,7 +8160,7 @@ class PinRollback:
     def _head_said(self) -> str:
         at = (self.at or "")[:12]
         if self.branch is not None:
-            return f"{self.path} back on {self.branch} at {at}"
+            return f"{self.path} back on {_shown(self.branch)} at {at}"
         return f"{self.path} checked out at {at} again"
 
     def _work_tree_said(self) -> str:
@@ -8127,7 +8169,7 @@ class PinRollback:
         if self.at is None:
             return f"{self.path} checked out again"
         said = (f"{self.path} checked out again at {self.at[:12]}"
-                + (f" on {self.branch}" if self.branch else "")
+                + (f" on {_shown(self.branch)}" if self.branch else "")
                 + " from the object store `git rm` keeps")
         if self.legs:
             said += (", and " + " and ".join(leg for leg, _, _, _ in self.legs)
@@ -8657,65 +8699,15 @@ def _on_a_remote_branch(member: Path, commit: str) -> bool:
                     cwd=member))
 
 
-#: What `bump`'s fetch always asks of `origin` (#686): every branch, into the
-#: namespace `_on_a_remote_branch` reads, forced as a remote-tracking ref is.
-_ORIGIN_BRANCHES = "+refs/heads/*:refs/remotes/origin/*"
-
-#: The names `_ORIGIN_BRANCHES` gives the branches of `origin` (#905): a
-#: refspec of the mount's own that gives another namespace these very names
-#: is not carried (`_origin_fetch_refspecs`).
-_ORIGIN_BRANCH_NAMES = _ORIGIN_BRANCHES.partition(":")[2]
-
-#: Where a repository keeps its tags: a refspec of the mount's own whose
-#: source can name a ref here is not carried (`_can_name_a_tag`, #1009).
-_TAGS_PREFIX = "refs/tags/"
-
-
-def _can_name_a_tag(source: str) -> bool:
-    """Whether a fetch refspec's `source` can name a tag of `origin`, so that
-    `bump`'s fetch does not carry the mount's refspec that has it
-    (`_origin_fetch_refspecs`; #905, RV946's S1, #1009). Three ways, each
-    measured on git 2.43:
-
-    UNDER `refs/tags/`: `+refs/tags/*:refs/remotes/origin/*`, onto the
-    branches' names, `+refs/tags/*:refs/remotes/origin/tags/*`, or one tag.
-
-    A PATTERN WHOSE PART BEFORE THE `*` IS A START OF `refs/tags/`, `refs/*`
-    or `*`: git matches a pattern against each ref's whole name and never
-    completes it, so it takes the tags too, and a mirror into `origin/`
-    (`+refs/*:refs/remotes/origin/*`) or into a folder there
-    (`+refs/*:refs/remotes/origin/all/*`) brings every tag.
-
-    NO PATTERN, AND NOT UNDER `refs/`: a short name, which git completes,
-    trying the name itself, then `refs/<name>`, then `refs/tags/<name>`
-    before `refs/heads/<name>`. With a branch and a tag `x`,
-    `+x:refs/remotes/origin/x` took the tag; `+heads/main:` took the branch
-    `main`, as `refs/heads/main` comes first, and names a tag only where the
-    remote has none of the names before it. An exact object id
-    (`+<40 hex>:refs/remotes/origin/pinned`) is no pattern and not under
-    `refs/` either, and is left out with them: it names a commit and no
-    branch, and under `origin/` it answered for one.
-
-    A FULL NAME THAT IS NO PATTERN IS NOT LEFT OUT, though git falls back to
-    a tag for it too: `+refs/heads/zz:refs/remotes/origin/zz` took the tag
-    `refs/tags/refs/heads/zz` where the remote had no branch `zz`. Leaving
-    out every full name would leave out the pull requests and the review
-    refs this fetch keeps (#946's U184 rows).
-    """
-    fixed, star, _ = source.partition("*")
-    if source.startswith(_TAGS_PREFIX):
-        return True
-    if star:
-        return _TAGS_PREFIX.startswith(fixed)
-    return not source.startswith("refs/")
-
-
 def _origin_fetch_refspecs(member: Path) -> list[str]:
     """The refspecs `bump`'s fetch of `origin` carries (#686): every branch of
     `origin`, then what the mount's own `remote.origin.fetch` keeps under
     `refs/remotes/origin/`, and none of what it excludes, nor one whose
-    source `_can_name_a_tag`, nor what gives another namespace the names the
-    branches take there (#905, #1009).
+    source can name a tag, nor what gives another namespace the names the
+    branches take there (#905, #1009). Which of the mount's are carried is
+    `shape_materialize`'s `origin_fetch_refspecs`, the one rule
+    `bump-leg.py` asks of a leg's fetch too (#1037); its docstring says
+    which clause leaves out what, and why.
 
     WHY THE MOUNT'S OWN ARE ADDED. `--prune` deletes every ref under
     `refs/remotes/origin/` that no refspec on the command line maps a ref of
@@ -8749,52 +8741,6 @@ def _origin_fetch_refspecs(member: Path) -> list[str]:
     the person's own `git fetch origin`, and `bump` says so as it says any
     failed fetch.
 
-    THREE CLAUSES LEAVE A REFSPEC OF THE MOUNT'S OUT, asked in this order,
-    and the first that matches is the one that leaves it out: a destination
-    OUTSIDE `origin/` (above), A SOURCE THAT CAN NAME A TAG, and THE
-    BRANCHES' GLOB.
-
-    A SOURCE THAT CAN NAME A TAG IS LEFT OUT, wherever under `origin/` it
-    writes (#905, #459's U183, RV946's S1, #1009): a tag is not a branch,
-    and under `origin/` it answers for one. `_can_name_a_tag` says which
-    sources can, three ways: one under `refs/tags/`; a pattern that takes the
-    tags too, such as the mirror into `origin/`
-    (`+refs/*:refs/remotes/origin/*`) or into a folder there
-    (`+refs/*:refs/remotes/origin/all/*`); and one that is no pattern and
-    not under `refs/`, a short name or an exact object id. A full name that
-    is no pattern is not asked, though git falls back to a tag for it too
-    (`_can_name_a_tag` says why). Carried, it clashed with the first
-    refspec wherever it put a tag on a branch's name: this fetch exited 128
-    ("Cannot fetch both refs/heads/feat and refs/tags/feat to
-    refs/remotes/origin/feat"; for the mirror in a folder, a branch
-    `all/tags/v1` and a tag `v1`) where `git fetch origin` exits 0, and
-    `bump` said it could not fetch the member, then told the person to fix
-    the network or the credential. Where no name was shared, the tags it
-    put there answered for branches: `_on_a_remote_branch` reads every ref
-    under `refs/remotes/origin/`, so a commit only a tag of `origin` reaches
-    was pinned, against the rule (#613) that a tag is not a branch
-    (measured on git 2.43, each). #946 left out a source under `refs/tags/`
-    and a mirror onto the branches' glob, so a mirror in a folder was still
-    carried and failed both ways (#1009). Left out, the fetch works and a
-    tag there answers for nothing: the prune drops such a ref, as any ref
-    under `origin/` no refspec of this fetch maps, and the mount's own next
-    `git fetch origin` writes it back. A refspec that can name no tag and
-    writes a folder of its own under `origin/` (the pull requests above,
-    `pr/*`) still rides along.
-
-    THE BRANCHES' GLOB: ONE THAT GIVES ANOTHER NAMESPACE THE BRANCHES' NAMES
-    IS LEFT OUT (#905, #459's U183), a refspec whose destination is the
-    first refspec's own, `refs/remotes/origin/*`, and whose source is not
-    under `refs/heads/`. The tags onto the branches' names and the mirror
-    into `origin/` meet it too, and the clause before has left them out
-    already; this one alone leaves out a source that can name no tag, such
-    as pull requests onto the branches' names
-    (`+refs/pull/*/head:refs/remotes/origin/*`). Carried, that clashed with
-    the first refspec wherever a pull request and a branch share a name
-    ("Cannot fetch both refs/heads/7 and refs/pull/7/head to
-    refs/remotes/origin/7") where `git fetch origin` exits 0 (measured, git
-    2.43).
-
     READ BY A LISTING, `git config --list -z`, not `--get-all`: the dry
     run's test holds every `git config` it runs to a listing, the one form
     that cannot write, and a listing exits 0 whether or not the mount has a
@@ -8814,22 +8760,7 @@ def _origin_fetch_refspecs(member: Path) -> list[str]:
                   for key, _, value in (record.partition(b"\n")
                                         for record in listed.split(b"\0"))
                   if key == b"remote.origin.fetch"]
-    refspecs = [_ORIGIN_BRANCHES]
-    for spec in (value.strip() for value in configured):
-        if spec.startswith("^"):
-            continue  # a narrowing refspec never decides reachability (p07)
-        spec = spec if spec.startswith("+") else "+" + spec
-        source, _, destination = spec[1:].partition(":")
-        if not destination.startswith("refs/remotes/origin/"):
-            continue
-        if _can_name_a_tag(source):
-            continue  # a tag is not a branch (RV946's S1, #1009)
-        if (destination == _ORIGIN_BRANCH_NAMES
-                and not source.startswith("refs/heads/")):
-            continue  # it gives other refs the branches' names (U183)
-        if spec not in refspecs:
-            refspecs.append(spec)
-    return refspecs
+    return origin_fetch_refspecs(configured)
 
 
 def _has_origin(member: Path) -> bool:
@@ -10452,8 +10383,15 @@ def build_parser() -> argparse.ArgumentParser:
                            "--local-remote-dir) and whether <org>/<Family> "
                            "already exists (`gh repo view` and its commit "
                            "listing; with --local-remote-dir, the bare "
-                           "repository), refusing what it refuses; make no "
-                           "folder, remote or repository")
+                           "repository), refusing what it refuses. Whether "
+                           "each folder can be written in is asked of "
+                           "`os.access`, which reads the mode bits and on "
+                           "Windows says yes for every folder, so a quota, "
+                           "a Windows ACL or a read-only drive on Windows "
+                           "can pass here and be refused by the real run. "
+                           "It leaves nothing that stays: it makes and "
+                           "removes temporary folders, creates no remote or "
+                           "repository and pushes nothing")
     init.set_defaults(func=cmd_init)
 
     add = subparsers.add_parser(

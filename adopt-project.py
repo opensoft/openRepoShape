@@ -278,9 +278,8 @@ from shape_materialize import (  # noqa: E402
 # into its manifest, and whether a repository's name can be a directory's:
 # asked of the plan's values by `plan`, `check` and `execute` (#261).
 from shape_materialize import (  # noqa: E402
-    KIND_UNREADABLE, MANIFEST_INVALID_REMEDIATION,
-    MANIFEST_UNREADABLE_REMEDIATION, manifest_judged, manifest_value_problems,
-    refuse_manifest_values, refuse_unstorable_names,
+    KIND_NOT_A_MAPPING, PROJECT_MANIFEST, manifest_judged,
+    manifest_value_problems, refuse_manifest_values, refuse_unstorable_names,
 )
 # What GitHub keeps a repository's name, a topic and an organisation's name
 # to, asked by `execute` before either leg exists where GitHub is (#838).
@@ -1762,6 +1761,52 @@ def _os_reason(exc: OSError) -> str:
     return exc.strerror or type(exc).__name__
 
 
+def _refused_at(exc: OSError, directory: Path) -> bool:
+    """Whether `exc`, raised by a command run with `cwd=directory`, is the
+    operating system refusing to enter `directory` (#918): `subprocess`
+    names the directory as the exception's `filename` then. A program that
+    could not be started is named by the program instead, and is not this:
+    whether that is a question the caller can answer stays the caller's,
+    as `git_out` leaves it."""
+    return exc.filename == str(directory)
+
+
+def _recorded_spelling(recorded: str) -> tuple[str, str]:
+    """`(spelling, said)`: `recorded`, a path a plan records as text, as the
+    disk is asked for it in this locale, and what a refusal that it names
+    nothing adds, which is "" where it is asked as written (#918, #457's
+    L1-86).
+
+    A PLAN IS UTF-8 TEXT, and `plan` records a path as `os.fsdecode` read
+    it: under a UTF-8 locale or Python's UTF-8 mode each character as
+    itself and a byte that is not UTF-8 as its surrogate, and under the C
+    locale every byte outside ASCII as its surrogate. Either way the path's
+    bytes are the text's UTF-8 with `surrogateescape`, as `_path_argument`
+    spells a path for git. Where this locale's file-name encoding can spell
+    the text, it is asked as written, as before. Where it cannot, as the
+    ASCII of `LC_ALL=C PYTHONUTF8=0` cannot spell `Thing\\u00e9` from a plan
+    written in UTF-8 mode, `Path.exists()` met the `UnicodeEncodeError`
+    inside and answered False, and `check` refused `plan-source-gone`,
+    "names nothing that exists", of a source that is there. It is asked as
+    those UTF-8 bytes instead, which `os.fsdecode` spells in this locale;
+    and where they name nothing, `said` names the spelling asked and this
+    locale's encoding, which cannot spell the text: a plan written under
+    another locale of one byte to a character, Latin-1 say, recorded
+    other bytes. A surrogate no byte is read as cannot be those bytes
+    either, and no name on the disk holds it: it is asked as written."""
+    try:
+        os.fsencode(recorded)
+        return recorded, ""
+    except UnicodeEncodeError:
+        pass
+    try:
+        spelling = os.fsdecode(recorded.encode("utf-8", "surrogateescape"))
+    except UnicodeEncodeError:
+        return recorded, ""
+    return spelling, (f" as UTF-8 spells it (this locale's file names, "
+                      f"{sys.getfilesystemencoding()}, cannot spell it)")
+
+
 # ---------------------------------------------------------------------------
 # What a `--source` names, and where its clone goes (#652)
 # ---------------------------------------------------------------------------
@@ -2012,7 +2057,11 @@ def _source_spec(spec: str) -> tuple[Path | None, str | None]:
     if _source_there(spec, candidate, name):
         if name is not None:
             raise _ambiguous(spec, name)
-        return _top_level(candidate, f"--source {spec!r}"), None
+        return _top_level(
+            candidate, f"--source {spec!r}",
+            lambda exc: _source_unreadable(f"--source {spec!r}", exc,
+                                           "whether a repository is there")
+        ), None
     if name is None:
         raise Refusal(
             SOURCE_UNRESOLVABLE,
@@ -2022,7 +2071,8 @@ def _source_spec(spec: str) -> tuple[Path | None, str | None]:
     return None, name
 
 
-def _top_level(path: Path, named: str) -> Path:
+def _top_level(path: Path, named: str,
+               refused: Callable[[OSError], Refusal]) -> Path:
     """`path`, a local source that exists, resolved, where it is the
     top-level directory of a repository; refused as `source-not-top-level`
     where it is not a directory, or is a directory inside a repository
@@ -2047,13 +2097,26 @@ def _top_level(path: Path, named: str) -> Path:
     a later read refused it on main. On main a directory inside a
     repository was read as the source: `git ls-tree` there lists what is
     under it alone, so `plan` planned that, exit 0, and the plan recorded
-    it."""
+    it.
+
+    A DIRECTORY THIS USER CANNOT ENTER IS `refused(<the OSError>)`, the
+    caller's `source-unreadable`, before git reads anything in it (#918,
+    #457's L1-105): git runs IN the directory, and at mode 000 `subprocess`
+    raised the `PermissionError` of `cwd=` out of `plan`, `check` and
+    `execute`, a traceback. No other `OSError` is: a git that cannot be
+    started is raised, as `git_out` leaves it (`_refused_at`)."""
     resolved = Path(os.path.realpath(path))
     if not resolved.is_dir():
         raise Refusal(SOURCE_NOT_TOP_LEVEL,
                       f"{named} is not a directory, and {TOP_LEVEL_ONLY}",
                       TOP_LEVEL_REMEDY)
-    if git_out(["rev-parse", "--is-inside-git-dir"], cwd=resolved) == "true":
+    try:
+        inside = git_out(["rev-parse", "--is-inside-git-dir"], cwd=resolved)
+    except OSError as exc:
+        if not _refused_at(exc, resolved):
+            raise
+        raise refused(exc) from exc
+    if inside == "true":
         git_dir = os.fsdecode(git_out(["rev-parse", "--absolute-git-dir"],
                                       cwd=resolved, binary=True).rstrip(b"\n"))
         if Path(os.path.realpath(git_dir)) != resolved:
@@ -2421,13 +2484,22 @@ def _not_a_whole_clone(path: Path, commit: str) -> str | None:
     another repository, which git reads as that one; the third a removed
     pack, which a clone holds all its objects in. Only what a cleaner
     leaves is asked: whether every object is whole is `git fsck`'s question,
-    which a large source would pay for on every run."""
+    which a large source would pay for on every run.
+
+    A DIRECTORY THIS USER CANNOT ENTER IS NEITHER (#918, #457's L1-105): the
+    `OSError` of `cwd=` (`_refused_at`) is raised, for the caller to name.
+    It was "git finds no repository there", and the clone, still there, was
+    cloned again or refused as gone."""
     if not path.is_dir():
         return "it is not a directory"
     try:
         top = os.fsdecode(git_out(["rev-parse", "--show-toplevel"],
                                   cwd=path, binary=True).strip())
-    except (Refusal, OSError):
+    except Refusal:
+        return "git finds no repository there"
+    except OSError as exc:
+        if _refused_at(exc, path):
+            raise
         return "git finds no repository there"
     if os.path.realpath(top) != os.path.realpath(path):
         return f"git reads it as part of the repository at {_spelled(top)}"
@@ -5179,16 +5251,17 @@ def _checked_flag_inputs(args, naming: NamingPolicy) -> None:
     source.
 
     NOT EVERY REFUSAL A FLAG DECIDES IS HERE. Still after the source, for
-    an `org/repo` source as for a local one: `naming-unclassified` and
-    `naming-role-mismatch`, which `_check_names` asks of the names
-    `--project` makes, with a remedy about the source; an empty
-    `--elected-by`, which is a value `unwritable_values` holds and the
-    manifest validator refuses (`adopt-manifest-invalid`, in
-    `_refuse_unholdable_values`), and an empty `--reference` with it
-    (#902); and a missing `--path-policy` (`yaml-unreadable`). A passed
-    `--id` that is no id is here only where `naming` holds the names
-    `--project` makes (`_names_held`, #902): beside a name it refuses, the
-    naming refusal speaks first, and its remedy needs the source.
+    an `org/repo` source as for a local one, among them:
+    `naming-unclassified` and `naming-role-mismatch`, which `_check_names`
+    asks of the names `--project` makes, with a remedy about the source
+    where it names a repository; an empty `--elected-by`, which is a value
+    `unwritable_values` holds and the manifest validator refuses
+    (`adopt-manifest-invalid`, in `_refuse_unholdable_values`), and an
+    empty `--reference` with it (#902); and a missing `--path-policy`
+    (`yaml-unreadable`). A passed `--id` that is no id is here only where
+    `naming` holds the names `--project` makes (`_names_held`, #902):
+    beside a name it refuses, the naming refusal speaks first, and its
+    remedy needs the source.
     """
     args.project = checked_value("--project", args.project)
     # A `--tracking-branch` that was passed: PASSED IS ON THE COMMAND LINE,
@@ -5196,9 +5269,9 @@ def _checked_flag_inputs(args, naming: NamingPolicy) -> None:
     # `checked_value` (#420): a name inside its alphabet that git will not
     # create (`a..b`, `~`, `x.lock`, `a/`) is refused here, in git's words,
     # and is not written for `check` to find it no branch of the source and
-    # the plan to be written again. That question is asked of a throwaway
-    # repository in the system temp folder, which it removes, and never of
-    # the source.
+    # the plan to be written again. That question is asked with an empty
+    # temporary directory as its `--git-dir`, which `plan` removes, and
+    # never of the source.
     if args.tracking_branch is not None:
         tracking = _flag_named(TRACKING_KEY, {TRACKING_KEY})
         args.tracking_branch = checked_value(tracking, args.tracking_branch)
@@ -5581,6 +5654,12 @@ def _manifest_findings(plan: Plan) -> tuple[list[str], list[str]]:
     what was read (`_named_as_read`), because the sentence goes on to
     quote `str` of it, the text `execute` would write and not what the
     plan says.
+
+    A MANIFEST THE READER MAKES NO MAPPING OF is one finding about no value
+    (`KIND_NOT_A_MAPPING`, #1059): its remedy is the one for a defect of the
+    copy of the standard, which `PROJECT_MANIFEST.remediations` gives the
+    kind, and it has no sentence about the plan's values, none of which is
+    at fault.
     """
     naming = NamingPolicy.load(NAMING_POLICY)
     values = _manifest_values(plan, naming)
@@ -5591,17 +5670,21 @@ def _manifest_findings(plan: Plan) -> tuple[list[str], list[str]]:
                                        ignore=_validator_ignores(plan))
     if not problems:
         return [], []
-    # Where the project's own YAML reader refuses the manifest, the words
-    # are the reader's, and so is the remedy (#708).
-    remedy = (MANIFEST_UNREADABLE_REMEDIATION
-              if problems[0][0] == KIND_UNREADABLE
-              else MANIFEST_INVALID_REMEDIATION)
+    # The remedy is the kind's own: where the project's own YAML reader
+    # refuses the manifest, the words are the reader's, and so is the remedy
+    # (#708); where it reads the template's manifest as something other than
+    # a mapping, no value is at fault and only the template is, so the remedy
+    # is the defect-of-the-standard one and the sentence about the plan's
+    # values is left out (#1059).
+    kind = problems[0][0]
+    values_tail = (
+        "" if kind == KIND_NOT_A_MAPPING
+        else " `execute` writes the plan's values into the project's "
+        "`project.yaml` as they stand, so correct each one named here in "
+        "the plan, or re-run `plan` with a value the validator accepts.")
     return ([f"FINDING plan-manifest-invalid: {sentence}"
              for _, sentence in problems],
-            [f"{remedy} `execute` writes the plan's "
-             "values into the project's `project.yaml` as they stand, so "
-             "correct each one named here in the plan, or re-run `plan` with "
-             "a value the validator accepts."])
+            [f"{PROJECT_MANIFEST.remediations[kind]}{values_tail}"])
 
 
 def _validator_judged(plan: Plan) -> frozenset[str] | None:
@@ -6026,8 +6109,9 @@ def cmd_plan(args) -> int:
     # made, git had read the source and an `org/repo` one was cloned, and
     # with a clone that failed they were never reached: no work directory
     # is made, git reads nothing of the source and no `gh` runs before
-    # them. A passed `--tracking-branch` runs `git check-ref-format` in a
-    # throwaway repository first, and never touches the source.
+    # them. A passed `--tracking-branch` runs `git check-ref-format` first,
+    # with an empty temporary directory as its `--git-dir`, which `plan`
+    # removes, and never touches the source.
     # The naming policy is read first, a file of this checkout: a passed
     # `--id` is refused with the flags only where the names `--project`
     # makes are ones it holds (#902).
@@ -6360,12 +6444,14 @@ class Plan:
         is at the plan's own `source.local_path` (#803, #457's L1-97): it is
         the plan's source again, as the clone `_recorded_source` makes there
         is. On main `check` removed it, and the next run cloned it once
-        more."""
+        more. The record is spelled as `_recorded_source` asks the disk for
+        it (`_recorded_spelling`, #918)."""
         record = self.source.get("local_path")
         if not (made and record):
             return
         try:
-            at = os.path.realpath(os.path.expanduser(str(record)))
+            at = os.path.realpath(os.path.expanduser(
+                _recorded_spelling(str(record))[0]))
         except (OSError, ValueError):
             return
         made[:] = [claim for claim in made
@@ -6434,34 +6520,52 @@ class Plan:
         raised it, a `PermissionError` traceback; on 3.14 it answered False,
         so the path was `plan-source-gone`, "names nothing that exists", or,
         a clone `plan` made, "no longer exists" and was cloned again from
-        GitHub beside the one still there."""
-        path = Path(os.path.expanduser(local_path))
-        try:
-            there = _is_there(path)
-        except OSError as exc:
-            raise _source_unreadable(
-                f"the plan's `source.local_path`, {_spelled(local_path)}", exc,
+        GitHub beside the one still there. So is a directory this user
+        cannot enter (#918): git runs in it, and at mode 000 that was a
+        `PermissionError` traceback where `plan` did not make it, and "no
+        longer whole (git finds no repository there)" where it did.
+
+        A PATH THIS LOCALE CANNOT SPELL IS ASKED AS ITS UTF-8 BYTES
+        (`_recorded_spelling`, #918): a plan written in UTF-8 mode for
+        `Thing\\u00e9` and checked under `LC_ALL=C PYTHONUTF8=0` was
+        `plan-source-gone`, "names nothing that exists", of a source that is
+        there. It is named as the plan records it."""
+        spelling, said = _recorded_spelling(local_path)
+        path = Path(os.path.expanduser(spelling))
+        named = f"the plan's `source.local_path`, {_spelled(local_path)}"
+
+        def unreadable(exc: OSError) -> Refusal:
+            return _source_unreadable(
+                named, exc,
                 ("whether `plan`'s clone is still there, to be read, or gone, "
                  "to be cloned again," if self.source.get("cloned") is True
                  else "whether the source is still there"),
                 "pass the source again with --source, which is held to the "
-                "plan's `commit:`") from exc
+                "plan's `commit:`")
+
+        try:
+            there = _is_there(path)
+        except OSError as exc:
+            raise unreadable(exc) from exc
         if self.source.get("cloned") is not True:
             if there:
-                return Source.in_place(_top_level(
-                    path, f"the plan's `source.local_path`, "
-                          f"{_spelled(local_path)},"), work_root, self.read_at)
-            raise self._gone(local_path, "names nothing that exists",
+                return Source.in_place(_top_level(path, f"{named},",
+                                                  unreadable),
+                                       work_root, self.read_at)
+            raise self._gone(local_path, "names nothing that exists" + said,
                              "the plan does not record it as a clone `plan` "
                              "made (`source.cloned` is not `true`), so "
                              "nothing clones it again")
-        broken = _not_a_whole_clone(path, self.source_commit) if there \
-            else None
+        try:
+            broken = _not_a_whole_clone(path, self.source_commit) if there \
+                else None
+        except OSError as exc:
+            raise unreadable(exc) from exc
         if there and broken is None:
             return Source.in_place(Path(os.path.realpath(path)), work_root,
                                    self.read_at)
         state = (f"is a clone `plan` made that is no longer whole ({broken})"
-                 if there else "no longer exists")
+                 if there else "no longer exists" + said)
         repository = self._recorded_repository()
         if repository is None:
             raise self._gone(local_path, state, "the plan records no "
@@ -12280,13 +12384,14 @@ WORK_DIR_FIX = ("Pass a --work-dir this user can write in, or none: without "
 NO_LEG_YET = "no leg repository was created and nothing was pushed. "
 
 
-def _work_dir_refusal(detail: str, done: str = "") -> Refusal:
+def _work_dir_refusal(detail: str, done: str = "",
+                      fix: str = WORK_DIR_FIX) -> Refusal:
     """`adopt-work-dir-unwritable` for `detail`, why the `--work-dir`
     cannot be used: `_work_root`'s or `_unwritable_work_dir`'s. The one
     refusal of a work directory, in all three commands (#650); `done` is
-    what the refusing command left as it was, said first."""
-    return Refusal(WORK_DIR_UNWRITABLE, detail,
-                   f"Remediation: {done}{WORK_DIR_FIX}")
+    what the refusing command left as it was, said first, and `fix` the way
+    out, which is #524's but for a symlink in the way (#978)."""
+    return Refusal(WORK_DIR_UNWRITABLE, detail, f"Remediation: {done}{fix}")
 
 
 def _unwritable_work_dir(args, work_root: Path,
@@ -16046,8 +16151,11 @@ def _work_root(args, done: str = "") -> Path:
     FileExistsError, NotADirectoryError or PermissionError traceback, exit
     1, and on a loop Python 3.12's `Path.resolve` raised RuntimeError
     first; `os.path.realpath` is the same reading without that raise. The
-    code and the way out are #524's, for one this user cannot write in;
-    `done` is what the refusing command left as it was, said first.
+    code and the way out are #524's, for one this user cannot write in, but
+    a symlink in the way is named, with a way out of its own: one at the
+    `--work-dir` or on the way to it that leads round a loop, or one at it
+    that leads to what is no directory (`_unmade_work_dir`, #978); `done`
+    is what the refusing command left as it was, said first.
 
     A `--work-dir` ANOTHER USER CAN RENAME IN IS REFUSED NEXT, before
     anything is made in it (#803): one another user owns, or one every user
@@ -16071,9 +16179,8 @@ def _work_root(args, done: str = "") -> Path:
         _made_0755(root)
         status = os.lstat(root)
     except OSError as exc:
-        raise _work_dir_refusal(
-            f"--work-dir {_spelled(str(root))} cannot be made: making it a "
-            f"directory failed ({exc.strerror or exc})", done) from None
+        detail, fix = _unmade_work_dir(args.work_dir, root, exc)
+        raise _work_dir_refusal(detail, done, fix) from None
     _refuse_a_shared_chain(root, done)
     shared = _shared_with_another_user(status)
     if shared:
@@ -16082,6 +16189,89 @@ def _work_root(args, done: str = "") -> Path:
             "could rename or replace what this run makes in it", done,
             WORK_DIR_OWN)
     return root
+
+
+#: Why a `--work-dir` that is a symlink round a loop cannot be made (#978).
+SYMLINK_LOOP = "it is a symbolic link that leads round a loop"
+
+
+def _unmade_work_dir(work_dir: Path, root: Path,
+                     exc: OSError) -> tuple[str, str]:
+    """Why the `--work-dir` `work_dir`, which `_work_root` read as `root`
+    (`os.path.realpath`), could not be made, where making it failed with
+    `exc`, and the way out: `_work_root`'s refusal (#650).
+
+    A SYMLINK IN THE WAY IS NAMED AS ONE (#978). `os.mkdir` of a symlink
+    that leads round a loop fails with EEXIST, the error a file in the way
+    gets, so the reason was "(File exists)": the person was told a file is
+    there, and found a link, and the way out was for a folder this user
+    cannot write in. Where the `--work-dir` is a symlink, or the way to it
+    runs through one, that leads round a loop, the reason says so and names
+    the link, and the link in the loop where that is another; where it is a
+    symlink that leads to a file, or to anything else that is no directory,
+    the reason names the link and what it leads to. The way out is to
+    remove the link or make it lead to a directory: the `--work-dir` itself
+    where it is a symlink, else the link in the loop. The `--work-dir` is
+    named as given, made absolute and not resolved, since
+    `os.path.realpath` stops at a loop on a path the person may never have
+    typed.
+
+    A DANGLING SYMLINK IS NO LOOP: `os.path.realpath` reads it as the path
+    it leads to, which `_made_0755` makes, and only where that fails does
+    it get here. That failure, and every other, a file at the `--work-dir`
+    or above it among them, is said in the system's own words, of `root`,
+    as before."""
+    given = work_dir.absolute()
+    link = given if os.path.islink(given) else None
+    looped = (_the_loop_in(root)
+              if exc.errno in (errno.EEXIST, errno.ELOOP) else None)
+    if looped is not None:
+        if link is None:
+            why = ("the way to it leads round a loop, at the symbolic link "
+                   f"{_spelled(str(looped))}")
+            link = looped
+        elif _same_entry(link, looped):
+            why = SYMLINK_LOOP
+        else:
+            why = (f"{SYMLINK_LOOP}, at the symbolic link "
+                   f"{_spelled(str(looped))}")
+    elif link is not None and exc.errno == errno.EEXIST:
+        why = (f"it is a symbolic link that leads to {_spelled(str(root))}, "
+               "which is not a directory")
+    else:
+        return (f"--work-dir {_spelled(str(root))} cannot be made: making it "
+                f"a directory failed ({exc.strerror or exc})", WORK_DIR_FIX)
+    return (f"--work-dir {_spelled(str(given))} cannot be made: {why}",
+            f"Remove the symbolic link {_spelled(str(link))}, or make it "
+            "lead to a directory, or pass another --work-dir, or none: "
+            "without one, each run makes a new one.")
+
+
+def _the_loop_in(root: Path) -> Path | None:
+    """The symlink in `root`, a `--work-dir` as `os.path.realpath` read it,
+    that leads round a loop; None where there is none (#978).
+    `os.path.realpath` follows every symlink but one it meets again before
+    it has resolved it, which it leaves in the path as it found it, with
+    the rest of the path unread after it. So the first symlink in `root`,
+    from `/` down, is that one, and the system is asked whether following
+    it loops (ELOOP), so that nothing else is called a loop."""
+    for part in (*reversed(root.parents), root):
+        if os.path.islink(part):
+            try:
+                os.stat(part)
+            except OSError as exc:
+                return part if exc.errno == errno.ELOOP else None
+            return None
+    return None
+
+
+def _same_entry(one: Path, other: Path) -> bool:
+    """Whether `one` and `other` are the same directory entry, a symlink
+    taken as itself and not followed."""
+    try:
+        return os.path.samestat(os.lstat(one), os.lstat(other))
+    except OSError:
+        return False
 
 
 def _holds_a_file(root: Path) -> bool:
@@ -16470,8 +16660,9 @@ def main(argv: list[str] | None = None) -> int:
                            "and one that is neither a path that exists nor "
                            "an `org/repo`; `source-unreadable`, a path this "
                            "user cannot reach (under a directory it may not "
-                           "search), which is never read as one that is not "
-                           "there, nor cloned as an `org/repo`.")
+                           "search, or one it may not enter), which is never "
+                           "read as one that is not there, nor cloned as an "
+                           "`org/repo`.")
     plan.add_argument("--project", required=True,
                       help="the assembly-root name; for an in-place adoption "
                            "it is the source repository's own name. "
