@@ -63,6 +63,18 @@ VALIDATOR_REMEDY = (
     "the `validate` workflow run it first, and `init` cannot be run again "
     "over a pushed holder: there is no --force.")
 
+#: The misread remedy, as `init` gives it, before the sentence it ends with.
+MISREAD_REMEDY = (
+    "Remediation: choose another value for each one named, as nothing here "
+    "will retype it for you. family.yaml writes a value like these unquoted, "
+    "so the holder's own YAML reader takes `null` and `~` for no value, "
+    "`true` and `false` for booleans, and `007`, `2026` or `20261011` for "
+    "numbers: what it reads back is not what was typed. A value the reader "
+    "takes for text (`contoso`, `release-2026`, `v2`) passes. A branch `007` "
+    "reads back as the branch `7`, and `2026` happens to work today because "
+    "the tools that read it turn the number back into text, but it is still "
+    "a number to the holder's reader and not a name.")
+
 #: The sentence every `init` remedy ends with, nothing having been made.
 NOTHING = " Nothing was created, and `--dry-run` refuses the same."
 
@@ -150,3 +162,21 @@ def test_the_projects_remedy_keeps_its_words():
         "would write before its validate-manifest.py can be asked, and a "
         "project whose manifest it refuses is one whose first bootstrap would "
         "fail.")
+
+
+def test_a_misread_keeps_its_words_and_its_remedy(tmp_path):
+    """#925: the misread question and the refusal are `shape_materialize`'s,
+    the scaffold's, asked of `family.yaml`. The sentence and the remedy are
+    the family's, byte for byte, and the remedy ends with the sentence every
+    `init` remedy ends with."""
+    template = template_copy(tmp_path, "bare", quoted=False)
+    module = family_module()
+    with pytest.raises(module.Refusal) as caught:
+        module.refuse_unholdable_manifest(given(id="null"),
+                                          table(FAMILY_ID="null"), template)
+    assert caught.value.code == "family-manifest-misread"
+    assert caught.value.detail == (
+        "--id is 'null', which is written into family.yaml as `id: null`, "
+        "where the holder's own YAML reader reads it back as no value at all "
+        "and not as that text.")
+    assert caught.value.remediation == MISREAD_REMEDY + NOTHING

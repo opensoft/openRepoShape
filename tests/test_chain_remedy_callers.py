@@ -653,6 +653,78 @@ def test_a_key_is_read_whole(tmp_path, monkeypatch, before, key):
         result.stderr)
 
 
+# #1054: what #980 left as it was. #980 claimed that a chain whose links hold
+# no `=` is read exactly as before, and the rows above hold the new reading.
+# These three hold the corners of the OLD split at the first `=`, each of
+# which a one-line change to `_read_source` moved with no test failing.
+
+@pytest.mark.parametrize("chain, key, path", [
+    pytest.param(THREE, "openXdox", "=x", id="a-plain-link"),
+    pytest.param(EQUALS, "open=y", "=", id="a-link-holding-an-equals"),
+])
+def test_a_keyed_path_may_begin_with_an_equals(tmp_path, monkeypatch, chain,
+                                               key, path):
+    """The key is the longest link before an `=` that leaves a path, so in
+    `openXdox==x` the second `=` is tried and passed over (`openXdox=` is
+    no link), and the key is `openXdox` with the path `=x`, as it was at
+    the first `=`. In a chain naming `open=y`, `open=y==` is that link with
+    the path `=`. A scan that steps over the `=` right before the one it is
+    at never reads the key: the value is a bare PATH, and the run adds a
+    false line, "It was read as a PATH: `openXdox` is not a link of a
+    referent chain here"."""
+    clear_ambient_pin_sources(monkeypatch)
+    result = naming(tmp_path, *chain, "--link-source", f"{key}={path}",
+                    "codexInk")
+    assert result.returncode == 0, result.stderr
+    assert (f"WARNING link-source-unreadable: {path} (--link-source {key}"
+            f"=...) could not answer for {key}: no such file or directory\n"
+            ) in result.stderr, result.stderr
+    assert "read as a PATH" not in result.stderr, result.stderr
+
+
+def test_a_keyed_blank_path_is_one_blank_and_is_not_refused(tmp_path,
+                                                            monkeypatch):
+    """`openXdox= ` is keyed to the path ` `, one blank, as every path is
+    read as typed. Where a blank leaves no path for the key, the value is a
+    bare PATH for the chain's first link, with the false line above; where
+    `no_path` strips it, the value is refused `link-source-no-path`, exit
+    2, and not read as the tree that is not there, exit 0, as it was before
+    #980."""
+    clear_ambient_pin_sources(monkeypatch)
+    result = naming(tmp_path, *THREE, "--link-source", "openXdox= ",
+                    "codexInk")
+    assert result.returncode == 0, result.stderr
+    assert "REFUSED" not in result.stderr, result.stderr
+    assert ("WARNING link-source-unreadable:   (--link-source openXdox=...) "
+            "could not answer for openXdox: no such file or directory\n"
+            ) in result.stderr, result.stderr
+    assert "read as a PATH" not in result.stderr, result.stderr
+
+
+@pytest.mark.parametrize("chain, key, link", [
+    pytest.param(EQUALS, "OPEN=Y", "open=y", id="a-link-holding-an-equals"),
+    # A chain spelling that is not all lowercase: the link read out of a
+    # key typed in capitals is not that key's lowercase either (rv1058).
+    pytest.param(THREE, "OPENXDOX", "openXdox", id="a-capital-inside-a-link"),
+])
+def test_a_key_typed_in_capitals_is_noted_as_the_chain_spells_it(
+        tmp_path, monkeypatch, chain, key, link):
+    """A run that reads no declaration used no source, so the NOTE names
+    the value as typed, `OPEN=Y=<path>`, and why: no name here reads
+    `open=y`'s own declaration. The link in that reason is spelled as the
+    chain spells it, and not as the value does: `OPENXDOX` is `openXdox`,
+    which is not what its lowercase, `openxdox`, spells. `OPENXDOX=<path>`
+    in a chain with no `=` in it is read so as well, and was before #980."""
+    clear_ambient_pin_sources(monkeypatch)
+    typed = f"{key}={tree(tmp_path / 'trees' / 'linked', 'openInk')}"
+    result = naming(tmp_path, *chain, "--link-source", typed, "brett-wip")
+    assert result.returncode == 0, result.stderr
+    assert [line for line in result.stderr.splitlines()
+            if line.startswith("NOTE ")] == [
+        f"NOTE --link-source {typed}: not used — no name classified here "
+        f"reads {link}'s own declaration."], result.stderr
+
+
 # --- L2-69: every --link-source value and path the gate prints is spelled ---
 
 def assert_clean(result) -> None:

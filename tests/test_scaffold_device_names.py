@@ -176,8 +176,8 @@ def test_a_name_the_policy_refuses_too_is_refused_by_the_policy(
         tmp_path, project, passed):
     """THE NAMING REFUSAL SPEAKS FIRST, as `init` asks `_classify_family_name`
     before its own: a device-shaped name the policy holds as no assembly
-    root is refused as `naming-unclassified`, whatever the id, and is never
-    told it is a device name."""
+    root is refused as `naming-unclassified`, whatever id is passed, and is
+    never told it is a device name."""
     result = scaffold(tmp_path, project, f"--id={passed}")
     assert result.returncode == 2, result.stdout + result.stderr
     assert refused_line(result).startswith(
