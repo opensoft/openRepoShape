@@ -4323,11 +4323,11 @@ def _plan_fields(plan: Plan) -> list[tuple[str, tuple]]:
         if isinstance(value, str) and leg_path_problem(what, value) is None:
             fields.append((placeholder, _field(what, placeholder, value)))
     # Each pin `execute` writes, by the product it lists in the manifest
-    # (`_template_table`), less one no file can hold, which is #255's
-    # finding alone. None at all where the plan's `pins:` has a finding of
-    # its own (`_read_pins`, #273): `execute` refuses such a plan before any
-    # leg exists, and one wrong pin is one finding. A product given twice is
-    # one such finding (`plan-pin-collides`), so each is asked about once.
+    # (`_template_table`). None at all where the plan's `pins:` has a
+    # finding of its own (`_read_pins`, #273): `execute` refuses such a plan
+    # before any leg exists, and one wrong pin is one finding. A product
+    # given twice is one such finding (`plan-pin-collides`), so each is
+    # asked about once.
     recorded, pin_findings = _read_pins(plan)
     naming = NamingPolicy.load(NAMING_POLICY)
     return fields + [(PINS_PLACEHOLDER,
@@ -5097,9 +5097,11 @@ def _manifest_values(plan: Plan, naming: NamingPolicy) -> dict | None:
     same question as any other. A refusal of the plan's own names, id,
     organisation or leg paths is raised here as it is by `check` and `execute`
     a few lines later. The organisation and the id are asked BEFORE the date
-    is, by the function `execute` asks first of the plan's options
-    (`_checked_org_and_id`, #901), so a bad date beside a bad organisation or
-    id does not make `check` and `execute` name different problems first.
+    is, by the function `execute` asks after the plan's three repository
+    names, which both commands ask earlier (`plan.names()`), and before the
+    plan's leg paths and branch names (`_checked_org_and_id`, #901), so a bad
+    date beside a bad organisation or id does not make `check` and `execute`
+    name different problems first.
     """
     if not isinstance(plan.legs, dict):
         # The doctor's PLACEMENT plan writes `legs:` as a list (see
@@ -5113,9 +5115,10 @@ def _manifest_values(plan: Plan, naming: NamingPolicy) -> dict | None:
     except Refusal:
         return None
     # The organisation and the id are asked BEFORE the date's guard below,
-    # and as `execute` asks them, first of the plan's options (#901):
-    # `unsafe-value` for an `org:` this tool will not put on a command line,
-    # and `plan-bad-id` for an `id:` that is not a project id
+    # and as `execute` asks them, after the three repository names above
+    # and before the leg paths and the branch names (#901): `unsafe-value`
+    # for an `org:` this tool will not put on a command line, and
+    # `plan-bad-id` for an `id:` that is not a project id
     # (`_template_table` reads it again). After the guard, neither was asked
     # of a plan whose date is a finding: `check` listed the date where
     # `execute` refused the organisation, and refused the id where `execute`
@@ -12674,13 +12677,15 @@ def _mount_the_legs(assembly: Path, work_root: Path, names: dict, urls: dict,
 
 def _checked_org_and_id(plan: Plan) -> str:
     """The plan's `org:` as `checked_value` hands it back, once its `id:`
-    is asked too: THE FIRST OF THE PLAN'S OPTIONS, which `check` asks in
-    `_manifest_values` and `execute` in `_checked_plan_values`, before the
-    leg paths and the branch names. `checked_value` refuses an `org:` this
-    tool will not put on a `git` or `gh` command line as `unsafe-value`,
-    and `Plan.project_id` an `id:` that is no project id as `plan-bad-id`.
+    is asked too. Both commands ask the two BEFORE THE PLAN'S LEG PATHS AND
+    BRANCH NAMES, and after its three repository names, which they ask
+    earlier (`plan.names()`, then `_check_names`): `check` in
+    `_manifest_values` and `execute` in `_checked_plan_values`.
+    `checked_value` refuses an `org:` this tool will not put on a `git` or
+    `gh` command line as `unsafe-value`, and `Plan.project_id` an `id:`
+    that is no project id as `plan-bad-id`.
 
-    ONE ORDER, THE MOST BASIC PROBLEM FIRST (#901). `execute` asked the two
+    ONE ORDER, THE MORE BASIC PROBLEM FIRST (#901). `execute` asked the two
     leg paths and the two branch names first, the organisation after them
     (`_repository_urls`) and the id last, in `_refuse_what_check_finds`,
     where the manifest is built (`_manifest_values`), so a plan edited to
@@ -12688,15 +12693,15 @@ def _checked_org_and_id(plan: Plan) -> str:
     `check` and `plan-bad-leg-path` to `execute`, and one edited to `org:
     "-evil"` with the same path was `unsafe-value` to one and
     `plan-bad-leg-path` to the other. The organisation and the id come
-    first because they say which project the plan is about: every
-    repository the plan names is `<org>/<name>`, on GitHub and in the
-    manifest, and the topic `execute` sets and the manifest's `id:` are
-    made from the id, where a leg path or a branch is a value inside that
-    project. And `check` holds the manifest built from both to the
-    project's own validator before it lists a finding, so it refuses
-    either outright, exit 2, where a leg path or a branch name is one
-    finding of the many it lists: asked first by both commands, this is
-    the one order they can share.
+    before the leg paths and the branches because they say which project
+    the plan is about: every repository the plan names is `<org>/<name>`,
+    on GitHub and in the manifest, and the topic `execute` sets and the
+    manifest's `id:` are made from the id, where a leg path or a branch is
+    a value inside that project. And `check` holds the manifest built from
+    both to the project's own validator before it lists a finding, so it
+    refuses either outright, exit 2, where a leg path or a branch name is
+    one finding of the many it lists: asked before the leg paths and the
+    branches by both commands, this is the one order they can share.
     """
     org = checked_value("org", _plan_org(plan))
     _ = plan.project_id
@@ -12705,7 +12710,8 @@ def _checked_org_and_id(plan: Plan) -> str:
 
 def _checked_plan_values(plan: Plan) -> tuple[str, str, str, str]:
     """The plan's options, in the order `check` asks them (#901): its
-    `org:` and `id:` first (`_checked_org_and_id`), then the four values
+    `org:` and `id:` (`_checked_org_and_id`), after the three repository
+    names both commands ask earlier (`plan.names()`), then the four values
     that reach a `git` command line as arguments, which it returns:
     `(spec_path, code_path, branch, tracking)`.
 

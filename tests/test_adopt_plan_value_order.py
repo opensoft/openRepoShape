@@ -5,16 +5,18 @@ which groups five lines of #457).
 
 ON MAIN AT c7a3ff16, with a stub `gh`, an empty `GH_CONFIG_DIR` and local
 remotes, as the issue measured at 5017830:
-- ONE ORDER. `check` asked the plan's `org:` and `id:` first, in
-  `_manifest_values`, and refused either, exit 2, before it listed any
-  finding; `execute` asked the two leg paths and the two branch names first,
-  in `_checked_plan_values`. A plan edited to `id: "North Wind"` and
-  `legs.spec_path: "../spec"` was `REFUSED plan-bad-id` to `check` and
-  `REFUSED plan-bad-leg-path` to `execute`; `org: "-evil"` beside the same
-  path was `unsafe-value` about the organisation to the one and
-  `plan-bad-leg-path` to the other. Both now ask the organisation and the
-  id first (`_checked_org_and_id`): they say which project the plan is
-  about, which is the most basic thing a plan can get wrong.
+- ONE ORDER. `check` asked the plan's `org:` and `id:` after its three
+  repository names, in `_manifest_values`, and refused either, exit 2,
+  before it listed any finding; `execute` asked the two leg paths and the
+  two branch names before them, in `_checked_plan_values`. A plan edited to
+  `id: "North Wind"` and `legs.spec_path: "../spec"` was `REFUSED
+  plan-bad-id` to `check` and `REFUSED plan-bad-leg-path` to `execute`;
+  `org: "-evil"` beside the same path was `unsafe-value` about the
+  organisation to the one and `plan-bad-leg-path` to the other. Both now ask
+  the organisation and the id before the leg paths and the branch names,
+  after the three repository names (`_checked_org_and_id`): they say which
+  project the plan is about, which is a more basic thing for a plan to get
+  wrong than a path or a branch inside it.
 - ONE FINDING PER VALUE. A pin edited to `product: "a\\t"` and `repository:
   "opensoft/a\\t"` was three findings about one value: `plan-pin-malformed`,
   `plan-unwritable-value` and the validator's `plan-manifest-invalid`. A
@@ -28,7 +30,7 @@ remotes, as the issue measured at 5017830:
   file from the commit and the digest `plan` records, and nothing else",
   though the pin file `execute` writes says how the digest was read too
   (`_digest_source_written`). It ends "..., and how it was read, and
-  nothing else" now.
+  nothing else" now, and no finding about another key of a pin says so.
 
 Each test runs `check` and then `execute --yes`, both with the same
 `--local-remote-dir`, on one hand-edited plan, as the issue measured, and
@@ -132,7 +134,7 @@ def refused_with(executed, plan: Path, found: list[str]) -> str:
     return head.split()[1].rstrip(":")
 
 
-# --- one order: the organisation and the id first ---------------------------
+# --- one order: the organisation and the id before paths and branches -------
 
 #: `(the edits, what both commands refuse first)`, by test id. The id and
 #: the organisation beside a leg path are the issue's two measurements; a
@@ -321,3 +323,52 @@ def test_a_digest_source_finding_says_execute_writes_how_it_was_read(
     assert executed.returncode == 2, executed.stdout + executed.stderr
     assert refused_with(executed, tmp_path / PLAN_FILE,
                         found) == "plan-pin-malformed"
+
+
+# --- ... and only a `digest_source:` finding says it ------------------------
+
+#: The rest of a finding about any other key of a pin, after its `why`: the
+#: pin file says how the digest was read, but such a finding is not about
+#: that field, so it ends as it did (#901).
+WRITTEN_FROM = (
+    "`execute` writes the pin file from the commit and the digest `plan` "
+    "records, and nothing else: re-run `plan` with "
+    "`--pin opensoft/openGlass@<40 hex commit>`")
+
+#: `(the plan's one `pins:` entry, its code, what its finding says of it)`,
+#: by test id. `short-commit` is a finding whose ending `_pin_row_problem`
+#: gives itself, `no-commit` one whose ending is `_pin_written_from`'s, from
+#: the keys it names: a row of each, for each is a way the ending could say
+#: "how it was read" of a key that is not `digest_source:`.
+OTHER_FINDINGS = {
+    "short-commit": (pin_entry(commit=COMMIT[:12], digest=DIGEST,
+                               source="gh-api-tree-recursive"),
+                     "plan-pin-malformed",
+                     "records `commit: '0123456789ab'`, which is not 40 hex: "
+                     "a tag, a branch or an abbreviated oid can be moved, "
+                     "and a commit cannot"),
+    "no-commit": (pin_entry(digest=DIGEST, source="gh-api-tree-recursive",
+                            omit=("commit",)),
+                  "plan-pin-unrecorded", "records no `commit:`"),
+}
+
+
+@needs_filter_repo
+@pytest.mark.parametrize("case", sorted(OTHER_FINDINGS))
+def test_a_finding_about_another_key_does_not_say_how_it_was_read(
+        answered, tmp_path, case):
+    """Only a finding about an entry's `digest_source:` says `execute`
+    writes how the digest was read: one about its `commit:` ends "records,
+    and nothing else:" as it did, in `check` and in `execute`'s refusal."""
+    entry, code, why = OTHER_FINDINGS[case]
+    checked, executed = both_on(pinned(answered, entry), tmp_path)
+    found = findings_of(checked)
+    assert checked.returncode == 1, checked.stdout + checked.stderr
+    assert len(found) == 1, checked.stderr
+    assert found[0].startswith(
+        f"FINDING {code}: `pins:` entry 1 ('openGlass') {why}. "
+        f"{WRITTEN_FROM}"), found[0]
+    assert "records, and nothing else:" in found[0], found[0]
+    assert "how it was read" not in found[0], found[0]
+    assert executed.returncode == 2, executed.stdout + executed.stderr
+    assert refused_with(executed, tmp_path / PLAN_FILE, found) == code
