@@ -3517,7 +3517,12 @@ def test_step_four_reads_a_relative_variable_where_step_five_does(
     was set, and the chain step (5) refused as `chain-not-declared` passed
     step (4) as a descendant. On main step (4) ran in the checkout and
     agreed. The variable is the path from this checkout to the tree, which
-    leaves it by `..`."""
+    leaves it by `..`.
+
+    SETUP IS STARTED FROM ANOTHER FOLDER THAN THE CHECKOUT (#991, SHOULD-3
+    of RV949): with the two one folder, a step (4) that joined the
+    variable to the folder setup started in, and not to the standard's
+    checkout, passed this row."""
     clear_ambient_pin_sources(monkeypatch)
     project, chain, declares, verdict = RELATIVE_VARIABLE[case]
     first = declaring(tmp_path / "openXdox", "openYdox")
@@ -3537,7 +3542,7 @@ def test_step_four_reads_a_relative_variable_where_step_five_does(
                        "--into", str(tmp_path / "work"),
                        "--", "--pin", f"openXdox@{commit}",
                        "--referent-chain", chain, "--pin-source", str(first),
-                       "--dry-run",
+                       "--dry-run", cwd=tmp_path,
                        extra_env={"SHAPE_PIN_SOURCE_OPENYDOX": relative})
     heard = result.stdout + result.stderr
     assert not os.path.isabs(relative), relative
@@ -3552,22 +3557,26 @@ def test_step_four_reads_a_relative_variable_where_step_five_does(
     assert not (tmp_path / "remotes").exists()
 
 
-def test_only_a_pin_source_variable_that_names_a_path_is_joined():
+def test_only_a_pin_source_variable_that_names_a_path_is_joined(tmp_path):
     """`pin_sources_joined` joins a relative `SHAPE_PIN_SOURCE_<LINK>` to the
     standard's checkout and leaves an absolute one as it is. An empty one
     stays empty: neither step reads it, and joined it would name the
     checkout itself. Every other variable is handed on as it is, one whose
-    name only holds the prefix too."""
+    name only holds the prefix too. The checkout given is not the folder
+    this test runs in (#991, SHOULD-3 of RV949), so a join to the working
+    folder is told from a join to `shape_root`."""
     module = entry_point_module()
-    elsewhere = str(Path(REPO, os.pardir, "elsewhere").resolve())
+    shape_root = tmp_path / "standard"
+    assert shape_root.resolve() != Path.cwd().resolve()
+    elsewhere = str(Path(tmp_path, "elsewhere").resolve())
     relative = os.path.join(os.pardir, "yy")
     unjoined = {"SHAPE_PIN_SOURCE_OPENXDOX": elsewhere,
                 "SHAPE_PIN_SOURCE_OPENDOX": "",
                 "PYTHONIOENCODING": "utf-8:backslashreplace",
                 "NOT_SHAPE_PIN_SOURCE_OPENYDOX": relative}
-    assert module.pin_sources_joined(REPO, {
+    assert module.pin_sources_joined(shape_root, {
         "SHAPE_PIN_SOURCE_OPENYDOX": relative, **unjoined}) == {
-        "SHAPE_PIN_SOURCE_OPENYDOX": os.path.join(str(REPO), relative),
+        "SHAPE_PIN_SOURCE_OPENYDOX": os.path.join(str(shape_root), relative),
         **unjoined}
 
 
