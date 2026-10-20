@@ -810,13 +810,14 @@ The contracts decision costs something, and the plan says so instead of letting
 it be discovered later: `scripts/validate.py` reads `contracts/*.yaml` from
 beside it and must now read ACROSS the root. `plan` finds every such file with
 `git grep` and lists up to eight per directory in `follow_ups:`, counting the
-rest; the root Makefile it materializes exports `CONTRACTS_DIR`, pointing at the
-`contracts/` of the spec leg where the plan mounts it (`$(CURDIR)/spec/contracts`
-by default). The tool does not make the edit — naming it is the
-honest half, making it silently would be the dangerous one. And `.specify/` and
-the ten identical assistant stubs stay at the root because an assistant reading
-`CLAUDE.md` from inside the code leg would be told about specifications it
-cannot see.
+rest; the shape's Makefile exports `CONTRACTS_DIR`, pointing at the `contracts/`
+of the spec leg where the plan mounts it (`$(CURDIR)/spec/contracts` by
+default); it is the root's Makefile, or, where the source keeps a `Makefile` of
+its own, `shape/Makefile`, which holds the export until a person merges the two.
+The tool does not make the edit — naming it is the honest half, making it
+silently would be the dangerous one. And `.specify/` and the ten identical
+assistant stubs stay at the root because an assistant reading `CLAUDE.md` from
+inside the code leg would be told about specifications it cannot see.
 
 ### Ambiguous is an answer, and no source line is overwritten
 

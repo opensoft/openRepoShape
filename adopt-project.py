@@ -3563,7 +3563,8 @@ def _search_by_hand(named: str, why: str) -> str:
             "spec leg")
 
 
-def _root_keeps(surviving: set[str], path: str) -> bool:
+def _root_keeps(surviving: set[str], path: str, *,
+                fold: bool = False) -> bool:
     """Whether the root keeps `path`: as its own entry, or inside a
     directory it keeps there. `surviving` is each path the plan's entries
     send to the root.
@@ -3573,8 +3574,83 @@ def _root_keeps(surviving: set[str], path: str) -> bool:
     Makefile line says where the block waits when that copy is the one that
     moved (#906). Two readings of "the source keeps its own `Makefile`" is
     how a follow-up says the root wires what `shape/Makefile` holds.
+
+    `fold` asks it as a disk that ignores case finds a path, where `place`'s
+    `Path.exists()` holds a kept `makefile` to be `Makefile` (#977), as
+    `_KeptTree` asks it for `check`.
     """
+    if fold:
+        surviving = {kept.casefold() for kept in surviving}
+        path = path.casefold()
     return path in surviving or f"{path.split('/')[0]}/" in surviving
+
+
+#: The names GNU make looks for when no `-f` is given, in its order: it reads
+#: the first it finds, and only that one.
+GNU_MAKE_READS = ("GNUmakefile", "makefile", "Makefile")
+
+
+def _makefile_follow_up(surviving: set[str]) -> str:
+    """The follow-up that says which Makefile wires `CONTRACTS_DIR`, where
+    the shape's is written, and, where the source keeps a file GNU make reads
+    before it, which one. `surviving` is each path the plan's entries send
+    to the root.
+
+    WHERE THE ROOT KEEPS A `Makefile` OF THE SOURCE'S OWN, the shape's goes
+    beside it as `shape/Makefile` with the block in it, and the root's is
+    the source's, untouched (#906).
+
+    GNU MAKE READS THE FIRST OF `GNUmakefile`, `makefile` AND `Makefile` IT
+    FINDS (#977). #906 asked only whether the source keeps `Makefile`, byte
+    for byte, so a source that keeps `makefile` or `GNUmakefile` got "the
+    root Makefile wires `CONTRACTS_DIR`": the root's `Makefile` is the
+    shape's, with the block, and `make` there reads the source's file and
+    never it, so `make contracts-dir` answered `No rule to make target`. The
+    line names that file wherever the source keeps one, beside a `Makefile`
+    of its own or not, and says what it takes for `make` at the root to
+    export `CONTRACTS_DIR`.
+
+    AND ON A DISK THAT IGNORES CASE the source's `makefile` is `Makefile`:
+    `place` finds the name taken and writes the shape's as `shape/Makefile`,
+    so the line says the shape's is written as the root's `Makefile` where
+    case is kept, and as `shape/Makefile` where it is not, naming the kept
+    path that takes the name there. Whether GNU make itself reads a name by
+    its case there is its build's to say, so nothing more is said of it.
+    """
+    aside = _root_keeps(surviving, SHAPE_MAKEFILE)
+    folded = (not aside
+              and _root_keeps(surviving, SHAPE_MAKEFILE, fold=True))
+    twins = sorted(kept.rstrip("/") for kept in surviving
+                   if kept.rstrip("/").casefold() == SHAPE_MAKEFILE.casefold())
+    first = next((name for name in GNU_MAKE_READS
+                  if name != SHAPE_MAKEFILE and _root_keeps(surviving, name)),
+                 None)
+    whose = "the shape's" if aside or folded or first else "the root"
+    said = (f"{whose} Makefile wires `CONTRACTS_DIR` to the `contracts/` of "
+            "the spec leg, where the plan's `legs.spec_path` mounts it, and "
+            "exports it, so the code leg's tooling takes the path from the "
+            "environment instead of assuming it sits beside it")
+    copy = f"`{COLLISION_DIR}/{SHAPE_MAKEFILE}`"
+    if aside:
+        said += (
+            "; but the source keeps a Makefile of its own at the root, so "
+            f"that block waits in {copy} until the two are merged, and the "
+            "run adds none of it to the root's Makefile")
+    elif folded:
+        said += (
+            f"; it is written as the root's `{SHAPE_MAKEFILE}`, or as {copy}"
+            f"{_CASE_ASIDE}, where the source's {_spelled(twins[0])} is that "
+            "path, until the two are merged")
+    elif first:
+        said += f"; it is written as the root's `{SHAPE_MAKEFILE}`"
+    if first:
+        listed = _and_listed([f"`{name}`" for name in GNU_MAKE_READS])
+        said += (
+            f"{'; and' if aside or folded else ', but'} GNU make at the root "
+            f"reads the source's {_spelled(first)}, the first of {listed} it "
+            f"finds, so `make` there exports `CONTRACTS_DIR` only once "
+            f"{_spelled(first)} does, or includes a Makefile that does")
+    return said
 
 
 def follow_ups_for(source: "Source", entries: list["Entry"], names: dict,
@@ -3623,26 +3699,16 @@ def follow_ups_for(source: "Source", entries: list["Entry"], names: dict,
     make target` until the two are merged. The line then says the block
     waits in `shape/Makefile`, as #634 words it for the pinned
     `AGENTS-shape.md`, of the plan's entries as `_predict_collisions` reads
-    them (`_root_keeps`), the reading that moves the copy (#906).
+    them (`_root_keeps`), the reading that moves the copy (#906). And it
+    names the source's file GNU make reads before the shape's, and where a
+    disk that ignores case writes the shape's (`_makefile_follow_up`, #977).
     """
     out = cross_leg_references(source, entries)
     if any(e.leg == "spec" and (e.path == "contracts/"
                                 or e.path.startswith("contracts/"))
            for e in entries):
-        own = _root_keeps({e.path for e in entries if e.leg == "root"},
-                          SHAPE_MAKEFILE)
-        whose = "the shape's" if own else "the root"
-        waits = (
-            "; but the source keeps a Makefile of its own at the root, so "
-            f"that block waits in `{COLLISION_DIR}/{SHAPE_MAKEFILE}` until "
-            "the two are merged, and the run adds none of it to the root's "
-            "Makefile")
-        out.append(
-            f"{whose} Makefile wires `CONTRACTS_DIR` to the `contracts/` of "
-            "the spec leg, where the plan's `legs.spec_path` mounts it, and "
-            "exports it, so the code leg's tooling takes the path from the "
-            "environment instead of assuming it sits beside it"
-            + (waits if own else ""))
+        out.append(_makefile_follow_up(
+            {e.path for e in entries if e.leg == "root"}))
     if any(e.path in ("CODEOWNERS", ".github/CODEOWNERS") for e in entries):
         out.append(
             "CODEOWNERS in the assembly root now names paths that live in the "
