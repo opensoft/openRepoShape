@@ -19,7 +19,10 @@ this change, every printed line typed as printed:
    take the checkout's changes with it. The line is `git rm --cached` now,
    with `-f` over anything but an empty directory, which touches no file,
    and the text says why, quoting both refusals, what it leaves on disk
-   and what to do with it.
+   and what to do with it. Where the work tree's `.gitmodules` holds a
+   change not staged, `git add -- .gitmodules` comes first, since git
+   takes no gitlink out of the index until it is staged (RV1025's NIT 2 on
+   #1025).
 2. A hand mount with its own section, then a staged removal of a member,
    with the work tree's `.gitmodules` deleted: the `git rm` took the
    section out of no file, the removal's put-back brought it back, and the
@@ -240,6 +243,60 @@ def test_issue_1_a_gitlink_staged_over_what_is_on_disk_comes_out_cached(
     assert (CACHED_SAID.format(forced=FORCED if flag else "") + STAGED_WHY
             + (COMMIT_THAT if in_head else NOTHING_LEFT)) in mount, mount
     assert left.format(path=path) in mount, mount
+    typed_around(holder, env, found, lambda: deleted(holder / path))
+    committed_if_staged(holder, env)
+    assert raw(holder, env, "status", "--porcelain").stdout == b""
+    ends_well(holder, env, family, tmp_path)
+
+
+#: What the text says where the work tree's `.gitmodules` holds a change the
+#: index does not (`_stage_first`, #879's C3): `git add -- .gitmodules`
+#: first, since git takes no gitlink out of the index, `--cached` and `-f` or
+#: not, until it is staged (RV1025's NIT 2 on #1025).
+STAGED_FIRST = (
+    "stage .gitmodules with the second, which stages every other change in "
+    "it too, since git rm refuses to take any gitlink out of the index, -f "
+    "or not, while .gitmodules holds changes not staged (please stage your "
+    "changes to .gitmodules or stash them to proceed, exit 128), as lines "
+    "printed above may leave it or as it stands, take it out of the index "
+    "alone with the third, which touches no file{forced}, since a plain git "
+    "rm refuses it here: ")
+NOTHING_LEFT_FOURTH = ("; HEAD records nothing there, so nothing of it is "
+                       "left to commit, then mount it with the fourth")
+
+
+def edited_after_git_mv(root: Path, env: dict, family) -> str:
+    """`moved_by_git_mv`'s state, then a line appended to the work tree's
+    `.gitmodules` by hand and not staged. Returns the moved path."""
+    path = moved_by_git_mv(root, env, family)
+    with (root / ".gitmodules").open("ab") as handle:
+        handle.write(b"# a note made by hand\n")
+    return path
+
+
+def test_issue_1_a_gitmodules_change_not_staged_is_staged_before_cached(
+        family, holder, offline, tmp_path):
+    """State 1's `git mv members/IRRS members/IRRS2`, staged, then a line
+    appended to the work tree's `.gitmodules` by hand and not staged
+    (RV1025's NIT 2 on #1025). Git takes no gitlink out of the index,
+    `--cached` and `-f` or not, while that file holds changes the index
+    does not: `git rm --cached -f` typed first exits 128 (`please stage
+    your changes to .gitmodules or stash them to proceed`). So the
+    `--cached` line comes after `git add -- .gitmodules`, in every mode,
+    and the text numbers both. Typed in order, the moved checkout deleted
+    by hand as the text says, then committed: nothing is left, the gate
+    passes in every mode and a plain clone checks both members out."""
+    env = cloning(offline, tmp_path, family)
+    path = edited_after_git_mv(holder, env, family)
+
+    found = found_alike(holder, *MODES)
+
+    mount = mount_of(found, path)
+    assert commands(mount)[1:3] == ["git add -- .gitmodules",
+                                    f"git rm --cached -f -- {path}"], mount
+    assert (STAGED_FIRST.format(forced=FORCED) + STAGED_WHY
+            + NOTHING_LEFT_FOURTH) in mount, mount
+    assert CHECKOUT_LEFT.format(path=path) in mount, mount
     typed_around(holder, env, found, lambda: deleted(holder / path))
     committed_if_staged(holder, env)
     assert raw(holder, env, "status", "--porcelain").stdout == b""
