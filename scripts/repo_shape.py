@@ -220,14 +220,15 @@ class YamlError(Exception):
 #
 # A BLOCK SCALAR'S BODY IS READ AS YAML READS IT, OR REFUSED BY ITS LINE
 # (#1004). `+` keeps the empty lines at the block's end, where it was read
-# as clip, and a block with no line of text is `''` under clip or `-`, where
-# it was `'\n'`. A line of spaces deeper than the block keeps the spaces past
-# the block's column, and a folded block keeps the line breaks around a line
-# that opens with a space or a tab, where it joined it with a space. A tab
-# left of the block's column, and a blank line above the block's first line
-# of text holding more spaces than that line, are refused by their lines, as
-# PyYAML refuses them; a tab at the block's column or past it is text. See
-# `_block_scalar_body`, `_fold_block_body` and `_block_scalar_text`.
+# as clip, and a block with no line of text is `''` under clip, where it was
+# `'\n'` (under `-` it already was `''`). A line of spaces deeper than the
+# block keeps the spaces past the block's column, and a folded block keeps
+# the line breaks around a line that opens with a space or a tab, where it
+# joined it with a space. A tab left of the block's column, and a blank line
+# above the block's first line of text holding more spaces than that line,
+# are refused by their lines, as PyYAML refuses them; a tab at the block's
+# column or past it is text. See `_block_scalar_body`, `_fold_block_body`
+# and `_block_scalar_text`.
 #
 # A KEY WRITTEN TWICE IN ONE MAPPING IS REFUSED BY ITS LINE (#917), block or
 # flow: YAML requires a mapping's keys to be unique, and keeping the last, as
@@ -1001,7 +1002,7 @@ def _block_scalar_body(raw_lines: list[str], i: int,
       So is a tab on the block's first line, whose spaces are its column.
     """
     body: list[str] = []
-    leading: list[tuple[int, int]] = []
+    blank_lines: list[tuple[int, int]] = []
     block_indent = None
     while i < len(raw_lines):
         nxt = raw_lines[i]
@@ -1010,34 +1011,64 @@ def _block_scalar_body(raw_lines: list[str], i: int,
         if block_indent is not None and nxt_indent >= block_indent:
             body.append(nxt[block_indent:])
         elif rest == "":
-            if block_indent is None:
-                leading.append((i + 1, nxt_indent))
+            blank_lines.append((i + 1, nxt_indent))
             body.append("")
         elif nxt_indent <= indent:
             break
         elif block_indent is None:
-            deeper = [(line, spaces) for line, spaces in leading
-                      if spaces > nxt_indent]
-            if deeper and rest[0] == "#":
+            if _first_line_is_a_comment(blank_lines, nxt_indent, rest):
                 break
-            if deeper:
-                raise YamlError(
-                    f"line {deeper[0][0]}: a blank line above a block "
-                    f"scalar's first line of text holds {deeper[0][1]} "
-                    f"spaces, more than the {nxt_indent} of that line")
             block_indent = nxt_indent
             body.append(rest)
         elif rest[0] == "#":
             break
-        elif rest.strip(_YAML_WHITE) == "":
-            raise YamlError(f"line {i + 1}: tab used for indentation")
         else:
-            raise YamlError(
-                f"line {i + 1}: a line of a block scalar is indented "
-                f"{nxt_indent} spaces, fewer than the {block_indent} of its "
-                "first line")
+            raise _shallower_line_refusal(rest, i + 1, nxt_indent,
+                                          block_indent)
         i += 1
     return body, i
+
+
+def _first_line_is_a_comment(blank_lines: list[tuple[int, int]],
+                             spaces: int, rest: str) -> bool:
+    """Whether a block scalar's first line of text, `spaces` deep and
+    holding `rest`, is a comment that ends the block, read under the
+    `(line, spaces)` of each blank line `_block_scalar_body` has met.
+
+    Split out of `_block_scalar_body` for its length (#1004), which asks it
+    only before the block's column is set, so every blank line it has met
+    is ABOVE the first line of text. A blank line deeper than that line
+    sets YAML's column, so the line is indented less than its block: one
+    opening `#` is a comment that ends it, and any other line refuses the
+    document, named by the first such blank line. Otherwise the line is
+    the block's first, and sets its column.
+    """
+    deeper = [(line, held) for line, held in blank_lines if held > spaces]
+    if not deeper:
+        return False
+    if rest[0] == "#":
+        return True
+    raise YamlError(
+        f"line {deeper[0][0]}: a blank line above a block scalar's first "
+        f"line of text holds {deeper[0][1]} spaces, more than the {spaces} "
+        "of that line")
+
+
+def _shallower_line_refusal(rest: str, line: int, spaces: int,
+                            block_indent: int) -> YamlError:
+    """The refusal of a block scalar's `line`, `spaces` deep and holding
+    `rest`, which is less than the block's column, deeper than the key, and
+    no comment. Split out of `_block_scalar_body` for its length (#1004).
+
+    A line that holds a tab and nothing else is refused as any other tab in
+    a line's indentation is (#1004); a line with text in it, a tab or no
+    tab before the text, is #917's line indented less than its block.
+    """
+    if rest.strip(_YAML_WHITE) == "":
+        return YamlError(f"line {line}: tab used for indentation")
+    return YamlError(
+        f"line {line}: a line of a block scalar is indented {spaces} "
+        f"spaces, fewer than the {block_indent} of its first line")
 
 
 def _fold_block_body(body: list[str]) -> str:
@@ -1080,8 +1111,9 @@ def _block_scalar_text(header: str, body: list[str]) -> str:
     no indicator keeps that one line break (YAML's clip), and `+` keeps it
     and every empty line after it (#1004). `+` was read as clip, so
     `k: |+` over `  a` and an empty line read `'a\\n'`, where YAML reads
-    `'a\\n\\n'`. A block with no line of text is empty, `''`, under `-` or
-    clip, and its empty lines under `+`: it read `'\\n'`.
+    `'a\\n\\n'`. A block with no line of text is empty, `''`, under clip,
+    where it read `'\\n'` (under `-` it already read `''`), and is its empty
+    lines under `+`, where it read `'\\n'` too.
     """
     end = len(body)
     while end and body[end - 1] == "":

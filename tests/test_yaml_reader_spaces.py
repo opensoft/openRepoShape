@@ -1228,7 +1228,8 @@ TAB = "line {line}: tab used for indentation"
 #: `(document, the words it is refused with)`, each refused by PyYAML too.
 #: RV974's rows 3, 4a and 4b, each read by main as the text after it
 #: (`'\na\n'`, `'a\n\nb\n'`, `'a\n\nb\n'`), then the same nested, folded,
-#: before the next key, and on the block's first line.
+#: one space deeper than the first line, with two tabs, before the next
+#: key, and on the block's first line.
 REFUSED_BY_ITS_LINE = [
     pytest.param("k: |\n      \n  a",
                  DEEPER_BLANK.format(line=2, spaces=6, first=2),
@@ -1243,12 +1244,17 @@ REFUSED_BY_ITS_LINE = [
     pytest.param("k: |\n    \n      \n  a",
                  DEEPER_BLANK.format(line=2, spaces=4, first=2),
                  id="row-3-the-first-deeper-line-is-named"),
+    pytest.param("k: |\n   \n  a",
+                 DEEPER_BLANK.format(line=2, spaces=3, first=2),
+                 id="row-3-one-space-deeper"),
     pytest.param("k:\n  j: |\n      a\n   \t\n      b", TAB.format(line=4),
                  id="row-4b-nested"),
     pytest.param("k: |\n  a\n\t\nz: 1", TAB.format(line=3),
                  id="row-4a-before-the-next-key"),
     pytest.param("k: |\n  a\n \t\nz: 1", TAB.format(line=3),
                  id="row-4b-before-the-next-key"),
+    pytest.param("k: |\n  a\n \t\t\n  b", TAB.format(line=3),
+                 id="row-4b-two-tabs"),
     pytest.param("k: |\n\t\n  a", TAB.format(line=2),
                  id="row-4a-first"),
 ]
@@ -1266,7 +1272,8 @@ def test_pyyaml_refuses_each_such_block_scalar_too(text, words):
 
 
 #: The two headers the 16 tracked YAML files hold, `|` and `>-`, and `>`,
-#: over layouts main read as YAML does and still reads the same.
+#: over layouts main read as YAML does and still reads the same, the last a
+#: blank line at the first line's own column, which is not deeper than it.
 STILL_READ = [
     pytest.param("k: |\n  a\n\n  b\nz: 1", {"k": "a\n\nb\n", "z": 1},
                  id="literal"),
@@ -1279,6 +1286,8 @@ STILL_READ = [
                  id="strip-with-no-text"),
     pytest.param("k: >\n\n  a\n  b", {"k": "\na b\n"},
                  id="folded-after-an-empty-line"),
+    pytest.param("k: |\n  \n  a", {"k": "\na\n"},
+                 id="a-blank-line-at-the-first-lines-column"),
 ]
 
 
