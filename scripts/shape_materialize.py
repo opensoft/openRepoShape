@@ -5421,7 +5421,7 @@ def manifest_invalid(values: dict, policy: NamingPolicy, what: dict,
     as that validator's own exit code treats it: the project's WARNING (a
     chain link it cannot check offline) and its `  note` (a
     `SHAPE_PIN_SOURCE_<LINK>` the run guard passed over, #990). The holder
-    passes over none (#925), so every line its validator makes is a refusal.
+    passes over none (#925), so every line its `findings` returns is a refusal.
     Where the manifest's own YAML reader refuses the file before the
     validator can be asked, each sentence is the reader's, naming the value
     on the line it refuses (`_unread_sentences`, #708).
