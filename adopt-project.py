@@ -1762,6 +1762,52 @@ def _os_reason(exc: OSError) -> str:
     return exc.strerror or type(exc).__name__
 
 
+def _refused_at(exc: OSError, directory: Path) -> bool:
+    """Whether `exc`, raised by a command run with `cwd=directory`, is the
+    operating system refusing to enter `directory` (#918): `subprocess`
+    names the directory as the exception's `filename` then. A program that
+    could not be started is named by the program instead, and is not this:
+    whether that is a question the caller can answer stays the caller's,
+    as `git_out` leaves it."""
+    return exc.filename == str(directory)
+
+
+def _recorded_spelling(recorded: str) -> tuple[str, str]:
+    """`(spelling, said)`: `recorded`, a path a plan records as text, as the
+    disk is asked for it in this locale, and what a refusal that it names
+    nothing adds, which is "" where it is asked as written (#918, #457's
+    L1-86).
+
+    A PLAN IS UTF-8 TEXT, and `plan` records a path as `os.fsdecode` read
+    it: under a UTF-8 locale or Python's UTF-8 mode each character as
+    itself and a byte that is not UTF-8 as its surrogate, and under the C
+    locale every byte outside ASCII as its surrogate. Either way the path's
+    bytes are the text's UTF-8 with `surrogateescape`, as `_path_argument`
+    spells a path for git. Where this locale's file-name encoding can spell
+    the text, it is asked as written, as before. Where it cannot, as the
+    ASCII of `LC_ALL=C PYTHONUTF8=0` cannot spell `Thing\\u00e9` from a plan
+    written in UTF-8 mode, `Path.exists()` met the `UnicodeEncodeError`
+    inside and answered False, and `check` refused `plan-source-gone`,
+    "names nothing that exists", of a source that is there. It is asked as
+    those UTF-8 bytes instead, which `os.fsdecode` spells in this locale;
+    and where they name nothing, `said` names the spelling asked and this
+    locale's encoding, which cannot spell the text: a plan written under
+    another locale of one byte to a character, Latin-1 say, recorded
+    other bytes. A surrogate no byte is read as cannot be those bytes
+    either, and no name on the disk holds it: it is asked as written."""
+    try:
+        os.fsencode(recorded)
+        return recorded, ""
+    except UnicodeEncodeError:
+        pass
+    try:
+        spelling = os.fsdecode(recorded.encode("utf-8", "surrogateescape"))
+    except UnicodeEncodeError:
+        return recorded, ""
+    return spelling, (f" as UTF-8 spells it (this locale's file names, "
+                      f"{sys.getfilesystemencoding()}, cannot spell it)")
+
+
 # ---------------------------------------------------------------------------
 # What a `--source` names, and where its clone goes (#652)
 # ---------------------------------------------------------------------------
@@ -2012,7 +2058,11 @@ def _source_spec(spec: str) -> tuple[Path | None, str | None]:
     if _source_there(spec, candidate, name):
         if name is not None:
             raise _ambiguous(spec, name)
-        return _top_level(candidate, f"--source {spec!r}"), None
+        return _top_level(
+            candidate, f"--source {spec!r}",
+            lambda exc: _source_unreadable(f"--source {spec!r}", exc,
+                                           "whether a repository is there")
+        ), None
     if name is None:
         raise Refusal(
             SOURCE_UNRESOLVABLE,
@@ -2022,7 +2072,8 @@ def _source_spec(spec: str) -> tuple[Path | None, str | None]:
     return None, name
 
 
-def _top_level(path: Path, named: str) -> Path:
+def _top_level(path: Path, named: str,
+               refused: Callable[[OSError], Refusal]) -> Path:
     """`path`, a local source that exists, resolved, where it is the
     top-level directory of a repository; refused as `source-not-top-level`
     where it is not a directory, or is a directory inside a repository
@@ -2047,13 +2098,26 @@ def _top_level(path: Path, named: str) -> Path:
     a later read refused it on main. On main a directory inside a
     repository was read as the source: `git ls-tree` there lists what is
     under it alone, so `plan` planned that, exit 0, and the plan recorded
-    it."""
+    it.
+
+    A DIRECTORY THIS USER CANNOT ENTER IS `refused(<the OSError>)`, the
+    caller's `source-unreadable`, before git reads anything in it (#918,
+    #457's L1-105): git runs IN the directory, and at mode 000 `subprocess`
+    raised the `PermissionError` of `cwd=` out of `plan`, `check` and
+    `execute`, a traceback. No other `OSError` is: a git that cannot be
+    started is raised, as `git_out` leaves it (`_refused_at`)."""
     resolved = Path(os.path.realpath(path))
     if not resolved.is_dir():
         raise Refusal(SOURCE_NOT_TOP_LEVEL,
                       f"{named} is not a directory, and {TOP_LEVEL_ONLY}",
                       TOP_LEVEL_REMEDY)
-    if git_out(["rev-parse", "--is-inside-git-dir"], cwd=resolved) == "true":
+    try:
+        inside = git_out(["rev-parse", "--is-inside-git-dir"], cwd=resolved)
+    except OSError as exc:
+        if not _refused_at(exc, resolved):
+            raise
+        raise refused(exc) from exc
+    if inside == "true":
         git_dir = os.fsdecode(git_out(["rev-parse", "--absolute-git-dir"],
                                       cwd=resolved, binary=True).rstrip(b"\n"))
         if Path(os.path.realpath(git_dir)) != resolved:
@@ -2421,13 +2485,22 @@ def _not_a_whole_clone(path: Path, commit: str) -> str | None:
     another repository, which git reads as that one; the third a removed
     pack, which a clone holds all its objects in. Only what a cleaner
     leaves is asked: whether every object is whole is `git fsck`'s question,
-    which a large source would pay for on every run."""
+    which a large source would pay for on every run.
+
+    A DIRECTORY THIS USER CANNOT ENTER IS NEITHER (#918, #457's L1-105): the
+    `OSError` of `cwd=` (`_refused_at`) is raised, for the caller to name.
+    It was "git finds no repository there", and the clone, still there, was
+    cloned again or refused as gone."""
     if not path.is_dir():
         return "it is not a directory"
     try:
         top = os.fsdecode(git_out(["rev-parse", "--show-toplevel"],
                                   cwd=path, binary=True).strip())
-    except (Refusal, OSError):
+    except Refusal:
+        return "git finds no repository there"
+    except OSError as exc:
+        if _refused_at(exc, path):
+            raise
         return "git finds no repository there"
     if os.path.realpath(top) != os.path.realpath(path):
         return f"git reads it as part of the repository at {_spelled(top)}"
@@ -6360,12 +6433,14 @@ class Plan:
         is at the plan's own `source.local_path` (#803, #457's L1-97): it is
         the plan's source again, as the clone `_recorded_source` makes there
         is. On main `check` removed it, and the next run cloned it once
-        more."""
+        more. The record is spelled as `_recorded_source` asks the disk for
+        it (`_recorded_spelling`, #918)."""
         record = self.source.get("local_path")
         if not (made and record):
             return
         try:
-            at = os.path.realpath(os.path.expanduser(str(record)))
+            at = os.path.realpath(os.path.expanduser(
+                _recorded_spelling(str(record))[0]))
         except (OSError, ValueError):
             return
         made[:] = [claim for claim in made
@@ -6434,34 +6509,52 @@ class Plan:
         raised it, a `PermissionError` traceback; on 3.14 it answered False,
         so the path was `plan-source-gone`, "names nothing that exists", or,
         a clone `plan` made, "no longer exists" and was cloned again from
-        GitHub beside the one still there."""
-        path = Path(os.path.expanduser(local_path))
-        try:
-            there = _is_there(path)
-        except OSError as exc:
-            raise _source_unreadable(
-                f"the plan's `source.local_path`, {_spelled(local_path)}", exc,
+        GitHub beside the one still there. So is a directory this user
+        cannot enter (#918): git runs in it, and at mode 000 that was a
+        `PermissionError` traceback where `plan` did not make it, and "no
+        longer whole (git finds no repository there)" where it did.
+
+        A PATH THIS LOCALE CANNOT SPELL IS ASKED AS ITS UTF-8 BYTES
+        (`_recorded_spelling`, #918): a plan written in UTF-8 mode for
+        `Thing\\u00e9` and checked under `LC_ALL=C PYTHONUTF8=0` was
+        `plan-source-gone`, "names nothing that exists", of a source that is
+        there. It is named as the plan records it."""
+        spelling, said = _recorded_spelling(local_path)
+        path = Path(os.path.expanduser(spelling))
+        named = f"the plan's `source.local_path`, {_spelled(local_path)}"
+
+        def unreadable(exc: OSError) -> Refusal:
+            return _source_unreadable(
+                named, exc,
                 ("whether `plan`'s clone is still there, to be read, or gone, "
                  "to be cloned again," if self.source.get("cloned") is True
                  else "whether the source is still there"),
                 "pass the source again with --source, which is held to the "
-                "plan's `commit:`") from exc
+                "plan's `commit:`")
+
+        try:
+            there = _is_there(path)
+        except OSError as exc:
+            raise unreadable(exc) from exc
         if self.source.get("cloned") is not True:
             if there:
-                return Source.in_place(_top_level(
-                    path, f"the plan's `source.local_path`, "
-                          f"{_spelled(local_path)},"), work_root, self.read_at)
-            raise self._gone(local_path, "names nothing that exists",
+                return Source.in_place(_top_level(path, f"{named},",
+                                                  unreadable),
+                                       work_root, self.read_at)
+            raise self._gone(local_path, "names nothing that exists" + said,
                              "the plan does not record it as a clone `plan` "
                              "made (`source.cloned` is not `true`), so "
                              "nothing clones it again")
-        broken = _not_a_whole_clone(path, self.source_commit) if there \
-            else None
+        try:
+            broken = _not_a_whole_clone(path, self.source_commit) if there \
+                else None
+        except OSError as exc:
+            raise unreadable(exc) from exc
         if there and broken is None:
             return Source.in_place(Path(os.path.realpath(path)), work_root,
                                    self.read_at)
         state = (f"is a clone `plan` made that is no longer whole ({broken})"
-                 if there else "no longer exists")
+                 if there else "no longer exists" + said)
         repository = self._recorded_repository()
         if repository is None:
             raise self._gone(local_path, state, "the plan records no "
