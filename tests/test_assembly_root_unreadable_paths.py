@@ -650,6 +650,15 @@ def test_a_leg_path_holding_a_nul_is_not_initialized(project):
     pytest.param("my spec", "'my spec'", id="space"),
     pytest.param("=spec", "'=spec'", id="leading-equals"),
     pytest.param("-spec", "-spec", id="leading-dash"),
+    # Git reads a leading `:` as pathspec magic, even after the `--`.
+    pytest.param(":spec", "./:spec", id="leading-colon"),
+    # `./` goes before the path, inside the one word: `./':my spec'` is the
+    # same name to a shell, and is not the word.
+    pytest.param(":my spec", "'./:my spec'", id="leading-colon-and-space"),
+    pytest.param(":sp\udcffec", r'''"$(printf -- './:sp\377ec')"''',
+                 id="leading-colon-and-byte-0xff"),
+    pytest.param("spec ", "'spec '", id="trailing-space"),
+    pytest.param(" spec", "' spec'", id="leading-space"),
     pytest.param("sp\x1bec", r'''"$(printf -- 'sp\033ec')"''', id="escape"),
     pytest.param("sp\u2028ec", r'''"$(printf -- 'sp\342\200\250ec')"''',
                  id="line-separator", marks=NEEDS_A_UTF8_PROCESS),

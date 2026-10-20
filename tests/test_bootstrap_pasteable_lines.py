@@ -24,8 +24,11 @@ such word (one that ends in a line feed, which `$(...)` strips, one with a
 NUL, which it drops, and one `os.fsencode` cannot write) keeps what
 `spelled` made of it. The leg's path in `git submodule update --init -- <leg>`
 is such a word too, after a `--`, which keeps a path that begins with `-`
-from being read as an option. The bytes git is handed are `os.fsencode`'s on
-POSIX and UTF-8 on Windows, where git is handed UTF-16 and stores UTF-8.
+from being read as an option; a path that begins with `:` is `./:spec` there,
+as git reads a leading `:` as pathspec magic even after the `--`. The bytes
+git is handed are `os.fsencode`'s on POSIX and UTF-8 on Windows, where git is
+handed UTF-16 and stores UTF-8, both in the comparison with the stdout and in
+the `printf` word.
 
 THE TESTS THAT TAKE A `root` RUN WHAT WAS PRINTED, AS PRINTED: the command
 in the line, through a shell's `-c` from the root, and ask where the branch
@@ -111,6 +114,9 @@ PATHS = [
     # zsh expands a bare `=spec` to the path of a command (#961).
     pytest.param("=spec", "=spec", "'=spec'", id="leading-equals"),
     pytest.param("my spec", "my spec", "'my spec'", id="space"),
+    # A name is not stripped: its spaces are part of the path (rv973's R-H).
+    pytest.param("spec ", "spec ", "'spec '", id="trailing-space"),
+    pytest.param(" spec", " spec", "' spec'", id="leading-space"),
     # `git -C -spec` takes the path; a `--init -spec` is an option (#961).
     pytest.param("-spec", "-spec", "-spec", id="leading-dash-ASCII"),
 ]
@@ -202,9 +208,13 @@ def emptied_leg_line(root: Path, tmp_path: Path, path: str
     if "\udcff" in path:
         needs_the_byte(tmp_path)
     leg = mounted_at(root, path)
-    # Bytes: git's own line names the path, which may be the byte 0xff.
-    emptied = subprocess.run(["git", "submodule", "deinit", "-f", "--", path],
-                             cwd=str(root), capture_output=True, check=False)
+    # `./` before a path that begins with `:`, which is pathspec magic even
+    # after the `--`. Bytes: git's own line names the path, which may be the
+    # byte 0xff.
+    pathspec = f"./{path}" if path.startswith(":") else path
+    emptied = subprocess.run(
+        ["git", "submodule", "deinit", "-f", "--", pathspec],
+        cwd=str(root), capture_output=True, check=False)
     assert emptied.returncode == 0, emptied.stderr.decode("utf-8", "replace")
     assert not os.path.lexists(leg / ".git"), "the leg is emptied"
     return leg, not_initialized_line(root)
@@ -427,6 +437,21 @@ def test_the_initializing_command_reads_a_path_that_begins_with_a_dash(
 
 
 @pytest.mark.parametrize("shell", SHELLS)
+def test_the_initializing_command_names_a_path_that_begins_with_a_colon(
+        root, tmp_path, shell):
+    """Git reads a word that begins with `:` as pathspec magic, even after
+    the `--`: `--init -- :spec` is `pathspec ':spec' did not match any
+    file(s) known to git`, and the leg stays empty. `./` before the path
+    makes it the path, and the printed command puts the leg back in each
+    shell (rv973's NIT 1, #961)."""
+    leg, line = emptied_leg_line(root, tmp_path, ":spec")
+
+    assert command_of(line) == "git submodule update --init -- ./:spec", line
+    pasted(root, command_of(line), shell)
+    assert os.path.lexists(leg / ".git"), "the leg is initialized again"
+
+
+@pytest.mark.parametrize("shell", SHELLS)
 def test_the_initializing_command_of_an_equals_sign_path_pastes_in_a_shell(
         root, tmp_path, shell):
     """A leg at `=spec`: zsh expands the bare word of `--init =spec` to the
@@ -594,14 +619,21 @@ def test_a_name_with_no_printf_word_keeps_the_text_it_had(
         shlex.quote(name))
 
 
-def test_a_name_the_codec_would_not_read_back_keeps_the_text_it_had(
-        bootstrap_module, monkeypatch):
-    """The word is the bytes `os.fsencode` gives the name, so it is the name
-    only where `os.fsdecode` gives the name back from them. Under Windows'
-    legacy code page (`LegacyWindowsOs`: `fsdecode` replaces what the page
-    lacks) it does not, and a word would name another path: the name keeps
-    what `spelled(shlex.quote(name))` made of it."""
-    monkeypatch.setattr(bootstrap_module, "os", LegacyWindowsOs())
+@pytest.mark.parametrize("filesystem", [
+    pytest.param(LegacyWindowsOs(), id="fsdecode-replaces"),
+    pytest.param(WINDOWS_FS, id="default-mode"),
+    pytest.param(LEGACY_MBCS_FS, id="legacy-mode"),
+])
+def test_on_windows_a_lone_surrogate_has_no_bytes_and_keeps_the_text_it_had(
+        bootstrap_module, monkeypatch, filesystem):
+    """Windows hands git UTF-16 and takes UTF-8 back, and UTF-8 has no bytes
+    for a lone surrogate, so there is nothing for a `printf` to print: the
+    name keeps what `spelled(shlex.quote(name))` made of it. It was the
+    read-back of `os.fsdecode` that kept it (`LegacyWindowsOs`, #944's shim:
+    it replaces what the page lacks), and under the default mode `os.fsencode`
+    gave a surrogate three junk bytes, which the read-back let through
+    (rv973's NIT 2, #961)."""
+    monkeypatch.setattr(bootstrap_module, "os", filesystem)
     name = "a\udcffb"
     assert bootstrap_module._paste_word(name) == bootstrap_module.spelled(
         shlex.quote(name))
@@ -661,12 +693,33 @@ def test_on_windows_the_bytes_git_is_handed_are_utf_8(
     and not with `os.fsencode`: under `PYTHONLEGACYWINDOWSFSENCODING=1` that
     is `mbcs`, and a UTF-8 stdout got `origin/caf\\351`, a name Git Bash does
     not hold, where the quoted word was right (rv973's NIT 1, #961). In
-    the default mode the two are the same bytes. The `printf` word of a name
-    a legacy-mode stdout cannot write is still made of `os.fsencode`'s
-    bytes, and no row here says it is right."""
+    the default mode the two are the same bytes."""
     monkeypatch.setattr(sys, "stdout", Stdout(encoding))
     monkeypatch.setattr(bootstrap_module, "os", filesystem)
     assert bootstrap_module._paste_word("origin/café") == word
+
+
+@pytest.mark.parametrize("filesystem, name, word", [
+    pytest.param(WINDOWS_FS, "origin/café", CAFE_AS_BYTES, id="default-mode"),
+    pytest.param(LEGACY_MBCS_FS, "origin/café", CAFE_AS_BYTES,
+                 id="legacy-mode"),
+    pytest.param(LEGACY_MBCS_FS, "\u20ac5",
+                 r'''"$(printf -- '\342\202\2545')"''', id="legacy-mode-euro"),
+    pytest.param(LEGACY_MBCS_FS, "日本",
+                 r'''"$(printf -- '\346\227\245\346\234\254')"''',
+                 id="legacy-mode-no-such-character-in-the-code-page"),
+])
+def test_on_windows_the_printf_word_is_made_of_utf_8(
+        bootstrap_module, monkeypatch, filesystem, name, word):
+    """A stdout that cannot write the name (`ascii`) gets the `printf` word,
+    and Git Bash reads what it prints as UTF-8: so those are the bytes, and
+    not what `os.fsencode` makes of the name under
+    `PYTHONLEGACYWINDOWSFSENCODING=1`, which is `mbcs`: `\\351` for e-acute,
+    `\\2005` for the euro sign, and `?` for a character the code page
+    lacks (rv973's NIT 2, #961)."""
+    monkeypatch.setattr(sys, "stdout", Stdout("ascii"))
+    monkeypatch.setattr(bootstrap_module, "os", filesystem)
+    assert bootstrap_module._paste_word(name) == word
 
 
 def test_the_euro_sign_is_quoted_on_a_utf_8_stdout_under_the_legacy_mode(

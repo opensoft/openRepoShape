@@ -393,7 +393,8 @@ def test_a_legs_path_is_spelled_where_it_is_not_initialized(
     code, out, err = run(bootstrap_of(project), "--skip-validators",
                          encoding="utf-8:strict", tmp_path=tmp_path,
                          cwd=project, changes={"PYTHONUTF8": "1"})
-    assert code == 0 and "Traceback" not in err, out + err
+    assert code == 0, out + err
+    assert "Traceback" not in err, out + err
     assert (f"  [spec] {spelling}: NOT INITIALIZED. Run `git submodule update "
             f"--init -- {word}` {DASH} the validators below will refuse "
             "until you do.") in out.split("\n"), out
