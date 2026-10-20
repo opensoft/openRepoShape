@@ -14,13 +14,15 @@ checkout has failed, so it is the person's one way back.
 
 NOW a name that is not UTF-8 is printed as `"$(printf '<escapes>')"`: each
 byte that is not printable ASCII is a three-digit octal escape (`\\351`), and
-so are `'`, `\\` and `%`, so any POSIX shell hands git the exact bytes. A UTF-8
-name is `shlex.quote`d as before, byte for byte.
+so are `'`, `\\`, `%` and `!`, so any POSIX shell hands git the exact bytes and
+no shell's history scanner reads the line. A UTF-8 name is `shlex.quote`d as
+before, byte for byte.
 
 `_head_by_hand` is asked directly: on this tree `_member_head` still raises on
 a branch that is not UTF-8 (#1072 fixes that), so the rollback is not run end
-to end. The line is run through a shell as the person types it, text as the
-printing stream writes it, in a repository that really holds the branch.
+to end. The line is run through a shell as the person types it (`sh`, `dash`,
+`bash` and `zsh`, macOS's default), text as the printing stream writes it, in
+a repository that really holds the branch.
 """
 
 from __future__ import annotations
@@ -37,7 +39,8 @@ from conftest import (IDENTITY_CONFIG, REPO, WINDOWS_SKIP,
                       load_without_bytecode,
                       skip_where_a_name_cannot_be_not_utf_8)
 
-SHELLS = [pytest.param(name, id=name) for name in ("sh", "dash", "bash")]
+SHELLS = [pytest.param(name, id=name)
+          for name in ("sh", "dash", "bash", "zsh")]
 
 #: `caf` and the Latin-1 byte for `e` with an acute: not UTF-8, so git holds
 #: it as the bytes `63 61 66 e9` and Python reads it as `caf` and U+DCE9.
@@ -171,6 +174,23 @@ def test_each_byte_the_format_or_its_quotes_would_read_is_an_octal_escape():
     assert word == "\"$(printf 'a\\047b\\134c\\045d\\351')\""
 
 
+def test_the_bang_is_an_octal_escape_so_no_history_scanner_reads_the_line():
+    """A shell with history on reads a `!` it finds in a typed line, and the
+    line's word is double-quoted, where bash and zsh expand `"fix!ec"`;
+    whether a `!` inside the `printf '...'` is read is each shell's own
+    scanner's matter. Spelled `\\041`, the line holds none, whatever else the
+    name holds. A UTF-8 name keeps `shlex.quote`, as before."""
+    family = family_module()
+    word = family._branch_by_hand(
+        read_as_the_module_does(b"fix!ec!" + b"\xe9"))
+    line = family._head_by_hand(
+        "members/Thing", "0" * 40, read_as_the_module_does(b"x!" + b"\xe9"))
+
+    assert word == "\"$(printf 'fix\\041ec\\041\\351')\""
+    assert "!" not in word
+    assert "!" not in line
+
+
 def test_the_word_holds_printable_ascii_only_whatever_the_bytes():
     """Every control byte, DEL included, and every byte above 0x7E is an
     escape, so what is printed and typed is the characters of ASCII that
@@ -189,6 +209,7 @@ def test_the_word_holds_printable_ascii_only_whatever_the_bytes():
     pytest.param(b"a'b\\n\\t\\x41\\0%d\\\\" + b"\xe9",
                  id="apostrophe-backslash-percent"),
     pytest.param(b"%s%%\xff%d", id="percent-conversions"),
+    pytest.param(b"fix!ec!!\xe9", id="bang"),
     pytest.param(b"\xc3", id="a-lead-byte-alone"),
     pytest.param(b"caf\xc3\xa9-\xe9", id="utf8-letter-and-a-stray-byte"),
     pytest.param(EVERY_BYTE, id="every-byte"),
@@ -220,6 +241,8 @@ def test_the_shell_hands_git_the_exact_bytes(shell, raw, tmp_path):
     "$HOME",
     "x;rm",
     "café'%\\",
+    "fix!ec",
+    "café!",
 ])
 def test_a_utf8_name_is_quoted_exactly_as_shlex_quote_has_always_done(branch):
     """A branch that is UTF-8 text, however odd, prints as it did before:
@@ -242,10 +265,14 @@ def test_no_branch_prints_the_commit_and_the_path_is_quoted_as_before():
         "git -C 'my dir/Thing' checkout -q main --")
 
 
-def test_the_module_reads_a_name_as_this_test_does():
-    """The premise of the rows above: a branch git holds as `caf` and the byte
-    E9 reaches `_head_by_hand` as `caf` and the surrogate U+DCE9, which is also
-    what `os.fsdecode` gives where the file system encoding is UTF-8."""
+def test_surrogateescape_reads_the_issues_branch_as_caf_and_u_dce9():
+    """The premise of the rows above, checked on Python's own decode and not
+    on `family.py`: a branch git holds as `caf` and the byte E9, read with
+    `surrogateescape`, is `caf` and the surrogate U+DCE9, which is also what
+    `os.fsdecode` gives where the file system encoding is UTF-8. The
+    module's own read of such a branch is `_member_head`, #1072's, which this
+    file does not test: on this tree it still raises on a name that is not
+    UTF-8, so the rows above ask `_head_by_hand` directly."""
     branch = read_as_the_module_does(LATIN_1)
 
     assert branch == "caf" + chr(0xDCE9)

@@ -7760,10 +7760,11 @@ def _branch_by_hand(branch: str) -> str:
     `\\udce9`, which typed names a branch that is not there. It is spelled
     `"$(printf '<escapes>')"`, a form any POSIX shell reads the same way: each
     byte that is not printable ASCII is a three-digit octal escape (`\\351`),
-    and so are the three ASCII bytes the format or its quotes would read as
-    something else, `'`, `\\` and `%`, so the line is ASCII whatever the
-    stream it is printed on. A ref name cannot hold a newline, so the
-    substitution's stripped trailing newlines lose nothing."""
+    and so are the four ASCII bytes the format, its quotes or an interactive
+    shell's history scanner would read as something else, `'`, `\\`, `%` and
+    `!` (`\\041`), so the line is ASCII whatever the stream it is printed on,
+    and never depends on a shell's history expansion. A ref name cannot hold a
+    newline, so the substitution's stripped trailing newlines lose nothing."""
     try:
         branch.encode("utf-8")
     except UnicodeEncodeError:
@@ -7771,7 +7772,7 @@ def _branch_by_hand(branch: str) -> str:
     else:
         return shlex.quote(branch)
     escapes = "".join(
-        chr(byte) if 0x20 <= byte < 0x7f and chr(byte) not in "'\\%"
+        chr(byte) if 0x20 <= byte < 0x7f and chr(byte) not in "'\\%!"
         else f"\\{byte:03o}"
         for byte in branch.encode("utf-8", "surrogateescape"))
     return f"\"$(printf '{escapes}')\""
