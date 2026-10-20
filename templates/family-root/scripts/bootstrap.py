@@ -624,13 +624,17 @@ def git_not_started(exc: OSError) -> Refusal | None:
     FAILED`, though nothing had failed. Git's is told by its NAME, as
     `validate-pins.py` tells it: a `filename` of `git`, or none at all on a
     `FileNotFoundError` or a `PermissionError`, as Windows raises them, or
-    on an `OSError` whose `winerror` is 193, Windows' `[WinError 193]` for a
-    `git.exe` it cannot execute (#1001); one naming a directory is not
-    git's. The code, and the remedy's first sentence, are
+    on an `OSError` whose `winerror` says Windows could not start the
+    program itself: 193, a `git.exe` it cannot execute (#1001), the rest of
+    193's `ENOEXEC` family (11, 188 to 202), 216, one built for another
+    architecture, and 1260, one a policy blocks (#1040). One naming a
+    directory is not git's, nor is a nameless `[WinError 267]`, a `cwd`
+    that is not a folder. The code, and the remedy's first sentence, are
     `validate-family.py`'s."""
     nameless = (exc.filename is None
                 and (isinstance(exc, (FileNotFoundError, PermissionError))
-                     or getattr(exc, "winerror", None) == 193))
+                     or getattr(exc, "winerror", None)
+                     in (11, *range(188, 203), 216, 1260)))
     if exc.filename != "git" and not nameless:
         return None
     return Refusal(

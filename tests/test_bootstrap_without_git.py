@@ -19,9 +19,12 @@ and no traceback. The run STOPS there: every later step runs git too, so
 going on would only say it again. Which `OSError` is git's is read by NAME,
 as `validate-pins.py` reads it: `filename` `git`, or none on a
 `FileNotFoundError` or a `PermissionError`, which is how Windows raises
-them, or on an `OSError` whose `winerror` is 193, Windows' `[WinError 193]`
-for a `git.exe` it cannot execute (#1001); an error naming a directory goes
-on as it did.
+them, or on an `OSError` whose `winerror` says Windows could not start the
+program itself: 193, a `git.exe` it cannot execute (#1001), the rest of
+193's `ENOEXEC` family (11, 188 to 202), 216, one built for another
+architecture, and 1260, one a policy blocks (#1040). An error naming a
+directory goes on as it did, and so does a nameless `[WinError 267]`, a
+`cwd` that is not a folder.
 
 The end-to-end runs are a person's: a scaffold's recursive clone, a plain
 clone, and a family holder, each run with no git on `PATH`. The rule's other
@@ -39,7 +42,8 @@ import pytest
 from conftest import (PROJECT, REPO, clone_just_pushed, load_without_bytecode,
                       run_script)
 from test_family import family, holder  # noqa: F401
-from test_validate_pins_without_git import WIN_ERROR_193
+from test_validate_pins_without_git import (WIN_ERROR_193, WIN_ERROR_216,
+                                            WIN_ERROR_1260, win_error)
 
 #: What `subprocess` says when there is no git to start, here.
 NO_GIT = ("The system cannot find the file specified" if os.name == "nt"
@@ -56,14 +60,13 @@ FAMILY_REMEDY = (
     "through git too, so without it nothing here can be fetched or "
     "bootstrapped.")
 
-#: What stands where a `git.exe` Windows cannot execute would. Python imports
+#: What stands where a `git.exe` Windows cannot start would. Python imports
 #: `sitecustomize` at start-up from `PYTHONPATH`, so the script, and anything
 #: it starts, load this first, as `tests/test_update_shape_landing.py`'s
 #: `GH_ON_PATH` stands in for `gh`. Starting a program named `git` raises
-#: what CPython raises on Windows there, `WIN_ERROR_193`; nothing else
-#: changes.
-GIT_NOT_WIN32 = """\
-import errno
+#: what CPython raises on Windows there, the error `git_raising` fills in;
+#: nothing else changes.
+GIT_RAISING = """\
 import os
 import subprocess
 
@@ -73,15 +76,30 @@ class _Popen(subprocess.Popen):
         if (isinstance(args, (list, tuple)) and args
                 and os.path.basename(str(args[0])).lower()
                 in ("git", "git.exe")):
-            error = OSError(errno.ENOEXEC,
-                            "%1 is not a valid Win32 application")
-            error.winerror = 193
+            error = OSError({number}, {words!r})
+            error.winerror = {winerror}
             raise error
         super().__init__(args, *rest, **kwargs)
 
 
 subprocess.Popen = _Popen
 """
+
+
+def git_raising(error: OSError) -> str:
+    """`GIT_RAISING` where every start of git raises `error`, a nameless
+    `OSError` as CPython raises it on Windows (`win_error`): its `errno`,
+    its words and its `winerror`."""
+    return GIT_RAISING.format(number=error.errno, words=error.strerror,
+                              winerror=error.winerror)
+
+
+#: Every start of git raises `WIN_ERROR_193`, a `git.exe` Windows cannot
+#: execute (#1001).
+GIT_NOT_WIN32 = git_raising(WIN_ERROR_193)
+#: Every start of git raises `WIN_ERROR_216`, a `git.exe` built for another
+#: architecture (#1040).
+GIT_FOR_ANOTHER_MACHINE = git_raising(WIN_ERROR_216)
 
 
 def without_git(root: Path, tmp_path: Path, *extra: str,
@@ -120,8 +138,9 @@ def test_an_assembly_root_with_no_git_refuses_in_step_a(project, tmp_path,
 
 
 @pytest.mark.parametrize("shim, said", [
-    (None, NO_GIT), (GIT_NOT_WIN32, WIN_ERROR_193.strerror)],
-    ids=["no-git", "winerror-193"])
+    (None, NO_GIT), (GIT_NOT_WIN32, WIN_ERROR_193.strerror),
+    (GIT_FOR_ANOTHER_MACHINE, WIN_ERROR_216.strerror)],
+    ids=["no-git", "winerror-193", "winerror-216"])
 def test_the_offline_upstream_notice_with_no_git_refuses_too(scaffolded,
                                                              tmp_path, shim,
                                                              said):
@@ -131,7 +150,8 @@ def test_the_offline_upstream_notice_with_no_git_refuses_too(scaffolded,
     itself; the notice then ended the run in a traceback. It refuses, and
     the review-authority step is not reached. So it does where every start
     of git raises Windows' `[WinError 193]` (`GIT_NOT_WIN32`; #1001,
-    RV1028's NIT 1), which the notice's `except OSError` used to swallow
+    RV1028's NIT 1), or its `[WinError 216]` (`GIT_FOR_ANOTHER_MACHINE`,
+    #1040), each of which the notice's `except OSError` used to swallow
     and say nothing of."""
     clone = tmp_path / PROJECT
     made = clone_just_pushed(scaffolded["remotes"] / f"{PROJECT}.git", clone,
@@ -200,8 +220,11 @@ def made_of(module, error: OSError):
     OSError(errno.ENOEXEC, "Exec format error", "git"),
     FileNotFoundError(2, "The system cannot find the file specified"),
     WIN_ERROR_193,
+    WIN_ERROR_216,
+    WIN_ERROR_1260,
 ], ids=["no git", "git not executable", "git no program", "windows",
-        "windows winerror 193"])
+        "windows winerror 193", "windows winerror 216",
+        "windows winerror 1260"])
 def test_each_way_git_cannot_start_is_git_not_runnable(root_module, error):
     made = made_of(root_module, error)
     assert made.code == "git-not-runnable", made
@@ -215,6 +238,8 @@ def test_each_way_git_cannot_start_is_git_not_runnable(root_module, error):
     FileNotFoundError(errno.ENOENT, "No such file or directory", "/nowhere"),
     PermissionError(errno.EACCES, "Permission denied", "/a/leg"),
     OSError(errno.EIO, "Input/output error"),
-], ids=["a directory not there", "a directory not entered", "nameless"])
+    win_error(267, errno.ENOTDIR, "The directory name is invalid"),
+], ids=["a directory not there", "a directory not entered", "nameless",
+        "nameless windows winerror 267"])
 def test_an_error_that_is_not_gits_goes_on_as_it_did(root_module, error):
     assert made_of(root_module, error) is error
