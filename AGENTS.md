@@ -93,9 +93,9 @@ VALUE to change. Three you can foresee, all before anything is created:
 inside a FILE the shape writes into the assembly root: `project.yaml` is one, and
 `contracts` holds `contracts/spec-pin.yaml`; the defaults `spec` and `code` pass) and
 `scaffold-pin-collides` (a `--pin` the shape cannot write, below), both after `--`;
-and anything already at `<into>/<Project>`, a rehearsal's clone included. Relay the
-refusal and ask the human for the value, or to move or delete what is there; never do
-either yourself. Do not retry with `--force`; there is none, deliberately.
+and anything already at `<into>/[<Family>/]<Project>`, a rehearsal's clone included.
+Relay the refusal and ask the human for the value, or to move or delete what is there;
+never do either yourself. Do not retry with `--force`; there is none, deliberately.
 
 ## 3. It finishes the job
 

@@ -1,0 +1,8 @@
++3
+2026-10-20
+Three lines for one sentence #921 (U088) leaves false in the README as written:
+"Nothing is created before the typed `yes`" is not so while step (3) makes and
+removes `.openreposhape-write-probe-*` above the clone, and the plan's dry run
+makes and removes `openreposhape-seed-*` and `openreposhape-branch-*` in the
+temporary folder. The paragraph says "nothing that stays", and names the three
+folders a person who finds one after a killed run would otherwise meet unnamed.

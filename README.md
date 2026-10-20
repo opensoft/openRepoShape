@@ -481,9 +481,12 @@ manifest, sets the topic `xf-project-atlas` on all three, clones the root as
 `./Atlas` where you ran it (or `--into <dir>`), and runs `scripts/bootstrap.py`.
 
 > [!WARNING]
-> **If it fails part-way.** Nothing is created before the typed `yes` in (4):
-> the preflight, the naming check and the plan only read and print, and the
-> plan is literally a `--dry-run`. After the `yes`, `scaffold-project.py`
+> **If it fails part-way.** Nothing that stays is created before the typed `yes`
+> in (4): the preflight, the naming check and the plan only read and print, and
+> the plan is literally a `--dry-run`. The run makes a few short-lived folders
+> along the way and takes each away again, such as `.openreposhape-write-probe-*`
+> above the clone and `openreposhape-seed-*` and `openreposhape-branch-*` in the
+> temporary folder. After the `yes`, `scaffold-project.py`
 > creates the three repositories with `gh repo create` in the order
 > `Atlas-spec`, `Atlas-code`, `Atlas` — the root LAST — then seeds and pushes
 > the two legs, then builds the root, pushes it, and sets the topic on all
