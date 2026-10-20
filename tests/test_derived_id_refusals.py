@@ -273,13 +273,16 @@ def test_a_name_no_holder_can_have_speaks_before_a_passed_id(tmp_path, name,
     assert "family-bad-id" not in stderr
 
 
-@pytest.mark.parametrize("passed", ["foo_bar", ""])
+@pytest.mark.parametrize("passed", ["foo_bar", "", "nul\n"])
 def test_a_name_no_root_can_have_on_windows_speaks_before_a_passed_id(
         tmp_path, passed):
     """The scaffold's half of the row above (#989): `--project NUL`, which
     no Windows disk can make a folder of, is refused as
     `scaffold-bad-project-name` before a passed id that is no id, as `init`
-    refuses `--family NUL` before its own; no `--id` mends it."""
+    refuses `--family NUL` before its own; no `--id` mends it. And before a
+    passed id's alphabet (#1014, RV1010's NIT-1): `nul` and a line break,
+    the one id `PROJECT_ID_RE.match` lets through, is `checked_value`'s
+    `unsafe-value` where the name is asked after it."""
     stderr = run_tool(tmp_path, "scaffold", "NUL", f"--id={passed}")
     assert stderr.startswith(
         "REFUSED scaffold-bad-project-name: --project is 'NUL', which names "

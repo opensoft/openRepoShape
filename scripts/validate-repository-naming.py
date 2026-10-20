@@ -65,6 +65,17 @@ PATH is read for none of them. A value that names no path — `PRODUCT=`, or an
 empty one — is refused (#442): an empty path is the current directory, and
 `.` is how to mean that.
 
+A KEY IS THE LONGEST LINK A VALUE NAMES (#980). The text before an `=` is a
+link only where it names a link of a chain this run reads, and of those
+texts the longest that leaves a path after it is the key, so a link holding
+`=` is one: `open=y=<path>`, the source the `declared-unverified` WARNING
+offers `open=y`, is that link's tree, where the first `=` made it a bare
+PATH. The key is the whole text before its `=`, never stripped or cut at a
+`/`, so `./` before a value still asks for the directory it spells, and
+`<link>=./<path>` gives a link a path that begins like a longer link's
+name. A value that ends at a link, `open=y=`, names no path and is refused,
+as `PRODUCT=` is.
+
 A CALLER THAT PASSES A SOURCE FOR SOMEONE ELSE SAYS IT IN ITS OWN WORDS
 (#661). `--link-source-label=FLAG` is the flag the person typed for the bare
 PATH (setup's step (4) passes `--pin-source`): the `link-source-unreadable`
@@ -80,8 +91,8 @@ holding `=` keeps it, and the words are stripped. Its owner, the text
 before its last `/`, holds no `=` (#991): no owner is spelled with one, so
 `openXdox=a/openYdox=b` gives `openXdox` the words `a/openYdox=b`, and
 `opensoft/open=y=TEXT` still gives `open=y` the words. A `--link-source`
-key is not read so: it is the text before the value's first `=`, so a link
-holding `=` is never one. A `--link-remedy` no holder used is a NOTE saying
+key is read the same way (#980), but whole, as the paragraph above says.
+A `--link-remedy` no holder used is a NOTE saying
 why, except where the caller gave a label: its words are its own, not the
 person's. A project's own runs pass neither.
 Every `--link-source` and `--link-remedy` value and path this prints, and
@@ -192,8 +203,8 @@ def _link_remedy(value: str) -> str:
     WHICH `=` ENDS THE LINK is decided once the chains this run reads are
     known (`LinkSources._read_remedy`, #907): the last one that leaves a
     link of theirs before it, with no `=` in its owner (#991), and words
-    after it. A `--link-source` key ends at the value's first `=`, whatever
-    the chains name."""
+    after it. A `--link-source` key is found the same way once the chains
+    are known, but whole (`LinkSources._read_source`, #980)."""
     link, sep, text = value.partition("=")
     if not (sep and repo_basename(link.strip()) and text.strip()):
         raise argparse.ArgumentTypeError(
@@ -243,16 +254,22 @@ class LinkSources:
     that a source keyed to a link `a` that no chain names, which no lookup
     ever asked for — the link stayed declared-unverified, exit 0, under a
     WARNING suggesting the very `--link-source` the person had passed. So the
-    text before the first `=` is a LINK only when it names a link of a
-    referent chain this run reads (`--referent-chain`'s, or a leg's
+    text before an `=` is a LINK only when it names a link of a referent
+    chain this run reads (`--referent-chain`'s, or a leg's
     `naming.referent_chain:` under `--project`) by `pin_product_key`, the key
-    the lookup uses, and any other value is a bare PATH, whole. A link's name
+    the lookup uses, and any other value is a bare PATH, whole. Of the texts
+    that do, the longest that leaves a path after it is the key
+    (`_read_source`, #980), so a link may hold an `=`. A link's name
     wins even where a directory is spelled like the whole value: the reading
     is decided by the chains and never by the disk, and `./` asks for the
     directory.
     That is `validate-pins.py`'s reading of `--pin-source` (#295), with a
     chain link where that file has a declared pin, so the two copied tools
-    read `[PRODUCT=]PATH` one way OVER ASCII ONLY (#444). Outside it they part
+    read `[PRODUCT=]PATH` one way OVER ASCII ONLY (#444), and for a name that
+    holds no `=` (#980). That file still ends a key at the first `=`, so a
+    declared pin holding one is never a `--pin-source` key there; no
+    scaffold writes such a pin, since `--pin` names are `[A-Za-z0-9_.-]`,
+    and it is left as its own change. Outside ASCII they part
     company: `templates/assembly-root/scripts/validate-pins.py` still keys
     `--pin-source PRODUCT=` by `casefold()`, in `PinSources.__init__`, which
     builds the table, and in `resolve_neutral_pin_source`, which looks a pin
@@ -350,8 +367,7 @@ class LinkSources:
         #: `{typed: the later value that took its place}`.
         self.replaced: dict[str, str] = {}
         for typed in values:
-            key, sep, path = typed.partition("=")
-            link = names.get(pin_product_key(key)) if sep else None
+            link, path = self._read_source(typed)
             self.reading[typed] = link
             if link is not None:
                 earlier = self.keyed.get(pin_product_key(link))
@@ -363,10 +379,10 @@ class LinkSources:
             if earlier is not None and earlier[0] != typed:
                 self.replaced[earlier[0]] = typed
         #: The values that name no path (#442), in the order given: a keyed
-        #: value with nothing after its `=`, and an empty bare one.
+        #: value with nothing after its key's `=`, and an empty bare one.
         self.no_path: list[str] = [
-            typed for typed, link in self.reading.items()
-            if not (typed.partition("=")[2] if link is not None else typed)]
+            typed for typed in self.reading
+            if not self._read_source(typed)[1]]
         #: The links some name's lookup asked about, by `pin_product_key`.
         self.asked: set[str] = set()
         #: The values a link read: each the answer for one link (#441).
@@ -382,6 +398,51 @@ class LinkSources:
         #: lookup passed over (#990), in the order first met.
         self.shared_variables: dict[str, list[str]] = {}
 
+    def _read_source(self, typed: str) -> tuple[str | None, str]:
+        """`(link, path)` for one `--link-source` value (#980): the link it
+        is keyed to, as the chain spells it, and the text of its path; or
+        `(None, typed)` for a bare PATH, which is the whole value.
+
+        THE LONGEST LINK THAT LEAVES A PATH, as `_read_remedy` finds a
+        remedy's link (#907). The text before an `=` is a link only where
+        it names a link of a chain this run reads, by `pin_product_key`,
+        and the LAST `=` whose text does, with a path after it, ends the
+        key. Read at the first `=`, `open=y=<path>`, the very source the
+        `declared-unverified` WARNING offers `open=y`, was a bare PATH for
+        the chain's first link, since no chain names `open`: typed as
+        printed, it never verified `open=y`. In a chain naming `open` and
+        `open=y` both, `open=y=<path>` is `open=y`'s and `open=<path>` is
+        `open`'s, where the first `=` gave both to `open`, and the later
+        value replaced the earlier one.
+
+        WHOLE, where a remedy's link is not: the key is the text before its
+        `=` as typed, never stripped and never cut at a `/`. A link's name
+        holds no `/` (`repo_basename`), so a text holding one names no
+        link, and `./open=y=x` is the directory it spells, as `./` asks for
+        one under the reading's documented rule (`_also_a_directory`
+        offers it). `open=./y=dir` gives `open` the path `./y=dir` in a
+        chain that names `open=y` too. A blank is a path's, as it always
+        was: ` open=y=x` names no link.
+
+        A VALUE THAT ENDS AT A LINK NAMES NO PATH. Only the last `=` can
+        leave nothing after it. Where its text names a link and no shorter
+        link leaves a path, the value is that link's, with an empty path,
+        and `no_path` refuses it (#442), as it refuses `openXdox=`: read as
+        a bare PATH, `open=y=` would be a tree for the chain's first link,
+        a link the person did not name. A remedy has no path to refuse, so
+        `_read_remedy` reads such a value at its first `=` instead."""
+        at = typed.rfind("=")
+        while at >= 0:
+            link = self.names.get(pin_product_key(typed[:at]))
+            if link is not None and typed[at + 1:]:
+                return link, typed[at + 1:]
+            at = typed.rfind("=", 0, at)
+        if typed.endswith("="):
+            link = self.names.get(pin_product_key(typed[:-1]))
+            if link is not None:
+                return link, ""
+        return None, typed
+
     def _read_remedy(self, typed: str) -> tuple[str, str]:
         """`(link, words)` for one `--link-remedy` (#907): the text before
         an `=` is a LINK only where it names a link of a referent chain this
@@ -394,8 +455,8 @@ class LinkSources:
         its own words, and from the first `=` `openXdox=y=<words>` was
         `y=<words>` for `openXdox`. Where no `=` does, the text before the
         first one is the link, which no chain here names, and `unused_lines`
-        says so. A `--link-source` key is not read so: it is the text before
-        its first `=` alone (`__init__`). The link is spelled as the chain
+        says so. A `--link-source` key is read so too, but whole
+        (`_read_source`, #980). The link is spelled as the chain
         spells it, and the words are stripped: `openXdox= padded` offered
         ` padded`.
 
@@ -1348,14 +1409,16 @@ def main(argv: list[str] | None = None) -> int:
                         help="where a chain LINK's own tree is, so its "
                              "`neutral_product_pins:` can be read and the "
                              "link VERIFIED — e.g. --link-source "
-                             "openXdox=../openXdox. The text before the "
-                             "first `=` is a PRODUCT only when it names a "
-                             "chain link (an entry of --referent-chain, or "
-                             "of a leg's naming.referent_chain: under "
-                             "--project), and then that reading wins even "
-                             "over a directory spelled like the whole value "
-                             "(./PATH reads that directory); any other value "
-                             "is a bare PATH: the tree of the chain's FIRST "
+                             "openXdox=../openXdox. The text before an `=` "
+                             "is a PRODUCT only when it names a chain link "
+                             "(an entry of --referent-chain, or of a leg's "
+                             "naming.referent_chain: under --project), and "
+                             "the longest such text that leaves a path "
+                             "after it is the one read, so a link may hold "
+                             "`=`; that reading wins even over a directory "
+                             "spelled like the whole value (./PATH reads "
+                             "that directory); any other value is a bare "
+                             "PATH: the tree of the chain's FIRST "
                              "link (the pin the project holds), read when "
                              "that link has no more specific answer, and "
                              "never a later link's, which needs its own "

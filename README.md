@@ -481,9 +481,12 @@ manifest, sets the topic `xf-project-atlas` on all three, clones the root as
 `./Atlas` where you ran it (or `--into <dir>`), and runs `scripts/bootstrap.py`.
 
 > [!WARNING]
-> **If it fails part-way.** Nothing is created before the typed `yes` in (4):
-> the preflight, the naming check and the plan only read and print, and the
-> plan is literally a `--dry-run`. After the `yes`, `scaffold-project.py`
+> **If it fails part-way.** Nothing that stays is created before the typed `yes`
+> in (4): the preflight, the naming check and the plan only read and print, and
+> the plan is literally a `--dry-run`. The run makes a few short-lived folders
+> along the way, such as `.openreposhape-write-probe-*` above the clone and
+> `openreposhape-seed-*` and `openreposhape-branch-*` in the temporary folder,
+> and takes each away again. After the `yes`, `scaffold-project.py`
 > creates the three repositories with `gh repo create` in the order
 > `Atlas-spec`, `Atlas-code`, `Atlas` — the root LAST — then seeds and pushes
 > the two legs, then builds the root, pushes it, and sets the topic on all
@@ -807,13 +810,14 @@ The contracts decision costs something, and the plan says so instead of letting
 it be discovered later: `scripts/validate.py` reads `contracts/*.yaml` from
 beside it and must now read ACROSS the root. `plan` finds every such file with
 `git grep` and lists up to eight per directory in `follow_ups:`, counting the
-rest; the root Makefile it materializes exports `CONTRACTS_DIR`, pointing at the
-`contracts/` of the spec leg where the plan mounts it (`$(CURDIR)/spec/contracts`
-by default). The tool does not make the edit — naming it is the
-honest half, making it silently would be the dangerous one. And `.specify/` and
-the ten identical assistant stubs stay at the root because an assistant reading
-`CLAUDE.md` from inside the code leg would be told about specifications it
-cannot see.
+rest; the shape's Makefile exports `CONTRACTS_DIR`, pointing at the `contracts/`
+of the spec leg where the plan mounts it (`$(CURDIR)/spec/contracts` by
+default); it is the root's Makefile, or, where the source keeps a `Makefile` of
+its own, `shape/Makefile`, which holds the export until a person merges the two.
+The tool does not make the edit — naming it is the honest half, making it
+silently would be the dangerous one. And `.specify/` and the ten identical
+assistant stubs stay at the root because an assistant reading `CLAUDE.md` from
+inside the code leg would be told about specifications it cannot see.
 
 ### Ambiguous is an answer, and no source line is overwritten
 

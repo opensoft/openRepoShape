@@ -337,23 +337,24 @@ def _git_runs(unread: str) -> Iterator[None]:
     `filename` is `git` counts, `ENOEXEC`'s included (a binary for another
     architecture, a script with no shebang), and so does a
     `FileNotFoundError` or a `PermissionError` that names no file, as
-    Windows' `CreateProcess` raises one for a missing git. Every other
-    `OSError` passes through as it came, and so does Windows' `[WinError
-    193]`, a `git.exe` it cannot execute, which names no file and is
-    neither class: `validate-pins.py` passes it through as well.
+    Windows' `CreateProcess` raises one for a missing git, and so does an
+    `OSError` that names none whose `winerror` is 193, Windows' `[WinError
+    193]` for a `git.exe` it cannot execute, which is neither class (#1001).
+    Every other `OSError` passes through as it came.
 
     `validate-pins.py`'s RULE, COPIED, NOT SHARED. This file is a pinned
     copy, and a holder re-copies its pinned files one row at a time, so it
     may run beside a `repo_shape.py` older than itself: a rule moved there
     would end this run in an `ImportError` (#610's skew rule).
-    `tests/test_validate_family_git_not_runnable.py` holds the two copies to
-    one answer.
+    `tests/test_validate_family_git_not_runnable.py` holds this copy, that
+    one and both `bootstrap.py`s' to one answer and one text.
     """
     try:
         yield
     except OSError as exc:
         nameless = (exc.filename is None
-                    and isinstance(exc, (FileNotFoundError, PermissionError)))
+                    and (isinstance(exc, (FileNotFoundError, PermissionError))
+                         or getattr(exc, "winerror", None) == 193))
         if exc.filename != "git" and not nameless:
             raise
         raise Refusal(
@@ -3202,9 +3203,10 @@ def _check_gitmodules_named(root: Path, sections: dict[str, dict[str, str]],
                                said + _variant_advice(kind, path, *variant,
                                                       "section"))
                 continue
+            then, staged = _section_then(root, name)
             said += _variant_said(*variant) + _section_out(
-                name, keys, "Take", f"then commit {GITMODULES}",
-                back=_file_put_back(root, report))
+                name, keys, "Take", then, back=_file_put_back(root, report),
+                staged=staged)
         elif (path in gitlinks and path not in removed and given[path] == 1
               and _in_members(path)
               and _hand_cached(root, path, gitlinks[path]) is None):
@@ -3239,7 +3241,8 @@ def _section_unnamed_said(name: str, keys: dict[str, str]) -> str:
 
 
 def _section_out(name: str, keys: dict[str, str], lead: str, then: str,
-                 line: str = "", back: tuple[str, str] = ("", "")) -> str:
+                 line: str = "", back: tuple[str, str] = ("", ""),
+                 staged: bool = False) -> str:
     """The end of `gitmodules-path-unnamed`'s text, which takes the section
     `name` out by key (#300), every key it holds (`keys`), after `lead`,
     ending `then`, with `line`, a `git rm` printed first, before those
@@ -3251,10 +3254,19 @@ def _section_out(name: str, keys: dict[str, str], lead: str, then: str,
     said: `git config -f` on no file exits 5 and makes none, measured on
     git 2.43, so the keys' lines took nothing out (#1036). A `git rm
     --cached` takes the gitlink out with no file on disk, so `line` stays
-    first."""
+    first.
+
+    `staged`, where HEAD's `.gitmodules` holds no section of `name`
+    (`_section_then`), prints `git add -- .gitmodules` after the keys'
+    lines: the commit records the index's file, which still held the
+    section `git submodule add` staged, so a `git commit` after the lines
+    recorded it, and `git commit -- .gitmodules` had nothing to commit
+    (RV1069's SHOULD 1 on #1069)."""
     removal = "".join(
         f"\n    git config -f {GITMODULES} --unset-all "
         f"{shlex.quote(f'submodule.{name}.{key}')}" for key in keys)
+    if staged:
+        removal += f"\n    {STAGE_LINE}"
     put_back, whose = back
     if put_back:
         then = (f"after the line that puts {GITMODULES}, gone from the work "
@@ -3264,6 +3276,20 @@ def _section_out(name: str, keys: dict[str, str], lead: str, then: str,
     return (f" {lead} the section out by hand, in a POSIX shell, every key "
             "it holds, so a submodule later given its name inherits none of "
             f"them, {then}:{line}{removal}")
+
+
+def _section_then(root: Path, name: str) -> tuple[str, bool]:
+    """How `gitmodules-path-unnamed`'s text for the section `name` ends,
+    and whether its lines end staging `.gitmodules` (`_section_out`): the
+    commit where HEAD's file holds a section of that name, else the file
+    staged, with nothing of it left to commit, as after a `git submodule
+    add` not committed (RV1069's SHOULD 1 on #1069). Every branch asks
+    it, in `members/`, outside it and in another case."""
+    in_head = _head_gitmodules(root)
+    if in_head is not None and name in in_head[1]:
+        return f"then commit {GITMODULES}", False
+    return (f"then stage {GITMODULES}: HEAD's holds no section of that name, "
+            "so nothing of it is left to commit"), True
 
 
 def _gitlink_out_first(root: Path, name: str, keys: dict[str, str],
@@ -3311,15 +3337,12 @@ def _gitlink_out_first(root: Path, name: str, keys: dict[str, str],
     path = keys["path"]
     if (path not in gitlinks or path in removed or _in_members(path)
             or path in taken):
-        return _section_out(name, keys, "Otherwise take",
-                            f"then commit {GITMODULES}", back=back)
+        then, staged = _section_then(root, name)
+        return _section_out(name, keys, "Otherwise take", then, back=back,
+                            staged=staged)
     taken.add(path)
     head = _forced(root, path, gitlinks[path])
-    in_head = _head_gitmodules(root)
-    then = (f"then commit {GITMODULES}"
-            if in_head is not None and name in in_head[1] else
-            f"then stage {GITMODULES}: HEAD's holds no section of that name, "
-            "so nothing of it is left to commit")
+    then, staged = _section_then(root, name)
     stage = _stage_first(root, edited)
     nth = "the second line" if stage else "the first line"
     return (" Otherwise take its gitlink out first, since a gitlink no "
@@ -3331,7 +3354,8 @@ def _gitlink_out_first(root: Path, name: str, keys: dict[str, str],
             + _forced_said(head, nth, _held_if_forced(root, path, head)) + "."
             + _section_out(name, keys, "Then, with the lines after it, take",
                            then, (f"\n    {STAGE_LINE}" if stage else "")
-                           + f"\n    {_cached_removal(path, head)}", back))
+                           + f"\n    {_cached_removal(path, head)}", back,
+                           staged))
 
 
 def _section_lines(path: str, repository,

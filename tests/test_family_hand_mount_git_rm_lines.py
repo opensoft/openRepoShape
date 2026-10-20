@@ -564,6 +564,14 @@ def index_url(root: Path, env: dict, name: str) -> str:
                f"submodule.{name}.url").stdout.decode("utf-8").strip()
 
 
+def what_is_staged_committed(root: Path, env: dict) -> None:
+    """`git commit` of what is staged, typed by the person after the
+    printed lines, the issue's Verify, and nothing else: no `git add` the
+    text does not print (RV1069's SHOULD 1 on #1069). Where nothing is
+    staged it exits 1, `nothing to commit`, and HEAD is as it was."""
+    raw(root, env, "commit", "-q", "-m", "What is staged", check=False)
+
+
 def lines_of(*lines: str) -> str:
     """`lines` as a finding prints them, one to an indented line."""
     return "".join(f"\n    {line}" for line in lines)
@@ -596,11 +604,14 @@ def test_1036_a_section_the_index_alone_gives_comes_out_of_the_file_put_back(
     read the work tree's alone: the hand mount's `git rm --cached -f` exited
     0, the gate passed, and the commit of what was staged recorded the
     section. The section is a finding now, in every mode, whose lines put
-    the index's file back first, then take every key out. Typed in order,
-    the checkout deleted as the text says, `.gitmodules` staged as the
-    section's text says, then what is staged committed: HEAD's `.gitmodules`
-    gives the two members alone, nothing is left, the gate passes in every
-    mode and a plain clone checks both out."""
+    the index's file back first, take every key out, then stage the file,
+    since HEAD's holds no section of that name (RV1069's SHOULD 1 on #1069:
+    the text said "then commit .gitmodules", the index's file kept the
+    section, and a `git commit` recorded it). Only the printed lines typed,
+    in order, the checkout deleted as the text says, then `git commit` of
+    what is staged, the issue's Verify: HEAD's `.gitmodules` gives the two
+    members alone, nothing is left, the gate passes in every mode and a
+    plain clone checks both out."""
     env = cloning(offline, tmp_path, family)
     path = added_not_committed(holder, env, family)
     url = index_url(holder, env, path)
@@ -609,11 +620,7 @@ def test_1036_a_section_the_index_alone_gives_comes_out_of_the_file_put_back(
     found = found_alike(holder, *MODES)
 
     typed_around(holder, env, found, lambda: deleted(holder / path))
-    if "gitmodules-path-unnamed" in codes_of(found):
-        raw(holder, env, "add", "--", ".gitmodules")
-    if raw(holder, env, "diff", "--cached", "--quiet",
-           check=False).returncode:
-        commit_all(holder, env, "What is staged")
+    what_is_staged_committed(holder, env)
     assert head_paths(holder, env) == {ROW, OTHER_ROW}
     assert raw(holder, env, "status", "--porcelain").stdout == b""
     ends_well(holder, env, family, tmp_path)
@@ -625,9 +632,9 @@ def test_1036_a_section_the_index_alone_gives_comes_out_of_the_file_put_back(
     assert found[1] == (
         SECTION_SAID.format(path=path, name=path, url=f"url {url}")
         + SECTION_REMEDY.replace("then commit .gitmodules:",
-                                 put_back_said("deleted")
-                                 + "then commit .gitmodules:")
-        + lines_of(put_back, *removal(path, "path", "url")))
+                                 put_back_said("deleted") + THEN_STAGE + ":")
+        + lines_of(put_back, *removal(path, "path", "url"),
+                   "git add -- .gitmodules"))
 
 
 def test_1036_outside_members_the_gitlink_goes_first_then_the_put_back(
@@ -638,10 +645,10 @@ def test_1036_outside_members_the_gitlink_goes_first_then_the_put_back(
     and `gitmodules-path-unnamed` read the work tree's alone: the gate
     passed, and the next commit recorded a gitlink and a section no row can
     name. The section's finding takes the gitlink out of the index first,
-    then puts the index's file back, then takes every key out. Typed in
-    order and staged as it says, nothing is left to commit, the checkout
-    stays untracked, the gate passes in every mode and a plain clone checks
-    both out."""
+    then puts the index's file back, takes every key out and stages the
+    file. Only the printed lines typed, then `git commit` of what is staged,
+    nothing is left to commit, the checkout stays untracked, the gate passes
+    in every mode and a plain clone checks both out."""
     env = cloning(offline, tmp_path, family)
     submodule_added(holder, env, family, TOOLS)
     url = index_url(holder, env, TOOLS)
@@ -656,7 +663,8 @@ def test_1036_outside_members_the_gitlink_goes_first_then_the_put_back(
         put_back_said("deleted") + THEN_STAGE, " -f").replace(
             removed, removed + lines_of(put_back))]
     typed_in_order(holder, env, validate(holder, "--no-members"))
-    raw(holder, env, "add", "--", ".gitmodules")
+    what_is_staged_committed(holder, env)
+    assert head_paths(holder, env) == {ROW, OTHER_ROW}
     assert raw(holder, env, "status", "--porcelain").stdout == b"?? tools/\n"
     ends_well(holder, env, family, tmp_path)
 
