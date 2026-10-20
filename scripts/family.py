@@ -90,7 +90,7 @@ with; it never runs `git submodule add` and writes nothing of the holder's.
 question the real run asks before it creates the holder (#537): `gh repo
 view` and the commit listing, or the bare repository with
 `--local-remote-dir`. It refuses `family-remote-exists` as the real run does,
-and makes no folder, remote or repository. Both runs ask it after whether
+and creates no remote or repository. Both runs ask it after whether
 each folder `init` makes can be made and the holder written (#609), and
 before the real run makes the family folder, so a refusal leaves none: a file
 where a folder must go, or a folder this user cannot write in, is
@@ -98,6 +98,23 @@ where a folder must go, or a folder this user cannot write in, is
 Only gh's own not-found answer says the holder does not exist; any other
 `gh repo view` failure (a bad login, a rate limit, no network) is refused as
 `remote-unreadable`.
+
+`init --dry-run` LEAVES NOTHING THAT STAYS, which is not the same as making
+no folder (#921). It makes and removes temporary folders, as the real run
+does: `openreposhape-branch-*`, where git is asked whether the tracking
+branch is a name it will create, and `openreposhape-ident-*`, one for the
+author when GIT_AUTHOR_NAME, _EMAIL or _DATE is set and not empty, and one
+for the committer when a GIT_COMMITTER_ one is. Each is empty, and a removal
+that fails is not reported. It creates no remote or repository and pushes
+nothing: the only `gh` calls it makes read (`gh repo view`, the commit
+listing).
+
+WHETHER EACH FOLDER CAN BE WRITTEN IN IS THE MODE BITS' ANSWER (#923). The
+family folder or `--work-dir`, the holder in it and `--local-remote-dir` are
+asked of `os.access`, which reads the mode bits and on Windows says yes for
+every folder, and a dry run makes none of them to ask. So a quota, a Windows
+ACL or a read-only drive on Windows can pass the dry run and be refused by the
+real run.
 
 `init` ASKS GITHUB'S LIMITS FIRST, WHERE GITHUB IS (#863), as the scaffold
 and `adopt-project.py` ask theirs (#838), before `_creator_name` and before
@@ -181,8 +198,8 @@ sys.path.insert(0, str(SHAPE_ROOT / "scripts"))
 from repo_shape import (  # noqa: E402
     COMMIT_RE, PROJECT_ID_RE, PYTHON, TREE_DIGEST_DEFINITION,
     VISIBILITY_CHOICES, NamingPolicy, Refusal, YamlError, checked_value,
-    double_quoted, git_out, load_yaml, parse_yaml, recorded_gitlink,
-    repo_basename, same_repository, tree_digest,
+    double_quoted, git_out, load_yaml, parse_yaml, repo_basename,
+    same_repository, tree_digest,
 )
 from shape_materialize import (  # noqa: E402
     FAMILY_RULESET_HINT, SHAPE_REPOSITORY, CommandFailed, check_program,
@@ -193,18 +210,13 @@ from shape_materialize import (  # noqa: E402
     target_in_the_way, target_remediation, trailer_line, write_lf,
 )
 # What `init` asks of the holder's own reader and validator before it creates
-# anything (#307), imported as its own unit and not added to the lists above.
-import importlib.util  # noqa: E402
-from repo_shape import YamlError, parse_yaml  # noqa: E402
+# anything (#307): the questions the scaffold and `adopt-project.py` ask of
+# `project.yaml`, asked of `family.yaml` (#925), and the first sentence of
+# the remedy where the holder's reader refuses it (#929).
 from shape_materialize import (  # noqa: E402
-    FAMILY_TEMPLATED, PLACEHOLDER_RE, render,
-)
-# Where the holder's own reader refuses the manifest `init` would write: the
-# sentences that name the value on the line it refuses, and the first
-# sentence of their remedy, the scaffold's and `adopt-project.py`'s since
-# #708, asked of `family.yaml` (#929).
-from shape_materialize import (  # noqa: E402
-    KIND_INVALID, KIND_UNREADABLE, UNREADABLE_CHOICE, _unread_sentences,
+    FAMILY_TEMPLATED, KIND_INVALID, KIND_MISREAD, KIND_UNREADABLE,
+    UNREADABLE_CHOICE, TemplateManifest, manifest_invalid, manifest_misreads,
+    manifest_validator, manifest_value_problems, refuse_manifest_problems,
 )
 # How every command this prints for a person to paste spells its paths
 # (#486), the quoting the holder's `scripts/siblings.py` uses too.
@@ -3477,13 +3489,15 @@ holder         {work}
 # retyping this refuses. Whether the templates quote is #259's decision, and
 # one decision for every tool that renders them.
 #
-# THIS IS THE SMALLEST VERSION THE FAMILY NEEDS, and not `shape_materialize`'s:
-# the questions there (`manifest_misreads`, `manifest_invalid`, #261) are
-# written for the assembly root's `project.yaml` and its `validate-manifest.py`.
-# #314 added them first, and this change landed second without unifying them,
-# so the two sets of helpers exist side by side. Unifying them is an item on
-# tracking issue #459's checklist: the two differ only in the template, the
-# validator's entry point and the sentence that names the file.
+# THE QUESTIONS ARE `shape_materialize`'S (#925), the ones the scaffold and
+# `adopt-project.py` ask of `project.yaml` (`manifest_misreads`,
+# `manifest_invalid`, `manifest_value_problems`, #261), asked of
+# `family.yaml` through `HOLDER_MANIFEST`. #314 added them first, and
+# #307's `init` landed second with a copy of every helper; the two drifted,
+# and a fix to one missed the other (#817's whole-manifest words, #929).
+# What is the holder's alone is data, and it is all below: the template,
+# the validator and the question put to it, the words that name the
+# holder, and the remedies.
 
 #: The holder's template directory, and the one validator in it these
 #: questions ask. `materialize_family_root` reads the same directory.
@@ -3518,246 +3532,11 @@ FINDING_PLACEHOLDER = {
     "family-created-on": "CREATED_ON", "family-visibility": "VISIBILITY",
 }
 
-_FINDING_RE = re.compile(r"^FINDING (?P<code>[a-z0-9-]+): (?P<detail>.*)$",
-                         re.DOTALL)
-
-#: The validator modules already loaded, by the file they were loaded from.
-_VALIDATORS: dict = {}
-
-
-def _validator_unusable(what: str, why: str) -> Refusal:
-    """The refusal for a template validator that cannot be asked, and not a
-    traceback. It is a defect of the copy of the standard that was run and not
-    of any value; nothing was created, because the question is asked before
-    anything exists, and a validator that cannot answer lets no manifest
-    through unasked."""
-    return Refusal(
-        "family-validator-unusable",
-        f"templates/family-root/{FAMILY_VALIDATOR}, the validator this run "
-        f"asks about the manifest it would write, {what}: {why}",
-        "Remediation: this is a defect in the copy of this standard you ran, "
-        "not in your values: the file is missing, unreadable or broken "
-        "there, and nothing was created. Restore it from the standard's "
-        "repository, or reinstall the standard, and run again.")
-
-
-def family_validator(template_dir: Path = FAMILY_TEMPLATE):
-    """The holder's own `scripts/validate-family.py`, as a module.
-
-    LOADED FROM THE TEMPLATE IT IS COPIED FROM, so what is asked is the rule
-    the holder will apply and no second spelling of it exists. By path,
-    because the filename has a hyphen and cannot be imported by name. The
-    directory the validator puts at the front of `sys.path` for its own
-    imports is taken off again, and NO BYTECODE IS WRITTEN: importing a source
-    file makes CPython write `scripts/__pycache__/` beside it, and this file
-    is a TEMPLATE, in a tree every reader of it then meets.
-    """
-    path = Path(template_dir) / FAMILY_VALIDATOR
-    module = _VALIDATORS.get(path)
-    if module is None:
-        spec = importlib.util.spec_from_file_location(
-            "openreposhape_validate_family", path)
-        module = importlib.util.module_from_spec(spec)
-        saved_path, saved_flag = list(sys.path), sys.dont_write_bytecode
-        sys.dont_write_bytecode = True
-        try:
-            spec.loader.exec_module(module)
-        except (Exception, SystemExit) as exc:  # missing, unreadable, broken
-            raise _validator_unusable(
-                "could not be loaded", f"{type(exc).__name__}: {exc}"
-            ) from exc
-        finally:
-            sys.path[:] = saved_path
-            sys.dont_write_bytecode = saved_flag
-        for name in FAMILY_VALIDATOR_ASKS:
-            if not hasattr(module, name):
-                raise _validator_unusable(
-                    "could not be used", f"it has no `{name}`")
-        _VALIDATORS[path] = module
-    return module
-
-
-def _reading_in_words(reading) -> str:
-    """What the holder's reader made of a value, as a sentence says it."""
-    if isinstance(reading, YamlError):
-        return f"nothing at all, because it refuses the line ({reading})"
-    if reading is None:
-        return "no value at all"
-    if isinstance(reading, bool):
-        return "the boolean " + ("true" if reading else "false")
-    if isinstance(reading, (int, float)):
-        return f"the number {reading!r}"
-    if isinstance(reading, str):
-        return f"the text {reading!r}"
-    return "a list" if isinstance(reading, list) else "a mapping"
-
-
-def _line_shown(line: str) -> str:
-    """`line` in backticks, or as Python spells it where it holds a character
-    a terminal shows as something else, so that one finding stays one line."""
-    return f"`{line}`" if line.isprintable() else repr(line)
-
-
-def _reading_of(rendered: str):
-    """What the holder's reader makes of the one `key: value` line
-    `rendered`: the value, the `YamlError` it raised, or the whole answer when
-    it is not one key with one value (a value with a line break in it can
-    carry a second key into the file)."""
-    try:
-        parsed = parse_yaml(rendered.lstrip() + "\n")
-    except YamlError as exc:
-        return exc
-    if isinstance(parsed, dict) and len(parsed) == 1:
-        return next(iter(parsed.values()))
-    return parsed
-
-
-def _misread_rows(values: dict, what: dict, template_dir: Path
-                  ) -> dict[str, list[tuple]]:
-    """For each placeholder of `what` whose value the holder's reader would
-    not read back as that same text: `(rendered line, reading)` for each
-    template line that carries it."""
-    found: dict[str, list] = {}
-    for rel in FAMILY_TEMPLATED_YAML:
-        text = (Path(template_dir) / rel).read_text(encoding="utf-8")
-        for line in text.splitlines():
-            keys = [token[2:-2] for token in PLACEHOLDER_RE.findall(line)]
-            if (len(keys) != 1 or keys[0] not in what
-                    or keys[0] not in values
-                    or line.lstrip().startswith("#")):
-                continue
-            key, value = keys[0], str(values[keys[0]])
-            rendered = render(line, {key: value}, rel).lstrip()
-            reading = _reading_of(rendered)
-            if not (isinstance(reading, str) and reading == value):
-                found.setdefault(key, []).append((rendered, reading))
-    return found
-
-
-def family_manifest_misreads(values: dict, what: dict,
-                             template_dir: Path = FAMILY_TEMPLATE
-                             ) -> list[str]:
-    """A sentence for each value the holder's reader would read back as
-    anything but that same text; `[]` when every one reads back.
-
-    `values` is the substitution table; `what` names the placeholders to ask
-    about and how a refusal calls each (`{"FAMILY_ID": "--id"}`). Each
-    template line that carries exactly one of them is rendered with the
-    value, as `render` writes it, and read as the holder reads it, so a value
-    the template quotes is asked as the quoted line it is.
-    """
-    return [
-        f"{what[key]} is {str(values[key])!r}, which is written "
-        + " and ".join(f"into family.yaml as {_line_shown(line)}"
-                       for line, _ in rows)
-        + ", where the holder's own YAML reader reads it back as "
-        + f"{_reading_in_words(rows[0][1])} and not as that text."
-        for key, rows in _misread_rows(values, what, template_dir).items()]
-
-
-def _sentences_of(findings: list[str], values: dict, what: dict) -> list[str]:
-    """The FINDINGs of the validator as sentences: one for each value `init`
-    was handed, naming it and holding every finding about it, and one for each
-    finding that is about none of them."""
-    by_value: dict[str, list[str]] = {}
-    sentences: list[str] = []
-    for finding in findings:
-        match = _FINDING_RE.match(finding)
-        if match is None:
-            sentences.append(finding)
-            continue
-        code, detail = match.group("code"), match.group("detail")
-        said = f"{code}: {detail if detail.endswith('.') else detail + '.'}"
-        key = FINDING_PLACEHOLDER.get(code)
-        if key in what and key in values:
-            by_value.setdefault(key, []).append(said)
-        else:
-            sentences.append("the manifest this run would write is one the "
-                             f"holder's own validate-family.py refuses: {said}")
-    return [f"{what[key]} is {str(values[key])!r}, which the holder's own "
-            f"validate-family.py refuses: {' '.join(said)}"
-            for key, said in by_value.items()] + sentences
-
-
-def family_manifest_invalid(values: dict, policy: NamingPolicy, what: dict,
-                            template_dir: Path = FAMILY_TEMPLATE
-                            ) -> list[str]:
-    """A sentence for each FINDING the holder's own validator would make of
-    the `family.yaml` these `values` render; `[]` when it would pass.
-
-    The WHOLE manifest is rendered and read, so a rule about how one value
-    relates to another is asked as the holder asks it. `values` must be the
-    complete table and `policy` the naming policy the holder carries a copy
-    of. The validator's `Report` is asked for its findings alone: its notes
-    are what it says when nothing is wrong. Where the holder's own YAML
-    reader refuses the file before the validator can be asked, each
-    sentence is the reader's, naming the value on the line it refuses
-    (`_manifest_problems`, #929).
-    """
-    return [sentence for _, sentence in _manifest_problems(
-        values, policy, what, template_dir)]
-
-
 #: The placeholders that carry a value of `what` into `family.yaml` where no
 #: line holds that value's own placeholder (#929): the organisation is the
 #: owner half of the holder's `repository:`, so the reader's refusal of that
 #: line is `--org`'s. `shape_materialize.CARRIED_BY` is the project's.
 CARRIED_BY = {"FAMILY_REPOSITORY": "ORG"}
-
-
-def _manifest_problems(values: dict, policy: NamingPolicy, what: dict,
-                       template_dir: Path) -> list[tuple[str, str]]:
-    """`family_manifest_invalid`'s sentences, each with its kind, as
-    `shape_materialize` gives a project's (#708): `invalid` for a finding of
-    the validator's, and `unreadable` where the holder's own YAML reader
-    refuses the file the validator would read, whose words are the
-    reader's and whose remedy is its own (`MANIFEST_UNREADABLE_REMEDIATION`).
-
-    THE VALUE IS NAMED (#929). The reader refuses `repository: @x/Orbit`,
-    so `init --org @x --local-remote-dir <dir>` said only that the manifest
-    was a file the reader refuses, under a remedy calling the words the
-    validator's. `_unread_sentences`, the scaffold's and `adopt-project.py`'s
-    since #708, reads each line of `family.yaml` that carries a value alone
-    and names the value whose line the reader refuses, by its own
-    placeholder or by the one `CARRIED_BY` names; where none is, the
-    sentence is the reader's refusal of the whole file, as before.
-    """
-    template = (Path(template_dir) / MANIFEST).read_text(encoding="utf-8")
-    try:
-        manifest = parse_yaml(render(template, values, MANIFEST))
-    except YamlError as exc:
-        return [(KIND_UNREADABLE, sentence) for sentence in _unread_sentences(
-            values, what, template_dir, exc, manifest=MANIFEST,
-            carried_by=CARRIED_BY, reader="the holder's own YAML reader")]
-    if not isinstance(manifest, dict):
-        return [(KIND_INVALID, "the manifest this run would write is not a "
-                 "mapping, which is what the holder's own YAML reader makes "
-                 "of it.")]
-    validator = family_validator(template_dir)
-    # THE VALIDATOR'S OWN DEFECT, NEVER A FINDING. One that raises, one that
-    # EXITS (a `sys.exit(0)` would end this run with a zero, having printed
-    # and created nothing) and one whose `Report` has no `findings`, or whose
-    # findings are not text, did not answer, and a manifest it did not answer
-    # for is not one that passed.
-    try:
-        report = validator.Report()
-        validator._check_envelope(manifest, policy, report)
-        findings = list(report.findings)
-    except SystemExit as exc:
-        raise _validator_unusable(
-            "exited when it was asked", f"SystemExit: {exc.code}") from exc
-    except Exception as exc:
-        raise _validator_unusable(
-            "raised when it was asked", f"{type(exc).__name__}: {exc}"
-        ) from exc
-    for finding in findings:
-        if not isinstance(finding, str):
-            raise _validator_unusable(
-                "answered with a finding that is not text",
-                f"its type is {type(finding).__name__}")
-    return [(KIND_INVALID, sentence)
-            for sentence in _sentences_of(findings, values, what)]
-
 
 #: The remediation of a value the reader turns into something else, without
 #: the sentence about what was or was not created, which `init` adds. WHAT IT
@@ -3792,9 +3571,57 @@ MANIFEST_UNREADABLE_REMEDIATION = (
     "red from its first commit, because `make validate` and the `validate` "
     "workflow run that validator first, and `init` cannot be run again over "
     "a pushed holder: there is no --force.")
-#: The remedy for each kind of problem `_manifest_problems` names.
-KIND_REMEDIATIONS = {KIND_INVALID: MANIFEST_INVALID_REMEDIATION,
+#: The remedy for each kind of problem the questions name.
+KIND_REMEDIATIONS = {KIND_MISREAD: MANIFEST_MISREAD_REMEDIATION,
+                     KIND_INVALID: MANIFEST_INVALID_REMEDIATION,
                      KIND_UNREADABLE: MANIFEST_UNREADABLE_REMEDIATION}
+
+
+def _holder_findings(validator, manifest: dict, policy: NamingPolicy):
+    """What the holder's `validate-family.py` finds in a manifest it has
+    read as a mapping: the findings of its envelope, from the `Report` its
+    `_check_envelope` fills. Its notes are what it says when nothing is
+    wrong, and are not asked."""
+    report = validator.Report()
+    validator._check_envelope(manifest, policy, report)
+    return report.findings
+
+
+#: The holder's `family.yaml`, which `init` writes.
+HOLDER_MANIFEST = TemplateManifest(
+    manifest=MANIFEST, templated_yaml=FAMILY_TEMPLATED_YAML,
+    template="family-root", validator=FAMILY_VALIDATOR,
+    module_name="openreposhape_validate_family", asks=FAMILY_VALIDATOR_ASKS,
+    findings=_holder_findings, passed_over=(),
+    unusable_code="family-validator-unusable", owner="holder",
+    finding_placeholder=FINDING_PLACEHOLDER, carried_by=CARRIED_BY,
+    remediations=KIND_REMEDIATIONS)
+
+
+def family_validator(template_dir: Path = FAMILY_TEMPLATE):
+    """The holder's own `scripts/validate-family.py`, as a module, loaded as
+    `shape_materialize.manifest_validator` loads the project's."""
+    return manifest_validator(template_dir, manifest_kind=HOLDER_MANIFEST)
+
+
+def family_manifest_misreads(values: dict, what: dict,
+                             template_dir: Path = FAMILY_TEMPLATE
+                             ) -> list[str]:
+    """A sentence for each value the holder's reader would read back as
+    anything but that same text; `[]` when every one reads back. `what` is
+    how a refusal calls each value (`{"FAMILY_ID": "--id"}`)."""
+    return manifest_misreads(values, what, template_dir,
+                             manifest_kind=HOLDER_MANIFEST)
+
+
+def family_manifest_invalid(values: dict, policy: NamingPolicy, what: dict,
+                            template_dir: Path = FAMILY_TEMPLATE
+                            ) -> list[str]:
+    """A sentence for each FINDING the holder's own validator would make of
+    the `family.yaml` these `values` render, or for each value on a line the
+    holder's own reader refuses (#929); `[]` when it would pass."""
+    return manifest_invalid(values, policy, what, template_dir,
+                            manifest_kind=HOLDER_MANIFEST)
 
 
 def _manifest_flags(args) -> dict:
@@ -3829,20 +3656,16 @@ def refuse_unholdable_manifest(args, values: dict,
     'Contoso Group'`) is `family-manifest-invalid`, in the validator's words.
     A manifest the reader refuses before the validator can be asked (`--org
     @x`, `repository: @x/<Family>`) is `family-manifest-invalid` still, in
-    the reader's words and with the reader's remedy (#929).
+    the reader's words and with the reader's remedy (#929). The questions
+    and the refusal are the scaffold's (#925).
     """
-    flags = _manifest_flags(args)
-    nothing = " Nothing was created, and `--dry-run` refuses the same."
-    problems = family_manifest_misreads(values, flags, template_dir)
-    if problems:
-        raise Refusal("family-manifest-misread", " ".join(problems),
-                      MANIFEST_MISREAD_REMEDIATION + nothing)
-    found = _manifest_problems(values, NamingPolicy.load(NAMING_POLICY), flags,
-                               template_dir)
-    if found:
-        raise Refusal("family-manifest-invalid",
-                      " ".join(sentence for _, sentence in found),
-                      KIND_REMEDIATIONS[found[0][0]] + nothing)
+    problems = manifest_value_problems(
+        values, NamingPolicy.load(NAMING_POLICY), _manifest_flags(args),
+        template_dir=template_dir, manifest_kind=HOLDER_MANIFEST)
+    refuse_manifest_problems(
+        "family", problems,
+        "Nothing was created, and `--dry-run` refuses the same.",
+        HOLDER_MANIFEST)
 
 
 def cmd_init(args) -> int:
@@ -10646,8 +10469,15 @@ def build_parser() -> argparse.ArgumentParser:
                            "--local-remote-dir) and whether <org>/<Family> "
                            "already exists (`gh repo view` and its commit "
                            "listing; with --local-remote-dir, the bare "
-                           "repository), refusing what it refuses; make no "
-                           "folder, remote or repository")
+                           "repository), refusing what it refuses. Whether "
+                           "each folder can be written in is asked of "
+                           "`os.access`, which reads the mode bits and on "
+                           "Windows says yes for every folder, so a quota, "
+                           "a Windows ACL or a read-only drive on Windows "
+                           "can pass here and be refused by the real run. "
+                           "It leaves nothing that stays: it makes and "
+                           "removes temporary folders, creates no remote or "
+                           "repository and pushes nothing")
     init.set_defaults(func=cmd_init)
 
     add = subparsers.add_parser(

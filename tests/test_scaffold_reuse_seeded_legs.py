@@ -39,6 +39,13 @@ credential helper holds that the local server refuses, a first run's and a
 re-run's, in a terminal, and a key the stand-in ssh refuses where an
 `insteadOf` or a `pushInsteadOf` rule sends the push over ssh, each in git's
 own locale and in one that translates git.
+
+A SEED FOUND ONLY ON ANOTHER BRANCH IS SAID (#921). The re-run takes a seed
+that sits on `seed/scaffold`, the branch the ruleset hint made before #506,
+creates the tracking branch at it and leaves that branch as it is. Its NOTE
+names each such branch, says it remains and, on GitHub only, that it may be
+the leg's default branch, in a dry run as in the real run, and says nothing
+where the tracking branch holds the seed too.
 """
 
 from __future__ import annotations
@@ -184,6 +191,9 @@ def test_legs_holding_the_seed_are_reused_at_their_commits(
     for leg in LEGS:
         assert (f"reuse {bare(tmp_path, leg)} (one commit, {seeds[leg][:12]}: "
                 "the seed this scaffold pushes)") in result.stdout
+    assert "NOTE the seed in" not in result.stdout, (
+        "a seed on the tracking branch is taken from it, so no branch "
+        "elsewhere is in question (#921)")
     assert_finished(tmp_path, result)
     for leg in LEGS:
         assert tip(tmp_path, leg) == seeds[leg], "a reused leg is never rewritten"
@@ -192,26 +202,246 @@ def test_legs_holding_the_seed_are_reused_at_their_commits(
         assert seeds[leg] in pin, pin
 
 
+def seed_pushed_to(tmp_path, template_dir, *branches: str) -> str:
+    """A first run every ruleset refused, so all three repositories are made
+    and empty, then the spec leg's seed pushed, as an operator would, to each
+    of `branches` (`main` not among them unless named): the commit pushed."""
+    assert scaffold(tmp_path, "w1", env=refusing(
+        template_dir, *REPOS.values())).returncode == 2
+    for branch in branches:
+        pushed = subprocess.run(
+            ["git", "-C", str(tmp_path / "w1" / f"{PROJECT}-spec"), "push",
+             "-q", str(bare(tmp_path, "spec")),
+             f"main:refs/heads/{branch}"],
+            capture_output=True, text=True, check=False,
+            env={**os.environ, **refusing(template_dir)})
+        assert pushed.returncode == 0, pushed.stderr
+    seed = tip(tmp_path, "spec", f"refs/heads/{branches[0]}")
+    assert seed
+    return seed
+
+
+def seed_branch_note(tmp_path, tracking: str, *branches: str) -> str:
+    """The NOTE a `--local-remote-dir` re-run prints for the spec leg's seed
+    found only on `branches` (#921): no word of GitHub, as the leg is a bare
+    repository on disk."""
+    if len(branches) > 1:
+        found = ("branches " + ", ".join(f"`{name}`" for name in branches[:-1])
+                 + f" and `{branches[-1]}`")
+        left = "them, so they remain"
+    else:
+        found = f"branch `{branches[0]}`"
+        left = f"`{branches[0]}`, so that branch remains"
+    return (f"NOTE the seed in {bare(tmp_path, 'spec')} was found only on its "
+            f"{found}: this run creates `{tracking}` at it and does not "
+            f"touch {left}.")
+
+
 def test_a_seed_pushed_to_a_seed_branch_alone_is_taken_too(
         tmp_path, template):  # noqa: F811
     """The exit the hint used to print: the seed pushed to `seed/scaffold`,
     which the ruleset lets through, and `main` absent. Its one commit is the
     seed, so the re-run takes it and creates `main` AT it: a new branch, not
-    a rewrite."""
-    everything = refusing(template, *REPOS.values())
-    assert scaffold(tmp_path, "w1", env=everything).returncode == 2
-    pushed = subprocess.run(
-        ["git", "-C", str(tmp_path / "w1" / f"{PROJECT}-spec"), "push", "-q",
-         str(bare(tmp_path, "spec")), "main:refs/heads/seed/scaffold"],
-        capture_output=True, text=True, check=False,
-        env={**os.environ, **everything})
-    assert pushed.returncode == 0, pushed.stderr
-    seed = tip(tmp_path, "spec", "refs/heads/seed/scaffold")
+    a rewrite. And it SAYS which branch remains (#921): `seed/scaffold` is
+    left as it is. It says nothing of GitHub's default branch, as a bare
+    repository on disk is no GitHub's."""
+    seed = seed_pushed_to(tmp_path, template, "seed/scaffold")
     assert seed and not tip(tmp_path, "spec")
     result = scaffold(tmp_path, "w2", "--reuse-empty-repo",
                       env=refusing(template))
     assert_finished(tmp_path, result)
     assert tip(tmp_path, "spec") == seed
+    assert tip(tmp_path, "spec", "refs/heads/seed/scaffold") == seed, (
+        "the branch the seed was found on is not touched")
+    note = seed_branch_note(tmp_path, "main", "seed/scaffold")
+    assert result.stdout.count(note) == 1, result.stdout
+    assert result.stdout.count("NOTE the seed in") == 1, (
+        "the code leg was empty and the root is no leg: one leg, one NOTE")
+    assert "GitHub" not in result.stdout, result.stdout
+    assert result.stdout.index(f"reuse {bare(tmp_path, 'spec')} (one commit") \
+        < result.stdout.index(note), "the NOTE follows the leg's reuse line"
+
+
+def test_a_dry_run_says_the_seed_branch_too_and_makes_nothing(
+        tmp_path, template):  # noqa: F811
+    """The question is asked before anything is made (#537), the NOTE with
+    it, so a person reads it in the plan and not after the run."""
+    seed = seed_pushed_to(tmp_path, template, "seed/scaffold")
+    result = scaffold(tmp_path, "w2", "--reuse-empty-repo", "--dry-run",
+                      env=refusing(template))
+    assert result.returncode == 0, result.stderr + result.stdout
+    assert seed_branch_note(tmp_path, "main", "seed/scaffold") in (
+        result.stdout), result.stdout
+    assert not tip(tmp_path, "spec"), "a dry run creates no branch"
+    assert tip(tmp_path, "spec", "refs/heads/seed/scaffold") == seed
+
+
+def test_a_seed_on_the_tracking_branch_as_well_prints_no_seed_note(
+        tmp_path, template):  # noqa: F811
+    """`main` holds the seed beside `seed/scaffold`: the re-run creates
+    nothing and takes the seed from `main`, so there is no seed found only
+    elsewhere to say (#921)."""
+    seed = seed_pushed_to(tmp_path, template, "seed/scaffold", "main")
+    assert tip(tmp_path, "spec") == seed
+    result = scaffold(tmp_path, "w2", "--reuse-empty-repo",
+                      env=refusing(template))
+    assert_finished(tmp_path, result)
+    assert "NOTE the seed in" not in result.stdout, result.stdout
+
+
+def test_a_seed_on_two_branches_names_both(tmp_path, template):  # noqa: F811
+    """Neither is `main`: both remain, and the NOTE names both, in the
+    order a sort gives them, whichever order git listed them."""
+    seed = seed_pushed_to(tmp_path, template, "seed/scaffold", "other")
+    result = scaffold(tmp_path, "w2", "--reuse-empty-repo",
+                      env=refusing(template))
+    assert_finished(tmp_path, result)
+    assert tip(tmp_path, "spec") == seed
+    assert seed_branch_note(tmp_path, "main", "other", "seed/scaffold") in (
+        result.stdout), result.stdout
+
+
+def test_a_branch_name_is_shown_safe_in_the_seed_note(
+        tmp_path, template):  # noqa: F811
+    """The remote gives the name, and git takes U+202E in a branch's name:
+    shown raw it reorders the line a person reads. It is spelt as
+    `shown_path` spells a path, as `repr` does (#692, #766)."""
+    name = "seed/" + chr(0x202E) + "scaffold"
+    assert not name.isprintable()
+    seed_pushed_to(tmp_path, template, name)
+    result = scaffold(tmp_path, "w2", "--reuse-empty-repo", "--dry-run",
+                      env=refusing(template))
+    assert result.returncode == 0, result.stderr + result.stdout
+    assert chr(0x202E) not in result.stdout + result.stderr
+    assert f"its branch `{name!r}`: " in result.stdout, result.stdout
+
+
+@pytest.mark.parametrize("refs,found_on", [
+    pytest.param(("HEAD", "refs/heads/seed/scaffold"), ("seed/scaffold",),
+                 id="github-default-branch-is-seed-scaffold"),
+    pytest.param(("refs/heads/seed/scaffold", "refs/heads/main"), (),
+                 id="the-tracking-branch-holds-it-too"),
+    pytest.param(("HEAD", "refs/heads/main"), (), id="only-the-tracking"),
+    pytest.param(("refs/heads/zeta", "refs/heads/alpha"), ("alpha", "zeta"),
+                 id="sorted"),
+    pytest.param(("refs/tags/v0", "refs/pull/1/head"), (),
+                 id="a-tag-and-a-pull-request-are-no-branch"),
+    pytest.param(("refs/heads/seed/scaffold", "refs/pull/1/head"),
+                 ("seed/scaffold",), id="a-pull-request-beside-the-branch"),
+    pytest.param(("refs/heads/mainline",), ("mainline",),
+                 id="a-name-that-starts-with-the-tracking-name"),
+    pytest.param(("refs/heads/seed/main",), ("seed/main",),
+                 id="a-branch-ending-in-the-tracking-name"),
+    pytest.param(("refs/tags/main", "refs/heads/seed/scaffold"),
+                 ("seed/scaffold",), id="a-tag-named-as-the-tracking-branch"),
+])
+def test_the_branches_a_seed_was_found_on(scaffold_module, refs, found_on):
+    """#921: `_seed_branches` names each branch, by name and in order, and
+    names none where `main` holds the seed too."""
+    assert scaffold_module._seed_branches(refs, "main") == found_on
+
+
+@pytest.mark.parametrize("local,branches,said", [
+    pytest.param(
+        True, ("seed/scaffold",),
+        "NOTE the seed in T was found only on its branch `seed/scaffold`: "
+        "this run creates `main` at it and does not touch `seed/scaffold`, "
+        "so that branch remains.",
+        id="local-one-branch-and-no-word-of-github"),
+    pytest.param(
+        True, ("other", "seed/scaffold"),
+        "NOTE the seed in T was found only on its branches `other` and "
+        "`seed/scaffold`: this run creates `main` at it and does not touch "
+        "them, so they remain.",
+        id="local-two-branches-and-no-word-of-github"),
+    pytest.param(
+        False, ("seed/scaffold",),
+        "NOTE the seed in T was found only on its branch `seed/scaffold`: "
+        "this run creates `main` at it and does not touch `seed/scaffold`, "
+        "so that branch remains, and on GitHub it may be the leg's default "
+        "branch.",
+        id="github-one-branch-may-be-the-default"),
+    pytest.param(
+        False, ("other", "seed/scaffold"),
+        "NOTE the seed in T was found only on its branches `other` and "
+        "`seed/scaffold`: this run creates `main` at it and does not touch "
+        "them, so they remain, and on GitHub one of them may be the leg's "
+        "default branch.",
+        id="github-two-branches-one-may-be-the-default"),
+])
+def test_the_seed_note_says_github_only_on_github(scaffold_module, local,
+                                                  branches, said):
+    """#921: "on GitHub it may be the leg's default branch" is said of a
+    GitHub leg, as the issue says it, and not of a bare repository under
+    `--local-remote-dir`, which has no GitHub to be the default branch of."""
+    assert scaffold_module._seed_branch_note(
+        "T", branches, "main", local) == said
+
+
+@pytest.mark.parametrize("local,ending", [
+    pytest.param(False, "so that branch remains, and on GitHub it may be "
+                 "the leg's default branch.", id="github-leg"),
+    pytest.param(True, "so that branch remains.", id="bare-repository-leg"),
+])
+def test_the_note_a_re_run_prints_says_github_only_for_a_github_leg(
+        scaffold_module, monkeypatch, capsys, local, ending):
+    """RV1052d's NIT-A: `_reusable_remotes` hands `_seed_branch_note` the
+    `local` it was called with. Every run in this file that finds a seed only
+    on `seed/scaffold` is a `--local-remote-dir` run, and the unit test above
+    calls `_seed_branch_note` directly, so a call that always passed `True`
+    for `local` (RV1052d's R2c) printed no GitHub clause for a GitHub leg and
+    no test failed. Here `remote_is_empty` says the leg exists with commits
+    and `_held_seed` says its one commit is the seed, found on
+    `seed/scaffold` alone, and the NOTE that `_reusable_remotes` itself
+    prints is what is read: GitHub's ends with the default-branch clause, and
+    the bare repository's, which has no GitHub, does not. In-process, so it
+    runs on every platform."""
+    seed = "0123456789abcdef0123456789abcdef01234567"
+    monkeypatch.setattr(scaffold_module, "remote_is_empty",
+                        lambda repository: False)
+    monkeypatch.setattr(scaffold_module, "local_remote_is_empty",
+                        lambda target: False)
+    monkeypatch.setattr(scaffold_module, "_held_seed",
+                        lambda role, url, values, tracking, scratch: (
+                            seed, None, ("seed/scaffold",)))
+    reused = scaffold_module._reusable_remotes(
+        {"spec": "Atlas-spec"}, {"spec": "/remotes/Atlas-spec.git"},
+        {"spec": "o/Atlas-spec"}, local=local, reuse_flag=True, values={},
+        tracking="main")
+    assert reused == {"spec": seed}
+    notes = [line for line in capsys.readouterr().out.splitlines()
+             if line.startswith("NOTE the seed in")]
+    target = str(Path("/remotes/Atlas-spec.git")) if local else "o/Atlas-spec"
+    assert notes == [
+        f"NOTE the seed in {target} was found only on its branch "
+        "`seed/scaffold`: this run creates `main` at it and does not touch "
+        f"`seed/scaffold`, {ending}"], notes
+    assert notes[0].endswith(", and on GitHub it may be the leg's default "
+                             "branch.") is (not local)
+    assert ("GitHub" in notes[0]) is (not local)
+
+
+def test_dry_run_help_says_the_mode_bits_and_nothing_that_stays(tmp_path):
+    """#923 U063 and #921 U088, the scaffold's half: `--dry-run`'s help says
+    the write question is asked of `os.access`, which on Windows says yes for
+    every folder, so a quota, a Windows ACL or a read-only drive there can
+    pass it, and that it leaves "nothing that stays" where it once said "make
+    no folder": it makes and removes `openreposhape-seed-*` and
+    `openreposhape-branch-*` in the temporary folder. The wording is
+    `docs/cli.md`'s too."""
+    result = run_script(SCAFFOLD, "--help", cwd=tmp_path)
+    assert result.returncode == 0, result.stderr
+    said = " ".join(result.stdout.split())
+    assert ("Whether each folder can be written in is asked of `os.access`, "
+            "which reads the mode bits and on Windows says yes for every "
+            "folder, so a quota, a Windows ACL or a read-only drive on "
+            "Windows can pass here and be refused by the real run. It leaves "
+            "nothing that stays: it makes and removes temporary folders, "
+            "creates no remote and pushes nothing") in said, said
+    assert "make no folder" not in said
+    assert "its mode bits'" not in said, (
+        "only the write question is `os.access`'s: a file in the way and a "
+        "tree's contents are not the mode bits'")
 
 
 def test_a_leg_holding_the_seed_without_the_flag_names_the_flag(
