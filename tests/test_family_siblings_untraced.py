@@ -20,7 +20,8 @@ variable taken out, and trace2's three targets set to `0`, which turns off
 a target the global or the system config names too. With no token, both
 keep the caller's environment and are traced where the caller asked. The
 member's own `scripts/bootstrap.py`, which `place` runs after a clone, is
-given no token, and keeps the caller's traces either way.
+given no token in its argv (it inherits the token variables, and the shipped
+one reads neither), and keeps the caller's traces either way.
 
 THE ROWS. Each entry point (`ENTRIES`: `make siblings` cloning, `make
 siblings` again fetching, `family.py siblings` cloning) is run with each way
@@ -38,12 +39,21 @@ out, and offline: a `gh` that refuses (`offline`), with TMPDIR a directory
 of the test's own, and every remote a local path that the token's rewrite of
 GitHub's urls never reaches, so the clones and the fetches succeed with the
 fake token too.
+
+AND ONE ROW WITH AN HTTPS MEMBER (`HTTPS_MEMBER`), which the rewrite does
+reach, as it reaches a `github.com` member. A local path is no https url, so
+`GIT_TRACE`'s own file holds no token for it; for an https one the clone's
+`run_command: git remote-https` lines hold the rewritten url, measured on git
+2.43.0 and 2.47.1 by lane 5's review of #1075. The row stays offline behind a
+dead proxy: the clone fails at once, `siblings.py` says so, and nothing
+leaves the host.
 """
 
 from __future__ import annotations
 
 import json
 import os
+import re
 import subprocess
 import sys
 from collections.abc import Callable
@@ -52,9 +62,11 @@ from typing import NamedTuple
 
 import pytest
 
-from conftest import NO_BYTECODE, run_script
+from conftest import (
+    NO_BYTECODE, appended_to_command_scope, command_scope_at, run_script,
+)
 from test_family import (  # noqa: F401 (the `family` and `estate` fixtures)
-    FAMILY, MEMBERS, allow_file_protocol, estate, family,
+    FAMILY, MEMBERS, ORG, allow_file_protocol, estate, family,
 )
 from test_family_add_refusals import offline  # noqa: F401
 from test_family_bootstrap_stops_named import CREDENTIALS, files_holding
@@ -66,6 +78,14 @@ TOKEN = "w1055-a-token-no-forge-takes"
 
 #: What a run that placed both members says last.
 PLACED = "siblings ok: 2 member(s) beside the holder in "
+
+#: A proxy nothing listens at (port 9, `discard`): an https clone through it
+#: fails at once, and nothing leaves the host.
+DEAD_PROXY = "http://127.0.0.1:9"
+
+#: The member the https row gives a GitHub url, and the member it leaves a
+#: local path.
+HTTPS_MEMBER, LOCAL_MEMBER = MEMBERS
 
 #: The trace variables lane 5's probe set (#1055), each to a file under the
 #: run's TMPDIR, and `GIT_TRACE_PERFORMANCE`, whose file holds each git's
@@ -272,6 +292,28 @@ def written(temp: Path, traced: Traced) -> list[str]:
     return [name for name in traced.written if (temp / name).is_file()]
 
 
+def given_a_github_url(holder: Path, project: str) -> None:
+    """`project`'s url in the holder's `.gitmodules`, a local path, spelled
+    as GitHub's: `https://github.com/<org>/<project>.git`, which the token's
+    rewrite reaches. The file is read by `siblings.py` as it stands."""
+    path = holder / ".gitmodules"
+    spelled, found = re.subn(
+        rf"(?m)^(\turl = ).*/{project}\.git$",
+        rf"\g<1>https://github.com/{ORG}/{project}.git",
+        path.read_text(encoding="utf-8"))
+    assert found == 1, path.read_text(encoding="utf-8")
+    path.write_text(spelled, encoding="utf-8")
+
+
+def behind_a_dead_proxy(env: dict) -> dict:
+    """`env` with `http.proxy` at `DEAD_PROXY` in git's command scope, after
+    the entries `env` and this process hold, and with no list of hosts that
+    skip a proxy: no https clone made under it leaves the host."""
+    held = {**os.environ, **env}
+    return {**env, **appended_to_command_scope(
+        held, [("http.proxy", DEAD_PROXY)]), "NO_PROXY": "", "no_proxy": ""}
+
+
 @pytest.mark.parametrize("variable", CREDENTIALS)
 @pytest.mark.parametrize("traced", TRACED_BY.values(), ids=TRACED_BY)
 @pytest.mark.parametrize("entry", ENTRIES.values())
@@ -313,3 +355,37 @@ def test_with_no_token_the_clone_and_the_fetch_are_traced_as_asked(
     assert written(offline.temp, traced) == list(traced.written)
     assert entry.ran(offline.temp / traced.event) == sorted(
         os.path.realpath(estate["folder"] / project) for project in MEMBERS)
+
+
+@needs_make
+def test_an_https_member_with_a_token_in_use_is_in_no_trace(
+        family, estate, offline, tmp_path):
+    """#1055, lane 5's review of #1075 (rv1075): the token in
+    `SHAPE_LEGS_TOKEN`, the trace variables set, and one member whose remote
+    is GitHub's (`HTTPS_MEMBER`), behind a dead proxy. The rewrite reaches
+    its clone, which fails with git's 128, whichever way this git is built
+    to fail an https clone (at the proxy, or for want of its https helper),
+    and `make siblings` exits 2; the other member is placed. Before,
+    `GIT_TRACE`'s file held the token in the clone's `run_command: git
+    remote-https` lines, and so did the trace2 files; the token is now in no
+    output and in no file under the test's directory, every trace the
+    variables ask for is written by the run's other gits, and a mutant that
+    keeps the caller's `GIT_TRACE` for the clone is found."""
+    traced = TRACED_BY["variables"]
+    setup = offline_env(offline)
+    env = behind_a_dead_proxy(
+        traced.asks({**setup, "SHAPE_LEGS_TOKEN": TOKEN}, offline.temp,
+                    tmp_path))
+    given_a_github_url(estate["holder"], HTTPS_MEMBER)
+    assert f"http.proxy={DEAD_PROXY}" in command_scope_at(
+        env, estate["holder"])
+
+    result = cloning_by_make(estate, env, setup)
+
+    assert result.returncode == 2, result.stdout + result.stderr
+    assert f"{HTTPS_MEMBER}: git clone exited 128:" in result.stderr
+    assert (estate["folder"] / LOCAL_MEMBER / ".git").is_dir()
+    assert not (estate["folder"] / HTTPS_MEMBER).exists()
+    assert TOKEN not in result.stdout + result.stderr
+    assert files_holding(tmp_path, TOKEN) == []
+    assert written(offline.temp, traced) == list(traced.written)

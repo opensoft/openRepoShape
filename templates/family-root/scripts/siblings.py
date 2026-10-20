@@ -83,8 +83,9 @@ WHAT IT DOES:
            writes, so with a token in use each runs with every `GIT_TRACE*`
            variable taken out and trace2 turned off (`rewrite_environment`),
            as `make bootstrap` runs every git it gives the token (#996). The
-           member's own bootstrap is given no token, and keeps the traces
-           the caller asked for.
+           member's own bootstrap is given no token in its argv (it inherits
+           the token variables; the shipped one reads neither), and keeps
+           the traces the caller asked for.
 
   PRESENT  `git fetch`, AND NOTHING ELSE. No checkout, no reset, no pull, no
            stash, no branch switch. Somebody is working in that clone — that
@@ -637,12 +638,15 @@ def rewrite_environment(token: str) -> dict[str, str] | None:
     `GIT_TRACE2_EVENT`, `GIT_TRACE2_PERF`) or in the global or the system
     config (`trace2.eventTarget`, `normalTarget`, `perfTarget`), and
     `GIT_TRACE_PERFORMANCE`'s file held it too, on git 2.43.0 and 2.47.1
-    alike (measured). So both run with every
+    alike (measured). With an https member, as a `github.com` one is,
+    `GIT_TRACE`'s own file held it as well, in the `run_command: git
+    remote-https` lines (measured). So both run with every
     `GIT_TRACE*` variable taken out and trace2's three targets set to `0`,
     as `make bootstrap` runs every git it gives the token (#996). With no
     token there is nothing to keep out, and the two keep the traces the
     caller asked for. The member's own `scripts/bootstrap.py`, which `place`
-    runs after a clone, is given no token and keeps them too."""
+    runs after a clone, is given no token in its argv (it inherits the token
+    variables; the shipped one reads neither) and keeps them too."""
     return untraced() if token else None
 
 
