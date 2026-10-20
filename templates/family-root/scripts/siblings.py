@@ -204,11 +204,17 @@ from repo_shape import (  # noqa: E402
 )
 # THE CREDENTIAL AND THE MEMBER ROWS ARE READ BY `bootstrap.py` ALREADY, and a
 # second definition of either is how the two start disagreeing about which
-# token they used or where a member is mounted. Both files are copies of
-# openRepoShape that travel together in `contracts/shape-pin.yaml`, so the
-# import is not a dependency this holder can lose.
+# token they used or where a member is mounted. So is the environment a
+# member's make gets under the holder's `make -jN` (`member_make_env`, #888,
+# #987): one reading of `MAKEFLAGS` and of the member's make for every verb.
+# Both files are copies of openRepoShape that travel together in
+# `contracts/shape-pin.yaml`, so the import is not a dependency this holder
+# can lose: where a holder keeps its own `bootstrap.py` while `update-shape.py
+# apply` writes this file, a name this list takes that the kept copy lacks is
+# refused as `update-accept-local-missing-name` (#536) before a byte is
+# written.
 from bootstrap import (  # noqa: E402
-    REWRITE_TARGETS, credential, member_path, members_of,
+    REWRITE_TARGETS, credential, member_make_env, member_path, members_of,
 )
 
 MANIFEST = "family.yaml"
@@ -1017,87 +1023,6 @@ def place(root: Path, row: dict, urls: dict[str, str], prefix: list[str],
 # ---------------------------------------------------------------------------
 # dispatching a verb into the WORKING CLONES (--make)
 # ---------------------------------------------------------------------------
-
-#: `bootstrap.py`'s readings of `MAKEFLAGS` (#888) and of a member's make
-#: (#987), written here rather than imported: a holder may keep a
-#: `bootstrap.py` older than this file (`update-shape.py apply
-#: --accept-local`), which has none of them, and `make park` would then end
-#: in an `ImportError` before it ran in any member.
-#: `tests/test_family_member_make_jobserver.py` holds the two files to one
-#: answer. A word is split as make splits it: only at a space or a tab, a
-#: backslash keeping either in a value. GNU make 4.4's named pipe
-#: (`FIFO_WORD`) is the one jobserver a member's make may be handed, and
-#: only where that make says it is 4.4 or later (`GNU_MAKE_VERSION`), asked
-#: once per make and per run (`FIFO_READERS`), within `VERSION_TIMEOUT`
-#: seconds.
-JOBSERVER_WORD = re.compile(r"--jobserver-(?:auth|fds)=.*", re.DOTALL)
-JOBS_WORD = re.compile(r"-j[0-9]*|--jobserver-(?:auth|fds)=.*", re.DOTALL)
-MAKEFLAGS_WORD = re.compile(r"(?:\\.|[^ \t])+", re.DOTALL)
-FIFO_WORD = re.compile(r"--jobserver-auth=fifo:(.+)", re.DOTALL)
-GNU_MAKE_VERSION = re.compile(rb"GNU Make (\d+)\.(\d+)")
-VERSION_TIMEOUT = 10
-FIFO_READERS: dict[str, bool] = {}
-
-
-def names_a_fifo(word: str) -> bool:
-    """Is `word` 4.4's jobserver word for a named pipe that is there now,
-    at an absolute path (`FIFO_WORD`)? Its path is read as make reads it:
-    a backslash keeps the character after it. A pipe that is gone, a path
-    that holds another kind of file, or one relative to a directory other
-    than a member's, would make a 4.4 member's make warn that it cannot
-    open the jobserver."""
-    found = FIFO_WORD.fullmatch(word)
-    if not found:
-        return False
-    path = re.sub(r"\\(.)", r"\1", found[1], flags=re.DOTALL)
-    try:
-        return os.path.isabs(path) and stat.S_ISFIFO(os.stat(path).st_mode)
-    except OSError:
-        return False
-
-
-def reads_fifo(make: str, env: dict[str, str]) -> bool:
-    """Does `make` say it is GNU make 4.4 or later, which reads a `fifo:`
-    jobserver word? Asked once per make and per run (`FIFO_READERS`), as
-    `make --version` under `env`, which names no jobserver, stdin closed;
-    a make that is not there, names itself otherwise, is older, exits
-    other than 0 or does not answer in `VERSION_TIMEOUT` seconds is a
-    no."""
-    if make not in FIFO_READERS:
-        try:
-            said = subprocess.run(
-                [make, "--version"], env=env, stdin=subprocess.DEVNULL,
-                stdout=subprocess.PIPE, stderr=subprocess.DEVNULL,
-                timeout=VERSION_TIMEOUT, check=False)
-        except (OSError, subprocess.SubprocessError):
-            said = None
-        found = (GNU_MAKE_VERSION.match(said.stdout)
-                 if said is not None and said.returncode == 0 else None)
-        FIFO_READERS[make] = found is not None and (
-            int(found[1]), int(found[2])) >= (4, 4)
-    return FIFO_READERS[make]
-
-
-def member_make_env(make: str) -> dict[str, str]:
-    """This run's environment for a member's `make <target>`, `make`:
-    `MAKEFLAGS` as it is where `make` can share the jobserver of the make
-    above it, GNU make 4.4's named pipe (#987), and otherwise without that
-    jobserver, where it names one, nor the `-j` that comes with it, as
-    `bootstrap.py`'s `member_make_env` gives it and for its reasons. Under
-    the holder's `make -j2 park`, each member's make said `jobserver
-    unavailable: using -j1.  Add '+' to parent make rule.`, of a rule the
-    person does not own (#888)."""
-    env = dict(os.environ)
-    words = MAKEFLAGS_WORD.findall(env.get("MAKEFLAGS", ""))
-    named = [word for word in words if JOBSERVER_WORD.fullmatch(word)]
-    if not named:
-        return env
-    plain = {**env, "MAKEFLAGS": " ".join(
-        word for word in words if not JOBS_WORD.fullmatch(word))}
-    if all(names_a_fifo(word) for word in named) and reads_fifo(make, plain):
-        return env
-    return plain
-
 
 def make_program() -> str:
     """`make`, resolved to an EXECUTABLE PATH, or a named refusal.

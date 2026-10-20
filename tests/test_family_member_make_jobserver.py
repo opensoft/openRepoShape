@@ -13,8 +13,9 @@ the warning names is the holder's pinned Makefile, which the person does
 not own.
 
 BOTH SCRIPTS NOW TAKE THE JOBSERVER, and the `-j` that comes with it, out
-of the `MAKEFLAGS` a member's make inherits (`member_make_env`): each
-member's make runs its jobs one at a time, as it did, and says nothing.
+of the `MAKEFLAGS` a member's make inherits (`member_make_env`, one
+function in `bootstrap.py`, which `siblings.py` imports): each member's
+make runs its jobs one at a time, as it did, and says nothing.
 `bootstrap.py`'s `member_make_env` says why the jobserver is not handed on
 instead. `make siblings` runs no member's make: it runs a member's own
 `scripts/bootstrap.py`, which runs none.
@@ -412,7 +413,7 @@ def test_under_make_4_4_a_member_s_make_shares_the_holder_s_named_pipe(
                 if word.startswith(FIFO)], (trace, flags)
 
 
-# --- the two scripts' `member_make_env`, one answer ------------------------
+# --- `member_make_env`: bootstrap.py's, and siblings.py's import of it -----
 
 #: `{case: (MAKEFLAGS as a make writes it, as the member's make gets it)}`,
 #: as each make spells its jobserver: GNU make 4.2 to 4.3 a pipe's two
@@ -471,6 +472,16 @@ def scripts(monkeypatch) -> dict:
     return {"bootstrap.py": boot,
             "siblings.py": load_without_bytecode(
                 SCRIPTS / "siblings.py", "jobserver_family_siblings")}
+
+
+def test_siblings_takes_bootstrap_s_member_make_env(scripts):
+    """`siblings.py` has no `member_make_env` of its own: it takes
+    `bootstrap.py`'s, as it takes the credential and the member rows, so
+    the two cannot come to disagree about a member's make (#987). Each
+    `siblings.py` item below runs that one function through the import
+    a holder's `siblings.py` makes."""
+    assert (scripts["siblings.py"].member_make_env
+            is scripts["bootstrap.py"].member_make_env)
 
 
 @pytest.mark.parametrize("script", ["bootstrap.py", "siblings.py"])
@@ -664,7 +675,9 @@ def test_each_script_takes_a_named_pipe_from_a_make_too_slow_to_answer(
     `VERSION_TIMEOUT` seconds, here 1, is a no, and the run is not held
     for it: the fake sleeps 30 seconds, and is stopped."""
     module = scripts[script]
-    monkeypatch.setattr(module, "VERSION_TIMEOUT", 1)
+    # `siblings.py`'s `member_make_env` is `bootstrap.py`'s, which reads
+    # `bootstrap.py`'s `VERSION_TIMEOUT`.
+    monkeypatch.setattr(scripts["bootstrap.py"], "VERSION_TIMEOUT", 1)
     make = fake_make(tmp_path / "bin", waits=True)
     monkeypatch.setenv("MAKEFLAGS", f" -j2 {FIFO}{named_pipe(tmp_path)}")
     began = time.monotonic()
