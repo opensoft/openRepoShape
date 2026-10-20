@@ -1574,26 +1574,89 @@ EMPTY_STORE = ("  [??] git's credential helper for github.com is `store`, and "
 
 SETUP_GIT_ASKED = "  Run `gh auth setup-git` now? Type yes to continue: "
 
+#: The `[??]` for a machine with no credential helper at all.
+NO_HELPER = ("  [??] git has no credential helper for github.com, so the "
+             "first push over HTTPS will fail. Fix it once: gh auth "
+             "setup-git\n")
+
+#: The `[??]` for helpers that are all `store` where git expands no `~` and
+#: `XDG_CONFIG_HOME` names no folder either, so `store` has no file (#1013).
+NO_STORE_FILE = ("  [??] git's credential helper for github.com is `store`, "
+                 "and with `HOME` not set git gives it no file to read, so "
+                 "the first push over HTTPS will fail. Fix it once: gh auth "
+                 "setup-git\n")
+
+
+class _RealGit(_Runs):
+    """`_Runs`, where a git argv no answer of its own matches is run by the
+    real git (`real`, the module's own `run`): gh is still answered, signed
+    in, and runs nowhere."""
+
+    def __init__(self, real, answers=None):
+        super().__init__(answers)
+        self.real = real
+
+    def __call__(self, argv, cwd=None, capture=False):
+        line = " ".join(argv)
+        if argv[0] == "git" and not any(marker in line
+                                        for marker in self.answers):
+            self.calls.append(list(argv))
+            return self.real(argv, cwd=cwd, capture=capture)
+        return super().__call__(argv, cwd, capture)
+
+
+def _a_real_git(monkeypatch, tmp_path, global_config="", system_config="",
+                answers=None):
+    """`setup-project.py` as a module on a machine where gh is signed in and
+    git is the real one (`_RealGit`, with `answers`), reading no config but
+    the test's own: these lines as its system and its global config, no
+    command scope, and no repository around the folder it runs in. `HOME`
+    and `XDG_CONFIG_HOME` are folders of the test's, so every file `store`
+    reads is the test's own. Nothing here makes a repository, so dropping
+    the session's command scope turns no maintenance on. The module and its
+    recorder."""
+    module = entry_point_module()
+    _no_terminal(monkeypatch, module)
+    monkeypatch.setattr(module.shutil, "which", _which("git", "gh"))
+    runs = _RealGit(module.run, answers)
+    monkeypatch.setattr(module, "run", runs)
+    for name, lines in (("GIT_CONFIG_SYSTEM", system_config),
+                        ("GIT_CONFIG_GLOBAL", global_config)):
+        config = tmp_path / (name.lower() + ".gitconfig")
+        config.write_text(lines, encoding="utf-8")
+        monkeypatch.setenv(name, str(config))
+    for name in ("GIT_CONFIG_NOSYSTEM", "GIT_CONFIG_COUNT",
+                 "GIT_CONFIG_PARAMETERS"):
+        monkeypatch.delenv(name, raising=False)
+    (tmp_path / "home").mkdir()
+    (tmp_path / "run").mkdir()
+    monkeypatch.setenv("HOME", str(tmp_path / "home"))
+    monkeypatch.setenv("XDG_CONFIG_HOME", str(tmp_path / "xdg"))
+    monkeypatch.setenv("GIT_CEILING_DIRECTORIES", str(tmp_path))
+    monkeypatch.chdir(tmp_path / "run")
+    return module, runs
+
+
+def _store_warning(tmp_path) -> str:
+    """`EMPTY_STORE` around the two files `store` alone reads on
+    `_a_real_git`'s machine."""
+    return EMPTY_STORE % ("%s or %s" % (
+        tmp_path / "home" / ".git-credentials",
+        tmp_path / "xdg" / "git" / "credentials"))
+
 
 def _a_credential_store(monkeypatch, tmp_path, machine_wide, scoped=""):
     """`setup-project.py` as a module on a machine where gh is signed in and
     git's two helper keys hold these lines, `{own}` in them the test's own
     folder: the module, its recorder, and the two files `store` alone reads.
-    `HOME` and `XDG_CONFIG_HOME` are folders of the test's, so every file
-    `store` reads is the test's own."""
+    Every other git argv is the real git's, on `_a_real_git`'s machine, so
+    each `~` is the one git expands (#1013)."""
     own = tmp_path.resolve().as_posix()
-    module = entry_point_module()
-    _no_terminal(monkeypatch, module)
-    monkeypatch.setattr(module.shutil, "which", _which("git", "gh"))
-    runs = _Runs({"github.com.helper": (0 if scoped else 1, scoped),
-                  "credential.helper": (0, machine_wide.format(own=own))})
-    monkeypatch.setattr(module, "run", runs)
-    home, config_home = tmp_path / "home", tmp_path / "xdg"
-    home.mkdir()
-    monkeypatch.setenv("HOME", str(home))
-    monkeypatch.setenv("XDG_CONFIG_HOME", str(config_home))
-    return (module, runs, home / ".git-credentials",
-            config_home / "git" / "credentials")
+    module, runs = _a_real_git(monkeypatch, tmp_path, answers={
+        "github.com.helper": (0 if scoped else 1, scoped),
+        "credential.helper": (0, machine_wide.format(own=own))})
+    return (module, runs, tmp_path / "home" / ".git-credentials",
+            tmp_path / "xdg" / "git" / "credentials")
 
 
 def test_a_key_holding_only_an_empty_line_is_no_credential_helper(
@@ -1775,12 +1838,13 @@ def test_a_credential_store_file_is_read_as_git_reads_it(tmp_path, line,
     assert read or not given, "a login git gives is read here as none"
 
 
-class _SetsUpGit(_Runs):
-    """`_Runs`, where `gh auth setup-git` writes gh's helper over the scoped
-    key as the real one does, or, where `writes` is False, writes nothing."""
+class _SetsUpGit(_RealGit):
+    """`recorder` again, where `gh auth setup-git` writes gh's helper over
+    the scoped key as the real one does, or, where `writes` is False, writes
+    nothing."""
 
-    def __init__(self, answers, writes):
-        super().__init__(answers)
+    def __init__(self, recorder, writes):
+        super().__init__(recorder.real, recorder.answers)
         self.writes = writes
 
     def __call__(self, argv, cwd=None, capture=False):
@@ -1798,13 +1862,254 @@ def test_an_empty_credential_store_is_asked_about_again_after_setup_git(
     where the command wrote nothing."""
     module, recorder, _, _ = _a_credential_store(monkeypatch, tmp_path,
                                                  "store\n")
-    runs = _SetsUpGit(recorder.answers, writes)
+    runs = _SetsUpGit(recorder, writes)
     monkeypatch.setattr(module, "run", runs)
     _answers(monkeypatch, module, "yes")
     assert module.preflight_checks(module.parse_args([], str(tmp_path)))
     assert ["gh", "auth", "setup-git"] in runs.calls
     assert ("[ok] git will ask gh for github.com credentials"
             in capsys.readouterr().out) is writes
+
+
+#: `store` in git's machine-wide key, as git's config holds it.
+STORE_HELPER = "[credential]\n\thelper = store\n"
+
+#: `url.<base>` rules as git's config holds them: every github.com url over
+#: ssh, `demoorg`'s alone, pushes alone, `DemoOrg`'s alone in capitals
+#: (`DEMOORG_IN_CAPITALS_OVER_SSH`), and every github.com url over HTTP
+#: (`EVERY_ORG_OVER_HTTP`).
+EVERY_ORG_OVER_SSH = ('[url "git@github.com:"]\n'
+                      "\tinsteadOf = https://github.com/\n")
+DEMOORG_OVER_SSH = ('[url "git@github.com:demoorg/"]\n'
+                    "\tinsteadOf = https://github.com/demoorg/\n")
+PUSHES_OVER_SSH = ('[url "git@github.com:"]\n'
+                   "\tpushInsteadOf = https://github.com/\n")
+DEMOORG_IN_CAPITALS_OVER_SSH = ('[url "git@github.com:DemoOrg/"]\n'
+                                "\tinsteadOf = https://github.com/DemoOrg/\n")
+EVERY_ORG_OVER_HTTP = ('[url "http://github.com/"]\n'
+                       "\tinsteadOf = https://github.com/\n")
+
+#: A rule in git's global config, the run's flags, and whether git still
+#: sends the run's github.com urls over HTTP or HTTPS, where it asks a
+#: credential helper (`git ls-remote --get-url`, measured, #1013).
+RULES = {
+    "no-rule": ("", [], True),
+    "every-org": (EVERY_ORG_OVER_SSH, [], False),
+    "every-org-and-an-org": (EVERY_ORG_OVER_SSH, ["--org", "demoorg"], False),
+    "this-org": (DEMOORG_OVER_SSH, ["--org", "demoorg"], False),
+    "another-org": (DEMOORG_OVER_SSH, ["--org", "other"], True),
+    "no-org-to-match": (DEMOORG_OVER_SSH, [], True),
+    "this-org-in-capitals": (DEMOORG_IN_CAPITALS_OVER_SSH,
+                             ["--org", "DemoOrg"], False),
+    "pushes-alone": (PUSHES_OVER_SSH, ["--org", "demoorg"], True),
+    "plain-http": (EVERY_ORG_OVER_HTTP, [], True),
+}
+
+
+@pytest.mark.parametrize("helper", ["none", "an-empty-store"])
+@pytest.mark.parametrize("case", RULES)
+def test_a_rule_sending_github_over_ssh_silences_both_warnings(
+        monkeypatch, capsys, tmp_path, case, helper):
+    """Where a `url.<base>.insteadOf` rule sends the run's github.com urls
+    over ssh, git logs in with an ssh key and asks no credential helper, so
+    neither `[??]` is true, and neither is said nor `gh auth setup-git`
+    offered (#1013): a rule for every organisation, and one for `--org`'s,
+    spelled as `--org` spells it. A rule for another organisation, one with
+    no `--org` to match, a `pushInsteadOf` rule alone, and a rule to
+    `http://`, over which git asks a helper too, leave both warnings as
+    they were, byte for byte. Real git, reading the test's config alone.
+    `--preflight` exits 0 either way."""
+    rule, flags, warned = RULES[case]
+    stored = STORE_HELPER if helper == "an-empty-store" else ""
+    module, _ = _a_real_git(monkeypatch, tmp_path, rule + stored)
+    asked = _answers(monkeypatch, module, "no")
+    assert module.preflight_only(
+        module.parse_args(["--preflight", *flags], str(tmp_path))) == 0
+    printed = capsys.readouterr().err
+    if not warned:
+        assert "credential helper" not in printed
+        assert asked == []
+        return
+    assert (_store_warning(tmp_path) if stored else NO_HELPER) in printed
+    assert asked == [SETUP_GIT_ASKED]
+
+
+#: A helper that prints a made-up login, as git's config holds it. The
+#: preflight never runs it: it asks no helper anything.
+MADE_UP_HELPER = ("!f() { echo username=tester; "
+                  "echo password=made-up-1013; }; f")
+
+
+def _a_url_helper(url: str) -> str:
+    """`MADE_UP_HELPER` under `credential.<url>.helper`, as git's config
+    holds it."""
+    return '[credential "%s"]\n\thelper = "%s"\n' % (url, MADE_UP_HELPER)
+
+
+#: Urls of a `credential.<url>.helper` beside `store` over no login, and
+#: whether the `[??]` is still said: git asks the first three's helper for
+#: a push to https://github.com, and the last two's for none (#1013).
+BESIDE_STORE = {
+    "https://github.com/": False,
+    "github.com": False,
+    "https://GitHub.com": False,
+    "https://gitlab.com/": True,
+    "http://github.com/": True,
+}
+
+
+@pytest.mark.parametrize("url", BESIDE_STORE)
+def test_a_helper_under_another_spelling_of_the_key_is_counted(
+        monkeypatch, capsys, tmp_path, url):
+    """`store` in `credential.helper` over no login, beside a helper under
+    `credential.<url>.helper`: git asks that helper too wherever its url
+    matches github.com's, the slash after it included, so the machine may
+    have a login and is left alone; a helper for another host or scheme is
+    not asked, and the `[??]` stands. Real git."""
+    module, _ = _a_real_git(monkeypatch, tmp_path,
+                            STORE_HELPER + _a_url_helper(url))
+    assert module.preflight_checks(module.parse_args([], str(tmp_path)))
+    printed = capsys.readouterr().err
+    if BESIDE_STORE[url]:
+        assert _store_warning(tmp_path) in printed
+    else:
+        assert "credential helper" not in printed
+
+
+#: Urls of a `credential.<url>.helper`, whether `_names_github` reads each
+#: as one git may ask for https://github.com, and whether git's own
+#: `credential fill` asks it (measured with git 2.43, #1013). The two
+#: differ only where this reads a url git does not: a path, a user, and a
+#: `*` git matches with no part of the host, so what it costs is silence.
+HELPER_URLS = [
+    ("https://github.com", True, True),
+    ("https://github.com/", True, True),
+    ("https://GitHub.com/", True, True),
+    ("HTTPS://github.com", True, True),
+    ("github.com", True, True),
+    ("https://github%2Ecom", True, True),
+    ("https://github.com:443", True, True),
+    ("https://github.com:0443", True, True),
+    ("https://*.com", True, True),
+    ("https://", True, True),
+    ("", True, True),
+    ("https://github.com/demoorg", True, False),
+    ("https://tester@github.com", True, False),
+    ("https://*", True, False),
+    ("*.com", True, False),
+    ("https://github.com:8443", False, False),
+    ("https://github.com:0", False, False),
+    ("https://github.com:000", False, False),
+    ("http://github.com", False, False),
+    ("ssh://github.com", False, False),
+    ("https://gitlab.com", False, False),
+    ("https://gist.github.com", False, False),
+    ("github", False, False),
+    ("https:", False, False),
+]
+
+
+@pytest.mark.parametrize("url, read, given", HELPER_URLS)
+def test_a_credential_helper_key_is_read_as_git_reads_it(
+        monkeypatch, tmp_path, url, read, given):
+    """Each url is read here as git reads it, `_credential_helpers` counts
+    its helper once where it is read, and git itself is asked with `git
+    credential fill`. That asks every helper git has, and on
+    `_a_real_git`'s machine the made-up one under this one key is the only
+    one: the system and global config are the test's, and nothing is in
+    command scope. With the prompt off and no askpass, git asks nobody
+    else."""
+    module, _ = _a_real_git(monkeypatch, tmp_path, _a_url_helper(url))
+    assert module._names_github(url) is read
+    assert module._credential_helpers().count(MADE_UP_HELPER) == int(read)
+    env = {name: value for name, value in os.environ.items()
+           if name not in ("GIT_ASKPASS", "SSH_ASKPASS")}
+    env["GIT_TERMINAL_PROMPT"] = "0"
+    answer = subprocess.run(
+        ["git", "credential", "fill"],
+        input="protocol=https\nhost=github.com\n\n", capture_output=True,
+        text=True, env=env, check=False)
+    assert ("password=made-up-1013" in answer.stdout) is given, (
+        answer.stderr)
+    assert read or not given, "a helper git asks is read here as none"
+
+
+@pytest.mark.parametrize("held", [None, MADE_UP_LOGIN])
+def test_a_store_in_the_system_config_is_read_where_git_reads_it(
+        monkeypatch, capsys, tmp_path, held):
+    """`store` in git's SYSTEM config, an empty home, and a global config
+    without it: the `[??]` over no login, and silence over one in
+    `~/.git-credentials`. Real git, so this row holds which scopes a helper
+    is read at, which the rows that answer the two keys themselves cannot
+    (#1013)."""
+    module, _ = _a_real_git(monkeypatch, tmp_path,
+                            system_config=STORE_HELPER)
+    if held is not None:
+        (tmp_path / "home" / ".git-credentials").write_text(
+            held, encoding="utf-8")
+    assert module.preflight_only(
+        module.parse_args(["--preflight"], str(tmp_path))) == 0
+    printed = capsys.readouterr().err
+    if held is None:
+        assert _store_warning(tmp_path) in printed
+    else:
+        assert "credential helper" not in printed
+
+
+@pytest.mark.parametrize("xdg", ["unset", "set"])
+def test_with_home_unset_the_store_warning_names_no_home_file(
+        monkeypatch, capsys, tmp_path, xdg):
+    """With `HOME` unset git expands no `~`, so its `store` reads no
+    `~/.git-credentials` and no `~/.config/git/credentials`, and the `[??]`
+    names neither, nor the account's home: only
+    `$XDG_CONFIG_HOME/git/credentials` where that is set, and where it is
+    not, that `store` has no file at all (#1013). Real git."""
+    module, _ = _a_real_git(monkeypatch, tmp_path, STORE_HELPER)
+    monkeypatch.delenv("HOME")
+    if xdg == "unset":
+        monkeypatch.delenv("XDG_CONFIG_HOME")
+    assert module.preflight_only(
+        module.parse_args(["--preflight"], str(tmp_path))) == 0
+    expected = (NO_STORE_FILE if xdg == "unset" else
+                EMPTY_STORE % (tmp_path / "xdg" / "git" / "credentials"))
+    assert expected in capsys.readouterr().err
+
+
+def test_a_url_git_gives_no_answer_for_keeps_the_warning(monkeypatch,
+                                                         capsys, tmp_path):
+    """Where `git ls-remote --get-url` fails, nothing says the run's urls
+    leave HTTPS, so the `[??]` is said as it was before #1013."""
+    module, runs, home_file, config_file = _a_credential_store(
+        monkeypatch, tmp_path, "store\n")
+    runs.answers["--get-url"] = (128, "")
+    assert module.preflight_checks(module.parse_args([], str(tmp_path)))
+    assert (EMPTY_STORE % ("%s or %s" % (home_file, config_file))
+            in capsys.readouterr().err)
+
+
+def test_an_empty_helper_under_a_url_of_its_own_is_no_helper(
+        monkeypatch, capsys, tmp_path):
+    """`[credential "https://github.com/"]` holding only `helper =`, the
+    empty line that resets git's list: git has no helper at all (`fill`
+    exits 128), and the machine is told so. Real git (#1013)."""
+    module, _ = _a_real_git(monkeypatch, tmp_path,
+                            '[credential "https://github.com/"]\n'
+                            "\thelper =\n")
+    assert module.preflight_checks(module.parse_args([], str(tmp_path)))
+    assert NO_HELPER in capsys.readouterr().err
+
+
+def test_a_home_git_will_not_expand_with_home_set_is_left_alone(
+        monkeypatch, capsys, tmp_path):
+    """git expands no `~` only where `HOME` is unset. Where its `config
+    --type=path` fails with `HOME` set (a git too old for `--type`, say),
+    the answer is one this cannot read, and `store`'s files are left alone,
+    as a file this cannot read is."""
+    module, runs, _, _ = _a_credential_store(monkeypatch, tmp_path,
+                                             "store\n")
+    runs.answers["--type=path"] = (129, "")
+    assert module.preflight_checks(module.parse_args([], str(tmp_path)))
+    assert "credential helper" not in capsys.readouterr().err
 
 
 # --- --preflight ------------------------------------------------------------
@@ -3517,7 +3822,12 @@ def test_step_four_reads_a_relative_variable_where_step_five_does(
     was set, and the chain step (5) refused as `chain-not-declared` passed
     step (4) as a descendant. On main step (4) ran in the checkout and
     agreed. The variable is the path from this checkout to the tree, which
-    leaves it by `..`."""
+    leaves it by `..`.
+
+    SETUP IS STARTED FROM ANOTHER FOLDER THAN THE CHECKOUT (#991, SHOULD-3
+    of RV949): with the two one folder, a step (4) that joined the
+    variable to the folder setup started in, and not to the standard's
+    checkout, passed this row."""
     clear_ambient_pin_sources(monkeypatch)
     project, chain, declares, verdict = RELATIVE_VARIABLE[case]
     first = declaring(tmp_path / "openXdox", "openYdox")
@@ -3537,7 +3847,7 @@ def test_step_four_reads_a_relative_variable_where_step_five_does(
                        "--into", str(tmp_path / "work"),
                        "--", "--pin", f"openXdox@{commit}",
                        "--referent-chain", chain, "--pin-source", str(first),
-                       "--dry-run",
+                       "--dry-run", cwd=tmp_path,
                        extra_env={"SHAPE_PIN_SOURCE_OPENYDOX": relative})
     heard = result.stdout + result.stderr
     assert not os.path.isabs(relative), relative
@@ -3552,22 +3862,26 @@ def test_step_four_reads_a_relative_variable_where_step_five_does(
     assert not (tmp_path / "remotes").exists()
 
 
-def test_only_a_pin_source_variable_that_names_a_path_is_joined():
+def test_only_a_pin_source_variable_that_names_a_path_is_joined(tmp_path):
     """`pin_sources_joined` joins a relative `SHAPE_PIN_SOURCE_<LINK>` to the
     standard's checkout and leaves an absolute one as it is. An empty one
     stays empty: neither step reads it, and joined it would name the
     checkout itself. Every other variable is handed on as it is, one whose
-    name only holds the prefix too."""
+    name only holds the prefix too. The checkout given is not the folder
+    this test runs in (#991, SHOULD-3 of RV949), so a join to the working
+    folder is told from a join to `shape_root`."""
     module = entry_point_module()
-    elsewhere = str(Path(REPO, os.pardir, "elsewhere").resolve())
+    shape_root = tmp_path / "standard"
+    assert shape_root.resolve() != Path.cwd().resolve()
+    elsewhere = str(Path(tmp_path, "elsewhere").resolve())
     relative = os.path.join(os.pardir, "yy")
     unjoined = {"SHAPE_PIN_SOURCE_OPENXDOX": elsewhere,
                 "SHAPE_PIN_SOURCE_OPENDOX": "",
                 "PYTHONIOENCODING": "utf-8:backslashreplace",
                 "NOT_SHAPE_PIN_SOURCE_OPENYDOX": relative}
-    assert module.pin_sources_joined(REPO, {
+    assert module.pin_sources_joined(shape_root, {
         "SHAPE_PIN_SOURCE_OPENYDOX": relative, **unjoined}) == {
-        "SHAPE_PIN_SOURCE_OPENYDOX": os.path.join(str(REPO), relative),
+        "SHAPE_PIN_SOURCE_OPENYDOX": os.path.join(str(shape_root), relative),
         **unjoined}
 
 

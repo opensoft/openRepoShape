@@ -82,6 +82,8 @@ PLAN_OK = b"\nplan ok\n"
 ADOPT_REFUSED = b"REFUSED adopt-unwritable-value: "
 PLAN_REFUSED = b"REFUSED plan-unwritable-value: "
 FINDING = b"FINDING plan-unwritable-value: "
+#: How `check` begins its one finding about a name-only `pins:` item (#901).
+PIN_UNRECORDED = b"FINDING plan-pin-unrecorded: "
 SOURCE_REFUSED = b"REFUSED source-unresolvable: "
 
 needs_filter_repo = pytest.mark.skipif(
@@ -379,7 +381,9 @@ def edited_plan(base: Path, answered: tuple[Path, str], line: str,
 
 #: `(id, key, value, what the FINDING calls it)`. Each value is spelled in
 #: the plan by `double_quoted`, as the plan writer escapes it and as a person
-#: editing the plan would.
+#: editing the plan would. A name-only `pins:` item is #273's to name, as
+#: `plan-pin-unrecorded`, and since #901 that is its one finding: #255 asks
+#: only the pins `execute` writes (`PIN_UNRECORDED`).
 EDITS = [
     ("elected_by-surrogate", "elected_by", "T\ud800", "elected_by"),
     ("elected_by-byte", "elected_by", "T\udce9", "elected_by"),
@@ -392,7 +396,7 @@ EDITS = [
     ("reference-surrogate", "reference", "x\ud800", "reference"),
     ("reference-nul", "reference", "x\x00", "reference"),
     ("visibility-surrogate", "visibility", "priv\ud800ate", "visibility"),
-    ("pins-surrogate", "pins", "openX\ud800", "a `pins:` item"),
+    ("pins-surrogate", "pins", "openX\ud800", "`pins:` entry 1,"),
     ("follow_ups-surrogate", "follow_ups", "fix x\ud800",
      "a `follow_ups:` item"),
     ("elected_by-override", "elected_by", "\u202eevil", "elected_by"),
@@ -431,6 +435,9 @@ def test_check_finds_and_execute_refuses_a_hand_edited_value(
     found, refused = runs["check"], runs["execute"]
     finding = FINDING + f"{what} is {value!r}, which `execute` writes " \
         "into ".encode()
+    if key == "pins":
+        finding = PIN_UNRECORDED + f"{what} {value!r}, is a name ".encode()
+        assert FINDING not in found.stderr, said(found)
     assert found.returncode == 1, said(found)
     assert finding in found.stderr, said(found)
     assert refused.returncode == 2, said(refused)

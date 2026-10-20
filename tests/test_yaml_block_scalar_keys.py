@@ -111,12 +111,26 @@ PLAIN_TWIN_SPELLINGS = [
 ]
 
 
-@pytest.mark.parametrize("header", ["|", ">", "|-", ">+", "|2"])
+@pytest.mark.parametrize("header", ["|", ">", "|-", ">+", "|+", ">-"])
 @pytest.mark.parametrize("spelled", PLAIN_TWIN_SPELLINGS)
 def test_a_block_key_reads_as_its_plain_twin(spelled, header):
     (key,) = parse_yaml(f"{spelled}: text\n")
     assert parse_yaml(f"{spelled}: {header}\n  text\n") == {
         key: "text" if header.endswith("-") else "text\n"}
+
+
+@pytest.mark.parametrize("header", ["|2", ">-2", "|2+"])
+@pytest.mark.parametrize("spelled", PLAIN_TWIN_SPELLINGS)
+def test_a_block_key_over_an_indentation_digit_is_refused_by_its_line(
+        spelled, header):
+    """`|2` was one of the headers above, read with its digit ignored, which
+    over `  text` is what YAML reads. The digit is refused now (#1004),
+    whatever the key, by the header's line."""
+    with pytest.raises(YamlError) as caught:
+        parse_yaml(f"{spelled}: {header}\n  text\n")
+    assert str(caught.value) == (
+        "line 1: a block scalar's indentation indicator is not supported: "
+        f"{header!r}")
 
 
 #: Above the first 0x300 code points, every one of which is checked: a
