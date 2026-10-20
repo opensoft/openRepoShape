@@ -8148,14 +8148,19 @@ def empty_clause(legs: list) -> str:
     leg that holds no submodule, or "" where none does (#655, #914). SAID, as
     the one the record answers is: a reader who knows the policy asks about
     every `.gitmodules` is owed why this one was not asked. AND HOW TO REMOVE
-    IT (#914), since no record can answer it and nothing needs it."""
+    IT (#914), since no record can answer it and nothing needs it. `git rm
+    -f`, because a plain `git rm` refuses the file where it is staged and not
+    committed (what a plain `git rm` of a leg's only submodule leaves) or
+    changed on disk and not staged (measured, git 2.43); `-f` takes it out of
+    the index and the disk in each state, and discards no section, since the
+    clause is printed only where the disk copy holds none."""
     empty = [path for leg in legs for path in leg.get(EMPTY_GITMODULES) or []]
     if not empty:
         return ""
     return (f"the policy asks nothing of {len(empty)} `.gitmodules` that "
             "hold(s) no section and so register(s) no submodule, in a leg "
             f"that holds none (#655, #914): {', '.join(empty)}; nothing "
-            "needs one, and `git rm .gitmodules` in its leg removes it")
+            "needs one, and `git rm -f .gitmodules` in its leg removes it")
 
 
 def unregistered_clause(legs: list) -> str:
@@ -8170,6 +8175,13 @@ def unregistered_clause(legs: list) -> str:
     git 2.43). Neither record can say where its repository is, and `git
     submodule add` refuses a path the index holds: the person writes its
     section, or removes the gitlink.
+
+    THE REMOVAL TYPED AS PRINTED WORKS (measured, git 2.43). `git rm
+    --cached` dies with `please stage your changes to .gitmodules` where the
+    leg's tracked `.gitmodules` has an edit that is not staged, so the clause
+    says to stage it first; and it names the path as the leg spells it,
+    because the row's own `code/vendor/lib` is the project's spelling, which
+    the leg does not know.
     """
     held = [path for leg in legs
             for path in leg.get(UNREGISTERED_SUBMODULES) or []]
@@ -8179,8 +8191,9 @@ def unregistered_clause(legs: list) -> str:
             "leg that holds no section, so nothing registers them and a "
             "recursive clone of the leg leaves each empty (#914): "
             f"{first_three(held)}; give each a section with its `path` and "
-            "`url` in that `.gitmodules`, or remove its gitlink with `git rm "
-            "--cached <path>` in its leg")
+            "`url` in that `.gitmodules`, or, once that `.gitmodules` is "
+            "staged (`git add .gitmodules`), remove its gitlink with `git rm "
+            "--cached <its path in the leg>` in its leg")
 
 
 def slashed_clause(legs: list) -> str:

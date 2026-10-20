@@ -272,7 +272,7 @@ GITMODULES_BODIES = [
 EMPTY_CLAUSE = ("the policy asks nothing of 1 `.gitmodules` that hold(s) no "
                 "section and so register(s) no submodule, in a leg that "
                 "holds none (#655, #914): code/.gitmodules; nothing needs "
-                "one, and `git rm .gitmodules` in its leg removes it")
+                "one, and `git rm -f .gitmodules` in its leg removes it")
 #: A submodule the code leg holds, which no `.gitmodules` section registers.
 GITLINK_PATH = "vendor/lib"
 #: What the row says of it beside a `.gitmodules` that holds no section.
@@ -280,8 +280,13 @@ UNREGISTERED_CLAUSE = (
     "1 submodule(s) sit beside a `.gitmodules` of their leg that holds no "
     "section, so nothing registers them and a recursive clone of the leg "
     "leaves each empty (#914): code/vendor/lib; give each a section with "
-    "its `path` and `url` in that `.gitmodules`, or remove its gitlink "
-    "with `git rm --cached <path>` in its leg")
+    "its `path` and `url` in that `.gitmodules`, or, once that "
+    "`.gitmodules` is staged (`git add .gitmodules`), remove its gitlink "
+    "with `git rm --cached <its path in the leg>` in its leg")
+#: Where the clause says the gitlink's path as its leg spells it, which is
+#: not the row's own `code/vendor/lib`: typed in the leg, that path matches
+#: nothing and `git rm --cached` exits 128.
+LEG_PATH = "<its path in the leg>"
 
 
 def stage_bytes(leg: Path, name: str, body: bytes) -> None:
@@ -289,6 +294,26 @@ def stage_bytes(leg: Path, name: str, body: bytes) -> None:
     are what is under test, so no text layer may add or drop one."""
     (leg / name).write_bytes(body)
     git("add", "--", name, cwd=leg)
+
+
+def printed_git(clause: str) -> list:
+    """Each `git ...` command a clause prints between backticks, as its
+    arguments after `git`, in the order it prints them. The clause's
+    `<its path in the leg>` is typed as the gitlink's own path there."""
+    return [command.replace(LEG_PATH, GITLINK_PATH).split()[1:]
+            for command in clause.split("`")[1::2]
+            if command.startswith("git ")]
+
+
+def typed_in(leg: Path, clause: str) -> None:
+    """Type in `leg`, in order, each command `clause` prints, as the person
+    it advises would, and assert that each exits 0: what a row prints is
+    held to what git does with it (#914), not to the row's own spelling."""
+    commands = printed_git(clause)
+    assert commands, clause
+    for args in commands:
+        done = git(*args, cwd=leg, check=False)
+        assert done.returncode == 0, (args, done.returncode, done.stderr)
 
 
 def git_lists_nothing(leg: Path) -> bool:
@@ -324,22 +349,46 @@ def test_an_empty_gitmodules_is_asked_nothing(standard, project, body,
         None if asked else ["code/.gitmodules"]), leg_entry(row, "code")
     assert (EMPTY_CLAUSE in row["reason"]) != asked, row["reason"]
     assert "unregistered_submodules" not in leg_entry(row, "code")
+    if not asked:
+        # THE ADVICE TYPED AS PRINTED: the file here is staged and not
+        # committed, the state a plain `git rm` refuses (rc 1, `has changes
+        # staged in the index`), and `-f` leaves it in no index.
+        typed_in(leg, EMPTY_CLAUSE)
+        assert git("ls-files", "--", GITMODULES, cwd=leg).stdout == ""
 
 
-@pytest.mark.parametrize("body, recorded", [
-    (b"", False), (b"\n", False), (b"# none\n", False), (b"", True),
-], ids=["no-byte", "a-blank-line", "a-comment", "no-byte-and-recorded"])
+#: What a leg's `.gitmodules` held before its section was emptied on disk.
+SECTIONED = (f'[submodule "{GITLINK_PATH}"]\n\tpath = {GITLINK_PATH}\n'
+             "\turl = https://example.invalid/lib.git\n").encode("utf-8")
+
+
+@pytest.mark.parametrize("body, recorded, unstaged", [
+    (b"", False, False), (b"\n", False, False), (b"# none\n", False, False),
+    (b"", True, False), (b"", False, True),
+], ids=["no-byte", "a-blank-line", "a-comment", "no-byte-and-recorded",
+        "no-byte-and-an-unstaged-edit"])
 def test_a_sectionless_gitmodules_beside_a_submodule_is_said(
-        standard, project, body, recorded):
+        standard, project, body, recorded, unstaged):
     """#914's L1-84, its second case. Beside a submodule of its leg, a
     `.gitmodules` that holds no section is no emptied file: it registers
     none of the leg's submodules, and on main it was set aside as if it
     were, with no row naming the submodule nothing registers. Now it stays
     the question it was -- asked, or answered where `submodules:` places
     every submodule of the leg -- and the row names the submodule with what
-    to do: a section for it, or its gitlink removed."""
+    to do: a section for it, or its gitlink removed.
+
+    THE REMOVAL TYPED AS PRINTED, in each state. `unstaged` is a tracked
+    `.gitmodules` whose section was emptied on disk and not staged: it reads
+    as holding none, so the row names the gitlink beside it, and `git rm
+    --cached` there dies (rc 128, `please stage your changes to
+    .gitmodules`) before it looks at the gitlink. The row says to stage the
+    file first, and the two commands it prints, typed in order and with the
+    path as the leg spells it, exit 0 and leave the gitlink out of the
+    index."""
     leg = project / "code"
-    stage_bytes(leg, GITMODULES, body)
+    stage_bytes(leg, GITMODULES, SECTIONED if unstaged else body)
+    if unstaged:
+        (leg / GITMODULES).write_bytes(body)
     stage_gitlink(leg, GITLINK_PATH)
     if recorded:
         record_submodules(project, (GITLINK_PATH, "code"))
@@ -355,6 +404,14 @@ def test_a_sectionless_gitmodules_beside_a_submodule_is_said(
     assert code["unregistered_submodules"] == ["code/vendor/lib"], code
     assert UNREGISTERED_CLAUSE in row["reason"], row["reason"]
     assert "the policy asks nothing of" not in row["reason"], row["reason"]
+    if unstaged:
+        alone = git("rm", "--cached", "--", GITLINK_PATH, cwd=leg,
+                    check=False)
+        assert (alone.returncode, "stage your changes to .gitmodules" in (
+            alone.stderr)) == (128, True), alone.stderr
+    typed_in(leg, UNREGISTERED_CLAUSE)
+    assert git("ls-files", "--stage", "--", GITLINK_PATH,
+               cwd=leg).stdout == ""
 
 
 def test_a_gitmodules_that_registers_its_submodule_names_none(standard,
