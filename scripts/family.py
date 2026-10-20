@@ -8689,11 +8689,12 @@ def _origin_fetch_refspecs(member: Path) -> list[str]:
     """The refspecs `bump`'s fetch of `origin` carries (#686): every branch of
     `origin`, then what the mount's own `remote.origin.fetch` keeps under
     `refs/remotes/origin/`, and none of what it excludes, nor one whose
-    source can name a tag, nor what gives another namespace the names the
-    branches take there (#905, #1009). Which of the mount's are carried is
-    `shape_materialize`'s `origin_fetch_refspecs`, the one rule
-    `bump-leg.py` asks of a leg's fetch too (#1037); its docstring says
-    which clause leaves out what, and why.
+    source can name a tag, nor one onto the names the branches take there
+    (#905, #1009), nor one that puts a branch under another name, which
+    failed this fetch where `git fetch origin` works (#1066). Which of the
+    mount's are carried is `shape_materialize`'s `origin_fetch_refspecs`,
+    the one rule `bump-leg.py` asks of a leg's fetch too (#1037); its
+    docstring says which clause leaves out what, and why.
 
     WHY THE MOUNT'S OWN ARE ADDED. `--prune` deletes every ref under
     `refs/remotes/origin/` that no refspec on the command line maps a ref of
@@ -8725,7 +8726,12 @@ def _origin_fetch_refspecs(member: Path) -> list[str]:
     A mount whose refspec git cannot satisfy, one that names a ref `origin`
     lacks or two that map to one destination, fails this fetch as it fails
     the person's own `git fetch origin`, and `bump` says so as it says any
-    failed fetch.
+    failed fetch. So does one carried into a folder of its own where a
+    branch's name falls in that folder (pull requests in `origin/pr/`
+    beside a branch `pr/7`), which the person's own fetch fails too
+    wherever the mount has the branches' glob, as `add` leaves it, and
+    which this fetch alone fails where it has not. A branch put under
+    another name failed this fetch alone until #1066, and is left out now.
 
     READ BY A LISTING, `git config --list -z`, not `--get-all`: the dry
     run's test holds every `git config` it runs to a listing, the one form
