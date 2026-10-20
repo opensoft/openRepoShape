@@ -433,8 +433,14 @@ def test_the_note_goes_by_both_answers(monkeypatch, visibility, plan, said):
         assert note is None
     else:
         assert note.startswith(first[said]), note
-    if said == "hint":
+    if said == "hint" and visibility == "private":
         assert f"{root} is private, so org-level" in note, note
+    if said == "hint" and visibility == "internal":
+        # Not called private (#994): `FREE_PLAN_HINT` reads "{what} private,
+        # so", and `what` says the root is internal.
+        assert (f"{root} is internal, which this hint treats as private, so "
+                "org-level") in note, note
+        assert f"{root} is private" not in note, note
     if said == "plan":
         assert note == unread_plan(root)[0], note
     if said == "internal":

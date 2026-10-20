@@ -12637,7 +12637,10 @@ def _free_plan_hint_by_the_root(plan: Plan, root: str) -> None:
     private root on an organisation whose plan the token could not see was
     told nothing. `free_plan_secrets_note`, which the scaffold and
     `family.py` ask too, and where `ROOT_VISIBILITY_UNREAD` now lives, says
-    `FREE_PLAN_UNREAD` there; the words adopt printed before are unchanged.
+    `FREE_PLAN_UNREAD` there. Since #969 (#913), an INTERNAL root whose plan
+    is unread is told `FREE_PLAN_UNREAD_INTERNAL` instead, which says the
+    plan is not what the hint hangs on; every other case is in the words
+    adopt printed before.
     """
     note = free_plan_secrets_note(plan.get("org", ""), root,
                                   _root_visibility(root))

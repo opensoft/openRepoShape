@@ -52,6 +52,10 @@ LEG_NOTE = (f"NOTE {SPEC_REPO} and {CODE_REPO} are private: give {ROOT} a "
 #: " private, so": the root now, the two legs on main.
 HINT = f"NOTE {ORG} is on the GitHub FREE plan"
 ROOT_SUBJECT = f"{ROOT} is private, so org-level"
+#: The same for an INTERNAL root, which the hint no longer calls private
+#: (#994): `FREE_PLAN_HINT`'s "{what} private, so", with `what` saying so.
+INTERNAL_ROOT_SUBJECT = (f"{ROOT} is internal, which this hint treats as "
+                         "private, so org-level")
 LEG_SUBJECT = f"{SPEC_REPO} and {CODE_REPO} are private, so"
 #: What a run that could not read the root's visibility says instead.
 UNREAD = (f"NOTE this run could not read {ROOT}'s visibility from GitHub, "
@@ -122,22 +126,27 @@ def test_a_public_root_over_private_legs_gets_the_note_and_no_hint(
 
 
 @WINDOWS_SKIP
-@pytest.mark.parametrize("seen", ["PRIVATE", "INTERNAL"])
+@pytest.mark.parametrize("seen, subject, never", [
+    ("PRIVATE", ROOT_SUBJECT, INTERNAL_ROOT_SUBJECT),
+    ("INTERNAL", INTERNAL_ROOT_SUBJECT, ROOT_SUBJECT),
+], ids=["PRIVATE", "INTERNAL"])
 def test_a_closed_root_gets_the_hint_naming_the_root(
-        adopter, monkeypatch, capsys, tmp_path, seen):
+        adopter, monkeypatch, capsys, tmp_path, seen, subject, never):
     """A private or internal root on the Free plan gets the hint, once, with
     the root as the repository that is private and the one its `gh secret
     set` lines name. On main the hint named the legs as the reason.
 
-    `FREE_PLAN_HINT`'s word is "private" for an internal root too, as it is
-    in the scaffold's: an internal repository belongs to an enterprise's
-    organisation, whose plan is not `free`, so outside a stub the two never
-    meet. The row is here for the gate, which counts internal as closed."""
+    An internal root is not called private (#994): an internal repository
+    belongs to an enterprise's organisation, whose plan is not `free`, so
+    outside a stub the two never meet, but where a plan read as `free` does
+    meet one, the hint says the root is internal, which it treats as
+    private. The row is here for the gate, which counts internal as closed."""
     out, calls = create_the_legs(adopter, monkeypatch, capsys, tmp_path,
                                  {NORTHWIND: seen})
     assert LEG_NOTE in out, out
     assert HINT in out, out
-    assert ROOT_SUBJECT in out, out
+    assert subject in out, out
+    assert never not in out, out
     assert LEG_SUBJECT not in out, out
     assert f"--repo {ROOT} --body" in out, out
     assert out.count("resolve to EMPTY") == 1, out
