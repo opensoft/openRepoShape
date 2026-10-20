@@ -17,8 +17,12 @@ WHAT IT DOES, in order:
       called this) first, then a `SHAPE_LEGS_TOKEN` PAT, then nothing at all.
       Whichever it finds is used ONLY through a `git -c
       url.<...>.insteadOf=<...>` rewrite for the duration of the one command,
-      covering both the HTTPS and SSH spellings a submodule URL may carry. It
-      is never written into `.git/config`, never persisted, never printed.
+      covering both the HTTPS and SSH spellings a submodule URL may carry,
+      and of the two fetches made again where that command dies (below). It
+      is never written into `.git/config`, never persisted, never printed,
+      and never traced: each of those commands runs with every `GIT_TRACE*`
+      variable taken out of its environment and trace2 turned off
+      (`untraced`, #996), since a trace writes a command's arguments.
 
       With no credential this is a plain `git submodule update --init
       --recursive`, exactly as it was for a family whose members are public.
@@ -49,21 +53,22 @@ WHAT IT DOES, in order:
         found` there said `ok`;
       - at a member whose store still lacks the commit this holder
         records for it where git's fetch there reached the member's
-        remote, which git's own trace of the run says, by the fetch's
-        exit code (`fetched_in`): its `not our ref` said `ok` too. A
-        fetch git could not make, as for want of a credential, leaves
-        the store as short, so the store alone tells nothing.
+        remote, by the fetch's exit code: git's own trace of the run
+        says it (`fetched_in`), or, with `SHAPE_LEGS_TOKEN` or
+        `SHAPE_LEGS_APP_TOKEN` set, whose rewrite a trace would write,
+        so that git's update is never traced, the two fetches git's
+        update makes there, made again in this process, untraced, say it
+        (`refetched`, #996): its `not our ref` said `ok` too, and with a
+        token set it still did, with the advice to set the token that
+        was set (lane 5's SHOULD 4 on #954). A fetch git could not make,
+        as for want of a credential, leaves the store as short, so the
+        store alone tells nothing.
       A leg in a member is asked as a member is, and a gitlink git's
       update passes without a look, its `update` `none` or the gitlink
       inactive, is passed (lane 5's SHOULD 1 on #954). Where neither
       tells, an exit 128 is read as before, the advice and `ok` where no
       row is left not checked out but for want of a credential, and the
-      run names only where git's init in this holder stopped. A run with
-      `SHAPE_LEGS_TOKEN` or `SHAPE_LEGS_APP_TOKEN` set is never traced,
-      since the trace would write that token, so the second is told only
-      where neither is set; with one set, B4 still gives the advice to
-      set the token that is set, and `ok` (lane 1's SHOULD 4 on #889,
-      lane 5's SHOULD 4 on #954, a known limit).
+      run names only where git's init in this holder stopped.
 
       Where git's update ends on a signal, read from its exit code alone,
       `128 + N` where a git it ran died of signal N and `-N` where it was
@@ -238,6 +243,19 @@ UPDATE_KILLED = "UPDATE KILLED"
 #: use, a directory, so each git it starts writes its events to a file of
 #: its own there (`fetched_in`, #892).
 TRACE_ENV = "GIT_TRACE2_EVENT"
+#: How the name of each variable that asks git for a trace begins
+#: (`GIT_TRACE`, `GIT_TRACE2_EVENT`, `GIT_TRACE_CURL` and the rest): each is
+#: taken out of the environment of a git given the token (`untraced`, #996).
+TRACE_PREFIX = "GIT_TRACE"
+#: trace2's three targets, each set to `0` for a git given the token: git
+#: reads a target the system or the global config names (`trace2.
+#: eventTarget`) where its variable is absent or empty, and `0` turns it
+#: off (`untraced`, #996).
+TRACE2_OFF = ("GIT_TRACE2", "GIT_TRACE2_EVENT", "GIT_TRACE2_PERF")
+#: What `git submodule` sets to `0` for every git it starts, so a url from
+#: a `.gitmodules` is given no transport git gives only a person's own
+#: (`user`); the fetches made again are given it too (`refetched`, #996).
+FROM_USER_ENV = "GIT_PROTOCOL_FROM_USER"
 #: The whys a `.gitmodules` git read only up to a line it cannot parse, or
 #: up to a key with no value it stops at, may be the cause of, since what
 #: it did not read is past that line (`Gitmodules.cut`, #856).
@@ -405,7 +423,10 @@ def fetch_members(root: Path, rows: list[dict]) -> list[str]:
     where it died past this holder's own records, in a member's own
     index or at a member's commit no fetch brought (`stopped_below`,
     #892), the one failure line is for the gitlink git stopped at, and
-    its line says the update stopped there.
+    its line says the update stopped there. Whether a fetch there reached
+    its remote is git's own trace's answer, or, where a token is in use
+    and git's update was not traced, that of the two fetches made again
+    with the token's rewrite (`fetch_reached`, #996).
 
     Returns a failure line for each of `rows` whose member it leaves not
     checked out where no credential would check it out (`unfetchable`), for
@@ -417,12 +438,12 @@ def fetch_members(root: Path, rows: list[dict]) -> list[str]:
     row's mount cannot be asked about, after git's own words (`unfetched`,
     #430)."""
     source, token = credential()
-    args = ["git"]
+    rewrite: list[str] = []
     if token:
         for target in REWRITE_TARGETS:
-            args += ["-c", f"url.https://x-access-token:{token}@github.com/"
-                           f".insteadOf={target}"]
-    args += ["submodule", "update", "--init", "--recursive"]
+            rewrite += ["-c", f"url.https://x-access-token:{token}@github.com/"
+                              f".insteadOf={target}"]
+    args = ["git", *rewrite, "submodule", "update", "--init", "--recursive"]
     print(f"  credential source: {source}")
     sys.stdout.flush()
     proc, fetched = run_update(args, root, traced=not token)
@@ -430,7 +451,7 @@ def fetch_members(root: Path, rows: list[dict]) -> list[str]:
     whole = updated_none(stopper, modules)
     signum = ended_on(proc.returncode)
     below = (None if left or whole or proc.returncode != GIT_DIED
-             else stopped_below(root, fetched))
+             else stopped_below(root, fetch_reached(fetched, rewrite)))
     if proc.returncode != 0:
         fetch_incomplete(proc, source, token,
                          credential_advice(bool(left), stopper, modules,
@@ -473,7 +494,11 @@ def run_update(args: list[str], root: Path, traced: bool
     (`CREDENTIAL_ENV`): trace2 writes each command's arguments, and the
     rewrite that carries that token is one, as is the url a remote helper
     is given with it, which git 2.43 writes unredacted (2.47.1 redacts the
-    url, not the argument). A credential the person's own git config gives,
+    url, not the argument). Where `traced` says no, git's update runs in
+    `untraced()`'s environment, so no trace the person asked for writes
+    that token either: with `GIT_TRACE2_EVENT` set in this run's own
+    environment, git wrote the rewrite into that file, the token in it
+    (#996). A credential the person's own git config gives,
     a url rewrite in a config file or in `GIT_CONFIG_COUNT`, is read by the
     gits the update starts and can reach the trace files too (lane 5's
     NIT 1 on #954). The trace is a directory of the run's own, made with
@@ -487,7 +512,8 @@ def run_update(args: list[str], root: Path, traced: bool
             trace = Path(tempfile.mkdtemp(prefix="bootstrap-trace-"))
         except OSError:
             trace = None
-    env = None if trace is None else {**os.environ, TRACE_ENV: str(trace)}
+    env = (untraced() if not traced else None if trace is None
+           else {**os.environ, TRACE_ENV: str(trace)})
     try:
         proc = started(args, root, env)
         return proc, None if trace is None else fetched_in(trace)
@@ -575,6 +601,80 @@ def same_place(path: str | Path) -> str:
     """`path` as one spelling for one directory: its real path, in the
     case the disk compares names in where it folds case."""
     return os.path.normcase(os.path.realpath(path))
+
+
+#: How the walk asks, of a checkout whose store lacks the commit recorded
+#: for it and that commit, whether a fetch there reached its remote and
+#: did not bring it (B4, `entered`): `fetch_reached` makes one.
+Reached = Callable[[Path, str], bool]
+
+
+def fetch_reached(fetched: frozenset[str] | None, rewrite: list[str]
+                  ) -> Reached:
+    """How the walk asks whether a fetch git's update made in a checkout
+    reached its remote (`entered`). Where `rewrite`, the token's `-c`, is
+    given, git's update was not traced, and the two fetches it makes there
+    are made again (`refetched`, #996); else the trace answers, by whether
+    `fetched` holds that checkout's work tree (`fetched_in`, #892), and
+    no fetch reached any remote where the run was not traced (`fetched`
+    None)."""
+    if rewrite:
+        return lambda checkout, commit: refetched(checkout, commit, rewrite)
+    return lambda checkout, commit: (fetched is not None
+                                     and same_place(checkout) in fetched)
+
+
+def refetched(checkout: Path, commit: str, rewrite: list[str]) -> bool:
+    """Whether a fetch in `checkout` reaches its remote and leaves its
+    store without `commit` (#996): the two fetches git's update makes
+    there (`run_update_procedure` in git 2.43's submodule--helper.c),
+    made again in this process, since a run with a token in use is not
+    traced (`run_update`). `git fetch origin`, then, where the store still
+    lacks `commit`, `git fetch origin <commit>`, each with `rewrite`, the
+    token's `-c`, in its argv, as git's update was given it, and in
+    `untraced()`'s environment, so neither writes the token anywhere; what
+    they print is neither read nor shown. Each runs with
+    `GIT_PROTOCOL_FROM_USER=0`, as `git submodule` runs every git it
+    starts, so a url a member's config took from a `.gitmodules` is given
+    only the transports git's update gives it: a plain fetch took the
+    `file` transport, which git's update refused (`protocol.file.allow`
+    is `user`), and brought a commit git's update could not (measured,
+    git 2.43.0).
+
+    TOLD BY THE EXIT CODE AND THE STORE, never git's words: B4 where the
+    first exits 0, so reached the remote, and the store still lacks
+    `commit` after the second. A first that fails, as where the token
+    does not reach that remote, is the credential's, as git's own was;
+    and where either brings the commit, git's update did not die for want
+    of it as far as this tells, so nothing is said. Asked only of a
+    checkout the walk reaches whose store lacks its commit after git's
+    update exited 128 with a token in use, where the walk ends, so it
+    costs two fetches at most."""
+    env = {**untraced(), FROM_USER_ENV: "0"}
+    first = subprocess.run(["git", *rewrite, "fetch", "origin"],
+                           cwd=str(checkout), capture_output=True,
+                           check=False, env=env)
+    if first.returncode != 0 or commit_held(checkout, commit):
+        return False
+    subprocess.run(["git", *rewrite, "fetch", "origin", commit],
+                   cwd=str(checkout), capture_output=True, check=False,
+                   env=env)
+    return not commit_held(checkout, commit)
+
+
+def untraced() -> dict[str, str]:
+    """This run's environment for a git given the token in its argv
+    (#996): every variable whose name begins `GIT_TRACE` (`TRACE_PREFIX`)
+    taken out, which on Windows `os.environ` spells in upper case
+    whatever case it was set in, and trace2's targets set to `0`
+    (`TRACE2_OFF`), which turns off one the system or the global config
+    names too. A trace writes a command's arguments, the token's rewrite
+    among them, and the url a remote helper is given, the token in it, to
+    a file or a socket."""
+    env = {name: value for name, value in os.environ.items()
+           if not name.startswith(TRACE_PREFIX)}
+    env.update(dict.fromkeys(TRACE2_OFF, "0"))
+    return env
 
 
 def unfetched(root: Path, rows: list[dict],
@@ -1375,8 +1475,7 @@ class Below(NamedTuple):
 UNTOLD = Below("", ())
 
 
-def stopped_below(root: Path, fetched: frozenset[str] | None
-                  ) -> Below | None:
+def stopped_below(root: Path, reached: Reached) -> Below | None:
     """Where git's update, which died (`GIT_DIED`) where `unfetchable`
     left no row and nothing in this holder's own records stopped it, died
     past them (#892), or None where that is not told.
@@ -1397,14 +1496,15 @@ def stopped_below(root: Path, fetched: frozenset[str] | None
     - one whose `.git` the operating system will not `stat`, or that git
       cannot be run in, is untold (`checkout_stop`, lane 5's SHOULD 2);
     - one whose store lacks its recorded commit (`commit_held`) is the
-      stop where a fetch git made there reached the remote (`fetched`
-      holds its work tree, `fetched_in`), and untold where none did, as
-      for want of a credential, or where the run was not traced
-      (`fetched` None). Git asks whether a ref reaches the commit
-      (`is_tip_reachable`) before it fetches, but it dies there only
-      where its fetch of the commit fails, and a fetch of a commit the
-      store holds is answered from the store (measured, git 2.43.0: exit
-      0), so a commit held and reached by no ref is never the stop;
+      stop where a fetch git made there reached the remote (`reached`,
+      `fetch_reached`: git's own trace, `fetched_in`, or, with a token in
+      use, the two fetches made again, `refetched`, #996), and untold
+      where none did, as for want of a credential, or where the run was
+      not traced and no token was in use. Git asks whether a ref reaches
+      the commit (`is_tip_reachable`) before it fetches, but it dies there
+      only where its fetch of the commit fails, and a fetch of a commit
+      the store holds is answered from the store (measured, git 2.43.0:
+      exit 0), so a commit held and reached by no ref is never the stop;
     - one at another commit than the one recorded, which git did not check
       out there, is untold, nothing in it asked: its `git checkout` there
       refused to overwrite a change, exit 1, which git's update passes, or
@@ -1420,11 +1520,11 @@ def stopped_below(root: Path, fetched: frozenset[str] | None
       other than whole, a merge leaving it unmerged, a value git dies on,
       a line it cannot parse, it is untold: git stops there other than at
       a gitlink with no url."""
-    found = walked(root, fetched, ())
+    found = walked(root, reached, ())
     return found if found is not None and found.path else None
 
 
-def walked(root: Path, fetched: frozenset[str] | None,
+def walked(root: Path, reached: Reached,
            owners: tuple[str, ...]) -> Below | None:
     """`stopped_below` asked of the checkout `root`, which `owners` lead
     to from this holder (none for this holder, whose own records
@@ -1443,7 +1543,7 @@ def walked(root: Path, fetched: frozenset[str] | None,
         if not updated_there(root, modules, config, path):
             continue
         found = checkout_stop(root / path, prefix + path, commit, owners,
-                              fetched)
+                              reached)
         if found is not None:
             return found
     return None
@@ -1477,7 +1577,7 @@ def updated_there(root: Path, modules: Gitmodules,
 
 def checkout_stop(checkout: Path, where: str, commit: str,
                   owners: tuple[str, ...],
-                  fetched: frozenset[str] | None) -> Below | None:
+                  reached: Reached) -> Below | None:
     """`walked`'s answer for the gitlink at `where`, recorded at `commit`
     by the last of `owners` (this holder where there is none), whose
     checkout is `checkout`: None where its `.git` is not there, asked as
@@ -1489,25 +1589,25 @@ def checkout_stop(checkout: Path, where: str, commit: str,
     try:
         if not _is_a(checkout / ".git", _anything):
             return None
-        return entered(checkout, where, commit, owners, fetched)
+        return entered(checkout, where, commit, owners, reached)
     except OSError:
         return UNTOLD
 
 
 def entered(checkout: Path, where: str, commit: str,
             owners: tuple[str, ...],
-            fetched: frozenset[str] | None) -> Below | None:
+            reached: Reached) -> Below | None:
     """`checkout_stop`'s answer for a checkout whose `.git` is there: B4
-    where its store lacks `commit` and a fetch git made in it reached the
-    remote, `UNTOLD` where none did or where it is at another commit, and
-    else what `walked` finds in it."""
+    where its store lacks `commit` and a fetch in it reached the remote
+    and did not bring it (`reached`), `UNTOLD` where none did or where it
+    is at another commit, and else what `walked` finds in it."""
     if not commit_held(checkout, commit):
-        if fetched is not None and same_place(checkout) in fetched:
+        if reached(checkout, commit):
             return Below(where, owners, commit)
         return UNTOLD
     if head_commit(checkout) != commit:
         return UNTOLD
-    return walked(checkout, fetched, (*owners, where))
+    return walked(checkout, reached, (*owners, where))
 
 
 def commit_held(checkout: Path, commit: str) -> bool:
