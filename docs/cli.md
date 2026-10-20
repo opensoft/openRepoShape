@@ -956,8 +956,14 @@ options:
                         --work-dir, the holder in it, --local-remote-dir) and
                         whether <org>/<Family> already exists (`gh repo view`
                         and its commit listing; with --local-remote-dir, the
-                        bare repository), refusing what it refuses; make no
-                        folder, remote or repository
+                        bare repository), refusing what it refuses. Whether
+                        each folder can be written in is asked of `os.access`,
+                        which reads the mode bits and on Windows says yes for
+                        every folder, so a quota, a Windows ACL or a read-only
+                        drive on Windows can pass here and be refused by the
+                        real run. It leaves nothing that stays: it makes and
+                        removes temporary folders, creates no remote or
+                        repository and pushes nothing
 ```
 
 #### `scripts/family.py add`
