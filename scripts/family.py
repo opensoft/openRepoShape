@@ -3575,9 +3575,10 @@ HOLDER_MANIFEST = TemplateManifest(
     manifest=MANIFEST, templated_yaml=FAMILY_TEMPLATED_YAML,
     template="family-root", validator=FAMILY_VALIDATOR,
     module_name="openreposhape_validate_family", asks=FAMILY_VALIDATOR_ASKS,
-    findings=_holder_findings, unusable_code="family-validator-unusable",
-    owner="holder", finding_placeholder=FINDING_PLACEHOLDER,
-    carried_by=CARRIED_BY, remediations=KIND_REMEDIATIONS)
+    findings=_holder_findings, passed_over=(),
+    unusable_code="family-validator-unusable", owner="holder",
+    finding_placeholder=FINDING_PLACEHOLDER, carried_by=CARRIED_BY,
+    remediations=KIND_REMEDIATIONS)
 
 
 def family_validator(template_dir: Path = FAMILY_TEMPLATE):

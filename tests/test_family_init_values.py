@@ -979,3 +979,35 @@ def test_init_asks_the_scaffolds_questions_and_keeps_no_copy_of_them():
 
     assert defined(FAMILY) & defined(
         REPO / "scripts" / "shape_materialize.py") == set()
+
+
+@pytest.mark.parametrize("line", [
+    pytest.param("WARNING family-id: the id is wrong", id="warning"),
+    pytest.param("  note family-id: the id is a note", id="note"),
+])
+def test_a_holder_validator_whose_only_finding_is_a_warning_is_refused(
+        tmp_path, line):
+    """#925, RV1057's MUST-1. The holder's own `main` fails on EVERY entry of
+    `report.findings` (`validate-family.py`), so `init` refuses one, whatever
+    the line starts with: the filter that passes a WARNING or a `  note ` over
+    is the project's, whose validator's own `main` counts those as notes
+    (`TemplateManifest.passed_over`), and it dropped them for the holder too
+    when the two copies became one, letting `init` write a holder whose gate
+    fails from its first commit. The line is the sentence, whole."""
+    module = family_module()
+    template = template_copy(tmp_path, "warns", quoted=False)
+    (template / "scripts" / "validate-family.py").write_bytes((
+        "class Report:\n    def __init__(self):\n        self.findings = []\n"
+        "\n\ndef _check_envelope(manifest, policy, report):\n"
+        f"    report.findings.append({line!r})\n").encode("utf-8"))
+    assert module.HOLDER_MANIFEST.passed_over == ()
+    assert module.family_manifest_invalid(
+        table(), module.NamingPolicy.load(module.NAMING_POLICY),
+        module.MANIFEST_FLAGS, template) == [line]
+    with pytest.raises(module.Refusal) as caught:
+        module.refuse_unholdable_manifest(given(), table(), template)
+    assert caught.value.code == "family-manifest-invalid"
+    assert caught.value.detail == line
+    assert caught.value.remediation.startswith(
+        "Remediation: choose a value the holder's own validate-family.py "
+        "accepts;")

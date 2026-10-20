@@ -1093,3 +1093,43 @@ def test_a_validator_that_cannot_be_asked_says_so_in_the_projects_words(
         "not in your values: the file is missing, unreadable or broken "
         "there, and nothing was created. Restore it from the standard's "
         "repository, or reinstall the standard, and run again.")
+
+
+def test_a_project_validators_warnings_and_notes_are_notes_and_no_finding(
+        tmp_path, monkeypatch):
+    """#925, RV1057's MUST-1, from the project's side. Its validator's own
+    `main` counts a WARNING and a `  note ` as notes, so the questions pass
+    them over (`PROJECT_MANIFEST.passed_over`) and refuse only a FINDING;
+    the holder's `passed_over` is empty, because its own `main` fails on
+    every entry of `report.findings` (`test_family_init_values.py`). The
+    manifest here holds no placeholder, as the one the root's note is asked
+    of in `test_chain_pin_sources.py` does not."""
+    monkeypatch.setattr(shape_materialize, "_VALIDATORS", {})
+    copy = tmp_path / "assembly-root"
+    shutil.copytree(REPO / "templates" / "assembly-root", copy,
+                    ignore=shutil.ignore_patterns("__pycache__", "*.pyc"))
+    (copy / "project.yaml").write_text("id: atlas\n", encoding="utf-8")
+    notes = ["WARNING naming-referent-chain: the chain could not be checked",
+             "  note link-source-collides: a variable is set"]
+    finding = "FINDING manifest-id: the id is wrong"
+    with (copy / "scripts" / "validate-manifest.py").open(
+            "a", encoding="utf-8", newline="\n") as stream:
+        stream.write("\n\ndef _findings(manifest, policy, other):\n"
+                     f"    return {[*notes, finding]!r}\n")
+    policy = shape_materialize.NamingPolicy.load(
+        REPO / shape_materialize.NAMING_POLICY_YAML)
+    assert shape_materialize.PROJECT_MANIFEST.passed_over == (
+        "WARNING", "  note ")
+    expected = ["the manifest this run would write is one the project's own "
+                "validate-manifest.py refuses: manifest-id: the id is "
+                "wrong."]
+    assert shape_materialize._validator_notes(
+        {}, policy, copy, ()) == [finding]
+    assert shape_materialize.manifest_invalid({}, policy, {}, copy) == expected
+    assert shape_materialize.manifest_judged({}, policy, copy) == frozenset(
+        {"PROJECT_ID"})
+    # With the finding ignored the validator has said nothing but notes.
+    assert shape_materialize.manifest_invalid(
+        {}, policy, {}, copy, ignore=("manifest-id",)) == []
+    assert shape_materialize.manifest_judged(
+        {}, policy, copy, ignore=("manifest-id",)) == frozenset()

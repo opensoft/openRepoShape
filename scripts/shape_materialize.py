@@ -5118,6 +5118,12 @@ class TemplateManifest(NamedTuple):
     asks: tuple
     #: `(validator, manifest, policy)` to the validator's FINDING lines.
     findings: Callable
+    #: The prefixes of the lines `findings` returns that are not findings,
+    #: as the validator's own `main` counts them: the project's WARNINGs and
+    #: `  note`s are notes there, and the holder's `main` fails on every
+    #: entry of `report.findings`, so it passes over none (`()`, which
+    #: `str.startswith` never matches).
+    passed_over: tuple
     #: The code of the refusal for a validator that cannot be asked.
     unusable_code: str
     #: Whose reader and validator they are, in a sentence: `project`.
@@ -5144,9 +5150,10 @@ PROJECT_MANIFEST = TemplateManifest(
     manifest=MANIFEST_TEMPLATE, templated_yaml=TEMPLATED_YAML,
     template="assembly-root", validator=MANIFEST_VALIDATOR,
     module_name="openreposhape_validate_manifest", asks=VALIDATOR_ASKS,
-    findings=_project_findings, unusable_code="manifest-validator-unusable",
-    owner="project", finding_placeholder=FINDING_PLACEHOLDER,
-    carried_by=CARRIED_BY, remediations=KIND_REMEDIATIONS)
+    findings=_project_findings, passed_over=("WARNING", "  note "),
+    unusable_code="manifest-validator-unusable", owner="project",
+    finding_placeholder=FINDING_PLACEHOLDER, carried_by=CARRIED_BY,
+    remediations=KIND_REMEDIATIONS)
 
 
 def manifest_validator(template_dir: Path = ASSEMBLY_TEMPLATE, *,
@@ -5281,9 +5288,9 @@ def manifest_misreads(values: dict, what: dict,
                       template_dir: Path = ASSEMBLY_TEMPLATE, *,
                       manifest_kind: TemplateManifest = PROJECT_MANIFEST
                       ) -> list[str]:
-    """A sentence for each value the project's reader (or the reader of
-    `manifest_kind`) would read back as anything but that same text; `[]`
-    when every one reads back.
+    """A sentence for each value the reader of the manifest of
+    `manifest_kind` (the project's, by default) would read back as anything
+    but that same text; `[]` when every one reads back.
 
     `values` is the substitution table; `what` names the placeholders to ask
     about and how the caller calls each (`{"PROJECT_ID": "--id"}`), and a
@@ -5292,7 +5299,8 @@ def manifest_misreads(values: dict, what: dict,
     value a rule of its own already judged is not asked twice.
 
     Each template line that carries exactly one of them is rendered with the
-    value, as `render` writes it, and read as the project reads it.
+    value, as `render` writes it, and read as the reader of the manifest of
+    `manifest_kind` reads it.
     """
     return [
         f"{what[key]} is {str(values[key])!r}, which is written "
@@ -5358,9 +5366,9 @@ def manifest_invalid(values: dict, policy: NamingPolicy, what: dict,
                      ignore: tuple = (), not_text: tuple = (), *,
                      manifest_kind: TemplateManifest = PROJECT_MANIFEST
                      ) -> list[str]:
-    """A sentence for each FINDING the project's own validator (or the
-    validator of `manifest_kind`) would make of the `project.yaml` these
-    `values` render; `[]` when it would pass.
+    """A sentence for each FINDING the validator of the manifest of
+    `manifest_kind` (the project's, by default) would make of the manifest
+    these `values` render; `[]` when it would pass.
 
     `ignore` is the codes of findings the CALLER already reports by a rule of
     its own in the same list (`adopt-project.py check` finds a leg path
@@ -5455,15 +5463,17 @@ def _validator_notes(values: dict, policy: NamingPolicy, template_dir: Path,
                      ignore: tuple,
                      manifest_kind: TemplateManifest = PROJECT_MANIFEST
                      ) -> list[str] | YamlError:
-    """The FINDINGs the project's own validator (or the validator of
-    `manifest_kind`) makes of the manifest these `values` render, less its
-    WARNINGs, its `  note`s and the codes in `ignore`; or the `YamlError`
-    its reader raised, where it cannot read that file. A `  note` is no
-    finding, as the validator's own `main` counts it (#990): `_findings`
-    returns its `link-source-collides` note beside the findings, and read
-    as one, `manifest_invalid` gave it as a refusal and `manifest_judged`
-    said None (RV1011's SHOULD-1). The holder's validator keeps its
-    findings apart from its notes (`Report`), so it gives neither.
+    """The FINDINGs the validator of the manifest of `manifest_kind` (the
+    project's, by default) makes of the manifest these `values` render, less
+    the lines `manifest_kind.passed_over` names and the codes in `ignore`;
+    or the `YamlError` its reader raised, where it cannot read that file.
+    The project's WARNINGs and `  note`s are no finding, as its validator's
+    own `main` counts them (#990): `_findings` returns its
+    `link-source-collides` note beside the findings, and read as one,
+    `manifest_invalid` gave it as a refusal and `manifest_judged` said None
+    (RV1011's SHOULD-1). The holder's validator keeps its findings apart
+    from its notes (`Report`), and its own `main` fails on every entry of
+    `report.findings`, so it passes over none (#925).
 
     A MANIFEST THAT IS NOT A MAPPING is one sentence that says so, and is
     about no value: each validator's own `main` refuses such a file before
@@ -5502,7 +5512,7 @@ def _validator_notes(values: dict, policy: NamingPolicy, template_dir: Path,
                 "answered with a finding that is not text",
                 f"its type is {type(note).__name__}", manifest_kind)
     return [note for note in notes
-            if not note.startswith(("WARNING", "  note "))
+            if not note.startswith(manifest_kind.passed_over)
             and _code_of(note) not in ignore]
 
 
@@ -5511,10 +5521,10 @@ def manifest_judged(values: dict, policy: NamingPolicy,
                     ignore: tuple = (), *,
                     manifest_kind: TemplateManifest = PROJECT_MANIFEST
                     ) -> frozenset[str] | None:
-    """The placeholders whose value the project's own validator makes a
-    finding about, in the `project.yaml` these `values` render (the
-    question `manifest_invalid` asks, with the same `ignore`); an empty set
-    when it makes none.
+    """The placeholders whose value the validator of the manifest of
+    `manifest_kind` (the project's, by default) makes a finding about, in
+    the manifest these `values` render (the question `manifest_invalid`
+    asks, with the same `ignore`); an empty set when it makes none.
 
     None where it cannot be told of ANY value that the validator passes it:
     its reader refuses the whole file, or it makes a finding that is about
@@ -5542,7 +5552,7 @@ def manifest_value_problems(values: dict, policy: NamingPolicy, what: dict,
                             ) -> list[tuple[str, str]]:
     """`(kind, sentence)` for everything wrong with the values, `kind` being
     `misread`, `invalid` or `unreadable` (`_invalid_problems`); `[]` when
-    the project would hold every one.
+    the manifest of `manifest_kind` would hold every one.
 
     A misread comes FIRST and alone: a value the reader turns into something
     else makes the manifest invalid in ways that are its consequence (`id:
