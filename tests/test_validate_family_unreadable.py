@@ -31,14 +31,19 @@ The sites are the member checkout's `.git` (`_check_members`' stop,
 `family.yaml`, the staged removal's `_put_back_lines` and `_moved_checkouts`
 (`_gone`: nothing there is ENOENT alone, so a file where the checkout should
 be is refused, never "none there"), `_names_store`, `_on_disk` and
-`_held_as`, which decide the `-f` of a gitlink's `git rm --cached`, and
+`_held_as`, which decide the `-f` of a gitlink's `git rm --cached`,
 `_staged_over` (#889's round 2), which decides whether a hand mount's `git
-rm` is said to refuse a staged gitlink.
+rm` is said to refuse a staged gitlink, and `_hand_cached` and
+`_cached_left` (#936), which decide whether it is `git rm --cached`.
 
 WHAT IS ON DISK IS ASKED ONLY WHERE IT IS SAID (round 2, r956's SHOULD 1
 on #956): `_forced` and `_staged_over` ask git first, and where HEAD
 records a gitlink at the index's own commit, the disk under it is never
-asked, so a folder this user cannot search there changes nothing. And ONE
+asked, so a folder this user cannot search there changes nothing. A hand
+mount's is said (#936): whether its plain `git rm` works turns on what is
+there, a clone no section names or what is no checkout, and under a folder
+this user cannot search that `git rm` exits 128, so a hand mount HEAD
+records is refused by name there too (`_hand_cached`). And ONE
 CODE HAS ONE TEXT (r956's SHOULD 2): a member's `project.yaml` that cannot
 be opened says what one whose `stat` is refused says.
 
@@ -187,8 +192,9 @@ def hand_mount_staged(holder: Path, request) -> tuple[str, ...]:
 
 def hand_mount_committed(holder: Path, request) -> tuple[str, ...]:
     """The hand mount committed: HEAD records SPARE's gitlink at the
-    index's own commit, so a plain `git rm` takes it, no `-f` is said and
-    no staged clause, whatever is on disk (r956's C19 on #956)."""
+    index's own commit, so no `-f` is said and no staged clause, whatever
+    is on disk (r956's C19 on #956). Whether a plain `git rm` takes it
+    turns on what is on disk (#936): over this empty directory it does."""
     extra = hand_mount_staged(holder, request)
     git("commit", "-qm", "A hand mount", cwd=holder)
     return extra
@@ -281,6 +287,8 @@ def test_what_is_not_there_is_said_as_it_always_was(holder, request, made,
                  f"{VARIANT_PATH}/.git", id="variant-checkout"),
     pytest.param(hand_mount_staged, (SPARE,), MEMBER_UNREADABLE, HAND,
                  id="hand-mount-staged"),
+    pytest.param(hand_mount_committed, (SPARE,), MEMBER_UNREADABLE, HAND,
+                 id="hand-mount-committed"),
 ])
 def test_a_path_whose_stat_is_refused_is_refused_by_name(
         holder, request, monkeypatch, capsys, made, names, refusal, named):
@@ -508,7 +516,6 @@ def said(module, holder: Path, capsys, extra: tuple[str, ...]) -> tuple:
 
 
 @pytest.mark.parametrize("made,names", [
-    pytest.param(hand_mount_committed, (SPARE,), id="hand-mount-committed"),
     pytest.param(variant_committed, ("IRRS",), id="variant-committed"),
 ])
 def test_a_gitlink_head_records_as_staged_asks_nothing_of_the_disk(
@@ -518,7 +525,10 @@ def test_a_gitlink_head_records_as_staged_asks_nothing_of_the_disk(
     the `-f` (`_forced`) nor the staged clause (`_staged_over`) is said,
     whatever is on disk, and a path whose `stat` would be refused is never
     asked. The finding is the control's, word for word, on every Python:
-    asked first, the disk refused it `member-unreadable`, exit 2."""
+    asked first, the disk refused it `member-unreadable`, exit 2. A hand
+    mount HEAD records is no row here: whether its plain `git rm` works
+    turns on what is on disk (#936), so it is refused by name
+    (`test_a_path_whose_stat_is_refused_is_refused_by_name`)."""
     extra = made(holder, request)
     module = gate(holder, monkeypatch)
     control = said(module, holder, capsys, extra)
@@ -603,6 +613,12 @@ def test_a_name_that_needs_spelling_is_spelled_where_it_cannot_be_read(
                   "member-gitlink-removal-staged"], id="variant-000"),
     pytest.param(hand_mount_staged, "members", 0, MEMBER_UNREADABLE, HAND,
                  ["member-gitlink-unnamed"], id="hand-mount-folder-000"),
+    pytest.param(hand_mount_committed, "members", 0, MEMBER_UNREADABLE, HAND,
+                 ["member-gitlink-unnamed"],
+                 id="hand-mount-committed-folder-000"),
+    pytest.param(hand_mount_committed, HAND, 0o444, MEMBER_UNREADABLE,
+                 f"{HAND}/.git", ["member-gitlink-unnamed"],
+                 id="hand-mount-committed-444"),
 ])
 def test_a_folder_this_user_cannot_search_is_refused_by_name(
         holder, request, made, folder, mode, refusal, named, after):
@@ -622,14 +638,17 @@ def test_a_folder_this_user_cannot_search_is_refused_by_name(
 
 @needs_a_mode
 @pytest.mark.parametrize("made,folder", [
-    pytest.param(hand_mount_committed, "members", id="hand-mount-committed"),
     pytest.param(variant_committed, "Members", id="variant-committed"),
 ])
 def test_a_folder_under_a_gitlink_git_takes_is_never_asked(
         holder, request, made, folder):
-    """r956's C19 and C20 on #956, on this Python: with the folder at mode
-    000, the gate says what it says with the folder open, word for word,
-    since nothing it says turns on what is in that folder."""
+    """r956's C20 on #956, on this Python: with the folder at mode 000, the
+    gate says what it says with the folder open, word for word, since
+    nothing it says turns on what is in that folder. C19's hand mount is no
+    row here: what its line says turns on that folder (#936), and a plain
+    `git rm` of it under a folder at mode 000 exits 128 (`failed to stat`,
+    `could not remove`), so it is refused by name
+    (`hand-mount-committed-folder-000` above)."""
     extra = made(holder, request)
     control = validate(holder, *extra)
     with made_unopenable(holder, folder):
