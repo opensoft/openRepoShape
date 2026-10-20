@@ -291,3 +291,33 @@ def test_a_folder_flag_not_given_keeps_its_default(tmp_path, tool, flag):
         holder = (tmp_path / "here" / "NorthWind" / "NorthWind").resolve()
         assert f"landing      {holder}" in result.stdout, result.stdout
     assert everything_under(tmp_path) == ["here"]
+
+
+def option_help(tool: str, flag: str) -> str:
+    """`flag`'s entry in `tool`'s `--help`, its lines joined: argparse is
+    given a terminal wide enough that it breaks no word, a code's hyphen
+    among them."""
+    result = run_script(*TOOLS[tool]["command"], "--help",
+                        env={"COLUMNS": "1000"})
+    assert result.returncode == 0, result.stderr
+    entries, current = {}, None
+    for line in result.stdout.splitlines():
+        if line.startswith("  -"):
+            current = line.split()[0]
+            entries[current] = [line]
+        elif current and line.startswith("   "):
+            entries[current].append(line)
+        else:
+            current = None
+    assert flag in entries, result.stdout
+    return " ".join(" ".join(entries[flag]).split())
+
+
+@pytest.mark.parametrize("tool, flag", FOLDER_PARAMS)
+def test_each_folder_flag_s_help_says_what_empty_and_a_dot_mean(tool, flag):
+    """#999: each folder flag's `--help` says what #972 made true, as
+    `--pin-source`'s says `pin-source-no-path`: an empty value is refused by
+    its code, and `.` is the directory the run stands in."""
+    code = FOLDER_ROWS[tool, flag][0]
+    assert (f"An empty value is refused as `{code}`, and `.` means the "
+            "directory the run stands in.") in option_help(tool, flag)
