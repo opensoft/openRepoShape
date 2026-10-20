@@ -116,11 +116,11 @@ scripts/bootstrap.py`. README's "What setup.sh does" carries the exact commands.
 
 ## Adopting an existing repository
 
-`adopt-project.py` converts a repository that already exists, IN PLACE: it keeps
-its name, which `--project` must be, its identity and its full history and
-becomes the assembly root, and the two legs are new repositories extracted with
-`git filter-repo` (a hard dependency: `execute` refuses without it, printing the
-install command). Seven steps, in order, and step 4 is the one you must not skip.
+`adopt-project.py` converts an existing repository IN PLACE: it keeps its name,
+which `--project` must be, its identity and its full history and becomes the
+assembly root; its two legs are new repositories extracted with `git filter-repo`
+(`execute` refuses without it). `--org` defaults to the org of an `org/repo` or a
+url `origin`; a path `origin`, or none, needs it. Seven steps; never skip step 4.
 
 ```sh
 ./adopt-project.py plan --source <org/repo|path> --project <its own name>
