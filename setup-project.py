@@ -2675,12 +2675,13 @@ def as_the_plan_reads_it(shape_root: Path, path: str) -> str:
     (`check_names`), not from the checkout a relative path is read from.
 
     AND THE NAMING CHECK CANNOT READ IT AS `LINK=PATH`. It takes the text
-    before a `--link-source`'s first `=` for a product when that is a link
-    of the chain, so `openXdox=layer`, which the scaffold reads as the one
-    path it is, would be read as `layer` for `openXdox`. An absolute path
-    has a separator or a drive before its first `=`, which no link's name
-    holds (a link is read at its last `/`), so it is one path to the naming
-    check too, as `./openXdox=layer` was.
+    before an `=` of a `--link-source` for a product when that is a link of
+    the chain, the longest such text that leaves a path after it (#980), so
+    `openXdox=layer`, which the scaffold reads as the one path it is, would
+    be read as `layer` for `openXdox`. An absolute path has a separator or a
+    drive before its first `=`, and so before every one, which no link's
+    name holds (a link is read at its last `/`), so it is one path to the
+    naming check too, as `./openXdox=layer` was.
 
     AN EMPTY PATH IS NEVER GIVEN TO IT. Since #570 the scaffold takes
     `--pin-source` as text and refuses an exactly empty value as
