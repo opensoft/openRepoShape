@@ -54,7 +54,8 @@ from typing import NamedTuple
 import pytest
 
 from conftest import REPO, git, load_without_bytecode, run_script
-from test_bootstrap_without_git import ASSEMBLY_REMEDY, FAMILY_REMEDY
+from test_bootstrap_without_git import (ASSEMBLY_REMEDY, FAMILY_REMEDY,
+                                        GIT_NOT_WIN32)
 from test_family import MEMBERS, family, holder  # noqa: F401
 from test_validate_family_without_git import (REMEDIATION, holder_validator,
                                               run, without_git)
@@ -213,34 +214,6 @@ def test_the_four_copies_are_one_text():
              for name, (path, function) in COPIES.items()}
     assert len(rules["validate-pins.py"]) == 2, rules
     assert rules == dict.fromkeys(COPIES, rules["validate-pins.py"])
-
-
-#: What stands where a `git.exe` Windows cannot execute would. Python imports
-#: `sitecustomize` at start-up from `PYTHONPATH`, so the script, and anything
-#: it starts, load this first, as `tests/test_update_shape_landing.py`'s
-#: `GH_ON_PATH` stands in for `gh`. Starting a program named `git` raises
-#: what CPython raises on Windows there, `WIN_ERROR_193`; nothing else
-#: changes.
-GIT_NOT_WIN32 = """\
-import errno
-import os
-import subprocess
-
-
-class _Popen(subprocess.Popen):
-    def __init__(self, args, *rest, **kwargs):
-        if (isinstance(args, (list, tuple)) and args
-                and os.path.basename(str(args[0])).lower()
-                in ("git", "git.exe")):
-            error = OSError(errno.ENOEXEC,
-                            "%1 is not a valid Win32 application")
-            error.winerror = 193
-            raise error
-        super().__init__(args, *rest, **kwargs)
-
-
-subprocess.Popen = _Popen
-"""
 
 
 @pytest.mark.parametrize("root, script, remedy", [

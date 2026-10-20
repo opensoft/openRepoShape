@@ -56,6 +56,33 @@ FAMILY_REMEDY = (
     "through git too, so without it nothing here can be fetched or "
     "bootstrapped.")
 
+#: What stands where a `git.exe` Windows cannot execute would. Python imports
+#: `sitecustomize` at start-up from `PYTHONPATH`, so the script, and anything
+#: it starts, load this first, as `tests/test_update_shape_landing.py`'s
+#: `GH_ON_PATH` stands in for `gh`. Starting a program named `git` raises
+#: what CPython raises on Windows there, `WIN_ERROR_193`; nothing else
+#: changes.
+GIT_NOT_WIN32 = """\
+import errno
+import os
+import subprocess
+
+
+class _Popen(subprocess.Popen):
+    def __init__(self, args, *rest, **kwargs):
+        if (isinstance(args, (list, tuple)) and args
+                and os.path.basename(str(args[0])).lower()
+                in ("git", "git.exe")):
+            error = OSError(errno.ENOEXEC,
+                            "%1 is not a valid Win32 application")
+            error.winerror = 193
+            raise error
+        super().__init__(args, *rest, **kwargs)
+
+
+subprocess.Popen = _Popen
+"""
+
 
 def without_git(root: Path, tmp_path: Path, *extra: str,
                 env: dict | None = None):
@@ -92,25 +119,37 @@ def test_an_assembly_root_with_no_git_refuses_in_step_a(project, tmp_path,
         "\n(a) legs on tracking branches, pins untouched\n"), result.stdout
 
 
+@pytest.mark.parametrize("shim, said", [
+    (None, NO_GIT), (GIT_NOT_WIN32, WIN_ERROR_193.strerror)],
+    ids=["no-git", "winerror-193"])
 def test_the_offline_upstream_notice_with_no_git_refuses_too(scaffolded,
-                                                             tmp_path):
+                                                             tmp_path, shim,
+                                                             said):
     """A PLAIN clone: both legs NOT INITIALIZED, so step (a) runs no git, and
     `SHAPE_UPSTREAM_PATH` names a directory, so the notice after the
     validators runs one. `validate-pins.py` refuses `git-not-runnable`
     itself; the notice then ended the run in a traceback. It refuses, and
-    the review-authority step is not reached."""
+    the review-authority step is not reached. So it does where every start
+    of git raises Windows' `[WinError 193]` (`GIT_NOT_WIN32`; #1001,
+    RV1028's NIT 1), which the notice's `except OSError` used to swallow
+    and say nothing of."""
     clone = tmp_path / PROJECT
     made = clone_just_pushed(scaffolded["remotes"] / f"{PROJECT}.git", clone,
                              recurse=False)
     assert made.returncode == 0, made.stderr
     upstream = tmp_path / "upstream"
     upstream.mkdir()
+    env = {"SHAPE_UPSTREAM_PATH": str(upstream)}
+    if shim is not None:
+        sitecustomize = tmp_path / "git-not-win32"
+        sitecustomize.mkdir()
+        (sitecustomize / "sitecustomize.py").write_text(shim, encoding="utf-8")
+        env["PYTHONPATH"] = str(sitecustomize)
 
-    result = without_git(clone, tmp_path,
-                         env={"SHAPE_UPSTREAM_PATH": str(upstream)})
+    result = without_git(clone, tmp_path, env=env)
     refused(result,
             "REFUSED git-not-runnable: the clone SHAPE_UPSTREAM_PATH names, "
-            f"{upstream}, could not be read: git could not be run ({NO_GIT})",
+            f"{upstream}, could not be read: git could not be run ({said})",
             ASSEMBLY_REMEDY)
     assert "  [spec] spec: NOT INITIALIZED." in result.stdout, result.stdout
     assert "(c) review authority" not in result.stdout
