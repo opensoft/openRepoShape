@@ -219,7 +219,8 @@ class Project:
                 "Remediation: --root takes the ASSEMBLY ROOT — the repository "
                 "an engineer clones — not a leg and not a family holder. A "
                 "family's member pins are moved with `scripts/family.py "
-                "bump`; a leg has no legs of its own to move.")
+                "bump --family-root <holder> --member <Project> --to "
+                "<sha>`; a leg has no legs of its own to move.")
         data = load_yaml(path)
         if not isinstance(data, dict):
             raise Refusal("bump-leg-manifest-unreadable",
@@ -231,7 +232,8 @@ class Project:
                 "'project-manifest'",
                 "Remediation: a family holder declares `kind: "
                 "family-manifest` and its members move with `scripts/"
-                "family.py bump`.")
+                "family.py bump --family-root <holder> --member <Project> "
+                "--to <sha>`.")
         return cls(root, data)
 
     @property
@@ -276,6 +278,9 @@ class Project:
         # branch would never be reached, and the root is not a submodule of
         # itself to advance.
         if role == "assembly":
+            # `<holder>` IS A PLACEHOLDER (#927): `family.py bump` requires
+            # `--family-root`, and this tool is pointed at a root, which
+            # knows no holder, so it is said as `<Project>` and `<sha>` are.
             raise Refusal(
                 "bump-leg-assembly-is-not-a-leg",
                 "the assembly root is THIS repository, mounted at `.`, and it "
@@ -283,7 +288,8 @@ class Project:
                 "Remediation: --leg takes `spec` or `code`. The assembly "
                 "root advances by its own commits; if you meant to move the "
                 "project's pin inside a FAMILY, that is `scripts/family.py "
-                "bump --member <Project> --to <sha>`.")
+                "bump --family-root <holder> --member <Project> --to "
+                "<sha>`.")
         for row in self.legs:
             if str(row.get("role")) == role:
                 return row
@@ -1110,30 +1116,50 @@ def _has_origin(submodule: Path) -> bool:
 
 def _remote_tag_reaches(submodule: Path, remote: str, protocol: list[str],
                         commit: str) -> bool:
-    """Whether a tag of the leg's remote reaches `commit` (#898): a tag the
-    leg has whose commit contains it, which the remote lists under the same
-    id. Asked only for the refusal's words, after a fetch that worked, of a
-    commit the leg holds and no branch of the remote reaches; the rule stays
-    branches. `family.py`'s `_origin_tag_reaches` (#686), asked of a leg.
+    """Whether a tag of the leg's remote reaches `commit` (#898, #982): a tag
+    the leg has whose commit contains it, at a commit the remote lists a tag
+    at too. Asked only for the refusal's words, after a fetch that worked, of
+    a commit the leg holds and no branch of the remote reaches; the rule
+    stays branches. `family.py`'s `_origin_tag_reaches` (#686), asked of a
+    leg.
 
     WHY IT IS ASKED. Such a commit was refused with "somebody committed
     inside the leg's mount and never pushed it", which is untrue of one a tag
     of the remote holds: the tag was pushed, and a fresh clone holds the
     commit. The leg's own tags cannot say it alone, since a tag made inside
-    the leg is one only the leg has, so `git ls-remote --tags --refs` asks
-    the remote the fetch asked which of them it has, by object id. Only when
-    a tag of the leg contains the commit is the remote asked. A listing that
-    fails is no answer, and the words stay the plain ones. `ls-remote`
-    writes nothing: no ref the person's leg did not have is made.
+    the leg is one only the leg has, so `git ls-remote --tags` asks the
+    remote the fetch asked whether it has one of them, or a tag at a commit
+    one of them names. Only when a tag of the leg contains the commit is the
+    remote asked. A listing that fails is no answer, and the words stay the
+    plain ones. `ls-remote` writes nothing: no ref the person's leg did not
+    have is made.
+
+    THE COMMITS TAGS POINT TO ARE COMPARED, NOT THE TAG OBJECTS ALONE (#982).
+    An annotated tag's own id is the id of its tag object, which two tags at
+    one commit have apart when each was made on its own, and which a
+    lightweight tag does not have at all, so comparing them alone missed a
+    lightweight `v1` of the leg beside an annotated `v1` of the remote at the
+    same commit, and two annotated `v1` made apart (measured, git 2.43). Each
+    tag of the leg is read as its own id and as the commit `git rev-parse
+    <id>^{}` peels it to, through a tag of a tag too; `%(*objectname)` would
+    not do, since git before 2.44 reads `*` one level, to the tag a tag of a
+    tag tags (measured, git 2.43). The remote is listed WITHOUT `--refs`, so
+    each annotated tag has its `<tag>^{}` line, the commit, beside its own,
+    and a lightweight tag has its own line, the commit. Every id on either
+    side is compared, so the tag object of a tag the two share still matches
+    as it did.
     """
-    held = set(run(["git", "for-each-ref", "--contains", commit,
-                    "--format=%(objectname)", "refs/tags/"],
-                   cwd=submodule).lower().split())
-    if not held:
+    tags = run(["git", "for-each-ref", "--contains", commit,
+                "--format=%(objectname)", "refs/tags/"],
+               cwd=submodule).lower().split()
+    if not tags:
         return False
+    held = set(tags) | set(run(["git", "rev-parse",
+                                *[f"{tag}^{{}}" for tag in tags]],
+                               cwd=submodule).lower().split())
     try:
-        listed = run(["git", *protocol, "ls-remote", "--tags", "--refs",
-                      remote], cwd=submodule)
+        listed = run(["git", *protocol, "ls-remote", "--tags", remote],
+                     cwd=submodule)
     except CommandFailed:
         return False
     return any(line.split("\t", 1)[0].lower() in held

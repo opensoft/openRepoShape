@@ -53,12 +53,16 @@ def test_a_topic_that_is_not_derived_from_the_id_is_a_finding(project):
 
 
 def test_a_missing_role_is_a_finding(project):
+    """The whole `code` entry goes, its `naming:` record with it: left
+    behind, that record is a second `naming:` of the `spec` entry above it,
+    a key written twice, which the reader refuses since #917."""
     edit(project,
          '  - role: code\n    repository: testorg/Atlas-code\n'
-         '    path: "code"\n',
+         '    path: "code"\n    naming:\n      form: project-leg\n'
+         '      role: code\n      also_matches: []\n',
          "")
     result = validate(project)
-    assert result.returncode == 1
+    assert result.returncode == 1, result.stderr
     assert "manifest-roles" in result.stderr
 
 

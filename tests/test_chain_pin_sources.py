@@ -26,6 +26,13 @@ file uses (#909, from #459's lines U172, U113, U145, U114 and U146).
     `--pin openKdox@<sha>` was planned and recorded in that spelling, beside
     the one pin file `contracts/openkdox-pin.yaml`. It is recorded in the
     `--pin`'s spelling now.
+  * #990. A variable that is SET, and that the guard passes over because
+    two products of the run share it, was named by no line in either chain
+    reader, so the `declared-unverified` WARNING, which leaves it out of
+    its offer, read as if nothing were set. Each reader says it once now,
+    naming the variable and the products: a NOTE in the gate and a
+    `  note` in the root's validator, as `validate-pins.py` prints one.
+    Nothing fails on it, and an unset variable stays unsaid.
 
 No network and no GitHub: scaffolds dry-run, or into local bare remotes.
 """
@@ -50,8 +57,10 @@ from test_manifest_validator import as_a_descendant_by_chain
 
 sys.path.insert(0, str(REPO / "scripts"))
 from repo_shape import (  # noqa: E402
-    LINK_SOURCE_ABSENT, LinkPins, link_pins_from_trees, load_yaml, shown_path,
+    LINK_SOURCE_ABSENT, LinkPins, NamingPolicy, link_pins_from_trees,
+    load_yaml, shown_path,
 )
+import shape_materialize  # noqa: E402
 
 TEMPLATE_MANIFEST = (REPO / "templates" / "assembly-root" / "scripts" /
                      "validate-manifest.py")
@@ -243,6 +252,33 @@ GATE_UNREACHED = ("WARNING {name}: declared-unverified: {holder} declaring a "
                   "{holder}=<path> would let it be read). The recorded chain "
                   "still classifies.\n")
 
+#: The gate's NOTE for a variable that is set and that products of the run
+#: share, so that it is read for no link (#990).
+GATE_SHARED = ("NOTE link-source-collides: {variable} is set, but {products}, "
+               "products this run reads, share it: it cannot say which it "
+               "holds, so it is read for none of them. A link's own tree is "
+               "read from a sibling checkout or --link-source <link>=<path>.")
+
+#: The root's own note for the same, spelled as `validate-pins.py` spells a
+#: note (#990).
+ROOT_SHARED = ("  note link-source-collides: {variable} is set, but "
+               "{products}, products this run reads, share it: it cannot say "
+               "which it holds, so it is read for none of them. A link's own "
+               "tree is read from a checkout of it beside this root.")
+
+
+def said_shared(template: str, variable: str, *products: str) -> str:
+    """`template`, `GATE_SHARED` or `ROOT_SHARED`, for `variable` and the
+    products that share it, joined as both readers join them."""
+    return template.format(variable=variable, products=(
+        ", ".join(products[:-1]) + f" and {products[-1]}"))
+
+
+def collision_lines(result) -> list[str]:
+    """Every line a chain reader printed about a shared variable."""
+    return [line for line in result.stderr.splitlines()
+            if "link-source-collides" in line]
+
 
 def two_firsts(path: Path) -> Path:
     """R444's project: pins on `openß` and `openss`, which share
@@ -274,22 +310,41 @@ def sharp_tree(tmp_path: Path, declares: str) -> dict:
         tree(tmp_path / "trees" / "sharp", declares))}
 
 
-@pytest.mark.parametrize("variable", [True, False], ids=["set", "unset"])
+#: How a row hands `SHAPE_PIN_SOURCE_OPENSS` to the child: set to `openß`'s
+#: tree, set to nothing, or not handed at all. An empty variable is read
+#: for no product (`resolve_link_source` asks only a value), so it is no
+#: more said than an unset one (#990, RV1011's NIT-1): the conftest's
+#: `blank_unnamed_pin_sources` hands children `""`, and so does a person
+#: who exported the variable empty.
+HANDED = ["set", "empty", "unset"]
+
+
+def handed(tmp_path: Path, how: str, declares: str) -> dict:
+    """The child's `SHAPE_PIN_SOURCE_OPENSS`, as `HANDED` names `how`."""
+    if how == "set":
+        return sharp_tree(tmp_path, declares)
+    return {"SHAPE_PIN_SOURCE_OPENSS": ""} if how == "empty" else {}
+
+
+@pytest.mark.parametrize("variable", HANDED)
 def test_the_gate_reads_a_shared_variable_for_no_chain(tmp_path, variable):
     """R444. Set to `openß`'s tree, the variable was read for both chains,
     and the gate said "FINDING codexQuill: the declared chain openss ->
     openQuill is broken (openss declares openInk, not openQuill)", exit 1;
     unset, each leg was offered it. It is read for neither now, and offered
-    to neither, and both chains are declared-unverified, exit 0."""
+    to neither, and both chains are declared-unverified, exit 0. Set, one
+    NOTE names it and both products (#990); empty or unset, nothing
+    does."""
     root = two_firsts(tmp_path / "ws" / "codexSoft")
-    env = sharp_tree(tmp_path, "openInk") if variable else {}
     result = run_script(VALIDATOR, "--project", "project.yaml", cwd=root,
-                        env=env)
+                        env=handed(tmp_path, variable, "openInk"))
     assert result.returncode == 0, result.stderr
     assert result.stderr == (
         GATE_UNREACHED.format(name="codexInk", holder=SHARP, held="openInk")
         + GATE_UNREACHED.format(name="codexQuill", holder=SS,
-                                held="openQuill"))
+                                held="openQuill")
+        + (said_shared(GATE_SHARED, "SHAPE_PIN_SOURCE_OPENSS", SHARP, SS)
+           + "\n" if variable == "set" else ""))
 
 
 def test_a_variable_two_declared_pins_share_is_read_for_no_chain(tmp_path):
@@ -297,13 +352,15 @@ def test_a_variable_two_declared_pins_share_is_read_for_no_chain(tmp_path):
     neither, holds for a chain too. One chain begins at `openss`, and the
     project pins `openß` as well, on no chain: the variable was read for
     `openss`, the one link of the one chain that names it, and `openß`'s
-    tree broke the chain, exit 1."""
+    tree broke the chain, exit 1. The NOTE names the pin that is on no
+    chain too (#990)."""
     root = one_chain(tmp_path / "ws" / "codexSoft", SHARP, SS)
     result = run_script(VALIDATOR, "--project", "project.yaml", cwd=root,
                         env=sharp_tree(tmp_path, "openInk"))
     assert result.returncode == 0, result.stderr
     assert result.stderr == GATE_UNREACHED.format(
-        name="codexQuill", holder=SS, held="openQuill")
+        name="codexQuill", holder=SS, held="openQuill") + said_shared(
+        GATE_SHARED, "SHAPE_PIN_SOURCE_OPENSS", SS, SHARP) + "\n"
 
 
 def test_a_variable_a_link_of_another_chain_shares_is_read_for_no_chain(
@@ -311,7 +368,8 @@ def test_a_variable_a_link_of_another_chain_shares_is_read_for_no_chain(
     """The chains half. The project pins `openss` alone, and its spec leg
     records a chain beginning at `openß`: a link of the run, though no
     classification consults that chain. The variable was read for `openss`,
-    and `openß`'s tree broke `codexQuill`'s chain, exit 1."""
+    and `openß`'s tree broke `codexQuill`'s chain, exit 1. The NOTE names
+    the other chain's link too (#990)."""
     root = manifest(tmp_path / "ws" / "codexSoft", (
         f"neutral_product_pins:\n  - {SS}\nlegs:\n"
         "  - repository: testorg/codexQuill\n    path: \".\"\n"
@@ -324,7 +382,8 @@ def test_a_variable_a_link_of_another_chain_shares_is_read_for_no_chain(
                         env=sharp_tree(tmp_path, "openInk"))
     assert result.returncode == 0, result.stderr
     assert result.stderr == GATE_UNREACHED.format(
-        name="codexQuill", holder=SS, held="openQuill")
+        name="codexQuill", holder=SS, held="openQuill") + said_shared(
+        GATE_SHARED, "SHAPE_PIN_SOURCE_OPENSS", SS, SHARP) + "\n"
 
 
 def test_a_variable_one_product_of_the_run_names_is_still_read(tmp_path):
@@ -367,7 +426,7 @@ def a_root_sharing_one_variable(project: Path, where: str) -> Path:
     return project
 
 
-@pytest.mark.parametrize("variable", [True, False], ids=["set", "unset"])
+@pytest.mark.parametrize("variable", HANDED)
 @pytest.mark.parametrize("where", ["chain", "qualified-chain", "pin"])
 def test_the_manifest_gate_reads_a_shared_variable_for_no_chain(
         project, monkeypatch, tmp_path, where, variable):
@@ -378,16 +437,206 @@ def test_the_manifest_gate_reads_a_shared_variable_for_no_chain(
     alone. The products are read by `repo_basename` (RV981's S2): this
     validator hands them over as its manifest spells them, and read whole,
     the owner-qualified link names `SHAPE_PIN_SOURCE_OPENSOFT_OPENSS` and
-    shares nothing."""
+    shares nothing. Set, one note names it and both products, and fails
+    nothing (#990); empty or unset, nothing does."""
     clear_ambient_pin_sources(monkeypatch)
     root = a_root_sharing_one_variable(project, where)
-    result = validate(root, sharp_tree(tmp_path, "openQuill")
-                      if variable else {})
+    result = validate(root, handed(tmp_path, variable, "openQuill"))
     assert result.returncode == 0, result.stderr
     assert "manifest ok" in result.stdout
     assert manifest_warnings(result) == [UNREACHED.format(
         holder=SS, held="openDox",
         offer=f"a checkout of {SS} beside this root would let it be read")]
+    assert collision_lines(result) == ([said_shared(
+        ROOT_SHARED, "SHAPE_PIN_SOURCE_OPENSS", SS, SHARP)]
+        if variable == "set" else []), result.stderr
+
+
+# --- #990: a set variable the guard passes over is said, once ----------------
+
+#: #990's probes of the gate, `MedxGlass --role assembly`, each as `(--pins,
+#: --referent-chain, what the tree `SHAPE_PIN_SOURCE_OPEN_X` names declares,
+#: the chain's status with it set, and the products the NOTE names)`. Unset,
+#: every chain is declared-unverified and nothing is said.
+PROBES = {
+    "two-links-of-one-chain": ("open-x", "open-x,open_x,openGlass", "open_x",
+                               "declared-unverified", ("open-x", "open_x")),
+    "a-link-and-a-declared-pin": ("open-x,open_x", "open-x,openGlass",
+                                  "openGlass", "declared-unverified",
+                                  ("open-x", "open_x")),
+    "a-variable-to-itself": ("open-x", "open-x,openGlass", "openGlass",
+                             "verified", ()),
+}
+
+
+def probe(tmp_path: Path, pins: str, chain: str, env: dict, *args: str):
+    """The gate on `MedxGlass` from an empty folder, so that nothing beside
+    it answers for a link."""
+    here = tmp_path / "here"
+    here.mkdir(exist_ok=True)
+    return run_script(VALIDATOR, "MedxGlass", "--role", "assembly", "--pins",
+                      pins, "--referent-chain", chain, *args, cwd=here,
+                      env=env)
+
+
+def open_x_tree(tmp_path: Path, declares: str) -> dict:
+    """`SHAPE_PIN_SOURCE_OPEN_X` set to a tree declaring `declares`."""
+    return {"SHAPE_PIN_SOURCE_OPEN_X": str(
+        tree(tmp_path / "trees" / "open-x", declares))}
+
+
+@pytest.mark.parametrize("variable", [True, False], ids=["set", "unset"])
+@pytest.mark.parametrize("case", PROBES)
+def test_the_gate_says_a_set_variable_it_passed_over_once(tmp_path, case,
+                                                         variable):
+    """#990's probes. Two links of one chain share the variable, or a link
+    and a declared pin do (#909): set, the output was the same bytes as
+    unset, and the second chain, verified through the variable before
+    #909, became declared-unverified with no word why. One NOTE names the
+    variable and both products now, and the exit is the same set or unset.
+    The control, a variable a link has to itself, is read and says
+    nothing."""
+    pins, chain, declares, status, products = PROBES[case]
+    env = open_x_tree(tmp_path, declares) if variable else {}
+    result = probe(tmp_path, pins, chain, env, "--explain")
+    assert result.returncode == 0, result.stderr
+    assert f"   [{status if variable else 'declared-unverified'}]\n" in (
+        result.stdout), result.stdout
+    assert collision_lines(result) == (
+        [said_shared(GATE_SHARED, "SHAPE_PIN_SOURCE_OPEN_X", *products)]
+        if variable and products else []), result.stderr
+
+
+@pytest.mark.parametrize("args", [
+    pytest.param(("--explain", "--link-source-label=--pin-source"),
+                 id="under-a-label"),
+    pytest.param(("--quiet",), id="quiet"),
+])
+def test_the_gate_says_it_nowhere_it_says_no_note(tmp_path, args):
+    """`--quiet` drops it with every NOTE. Under a label the caller speaks
+    for someone else in its own sources: setup's step (4) speaks for the
+    scaffold, which asks the guard over its one chain and reads a variable
+    a declared pin shares, and its words for a link say where another link
+    shares the variable (#990)."""
+    pins, chain, declares, _status, _products = PROBES[
+        "two-links-of-one-chain"]
+    result = probe(tmp_path, pins, chain, open_x_tree(tmp_path, declares),
+                   *args)
+    assert result.returncode == 0, result.stderr
+    assert "link-source-collides" not in result.stdout + result.stderr
+
+
+def test_a_variable_only_a_chains_end_shares_is_not_said(tmp_path):
+    """Only a holder's declaration is read, so a variable passed over for
+    the chain's END alone decided nothing (#990). `openGla<SHARP S>`, a
+    declared pin, and `openGlass`, the chain's end, are two pin files and
+    one `SHAPE_PIN_SOURCE_OPENGLASS`."""
+    sharp = "openGla" + chr(0xDF)
+    env = {"SHAPE_PIN_SOURCE_OPENGLASS": str(
+        tree(tmp_path / "trees" / "openGlass", "openGlass"))}
+    result = probe(tmp_path, f"openXglass,{sharp}", "openXglass,openGlass",
+                   env, "--explain")
+    assert result.returncode == 0, result.stderr
+    assert "   [declared-unverified]\n" in result.stdout, result.stdout
+    assert collision_lines(result) == [], result.stderr
+
+
+@pytest.mark.parametrize("chain, run, kept", [
+    pytest.param(("open-x", "openGlass"), ("open_x",),
+                 {"SHAPE_PIN_SOURCE_OPEN_X": ["open-x", "open_x"]},
+                 id="a-holder"),
+    pytest.param(("openXglass", "openGlass"), ("openGla" + chr(0xDF),), {},
+                 id="the-end-alone"),
+])
+def test_the_root_keeps_a_variable_only_for_a_holder(monkeypatch, chain, run,
+                                                     kept):
+    """The root's copy keeps a set variable the guard passes over only where
+    a holder is among the products that share it, as the gate does (#990):
+    the chain's end holds no pin. No scaffolded root's chain can show it,
+    since nothing folds onto `openDox`'s variable but its own spellings."""
+    clear_ambient_pin_sources(monkeypatch)
+    for variable in ("SHAPE_PIN_SOURCE_OPEN_X", "SHAPE_PIN_SOURCE_OPENGLASS"):
+        monkeypatch.setenv(variable, "somewhere")
+    module = load_without_bytecode(TEMPLATE_MANIFEST,
+                                   "chain_pin_sources_shared")
+    shared: dict = {}
+    module._record_shared_variables(shared, chain, run)
+    assert {variable: list(named.values())
+            for variable, named in shared.items()} == kept
+
+
+@pytest.mark.parametrize("library", ["v1.1.1", "this-checkout"])
+def test_each_copy_says_it_only_where_the_library_passed_it_over(
+        project, monkeypatch, tmp_path, library):
+    """THE SKEW RULE (#990). A library with no `run_products=` asks the
+    guard over the chain alone, so it READS a variable that a declared pin
+    shares with a holder: beside v1.1.1's library the chain is verified
+    through it, and neither copy says it was read for none. Beside this
+    checkout's library it is passed over, and each copy says so once."""
+    clear_ambient_pin_sources(monkeypatch)
+    root = a_root_sharing_one_variable(project, "pin")
+    if library == "v1.1.1":
+        (root / "scripts" / "repo_shape.py").write_bytes(library_at(V1_1_1))
+    env = {"SHAPE_PIN_SOURCE_OPENSS": str(
+        tree(tmp_path / "trees" / SS, "openDox"))}
+    passed_over = library == "this-checkout"
+    own = validate(root, env)
+    assert own.returncode == 0, own.stderr
+    assert bool(manifest_warnings(own)) is passed_over, own.stderr
+    assert collision_lines(own) == ([said_shared(
+        ROOT_SHARED, "SHAPE_PIN_SOURCE_OPENSS", SS, SHARP)]
+        if passed_over else []), own.stderr
+    gate = run_script(root / "scripts" / "validate-repository-naming.py",
+                      "--project", "project.yaml", cwd=root, env=env)
+    assert gate.returncode == 0, gate.stderr
+    assert collision_lines(gate) == ([said_shared(
+        GATE_SHARED, "SHAPE_PIN_SOURCE_OPENSS", SS, SHARP)]
+        if passed_over else []), gate.stderr
+
+
+def test_the_doctor_reads_the_roots_note_as_a_note(project, monkeypatch,
+                                                   tmp_path):
+    """The root's note is spelled as `validate-pins.py` spells one, so the
+    doctor's `manifest` row reads it as a note of its own (`reported`), as
+    its `pins` row reads `neutral-pin-source-collides`. A line it does not
+    know as an item it reads as the tail of the WARNING before it."""
+    clear_ambient_pin_sources(monkeypatch)
+    root = a_root_sharing_one_variable(project, "pin")
+    result = validate(root, sharp_tree(tmp_path, "openQuill"))
+    assert result.returncode == 0, result.stderr
+    doctor = load_without_bytecode(REPO / "shape-doctor.py",
+                                   "chain_pin_sources_doctor")
+    said = doctor.reported(result.stdout + result.stderr)
+    assert [key for key, _text in said] == ["warnings", "notes"], said
+    assert said[1][1].startswith(
+        "link-source-collides: SHAPE_PIN_SOURCE_OPENSS is set, but "), said
+
+
+@pytest.mark.parametrize("where", ["chain", "pin"])
+def test_the_standard_reads_the_roots_note_as_no_finding(project, monkeypatch,
+                                                        tmp_path, where):
+    """RV1011's SHOULD-1 on #990. The standard asks the root's validator
+    in process (`shape_materialize._validator_notes`, behind the
+    scaffold's `manifest_invalid` and adopt's `manifest_judged`), and it
+    dropped only the WARNINGs `_findings` returns. So the root's
+    `link-source-collides` note read as a finding: `manifest_invalid`
+    gave it as a refusal and `manifest_judged` said None, where the
+    root's own `main` counts it as none. The root here is its own
+    template: its `project.yaml` holds no placeholder."""
+    clear_ambient_pin_sources(monkeypatch)
+    root = a_root_sharing_one_variable(project, where)
+    for variable, path in sharp_tree(tmp_path, "openQuill").items():
+        monkeypatch.setenv(variable, path)
+    policy = NamingPolicy.load(REPO / "contracts" / "repository-naming.yaml")
+    manifest = shape_materialize.parse_yaml(
+        (root / "project.yaml").read_text(encoding="utf-8"))
+    said = shape_materialize.manifest_validator(root)._findings(
+        manifest, policy, None)
+    assert [note for note in said if "link-source-collides" in note] == [
+        said_shared(ROOT_SHARED, "SHAPE_PIN_SOURCE_OPENSS", SS, SHARP)], said
+    assert shape_materialize._validator_notes({}, policy, root, ()) == []
+    assert shape_materialize.manifest_invalid({}, policy, {}, root) == []
+    assert shape_materialize.manifest_judged({}, policy, root) == frozenset()
 
 
 def test_the_library_asks_the_guard_over_the_run(tmp_path, monkeypatch):

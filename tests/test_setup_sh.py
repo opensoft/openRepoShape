@@ -58,7 +58,15 @@ from conftest import (STEP_FOUR_WORDS,
 from conftest import (REF_PARTS, assert_a_copy_answers_as_git_does,
                       assert_the_refusal_states_the_ref_rule)
 
+from conftest import (CONTROL, CONTROL_RULE, REF_RULE_WORDS,
+                      REPO_WITH_A_LEADING_DASH, SEPARATORS,
+                      assert_a_copy_answers_as_the_rule_does,
+                      the_rules_answer)
+
 from test_openreposhape_command import fake_github
+
+from test_openreposhape_command import (LOCALES, REPO_NOT_FOR_A_CLONE,
+                                        assert_refused_saying)
 
 SETUP = REPO / "setup.sh"
 DEGRADE_LINE = "authority is not wallet-carried in this org"
@@ -124,8 +132,8 @@ def make_outside_checkout(tmp_path: Path) -> Path:
 
 
 def run_bare_setup(script: Path, *args: str, cwd: Path,
-                   extra_env: dict | None = None,
-                   stdin: str = "") -> subprocess.CompletedProcess:
+                   extra_env: dict | None = None, stdin: str = "",
+                   errors: str | None = None) -> subprocess.CompletedProcess:
     """Like `run_setup`, but against an arbitrary script path and cwd — what
     the self-bootstrap tests need since `run_setup` always drives THIS
     checkout's own `setup.sh` from THIS checkout's own directory.
@@ -133,7 +141,8 @@ def run_bare_setup(script: Path, *args: str, cwd: Path,
     `stdin` as `run_setup` has it: a pipe, and no controlling terminal
     either (#492), never the terminal pytest was started from, so a run that
     reaches the one `yes` refuses instead of waiting for somebody to type
-    it."""
+    it. `errors`, how the output is read where it may hold a byte that is
+    not UTF-8 (#940)."""
     env = dict(os.environ)
     env.setdefault("GIT_AUTHOR_NAME", "openRepoShape tests")
     env.setdefault("GIT_AUTHOR_EMAIL", "tests@openreposhape.invalid")
@@ -142,7 +151,7 @@ def run_bare_setup(script: Path, *args: str, cwd: Path,
     env.update(extra_env or {})
     return subprocess.run(["bash", str(script), *args], capture_output=True,
                           text=True, check=False, input=stdin, cwd=str(cwd),
-                          env=env, start_new_session=True)
+                          env=env, start_new_session=True, errors=errors)
 
 
 def shim_default_repo() -> str:
@@ -922,6 +931,29 @@ def test_a_shape_ref_that_is_not_a_ref_is_refused_by_the_shim(tmp_path, ref):
     assert "--shape-ref" in result.stderr
 
 
+def run_shim_under(tmp_path: Path, repo: str, *args: str, locale: str = ""):
+    """The shim from a directory that is no checkout, run with `args`,
+    `$OPENREPOSHAPE_REPO` set to `repo`, `LC_ALL` to `locale` where one is
+    given, a `$TMPDIR` of its own, and a `gh` and a `curl` that log and
+    fail first on `$PATH`. Neither is asked, and the run leaves no shape
+    checkout. Read with `surrogateescape`: a value the guard takes may be
+    printed as typed, a byte that is not UTF-8 and all (#940)."""
+    outside = make_outside_checkout(tmp_path)
+    temporary = tmp_path / "tmp"
+    temporary.mkdir()
+    network = tmp_path / "network.log"
+    chosen = {"LC_ALL": locale} if locale else {}
+    result = run_bare_setup(outside / "setup.sh", *args,
+                            cwd=outside, errors="surrogateescape",
+                            extra_env={"OPENREPOSHAPE_REPO": repo, **chosen,
+                                       "TMPDIR": str(temporary),
+                                       **fake_github(tmp_path, (),
+                                                     log=network)})
+    assert not network.exists(), network.read_text(encoding="utf-8")
+    assert list(temporary.iterdir()) == [], "a shape checkout was left behind"
+    return result
+
+
 @pytest.mark.parametrize("name, takes", REF_PARTS)
 def test_the_shim_takes_a_shape_ref_as_git_does_before_any_clone(
         tmp_path, name, takes):
@@ -939,24 +971,12 @@ def test_the_shim_takes_a_shape_ref_as_git_does_before_any_clone(
     applied, and leaves nothing in `$TMPDIR`. A `gh` and a `curl` that log
     and fail stand first on `$PATH`, and neither is called.
     """
-    outside = make_outside_checkout(tmp_path)
-    temporary = tmp_path / "tmp"
-    temporary.mkdir()
-    network = tmp_path / "network.log"
-    result = run_bare_setup(outside / "setup.sh",
+    result = run_shim_under(tmp_path, str(tmp_path / "no-standard-here"),
                             "--org", "demoorg", "--project", "Sample", "--yes",
                             "--shape-ref", name,
-                            "--local-remote-dir", str(tmp_path / "remotes"),
-                            cwd=outside,
-                            extra_env={"OPENREPOSHAPE_REPO":
-                                       str(tmp_path / "no-standard-here"),
-                                       "TMPDIR": str(temporary),
-                                       **fake_github(tmp_path, (),
-                                                     log=network)})
-    assert not network.exists(), network.read_text(encoding="utf-8")
+                            "--local-remote-dir", str(tmp_path / "remotes"))
     took = "(0) self-bootstrap" in result.stdout
     assert_a_copy_answers_as_git_does("setup.sh", name, takes, took)
-    assert list(temporary.iterdir()) == [], "a shape checkout was left behind"
     if took:
         return
     assert result.returncode == 2, result.stderr + result.stdout
@@ -1018,6 +1038,93 @@ def test_a_shape_ref_with_a_control_character_is_refused_without_echo(tmp_path):
     assert "--shape-ref" in result.stderr
     assert "FORGED" not in result.stderr, (
         "the newline let a forged line reach stderr:\n" + result.stderr)
+
+
+# --- the launcher's rule for a control character (#940) ----------------------
+
+#: `CONTROL_RULE` as this script answers it (#940): the line and paragraph
+#: separators as control characters, by their bytes (`SEPARATORS`), and no
+#: other row a code point answers, as this script asks nothing else of the
+#: characters a terminal draws as something other than themselves (#837).
+SHIM_CONTROL_RULE = [
+    pytest.param(row.values[0],
+                 CONTROL if row.values[1] in SEPARATORS else row.values[1],
+                 id=row.id)
+    for row in CONTROL_RULE
+    if not row.values[1].startswith("U+") or row.values[1] in SEPARATORS]
+
+#: How `$OPENREPOSHAPE_REPO` ends (`SHIM_CONTROL_RULE`), after a path
+#: nothing is at (`{d}`), and what the guard says of it; and a value that
+#: starts with `-`, which it refuses in the words of a control character.
+SHIM_REPOSITORIES = [
+    *(pytest.param("{d}/" + row.values[0], row.values[1], id=row.id)
+      for row in SHIM_CONTROL_RULE),
+    pytest.param(REPO_WITH_A_LEADING_DASH, CONTROL, id="a-leading-dash"),
+]
+
+#: The guard's refusal of a `--shape-ref` holding a control character.
+SHAPE_REF_CARRIES_A_CONTROL_CHARACTER = (
+    "--shape-ref carries a control character, which is not a branch, tag or "
+    "commit this tool will pass to `git checkout`.")
+
+
+@pytest.mark.parametrize("locale", LOCALES)
+@pytest.mark.parametrize("typed, said", SHIM_REPOSITORIES)
+def test_the_repository_guard_answers_as_the_launchers_rule_does(
+        tmp_path, typed, said, locale):
+    """The guard held `$OPENREPOSHAPE_REPO` to `[![:print:]]`, which under
+    `C` matches every byte past ASCII: a URL or a path with a letter past
+    ASCII was refused as carrying a control character, where `C.UTF-8`
+    cloned it, and the launcher hands this script the URL it fetched from
+    (#940). It now asks the launcher's rule, #760's bytes under
+    `LC_ALL=C`, and gives each row of `SHIM_CONTROL_RULE` its answer in
+    both locales: a value it takes goes to `git clone`, which finds nothing
+    there, a lone `0x9B` byte too (#867's trade); a control character, the
+    line and paragraph separators, which it refused in both locales before,
+    and a leading `-` are refused, exit 2, before any clone, none of it
+    echoed."""
+    repo = typed.format(d=tmp_path / "no-standard-here")
+    result = run_shim_under(tmp_path, repo, "--preflight", locale=locale)
+    took = "(0) self-bootstrap" in result.stdout
+    assert_a_copy_answers_as_the_rule_does(
+        "setup.sh's guard on $OPENREPOSHAPE_REPO", repo, said,
+        the_rules_answer(result.stderr, took))
+    if took:
+        assert f"  git clone --quiet -- {repo} " in result.stdout
+        return
+    assert assert_refused_saying(result, REPO_NOT_FOR_A_CLONE) \
+        == f"REFUSED: {REPO_NOT_FOR_A_CLONE}"
+
+
+@pytest.mark.parametrize("locale", LOCALES)
+@pytest.mark.parametrize("end, said", SHIM_CONTROL_RULE)
+def test_the_shape_ref_guard_answers_as_the_launchers_rule_does(
+        tmp_path, end, said, locale):
+    """The guard held `--shape-ref` to `[![:print:]]` as well, so under `C`
+    a ref with a letter past ASCII was refused as carrying a control
+    character, and under `C.UTF-8` by the shape `case`, which names it
+    (#940). It now asks the launcher's rule: a ref it takes goes on to the
+    shape, which refuses each of these, exit 2, naming it, in the words
+    `C.UTF-8` gave, a lone `0x9B` byte included (#867's trade); a control
+    character, and either separator, is refused, exit 2, and not echoed.
+    No clone either way."""
+    ref = "v1" + end
+    result = run_shim_under(tmp_path, str(tmp_path / "no-standard-here"),
+                            "--preflight", "--shape-ref", ref, locale=locale)
+    took = REF_RULE_WORDS in result.stderr
+    assert_a_copy_answers_as_the_rule_does(
+        "setup.sh's guard on --shape-ref", end, said,
+        the_rules_answer(result.stderr, took))
+    assert "git clone" not in result.stdout
+    if took:
+        assert result.returncode == 2, result.stderr + result.stdout
+        assert_the_refusal_states_the_ref_rule(
+            result.stderr,
+            f"REFUSED: --shape-ref is '{ref}', which is not a branch, tag or "
+            "commit this tool will pass to `git checkout`: ")
+        return
+    refusal = SHAPE_REF_CARRIES_A_CONTROL_CHARACTER
+    assert assert_refused_saying(result, refusal) == f"REFUSED: {refusal}"
 
 
 def test_the_shim_refuses_before_cloning_when_git_is_missing(tmp_path):
