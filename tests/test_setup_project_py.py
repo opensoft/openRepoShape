@@ -1875,7 +1875,9 @@ def test_an_empty_credential_store_is_asked_about_again_after_setup_git(
 STORE_HELPER = "[credential]\n\thelper = store\n"
 
 #: `url.<base>` rules as git's config holds them: every github.com url over
-#: ssh, `demoorg`'s alone, and pushes alone.
+#: ssh, `demoorg`'s alone, pushes alone, `DemoOrg`'s alone in capitals
+#: (`DEMOORG_IN_CAPITALS_OVER_SSH`), and every github.com url over HTTP
+#: (`EVERY_ORG_OVER_HTTP`).
 EVERY_ORG_OVER_SSH = ('[url "git@github.com:"]\n'
                       "\tinsteadOf = https://github.com/\n")
 DEMOORG_OVER_SSH = ('[url "git@github.com:demoorg/"]\n'
@@ -1888,8 +1890,8 @@ EVERY_ORG_OVER_HTTP = ('[url "http://github.com/"]\n'
                        "\tinsteadOf = https://github.com/\n")
 
 #: A rule in git's global config, the run's flags, and whether git still
-#: sends the run's github.com urls over HTTPS, where it asks a credential
-#: helper (`git ls-remote --get-url`, measured, #1013).
+#: sends the run's github.com urls over HTTP or HTTPS, where it asks a
+#: credential helper (`git ls-remote --get-url`, measured, #1013).
 RULES = {
     "no-rule": ("", [], True),
     "every-org": (EVERY_ORG_OVER_SSH, [], False),
@@ -1997,6 +1999,7 @@ HELPER_URLS = [
     ("*.com", True, False),
     ("https://github.com:8443", False, False),
     ("https://github.com:0", False, False),
+    ("https://github.com:000", False, False),
     ("http://github.com", False, False),
     ("ssh://github.com", False, False),
     ("https://gitlab.com", False, False),
