@@ -84,14 +84,19 @@ WHAT IS CHECKED
     names a file, is the doctor's to say (#655).
 
 EXIT CODES: 0 valid · 1 findings · 2 refusal (the file is missing or unreadable)
+            -- and a declared referent's pin file this user cannot reach is
+            a refusal too, never a finding that it is missing (#430)
 """
 
 from __future__ import annotations
 
 import argparse
+import errno
 import inspect
 import re
+import stat
 import sys
+from collections.abc import Callable
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
@@ -106,6 +111,112 @@ from repo_shape import (  # noqa: E402
 DATE_RE = re.compile(r"^\d{4}-\d{2}-\d{2}$")
 QUALIFIED_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_.-]*/[A-Za-z0-9][A-Za-z0-9_.-]*$")
 REQUIRED_ROLES = {"assembly", "spec", "code"}
+
+#: The `OSError`s that `Path.is_file()` answered False to on Python 3.9 to
+#: 3.13 (pathlib's `_ignore_error`), because each means there is nothing at
+#: the name to open: no such file, a part of the path that is not a
+#: directory, a bad descriptor, a symlink loop, and Windows' "not ready",
+#: "invalid name" and "cannot resolve". Every other one was raised, and is
+#: refused here by name (#430), as `validate-pins.py` refuses it.
+_ABSENT_ERRNOS = (errno.ENOENT, errno.ENOTDIR, errno.EBADF, errno.ELOOP)
+_ABSENT_WINERRORS = (21, 123, 1921)
+
+#: What a file the operating system refused for ANOTHER reason than
+#: permission is told (#430): an I/O error, a name longer than the
+#: filesystem takes, a file replaced while this ran. No `chmod` puts one
+#: right. `validate-pins.py`'s `OTHER_REASON`, word for word.
+OTHER_REASON = (
+    "Where the operating system gave another reason, put a regular file this "
+    "user can open back in its place, or take away one nobody wants, and make "
+    "sure nothing is changing the directory while this runs. ")
+
+
+def _is_a(path: Path, kind: Callable[[int], bool]) -> bool:
+    """Whether `path` is there and of `kind` (`stat.S_ISREG`), raising the
+    `OSError` of a `stat` the operating system REFUSED (#430).
+
+    `validate-pins.py`'s `_is_a`, as a copy: this file imports nothing new
+    from `repo_shape.py`, which may be older than it (#370, #610). NOT
+    `Path.is_file()`, whose answer depends on the Python. Up to 3.13 it
+    raised a refused `stat` (`PermissionError`) out of the run, a traceback
+    and exit 1, which is a finding's code; from 3.14 it answers False to ANY
+    `OSError`, so a `project.yaml` this user cannot reach was refused
+    `manifest-missing`, and a declared referent's pin file in a `contracts/`
+    it cannot search was the finding `naming-referent-missing`: a file that
+    is there, said not to be. A name the operating system cannot take at all
+    (a NUL in it) is no file, as `is_file()` answered it.
+    """
+    try:
+        mode = path.stat().st_mode
+    except OSError as exc:
+        if (exc.errno in _ABSENT_ERRNOS
+                or getattr(exc, "winerror", None) in _ABSENT_WINERRORS):
+            return False
+        raise
+    except ValueError:
+        return False
+    return kind(mode)
+
+
+def _unreadable_file(root: Path, path: Path, exc: OSError) -> Refusal:
+    """`yaml-unreadable` for a file this validator must read or find and the
+    operating system will not let it (#430): its `stat` refused, or its
+    open. `validate-pins.py`'s `_unreadable_file`, in its words.
+
+    NAMED ONCE, RELATIVE TO THE ROOT, POSIX on every platform, or whole
+    where it is not under the root (a `--policy` given elsewhere), and
+    spelled (`_shown`). THE ADVICE FOLLOWS THE CAUSE: a permission
+    (`PermissionError`, which is `EACCES` and `EPERM`) is put right by the
+    mode or the owner, and any other cause is `OTHER_REASON`, which is not
+    told to `chmod`.
+    """
+    try:
+        named = _shown(path.relative_to(root).as_posix())
+    except ValueError:
+        named = _shown(str(path))
+    advice = (
+        "Make what this user may not open readable by this user: `chmod u+r` "
+        "on a file, `chmod u+rx` on a directory (and on every directory above "
+        "it inside the root), or fix who owns it. "
+        if isinstance(exc, PermissionError) else OTHER_REASON)
+    return Refusal(
+        "yaml-unreadable",
+        f"{named}: cannot be read ({exc.strerror or type(exc).__name__})",
+        "Remediation: this validator reads project.yaml, the naming policy "
+        "and the pin file each declared referent needs, and one it cannot "
+        "read is a question it cannot answer, never a pass. " + advice
+        + "Then run the same command again.")
+
+
+def _is_file(root: Path, path: Path) -> bool:
+    """Whether `path` is a file, asked as `_is_a` asks it, or the refusal
+    naming it (`_unreadable_file`) where its `stat` was refused (#430)."""
+    try:
+        return _is_a(path, stat.S_ISREG)
+    except OSError as exc:
+        raise _unreadable_file(root, path, exc) from exc
+
+
+def _load(root: Path, path: Path, read: Callable = load_yaml):
+    """`read(path)`, `load_yaml` or `NamingPolicy.load`, with a file this
+    user cannot OPEN named as one whose `stat` was refused is
+    (`_unreadable_file`, #430), so `project.yaml` at mode 000 and one in a
+    folder nobody may search say one line, and so does the naming policy
+    in a `contracts/` this user cannot search, which was named whole, with
+    nothing to put it right.
+
+    Read off the refusal's cause, as `validate-pins.py`'s `_load` reads it:
+    `load_yaml` has raised its refusal `from` the `OSError` since it was
+    written, so a `repo_shape.py` older than this file is read the same way.
+    Any other refusal (a file that is not UTF-8, or does not parse, or a
+    policy of the wrong kind) keeps its words."""
+    try:
+        return read(path)
+    except Refusal as exc:
+        if isinstance(exc.__cause__, OSError):
+            raise _unreadable_file(root, path,
+                                   exc.__cause__) from exc.__cause__
+        raise
 
 
 def _declared_pins(manifest: dict) -> set[str]:
@@ -494,6 +605,12 @@ def _naming_referent_missing_pin_finding(leg_role, naming: dict, found,
     Split from `_naming_referent_declared_findings` for #132. A direct pin
     is the referent's own pin file; a chain's is the FIRST LINK's, because
     that is the pin this project actually holds.
+
+    A PIN FILE THIS USER CANNOT REACH IS NOT MISSING (#430): `_is_file`
+    raises `yaml-unreadable` naming it, which `main` refuses, exit 2, as
+    `validate-pins.py` refuses the same file. `Path.is_file()` raised that
+    `stat` out of the run up to Python 3.13, and from 3.14 answered False,
+    and this finding said a file that is there does not exist.
     """
     resolution = found.referent
     satisfied = resolution.referent if resolution.reached else None
@@ -503,7 +620,7 @@ def _naming_referent_missing_pin_finding(leg_role, naming: dict, found,
     if not (declared is True and held and root is not None):
         return []
     pin_path = root / "contracts" / f"{held.lower()}-pin.yaml"
-    if pin_path.is_file():
+    if _is_file(root, pin_path):
         return []
     return [
         f"FINDING naming-referent-missing: leg {leg_role!r}: "
@@ -1186,23 +1303,28 @@ def main(argv: list[str] | None = None) -> int:
     try:
         root = find_repo_root(args.root or Path(__file__).resolve().parents[1])
         manifest_path = root / "project.yaml"
-        if not manifest_path.is_file():
+        # A `project.yaml` this user cannot reach or open is refused by name,
+        # `yaml-unreadable`, never `manifest-missing` (#430).
+        if not _is_file(root, manifest_path):
             raise Refusal(
                 "manifest-missing",
                 f"{manifest_path} does not exist. A project that has elected "
                 "this schema declares it in `project.yaml`; a project that has "
                 "not, does not run this validator.",
             )
-        manifest = load_yaml(manifest_path)
+        manifest = _load(root, manifest_path)
         if not isinstance(manifest, dict):
             raise Refusal("manifest-unreadable", f"{manifest_path}: not a mapping")
         policy_path = args.policy or (root / "contracts" / "repository-naming.yaml")
-        policy = NamingPolicy.load(policy_path)
+        policy = _load(root, policy_path, NamingPolicy.load)
+        # Inside the `try`: a declared referent's pin file this user cannot
+        # reach is a check that cannot run, so it is refused, exit 2, and no
+        # finding is said over it (#430).
+        notes = _findings(manifest, policy, root)
     except Refusal as exc:
         print(str(exc), file=sys.stderr)
         return 2
 
-    notes = _findings(manifest, policy, root)
     # A WARNING is a note about what could not be CHECKED here (a chain link
     # whose tree is not on this disk), never about what is wrong. It is
     # printed and then forgotten by the exit code, deliberately.
