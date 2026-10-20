@@ -140,14 +140,16 @@ def run_tool(tool: str, tmp_path, monkeypatch, capsys, module,
 
 
 #: `(root's visibility, stub keywords, what is said)`: "hint" is the Free-plan
-#: hint naming the root, "root" the unread-visibility NOTE, "plan" the
-#: unread-plan NOTE, and None nothing about the secrets at all. A
+#: hint naming the root, "hint-internal" the same for an INTERNAL root, which
+#: it does not call private (#994), "root" the unread-visibility NOTE, "plan"
+#: the unread-plan NOTE, and None nothing about the secrets at all. A
 #: `visibility_errors` text fails the root's `--json visibility` read alone.
 #: An owner GitHub says is no organisation has no organisation secrets, so
 #: nothing is said of them: it is not a plan this run could not read.
 CASES = {
     "public": ("PUBLIC", {"plan": "free"}, None),
     "private": ("PRIVATE", {"plan": "free"}, "hint"),
+    "internal": ("INTERNAL", {"plan": "free"}, "hint-internal"),
     "visibility-502": ("PRIVATE", {"plan": "free",
                                    "visibility_errors": BAD_GATEWAY}, "root"),
     "visibility-403": ("PRIVATE", {"plan": "free",
@@ -167,13 +169,14 @@ def test_each_tool_says_what_github_said_of_the_root_and_its_plan(
         tool, case, tmp_path, monkeypatch, capsys, adopter):
     """L2-57, L2-58, L2-59 and L2-71, in each tool. The hint is printed only
     for a root GitHub calls private or internal on a plan it calls `free`,
-    with the root alone as the repository that is private; a root whose
-    visibility GitHub does not give is said to be unread and the plan is not
-    asked; a closed root whose plan GitHub does not name is said to be on a
-    plan this run could not read. On main `init` called a public holder
-    private and gave it the hint, the scaffold took the run's visibility for
-    a root it could not read, and every tool was silent over an unread plan,
-    as over a paid one."""
+    with the root alone as the repository that is private, or an internal
+    one said to be internal (#994); a root whose visibility GitHub does not
+    give is said to be unread and the plan is not asked; a closed root whose
+    plan GitHub does not name is said to be on a plan this run could not
+    read. On main `init` called a public holder private and gave it the
+    hint, the scaffold took the run's visibility for a root it could not
+    read, and every tool was silent over an unread plan, as over a paid
+    one."""
     seen, stub, said = CASES[case]
     root = ROOTS[tool]
     if "visibility_errors" in stub:
@@ -182,13 +185,19 @@ def test_each_tool_says_what_github_said_of_the_root_and_its_plan(
     printed, calls = run_tool(tool, tmp_path, monkeypatch, capsys, adopter,
                               seen, **stub)
     assert f"repo view {root} --json visibility" in calls, calls
-    lines = {"hint": [HINT, f"{root} is private, so org-level",
-                      f"--repo {root} --body"],
-             "root": unread_root(root), "plan": unread_plan(root)}
-    for kind, expected in lines.items():
+    subjects = {"hint": f"{root} is private, so org-level",
+                "hint-internal": f"{root} is internal, which this hint "
+                                 "treats as private, so org-level"}
+    closed = said in subjects
+    for line in (HINT, f"--repo {root} --body"):
+        assert (line in printed) == closed, (line, printed)
+    for kind, line in subjects.items():
+        assert (line in printed) == (kind == said), (kind, line, printed)
+    for kind, expected in (("root", unread_root(root)),
+                           ("plan", unread_plan(root))):
         for line in expected:
             assert (line in printed) == (kind == said), (kind, line, printed)
-    assert (PLAN_ASKED in calls) == (seen == "PRIVATE"
+    assert (PLAN_ASKED in calls) == (seen in ("PRIVATE", "INTERNAL")
                                      and said != "root"), calls
     assert "its members" not in printed, printed
 
@@ -433,8 +442,14 @@ def test_the_note_goes_by_both_answers(monkeypatch, visibility, plan, said):
         assert note is None
     else:
         assert note.startswith(first[said]), note
-    if said == "hint":
+    if said == "hint" and visibility == "private":
         assert f"{root} is private, so org-level" in note, note
+    if said == "hint" and visibility == "internal":
+        # Not called private (#994): `FREE_PLAN_HINT` reads "{what} private,
+        # so", and `what` says the root is internal.
+        assert (f"{root} is internal, which this hint treats as private, so "
+                "org-level") in note, note
+        assert f"{root} is private" not in note, note
     if said == "plan":
         assert note == unread_plan(root)[0], note
     if said == "internal":
