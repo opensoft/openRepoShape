@@ -47,7 +47,9 @@ from test_commit_trailers import (
 from test_update_shape import rendered_shape_line, strip_shape_block
 
 sys.path.insert(0, str(REPO / "scripts"))
-from repo_shape import Refusal, load_yaml, tree_digest  # noqa: E402
+from repo_shape import (  # noqa: E402
+    Refusal, load_yaml, shell_quoted, tree_digest,
+)
 from shape_materialize import (  # noqa: E402
     SHAPE_REPOSITORY, readme_shape_lines, readme_trailing_shape_line,
 )
@@ -538,7 +540,9 @@ def test_add_refuses_a_spelling_of_a_member_the_family_already_pins(
     assert result.returncode == 2, result.stderr + result.stdout
     assert "REFUSED member-already-present" in result.stderr
     assert "the row IRRS pins InkRouter/IRRS" in result.stderr
-    assert "`family.py bump --member IRRS --to <commit>`" in result.stderr
+    assert ("`family.py bump --family-root "
+            f"{shell_quoted(holder.resolve())} --member IRRS --to "
+            "<commit>`") in result.stderr
     assert "mounting" not in result.stdout
     assert git("rev-parse", "HEAD", cwd=holder).stdout == head
     assert git("status", "--porcelain", cwd=holder).stdout == status
