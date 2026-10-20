@@ -465,6 +465,36 @@ def test_a_word_the_reader_refuses_is_no_members_line(tmp_path,
     assert held.rewritten([]) == text
 
 
+@pytest.mark.parametrize("line", ["members: null", "members: []"])
+def test_two_members_lines_are_refused_by_the_rewrite_itself(
+        tmp_path, family_module, line):
+    """THE COUNT OF TWO, ASKED OF THE METHOD (#1029, lane 4's RV1026,
+    SHOULD 1). Since #974 the reader refuses a key written twice, so a verb
+    stops such a manifest at `Family.open` (the premise below) and
+    `test_a_second_members_line_above_the_block_is_refused` never reaches
+    this count. It is defence in depth, for a manifest changed after the
+    open or a caller of the method: a second margin `members:` line above
+    `name:` is refused with both lines counted, and nothing is rewritten,
+    rather than the manifest cut off at the first one and every key below
+    it lost."""
+    path = tmp_path / "family.yaml"
+    text = f"kind: family-manifest\n{line}\nname: x\nmembers: []\n"
+    path.write_text(text, encoding="utf-8")
+    with pytest.raises(family_module.Refusal) as read:
+        family_module.load_yaml(path)
+    assert (read.value.code, read.value.detail) == (
+        "yaml-unparsable",
+        f"{path}: line 4: key 'members' is written twice"), "premise"
+    held = family_module.Family(tmp_path, {"members": []})
+    with pytest.raises(family_module.Refusal) as caught:
+        held.write_members([])
+    assert caught.value.code == "family-members-unrecognised"
+    assert caught.value.detail == (
+        f"{path} has 2 `members:` line(s) where exactly one was expected, "
+        "so this tool will not rewrite it")
+    assert path.read_text(encoding="utf-8") == text
+
+
 def a_line_above_the_name(root: Path, line: str) -> None:
     """`line` at the margin above `family.yaml`'s `name:`, with the real
     `members:` block still at the end, committed, as a person commits a
@@ -489,7 +519,9 @@ def test_a_second_members_line_above_the_block_is_refused(family, holder,
     written twice, by the line of the second, so `add` stops at
     `Family.open`, before the mount and before any line is counted, and
     the file is untouched. The refusal is the reader's own `yaml-unparsable`:
-    one line, with no remediation of its own."""
+    one line, with no remediation of its own. The count of two itself is
+    asked of the method, #1029:
+    `test_two_members_lines_are_refused_by_the_rewrite_itself`."""
     a_line_above_the_name(holder, line)
     opens = [number for number, text in enumerate(
         (holder / "family.yaml").read_text(encoding="utf-8").splitlines(), 1)

@@ -2036,13 +2036,14 @@ def free_plan_secrets_note(org: str, root: str,
     - Unread: `ROOT_VISIBILITY_UNREAD`, and the plan is not asked: that NOTE
       names both conditions, so it holds whatever the plan is.
     - Public: None. An organisation secret reaches it on every plan.
-    - Private or internal: the plan is asked. On `free` it is
-      `FREE_PLAN_HINT`, with `root` alone as the repository that is private,
-      as the scaffold and adopt name it since #602 and `family.py init` since
-      #660; where the plan is unread, `FREE_PLAN_UNREAD`, or for an internal
+    - Private or internal: the plan is asked. On `free` it is `FREE_PLAN_HINT`,
+      with `root` alone as the repository that is private, as the scaffold and
+      adopt name it since #602 and `family.py init` since #660, and for an
+      internal root saying it is internal, which the hint treats as private
+      (#994); where the plan is unread, `FREE_PLAN_UNREAD`, or for an internal
       root `FREE_PLAN_UNREAD_INTERNAL`, which says the plan cannot be what
-      makes the hint apply to it (#913); on any other plan, and where the
-      owner is not an organisation, None.
+      makes the hint apply to it (#913); on any other plan, and where the owner
+      is not an organisation, None.
 
     The scaffold passes the run's visibility for a root it created and
     GitHub's for one it reused, adopt GitHub's for the root it adopted, and
@@ -2055,7 +2056,17 @@ def free_plan_secrets_note(org: str, root: str,
         return None
     plan = organisation_plan(org)
     if plan == "free":
-        return FREE_PLAN_HINT.format(org=org, repo=root, what=f"{root} is")
+        # GitHub gives internal visibility only to an organisation an
+        # enterprise account owns, which is not on Free (see
+        # `FREE_PLAN_UNREAD_INTERNAL`), so an internal root on a plan read as
+        # `free` should not arise. If it does, the hint holds of it as of a
+        # private one (an organisation secret is delivered only to a public
+        # repository), but `FREE_PLAN_HINT` reads "{what} private, so ...",
+        # so `what` says the root is internal rather than calling it private
+        # (#994); `repo_shape.py`'s pinned text is not touched.
+        what = (f"{root} is internal, which this hint treats as"
+                if visibility == "internal" else f"{root} is")
+        return FREE_PLAN_HINT.format(org=org, repo=root, what=what)
     if plan is None and visibility == "internal":
         return FREE_PLAN_UNREAD_INTERNAL.format(org=org, root=root)
     if plan is None:
