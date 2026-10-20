@@ -74,6 +74,9 @@ import pytest
 
 from conftest import (NO_BYTECODE, REPO, clear_ambient_pin_sources, git,
                       load_without_bytecode, run_script)
+from test_bootstrap_non_utf8_branch import (
+    NEEDS_A_UTF8_PROCESS, needs_the_byte,
+)
 from test_bump_leg_unopenable import refused_stat
 from test_manifest_validator import as_a_descendant_by_chain, link_tree
 from test_validate_pins_named_and_spelled import (
@@ -152,11 +155,14 @@ def nothing_claimed(named: str, label: str = MAYBE,
             f"be read ({reason})", f"      {advice}{AGAIN}"]
 
 
-def not_initialized(shown: str) -> str:
-    """Step (a)'s line for a spec leg at `shown` that is not there."""
+def not_initialized(shown: str, word: str | None = None) -> str:
+    """Step (a)'s line for a spec leg at `shown` that is not there. The
+    command that makes it one holds the path as ONE shell word, `word`
+    (`shown` itself where the name needs no quoting), after a `--`, which
+    keeps a path that begins with `-` from being read as an option (#961)."""
     return (f"  [spec] {shown}: NOT INITIALIZED. Run `git submodule update "
-            f"--init {shown}` {DASH} the validators below will refuse until "
-            "you do.")
+            f"--init -- {shown if word is None else word}` {DASH} the "
+            "validators below will refuse until you do.")
 
 
 def refusing(monkeypatch, name: str, failure: OSError | None,
@@ -634,7 +640,45 @@ def test_a_leg_path_holding_a_nul_is_not_initialized(project):
     shown = leg_path(project, "spec", "sp\x00ec")
     result = bootstrap(project, "--skip-validators")
     assert result.stdout == skipping_validators(
-        project, [not_initialized(shown), placed(project, "code")],
+        project, [not_initialized(shown, f"'{shown}'"),
+                  placed(project, "code")],
+        DEGRADE), result.stdout
+    assert result.returncode == 0, result.stderr
+
+
+@pytest.mark.parametrize("typed, word", [
+    pytest.param("my spec", "'my spec'", id="space"),
+    pytest.param("=spec", "'=spec'", id="leading-equals"),
+    pytest.param("-spec", "-spec", id="leading-dash"),
+    # Git reads a leading `:` as pathspec magic, even after the `--`.
+    pytest.param(":spec", "./:spec", id="leading-colon"),
+    # `./` goes before the path, inside the one word: `./':my spec'` is the
+    # same name to a shell, and is not the word.
+    pytest.param(":my spec", "'./:my spec'", id="leading-colon-and-space"),
+    pytest.param(":sp\udcffec", r'''"$(printf -- './:sp\377ec')"''',
+                 id="leading-colon-and-byte-0xff"),
+    pytest.param("spec ", "'spec '", id="trailing-space"),
+    pytest.param(" spec", "' spec'", id="leading-space"),
+    pytest.param("sp\x1bec", r'''"$(printf -- 'sp\033ec')"''', id="escape"),
+    pytest.param("sp\u2028ec", r'''"$(printf -- 'sp\342\200\250ec')"''',
+                 id="line-separator", marks=NEEDS_A_UTF8_PROCESS),
+    pytest.param("sp\udcffec", r'''"$(printf -- 'sp\377ec')"''',
+                 id="byte-0xff"),
+])
+def test_the_command_that_initializes_a_leg_holds_its_path_as_one_word(
+        project, tmp_path, typed, word):
+    """THE ISSUE (#961, rv932's SHOULD 3): the line printed
+    `--init my spec` (two pathspecs), `--init =spec` (zsh expands it),
+    `--init sp\\x1bec` and `--init sp\\udcffec` (the escape text, which
+    names no path) and `--init -spec` (an option). The path is one word,
+    `_paste_word`'s, after a `--`; `tests/test_bootstrap_pasteable_lines.py`
+    pastes each into a shell."""
+    if "\udcff" in typed:
+        needs_the_byte(tmp_path)
+    shown = leg_path(project, "spec", typed)
+    result = bootstrap(project, "--skip-validators")
+    assert result.stdout == skipping_validators(
+        project, [not_initialized(shown, word), placed(project, "code")],
         DEGRADE), result.stdout
     assert result.returncode == 0, result.stderr
 

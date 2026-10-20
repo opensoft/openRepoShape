@@ -35,6 +35,19 @@ And two things the reader read without a word, from #459's triage (#917):
   refused by its line. One opening `#` is a comment that ends the block,
   as PyYAML reads it, where it was text.
 
+And what RV974's review of #974 found in block scalars (#1004):
+
+- A HEADER'S INDENTATION DIGIT (`|2`, `|1`, `>-2`) was accepted and never
+  read, so `k: |2` over `    a` and `    b` read `'a\\nb\\n'`, where PyYAML
+  reads `'  a\\n  b\\n'`. It is refused by the header's line.
+- `+` was read as clip; a line of spaces deeper than the block lost the
+  spaces past its column; a blank line above the block's first line of
+  text and deeper than it, and a line holding a tab left of the block's
+  column, were blank lines, where PyYAML refuses the document. Each is
+  read as PyYAML reads it, or refused by its line, and so is what the same
+  reading changes: a block with no text, and a folded line that opens with
+  a space or a tab.
+
 PyYAML is the ORACLE ONLY, as in `tests/test_yaml_indicator_openers.py`,
 whose helpers this file uses: where it is not installed, the comparisons
 are skipped and this reader's answers are still asserted.
@@ -1091,13 +1104,202 @@ def test_pyyaml_refuses_the_line_under_the_comment_too():
     assert refused(stock(UNDER_THE_COMMENT))
 
 
-def test_an_indentation_digit_is_still_not_read_and_now_refuses():
-    """The header's indentation digit is accepted and never read: the
-    block's column is its first line's. `k: |2` over `    a` and `  b` is
-    `'  a\\nb\\n'` to PyYAML, and main read `'a\\n'`, losing `b`; it is
-    refused now, by the rule above, and not misread."""
-    assert refusal_words("k: |2\n    a\n  b") == UNDER.format(
-        line=3, spaces=2, block=4)
+# --- #1004: a block scalar is read as YAML reads it, or refused by its line -
+
+#: How a header holding an indentation digit is refused, by its own line.
+DIGIT = ("line {line}: a block scalar's indentation indicator is not "
+         "supported: {header!r}")
+
+#: `(document, the header's line, the header, what PyYAML reads, or None
+#: where PyYAML refuses it too)`. RV974's three SHOULD-1 rows first, each
+#: read with the digit ignored, then #974's row, refused by its line 3
+#: under the block's first line and not for its digit, then the digit
+#: first, nested, in an item, and the headers YAML refuses, which the
+#: reader took as headers and read with the digit ignored.
+DIGIT_HEADERS = [
+    pytest.param("k: |2\n    a\n    b", 1, "|2", {"k": "  a\n  b\n"},
+                 id="should-1-literal-2"),
+    pytest.param("k: |1\n  a\n  b", 1, "|1", {"k": " a\n b\n"},
+                 id="should-1-literal-1"),
+    pytest.param("k: >-2\n    a\n    b", 1, ">-2", {"k": "  a\n  b"},
+                 id="should-1-folded-strip-2"),
+    pytest.param("k: |2\n    a\n  b", 1, "|2", {"k": "  a\nb\n"},
+                 id="the-974-row"),
+    pytest.param("k: |2-\n    a\n    b", 1, "|2-", {"k": "  a\n  b"},
+                 id="the-digit-first"),
+    pytest.param("j: 1\nk:\n  m: >2\n      a", 3, ">2",
+                 {"j": 1, "k": {"m": "  a\n"}}, id="nested"),
+    pytest.param("- k: |+2\n      a", 1, "|+2", [{"k": "  a\n"}],
+                 id="in-an-item"),
+    pytest.param("k: |0\n  a", 1, "|0", None, id="a-zero"),
+    pytest.param("k: |10\n  a", 1, "|10", None, id="two-digits"),
+    pytest.param("k: |\u0662\n  a", 1, "|\u0662", None,
+                 id="a-digit-of-another-script"),
+]
+
+
+@pytest.mark.parametrize("text, line, header, pyyaml_reads", DIGIT_HEADERS)
+def test_an_indentation_digit_is_refused_by_the_headers_line(
+        text, line, header, pyyaml_reads):
+    """The digit was accepted and never read: the block's column was its
+    first line's. It is refused by the header's line, before the body is
+    read, so #974's row names line 1 and not the shallower line 3."""
+    assert refusal_words(text) == DIGIT.format(line=line, header=header)
+
+
+@NEEDS_PYYAML
+@pytest.mark.parametrize("text, line, header, pyyaml_reads", DIGIT_HEADERS)
+def test_pyyaml_reads_each_digit_header_otherwise_or_refuses_it(
+        text, line, header, pyyaml_reads):
+    """Why each is refused: where PyYAML reads it, the digit moves the
+    block's column, and the text this reader would give is not YAML's."""
+    if pyyaml_reads is None:
+        assert refused(stock(text)), f"PyYAML reads {stock(text)!r}"
+    else:
+        assert stock(text) == pyyaml_reads
+
+
+#: `(document, what this reader and PyYAML read)`. RV974's rows 1 and 2 and
+#: the tab at the block's column, each as the issue measured it, then the
+#: rest of what the same reading changes: `+` folded, over a block with no
+#: text and up to a comment, a block with no text under clip, a deeper line
+#: of spaces last and folded, a folded line that opens with a space or a
+#: tab, a tab on the block's first line, and a comment under a deeper blank
+#: line. Main read each otherwise, in order: `'a\n'`; `'a\n'`;
+#: `'a\n\nb\n'`; `'a\n\nb\n'`; `'a b\n'`; `'\n'`; `'\n'`; `'\n'`; `'a'`;
+#: `'a\nb\n'`; `'a   b c\n'`; `'a\n  b c\n'`; `'a \tb c\n'`; `'\na\n'`;
+#: `'a\n'`; and `'\n# c\n'`, the comment read as text.
+READ_AS_YAML = [
+    pytest.param("k: |+\n  a\n", {"k": "a\n\n"}, id="row-1-keep"),
+    pytest.param("k: |+\n  a\n\n\nz: 1", {"k": "a\n\n\n", "z": 1},
+                 id="row-1-keep-two-blank-lines"),
+    pytest.param("k: |\n  a\n    \n  b", {"k": "a\n  \nb\n"},
+                 id="row-2-a-deeper-line-of-spaces"),
+    pytest.param("k: |\n  a\n  \t\n  b", {"k": "a\n\t\nb\n"},
+                 id="a-tab-at-the-blocks-column"),
+    pytest.param("k: >+\n  a\n  b\n\n\nz: 1", {"k": "a b\n\n\n", "z": 1},
+                 id="keep-folded"),
+    pytest.param("k: |+\n\n\nz: 1", {"k": "\n\n", "z": 1},
+                 id="keep-with-no-text"),
+    pytest.param("k: |\nz: 1", {"k": "", "z": 1}, id="clip-with-no-text"),
+    pytest.param("k: |\n      \nz: 1", {"k": "", "z": 1},
+                 id="a-deep-line-of-spaces-and-no-text"),
+    pytest.param("k: |-\n  a\n    ", {"k": "a\n  "},
+                 id="a-deeper-line-of-spaces-last"),
+    pytest.param("k: >\n  a\n    \n  b", {"k": "a\n  \nb\n"},
+                 id="row-2-folded"),
+    pytest.param("k: >\n  a\n    b\n  c", {"k": "a\n  b\nc\n"},
+                 id="a-deeper-folded-line"),
+    pytest.param("k: >\n  a\n\n    b\n  c", {"k": "a\n\n  b\nc\n"},
+                 id="a-deeper-folded-line-after-an-empty-one"),
+    pytest.param("k: >\n  a\n  \tb\n  c", {"k": "a\n\tb\nc\n"},
+                 id="a-folded-line-opening-with-a-tab"),
+    pytest.param("k: |\n  \t\n  a", {"k": "\t\na\n"},
+                 id="a-tab-on-the-blocks-first-line"),
+    pytest.param("k:\n  j: |+\n      a\n\n    # c\n\n  m: 1",
+                 {"k": {"j": "a\n\n", "m": 1}},
+                 id="keep-ends-at-a-comment"),
+    pytest.param("k: |\n      \n  # c\nz: 1", {"k": "", "z": 1},
+                 id="a-comment-under-a-deeper-blank-line"),
+]
+
+
+@pytest.mark.parametrize("text, expected", READ_AS_YAML)
+def test_a_block_scalar_reads_as_yaml_reads_it(text, expected):
+    assert parse_yaml(text + "\n") == expected
+
+
+@NEEDS_PYYAML
+@pytest.mark.parametrize("text, expected", READ_AS_YAML)
+def test_pyyaml_reads_each_block_scalar_the_same(text, expected):
+    assert stock(text) == expected
+
+
+#: How a blank line above a block's first line of text, and deeper than it,
+#: is refused.
+DEEPER_BLANK = ("line {line}: a blank line above a block scalar's first line "
+                "of text holds {spaces} spaces, more than the {first} of that "
+                "line")
+
+#: How a tab in a line's indentation is refused, inside a block scalar or
+#: out of one.
+TAB = "line {line}: tab used for indentation"
+
+#: `(document, the words it is refused with)`, each refused by PyYAML too.
+#: RV974's rows 3, 4a and 4b, each read by main as the text after it
+#: (`'\na\n'`, `'a\n\nb\n'`, `'a\n\nb\n'`), then the same nested, folded,
+#: one space deeper than the first line, with two tabs, before the next
+#: key, and on the block's first line.
+REFUSED_BY_ITS_LINE = [
+    pytest.param("k: |\n      \n  a",
+                 DEEPER_BLANK.format(line=2, spaces=6, first=2),
+                 id="row-3-a-deeper-blank-line-first"),
+    pytest.param("k: |\n  a\n\t\n  b", TAB.format(line=3),
+                 id="row-4a-a-tab-line"),
+    pytest.param("k: |\n  a\n \t\n  b", TAB.format(line=3),
+                 id="row-4b-a-space-and-a-tab"),
+    pytest.param("k:\n  j: >\n\n        \n    a",
+                 DEEPER_BLANK.format(line=4, spaces=8, first=4),
+                 id="row-3-nested-and-folded"),
+    pytest.param("k: |\n    \n      \n  a",
+                 DEEPER_BLANK.format(line=2, spaces=4, first=2),
+                 id="row-3-the-first-deeper-line-is-named"),
+    pytest.param("k: |\n   \n  a",
+                 DEEPER_BLANK.format(line=2, spaces=3, first=2),
+                 id="row-3-one-space-deeper"),
+    pytest.param("k:\n  j: |\n      a\n   \t\n      b", TAB.format(line=4),
+                 id="row-4b-nested"),
+    pytest.param("k: |\n  a\n\t\nz: 1", TAB.format(line=3),
+                 id="row-4a-before-the-next-key"),
+    pytest.param("k: |\n  a\n \t\nz: 1", TAB.format(line=3),
+                 id="row-4b-before-the-next-key"),
+    pytest.param("k: |\n  a\n \t\t\n  b", TAB.format(line=3),
+                 id="row-4b-two-tabs"),
+    pytest.param("k: |\n\t\n  a", TAB.format(line=2),
+                 id="row-4a-first"),
+]
+
+
+@pytest.mark.parametrize("text, words", REFUSED_BY_ITS_LINE)
+def test_a_block_scalar_yaml_refuses_is_refused_by_its_line(text, words):
+    assert refusal_words(text) == words
+
+
+@NEEDS_PYYAML
+@pytest.mark.parametrize("text, words", REFUSED_BY_ITS_LINE)
+def test_pyyaml_refuses_each_such_block_scalar_too(text, words):
+    assert refused(stock(text)), f"PyYAML reads {text!r} as {stock(text)!r}"
+
+
+#: The two headers the 16 tracked YAML files hold, `|` and `>-`, and `>`,
+#: over layouts main read as YAML does and still reads the same, the last a
+#: blank line at the first line's own column, which is not deeper than it.
+STILL_READ = [
+    pytest.param("k: |\n  a\n\n  b\nz: 1", {"k": "a\n\nb\n", "z": 1},
+                 id="literal"),
+    pytest.param("k: >-\n  a\n  b\n\n  c\n\nz: 1", {"k": "a b\nc", "z": 1},
+                 id="folded-strip"),
+    pytest.param("k: >\n  a\n  b\n", {"k": "a b\n"}, id="folded"),
+    pytest.param("k: |\n    a\n      b\n  \n    c", {"k": "a\n  b\n\nc\n"},
+                 id="a-shallower-blank-line"),
+    pytest.param("k: >-\n\n\nz: 1", {"k": "", "z": 1},
+                 id="strip-with-no-text"),
+    pytest.param("k: >\n\n  a\n  b", {"k": "\na b\n"},
+                 id="folded-after-an-empty-line"),
+    pytest.param("k: |\n  \n  a", {"k": "\na\n"},
+                 id="a-blank-line-at-the-first-lines-column"),
+]
+
+
+@pytest.mark.parametrize("text, expected", STILL_READ)
+def test_what_the_tracked_headers_hold_still_reads(text, expected):
+    assert parse_yaml(text + "\n") == expected
+
+
+@NEEDS_PYYAML
+@pytest.mark.parametrize("text, expected", STILL_READ)
+def test_pyyaml_reads_what_still_reads_the_same(text, expected):
+    assert stock(text) == expected
 
 
 # --- #917: a file holding one, and the copy a project carries ---------------
@@ -1110,6 +1312,9 @@ def test_an_indentation_digit_is_still_not_read_and_now_refuses():
     pytest.param(b"id: atlas\nnote: |\n    a\n  bcd\n",
                  UNDER.format(line=4, spaces=2, block=4),
                  id="an-under-indented-line"),
+    pytest.param(b"id: atlas\nnote: >-2\n    a\n",
+                 DIGIT.format(line=2, header=">-2"),
+                 id="an-indentation-digit"),
 ])
 def test_a_file_holding_one_is_yaml_unparsable_naming_the_line_once(
         tmp_path, body, words):
@@ -1138,6 +1343,29 @@ def test_the_projects_own_validator_refuses_a_key_written_twice(project):
     assert result.returncode == 2, result.stderr
     assert (f"REFUSED yaml-unparsable: {manifest}: line {line}: key "
             "'tracking_branch' is written twice\n") in result.stderr
+    assert "Traceback" not in result.stderr
+    assert "manifest ok" not in result.stdout
+    assert manifest.read_bytes() == edited
+
+
+def test_the_projects_own_validator_refuses_a_digit_header(project):
+    """What a project sees once its copy of `repo_shape.py` is this one
+    (#1004): a block scalar under a `|2` header in `project.yaml`, which its
+    old copy read with the digit ignored, makes its own
+    `validate-manifest.py` exit 2, naming the file and the header's line."""
+    manifest = project / "project.yaml"
+    data = manifest.read_bytes()
+    old = b'tracking_branch: "main"\n'
+    assert data.count(old) == 1, f"fixture drift: {old!r} in project.yaml"
+    edited = data.replace(old, old + b"note: |2\n    a\n", 1)
+    manifest.write_bytes(edited)
+    line = edited[:edited.index(b"note: |2")].count(b"\n") + 1
+    result = run_script(project / "scripts" / "validate-manifest.py",
+                        cwd=project)
+    assert result.returncode == 2, result.stderr
+    assert (f"REFUSED yaml-unparsable: {manifest}: line {line}: a block "
+            "scalar's indentation indicator is not supported: "
+            "'|2'\n") in result.stderr
     assert "Traceback" not in result.stderr
     assert "manifest ok" not in result.stdout
     assert manifest.read_bytes() == edited
