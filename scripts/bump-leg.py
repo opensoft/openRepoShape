@@ -151,6 +151,9 @@ from repo_shape import (  # noqa: E402
 # On its own line, so the list above, which other changes extend, is
 # not a line two of them both rewrite (#715).
 from shape_materialize import readable_branch  # noqa: E402
+# U+FEFF by the reader's own name, which `rewrite_pin` takes off line 1 as
+# `parse_yaml` does, and puts back (#933). On its own line, as the one above.
+from repo_shape import BYTE_ORDER_MARK  # noqa: E402
 # Which of the leg's own refspecs its fetch carries: the rule `family.py
 # bump` asks of a member's fetch, one function for both (#1037).
 from shape_materialize import origin_fetch_refspecs  # noqa: E402
@@ -375,10 +378,22 @@ def rewrite_pin(text: str, commit: str, digest: str) -> str:
     line rewrite cannot carry is refused HERE as this tool's failure, before
     any byte is written. The digest is the one this command RECOMPUTED from
     the leg's own objects; the read-back only asks that it landed.
+
+    A BYTE-ORDER MARK IN FRONT OF LINE 1 IS LOOKED PAST, AND KEPT (#933).
+    `parse_yaml` takes off every U+FEFF the text starts with (#855), so a
+    pin whose first line is `commit:` after one is read with that key by
+    the project's validators; the pin is read here as `utf-8`, and the
+    mark was the key's first character, so the pin was refused as having
+    0 `commit` lines. The marks are taken off before the lines are looked
+    at and put back in front of them, so `write_lf` writes them back byte
+    for byte, as every other line's bytes are. A mark anywhere else is
+    text, to the reader and here.
     """
+    unmarked = text.lstrip(BYTE_ORDER_MARK)
+    marks = text[:len(text) - len(unmarked)]
     out: list[str] = []
     seen = {"commit": 0, "tree_sha256": 0}
-    for line in text.splitlines():
+    for line in unmarked.splitlines():
         if line.startswith("commit:"):
             seen["commit"] += 1
             out.append(with_scalar(line, "commit", commit))
@@ -398,7 +413,7 @@ def rewrite_pin(text: str, commit: str, digest: str) -> str:
                 "does not recognise. Fix it by hand this once — `commit:` at "
                 "column 0 and `tree_sha256:` indented under `digests:` — or "
                 "re-scaffold.")
-    rewritten = "\n".join(out) + "\n"
+    rewritten = marks + "\n".join(out) + "\n"
     why = rewrite_fault(text, rewritten, commit, digest)
     if why is not None:
         raise Refusal(

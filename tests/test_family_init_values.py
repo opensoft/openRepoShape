@@ -34,6 +34,7 @@ with every step that would reach GitHub replaced by one that fails the test.
 
 from __future__ import annotations
 
+import ast
 import importlib.util
 import re
 import shutil
@@ -46,6 +47,7 @@ from conftest import REPO, git, run_script
 
 sys.path.insert(0, str(REPO / "scripts"))
 from repo_shape import TREE_DIGEST_DEFINITION, load_yaml, parse_yaml  # noqa: E402
+import shape_materialize  # noqa: E402
 from shape_materialize import render  # noqa: E402
 
 FAMILY = REPO / "scripts" / "family.py"
@@ -58,7 +60,15 @@ BARE_KEYS = ("FAMILY_ID", "ORG", "CREATED_ON", "VISIBILITY", "TRACKING_BRANCH")
 
 
 def family_module():
-    """`scripts/family.py` as a module, for the calls that touch no disk."""
+    """`scripts/family.py` as a module, for the calls that touch no disk.
+
+    WITH NO VALIDATOR LOADED YET. The cache of loaded validators is
+    `shape_materialize`'s, which every ask in this process shares, keyed by
+    the file (#925), and a test's `tmp_path` can be the path a test before
+    it had (`tmp_path_retention_policy=failed` deletes a passed test's
+    directory, and the next takes its number): a copy of the template made
+    over there would be answered by the validator the earlier test made."""
+    shape_materialize._VALIDATORS.clear()
     spec = importlib.util.spec_from_file_location("family_init_values", FAMILY)
     module = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(module)
@@ -794,8 +804,8 @@ BREAKS = [
     pytest.param("def broken(:\n", "could not be loaded", id="syntax-error"),
     pytest.param("raise RuntimeError('nope')\n", "could not be loaded",
                  id="raises-on-import"),
-    pytest.param("import sys\nsys.exit(3)\n", "could not be loaded",
-                 id="exits-on-import"),
+    pytest.param("import sys\nsys.exit(3)\n",
+                 "could not be loaded: SystemExit: 3", id="exits-on-import"),
     pytest.param("class Report:\n    pass\n", "it has no `_check_envelope`",
                  id="lacks-the-question"),
     pytest.param(
@@ -866,6 +876,9 @@ def test_loading_the_validator_leaves_sys_path_as_it_was(monkeypatch):
     before = list(sys.path)
     module.family_validator()
     assert sys.path == before
+    # It loaded the file, as `family_module` leaves none loaded.
+    assert list(shape_materialize._VALIDATORS) == [
+        module.FAMILY_TEMPLATE / module.FAMILY_VALIDATOR]
 
 
 def test_a_validator_that_fails_to_load_leaves_sys_path_and_the_flag_alone(
@@ -919,3 +932,82 @@ def test_asking_the_validator_leaves_no_bytecode_of_it_in_the_template(
         module.MANIFEST_FLAGS, template)
     assert not cached.exists() or not list(cached.glob("validate-family*"))
     assert sys.dont_write_bytecode is False
+
+
+# ---------------------------------------------------------------------------
+# One set of questions for both manifests (#925)
+# ---------------------------------------------------------------------------
+
+def test_a_validator_that_cannot_be_asked_says_so_in_the_holders_words(
+        tmp_path):
+    """#925: the refusal is `shape_materialize`'s, asked of the holder's
+    validator, and its words are the family's, byte for byte."""
+    module = family_module()
+    template = template_copy(tmp_path, "broken", quoted=False)
+    (template / "scripts" / "validate-family.py").write_bytes(
+        b"import sys\nsys.exit(3)\n")
+    with pytest.raises(module.Refusal) as caught:
+        module.refuse_unholdable_manifest(given(), table(), template)
+    assert caught.value.code == "family-validator-unusable"
+    assert caught.value.detail == (
+        "templates/family-root/scripts/validate-family.py, the validator this "
+        "run asks about the manifest it would write, could not be loaded: "
+        "SystemExit: 3")
+    assert caught.value.remediation == (
+        "Remediation: this is a defect in the copy of this standard you ran, "
+        "not in your values: the file is missing, unreadable or broken "
+        "there, and nothing was created. Restore it from the standard's "
+        "repository, or reinstall the standard, and run again.")
+
+
+def test_init_asks_the_scaffolds_questions_and_keeps_no_copy_of_them():
+    """#925. `family.py` held a copy of every helper that asks a template's
+    reader and validator about a manifest's values, and a fix to one copy
+    missed the other (#929). It asks `shape_materialize`'s now, and defines
+    no function or class that module defines."""
+    module = family_module()
+    for name in ("TemplateManifest", "manifest_validator",
+                 "manifest_misreads", "manifest_invalid",
+                 "manifest_value_problems", "refuse_manifest_problems"):
+        assert getattr(module, name) is getattr(shape_materialize, name), name
+    assert module.HOLDER_MANIFEST.findings is module._holder_findings
+
+    def defined(path):
+        tree = ast.parse(path.read_text(encoding="utf-8"))
+        return {node.name for node in tree.body
+                if isinstance(node, (ast.FunctionDef, ast.ClassDef))}
+
+    assert defined(FAMILY) & defined(
+        REPO / "scripts" / "shape_materialize.py") == set()
+
+
+@pytest.mark.parametrize("line", [
+    pytest.param("WARNING family-id: the id is wrong", id="warning"),
+    pytest.param("  note family-id: the id is a note", id="note"),
+])
+def test_a_holder_validator_whose_only_finding_is_a_warning_is_refused(
+        tmp_path, line):
+    """#925, RV1057's MUST-1. The holder's own `main` fails on EVERY entry of
+    `report.findings` (`validate-family.py`), so `init` refuses one, whatever
+    the line starts with: the filter that passes a WARNING or a `  note ` over
+    is the project's, whose validator's own `main` counts those as notes
+    (`TemplateManifest.passed_over`), and it dropped them for the holder too
+    when the two copies became one, letting `init` write a holder whose gate
+    fails from its first commit. The line is the sentence, whole."""
+    module = family_module()
+    template = template_copy(tmp_path, "warns", quoted=False)
+    (template / "scripts" / "validate-family.py").write_bytes((
+        "class Report:\n    def __init__(self):\n        self.findings = []\n"
+        "\n\ndef _check_envelope(manifest, policy, report):\n"
+        f"    report.findings.append({line!r})\n").encode("utf-8"))
+    assert module.HOLDER_MANIFEST.passed_over == ()
+    assert module.family_manifest_invalid(
+        table(), module.NamingPolicy.load(module.NAMING_POLICY),
+        module.MANIFEST_FLAGS, template) == [line]
+    with pytest.raises(module.Refusal) as caught:
+        module.refuse_unholdable_manifest(given(), table(), template)
+    assert caught.value.code == "family-manifest-invalid"
+    assert caught.value.detail == line
+    assert caught.value.remediation.startswith(
+        "Remediation: choose a value the holder's own validate-family.py "
+        "accepts;")
