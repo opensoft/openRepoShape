@@ -1210,7 +1210,7 @@ one verdict, and its exit code:
 | `NOT A SHAPE ROOT` | 2 | neither manifest is there — adopt, or scaffold |
 
 Exit 3 is usage or environment (a flag argparse rejects is exit 2) — nothing about
-it is a statement about the tree you pointed at: no such path, a refused
+it is a statement about the tree you pointed at: no such path, a path this user cannot search, a refused
 `--placement-plan`, a `shape-doctor.py` outside a checkout of the standard, or
 **this** checkout unable to answer (`CANNOT ANSWER`): a pin's commit it lacks, a
 partial clone missing what is compared, a read that fails, a validator of its
