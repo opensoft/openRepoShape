@@ -684,7 +684,9 @@ def _pin_files(plan: "Plan") -> list[tuple[str, str | None]]:
     return [*files.items(), (SHAPE_PIN, None)]
 
 
-def _kept_pin_findings(plan: "Plan", tree: list) -> list[str]:
+def _kept_pin_findings(plan: "Plan", tree: list,
+                       named_links: frozenset | set = frozenset()
+                       ) -> list[str]:
     """A FINDING for each pin file a path the plan keeps in the root already
     holds: a declared pin's (#273), or the shape's own pin (#524). The
     materializer writes the pin beside such a path, under `COLLISION_DIR`,
@@ -701,7 +703,17 @@ def _kept_pin_findings(plan: "Plan", tree: list) -> list[str]:
     pushed both legs, wrote the shape's pin beside it and failed its
     verification as `adopt-shape-pin-unreadable`. A link there that leads
     nowhere, which `place` writes the pin through, is named here too, and
-    not again by the walk (`_links_at_a_pin`)."""
+    not again by the walk (`_links_at_a_pin`).
+
+    A SYMLINK AT A PIN'S FILE THAT `named_links` HOLDS IS LEFT OUT (#979),
+    as `_root_shape_findings` leaves out one at `project.yaml` (#908, L1-80
+    of #457): `plan-empty-symlink` or `plan-bad-symlink-target` names it,
+    and #908's remediation, said once after the findings, is the one that
+    helps. This finding's (send it to a leg, `drop` it) is not: no answer
+    in the plan makes a link no clone makes. It is still a link found
+    there, so the disk that ignores case is not asked about that file,
+    which keeps `_links_at_a_pin` reading the same disk. One link, one
+    finding."""
     kept = _kept_in_root(plan.entries, tree)
     if not kept:
         return []
@@ -716,6 +728,8 @@ def _kept_pin_findings(plan: "Plan", tree: list) -> list[str]:
             if not rows:
                 continue
             path, mode, entry = rows[0]
+            if at and path in named_links:
+                break
             under = "" if entry == path else f" under the entry {_spelled(entry)}"
             where = "at" if at else "inside"
             written = (_declared_pin_held(product) if product
@@ -751,13 +765,16 @@ def _shape_pin_held(mode: str | None) -> str:
             f"`{COLLISION_DIR}/`{through}")
 
 
-def _pin_findings(plan: "Plan", tree: list) -> list[str]:
+def _pin_findings(plan: "Plan", tree: list,
+                  named_links: frozenset | set = frozenset()) -> list[str]:
     """Every FINDING about the plan's pins: each entry `execute` cannot
     write a pin file from, two pins at one file or one at a file the shape
     writes, two whose products one `SHAPE_PIN_SOURCE_<PRODUCT>` names
     (#275), and a path the root keeps where a pin is written, the shape's
-    own among them (#524)."""
-    return _read_pins(plan)[1] + _kept_pin_findings(plan, tree)
+    own among them (#524), but for a symlink there that `named_links`
+    holds (#979)."""
+    return (_read_pins(plan)[1]
+            + _kept_pin_findings(plan, tree, named_links))
 
 
 # ---------------------------------------------------------------------------
@@ -6663,7 +6680,9 @@ def _leg_findings(plan: Plan, tree: list | None,
     `named_links` are the symlinks of the source that `plan-empty-symlink`
     and `plan-bad-symlink-target` name one by one (`_named_symlinks`, #908):
     one kept AT `project.yaml` is theirs, and `plan-root-blocks-manifest`
-    leaves it.
+    leaves it; so is one kept AT the copy under `shape/` of a path the root
+    holds, which `plan-root-blocks-shape-copy` leaves, and one AT a pin's
+    file, which `plan-root-holds-pin` leaves (#979).
 
     The path findings live HERE, and not in `cmd_check`, so that whatever
     reads this function reports a bad path from the one place that knows what
@@ -6722,7 +6741,7 @@ def _leg_findings(plan: Plan, tree: list | None,
         # Each finding about an entry names the `plan` that records the pin
         # whole. A leg mounted over a pin's file is
         # `plan-leg-path-collides`, above, with the shape's own paths.
-        findings += _pin_findings(plan, tree)
+        findings += _pin_findings(plan, tree, named_links)
     return findings
 
 
@@ -6794,7 +6813,11 @@ def _leg_findings(plan: Plan, tree: list | None,
 # holds nothing but submodules) is `plan-submodule-root`'s too and is not said
 # again: it is not written over -- in a clone a submodule is an empty
 # directory, and `place` stops at it. A symlink AT the copy is found here,
-# and as a write THROUGH it, because nothing else on main says it.
+# and as a write THROUGH it, because nothing else on main says it; but one
+# whose target `plan-empty-symlink` or `plan-bad-symlink-target` names is
+# those findings' alone, as at the manifest (#979). They do not say where
+# it sits: given a target git makes, and still kept there, it is this
+# finding's again.
 #
 # A SYMLINK AT A SHAPE PATH counts as the root holding it, though
 # `Path.exists()` follows a link and is false of one that leads nowhere. A
@@ -7023,7 +7046,14 @@ def _root_shape_findings(plan: Plan, tree: list,
     L1-80 of #457): `plan-empty-symlink` or `plan-bad-symlink-target` names
     it, says where it sits and ends with the remedy that helps, which is not
     this finding's `drop`: no answer in the plan ends either. One link, one
-    finding."""
+    finding. SO IS ONE AT A COPY (#979): a bad link the plan keeps at
+    `shape/README.md`, where the shape writes its copy of the root's
+    `README.md`, is named by its own finding alone, and #908's remediation
+    is said once after the findings. Its finding does not say where it
+    sits, as the manifest's does: given a target git makes, and still kept
+    there, the link is named here. A link BELOW a directory kept at either
+    place is not left out: the directory is in the way whatever the link
+    holds."""
     kept = _kept_in_root(plan.entries, tree)
     if not kept:
         return []
@@ -7038,8 +7068,7 @@ def _root_shape_findings(plan: Plan, tree: list,
             if (code, rel, group) in seen or (
                     code == ROOT_BLOCKS_COPY and rel == SHAPE_PIN
                     and _holds_a_pin(disk, rel)) or (
-                    code == ROOT_BLOCKS_MANIFEST and group[0] == "at"
-                    and rows[0][0] in named_links):
+                    group[0] == "at" and rows[0][0] in named_links):
                 continue
             seen.add((code, rel, group))
             rels, copies, _, folded = blocked.setdefault(
@@ -8654,11 +8683,12 @@ def _empty_symlink_notes(tree: list, targets: dict[str, bytes]) -> list[str]:
 #     `MAXPATHLEN`, 1024, counting the NUL) and XFS (`XFS_SYMLINK_MAXLEN`,
 #     1024) make a target of at most 1023 bytes.
 #
-# SO THE LIMIT IS 4095 (`SYMLINK_TARGET_MAX`), GIT'S AND LINUX'S. `check`
-# reads the source's tree and never the disk it runs on, as #303 does, so one
-# plan gets one answer on every machine. A finding must never be false
-# anywhere, and a target over 4095 bytes is made on no host: it fails on
-# every Linux filesystem, and on the hosts that take less still.
+# SO THE LIMIT IS 4095 (`SYMLINK_TARGET_MAX`), LINUX'S: git sets no bound of
+# its own. `check` reads the source's tree and never the disk it runs on, as
+# #303 does, so one plan gets one answer on every machine. A finding must
+# never be false anywhere, and a target over 4095 bytes is made on no Linux
+# or macOS host: it fails on every Linux filesystem, and on the hosts that
+# take less still.
 #
 # IT IS NOT THE SMALLEST BOUND A HOST HAS, SO A TARGET UNDER IT CAN STILL
 # FAIL. A target of 4095 bytes is made on ext4-like filesystems; on macOS and
@@ -8666,10 +8696,11 @@ def _empty_symlink_notes(tree: list, targets: dict[str, bytes]) -> list[str]:
 # passes `check` and fails `execute`'s first clone there, after both leg
 # repositories exist: #908's own failure, in a window this rule leaves open
 # for those hosts. That is read from their sources, not measured here, and
-# it is a follow-up of #908. Windows makes no symlink by default
-# (`core.symlinks` false writes the target as a file's contents, which no
-# length bounds); where it is on, NTFS is thought to take far longer targets
-# (not measured here), and either way the rule asks Windows nothing.
+# it is #979, a follow-up of #908 left open for a measurement on macOS and
+# XFS. Windows makes no symlink by default (`core.symlinks` false writes the
+# target as a file's contents, which no length bounds); where it is on, NTFS
+# is thought to take far longer targets (not measured here), and either way
+# the rule asks Windows nothing.
 #
 # A NEW CODE, NOT A WIDENED `plan-empty-symlink`. #388 made a NUL-led target
 # the same finding because it is the same fault: Linux reads it as empty,
@@ -8688,6 +8719,18 @@ def _empty_symlink_notes(tree: list, targets: dict[str, bytes]) -> list[str]:
 # answer in the plan does. This finding is the plan-independent one, so it
 # stays, says where the link sits, and ends with the remedy that does help;
 # `_root_shape_findings` leaves out the other for that link.
+#
+# AND AT A COPY AND A PIN'S FILE (#979). A link the plan keeps AT the copy
+# under `shape/` of a path the root holds (`shape/README.md`, with the
+# source's `README.md` kept) was named twice too, the second time as
+# `plan-root-blocks-shape-copy`, and one AT a pin's file
+# (`contracts/shape-pin.yaml`, with `contracts/` kept) as
+# `plan-root-holds-pin`, each with the same remedy that cannot help it.
+# Each of those leaves the link out now, as `plan-root-blocks-manifest`
+# does (`_root_shape_findings`, `_kept_pin_findings`), and this finding is
+# the one that names it. It does not say where the link sits: a link given a
+# target git makes, and still kept there, is named by that code then, whose
+# remedy helps it.
 
 #: The most `symlink(2)` takes as a target on Linux, in bytes: `PATH_MAX` is
 #: 4096, counting the NUL that ends the string. On ext4-like filesystems 4095
@@ -8881,12 +8924,15 @@ def _named_symlinks(tree: list, targets: dict[str, bytes]) -> set[str]:
     past those is only counted, and is named by nothing else if this leaves
     it out too, so the manifest finding stays its own.
 
-    THE OTHER FINDINGS ABOUT A PATH THE SHAPE WRITES DO NOT LEAVE A NAMED
-    LINK OUT. A bad link at `shape/README.md` is also
+    THE OTHER FINDINGS ABOUT A PATH THE SHAPE WRITES LEAVE A NAMED LINK OUT
+    TOO (#979). A bad link at `shape/README.md` was also
     `plan-root-blocks-shape-copy`, and one at `contracts/shape-pin.yaml`
     also `plan-root-holds-pin`, each with a remedy (`drop` it, send it to a
-    leg) that cannot help a link no clone makes. That is L1-80's defect at
-    those two paths, outside #908's wording, and a follow-up of it."""
+    leg) that cannot help a link no clone makes: L1-80's defect at those two
+    paths, outside #908's wording. `_root_shape_findings` leaves out the
+    first for a named link AT a copy, and `_kept_pin_findings` the second
+    for one AT a pin's file. A counted link keeps those findings, as it
+    keeps the manifest's."""
     return {*empty_symlinks(tree, targets)[:EMPTY_SYMLINKS_NAMED],
             *(path for path, _ in bad_symlink_targets(
                 tree, targets)[:BAD_SYMLINK_TARGETS_NAMED])}
@@ -9776,7 +9822,9 @@ def _print_what_will_happen(plan: Plan, source: Source, names: dict,
 # pin's file is #273's `plan-root-holds-pin`, said once there, and so is one
 # AT the shape's own pin, wherever it leads (#524): where it leads to
 # something, `place` writes the shape's pin beside it and the root's
-# `contracts/shape-pin.yaml` is the source's link, which no walk refuses.
+# `contracts/shape-pin.yaml` is the source's link, which no walk refuses. A
+# link at either whose target `plan-empty-symlink` or
+# `plan-bad-symlink-target` names one by one is that finding alone (#979).
 
 #: The finding for a symlink the plan keeps in the root that the shape cannot
 #: write through.
@@ -10338,7 +10386,9 @@ def _links_at_a_copy(plan: Plan, tree: list) -> set[str]:
     copy written THROUGH it, earlier in `_entry_findings`' one list; and one
     AT `project.yaml`, which #305's `plan-root-blocks-manifest` names. Asked
     as `_leg_findings` asks it, of a plan whose `legs` it can read, on a
-    disk that keeps case and on one that ignores it."""
+    disk that keeps case and on one that ignores it. A link there whose
+    target `plan-empty-symlink` or `plan-bad-symlink-target` names one by
+    one is that finding's instead (#908, #979), and no walk names it."""
     if not isinstance(plan.legs, dict):
         return set()
     kept = _kept_in_root(plan.entries, tree)
@@ -10358,7 +10408,9 @@ def _links_at_a_pin(plan: Plan, tree: list) -> set[str]:
     the link is not said again by them. Asked as `_kept_pin_findings` asks
     it, in `_leg_findings`, of a plan whose `legs` it can read: of each pin
     file, on a disk that keeps case and, where that finds nothing there, on
-    one that ignores it."""
+    one that ignores it. A link there whose target `plan-empty-symlink` or
+    `plan-bad-symlink-target` names one by one is that finding's instead
+    (#979), and no walk names it."""
     if not isinstance(plan.legs, dict):
         return set()
     kept = _kept_in_root(plan.entries, tree)
