@@ -17,11 +17,13 @@ and never around a whole check. ONE code, `git-not-runnable`, the one
 told apart from every other `OSError`: the wrapper is around the git calls
 alone, and inside one it counts an `OSError` whose `filename` is `git` (a
 missing git, one that will not run, and one that cannot be executed, `ENOEXEC`:
-a binary for another architecture or a script with no shebang), and a
+a binary for another architecture or a script with no shebang), a
 `FileNotFoundError` or a `PermissionError` that names no file (Windows'
-`CreateProcess` failures carry none). `subprocess` raises the same two classes
-when the directory it was to run git in cannot be entered, and names that
-directory in `filename`; a program that will not start names `git`.
+`CreateProcess` failures carry none), and an `OSError` that names none whose
+`winerror` is 193, a `git.exe` Windows cannot execute (#1001). `subprocess`
+raises the same two classes when the directory it was to run git in cannot be
+entered, and names that directory in `filename`; a program that will not start
+names `git`.
 
 THE ROOT'S OWN VALIDATOR, RUN IN THIS PROCESS, with git failing as a missing
 program does, and no PATH changed for anything else, so each test means the
@@ -66,9 +68,19 @@ NOT_EXECUTABLE = PermissionError(13, "Permission denied", "git")
 CANNOT_EXECUTE = OSError(errno.ENOEXEC, "Exec format error", "git")
 #: An error that names no file: Windows' `CreateProcess` failures carry no
 #: filename, so a missing git there looks like this, and nothing says it was a
-#: directory. Only these two classes count, named or not (see `NOT_GIT`).
+#: directory. Only these two classes count, named or not, and the one
+#: `WIN_ERROR_193` is (see `NOT_GIT`).
 NO_FILE_NAMED = FileNotFoundError(2, "No such file or directory")
 NOT_EXECUTABLE_NO_FILE_NAMED = PermissionError(13, "Permission denied")
+#: What CPython raises on Windows for a `git.exe` that Windows cannot execute
+#: (`[WinError 193] %1 is not a valid Win32 application`): a plain `OSError`,
+#: since `winerror` 193 maps to `errno` `ENOEXEC`, which has no subclass, and
+#: no filename, since `CreateProcess` failures carry none. It counts by its
+#: `winerror` (#1001). Read from CPython (`PC/errmap.h`,
+#: `_winapi.CreateProcess`), not run on Windows, and built by hand on every
+#: OS, since only Windows sets `winerror`.
+WIN_ERROR_193 = OSError(errno.ENOEXEC, "%1 is not a valid Win32 application")
+WIN_ERROR_193.winerror = 193
 
 #: The run options. The validator has one mode of work and these three
 #: spellings of asking it: plain, without the `ok` notes, and with a source
@@ -201,9 +213,9 @@ def test_each_call_is_picked_by_its_subcommand_wherever_it_sits(before):
 @RUNS
 @pytest.mark.parametrize(
     "error", [NO_GIT, NOT_EXECUTABLE, CANNOT_EXECUTE, NO_FILE_NAMED,
-              NOT_EXECUTABLE_NO_FILE_NAMED],
+              NOT_EXECUTABLE_NO_FILE_NAMED, WIN_ERROR_193],
     ids=["no-git", "git-not-executable", "git-cannot-execute",
-         "no-file-named", "not-executable-no-file-named"])
+         "no-file-named", "not-executable-no-file-named", "winerror-193"])
 def test_no_git_at_all_is_one_refusal_in_every_run(
         validator, project, monkeypatch, capsys, extra, error):
     """A SCAFFOLDED ROOT AND NO GIT: the first check to run git is the first
@@ -321,11 +333,11 @@ def test_with_git_running_the_same_root_says_pins_ok(
 #: will not start: the directory git was to run in, which `subprocess` names
 #: in `filename` where it names `git` for a program (here the leg's submodule,
 #: the directory two of the three calls run in, as a submodule nobody may
-#: enter), and errors that name no file and are neither of the two classes
-#: that Windows' `CreateProcess` raises for a git it cannot start (an `ENOEXEC`
+#: enter), and errors that name no file and are none of the three that
+#: Windows' `CreateProcess` raises for a git it cannot start (an `ENOEXEC`
 #: with no name is the one a reader might expect to count, and does not: the
-#: nameless exceptions are those two classes only). Built in the test, which
-#: knows the paths.
+#: nameless errors that count are those two classes and `WIN_ERROR_193`, which
+#: carries its `winerror`). Built in the test, which knows the paths.
 NOT_GIT = {
     "unreadable-directory": lambda root: PermissionError(
         errno.EACCES, "Permission denied", str(root / "spec")),

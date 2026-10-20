@@ -118,9 +118,12 @@ working clone is reported and SKIPPED, naming `make siblings`; one that is
 not this member is reported and skipped exactly as it is above. Every member
 is tried — a refusal never stops the ones after it — and the summary names
 each outcome. `--dry-run` prints what would run and runs nothing. Under the
-holder's `make -jN`, each member's make runs its jobs one at a time and says
-nothing of it: the jobserver of the make above, and the `-j` that comes with
-it, are taken out of the `MAKEFLAGS` it inherits (`member_make_env`, #888).
+holder's `make -jN`, each member's make shares the holder's jobs where the
+holder's make is GNU make 4.4 or later, whose jobserver is a named pipe, and
+the member's make says it is too (#987). Everywhere else it runs its jobs one
+at a time and says nothing of it: the jobserver of the make above, and the
+`-j` that comes with it, are taken out of the `MAKEFLAGS` it inherits
+(`member_make_environment`, #888).
 
 IT CONFERS NOTHING, and neither does the layout. A folder is navigation.
 
@@ -201,11 +204,23 @@ from repo_shape import (  # noqa: E402
 )
 # THE CREDENTIAL AND THE MEMBER ROWS ARE READ BY `bootstrap.py` ALREADY, and a
 # second definition of either is how the two start disagreeing about which
-# token they used or where a member is mounted. Both files are copies of
-# openRepoShape that travel together in `contracts/shape-pin.yaml`, so the
-# import is not a dependency this holder can lose.
+# token they used or where a member is mounted. So is the environment a
+# member's make gets under the holder's `make -jN`
+# (`member_make_environment`, #888, #987): one reading of `MAKEFLAGS` and of
+# the member's make for every verb. Both files are copies of openRepoShape
+# that travel together in `contracts/shape-pin.yaml`. A holder that keeps its
+# own `bootstrap.py` with `update-shape.py apply --accept-local`, while the
+# apply writes this file, is refused before a byte is written for each name
+# this list takes that its kept copy does not define
+# (`update-accept-local-missing-name`, #536), and merges its `bootstrap.py`
+# by hand first. That refusal is the price of one copy of the jobserver code
+# (#987); #950 had copied the code here to spare such a holder it. The
+# function's name is new with #987 so that a kept `bootstrap.py` of #950's,
+# whose `member_make_env` took no make, is refused too, rather than ending
+# `make park` in a `TypeError`.
 from bootstrap import (  # noqa: E402
-    REWRITE_TARGETS, credential, member_path, members_of,
+    REWRITE_TARGETS, credential, member_make_environment, member_path,
+    members_of,
 )
 
 MANIFEST = "family.yaml"
@@ -1015,33 +1030,6 @@ def place(root: Path, row: dict, urls: dict[str, str], prefix: list[str],
 # dispatching a verb into the WORKING CLONES (--make)
 # ---------------------------------------------------------------------------
 
-#: `bootstrap.py`'s three readings of `MAKEFLAGS` (#888), written here
-#: rather than imported: a holder may keep a `bootstrap.py` older than this
-#: file (`update-shape.py apply --accept-local`), which has none of them,
-#: and `make park` would then end in an `ImportError` before it ran in any
-#: member. `tests/test_family_member_make_jobserver.py` holds the two files
-#: to one answer. A word is split as make splits it: only at a space or a
-#: tab, a backslash keeping either in a value.
-JOBSERVER_WORD = re.compile(r"--jobserver-(?:auth|fds)=.*", re.DOTALL)
-JOBS_WORD = re.compile(r"-j[0-9]*|--jobserver-(?:auth|fds)=.*", re.DOTALL)
-MAKEFLAGS_WORD = re.compile(r"(?:\\.|[^ \t])+", re.DOTALL)
-
-
-def member_make_env() -> dict[str, str]:
-    """This run's environment for a member's `make <target>`: `MAKEFLAGS`
-    without the jobserver of the make above it, where it names one, nor
-    the `-j` that comes with it, as `bootstrap.py`'s `member_make_env`
-    gives it and for its reasons. Under the holder's `make -j2 park`, each
-    member's make said `jobserver unavailable: using -j1.  Add '+' to
-    parent make rule.`, of a rule the person does not own (#888)."""
-    env = dict(os.environ)
-    words = MAKEFLAGS_WORD.findall(env.get("MAKEFLAGS", ""))
-    if any(JOBSERVER_WORD.fullmatch(word) for word in words):
-        env["MAKEFLAGS"] = " ".join(
-            word for word in words if not JOBS_WORD.fullmatch(word))
-    return env
-
-
 def make_program() -> str:
     """`make`, resolved to an EXECUTABLE PATH, or a named refusal.
 
@@ -1205,7 +1193,8 @@ def dispatch(root: Path, row: dict, urls: dict[str, str], target: str,
     print(f"  --- {who}: make {checked_target} ---")
     sys.stdout.flush()
     proc = subprocess.run([make, checked_target, *checked_assignments],
-                          cwd=str(path), check=False, env=member_make_env())
+                          cwd=str(path), check=False,
+                          env=member_make_environment(make))
     sys.stdout.flush()
     if proc.returncode != 0:
         sibling.state = f"make {target} exited {proc.returncode}"

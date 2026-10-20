@@ -348,8 +348,14 @@ options:
                         trees in it, --local-remote-dir) and whether each of
                         the three repositories already exists (`gh repo view`
                         and its commit listing, or the bare repositories with
-                        --local-remote-dir), refusing what it refuses; make no
-                        folder, create no remote and push nothing
+                        --local-remote-dir), refusing what it refuses. Whether
+                        each folder can be written in is asked of `os.access`,
+                        which reads the mode bits and on Windows says yes for
+                        every folder, so a quota, a Windows ACL or a read-only
+                        drive on Windows can pass here and be refused by the
+                        real run. It leaves nothing that stays: it makes and
+                        removes temporary folders, creates no remote and
+                        pushes nothing
   --local-remote-dir LOCAL_REMOTE_DIR
                         create bare repositories here instead of calling `gh
                         repo create` (the TEST path; no network). An empty
@@ -1103,19 +1109,20 @@ options:
                         where a chain LINK's own tree is, so its
                         `neutral_product_pins:` can be read and the link
                         VERIFIED — e.g. --link-source openXdox=../openXdox.
-                        The text before the first `=` is a PRODUCT only when
-                        it names a chain link (an entry of --referent-chain,
-                        or of a leg's naming.referent_chain: under --project),
-                        and then that reading wins even over a directory
-                        spelled like the whole value (./PATH reads that
-                        directory); any other value is a bare PATH: the tree
-                        of the chain's FIRST link (the pin the project holds),
-                        read when that link has no more specific answer, and
-                        never a later link's, which needs its own
-                        PRODUCT=PATH, its SHAPE_PIN_SOURCE_<PRODUCT> or a
-                        checkout beside the project. When the chains read here
-                        begin at two different links, a bare PATH is read for
-                        neither. A value that names no path (PRODUCT=, or
+                        The text before an `=` is a PRODUCT only when it names
+                        a chain link (an entry of --referent-chain, or of a
+                        leg's naming.referent_chain: under --project), and the
+                        longest such text that leaves a path after it is the
+                        one read, so a link may hold `=`; that reading wins
+                        even over a directory spelled like the whole value
+                        (./PATH reads that directory); any other value is a
+                        bare PATH: the tree of the chain's FIRST link (the pin
+                        the project holds), read when that link has no more
+                        specific answer, and never a later link's, which needs
+                        its own PRODUCT=PATH, its SHAPE_PIN_SOURCE_<PRODUCT>
+                        or a checkout beside the project. When the chains read
+                        here begin at two different links, a bare PATH is read
+                        for neither. A value that names no path (PRODUCT=, or
                         empty) is refused. Repeatable; a value no link used is
                         noted. Every link is tried against PRODUCT=PATH,
                         SHAPE_PIN_SOURCE_<PRODUCT> and a checkout beside the
