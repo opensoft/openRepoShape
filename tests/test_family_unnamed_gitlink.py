@@ -167,7 +167,8 @@ def section_first(path: str, name: str, url: str, said: str, then: str,
             + SECTION_THEN.format(then=then) + (STAGE_LINE if stage else "")
             + f"\n    git rm --cached{flag} -- {path}"
             + "".join(f"\n    {line}" for line in removal(name, "path",
-                                                           "url")))
+                                                           "url"))
+            + (STAGE_LINE if then.endswith(THEN_STAGE) else ""))
 
 
 def found_in_every_mode(root: Path, code: str) -> str:
