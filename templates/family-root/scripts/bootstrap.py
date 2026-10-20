@@ -111,7 +111,7 @@ WHAT IT DOES, in order:
       the member's make says it is too (#987). Everywhere else it runs its
       jobs one at a time and says nothing of it: the jobserver of the make
       above this run, and the `-j` that comes with it, are taken out of
-      the `MAKEFLAGS` it inherits (`member_make_env`, #888).
+      the `MAKEFLAGS` it inherits (`member_make_environment`, #888).
 
   (c) EXITS 0 unless a member's own command failed, or (a) left a member not
       checked out that no credential would check out, or found a line or a
@@ -1381,7 +1381,8 @@ def run_make(make: str, target: str, cwd: Path) -> tuple[int, int | None]:
     "Reaping losing child"), and the line would say `exited 2` for every
     failure again."""
     proc = subprocess.Popen([make, target], cwd=str(cwd),
-                            stderr=subprocess.PIPE, env=member_make_env(make))
+                            stderr=subprocess.PIPE,
+                            env=member_make_environment(make))
     errors = MakeErrors()
     for chunk in iter(lambda: proc.stderr.read1(65536), b""):
         passed_on(chunk)
@@ -1414,9 +1415,9 @@ def passed_on(chunk: bytes) -> None:
 #: make 3.81 writes it). `re.DOTALL` here and below, since a path may hold
 #: any character.
 JOBSERVER_WORD = re.compile(r"--jobserver-(?:auth|fds)=.*", re.DOTALL)
-#: The words `member_make_env` takes out where one names a jobserver: that
-#: word, and the jobs that come with it, `-j2`, or the bare `-j` a make
-#: before 4.2 writes beside `--jobserver-fds`.
+#: The words `member_make_environment` takes out where one names a
+#: jobserver: that word, and the jobs that come with it, `-j2`, or the
+#: bare `-j` a make before 4.2 writes beside `--jobserver-fds`.
 JOBS_WORD = re.compile(r"-j[0-9]*|--jobserver-(?:auth|fds)=.*", re.DOTALL)
 #: A word of `MAKEFLAGS` as make splits it: only at a space or a tab, and
 #: a backslash keeps the character after it in the word, a space or a tab
@@ -1475,7 +1476,7 @@ def reads_fifo(make: str, env: dict[str, str]) -> bool:
     return FIFO_READERS[make]
 
 
-def member_make_env(make: str) -> dict[str, str]:
+def member_make_environment(make: str) -> dict[str, str]:
     """This run's environment for a member's make, `make`: `MAKEFLAGS` as
     it is where `make` can share the jobserver of the make above this run
     (#987), and otherwise without that jobserver, where it names one, and
@@ -1524,7 +1525,16 @@ def member_make_env(make: str) -> dict[str, str]:
       (`invalid --jobserver-auth string`, exit 2, measured), which is why
       `reads_fifo` asks the member's make itself before a `fifo:` word is
       handed on.
-    Taken out, no make is asked to read a jobserver at all."""
+    Taken out, no make is asked to read a jobserver at all.
+
+    WHY THIS NAME, and not #950's `member_make_env`, which took no make
+    (#987). `siblings.py` imports this function, and `update-shape.py
+    apply --accept-local` asks a kept `bootstrap.py` for the names a
+    written `siblings.py` imports, not for their parameters
+    (`update-accept-local-missing-name`, #536). Under #950's name a kept
+    `bootstrap.py` of #950's passed that check, and the holder's `make
+    park` then stopped at its first member with a `TypeError`. Under
+    this one that apply is refused before it writes a byte."""
     env = dict(os.environ)
     words = MAKEFLAGS_WORD.findall(env.get("MAKEFLAGS", ""))
     named = [word for word in words if JOBSERVER_WORD.fullmatch(word)]

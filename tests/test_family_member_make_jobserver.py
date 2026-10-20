@@ -13,12 +13,12 @@ the warning names is the holder's pinned Makefile, which the person does
 not own.
 
 BOTH SCRIPTS NOW TAKE THE JOBSERVER, and the `-j` that comes with it, out
-of the `MAKEFLAGS` a member's make inherits (`member_make_env`, one
+of the `MAKEFLAGS` a member's make inherits (`member_make_environment`, one
 function in `bootstrap.py`, which `siblings.py` imports): each member's
 make runs its jobs one at a time, as it did, and says nothing.
-`bootstrap.py`'s `member_make_env` says why the jobserver is not handed on
-instead. `make siblings` runs no member's make: it runs a member's own
-`scripts/bootstrap.py`, which runs none.
+`bootstrap.py`'s `member_make_environment` says why the jobserver is not
+handed on instead. `make siblings` runs no member's make: it runs a
+member's own `scripts/bootstrap.py`, which runs none.
 
 BUT NOT GNU MAKE 4.4's NAMED PIPE (#987), `--jobserver-auth=fifo:<path>`,
 which a make opens by its path: both scripts hand the holder's `MAKEFLAGS`
@@ -413,7 +413,7 @@ def test_under_make_4_4_a_member_s_make_shares_the_holder_s_named_pipe(
                 if word.startswith(FIFO)], (trace, flags)
 
 
-# --- `member_make_env`: bootstrap.py's, and siblings.py's import of it -----
+# --- `member_make_environment`: bootstrap.py's, which siblings.py imports --
 
 #: `{case: (MAKEFLAGS as a make writes it, as the member's make gets it)}`,
 #: as each make spells its jobserver: GNU make 4.2 to 4.3 a pipe's two
@@ -439,10 +439,10 @@ TAKEN_OUT = {
     "windows": (" -j2 --jobserver-auth=gmake_semaphore_1234", ""),
     "4.3-j16-k": ("k -j16 --jobserver-auth=3,4", "k"),
     "4.3-no-break-space": (
-        " -j2 --jobserver-auth=3,4 -- NOTE=x EXTRA=injected",
-        "-- NOTE=x EXTRA=injected"),
-    "4.3-narrow-no-break-space": (" -j2 --jobserver-auth=3,4 -- NOTE=x !",
-                                  "-- NOTE=x !"),
+        " -j2 --jobserver-auth=3,4 -- NOTE=x\u00a0EXTRA=injected",
+        "-- NOTE=x\u00a0EXTRA=injected"),
+    "4.3-narrow-no-break-space": (" -j2 --jobserver-auth=3,4 -- NOTE=x\u202f!",
+                                  "-- NOTE=x\u202f!"),
     "4.3-newline": (" -j2 --jobserver-auth=3,4 -- NOTE=x\nEXTRA=injected",
                     "-- NOTE=x\nEXTRA=injected"),
 }
@@ -474,14 +474,14 @@ def scripts(monkeypatch) -> dict:
                 SCRIPTS / "siblings.py", "jobserver_family_siblings")}
 
 
-def test_siblings_takes_bootstrap_s_member_make_env(scripts):
-    """`siblings.py` has no `member_make_env` of its own: it takes
+def test_siblings_takes_bootstrap_s_member_make_environment(scripts):
+    """`siblings.py` has no `member_make_environment` of its own: it takes
     `bootstrap.py`'s, as it takes the credential and the member rows, so
     the two cannot come to disagree about a member's make (#987). Each
     `siblings.py` item below runs that one function through the import
     a holder's `siblings.py` makes."""
-    assert (scripts["siblings.py"].member_make_env
-            is scripts["bootstrap.py"].member_make_env)
+    assert (scripts["siblings.py"].member_make_environment
+            is scripts["bootstrap.py"].member_make_environment)
 
 
 @pytest.mark.parametrize("script", ["bootstrap.py", "siblings.py"])
@@ -495,7 +495,7 @@ def test_each_script_takes_out_a_jobserver_and_its_j_and_nothing_else(
     make = fake_make(tmp_path / "bin", b"GNU Make 4.3\n")
     monkeypatch.setenv("MAKEFLAGS", flags)
 
-    env = scripts[script].member_make_env(str(make))
+    env = scripts[script].member_make_environment(str(make))
 
     assert env.pop("MAKEFLAGS") == kept
     assert env == {key: value for key, value in os.environ.items()
@@ -514,7 +514,7 @@ def test_each_script_hands_no_other_jobserver_to_make_4_4(
     make = fake_make(tmp_path / "bin")
     monkeypatch.setenv("MAKEFLAGS", flags)
 
-    env = scripts[script].member_make_env(str(make))
+    env = scripts[script].member_make_environment(str(make))
 
     assert env.pop("MAKEFLAGS") == kept
     assert env == {key: value for key, value in os.environ.items()
@@ -536,7 +536,9 @@ def test_each_script_leaves_a_makeflags_that_names_no_jobserver(
     else:
         monkeypatch.setenv("MAKEFLAGS", flags)
 
-    assert scripts[script].member_make_env(str(make)) == dict(os.environ)
+    env = scripts[script].member_make_environment(str(make))
+
+    assert env == dict(os.environ)
     assert calls(make) == []
 
 
@@ -550,7 +552,7 @@ def test_each_script_hands_back_a_copy_and_leaves_its_own_environment(
     monkeypatch.setenv("MAKEFLAGS", " -j2 --jobserver-auth=3,4")
     before = dict(os.environ)
 
-    env = scripts[script].member_make_env(str(make))
+    env = scripts[script].member_make_environment(str(make))
 
     assert type(env) is dict
     assert env["MAKEFLAGS"] == ""
@@ -576,7 +578,7 @@ def test_each_script_hands_a_named_pipe_to_a_make_that_reads_it(
     make = fake_make(tmp_path / "bin", said)
     monkeypatch.setenv("MAKEFLAGS", f" -j2 {FIFO}{named_pipe(tmp_path)}")
 
-    env = scripts[script].member_make_env(str(make))
+    env = scripts[script].member_make_environment(str(make))
 
     assert type(env) is dict
     assert env == dict(os.environ)
@@ -598,7 +600,9 @@ def test_each_script_reads_a_named_pipe_s_path_as_make_reads_it(
     monkeypatch.setenv("MAKEFLAGS", f" -j2 {FIFO}{written}")
     make = fake_make(tmp_path / "bin")
 
-    assert scripts[script].member_make_env(str(make)) == dict(os.environ)
+    env = scripts[script].member_make_environment(str(make))
+
+    assert env == dict(os.environ)
     assert calls(make) == ["--version|"]
 
 
@@ -615,11 +619,31 @@ def test_each_script_asks_a_make_once_a_run_and_hands_it_no_jobserver(
     monkeypatch.setenv("MAKEFLAGS", flags)
     module = scripts[script]
 
-    handed = [module.member_make_env(str(make))["MAKEFLAGS"]
+    handed = [module.member_make_environment(str(make))["MAKEFLAGS"]
               for _ in range(3)]
 
     assert handed == [flags] * 3
     assert calls(make) == [r"--version|ks -- NOTE=a\ -j3"]
+
+
+@pytest.mark.parametrize("script", ["bootstrap.py", "siblings.py"])
+def test_each_script_asks_a_make_that_says_no_once_a_run(
+        scripts, monkeypatch, tmp_path, script):
+    """A no is remembered as a yes is: a member's make that says it is
+    GNU make 4.3 is asked `make --version` once in three calls, and each
+    call takes the pipe and its `-j2` out. So a member's make that is
+    slow to answer costs a run `VERSION_TIMEOUT` seconds once, not once
+    per member."""
+    make = fake_make(tmp_path / "bin", b"GNU Make 4.3\n")
+    monkeypatch.setenv("MAKEFLAGS",
+                       f" -j2 {FIFO}{named_pipe(tmp_path)} -- NOTE=x")
+    module = scripts[script]
+
+    handed = [module.member_make_environment(str(make))["MAKEFLAGS"]
+              for _ in range(3)]
+
+    assert handed == ["-- NOTE=x"] * 3
+    assert calls(make) == ["--version|-- NOTE=x"]
 
 
 #: `{case: (the first lines of `make --version`, its exit code)}` from a
@@ -647,7 +671,7 @@ def test_each_script_takes_a_named_pipe_from_a_make_not_known_to_read_it(
     monkeypatch.setenv("MAKEFLAGS",
                        f" -j2 {FIFO}{named_pipe(tmp_path)} -- NOTE=x")
 
-    env = scripts[script].member_make_env(str(make))
+    env = scripts[script].member_make_environment(str(make))
 
     assert env.pop("MAKEFLAGS") == "-- NOTE=x"
     assert env == {key: value for key, value in os.environ.items()
@@ -663,7 +687,7 @@ def test_each_script_takes_a_named_pipe_from_a_make_that_is_not_there(
     and nothing is raised here."""
     monkeypatch.setenv("MAKEFLAGS", f" -j2 {FIFO}{named_pipe(tmp_path)}")
 
-    env = scripts[script].member_make_env(str(tmp_path / "no-make"))
+    env = scripts[script].member_make_environment(str(tmp_path / "no-make"))
 
     assert env["MAKEFLAGS"] == ""
 
@@ -675,14 +699,14 @@ def test_each_script_takes_a_named_pipe_from_a_make_too_slow_to_answer(
     `VERSION_TIMEOUT` seconds, here 1, is a no, and the run is not held
     for it: the fake sleeps 30 seconds, and is stopped."""
     module = scripts[script]
-    # `siblings.py`'s `member_make_env` is `bootstrap.py`'s, which reads
-    # `bootstrap.py`'s `VERSION_TIMEOUT`.
+    # `siblings.py`'s `member_make_environment` is `bootstrap.py`'s, which
+    # reads `bootstrap.py`'s `VERSION_TIMEOUT`.
     monkeypatch.setattr(scripts["bootstrap.py"], "VERSION_TIMEOUT", 1)
     make = fake_make(tmp_path / "bin", waits=True)
     monkeypatch.setenv("MAKEFLAGS", f" -j2 {FIFO}{named_pipe(tmp_path)}")
     began = time.monotonic()
 
-    env = module.member_make_env(str(make))
+    env = module.member_make_environment(str(make))
 
     assert time.monotonic() - began < 20
     assert env["MAKEFLAGS"] == ""
@@ -710,7 +734,7 @@ def test_each_script_takes_out_a_named_pipe_a_member_s_make_cannot_open(
             "beside-descriptors": f"--jobserver-auth=3,4 {FIFO}{pipe}"}[case]
     monkeypatch.setenv("MAKEFLAGS", f" -j2 {word}")
 
-    env = scripts[script].member_make_env(str(make))
+    env = scripts[script].member_make_environment(str(make))
 
     assert env["MAKEFLAGS"] == ""
     assert calls(make) == []
