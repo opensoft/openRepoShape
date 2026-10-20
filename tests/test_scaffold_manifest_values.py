@@ -939,6 +939,24 @@ BROKEN_VALIDATORS = [
                                     "other):\n    raise KeyError('boom')\n",
                  "raised when it was asked: KeyError: 'boom'",
                  id="raises-when-asked"),
+    # THE FAMILY'S THREE GAPS (#307), the project's too since #925: a file
+    # that exits as it is loaded, a question that EXITS (a `sys.exit(0)`
+    # ended the scaffold with that zero, having made and said nothing), and
+    # an answer that is not a list of text.
+    pytest.param(lambda real: "import sys\nsys.exit(3)\n",
+                 "could not be loaded: SystemExit: 3", id="exits-at-import"),
+    pytest.param(lambda real: real + "\n\ndef _findings(manifest, policy, "
+                                    "other):\n    import sys\n    sys.exit(0)\n",
+                 "exited when it was asked: SystemExit: 0",
+                 id="exits-when-asked"),
+    pytest.param(lambda real: real + "\n\ndef _findings(manifest, policy, "
+                                    "other):\n    return [7]\n",
+                 "answered with a finding that is not text: its type is int",
+                 id="finding-is-not-text"),
+    pytest.param(lambda real: real + "\n\ndef _findings(manifest, policy, "
+                                    "other):\n    return None\n",
+                 "raised when it was asked: TypeError: 'NoneType' object is "
+                 "not iterable", id="answers-with-no-list"),
 ]
 
 
@@ -1009,3 +1027,69 @@ def test_a_validator_that_failed_to_load_is_not_remembered(tmp_path):
     assert caught.value.code == "manifest-validator-unusable"
     validator.write_bytes(good)
     assert hasattr(shape_materialize.manifest_validator(copy), "_findings")
+
+
+# --- one set of questions for both manifests (#925) -------------------------
+#
+# The project's questions and `family.py init`'s were two copies, and only the
+# family's refused a validator that EXITS, one that answers with something
+# that is not text, and a manifest that is not a mapping, each in words of its
+# own (#307). They are one implementation now, so the project's are those
+# words too, said of the project's validator and reader; the rows above
+# (`BROKEN_VALIDATORS`) and the two below hold them.
+
+#: What the scaffold says where its template's `project.yaml` is not a
+#: mapping: the sentence `family.py init` says of the holder's, in the
+#: project's words, where it was the validator's `AttributeError`.
+NOT_A_MAPPING = (
+    "REFUSED scaffold-manifest-invalid: the manifest this run would write is "
+    "not a mapping, which is what the project's own YAML reader makes of "
+    "it.\nRemediation: choose a value the project's own validate-manifest.py "
+    "accepts; the words after each value are the validator's own, and a "
+    "project it refuses is one whose first bootstrap would fail. Nothing was "
+    "created, and `--dry-run` refuses the same.\n")
+
+
+def test_a_manifest_that_is_not_a_mapping_is_said_and_not_a_validator_defect(
+        tmp_path):
+    """The validator's own `main` refuses a manifest that is not a mapping
+    before it asks `_findings`, so `_findings` is never asked of one: asked
+    of a list, it raised, and the scaffold called its validator broken."""
+    copy = a_copy_of_the_standard(tmp_path, lambda real: "- one\n- two\n",
+                                  "project.yaml")
+    run = tmp_path / "run"
+    (run / SCRATCH).mkdir(parents=True)
+    result = run_script(
+        copy / "scaffold-project.py", *IDENTITY, "--dry-run",
+        "--local-remote-dir", str(run / REMOTES),
+        "--work-dir", str(run / WORK),
+        env={"TMPDIR": str(run / SCRATCH), "TMP": str(run / SCRATCH),
+             "TEMP": str(run / SCRATCH)})
+    assert result.returncode == 2, result.stderr + result.stdout
+    assert NOT_A_MAPPING in result.stderr, result.stderr
+    assert "validator-unusable" not in result.stderr
+    assert result.stdout == ""
+    assert sorted(p.name for p in run.iterdir()) == [SCRATCH]
+
+
+def test_a_validator_that_cannot_be_asked_says_so_in_the_projects_words(
+        tmp_path):
+    """The refusal `family.py init` gives its holder's validator, byte for
+    byte, but for the code and the file it names."""
+    copy = tmp_path / "assembly-root"
+    shutil.copytree(REPO / "templates" / "assembly-root", copy,
+                    ignore=shutil.ignore_patterns("__pycache__", "*.pyc"))
+    (copy / "scripts" / "validate-manifest.py").write_bytes(
+        b"import sys\nsys.exit(3)\n")
+    with pytest.raises(shape_materialize.Refusal) as caught:
+        shape_materialize.manifest_validator(copy)
+    assert caught.value.code == "manifest-validator-unusable"
+    assert caught.value.detail == (
+        "templates/assembly-root/scripts/validate-manifest.py, the validator "
+        "this run asks about the manifest it would write, could not be "
+        "loaded: SystemExit: 3")
+    assert caught.value.remediation == (
+        "Remediation: this is a defect in the copy of this standard you ran, "
+        "not in your values: the file is missing, unreadable or broken "
+        "there, and nothing was created. Restore it from the standard's "
+        "repository, or reinstall the standard, and run again.")
