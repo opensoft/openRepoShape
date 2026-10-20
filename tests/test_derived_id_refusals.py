@@ -273,6 +273,21 @@ def test_a_name_no_holder_can_have_speaks_before_a_passed_id(tmp_path, name,
     assert "family-bad-id" not in stderr
 
 
+@pytest.mark.parametrize("passed", ["foo_bar", ""])
+def test_a_name_no_root_can_have_on_windows_speaks_before_a_passed_id(
+        tmp_path, passed):
+    """The scaffold's half of the row above (#989): `--project NUL`, which
+    no Windows disk can make a folder of, is refused as
+    `scaffold-bad-project-name` before a passed id that is no id, as `init`
+    refuses `--family NUL` before its own; no `--id` mends it."""
+    stderr = run_tool(tmp_path, "scaffold", "NUL", f"--id={passed}")
+    assert stderr.startswith(
+        "REFUSED scaffold-bad-project-name: --project is 'NUL', which names "
+        "the assembly root and the folders the scaffold makes for it, and "), \
+        stderr
+    assert "scaffold-bad-id" not in stderr
+
+
 def test_init_s_derived_remedy_rules_out_what_naming_not_a_family_refuses(
         tmp_path):
     """#911 (U162): `--family open_glass` was told to change `--family` to
