@@ -7750,11 +7750,40 @@ def _head_back(member: Path, at: str | None, branch: str | None) -> bool:
     return True
 
 
+def _branch_by_hand(branch: str) -> str:
+    """`branch` as ONE word a person types into a POSIX shell, so the shell
+    hands git the branch's exact bytes (#1079).
+
+    A UTF-8 name is `shlex.quote`d, as it always was. A name read from git
+    with `surrogateescape` that holds a byte which is not UTF-8 has no
+    spelling `shlex.quote` can give it: the surrogate is printed as the text
+    `\\udce9`, which typed names a branch that is not there. It is spelled
+    `"$(printf '<escapes>')"`, a form any POSIX shell reads the same way: each
+    byte that is not printable ASCII is a three-digit octal escape (`\\351`),
+    and so are the three ASCII bytes the format or its quotes would read as
+    something else, `'`, `\\` and `%`, so the line is ASCII whatever the
+    stream it is printed on. A ref name cannot hold a newline, so the
+    substitution's stripped trailing newlines lose nothing."""
+    try:
+        branch.encode("utf-8")
+    except UnicodeEncodeError:
+        pass
+    else:
+        return shlex.quote(branch)
+    escapes = "".join(
+        chr(byte) if 0x20 <= byte < 0x7f and chr(byte) not in "'\\%"
+        else f"\\{byte:03o}"
+        for byte in branch.encode("utf-8", "surrogateescape"))
+    return f"\"$(printf '{escapes}')\""
+
+
 def _head_by_hand(path: str, at: str, branch: str | None) -> str:
     """`_head_back` as the human types it in the holder: the branch the
     checkout was on, else the commit. FROM THE RECORD, with no git call: it
-    is named when a step failed, often with `path` not on disk at all."""
-    target = f"{shlex.quote(branch)} --" if branch is not None else at
+    is named when a step failed, often with `path` not on disk at all. The
+    branch is spelled by `_branch_by_hand`, which keeps the bytes of a name
+    that is not UTF-8 (#1079)."""
+    target = f"{_branch_by_hand(branch)} --" if branch is not None else at
     return f"git -C {shlex.quote(path)} checkout -q {target}"
 
 
