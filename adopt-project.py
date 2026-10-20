@@ -278,9 +278,8 @@ from shape_materialize import (  # noqa: E402
 # into its manifest, and whether a repository's name can be a directory's:
 # asked of the plan's values by `plan`, `check` and `execute` (#261).
 from shape_materialize import (  # noqa: E402
-    KIND_UNREADABLE, MANIFEST_INVALID_REMEDIATION,
-    MANIFEST_UNREADABLE_REMEDIATION, manifest_judged, manifest_value_problems,
-    refuse_manifest_values, refuse_unstorable_names,
+    KIND_NOT_A_MAPPING, PROJECT_MANIFEST, manifest_judged,
+    manifest_value_problems, refuse_manifest_values, refuse_unstorable_names,
 )
 # What GitHub keeps a repository's name, a topic and an organisation's name
 # to, asked by `execute` before either leg exists where GitHub is (#838).
@@ -5581,6 +5580,12 @@ def _manifest_findings(plan: Plan) -> tuple[list[str], list[str]]:
     what was read (`_named_as_read`), because the sentence goes on to
     quote `str` of it, the text `execute` would write and not what the
     plan says.
+
+    A MANIFEST THE READER MAKES NO MAPPING OF is one finding about no value
+    (`KIND_NOT_A_MAPPING`, #1059): its remedy is the one for a defect of the
+    copy of the standard, which `PROJECT_MANIFEST.remediations` gives the
+    kind, and it has no sentence about the plan's values, none of which is
+    at fault.
     """
     naming = NamingPolicy.load(NAMING_POLICY)
     values = _manifest_values(plan, naming)
@@ -5591,17 +5596,21 @@ def _manifest_findings(plan: Plan) -> tuple[list[str], list[str]]:
                                        ignore=_validator_ignores(plan))
     if not problems:
         return [], []
-    # Where the project's own YAML reader refuses the manifest, the words
-    # are the reader's, and so is the remedy (#708).
-    remedy = (MANIFEST_UNREADABLE_REMEDIATION
-              if problems[0][0] == KIND_UNREADABLE
-              else MANIFEST_INVALID_REMEDIATION)
+    # The remedy is the kind's own: where the project's own YAML reader
+    # refuses the manifest, the words are the reader's, and so is the remedy
+    # (#708); where it reads the template's manifest as something other than
+    # a mapping, no value is at fault and only the template is, so the remedy
+    # is the defect-of-the-standard one and the sentence about the plan's
+    # values is left out (#1059).
+    kind = problems[0][0]
+    values_tail = (
+        "" if kind == KIND_NOT_A_MAPPING
+        else " `execute` writes the plan's values into the project's "
+        "`project.yaml` as they stand, so correct each one named here in "
+        "the plan, or re-run `plan` with a value the validator accepts.")
     return ([f"FINDING plan-manifest-invalid: {sentence}"
              for _, sentence in problems],
-            [f"{remedy} `execute` writes the plan's "
-             "values into the project's `project.yaml` as they stand, so "
-             "correct each one named here in the plan, or re-run `plan` with "
-             "a value the validator accepts."])
+            [f"{PROJECT_MANIFEST.remediations[kind]}{values_tail}"])
 
 
 def _validator_judged(plan: Plan) -> frozenset[str] | None:
