@@ -652,15 +652,18 @@ def test_a_shorter_pin_that_leaves_a_path_is_the_key(tmp_path):
 
 
 @pytest.mark.parametrize("typed", [" open=y=x", "opensoft/open=y=x",
-                                   "open=z=x"],
-                         ids=["a-blank", "an-owner", "no-declared-pin"])
+                                   "open=z=x", "open=z="],
+                         ids=["a-blank", "an-owner", "no-declared-pin",
+                              "ends-at-no-declared-pin"])
 def test_a_value_naming_no_declared_pin_is_a_bare_path_whole(tmp_path,
                                                              typed):
     """A key is read WHOLE, never stripped and never cut at a `/`: with
     `open=y` declared, ` open=y=x` and `opensoft/open=y=x` name no pin, and
-    `open=z=x` names none at any of its `=`, so each is a bare PATH, the
-    whole value, and the directory spelled so answers, as it did when every
-    key ended at the first `=`."""
+    `open=z=x` and `open=z=` name none at any of their `=`, so each is a bare
+    PATH, the whole value, and the directory spelled so answers, as it did
+    when every key ended at the first `=`. `open=z=` ends in an `=` that
+    names no declared pin, so it is no value that names no path: it is
+    never refused, and never read as a pin's."""
     root, product, commit = scaffold_with_pin(tmp_path)
     standin_at(product, tmp_path / typed)
     declare_by_hand(root, ("open=y", product, commit))
