@@ -409,6 +409,30 @@ def test_init_help_says_each_bound_where_the_value_is_typed():
         assert sentence in entry, (flag, entry)
 
 
+def test_init_dry_run_help_says_the_mode_bits_and_nothing_that_stays():
+    """#923 U063 and #921 U088, the family's half, as the scaffold's
+    `--dry-run` says it: the write question is asked of `os.access`, which on
+    Windows says yes for every folder, so a quota, a Windows ACL or a
+    read-only drive there can pass it, and the run leaves "nothing that
+    stays" where it once said "make no folder": it makes and removes
+    `openreposhape-branch-*` (and `openreposhape-ident-*` where an identity
+    variable is set), creates no remote or repository and pushes nothing. The
+    wording is `docs/cli.md`'s too, which `test_cli_reference.py` holds."""
+    result = run_script(FAMILY, "init", "--help")
+    assert result.returncode == 0, result.stderr
+    said = help_entry(result.stdout, "--dry-run")
+    assert ("Whether each folder can be written in is asked of `os.access`, "
+            "which reads the mode bits and on Windows says yes for every "
+            "folder, so a quota, a Windows ACL or a read-only drive on "
+            "Windows can pass here and be refused by the real run. It leaves "
+            "nothing that stays: it makes and removes temporary folders, "
+            "creates no remote or repository and pushes nothing") in said, said
+    assert "make no folder" not in said
+    assert "its mode bits'" not in said, (
+        "only the write question is `os.access`'s: a file in the way and a "
+        "folder's contents are not the mode bits'")
+
+
 # --- family.py init end to end: GitHub's refusal, by its documentation ------
 
 #: A `gh` with no network that answers as GitHub's documentation says: a

@@ -378,6 +378,49 @@ def test_the_seed_note_says_github_only_on_github(scaffold_module, local,
         "T", branches, "main", local) == said
 
 
+@pytest.mark.parametrize("local,ending", [
+    pytest.param(False, "so that branch remains, and on GitHub it may be "
+                 "the leg's default branch.", id="github-leg"),
+    pytest.param(True, "so that branch remains.", id="bare-repository-leg"),
+])
+def test_the_note_a_re_run_prints_says_github_only_for_a_github_leg(
+        scaffold_module, monkeypatch, capsys, local, ending):
+    """RV1052d's NIT-A: `_reusable_remotes` hands `_seed_branch_note` the
+    `local` it was called with. Every run in this file that finds a seed only
+    on `seed/scaffold` is a `--local-remote-dir` run, and the unit test above
+    calls `_seed_branch_note` directly, so a call that always passed `True`
+    for `local` (RV1052d's R2c) printed no GitHub clause for a GitHub leg and
+    no test failed. Here `remote_is_empty` says the leg exists with commits
+    and `_held_seed` says its one commit is the seed, found on
+    `seed/scaffold` alone, and the NOTE that `_reusable_remotes` itself
+    prints is what is read: GitHub's ends with the default-branch clause, and
+    the bare repository's, which has no GitHub, does not. In-process, so it
+    runs on every platform."""
+    seed = "0123456789abcdef0123456789abcdef01234567"
+    monkeypatch.setattr(scaffold_module, "remote_is_empty",
+                        lambda repository: False)
+    monkeypatch.setattr(scaffold_module, "local_remote_is_empty",
+                        lambda target: False)
+    monkeypatch.setattr(scaffold_module, "_held_seed",
+                        lambda role, url, values, tracking, scratch: (
+                            seed, None, ("seed/scaffold",)))
+    reused = scaffold_module._reusable_remotes(
+        {"spec": "Atlas-spec"}, {"spec": "/remotes/Atlas-spec.git"},
+        {"spec": "o/Atlas-spec"}, local=local, reuse_flag=True, values={},
+        tracking="main")
+    assert reused == {"spec": seed}
+    notes = [line for line in capsys.readouterr().out.splitlines()
+             if line.startswith("NOTE the seed in")]
+    target = "/remotes/Atlas-spec.git" if local else "o/Atlas-spec"
+    assert notes == [
+        f"NOTE the seed in {target} was found only on its branch "
+        "`seed/scaffold`: this run creates `main` at it and does not touch "
+        f"`seed/scaffold`, {ending}"], notes
+    assert notes[0].endswith(", and on GitHub it may be the leg's default "
+                             "branch.") is (not local)
+    assert ("GitHub" in notes[0]) is (not local)
+
+
 def test_dry_run_help_says_the_mode_bits_and_nothing_that_stays(tmp_path):
     """#923 U063 and #921 U088, the scaffold's half: `--dry-run`'s help says
     the write question is asked of `os.access`, which on Windows says yes for
