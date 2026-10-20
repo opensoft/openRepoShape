@@ -12639,7 +12639,9 @@ def _free_plan_hint_by_the_root(plan: Plan, root: str) -> None:
     `family.py` ask too, and where `ROOT_VISIBILITY_UNREAD` now lives, says
     `FREE_PLAN_UNREAD` there. Since #969 (#913), an INTERNAL root whose plan
     is unread is told `FREE_PLAN_UNREAD_INTERNAL` instead, which says the
-    plan is not what the hint hangs on; every other case is in the words
+    plan is not what the hint hangs on, and since #994 an internal root on a
+    plan read as `free` is told it is internal, which the hint treats as
+    private, where it was called private; every other case is in the words
     adopt printed before.
     """
     note = free_plan_secrets_note(plan.get("org", ""), root,
