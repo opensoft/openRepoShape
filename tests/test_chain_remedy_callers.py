@@ -22,6 +22,11 @@ own sources, and how the naming gate spells what it prints (#661).
     blanks around its words, and a remedy no holder used was dropped with
     no NOTE (U173). And no row gave a labelled run a KEYED `--link-source`,
     so naming that by the label too passed every row (U174).
+  * #980. A `--link-source` key ended at the value's first `=`, so the
+    `--link-source open=y=<path>` the gate offers a link holding `=` was a
+    bare PATH for the chain's first link: typed as printed, it never
+    verified `open=y`. The key is the longest link a chain here names that
+    leaves a path after it, as a remedy's link is, but read whole.
 
 No network and no GitHub.
 """
@@ -30,6 +35,7 @@ from __future__ import annotations
 
 import subprocess
 import sys
+from pathlib import Path
 
 import pytest
 
@@ -325,6 +331,12 @@ EQUALS = ("--pins", "openXdox", "--referent-chain", "openXdox,open=y,openInk")
                  "OURS for y", id="padded"),
     pytest.param(THREE, "openXdox=a=b", "openXdox", "openYdox", "a=b",
                  id="words-holding-an-equals"),
+    # #991: an `=` whose owner, the text before the link's last `/`, holds
+    # one does not end the link, so the words are `openXdox`'s.
+    pytest.param(THREE, "openXdox=a/openYdox=b", "openXdox", "openYdox",
+                 "a/openYdox=b", id="an-owner-holding-an-equals"),
+    pytest.param(EQUALS, "opensoft/open=y=OURS for y", "open=y", "openInk",
+                 "OURS for y", id="an-owner-before-a-link-holding-an-equals"),
 ])
 def test_a_remedys_link_is_the_one_a_chain_names(tmp_path, monkeypatch, chain,
                                                  remedy, holder, held, words):
@@ -333,7 +345,13 @@ def test_a_remedys_link_is_the_one_a_chain_names(tmp_path, monkeypatch, chain,
     at the first `=`, `open=y=OURS for y` was the words `y=OURS for y` for a
     link `open` that no chain names, and `open=y` was offered the gate's own
     `--link-source open=y=<path>`, a flag setup does not take. Unstripped,
-    ` open=y ` names no link, and the value fell back to `open`."""
+    ` open=y ` names no link, and the value fell back to `open`.
+
+    #991, the tightening RV949 offered: that `=` is passed over where the
+    link's owner holds one, since no owner is spelled with an `=`. Read at
+    its last `=`, `openXdox=a/openYdox=b` gave `openYdox` the words `b`,
+    and `openXdox` kept the gate's own. An owner before a link holding `=`,
+    `opensoft/open=y`, still reads as that link."""
     clear_ambient_pin_sources(monkeypatch)
     result = naming(tmp_path, *chain, "--link-remedy", remedy, "codexInk")
     assert result.returncode == 0, result.stderr
@@ -456,6 +474,183 @@ def test_a_remedy_for_a_holder_whose_tree_answered_is_not_noted(tmp_path,
     assert result.returncode == 0, result.stderr
     assert "words" not in result.stderr, result.stderr
     assert "NOTE" not in result.stderr, result.stderr
+
+
+# --- #980: a --link-source key is the longest link a chain here names -------
+
+#: A chain naming `open` and `open=y` both: the shorter link's name is where
+#: the longer one's begins.
+PREFIX = ("--pins", "openXdox", "--referent-chain",
+          "openXdox,open,open=y,openInk")
+
+#: The gate's own offer for `open=y`, whose variable is `..._OPEN_Y`.
+EQUALS_OFFER = ("a sibling checkout, SHAPE_PIN_SOURCE_OPEN_Y, or "
+                "--link-source open=y=<path> would let it be read")
+
+
+def offered_source(result, holder: str) -> str:
+    """The `--link-source` value the gate's WARNING offers `holder`, as
+    printed: `<holder>=<path>`."""
+    said = [line for line in gate_warnings(result)
+            if line.startswith(f"declared-unverified: {holder} declaring ")]
+    assert len(said) == 1, result.stderr
+    return said[0].partition(" or --link-source ")[2].partition(
+        " would let it be read")[0]
+
+
+def chain_lines(result) -> list[str]:
+    """The `--explain` CHAIN lines, stripped."""
+    return [line.strip() for line in result.stdout.splitlines()
+            if line.strip().startswith("CHAIN ")]
+
+
+@pytest.mark.parametrize("key, where", [
+    pytest.param("open=y", "trees", id="as-printed"),
+    pytest.param("OPEN=Y", "trees", id="in-capitals"),
+    pytest.param("open=y", "a=b", id="a-path-holding-an-equals"),
+])
+def test_the_offer_for_a_link_holding_an_equals_verifies_it(
+        tmp_path, monkeypatch, key, where):
+    """#980, THE ISSUE'S ROW. The gate offers `open=y` the source
+    `--link-source open=y=<path>`, and typed as printed it was read at its
+    first `=`: `open` names no link, so the whole value was a bare PATH for
+    `openXdox`, `link-source-unreadable`, and `open=y` stayed
+    declared-unverified under the same offer, exit 0. Now the longest link
+    the value names with a path after it is its key, found by
+    `pin_product_key` as every key is, so the offer verifies `open=y`, and
+    a path that holds an `=` of its own is still that link's path. The one
+    WARNING left is for `openXdox`, which no source here names."""
+    clear_ambient_pin_sources(monkeypatch)
+    before = naming(tmp_path, *EQUALS, "codexInk")
+    printed = offered_source(before, "open=y")
+    assert printed == "open=y=<path>", before.stderr
+    linked = tree(tmp_path / where / "linked", "openInk")
+    typed = printed.replace("open=y", key, 1).replace("<path>", str(linked))
+    result = naming(tmp_path, *EQUALS, "--link-source", typed, "codexInk")
+    assert result.returncode == 0, result.stderr
+    assert gate_warnings(result) == [UNREACHED.format(
+        holder="openXdox", held="open=y",
+        offer=offer(GATE_OFFER, "openXdox"))], result.stderr
+    assert "link-source-unreadable" not in result.stderr, result.stderr
+    assert "NOTE" not in result.stderr, result.stderr
+
+
+@pytest.mark.parametrize("open_value, order", [
+    pytest.param("open={o}", "open-first", id="open-first"),
+    pytest.param("open={o}", "open=y-first", id="open=y-first"),
+    # A path that begins like the longer link's name is given after `./`:
+    # `open=./y` holds a `/`, so it names no link, and `open` is the key.
+    pytest.param("open=./y=dir", "open-first",
+                 id="a-path-that-begins-like-the-longer-link"),
+])
+def test_each_link_reads_its_own_source_where_one_name_begins_another(
+        tmp_path, monkeypatch, open_value, order):
+    """`open` and `open=y` in one chain, each given its own tree. Read at
+    the first `=`, `open=y=<path>` was a source for `open` with the path
+    `y=<path>`, so it and `open=<path>` were two values for one link, the
+    later replacing the earlier, and `open=y` read none: declared-unverified
+    whichever came first. The longest link the value names is its key, so
+    each link reads its own tree and the chain verifies, with nothing
+    warned or noted."""
+    clear_ambient_pin_sources(monkeypatch)
+    work = tmp_path / "work"
+    trees = {"x": tree(tmp_path / "trees" / "x", "open"),
+             "o": tree(tmp_path / "trees" / "o", "open=y"),
+             "y": tree(tmp_path / "trees" / "y", "openInk")}
+    tree(work / "y=dir", "open=y")
+    sources = [open_value.format(o=trees["o"]), f"open=y={trees['y']}"]
+    if order == "open=y-first":
+        sources.reverse()
+    result = naming(work, *PREFIX, "--explain",
+                    "--link-source", f"openXdox={trees['x']}",
+                    *(arg for value in sources
+                      for arg in ("--link-source", value)), "codexInk")
+    assert result.returncode == 0, result.stderr
+    assert chain_lines(result) == [
+        "CHAIN openXdox → open → open=y → openInk   [verified]"], (
+        result.stdout + result.stderr)
+    assert "WARNING" not in result.stdout + result.stderr, result.stderr
+    assert "NOTE" not in result.stderr, result.stderr
+
+
+def test_a_value_that_ends_at_a_link_holding_an_equals_names_no_path(
+        tmp_path, monkeypatch):
+    """`open=y=` is `PRODUCT=` for `open=y`, refused by name as
+    `openXdox=` is (#442), exit 2. Read at its first `=`, it was a bare
+    PATH, `open=y=`, asked for `openXdox`: a tree for a link the person did
+    not name."""
+    clear_ambient_pin_sources(monkeypatch)
+    result = naming(tmp_path, *EQUALS, "--link-source", "open=y=", "codexInk")
+    assert result.returncode == 2, result.stderr
+    assert result.stderr == (
+        "REFUSED link-source-no-path: `--link-source open=y=` names no path "
+        "for open=y. An empty path would be read as the directory this runs "
+        "in. Give the tree's path (`--link-source <link>=<path>`), or `.` to "
+        "mean this directory.\n"), result.stderr
+
+
+def test_a_shorter_link_that_leaves_a_path_is_the_key(tmp_path, monkeypatch):
+    """In a chain naming `open` too, `open=y=` holds a link that leaves a
+    path: `open`, with the path `y=`, as `--link-remedy openXdox=y=` gives
+    `openXdox` the words `y=` where a chain names `openXdox=y`. The longest
+    link that leaves a path is the key, and `open=y` leaves none."""
+    clear_ambient_pin_sources(monkeypatch)
+    result = naming(tmp_path, *PREFIX, "--link-source", "open=y=", "codexInk")
+    assert result.returncode == 0, result.stderr
+    assert ("WARNING link-source-unreadable: y= (--link-source open=...) "
+            "could not answer for open: no such file or directory\n"
+            ) in result.stderr, result.stderr
+    assert "NOTE" not in result.stderr, result.stderr
+
+
+def test_a_link_holding_an_equals_wins_over_a_directory_spelled_like_it(
+        tmp_path, monkeypatch):
+    """The documented rule, for a link holding `=`: `open=y=x` beside a
+    directory `open=y=x`, holding `openXdox`'s tree, and no `x`. `open=y`
+    is a link of the chain, so the keyed reading wins, decided by the
+    chain and not by the disk: the missing `x` is named, with the other
+    reading and how to ask for it. `./open=y=x` asks for it: a bare PATH,
+    the first link's tree, so `openXdox` verifies and `open=y` keeps its
+    WARNING."""
+    clear_ambient_pin_sources(monkeypatch)
+    work = tmp_path / "work"
+    tree(work / "open=y=x", "open=y")
+    keyed = naming(work, *EQUALS, "--link-source", "open=y=x", "codexInk")
+    assert keyed.returncode == 0, keyed.stderr
+    assert ("WARNING link-source-unreadable: x (--link-source open=y=...) "
+            "could not answer for open=y: no such file or directory\n"
+            "  `open=y=x` is also a directory; `--link-source ./open=y=x` "
+            "reads it as one.\n") in keyed.stderr, keyed.stderr
+    whole = naming(work, *EQUALS, "--link-source", "./open=y=x", "codexInk")
+    assert whole.returncode == 0, whole.stderr
+    assert gate_warnings(whole) == [UNREACHED.format(
+        holder="open=y", held="openInk", offer=EQUALS_OFFER)], whole.stderr
+    assert "link-source-unreadable" not in whole.stderr, whole.stderr
+    assert "NOTE" not in whole.stderr, whole.stderr
+
+
+@pytest.mark.parametrize("before, key", [
+    pytest.param(" ", " open", id="a-blank"),
+    pytest.param("opensoft/", "opensoft/open", id="an-owner"),
+])
+def test_a_key_is_read_whole(tmp_path, monkeypatch, before, key):
+    """A remedy's link is stripped and read at its last `/`; a key is the
+    text before its `=` as typed. ` open=y` and `opensoft/open=y` name no
+    link, so the value is a bare PATH for the first link, as it was, and
+    the run says how it was read."""
+    clear_ambient_pin_sources(monkeypatch)
+    linked = tree(tmp_path / "trees" / "linked", "openInk")
+    typed = f"{before}open=y={linked}"
+    result = naming(tmp_path, *EQUALS, "--link-source", typed, "codexInk")
+    assert result.returncode == 0, result.stderr
+    assert (f"WARNING link-source-unreadable: {Path(typed)} (--link-source) "
+            "could not answer for openXdox: no such file or directory\n"
+            f"  It was read as a PATH: `{key}` is not a link of a referent "
+            "chain here (links: openXdox, open=y, openInk).\n"
+            ) in result.stderr, result.stderr
+    assert UNREACHED.format(holder="open=y", held="openInk",
+                            offer=EQUALS_OFFER) in gate_warnings(result), (
+        result.stderr)
 
 
 # --- L2-69: every --link-source value and path the gate prints is spelled ---

@@ -206,14 +206,29 @@ class YamlError(Exception):
 # sequences, `#` comments, single- and double-quoted scalars, plain scalars
 # with int / float / bool / null coercion, single-level flow sequences and flow
 # mappings (`[a, b]`, `{k: v}`), and literal / folded block scalars (`|`, `>`,
-# with the `-` and `+` chomping indicators accepted and `-` honoured).
+# with the `-` and `+` chomping indicators both honoured, #1004).
 #
 # REFUSED (raises YamlError): tabs used for indentation, anchors and aliases
 # (`&`, `*`), tags (`!`), merge keys (`<<`), explicit keys (`? `), an empty
 # block key (`: a`, #715), a single-pair mapping in a flow sequence (`[a: b]`,
-# #392), and more than one document. Each of those has a meaning this reader
-# would have to invent, and an invented meaning in a validator is a wrong
-# answer with a confident tone.
+# #392), a block scalar's indentation indicator (`|2`, `>-2`, #1004), and
+# more than one document. Each of those but the indicator has a meaning this
+# reader would have to invent, and an invented meaning in a validator is a
+# wrong answer with a confident tone. The indicator's meaning is YAML's, but
+# it was accepted and never read, and no tool writes one, so it is refused
+# rather than read: see `_refuse_indentation_indicator`.
+#
+# A BLOCK SCALAR'S BODY IS READ AS YAML READS IT, OR REFUSED BY ITS LINE
+# (#1004). `+` keeps the empty lines at the block's end, where it was read
+# as clip, and a block with no line of text is `''` under clip, where it was
+# `'\n'` (under `-` it already was `''`). A line of spaces deeper than the
+# block keeps the spaces past the block's column, and a folded block keeps
+# the line breaks around a line that opens with a space or a tab, where it
+# joined it with a space. A tab left of the block's column, and a blank line
+# above the block's first line of text holding more spaces than that line,
+# are refused by their lines, as PyYAML refuses them; a tab at the block's
+# column or past it is text. See `_block_scalar_body`, `_fold_block_body`
+# and `_block_scalar_text`.
 #
 # A KEY WRITTEN TWICE IN ONE MAPPING IS REFUSED BY ITS LINE (#917), block or
 # flow: YAML requires a mapping's keys to be unique, and keeping the last, as
@@ -834,9 +849,11 @@ def _split_flow(body: str) -> list[str]:
 
 
 #: A block scalar's HEADER: `|` or `>`, optionally with a chomping indicator
-#: and an explicit indentation digit. Spelled once, beside the pair of
-#: functions that read the body it introduces.
-_BLOCK_HEADER_RE = re.compile(r"[|>][-+]?\d*")
+#: and an explicit indentation digit, in either order. Spelled once, beside
+#: the functions that read the body it introduces. A header that holds a
+#: digit is a header, and is refused by its line (#1004): see
+#: `_refuse_indentation_indicator`.
+_BLOCK_HEADER_RE = re.compile(r"[|>](?:[-+]?\d*|\d+[-+])")
 
 
 def _significant_text(raw: str, line: int) -> str | None:
@@ -922,16 +939,37 @@ def _opens_block_scalar(kv: tuple[str, str] | None) -> bool:
             and _BLOCK_HEADER_RE.fullmatch(kv[1]) is not None)
 
 
+def _refuse_indentation_indicator(header: str, line: int) -> None:
+    """A block scalar's INDENTATION INDICATOR, the digit of `|2` or `>-2`,
+    is refused by the header's line (#1004).
+
+    It was accepted and never read: the block's column was its first
+    line's, so `k: |2` over `    a` and `    b` read `'a\\nb\\n'`, where
+    YAML counts the block's column from the key's and reads `'  a\\n  b\\n'`,
+    and `>-2` was read as clip, because its `-` was not the header's last
+    character. No tool writes a block scalar and no tracked file holds a
+    digit header, so it is refused rather than read. Every header the
+    reader took before is still a header: `|0`, `|10` and a digit of
+    another script, which YAML refuses, are refused here with `|2`. So is
+    the digit first, `|2-`, which YAML reads and which was no header: alone
+    it read as the text `'|2-'`, and over a body it was refused by the
+    body's first line, as `unexpected indentation`.
+    """
+    if header.strip("|>-+"):
+        raise YamlError(f"line {line}: a block scalar's indentation "
+                        f"indicator is not supported: {header!r}")
+
+
 def _block_scalar_body(raw_lines: list[str], i: int,
                        indent: int) -> tuple[list[str], int]:
     """A block scalar's body lines, and the index of the line after them.
 
     Split out of `_tokenise` for #135. The body is every following line MORE
     INDENTED than the key, with the first such line's column taken as the
-    block's own indentation and stripped from all of them. A blank line
-    belongs to the body whatever its column, because it has none. A line of
-    Unicode spaces at the block's own indentation or deeper is not blank
-    (#715): it is text, as YAML reads it.
+    block's own indentation and stripped from all of them. A line of spaces
+    no deeper than that column is an EMPTY line, `""`, whatever its column.
+    A line of Unicode spaces at the block's own indentation or deeper is not
+    blank (#715): it is text, as YAML reads it.
 
     A LINE INDENTED LESS THAN THE BLOCK'S OWN, BUT MORE THAN THE KEY, IS
     REFUSED BY ITS LINE (#917). Stripping the block's column from it took
@@ -941,50 +979,127 @@ def _block_scalar_body(raw_lines: list[str], i: int,
     ONE OPENING `#` IS A COMMENT, which ends the block as YAML's trailing
     comment does and is read as one: `  # c` under `    a` and over the next
     key was the text `c`.
+
+    EVERY LINE IS READ AS YAML READS IT, OR REFUSED BY ITS LINE (#1004). A
+    line of spaces and tabs was blank whatever it held, so:
+
+    - a line of spaces DEEPER than the block is text: the spaces past the
+      block's column are kept, as for any deeper line. `k: |` over `  a`,
+      `    ` and `  b` read `'a\\n\\nb\\n'`, and YAML reads `'a\\n  \\nb\\n'`.
+    - a blank line ABOVE the block's first line of text that holds more
+      spaces than that line is refused by its line, as PyYAML refuses the
+      document: YAML takes the deepest of them as the block's column, so
+      the first line of text is indented less than its block. `k: |` over
+      `      ` and `  a` read `'\\na\\n'`. Where that first line opens `#`,
+      it is a comment, as above, and ends the block.
+    - a TAB LEFT OF THE BLOCK'S COLUMN, in a line that holds nothing else,
+      is refused by its line in the words a tab in any other line's
+      indentation is: `k: |` over `  a`, a tab, and `  b` read
+      `'a\\n\\nb\\n'`, and PyYAML refuses it, as it does fewer spaces than
+      the block's column and then a tab. A line no deeper than the key ends
+      the block, and `_significant_text` refuses it there. At the block's
+      column or past it, a tab is text, as YAML reads it: `'a\\n\\t\\nb\\n'`.
+      So is a tab on the block's first line, whose spaces are its column.
     """
     body: list[str] = []
+    blank_lines: list[tuple[int, int]] = []
     block_indent = None
     while i < len(raw_lines):
         nxt = raw_lines[i]
-        if nxt.strip(_YAML_WHITE) == "":
-            body.append("")
-            i += 1
-            continue
         nxt_indent = len(nxt) - len(nxt.lstrip(" "))
-        if nxt_indent <= indent:
+        rest = nxt[nxt_indent:]
+        if block_indent is not None and nxt_indent >= block_indent:
+            body.append(nxt[block_indent:])
+        elif rest == "":
+            blank_lines.append((i + 1, nxt_indent))
+            body.append("")
+        elif nxt_indent <= indent:
             break
-        if block_indent is None:
-            block_indent = nxt_indent
-        elif nxt_indent < block_indent:
-            if nxt[nxt_indent] == "#":
+        elif block_indent is None:
+            if _first_line_is_a_comment(blank_lines, nxt_indent, rest):
                 break
-            raise YamlError(
-                f"line {i + 1}: a line of a block scalar is indented "
-                f"{nxt_indent} spaces, fewer than the {block_indent} of its "
-                "first line")
-        body.append(nxt[block_indent:])
+            block_indent = nxt_indent
+            body.append(rest)
+        elif rest[0] == "#":
+            break
+        else:
+            raise _shallower_line_refusal(rest, i + 1, nxt_indent,
+                                          block_indent)
         i += 1
     return body, i
 
 
-def _fold_block_body(body: list[str]) -> str:
-    """A FOLDED (`>`) block scalar's body, joined the way folding joins it.
+def _first_line_is_a_comment(blank_lines: list[tuple[int, int]],
+                             spaces: int, rest: str) -> bool:
+    """Whether a block scalar's first line of text, `spaces` deep and
+    holding `rest`, is a comment that ends the block, read under the
+    `(line, spaces)` of each blank line `_block_scalar_body` has met.
 
-    Split out of `_tokenise` for #135. A blank line is a newline of its own
-    and every other line is joined to the one before it with a space; a body
-    whose LAST line is blank is stripped of newlines at both ends, because the
-    trailing one is the chomping indicator's to decide.
+    Split out of `_block_scalar_body` for its length (#1004), which asks it
+    only before the block's column is set, so every blank line it has met
+    is ABOVE the first line of text. A blank line deeper than that line
+    sets YAML's column, so the line is indented less than its block: one
+    opening `#` is a comment that ends it, and any other line refuses the
+    document, named by the first such blank line. Otherwise the line is
+    the block's first, and sets its column.
+    """
+    deeper = [(line, held) for line, held in blank_lines if held > spaces]
+    if not deeper:
+        return False
+    if rest[0] == "#":
+        return True
+    raise YamlError(
+        f"line {deeper[0][0]}: a blank line above a block scalar's first "
+        f"line of text holds {deeper[0][1]} spaces, more than the {spaces} "
+        "of that line")
+
+
+def _shallower_line_refusal(rest: str, line: int, spaces: int,
+                            block_indent: int) -> YamlError:
+    """The refusal of a block scalar's `line`, `spaces` deep and holding
+    `rest`, which is less than the block's column, deeper than the key, and
+    no comment. Split out of `_block_scalar_body` for its length (#1004).
+
+    A line that holds nothing but tabs and spaces, at least one of them a
+    tab, is refused as any other tab in a line's indentation is (#1004); a
+    line with text in it, a tab or no tab before the text, is #917's line
+    indented less than its block.
+    """
+    if rest.strip(_YAML_WHITE) == "":
+        return YamlError(f"line {line}: tab used for indentation")
+    return YamlError(
+        f"line {line}: a line of a block scalar is indented {spaces} "
+        f"spaces, fewer than the {block_indent} of its first line")
+
+
+def _fold_block_body(body: list[str]) -> str:
+    """A FOLDED (`>`) block scalar's lines, joined the way folding joins
+    them, without the line break after the last.
+
+    Split out of `_tokenise` for #135. The line break between two lines of
+    text is a space, and a run of empty lines between them is a newline
+    each, the break itself dropped. AS YAML FOLDS (#1004), A LINE THAT OPENS
+    WITH A SPACE OR A TAB, a line deeper than the block, is not folded: the
+    break before it and the break after it are kept. Each was joined with a
+    space, so `k: >` over `  a`, `    b` and `  c` read `'a   b c\\n'`, where
+    YAML reads `'a\\n  b\\nc\\n'`. `_block_scalar_text` hands this no empty
+    line at the end, because those are the chomping indicator's.
     """
     folded: list[str] = []
+    before = None
+    empty = 0
     for line in body:
         if line == "":
-            folded.append("\n")
-        elif folded and folded[-1] not in ("", "\n"):
-            folded.append(" " + line)
+            empty += 1
+            continue
+        if before is None:
+            folded.append("\n" * empty)
+        elif before[0] in _YAML_WHITE or line[0] in _YAML_WHITE:
+            folded.append("\n" * (empty + 1))
         else:
-            folded.append(line)
-    if body and body[-1] == "":
-        return "".join(folded).strip("\n")
+            folded.append("\n" * empty if empty else " ")
+        folded.append(line)
+        before, empty = line, 0
     return "".join(folded)
 
 
@@ -992,16 +1107,27 @@ def _block_scalar_text(header: str, body: list[str]) -> str:
     """A block scalar's body as the one string its key takes as a value.
 
     Split out of `_tokenise` for #135. `|` keeps every line break and `>`
-    folds them; the `-` chomping indicator drops the trailing newline, and its
-    absence leaves exactly one, which is YAML's clip behaviour.
+    folds them. The empty lines at the end are the CHOMPING INDICATOR'S, and
+    so is the line break after the last line of text: `-` drops them all,
+    no indicator keeps that one line break (YAML's clip), and `+` keeps it
+    and every empty line after it (#1004). `+` was read as clip, so
+    `k: |+` over `  a` and an empty line read `'a\\n'`, where YAML reads
+    `'a\\n\\n'`. A block with no line of text is empty, `''`, under clip,
+    where it read `'\\n'` (under `-` it already read `''`), and is its empty
+    lines under `+`, where it read `'\\n'` too.
     """
-    if header[0] == "|":
-        joined = "\n".join(body)
-    else:
-        joined = _fold_block_body(body)
+    end = len(body)
+    while end and body[end - 1] == "":
+        end -= 1
+    lines = body[:end]
+    text = "\n".join(lines) if header[0] == "|" else _fold_block_body(lines)
     if header.endswith("-"):
-        return joined.rstrip("\n")
-    return joined.rstrip("\n") + "\n"
+        return text
+    if lines:
+        text += "\n"
+    if header.endswith("+"):
+        text += "\n" * (len(body) - end)
+    return text
 
 
 def _tokenise(text: str) -> list[_Rec]:
@@ -1010,8 +1136,9 @@ def _tokenise(text: str) -> list[_Rec]:
     THE RULE THIS FUNCTION IMPLEMENTS IS THE ORDER, which is why each step of
     it is a named helper above (#135): a line that tokenises to nothing, a
     document marker, the `- ` markers peeled off the front, the two refusals,
-    a block scalar's header and the body swallowed under it, and last an
-    ordinary line kept as its own record.
+    a block scalar's header, refused by its line if it holds an indentation
+    digit (#1004), and the body swallowed under it, and last an ordinary
+    line kept as its own record.
     """
     recs: list[_Rec] = []
     raw_lines = text.splitlines()
@@ -1038,6 +1165,7 @@ def _tokenise(text: str) -> list[_Rec]:
             # The record is on the HEADER's line, where its key is, which a
             # key written twice is refused by (#917); it was the body's last.
             header_line = i
+            _refuse_indentation_indicator(kv[1], header_line)
             body, i = _block_scalar_body(raw_lines, i, indent)
             recs.append(_Rec(indent, "", False, header_line,
                              (kv[0], _block_scalar_text(kv[1], body))))

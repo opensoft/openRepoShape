@@ -443,9 +443,10 @@ def test_the_derived_ids_words_are_the_tables(adopter, monkeypatch):
     an edit to `FLAG_DEFAULTS["id"]` would not have reached it. Its label
     and its remedy are both read from the table."""
     monkeypatch.setitem(adopter.FLAG_DEFAULTS, "id", "a stand-in")
+    naming = adopter.NamingPolicy.load(adopter.NAMING_POLICY)
     with pytest.raises(adopter.Refusal) as refused:
         adopter._refuse_bad_id("north_wind", "North_Wind", set(),
-                               Namespace(repository=None))
+                               Namespace(repository=None), naming, set())
     assert refused.value.detail.startswith(
         "--id (not given, so a stand-in) is 'north_wind'"), refused.value
     assert "The id is a stand-in, and" in refused.value.remediation

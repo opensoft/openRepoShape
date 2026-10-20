@@ -623,11 +623,14 @@ def git_not_started(exc: OSError) -> Refusal | None:
     `FileNotFoundError` traceback, exit 1, the code of `family bootstrap
     FAILED`, though nothing had failed. Git's is told by its NAME, as
     `validate-pins.py` tells it: a `filename` of `git`, or none at all on a
-    `FileNotFoundError` or a `PermissionError`, as Windows raises them; one
-    naming a directory is not git's. The code, and the remedy's first
-    sentence, are `validate-family.py`'s."""
-    nameless = exc.filename is None and isinstance(
-        exc, (FileNotFoundError, PermissionError))
+    `FileNotFoundError` or a `PermissionError`, as Windows raises them, or
+    on an `OSError` whose `winerror` is 193, Windows' `[WinError 193]` for a
+    `git.exe` it cannot execute (#1001); one naming a directory is not
+    git's. The code, and the remedy's first sentence, are
+    `validate-family.py`'s."""
+    nameless = (exc.filename is None
+                and (isinstance(exc, (FileNotFoundError, PermissionError))
+                     or getattr(exc, "winerror", None) == 193))
     if exc.filename != "git" and not nameless:
         return None
     return Refusal(

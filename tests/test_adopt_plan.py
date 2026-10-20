@@ -373,8 +373,11 @@ def test_a_project_name_that_is_not_a_lowercase_id_is_refused(source_repo,
 
 #: `repo_shape.PROJECT_ID_RE`, as `adopt-bad-id` prints it.
 ID_PATTERN = "^[a-z0-9][a-z0-9-]*$"
-#: What a passed `--id` is told to do: pass another.
-PASS_AN_ID = "Remediation: pass an explicit lowercase --id."
+#: What a passed `--id` is told to do: pass another, of what an id may hold
+#: (#902), in the scaffold's and `family.py init`'s words (#911). "Pass an
+#: explicit lowercase --id" was said to `--id foo_bar`, which is both.
+PASS_AN_ID = ("Remediation: pass an --id of lowercase letters, digits and "
+              "hyphens, starting with a letter or digit.")
 #: How `adopt-bad-id` names an id `plan` derived from `--project`:
 #: `_flag_named` over `FLAG_DEFAULTS`, as the tracking branch and the
 #: elector are named (#529).
@@ -413,16 +416,16 @@ def test_a_passed_id_that_is_not_a_lowercase_id_is_named_as_passed(
     assert not plan.exists()
 
 
-@pytest.mark.parametrize("project", ["Northwind", "North_Wind"])
-def test_an_empty_id_is_refused_as_the_id_passed(source_repo, tmp_path,
-                                                 project):
+def test_an_empty_id_is_refused_as_the_id_passed(source_repo, tmp_path):
     """L2-53: `--id ''` was read as not passed, so a script's `--id "$ID"`
     with `ID` unset planned `id: northwind`, exit 0, and beside `--project
     North_Wind` was refused as an id derived from it, "(--id was not given)"
     (rv601's P4). It is a value typed, held to the id's rule as any other
-    and refused by name, as `--tracking-branch ''` is since #479."""
+    and refused by name, as `--tracking-branch ''` is since #479. (Beside
+    `--project North_Wind` the name is refused first since #902:
+    `tests/test_adopt_values_as_typed.py`.)"""
     plan = tmp_path / "plan.yaml"
-    result = write_plan(source_repo, plan, project=project,
+    result = write_plan(source_repo, plan, project="Northwind",
                         extra=("--id", ""))
     assert bad_id(result) == [
         f"REFUSED adopt-bad-id: --id '' must match {ID_PATTERN}",
@@ -479,17 +482,22 @@ def test_a_derived_ids_remedy_names_the_rule_naming_unclassified_does(
         f"Remediation: change --project to {NAME_RULE}. "), derived
 
 
-def test_a_passed_id_equal_to_the_derived_one_is_still_named_as_passed(
+def test_a_passed_id_equal_to_the_derived_one_meets_the_name_first(
         source_repo, tmp_path):
     """Whether the id was passed is what the person did, not whether it
     equals `--project` lowercased: `--id north_wind` beside `--project
-    North_Wind` is a flag typed, so its refusal names the flag."""
+    North_Wind` is a flag typed, and was refused as one, "pass an explicit
+    lowercase --id", whose retype met `naming-unclassified` (L2-90 on #457).
+    Since #902 the name the naming policy refuses speaks first, and no id
+    refusal is said; nor is the derived id's."""
     plan = tmp_path / "plan.yaml"
     result = write_plan(source_repo, plan, project="North_Wind",
                         extra=("--id", "north_wind"))
     assert bad_id(result) == [
-        f"REFUSED adopt-bad-id: --id 'north_wind' must match {ID_PATTERN}",
-        PASS_AN_ID], result.stderr
+        "REFUSED naming-unclassified: 'North_Wind' matches no family in the "
+        "naming policy", f"Remediation: --project takes {NAME_RULE}."], \
+        result.stderr
+    assert "adopt-bad-id" not in result.stderr
     assert not plan.exists()
 
 

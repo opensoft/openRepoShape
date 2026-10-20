@@ -694,11 +694,12 @@ def prepare(typed_ref: str = "") -> Standard:
     """The standard this run uses, cloned if it has to be and checked.
 
     In order: BESIDE a checkout, that checkout, untouched. Otherwise the
-    repository and then the ref are checked before anything reaches git; git
-    must be there, because the standard is a clone; the commit is the stamp's, the 40-hex ref's, or what
-    the remote says the ref is; a clone of it already in the cache is used,
-    and one that is not is made; and the clone is verified, against the
-    stamped digest where nothing overrode the stamp.
+    repository and then the ref are checked before anything reaches git;
+    git must be there, because the standard is a clone; the commit is the
+    stamp's, the 40-hex ref's, or what the remote says the ref is; a clone
+    of it already in the cache is used, and one that is not is made; and
+    the clone is verified, against the stamped digest where nothing
+    overrode the stamp.
     """
     beside = beside_checkout()
     if beside is not None:
