@@ -314,19 +314,45 @@ def _git_runs(unread: str) -> Iterator[None]:
 
     `git_out` raises `OSError` when there is no git to run, and nothing here
     caught it: the run ended in a `FileNotFoundError` traceback, which exits
-    1, a FINDING's code, though nothing was found. So every check that runs
-    git, in every mode, runs it inside this, and `unread` says which check
-    it was and what it could not read. ONE code for the whole validator,
+    1, a FINDING's code, though nothing was found. So every call that runs
+    git, in every mode, runs inside this, and `unread` says which check it
+    was and what it could not read. ONE code for the whole validator,
     whichever check met the missing git first: it is one fact about the
     machine, and `gitmodules-unreadable` keeps meaning a file git ran and
     could not read.
 
-    Around the git calls ALONE, and never around a whole check: a
-    `project.yaml` nobody may read is an `OSError` too, and it is not this.
+    ONLY AN ERROR FROM STARTING GIT COUNTS, told apart two ways, as
+    `validate-pins.py` tells it (#928). Around the git calls ALONE, and
+    never around a whole check: a `project.yaml` nobody may read is an
+    `OSError` too, and it is not this. A member's gitlink check and its
+    tree check each ran whole inside one, so whatever else either met was
+    told to put git on PATH. And inside a git call the class is not enough:
+    `subprocess` raises the same `FileNotFoundError` or `PermissionError`
+    when the DIRECTORY it was to run git in, a member's checkout, cannot be
+    entered, and on POSIX names that directory in `filename`, where a
+    program that will not start names `git`. So any `OSError` whose
+    `filename` is `git` counts, `ENOEXEC`'s included (a binary for another
+    architecture, a script with no shebang), and so does a
+    `FileNotFoundError` or a `PermissionError` that names no file, as
+    Windows' `CreateProcess` raises one for a missing git. Every other
+    `OSError` passes through as it came, and so does Windows' `[WinError
+    193]`, a `git.exe` it cannot execute, which names no file and is
+    neither class: `validate-pins.py` passes it through as well.
+
+    `validate-pins.py`'s RULE, COPIED, NOT SHARED. This file is a pinned
+    copy, and a holder re-copies its pinned files one row at a time, so it
+    may run beside a `repo_shape.py` older than itself: a rule moved there
+    would end this run in an `ImportError` (#610's skew rule).
+    `tests/test_validate_family_git_not_runnable.py` holds the two copies to
+    one answer.
     """
     try:
         yield
     except OSError as exc:
+        nameless = (exc.filename is None
+                    and isinstance(exc, (FileNotFoundError, PermissionError)))
+        if exc.filename != "git" and not nameless:
+            raise
         raise Refusal(
             "git-not-runnable",
             f"{unread}: git could not be run ({exc.strerror or exc})",
@@ -737,8 +763,13 @@ def _check_member_gitlink(root: Path, path: str, commit: str, project: str,
     variant of `path`, the refusal names that instead (#611). A gitlink
     whose removal is staged (`removed`) is HEAD's, which the next commit
     drops: `member-gitlink-removal-staged` names it, and nothing is said of
-    it here (#762)."""
-    gitlink = recorded_gitlink(root, path)
+    it here (#762).
+
+    The gitlink is read inside `_git_runs`, and nothing else here is: the
+    remedy a refusal builds reads the disk and HEAD's `.gitmodules`, and
+    the git it runs is in a `_git_runs` of its own (#928)."""
+    with _git_runs(f"the gitlink recorded at {path} could not be read"):
+        gitlink = recorded_gitlink(root, path)
     if gitlink is None:
         variants = sorted(other for other in gitlinks if other != path
                           and other.casefold() == path.casefold())
@@ -1351,6 +1382,11 @@ def _check_member_tree(member: Path, pin: dict, path: str, commit: str,
     Python 3.13, and on 3.14 was `member-uninitialized`, whose update then
     failed (`could not open '<path>/.git' for writing`) on the checkout
     that is there.
+
+    The pinned commit's lookup and the digest are read inside `_git_runs`,
+    and nothing else here is (#928). All of this ran inside one, the `stat`
+    of the checkout's `.git` too: on Python 3.12, a refused one met here
+    was `git-not-runnable`, which says to put git on PATH.
     """
     if not _checked_out(member, path):
         raise Refusal(
@@ -1362,21 +1398,28 @@ def _check_member_tree(member: Path, pin: dict, path: str, commit: str,
             f"Remediation: {stop}`git submodule update --init --recursive`, "
             "or `make bootstrap`, which resolves a credential for private "
             "members first.")
-    try:
-        git_out(["rev-parse", "--verify", "--quiet", f"{commit}^{{commit}}"],
-                cwd=member)
-    except Refusal as exc:
-        fetch = shlex.join(["git", "-C", path, "fetch", "origin", commit])
-        raise Refusal(
-            "member-commit-unresolvable",
-            f"{path}: the pinned commit {commit} is not in that member's "
-            f"object store ({exc.detail})",
-            f"Remediation: where a remote of the member holds it, `{fetch}` "
-            "fetches it into that store, and this then reads it. Where none "
-            "does, that fetch fails `not our ref`, exit 128, as `git "
-            "submodule update` does, and the pin names a commit no clone can "
-            "fetch: move the gitlink and the pin to one a remote holds. "
-            + rule) from exc
+    unread = (f"{project}'s pinned commit and its tree digest could not be "
+              f"read in {path}")
+    # `_git_runs` OUTSIDE the `try`, as `validate-pins.py` has it: the
+    # refusal it raises is a `Refusal`, and inside, the `except Refusal`
+    # below would turn "no git to run" into `member-commit-unresolvable`.
+    with _git_runs(unread):
+        try:
+            git_out(["rev-parse", "--verify", "--quiet",
+                     f"{commit}^{{commit}}"], cwd=member)
+        except Refusal as exc:
+            fetch = shlex.join(["git", "-C", path, "fetch", "origin",
+                                commit])
+            raise Refusal(
+                "member-commit-unresolvable",
+                f"{path}: the pinned commit {commit} is not in that member's "
+                f"object store ({exc.detail})",
+                f"Remediation: where a remote of the member holds it, "
+                f"`{fetch}` fetches it into that store, and this then reads "
+                "it. Where none does, that fetch fails `not our ref`, exit "
+                "128, as `git submodule update` does, and the pin names a "
+                "commit no clone can fetch: move the gitlink and the pin to "
+                "one a remote holds. " + rule) from exc
 
     recorded = pin.get("tree_sha256")
     if not isinstance(recorded, str) or not SHA256_RE.match(recorded):
@@ -1391,7 +1434,8 @@ def _check_member_tree(member: Path, pin: dict, path: str, commit: str,
             f"{TREE_DIGEST_DEFINITION!r}. A digest whose definition is "
             "unstated is a number, not an identity.")
     else:
-        actual = tree_digest(member, commit)
+        with _git_runs(unread):
+            actual = tree_digest(member, commit)
         if actual.lower() != recorded.lower():
             report.finding(
                 "member-digest-mismatch",
@@ -1433,8 +1477,8 @@ def _check_member(root: Path, row: dict, seen: dict, report: Report,
     dropped both findings unprinted.
 
     The git each check runs is run inside `_git_runs`, which names the check
-    when there is no git to run (#368); the identity check reads a file and
-    runs none.
+    when there is no git to run (#368), around the git calls alone (#928);
+    the identity check reads a file and runs none.
     """
     project = _member_project_name(row, seen, report)
     if project is None:
@@ -1454,10 +1498,8 @@ def _check_member(root: Path, row: dict, seen: dict, report: Report,
     # ---- the gitlink -------------------------------------------------------
     # THE LOCKSTEP RULE each finding below ends at names this member (#610).
     rule = _lockstep(root, project, str(row.get("id") or project))
-    with _git_runs(f"the gitlink recorded at {path} could not be read"):
-        _check_member_gitlink(root, path, commit, project,
-                              row.get("repository"), gitlinks, report, rule,
-                              removed)
+    _check_member_gitlink(root, path, commit, project, row.get("repository"),
+                          gitlinks, report, rule, removed)
     return Gitlinked(row, project, path, pin, commit, rule)
 
 
@@ -1483,10 +1525,8 @@ def _check_member_checkout(root: Path, asked: Gitlinked, report: Report,
     member = root / asked.path
     if asked.path in unregistered and not _checked_out(member, asked.path):
         return
-    with _git_runs(f"{asked.project}'s pinned commit and its tree digest "
-                   f"could not be read in {asked.path}"):
-        _check_member_tree(member, asked.pin, asked.path, asked.commit,
-                           asked.project, report, asked.rule, stop)
+    _check_member_tree(member, asked.pin, asked.path, asked.commit,
+                       asked.project, report, asked.rule, stop)
     _check_member_identity(member, asked.row, asked.project, asked.path,
                            report)
 
