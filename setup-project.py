@@ -1340,11 +1340,12 @@ def _names_github(url: str) -> bool:
     asks them where the url's scheme is `https` in any case, or there is
     none; its host is `github.com` in any case once its `%XX` escapes are
     decoded, or empty, or one a `*` stands in for a part of
-    (`https://*.com`); and its port is none or 443. A user, a path, a query
-    and a `*` git would not match are read past here, where git asks only
-    for a push that names the same: what this reads beyond git is a helper
-    counted that git will not ask, so what it costs is silence, never a
-    warning git would contradict.
+    (`https://*.com`); and its port is none, or 443 with or without zeros
+    before it (`:0443`), and not 0. A user, a path, a query, a port on a
+    url with no scheme and a `*` git would not match are read past here,
+    where git asks only for a push that names the same: what this reads
+    beyond git is a helper counted that git will not ask, so what it costs
+    is silence, never a warning git would contradict.
     """
     scheme, separator, rest = url.partition("://")
     if separator and scheme.lower() != "https":
@@ -1352,7 +1353,8 @@ def _names_github(url: str) -> bool:
     authority = re.split(r"[/?#]", rest if separator else url, maxsplit=1)[0]
     host, _, port = authority.rpartition("@")[2].partition(":")
     host = unquote(host).lower()
-    return port in ("", "443") and (host in ("", "github.com") or "*" in host)
+    return ((port == "" or port.lstrip("0") == "443")
+            and (host in ("", "github.com") or "*" in host))
 
 
 #: The key `_home_path` hands git a `~/` path under, to read it back
@@ -1496,9 +1498,9 @@ def _why_no_login() -> str:
             "will fail." % " or ".join(files))
 
 
-def _github_goes_over_https(opts: Options) -> bool:
-    """Whether git sends the run's github.com urls over HTTPS, the one way
-    git asks a credential helper for them (#1013).
+def _git_asks_a_helper(opts: Options) -> bool:
+    """Whether git sends the run's github.com urls over HTTP or HTTPS,
+    where it asks a credential helper for them (#1013).
 
     The scaffold's remotes are `https://github.com/<org>/...`
     (`clone_and_bootstrap`), and a `url.<base>.insteadOf` rule can send
@@ -1508,17 +1510,28 @@ def _github_goes_over_https(opts: Options) -> bool:
     It is asked of `https://github.com/<org>/`, with `--org`'s organisation,
     since a rule may be keyed to one organisation alone, and of
     `https://github.com/` where the run names none: a url every remote of
-    the run starts with. It applies no `pushInsteadOf` (measured), so a
+    the run starts with. An answer starting `https://` or `http://` keeps
+    the warnings, since git asks a helper over either (measured with
+    `credential fill`), though the checks behind them read github.com's
+    https keys and logins alone; any other answer, `git@github.com:` or
+    `ssh://`, silences them. It applies no `pushInsteadOf` (measured), so a
     rule for pushes alone leaves the answer HTTPS, as it leaves the clone
     of a private repository. Where git says nothing this can read, today's
-    answer: HTTPS.
+    answer: git asks.
+
+    A KNOWN LIMIT: git reads the config of the folder the run starts in,
+    `.git/config` too where that is a repository, and the scaffold pushes
+    from repositories of its own, which do not carry a rule kept there
+    alone; so such a rule silences both warnings for pushes it does not
+    reach (measured). The helper keys are read from the same folder, as
+    they have been since #992.
     """
     url = ("https://github.com/%s/" % opts.org if opts.org
            else "https://github.com/")
     asked = run(["git", "ls-remote", "--get-url", "--", url], capture=True)
     answer = (asked.stdout or "").strip()
     return (asked.returncode != 0 or not answer
-            or answer.startswith("https://"))
+            or answer.startswith(("https://", "http://")))
 
 
 def _check_credential_helper(opts: Options, offering: bool = True) -> None:
@@ -1535,7 +1548,7 @@ def _check_credential_helper(opts: Options, offering: bool = True) -> None:
 
     NOTHING IS SAID WHERE GIT ASKS NO HELPER (#1013): where a
     `url.<base>.insteadOf` rule sends the run's urls over ssh
-    (`_github_goes_over_https`), neither warning is true, and `gh auth
+    (`_git_asks_a_helper`), neither warning is true, and `gh auth
     setup-git` does nothing for an ssh key.
 
     THE KEYS READ (`_credential_helpers`): `credential.helper`,
@@ -1570,7 +1583,7 @@ def _check_credential_helper(opts: Options, offering: bool = True) -> None:
     A `yes` here makes gh write its helper into the person's global git
     config, which is no part of a run that ends at the plan.
     """
-    if opts.local_mode or not _github_goes_over_https(opts):
+    if opts.local_mode or not _git_asks_a_helper(opts):
         return
     why = _why_no_login()
     if not why:

@@ -1882,6 +1882,10 @@ DEMOORG_OVER_SSH = ('[url "git@github.com:demoorg/"]\n'
                     "\tinsteadOf = https://github.com/demoorg/\n")
 PUSHES_OVER_SSH = ('[url "git@github.com:"]\n'
                    "\tpushInsteadOf = https://github.com/\n")
+DEMOORG_IN_CAPITALS_OVER_SSH = ('[url "git@github.com:DemoOrg/"]\n'
+                                "\tinsteadOf = https://github.com/DemoOrg/\n")
+EVERY_ORG_OVER_HTTP = ('[url "http://github.com/"]\n'
+                       "\tinsteadOf = https://github.com/\n")
 
 #: A rule in git's global config, the run's flags, and whether git still
 #: sends the run's github.com urls over HTTPS, where it asks a credential
@@ -1893,7 +1897,10 @@ RULES = {
     "this-org": (DEMOORG_OVER_SSH, ["--org", "demoorg"], False),
     "another-org": (DEMOORG_OVER_SSH, ["--org", "other"], True),
     "no-org-to-match": (DEMOORG_OVER_SSH, [], True),
+    "this-org-in-capitals": (DEMOORG_IN_CAPITALS_OVER_SSH,
+                             ["--org", "DemoOrg"], False),
     "pushes-alone": (PUSHES_OVER_SSH, ["--org", "demoorg"], True),
+    "plain-http": (EVERY_ORG_OVER_HTTP, [], True),
 }
 
 
@@ -1904,11 +1911,12 @@ def test_a_rule_sending_github_over_ssh_silences_both_warnings(
     """Where a `url.<base>.insteadOf` rule sends the run's github.com urls
     over ssh, git logs in with an ssh key and asks no credential helper, so
     neither `[??]` is true, and neither is said nor `gh auth setup-git`
-    offered (#1013): a rule for every organisation, and one for `--org`'s.
-    A rule for another organisation, one with no `--org` to match, and a
-    `pushInsteadOf` rule alone leave both warnings as they were, byte for
-    byte. Real git, reading the test's config alone. `--preflight` exits 0
-    either way."""
+    offered (#1013): a rule for every organisation, and one for `--org`'s,
+    spelled as `--org` spells it. A rule for another organisation, one with
+    no `--org` to match, a `pushInsteadOf` rule alone, and a rule to
+    `http://`, over which git asks a helper too, leave both warnings as
+    they were, byte for byte. Real git, reading the test's config alone.
+    `--preflight` exits 0 either way."""
     rule, flags, warned = RULES[case]
     stored = STORE_HELPER if helper == "an-empty-store" else ""
     module, _ = _a_real_git(monkeypatch, tmp_path, rule + stored)
@@ -1979,6 +1987,7 @@ HELPER_URLS = [
     ("github.com", True, True),
     ("https://github%2Ecom", True, True),
     ("https://github.com:443", True, True),
+    ("https://github.com:0443", True, True),
     ("https://*.com", True, True),
     ("https://", True, True),
     ("", True, True),
@@ -1987,6 +1996,7 @@ HELPER_URLS = [
     ("https://*", True, False),
     ("*.com", True, False),
     ("https://github.com:8443", False, False),
+    ("https://github.com:0", False, False),
     ("http://github.com", False, False),
     ("ssh://github.com", False, False),
     ("https://gitlab.com", False, False),
@@ -2060,6 +2070,30 @@ def test_with_home_unset_the_store_warning_names_no_home_file(
     expected = (NO_STORE_FILE if xdg == "unset" else
                 EMPTY_STORE % (tmp_path / "xdg" / "git" / "credentials"))
     assert expected in capsys.readouterr().err
+
+
+def test_a_url_git_gives_no_answer_for_keeps_the_warning(monkeypatch,
+                                                         capsys, tmp_path):
+    """Where `git ls-remote --get-url` fails, nothing says the run's urls
+    leave HTTPS, so the `[??]` is said as it was before #1013."""
+    module, runs, home_file, config_file = _a_credential_store(
+        monkeypatch, tmp_path, "store\n")
+    runs.answers["--get-url"] = (128, "")
+    assert module.preflight_checks(module.parse_args([], str(tmp_path)))
+    assert (EMPTY_STORE % ("%s or %s" % (home_file, config_file))
+            in capsys.readouterr().err)
+
+
+def test_an_empty_helper_under_a_url_of_its_own_is_no_helper(
+        monkeypatch, capsys, tmp_path):
+    """`[credential "https://github.com/"]` holding only `helper =`, the
+    empty line that resets git's list: git has no helper at all (`fill`
+    exits 128), and the machine is told so. Real git (#1013)."""
+    module, _ = _a_real_git(monkeypatch, tmp_path,
+                            '[credential "https://github.com/"]\n'
+                            "\thelper =\n")
+    assert module.preflight_checks(module.parse_args([], str(tmp_path)))
+    assert NO_HELPER in capsys.readouterr().err
 
 
 def test_a_home_git_will_not_expand_with_home_set_is_left_alone(
