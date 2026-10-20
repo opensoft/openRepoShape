@@ -46,7 +46,9 @@ THE SAME FAMILY, OFFLINE RULES AND HELPERS as
 is git's refusal of the file transport to the fixture's local remotes, as
 in `tests/test_family_holder_bootstrap_texts.py` (#839). A commit a test
 makes in a member is pushed to a branch of the member's remote named for
-it, so a plain clone fetches it, and the remote's `main` is not moved.
+it, so a plain clone fetches it, and the remote's `main` is not moved. A
+commit made to be pushed nowhere names the clone it is made in, so no
+other row's push puts it on a remote (`unpushed`).
 """
 
 from __future__ import annotations
@@ -178,11 +180,23 @@ def unpushed(family, env: dict, tmp_path: Path,
     """A clone of the fixture's `remote` (OTHER's unless said) of the
     test's own and an empty commit made on its `main` there and never
     pushed: no store the holder reaches holds it, and its tree is that
-    `main`'s. Returns both."""
+    `main`'s. Returns both.
+
+    ITS MESSAGE NAMES THE CLONE, a path no other row's clone has, so no
+    other row makes the same commit. Under one message, every row's had
+    the same parent, tree, author and message, and git dates a commit to
+    the second, so two rows that made one in the same second made the
+    same commit. The remotes are the module's: where the earlier row had
+    pushed it (`pin_moved_on`, B4's cure), the later row's B4 commit was
+    on the remote, git's fetch brought it, its update exited 1, not 128,
+    and the walk never ran. CI, which runs these rows less than a second
+    apart, failed the refused checkout's row so at 4f97fedb and the
+    unreadable leg's at 938a83ef; a commit date fixed by
+    `GIT_COMMITTER_DATE` and `GIT_AUTHOR_DATE` fails both on git 2.43.0."""
     clone = tmp_path / f"unpushed-{remote}"
     raw(tmp_path, env, "clone", "-q", "--",
         str(family["remotes"] / f"{remote}.git"), str(clone))
-    return clone, committed(clone, env, "Made and never pushed")
+    return clone, committed(clone, env, f"Made in {clone} and never pushed")
 
 
 def moved_by_hand(root: Path, env: dict, project: str, commit: str) -> None:
@@ -652,10 +666,13 @@ def test_a_leg_this_user_cannot_search_is_untold(family, holder, offline,
     000, and B4 at IRSS. The walk's `stat` of the leg's `.git` is refused,
     which ended the run in a `PermissionError` traceback; that leg is
     untold now, nothing past it asked, and the run says what it said before
-    #954, the advice and ok. Git 2.43.0 passes the leg it cannot clone into
-    and dies at IRSS's B4 (exit 128), so the walk meets the leg; git 2.55.0
-    (CI) ends its update at the leg, `Failed to clone 'code' a second time,
-    aborting` (exit 1), so the walk, which runs on 128 only, does not."""
+    #954, the advice and ok. Git's update in IRRS cannot clone the leg
+    and exits 1 (`Failed to clone 'code' a second time, aborting`); the
+    holder's update passes that, as it passes a checkout that refused,
+    and dies at IRSS's B4 (exit 128), so the walk meets the leg. CI's
+    exit 1 here at 938a83ef, read then as git 2.55.0 ending its update at
+    the leg, was B4's commit already on the remote (`unpushed`): git
+    2.43.0 ends with the same two lines, and exits 1, where it is."""
     env = cloning(offline, tmp_path, family)
     b4(holder, env, family, tmp_path)
 
@@ -666,7 +683,7 @@ def test_a_leg_this_user_cannot_search_is_untold(family, holder, offline,
     assert result.returncode == 0, result.stdout + result.stderr
     assert "Traceback" not in result.stderr
     assert said_after_the_fetch(result) == [ALONE]
-    assert update.returncode in (1, 128)
+    assert update.returncode == 128
 
 
 def test_a_fetch_that_reached_another_member_s_remote_tells_nothing(
