@@ -1070,9 +1070,9 @@ def _refuse_an_unholdable_project_name(policy, project: str) -> None:
 
     THE NAMING REFUSAL SPEAKS FIRST, as `init` asks `_classify_family_name`
     before its own: a name this refuses that the policy refuses too
-    (`NUL.git`, `Nul.`) is refused as the policy refuses it, whatever the
-    id, and only a name the policy holds as an assembly root is told it is
-    a device name."""
+    (`NUL.git`, `Nul.`) is refused as the policy refuses it, whatever id
+    is passed, and only a name the policy holds as an assembly root is
+    told it is a device name."""
     try:
         refuse_an_unholdable_name(
             "scaffold-bad-project-name", "--project", project,
