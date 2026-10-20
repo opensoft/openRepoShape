@@ -261,6 +261,16 @@ def test_execute_refuses_it_first_of_the_list_check_reads(adopter, name,
     assert CODE in adopter.RENAMES_THE_LEGS
 
 
+def test_the_device_question_comes_before_the_organisations(adopter):
+    """First in `_what_cannot_be_held`: a root no disk can hold is found
+    ahead of a 40-character `org:`, so `execute`, which refuses the first,
+    says `adopt-bad-project-name` and `check` lists it first."""
+    naming = NamingPolicy.load(REPO / "contracts" / "repository-naming.yaml")
+    refused = list(adopter._what_cannot_be_held(
+        _Plan("nul"), names_of("NUL"), "a" * 40, False, naming))
+    assert [exc.code for exc in refused] == [CODE, "adopt-org-too-long"]
+
+
 @pytest.mark.parametrize("name", CONTROLS)
 def test_the_list_holds_a_name_that_only_starts_with_one(adopter, name):
     naming = NamingPolicy.load(REPO / "contracts" / "repository-naming.yaml")
