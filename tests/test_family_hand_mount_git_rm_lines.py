@@ -569,6 +569,24 @@ def lines_of(*lines: str) -> str:
     return "".join(f"\n    {line}" for line in lines)
 
 
+def ghost_out(how: str, *, put_back: bool) -> str:
+    """`gitmodules-path-unnamed` whole for a section named `ghost` giving
+    `Members/IRRS`, a case variant of MEMBER's path, url
+    `/nowhere/ghost.git`, with the work tree's `.gitmodules` gone as `how`
+    (`GONE`) says: its keys' lines, after the line that puts the file back
+    where `put_back`."""
+    line = GONE[how][1]
+    return (SECTION_SAID.format(path="Members/IRRS", name="ghost",
+                                url="url /nowhere/ghost.git")
+            + VARIANT.format(row_path=ROW, project="IRRS")
+            + " Take the section out by hand, in a POSIX shell, every key it "
+            "holds, so a submodule later given its name inherits none of "
+            "them, " + (put_back_said(how) if put_back else "")
+            + "then commit .gitmodules:"
+            + lines_of(*([line] if put_back else []),
+                       *removal("ghost", "path", "url")))
+
+
 def test_1036_a_section_the_index_alone_gives_comes_out_of_the_file_put_back(
         family, holder, offline, tmp_path):
     """#1036, RV1025's SHOULD 1 on #1025: `git submodule add` at
@@ -603,7 +621,7 @@ def test_1036_a_section_the_index_alone_gives_comes_out_of_the_file_put_back(
                                "gitmodules-path-unnamed"]
     assert (commands(mount_of(found, path))[1]
             == f"git rm --cached -f -- {path}")
-    whose, put_back = GONE["deleted"]
+    put_back = GONE["deleted"][1]
     assert found[1] == (
         SECTION_SAID.format(path=path, name=path, url=f"url {url}")
         + SECTION_REMEDY.replace("then commit .gitmodules:",
@@ -631,7 +649,7 @@ def test_1036_outside_members_the_gitlink_goes_first_then_the_put_back(
 
     found = found_alike(holder, *MODES)
 
-    whose, put_back = GONE["deleted"]
+    put_back = GONE["deleted"][1]
     removed = f"\n    git rm --cached -f -- {TOOLS}"
     assert found == [section_first(
         TOOLS, TOOLS, url, FORCED_NO_HEAD,
@@ -661,14 +679,39 @@ def test_1036_a_stray_section_comes_out_of_the_file_put_back(
 
     found = found_alike(holder, *MODES)
 
+    assert found == [ghost_out(how, put_back=True)]
+    typed_in_order(holder, env, validate(holder, "--no-members"))
+    staged_and_committed(holder, env, "Typed in order")
+    assert raw(holder, env, "status", "--porcelain").stdout == b""
+    assert head_paths(holder, env) == {ROW, OTHER_ROW}
+    ends_well(holder, env, family, tmp_path)
+
+
+def test_1036_one_put_back_serves_two_sections(family, holder, offline,
+                                               tmp_path):
+    """#1036, two sections no row names, `ghost` giving `Members/IRRS` and
+    `members/Old` giving its own name, committed, then the work tree's
+    `.gitmodules` deleted. The first finding puts the index's file back
+    before its keys, and records that; the second prints its keys alone,
+    as with the file on disk: a second put-back, typed after the first
+    finding's lines, brought back the section they had just taken out.
+    Typed in order, staged and committed, HEAD's `.gitmodules` gives the
+    two members alone, the gate passes in every mode and a plain clone
+    checks both out."""
+    env = cloning(offline, tmp_path, family)
+    with_section(holder, tmp_path, "ghost", "Members/IRRS",
+                 "/nowhere/ghost.git")
+    with_section(holder, tmp_path, "members/Old", "members/Old",
+                 "/nowhere/old.git")
+    gone(holder, env, "deleted")
+
+    found = found_alike(holder, *MODES)
+
     assert found == [
-        SECTION_SAID.format(path="Members/IRRS", name="ghost",
-                            url="url /nowhere/ghost.git")
-        + VARIANT.format(row_path=ROW, project="IRRS")
-        + " Take the section out by hand, in a POSIX shell, every key it "
-        "holds, so a submodule later given its name inherits none of them, "
-        + put_back_said(how) + "then commit .gitmodules:"
-        + lines_of(GONE[how][1], *removal("ghost", "path", "url"))]
+        ghost_out("deleted", put_back=True),
+        SECTION_SAID.format(path="members/Old", name="members/Old",
+                            url="url /nowhere/old.git")
+        + SECTION_REMEDY + lines_of(*removal("members/Old", "path", "url"))]
     typed_in_order(holder, env, validate(holder, "--no-members"))
     staged_and_committed(holder, env, "Typed in order")
     assert raw(holder, env, "status", "--porcelain").stdout == b""
