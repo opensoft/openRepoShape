@@ -38,9 +38,17 @@ WHAT IT DOES, in order:
       old commit, and one made as `main` could hide the commits the twin
       holds behind the new ref. No ref moves and none is made; the line
       says where the leg is, and gives `git -C <leg> switch <branch>` as
-      the way out, or, for a branch that is not there, to keep the commits
-      on a branch named otherwise and check out the pin, whose sha it
-      gives (#896). A leg
+      the way out, or, for a branch that is not there, `git -C <leg>
+      branch -m <twin> <name>`, which renames the twin and moves HEAD with
+      it, and the pin's sha (#896). A twin is also one in Unicode form:
+      `cafe` and U+0301 (NFD) is a twin of `caf` and U+00E9 (NFC), which
+      APFS reads as one file (#962). And a branch that is not there is not
+      made while any branch under `refs/heads/`, packed or loose, is a
+      twin of it, whether or not HEAD is on it and whatever else holds its
+      commits: a new file `refs/heads/main` shadows the twin's name on such
+      a disk, its entry stays in `packed-refs`, and a later `branch -D` of
+      the twin would unlink the file `main`. The line names the twin and
+      gives the same rename, to a name that is not there (#962). A leg
       with a merge, a cherry-pick, a revert, a rebase or an `am` in progress
       is not moved at all: a checkout ends the first three, carrying what
       they staged onto the branch, and leaves the last two to go on over
@@ -59,13 +67,21 @@ WHAT IT DOES, in order:
       too, the line gives git's words. Every name git prints back is read
       as bytes and decoded so that it reaches git again as the bytes it
       was (#710). The commands it prints for a person to paste (the
-      `merge --ff-only` that brings a moved-back branch forward, and the
-      `--continue` and `--abort` of an operation in progress) name the
-      leg's path and the upstream as ONE shell word each: quoted, and,
-      where the name holds a byte that is not UTF-8 or a character a
-      terminal must not be handed, a `printf` that prints its bytes
-      again, so a paste names what is on disk and not its escape (#932).
-      Advancing a pin
+      `merge --ff-only` that brings a moved-back branch forward, the
+      `--continue` and `--abort` of an operation in progress, and the
+      `git submodule update --init --` of a leg that is not there) name
+      the leg's path, and the upstream where there is one, as ONE shell
+      word each: quoted (a word that begins with `=` too, which zsh would
+      expand), and, where the name holds a byte that is not UTF-8, a
+      character a terminal must not be handed, or a character this stdout
+      cannot write, or writes as other bytes than git is handed, a
+      `printf` that prints those bytes again, so a paste names what is on
+      disk and not its escape (#932, #961). The `--init` of a path that
+      begins with `:`, which git reads as pathspec magic even after the
+      `--`, names `./:spec`. A name no `printf` can print, one that ends
+      in a line feed, holds a NUL or has a character git cannot be handed
+      (a lone surrogate, or one `os.fsencode` cannot write), is printed
+      spelled, as it was. Advancing a pin
       remains an explicit commit in this repository — see `README.md`, "The
       lockstep invariant". This is why `.gitmodules` carries no `branch=`:
       that would buy the same ergonomics by weakening the pin, and then "what
@@ -95,6 +111,13 @@ WHAT IT DOES, in order:
       upstream notice refuse `git-not-runnable`, exit 2, where git cannot be
       started, as the validators do (#694): the run stops there and says
       neither line, though a validator may have found or refused by then.
+      A `project.yaml` this user cannot read is refused by name, exit 2,
+      before step (a), and a validator it cannot read before step (b) runs
+      any (#430): read as absent, the first was a project that elected
+      nothing and the second a validator SKIPPED, each `bootstrap ok`. A
+      leg's `.git`, an operation's marker in its git dir or a register that
+      it cannot read is named in its own step, which goes on: the leg is
+      left as it is, and nothing is claimed from the register.
 
 SCHEMA-NEUTRAL BY CONTRACT. A one-repository project runs the same command:
 step (a) is a no-op where there are no submodules, and steps (c) and (d) are
@@ -107,12 +130,15 @@ from __future__ import annotations
 
 import argparse
 import codecs
+import errno
 import os
 import re
 import shlex
+import stat
 import subprocess
 import sys
-from collections.abc import Iterator
+import unicodedata
+from collections.abc import Callable, Iterator
 from contextlib import contextmanager
 from pathlib import Path
 
@@ -315,6 +341,239 @@ def _git_runs(unread: str) -> Iterator[None]:
         raise Refusal("git-not-runnable",
                       f"{unread}: git could not be run "
                       f"({exc.strerror or exc})", GIT_NOT_RUNNABLE) from exc
+
+
+#: The `OSError`s that `Path.is_file()` and `exists()` answered False to on
+#: Python 3.9 to 3.13 (pathlib's `_ignore_error`), because each means there
+#: is nothing at the name: no such file, a part of the path that is not a
+#: directory, a bad descriptor, a symlink loop, and Windows' "not ready",
+#: "invalid name" and "cannot resolve". Every other one was raised, and is
+#: named here as a path this user cannot read (#430), as `validate-pins.py`
+#: names it.
+_ABSENT_ERRNOS = (errno.ENOENT, errno.ENOTDIR, errno.EBADF, errno.ELOOP)
+_ABSENT_WINERRORS = (21, 123, 1921)
+#: What a path the operating system refused for ANOTHER reason than
+#: permission is told (#430): an I/O error, a name longer than the
+#: filesystem takes, a file replaced while this ran. No `chmod` puts one
+#: right. `validate-pins.py`'s `OTHER_REASON`, word for word.
+OTHER_REASON = (
+    "Where the operating system gave another reason, put a regular file this "
+    "user can open back in its place, or take away one nobody wants, and make "
+    "sure nothing is changing the directory while this runs. ")
+#: The sentence that ends what puts such a path right, `validate-pins.py`'s.
+RUN_AGAIN = "Then run the same command again."
+#: Why a `project.yaml` this user cannot read is refused (#430).
+MANIFEST_READ = (
+    "this command reads project.yaml for the legs it places and the "
+    "validators it runs, and one it cannot read is not one that is absent, "
+    "which would place no leg and check nothing.")
+#: Why a validator this user cannot read is refused (#430).
+VALIDATOR_READ = (
+    "step (b) runs each neutral validator it finds and skips only one that "
+    "is not there, and one it cannot read is a check that cannot run, never "
+    "a pass.")
+
+
+def _is_a(path: Path, kind: Callable[[int], bool], *,
+          link: bool = False) -> bool:
+    """Whether `path` is there and of `kind` (`stat.S_ISREG`, or anything),
+    raising the `OSError` of a `stat` the operating system REFUSED (#430).
+    With `link`, of the name itself and not of what a symlink there names,
+    as `os.path.lexists` asks.
+
+    `validate-pins.py`'s `_is_a`, as a copy: this file imports nothing new
+    from `repo_shape.py`, which may be older than it (#370, #610). NOT
+    `Path.is_file()` or `exists()`, whose answer depends on the Python, nor
+    `os.path.lexists`, whose does not. Up to 3.13 the first two raised a
+    refused `stat` out of the run, a traceback and exit 1, which is
+    `bootstrap FAILED`'s code; from 3.14 they answer False to ANY `OSError`,
+    and `lexists` always has. So a `project.yaml` this user cannot reach was
+    a project that elected nothing, and a `scripts/` it cannot search held
+    three validators SKIPPED as absent: `bootstrap ok` over a gate nobody
+    ran. A leg in a mount it cannot search was NOT INITIALIZED, a register
+    it cannot reach was none, and the marker of a cherry-pick in a git dir
+    it cannot search was no operation in progress, so the leg was moved and
+    the pick's `--continue` went on over the tracking branch. A name the
+    operating system cannot take at all (a NUL in it) is nothing there, as
+    `is_file()` answered it.
+    """
+    try:
+        mode = (path.lstat() if link else path.stat()).st_mode
+    except OSError as exc:
+        if (exc.errno in _ABSENT_ERRNOS
+                or getattr(exc, "winerror", None) in _ABSENT_WINERRORS):
+            return False
+        raise
+    except ValueError:
+        return False
+    return kind(mode)
+
+
+def _named(root: Path, path: Path) -> str:
+    """`path` as this file names one it cannot read (#430): relative to
+    `root`, POSIX on every platform, or whole where it is not under it (a
+    leg's git dir in another worktree), and spelled (#391)."""
+    try:
+        return spelled(path.relative_to(root).as_posix())
+    except ValueError:
+        return spelled(str(path))
+
+
+def _cannot_read(root: Path, path: Path, exc: OSError) -> str:
+    """`<path relative to the root>: cannot be read (<the operating
+    system's reason>)`, `validate-pins.py`'s line for a path whose `stat` or
+    open the operating system refused (#430)."""
+    return (f"{_named(root, path)}: cannot be read "
+            f"({exc.strerror or type(exc).__name__})")
+
+
+def _cure(exc: OSError) -> str:
+    """What puts right a path this command cannot read (#430), in
+    `validate-pins.py`'s words: the mode or the owner for a permission
+    (`PermissionError`, which is `EACCES` and `EPERM`), and `OTHER_REASON`
+    for any other cause, which is not told to `chmod`. It ends on
+    `RUN_AGAIN`."""
+    if isinstance(exc, PermissionError):
+        return ("Make what this user may not open readable by this user: "
+                "`chmod u+r` on a file, `chmod u+rx` on a directory (and on "
+                "every directory above it inside the root), or fix who owns "
+                "it. " + RUN_AGAIN)
+    return OTHER_REASON + RUN_AGAIN
+
+
+def _unreadable(code: str, root: Path, path: Path, exc: OSError,
+                why: str) -> Refusal:
+    """The refusal of a file the run cannot go on without, whose `stat` or
+    open the operating system refused (#430): `_cannot_read`'s line, then
+    `why` the file is read and `_cure`'s advice, as `validate-pins.py`'s
+    `_unreadable_file` says it."""
+    return Refusal(code, _cannot_read(root, path, exc),
+                   f"Remediation: {why} {_cure(exc)}")
+
+
+def _is_file(root: Path, path: Path, code: str, why: str) -> bool:
+    """Whether `path` is a file, asked as `_is_a` asks it, or `code`'s
+    refusal naming it (`_unreadable`) where its `stat` was refused
+    (#430)."""
+    try:
+        return _is_a(path, stat.S_ISREG)
+    except OSError as exc:
+        raise _unreadable(code, root, path, exc, why) from exc
+
+
+def _load_manifest(root: Path, path: Path):
+    """`load_yaml` of `project.yaml`, with one this user cannot OPEN refused
+    as one whose `stat` was refused is (`_unreadable`, #430), so a manifest
+    at mode 000 and one behind a folder nobody may search say one line.
+
+    Read off the refusal's cause, as `validate-pins.py`'s `_load` reads it:
+    `load_yaml` has raised its refusal `from` the `OSError` since it was
+    written, so a `repo_shape.py` older than this file is read the same way.
+    Any other refusal keeps its words."""
+    try:
+        return load_yaml(path)
+    except Refusal as exc:
+        if isinstance(exc.__cause__, OSError):
+            raise _unreadable("yaml-unreadable", root, path, exc.__cause__,
+                              MANIFEST_READ) from exc.__cause__
+        raise
+
+
+def _a_validator(root: Path, path: Path) -> bool:
+    """Whether step (b) runs the validator at `path`: a file this user can
+    open, or `validator-unreadable` naming it (`_unreadable`) where its
+    `stat` or its open was refused (#430). Opened, and closed unread, as
+    `bump-leg.py`'s `_validators_readable` opens each (#934), since the
+    child has to read it: one at mode 000 in a `scripts/` this user can
+    search reached the child, and the run said Python's own `can't open
+    file` line and `bootstrap REFUSED`, with nothing to put it right."""
+    if not _is_file(root, path, "validator-unreadable", VALIDATOR_READ):
+        return False
+    try:
+        path.open("rb").close()
+    except OSError as exc:
+        raise _unreadable("validator-unreadable", root, path, exc,
+                          VALIDATOR_READ) from exc
+    return True
+
+
+class _Unreadable(Exception):
+    """A name in a leg that step (a) must look at and whose `stat` the
+    operating system refused (#430): `path`, and its `OSError`, `error`.
+
+    NOT AN `OSError`, so `_git_runs` never takes it for git's, and NOT A
+    `Refusal`, so it ends no run: the leg is said to be left as it is
+    (`_say_unreadable`), and the next leg is placed, as it is after a leg
+    git refused to move."""
+
+    def __init__(self, path: Path, error: OSError):
+        super().__init__(path, error)
+        self.path = path
+        self.error = error
+
+
+def _found(path: Path, *, link: bool = False) -> bool:
+    """Whether anything is at `path` in a leg (its `.git`, or the marker of
+    an operation in its git dir), asked as `_is_a` asks it, or `_Unreadable`
+    where the operating system refused the `stat` (#430)."""
+    try:
+        return _is_a(path, lambda _mode: True, link=link)
+    except OSError as exc:
+        raise _Unreadable(path, exc) from exc
+
+
+def _say_unreadable(where: str, root: Path, unread: _Unreadable) -> None:
+    """A leg step (a) cannot look into (#430): the name it could not reach,
+    in `_cannot_read`'s words, that the leg is left as it is, and what puts
+    it right. No move is made."""
+    print(f"  {where}: {_cannot_read(root, unread.path, unread.error)}, so "
+          "the leg is left as it is")
+    print(f"          {_cure(unread.error)}")
+
+
+def _initialized(root: Path, sub: Path, where: str, path: str) -> bool:
+    """Whether the leg at `sub` is a checkout step (a) can place, its `.git`
+    there, saying why not: NOT INITIALIZED, with the command that makes it
+    one, or `_say_unreadable` where the `stat` of its `.git` is refused
+    (#430). `Path.exists()` raised that refusal out of the run up to Python
+    3.13, a traceback, and from 3.14 answered False, so an initialized leg
+    in a mount this user cannot search was NOT INITIALIZED.
+
+    The command is for a person to paste, so the leg's path is ONE word of
+    it, as `_paste_word` words it, after a `--`: `my spec` was two
+    pathspecs, `=spec` was expanded by zsh, a byte that is not UTF-8 was
+    its escape text and `-spec` was an option. The path is a pathspec, so
+    one that begins with `:` is read as magic even after the `--`
+    (`:spec` matched nothing): `./` before it makes it the path (#961)."""
+    try:
+        there = _found(sub / ".git")
+    except _Unreadable as unread:
+        _say_unreadable(where, root, unread)
+        return False
+    if not there:
+        word = _paste_word(f"./{path}" if path.startswith(":") else path)
+        print(f"  {where}: NOT INITIALIZED. Run "
+              f"`git submodule update --init -- {word}` — the "
+              f"validators below will refuse until you do.")
+    return there
+
+
+def _stays_for_an_operation(root: Path, sub: Path, where: str,
+                            path: str) -> bool:
+    """Whether the leg stays where it is for an operation in progress in it
+    (`_say_in_progress`, #704), or for the marker of one that step (a)
+    cannot reach (`_say_unreadable`, #430), said either way. Asked through
+    `os.path.lexists`, a marker it could not reach was no marker, so a leg
+    whose `sequencer/` this user cannot search was moved over a cherry-pick
+    that was not done."""
+    try:
+        doing = _in_progress(sub)
+    except _Unreadable as unread:
+        _say_unreadable(where, root, unread)
+        return True
+    if doing is not None:
+        _say_in_progress(where, path, *doing)
+    return doing is not None
 
 
 #: What `_argument_fault` calls a character that does not print, or white
@@ -688,13 +947,11 @@ def _say_left(head: str | None, current: str, named: str) -> None:
           f"{named} now")
 
 
-def _say_keep(options: str = "the pin or the branch",
-              kept: str = "a branch") -> None:
+def _say_keep(options: str = "the pin or the branch") -> None:
     """What to do about a checkout step (a) will not move, in the words
-    both refusals of it share, and a third's (`_say_twin`, which names the
-    branch the commits are kept on, `kept`). Nothing moves."""
+    both refusals of it share. Nothing moves."""
     print("          not moving the checkout off it. Keep any commit made "
-          f"there on {kept}, check out {options} in the leg, and run "
+          f"there on a branch, check out {options} in the leg, and run "
           "bootstrap again.")
 
 
@@ -718,10 +975,19 @@ def _on_a_branch(current: str | None) -> bool:
     return current is not None and current.startswith("refs/heads/")
 
 
+def _fold(name: str) -> str:
+    """`name` as a disk that folds case, or Unicode forms, reads it: in NFC,
+    then `str.casefold()`ed (#962). APFS reads the NFC and the NFD spelling
+    of a name as one file, and a surrogate escape (a name that is not UTF-8,
+    #704) passes through `unicodedata.normalize` as the text it is."""
+    return unicodedata.normalize("NFC", name).casefold()
+
+
 def _folded_twin(current: str | None, branch: str) -> bool:
     """Whether HEAD's ref is a TWIN of the tracking branch: a branch under
-    `refs/heads/` whose name is the branch's under `str.casefold()` and not
-    byte for byte, `refs/heads/Main` for `main` (#896).
+    `refs/heads/` whose name is the branch's under `_fold` and not byte for
+    byte, `refs/heads/Main` for `main`, or `cafe` and U+0301 (NFD) for `caf`
+    and U+00E9 (NFC) (#896, #962).
 
     WHAT IS WRONG WITH ONE. A disk that folds case (macOS APFS and Windows
     NTFS by default) reads the loose files `refs/heads/Main` and
@@ -739,19 +1005,34 @@ def _folded_twin(current: str | None, branch: str) -> bool:
     twin. The names after `refs/heads/` are compared, and a name this
     system holds as surrogate escapes (a branch that is not UTF-8, #704)
     folds as the text it is, so no name raises here. NFC and NFD spellings
-    of one name are NOT folded: APFS reads those as one file too, and that
-    is not handled here.
+    of one name are twins: APFS reads those as one file too, so a leg on
+    the NFD spelling did #896's harm (#962).
     """
     if current is None or not current.startswith("refs/heads/"):
         return False
     held = current[len("refs/heads/"):]
-    return held != branch and held.casefold() == branch.casefold()
+    return held != branch and _fold(held) == _fold(branch)
 
 
-#: What step (a) says a HEAD on a twin of the tracking branch could do, by
-#: what it would otherwise have done (#896): `move` is `fast_forward_to_pin`'s
+def _twin_words(twin: str, branch: str) -> tuple[str, str, str]:
+    """How a twin differs from the branch, what reads the two as one, and
+    what a name must differ in to be no twin, as the lines of `_say_fold`
+    word them (#962). A twin that is one under `str.casefold()` alone is
+    #896's, in #896's words, byte for byte; any other differs in its
+    Unicode form too (NFC and NFD), which only macOS folds."""
+    if twin.casefold() == branch.casefold():
+        return ("only in case", "a disk that folds case (macOS, Windows)",
+                "case")
+    return ("only in case or Unicode form",
+            "a disk that folds case or Unicode forms (macOS folds both, "
+            "Windows folds case)", "case or Unicode form")
+
+
+#: What step (a) says a twin of the tracking branch could do, by what it
+#: would otherwise have done (#896): `move` is `fast_forward_to_pin`'s
 #: `branch -f`, `place` is `place_at_pin`'s checkout and its line that the
-#: leg left a branch, and `make` is `create_at_pin`'s `checkout -b`.
+#: leg left a branch, and `make` is `create_at_pin`'s `checkout -b`, said by
+#: `_say_spelling` (#962).
 TWIN_RISKS = {
     "move": "moving {branch} could move the ref HEAD stands on and leave "
             "the index at the old commit",
@@ -767,7 +1048,9 @@ def _say_twin(label: str, path: str, branch: str, current: str, state: str,
     """A leg whose HEAD is on a twin of the tracking branch (`_folded_twin`,
     #896): nothing moves and no branch is made, and the lines say where the
     leg is, why it is left and the way out. `state` says what the branch is
-    to the pin, and `act` which of `TWIN_RISKS` is the harm.
+    to the pin, and `act` which of `TWIN_RISKS` is the harm: `move` or
+    `place`. The branch that is not there (`make`) is `_say_spelling`'s,
+    for HEAD's twin as for any other (#962).
 
     THE WORDS HOLD ON A DISK THAT KEEPS CASE TOO, where `Main` and `main`
     are two branches: they say only that a disk that folds case reads them
@@ -780,28 +1063,130 @@ def _say_twin(label: str, path: str, branch: str, current: str, state: str,
     disk that folds case it re-spells HEAD and moves no file, and the next
     run takes the on-branch `merge --ff-only` of `fast_forward_to_pin` or
     the no-op checkout of `place_at_pin`; where the two are branches, it
-    puts the leg on the real one, and `Main` keeps its commits. Where the
-    branch is NOT there (`make`), that command is no way out on a disk that
-    keeps case, so the commits `Main` holds are kept on a branch of another
-    name, and the pin is checked out: on a disk that folds case,
-    `checkout -b main` would write the file `Main` reads, and hide behind
-    it what `Main` holds in `packed-refs`. A loose `Main` there makes
-    `refs/heads/main` resolve, so this path never runs for it.
+    puts the leg on the real one, and `Main` keeps its commits.
     """
-    named = spelled(branch)
-    twin = spelled(current[len("refs/heads/"):])
-    risk = TWIN_RISKS[act].format(branch=named, twin=twin)
-    print(f"  {label}: {state}, and the checkout is on {twin}, which differs "
-          f"from {named} only in case")
-    print(f"          a disk that folds case (macOS, Windows) reads {twin} "
-          f"and {named} as one branch, so {risk}; the leg is left as it is")
-    if act == "make":
-        _say_keep("the pin", "a branch whose name differs from "
-                  f"{named} by more than case")
-        return
+    twin = current[len("refs/heads/"):]
+    _say_fold(label, state, "the checkout is on", twin, branch, act)
     command = f"git -C {_paste_word(path)} switch {_paste_word(branch)}"
     print(f"          run `{command}`, which moves no branch, and then run "
           "bootstrap again.")
+
+
+def _say_fold(label: str, state: str, where: str, twin: str, branch: str,
+              act: str) -> None:
+    """The first two lines of a refusal over a twin, `where` saying how the
+    leg has it (`the checkout is on` it, or `the leg has the branch`): where
+    the leg is, and why it is left (`TWIN_RISKS`). Every name is spelled
+    (#391), and the second line says only what a disk that folds could do,
+    never that the two are one (#962)."""
+    named = spelled(branch)
+    held = spelled(twin)
+    how, reads, _ = _twin_words(twin, branch)
+    risk = TWIN_RISKS[act].format(branch=named, twin=held)
+    print(f"  {label}: {state}, and {where} {held}, which differs from "
+          f"{named} {how}")
+    print(f"          {reads} reads {held} and {named} as one branch, so "
+          f"{risk}; the leg is left as it is")
+
+
+def _heads(sub: Path) -> list[str]:
+    """Every ref under `refs/heads/`, packed or loose, as `git for-each-ref`
+    lists them, or none where git says nothing (#962)."""
+    listed = _try_git(["for-each-ref", "--format=%(refname)",
+                       "refs/heads/"], sub)
+    return (listed or "").splitlines()
+
+
+def _folded_spelling(sub: Path, branch: str) -> str | None:
+    """The first branch under `refs/heads/`, packed or loose, that is a twin
+    of `branch` (`_folded_twin`), or `None` (#962).
+
+    WHAT WAS WRONG. `create_at_pin` asked only about HEAD's own ref, so a
+    leg detached at the pin over a packed `Main`, or on an unborn `Main`
+    beside a packed `MAIN`, ran `checkout -b main <pin>`, which wrote the
+    loose file a disk that folds case reads for `Main` and `MAIN`. Reasoned
+    from git's files backend, and not measured on such a disk (rv984): the
+    packed entry `Main` is left where it was, `for-each-ref` goes on listing
+    it at its old sha while `rev-parse Main` reads the new file `main`, and
+    a later `git branch -D Main` unlinks that file. The commit is still in
+    a ref, but its name is shadowed, and the state is fragile.
+
+    EVERY TWIN IS A REASON TO LEAVE, whether or not another ref holds its
+    commits (a tag, a remote-tracking ref, another branch, or the pin, which
+    the new branch holds): the ref made is the one bootstrap never makes, a
+    file a disk that folds case reads as a branch that is already there.
+    `_say_spelling` names it and gives the rename that ends the refusal."""
+    for ref in _heads(sub):
+        if _folded_twin(ref, branch):
+            return ref[len("refs/heads/"):]
+    return None
+
+
+def _taken(held: set[str], name: str) -> bool:
+    """Whether git would refuse to make a branch `name` beside the branches
+    `held`, each one `_fold`ed (#1000): one of them is `name` under `_fold`,
+    so a name only in another case or form is taken too, or one is stored
+    UNDER it, `name/x`. Git refuses to make `Main-kept` over `Main-kept/x`,
+    a loose ref or a packed one, at any depth, and exits 128:
+    `'refs/heads/Main-kept/x' exists; cannot create 'refs/heads/Main-kept'`.
+    A disk that folds case reads the directory `main-kept/` as the file
+    `Main-kept` too. A name that only STARTS with `name`, `Main-kept-x`, is
+    no bar.
+
+    A branch that is a directory PREFIX of `name` (`team` for
+    `team/main-kept`) is no case for this: `name` has every directory its
+    twin has, and the twin folds to the tracking branch, so that branch
+    stops `checkout -b <tracking branch>` just the same, whatever the twin
+    is renamed to."""
+    folded = _fold(name)
+    return folded in held or any(h.startswith(folded + "/") for h in held)
+
+
+def _kept_name(sub: Path, spelling: str) -> str:
+    """A name for the branch `spelling` is renamed to, so the line that says
+    to rename it can be pasted as it is: `spelling` and `-kept`, then
+    `-kept-2` and on, the first that `_taken` does not refuse: no branch of
+    the leg folds to it (`_fold`) and none is stored under it. It is longer
+    than `spelling`, so it differs from the tracking branch by more than
+    case or Unicode form, and a suffix of letters and dashes leaves a valid
+    ref name valid (#962).
+
+    WHAT IT CANNOT SEE. A reflog directory left under the name, which only
+    a ref file removed by hand leaves (git removes a branch's reflog with
+    the branch), is refused by git too (`directory not empty`), and no ref
+    names it, so `for-each-ref` does not list it. Nor does it ask the file
+    system: a name too long once `-kept` and git's `.lock` are added is
+    refused as well."""
+    held = {_fold(ref[len("refs/heads/"):]) for ref in _heads(sub)}
+    name, turn = f"{spelling}-kept", 1
+    while _taken(held, name):
+        turn += 1
+        name = f"{spelling}-kept-{turn}"
+    return name
+
+
+def _say_spelling(sub: Path, label: str, path: str, branch: str,
+                  spelling: str, state: str,
+                  where: str = "the leg has the branch") -> None:
+    """A leg with a twin of the missing tracking branch, `spelling`, in the
+    way of making it (`_folded_spelling`, or HEAD's own, `where` being `the
+    checkout is on`, #962): nothing is made, and the lines name the twin,
+    say why, and give the way out: rename it, `git -C <leg> branch -m
+    <spelling> <name>`, `_kept_name` being a name that is not there, and run
+    bootstrap again. The twin is then no twin, its commits stay on it, and
+    the next run makes the branch. Git moves HEAD with the rename of the
+    branch HEAD is on, an unborn one included, so a leg ON the twin takes
+    the way out as any other does, and the next run says `the leg was on
+    <name>, which keeps its commits`. The twin may be a branch of its own,
+    on a disk that keeps case, and the words are true there too."""
+    _say_fold(label, state, where, spelling, branch, "make")
+    more = _twin_words(spelling, branch)[2]
+    command = (f"git -C {_paste_word(path)} branch -m "
+               f"{_paste_word(spelling)} "
+               f"{_paste_word(_kept_name(sub, spelling))}")
+    print(f"          rename {spelled(spelling)} to a name that differs from "
+          f"{spelled(branch)} by more than {more}, its commits staying on "
+          f"it: `{command}`, and run bootstrap again.")
 
 
 def _in_progress(sub: Path) -> tuple[tuple[str, str, str], str] | None:
@@ -822,6 +1207,9 @@ def _in_progress(sub: Path) -> tuple[tuple[str, str, str], str] | None:
     file, so a leg stopped in either was moved, and the move ended it as
     #704 measured on the files backend: `CHERRY_PICK_HEAD` or `REVERT_HEAD`
     gone, and what it had staged carried onto the tracking branch.
+
+    A marker whose `stat` the operating system refuses is `_Unreadable`
+    (#430), never no marker: `os.path.lexists` answered False to it.
     """
     try:
         said = git_out(["rev-parse", "--git-dir"], cwd=sub, binary=True)
@@ -829,7 +1217,7 @@ def _in_progress(sub: Path) -> tuple[tuple[str, str, str], str] | None:
         return None
     gitdir = sub / os.fsdecode(said.rstrip(b"\r\n"))
     for row in IN_PROGRESS:
-        if os.path.lexists(gitdir / row[0]):
+        if _found(gitdir / row[0], link=True):
             return row, "git dir"
         if row[0] in IN_REF_STORE and _in_ref_store(sub, row[0]):
             return row, "ref store"
@@ -860,9 +1248,11 @@ def _sequence_in_progress(gitdir: Path) -> tuple[str, str, str] | None:
     --continue`, which picks B onto wherever HEAD is by then. A move onto
     the tracking branch put B there. `sequencer/todo` is what is left, and
     its first word is `revert` for a revert and `pick` for a cherry-pick;
-    a file that cannot be read is taken as the cherry-pick, the commoner."""
+    a file that cannot be read is taken as the cherry-pick, the commoner.
+    A `sequencer/` this user cannot search is `_Unreadable` (#430): the
+    leg is left as it is, and no `todo` is said to be missing."""
     todo = gitdir / SEQUENCER_TODO
-    if not os.path.lexists(todo):
+    if not _found(todo, link=True):
         return None
     try:
         first = todo.read_bytes().split(None, 1)[:1]
@@ -873,24 +1263,50 @@ def _sequence_in_progress(gitdir: Path) -> tuple[str, str, str] | None:
     return SEQUENCER_TODO, "a cherry-pick", "cherry-pick"
 
 
+def _handed_to_git(text: str) -> bytes:
+    """The bytes git is handed for `text` as a name (#961): `os.fsencode`'s
+    on POSIX, which is what `subprocess` passes. On Windows git is handed
+    UTF-16 and stores UTF-8, which is what Git Bash reads a paste as, so
+    they are UTF-8 there, and not what `os.fsencode` makes of the text
+    under `PYTHONLEGACYWINDOWSFSENCODING=1` (`mbcs`, a character the code
+    page lacks replaced). A name git cannot be handed raises
+    `UnicodeEncodeError`: a lone surrogate on Windows, which UTF-8 has no
+    bytes for, and on POSIX one the filesystem encoding cannot write."""
+    if os.name == "nt":
+        return text.encode("utf-8")
+    return os.fsencode(text)
+
+
 def _prints_as_it_is(text: str) -> bool:
-    """Whether `print` writes `text` as it is (#932): `spelled` has no
-    escape to make in it, and this stdout holds every character of it, so
-    what the terminal shows is the text and a paste of it names the same."""
+    """Whether `print` writes `text` as it is, and a paste of that gives git
+    the bytes it is handed (#932, #961): `spelled` has no escape to make in
+    it, this stdout holds every character of it and, where the text is not
+    ASCII, writes the bytes git is handed (`_handed_to_git`), so what the
+    terminal shows is the text and a paste of it names the same."""
+    if spelled(text) != text:
+        return False
+    encoding = getattr(sys.stdout, "encoding", None) or "utf-8"
     try:
-        text.encode(getattr(sys.stdout, "encoding", None) or "utf-8")
+        written = text.encode(encoding)
+        return text.isascii() or written == _handed_to_git(text)
     except (LookupError, UnicodeEncodeError):
         return False
-    return spelled(text) == text
 
 
 def _paste_word(name: str) -> str:
     """`name`, a leg's path or a ref's name, as ONE word of a command line
-    printed for a person to paste into a POSIX shell (#932).
+    printed for a person to paste into a POSIX shell (#932, #961).
 
     WHERE THE TEXT PRINTS AS IT IS it is `spelled(shlex.quote(name))`, as
     every such word was: an ordinary name, and a printable one that is not
-    ASCII, are byte for byte what they were (`_prints_as_it_is`).
+    ASCII where this stdout writes the bytes git is handed, are byte for
+    byte what they were (`_prints_as_it_is`).
+
+    ONE CHANGE: a word that begins with `=` is quoted, as
+    `repo_shape.shell_quoted` quotes it (#486). zsh expands a bare `=ls` to
+    `/usr/bin/ls` and stops a line at `=x` with `zsh: x not found`, where
+    dash and bash read both as they are; `=` anywhere else is itself to all
+    three. `shlex.quote` leaves a word bare only where it holds no `'`.
 
     WHAT WAS WRONG. `spelled` writes what a terminal must not be handed as
     an escape (#391), and a shell reads that text as the characters it is.
@@ -900,8 +1316,8 @@ def _paste_word(name: str) -> str:
     something we can merge`. A path with a tab, an ESC or a U+2028 in it, or
     one this stdout cannot write, was printed as its escape too.
 
-    ANY OTHER NAME is written as the bytes `os.fsencode` gives it, in a
-    command substitution that prints them again:
+    ANY OTHER NAME is written as the bytes git is handed (`_handed_to_git`),
+    in a command substitution that prints them again:
     `"$(printf -- 'origin/a\\377b')"`. Each byte outside `PRINTF_BARE` is a
     three-digit octal escape, which the `printf` of dash, bash and zsh
     reads, and a dash before 0.5.13 has no `$'...'` for. `--` keeps a name
@@ -910,15 +1326,22 @@ def _paste_word(name: str) -> str:
     ASCII, so it is the same on any stdout. It is `sh`'s dialect, as
     `shlex.quote` already was.
 
-    A NAME WITH NO SUCH FORM keeps `spelled`'s text, as it was: one whose
-    bytes do not read back as it (`os.fsdecode` of them is another name: a
-    lone surrogate with no byte, or a Windows code page that replaces), and
-    one that ENDS IN A LINE FEED, which `$(...)` strips, so the word would
-    name another path. A ref's name is neither: git refuses a control
-    character in one, and `_try_git` reads its bytes back. So it is a leg's
-    path, and one with no bytes is no directory a leg is moved in; a path
-    that ends in a line feed, which only a hand-made manifest holds, is the
-    one name left with no pasteable word.
+    A NAME WITH NO SUCH FORM keeps `spelled`'s text, as it was:
+    - one git cannot be handed, which `_handed_to_git` raises on: a lone
+      surrogate with no byte, or on POSIX a character the filesystem
+      encoding lacks;
+    - one whose bytes `$(...)` does not give back, so the word would name
+      another path: it strips a trailing line feed and drops a NUL.
+
+    The bytes are not read back as the name (#961): git IS handed them, so
+    a name `os.fsdecode` would read as another has its word, as
+    `sp\\udcc3\\udca9c` has `"$(printf -- 'sp\\303\\251c')"`, the bytes of the
+    directory `spéc`. On Windows they are UTF-8 whatever the code page,
+    which Git Bash reads a paste as. A ref's name is neither: git refuses a
+    control character in one, and `_try_git` reads its bytes back. So it is
+    a leg's path, and one with no bytes is no directory a leg is moved in;
+    a path that ends in a line feed, which only a hand-made manifest holds,
+    is the one name left with no pasteable word.
 
     A COPY, as `inherited_child_environment` is: a root re-copies its pinned
     files one row at a time, so this file may meet a `repo_shape.py` older
@@ -926,13 +1349,15 @@ def _paste_word(name: str) -> str:
     `tests/test_bootstrap_pasteable_lines.py` runs each form it writes.
     """
     quoted = shlex.quote(name)
+    if quoted.startswith("="):
+        quoted = f"'{quoted}'"
     if _prints_as_it_is(quoted):
         return quoted
     try:
-        raw = os.fsencode(name)
+        raw = _handed_to_git(name)
     except UnicodeEncodeError:
         return spelled(quoted)
-    if os.fsdecode(raw) != name or raw.endswith(b"\n"):
+    if raw.endswith(b"\n") or b"\0" in raw:
         return spelled(quoted)
     escaped = "".join(chr(byte) if byte in PRINTF_BARE else f"\\{byte:03o}"
                       for byte in raw)
@@ -1204,11 +1629,17 @@ def create_at_pin(sub: Path, label: str, path: str, branch: str, pin: str,
     HEAD on a TWIN of the branch, one that differs from it only in case
     (`Main` for `main`, `_folded_twin`, #896), and no branch is made: a
     disk that folds case reads the new file `refs/heads/main` as the file
-    `refs/heads/Main`, so the commits `Main` holds, packed as they are
-    after `git pack-refs`, are left behind it, in no ref anyone reads.
-    `switch <branch>` is no way out of a leg with no such branch, so
-    `_say_twin` says to keep the commits on a branch of another name and to
-    check out the pin; `path` is the leg's.
+    `refs/heads/Main`, so the name `Main` is shadowed by it, and its
+    packed entry is left behind it. `switch <branch>` is no way out of a
+    leg with no such branch, so `_say_spelling` says to rename the twin,
+    which moves HEAD with it (#962); `path` is the leg's.
+
+    The same harm comes with HEAD ELSEWHERE (#962): detached at the pin over
+    a packed `Main`, or on an unborn `Main` beside a packed `MAIN`. Before
+    the checkout, `_folded_spelling` asks every branch under `refs/heads/`,
+    packed or loose, for a twin of `branch`, and `_say_spelling` leaves the
+    leg, naming it. A twin in NFD or NFC is one too (`_fold`), and EVERY
+    twin is a reason to leave, whatever else holds its commits.
 
     The checkout is judged by WHERE HEAD IS AFTERWARDS, as `_check_out`
     judges one (#533; rv704's S3): a post-checkout hook that fails after
@@ -1220,9 +1651,10 @@ def create_at_pin(sub: Path, label: str, path: str, branch: str, pin: str,
     named = spelled(branch)
     head, current = _head_of(sub)
     if _folded_twin(current, branch):
-        _say_twin(label, path, branch, current,
-                  f"branch {named} does not exist (the pin is "
-                  f"{_short(pin)})", "make")
+        _say_spelling(sub, label, path, branch,
+                      current[len("refs/heads/"):],
+                      f"branch {named} does not exist (the pin is "
+                      f"{_short(pin)})", "the checkout is on")
         return
     if head is not None and current is None and head != pin:
         # `checkout -b <branch> <pin>` from a leg detached anywhere else
@@ -1241,6 +1673,12 @@ def create_at_pin(sub: Path, label: str, path: str, branch: str, pin: str,
               f"is at {_short(head)} ({_place_of(current)}), which is not a "
               "branch")
         _say_keep("the pin")
+        return
+    spelling = _folded_spelling(sub, branch)
+    if spelling is not None:
+        _say_spelling(sub, label, path, branch, spelling,
+                      f"branch {named} does not exist (the pin is "
+                      f"{_short(pin)})")
         return
     why = _git_says(["checkout", "-q", "--no-overwrite-ignore", "-b", branch,
                      pin], sub)
@@ -1271,17 +1709,16 @@ def checkout_tracking_branch(root: Path, leg: dict, branch: str) -> None:
     `_checkout_all_tracking_branches` turns into `git-not-runnable`.
 
     A leg with an operation in progress is refused before any path is
-    chosen (`_say_in_progress`, #704), so no move below meets one."""
+    chosen (`_say_in_progress`, #704), so no move below meets one. So is a
+    leg whose `.git`, or an operation's marker in whose git dir, this user
+    cannot reach (`_say_unreadable`, #430)."""
     path = str(leg.get("path") or "")
     sub = root / path
     # What is PRINTED of the leg is spelled (#391): `role`, `path` and `branch`
     # are the manifest's text, read before any validator has had its say.
     where = f"[{spelled(leg.get('role'))}] {spelled(path)}"
     named = spelled(branch)
-    if not (sub / ".git").exists():
-        print(f"  {where}: NOT INITIALIZED. Run "
-              f"`git submodule update --init {spelled(path)}` — the "
-              f"validators below will refuse until you do.")
+    if not _initialized(root, sub, where, path):
         return
     fault = _argument_fault(branch)
     if fault is not None:
@@ -1294,9 +1731,7 @@ def checkout_tracking_branch(root: Path, leg: dict, branch: str) -> None:
                       f"refs/heads/{branch}"], sub)
     remote = _try_git(["rev-parse", "--verify", "--quiet",
                        f"refs/remotes/origin/{branch}"], sub)
-    doing = _in_progress(sub)
-    if doing is not None:
-        _say_in_progress(where, path, *doing)
+    if _stays_for_an_operation(root, sub, where, path):
         return
 
     if local is None:
@@ -1407,13 +1842,36 @@ def _cached_tip(root: Path) -> str | None:
         return None
 
 
-def _register_paths(root: Path, legs: list[dict]) -> list[Path]:
+def _register_paths(root: Path, legs: list[dict]) -> list[tuple[Path, str]]:
+    """Each register step (c) reads, with what its line calls it
+    (`_a_register`)."""
     candidates = [root / REGISTER_RELPATH]
     for leg in legs:
         path = str(leg.get("path") or "")
         if path and path != ".":
             candidates.append(root / path / REGISTER_RELPATH)
-    return [c for c in candidates if c.is_file()]
+    called = [(c, _a_register(c)) for c in candidates]
+    return [(c, label) for c, label in called if label is not None]
+
+
+#: What step (c) calls a register whose `stat` the operating system refused
+#: (#430): a directory on the way to it cannot be searched, so whether one
+#: is there is not known, and the line does not say that one is.
+MAYBE_A_REGISTER = "register, if one is there"
+
+
+def _a_register(path: Path) -> str | None:
+    """What step (c) calls `path`: `register` where it is a file,
+    `MAYBE_A_REGISTER` where its `stat` the operating system refused (#430),
+    which `_load_register_rows` then names as unreadable, and `None` where
+    no register is there. `Path.is_file()` raised that refusal out of step
+    (c), which never fails, up to Python 3.13, a traceback, and from 3.14
+    answered False, so the run said `authority is not wallet-carried in
+    this org` of a register it could not read."""
+    try:
+        return "register" if _is_a(path, stat.S_ISREG) else None
+    except OSError:
+        return MAYBE_A_REGISTER
 
 
 def _row_objects(row: dict) -> list[str]:
@@ -1445,19 +1903,30 @@ def _matches(obj: str, repositories: set[str], prefixes: list[str]) -> bool:
     return False
 
 
-def _load_register_rows(register_path: Path) -> list[dict] | None:
+def _load_register_rows(register_path: Path,
+                        root: Path) -> list[dict] | None:
     """One register file's rows, tolerant of which key holds them.
 
     Split from `read_authority` for #132. Returns `None` when the file
     itself could not be read — already printed in that case — so the
     caller's loop moves on to the next register file exactly as the
     original loop's `continue` did.
+
+    One this user cannot reach or open is named relative to the root, in
+    `_cannot_read`'s words, with what puts it right (#430). Read off the
+    refusal's cause, as `_load_manifest` reads it; any other refusal is
+    said in its own words, as it was.
     """
     try:
         data = load_yaml(register_path)
     except Refusal as exc:
-        print("    unreadable, so nothing is claimed from it: "
-              f"{spelled(exc.detail)}")
+        cause = exc.__cause__
+        unread = isinstance(cause, OSError)
+        detail = (_cannot_read(root, register_path, cause) if unread
+                  else spelled(exc.detail))
+        print(f"    unreadable, so nothing is claimed from it: {detail}")
+        if unread:
+            print(f"      {_cure(cause)}")
         return None
     rows = []
     if isinstance(data, dict):
@@ -1489,19 +1958,21 @@ def _row_report_line(row: dict, repositories: set[str],
 
 
 def _report_one_register(register_path: Path, root: Path,
-                         repositories: set[str], prefixes: list[str]) -> None:
+                         repositories: set[str], prefixes: list[str],
+                         label: str = "register") -> None:
     """One register file, start to finish: read it, print each row that
     names this project, and the "no rows"/"no row names…" line when there
     is nothing to show.
 
     Split from `read_authority` for #132 so its loop over every register
-    file found is a single call per file.
+    file found is a single call per file. Its first line is `label`, which
+    `_a_register` chose, and the path as `_named` names it (#430): relative
+    to the root, POSIX on every platform, as git and the reader spell it,
+    and whole where a leg's `path:` is absolute, which `relative_to` ended
+    in a `ValueError`, a traceback from the step that never fails.
     """
-    # POSIX, on every platform: this line names a file in the repository,
-    # and git and the reader both spell it that way.
-    print("  register: "
-          f"{spelled(register_path.relative_to(root).as_posix())}")
-    rows = _load_register_rows(register_path)
+    print(f"  {label}: {_named(root, register_path)}")
+    rows = _load_register_rows(register_path, root)
     if rows is None:
         return
     if not rows:
@@ -1532,8 +2003,9 @@ def read_authority(root: Path, legs: list[dict]) -> None:
                     if leg.get("repository")}
     prefixes = [str(leg.get("path")) for leg in legs
                 if leg.get("path") and leg.get("path") != "."]
-    for register_path in found:
-        _report_one_register(register_path, root, repositories, prefixes)
+    for register_path, label in found:
+        _report_one_register(register_path, root, repositories, prefixes,
+                             label)
     print("  Grants are read here for REPORTING only. This command confers "
           "nothing and enforces nothing; a required check in the repository "
           "that owns the object is what confers.")
@@ -1546,12 +2018,16 @@ def _load_root_and_manifest(args) -> tuple[Path, dict | None]:
     from either step is `main`'s early exit 2, exactly as the original
     function's two separate `try`/`except Refusal` blocks around these same
     two steps both were.
+
+    A `project.yaml` this user cannot reach or open is `yaml-unreadable`,
+    naming it (#430), never a project with no manifest: read as absent, no
+    leg was placed, no validator ran, and the run said `bootstrap ok`.
     """
     root = find_repo_root(args.root or Path(__file__).resolve().parents[1])
     manifest_path = root / "project.yaml"
     manifest: dict | None = None
-    if manifest_path.is_file():
-        loaded = load_yaml(manifest_path)
+    if _is_file(root, manifest_path, "yaml-unreadable", MANIFEST_READ):
+        loaded = _load_manifest(root, manifest_path)
         manifest = loaded if isinstance(loaded, dict) else None
     return root, manifest
 
@@ -1620,6 +2096,13 @@ def _run_neutral_validators(root: Path, manifest: dict | None,
     Split from `main` for #132. Returns the label and the exit code of each
     validator that failed, in the order they ran: `_end_of_run` says which
     were findings and which refusals (#764).
+
+    Each validator is looked for BEFORE ANY RUNS, and one whose `stat` or
+    open the operating system refuses is `validator-unreadable`, naming it
+    (`_a_validator`, #430): only one that is not there is SKIPPED.
+    `Path.is_file()` raised a refused `stat` out of the run up to Python
+    3.13, a traceback, and from 3.14 answered False, so a `scripts/` this
+    user cannot search SKIPPED all three and the run said `bootstrap ok`.
     """
     if skip:
         print("  skipped (--skip-validators)")
@@ -1630,8 +2113,10 @@ def _run_neutral_validators(root: Path, manifest: dict | None,
               "governed for that.")
         return []
     failed = []
-    for label, argv_ in VALIDATORS:
-        if not (root / argv_[0]).is_file():
+    present = [(label, argv_, _a_validator(root, root / argv_[0]))
+               for label, argv_ in VALIDATORS]
+    for label, argv_, there in present:
+        if not there:
             print(f"  {label}: {argv_[0]} is absent; SKIPPED")
             continue
         print(f"  --- {label} ---")
@@ -1702,9 +2187,10 @@ def main(argv: list[str] | None = None) -> int:
         print("\n(b) neutral validators")
         failed = _run_neutral_validators(root, manifest, args.skip_validators)
     except Refusal as exc:
-        # Only `git-not-runnable` reaches here (#694): nothing else in the
-        # two steps raises one. Stdout first, so a log of both streams
-        # reads in the order the run went.
+        # Only `git-not-runnable` (#694) and step (b)'s
+        # `validator-unreadable` (#430) reach here: nothing else in the two
+        # steps raises one. Stdout first, so a log of both streams reads in
+        # the order the run went.
         sys.stdout.flush()
         print(str(exc), file=sys.stderr)
         return 2

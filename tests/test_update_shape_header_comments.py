@@ -50,7 +50,7 @@ from test_update_shape import (CHANGED_SOURCE, PROJECT, UPSTREAM_FIX_LINE,
                                scaffold_upstream_and_project)
 
 sys.path.insert(0, str(REPO / "scripts"))
-from repo_shape import Refusal, parse_yaml  # noqa: E402
+from repo_shape import Refusal, YamlError, parse_yaml  # noqa: E402
 
 UPDATE = REPO / "update-shape.py"
 PIN = "contracts/shape-pin.yaml"
@@ -228,13 +228,15 @@ def test_a_manifest_with_no_shape_header_still_names_this_kinds_validator(
 
 def doubled_manifest() -> str:
     """A manifest whose `shape:` key is written twice, the second block holding
-    the old values: the reader keeps the LAST block."""
+    the old values: the reader refuses it since #917 (it kept the LAST
+    block)."""
     doubled = (MANIFEST.format(member="e" * 40, commit=OLD_COMMIT,
                                tree=OLD_TREE)
                + f'shape:\n  commit: "{OLD_COMMIT}"\n  digests:\n'
                  f'    tree_sha256: "{OLD_TREE}"\n')
-    assert parse_yaml(doubled)["shape"]["commit"] == OLD_COMMIT, (
-        "fixture: the reader keeps the last block")
+    with pytest.raises(YamlError, match="^line 17: key 'shape' is written "
+                       "twice$"):
+        parse_yaml(doubled)
     return doubled
 
 
@@ -242,10 +244,11 @@ def doubled_manifest() -> str:
 @pytest.mark.parametrize("which", ["neither", "first", "last", "both"])
 def test_a_doubled_shape_header_is_refused_by_name_as_a_key_written_twice(
         update_shape, kind_name, which):
-    """THE READER DOES NOT REFUSE A DOUBLED `shape:` (it keeps the last), and a
-    rewrite of the first block would move a pin nobody reads. It is refused
-    BY NAME, in words that are true of a key written twice, whichever header
-    carries a comment: the read-back's, "this tool's line rewrite", are not.
+    """THE READER REFUSES A DOUBLED `shape:` SINCE #917 (it kept the last),
+    and a rewrite of the first block would move a pin nobody reads. It is
+    refused BY NAME, in words that are true of a key written twice, whichever
+    header carries a comment: the read-back's, "this tool's line rewrite",
+    are not.
     On main a first header with a comment was skipped by the exact match, so
     that manifest was rewritten at its last block and went through (review of
     PR #558); it is refused here, as the uncommented one always was."""
@@ -267,11 +270,17 @@ def test_a_doubled_shape_header_is_refused_by_name_as_a_key_written_twice(
     assert caught.value.code == "update-manifest-unrecognised"
     assert caught.value.detail.startswith(
         f"{kind.manifest} holds the `shape:` key twice, at lines 8 and 17, "
-        "where exactly one was expected: the reader keeps the last block")
+        "where exactly one was expected: the reader refuses a key written "
+        "twice")
     assert "Remediation: delete the extra `shape:` block by hand" in \
+        caught.value.remediation
+    assert "(the reader refuses a manifest that holds it twice)" in \
         caught.value.remediation
     assert "line rewrite" not in (caught.value.detail
                                   + caught.value.remediation)
+    assert "the last" not in (caught.value.detail
+                              + caught.value.remediation), (
+        "the reader no longer keeps the last block (#917)")
 
 
 # --- `apply`, end to end ------------------------------------------------------

@@ -511,6 +511,65 @@ def neutral_pin_path(product: str) -> str:
     return f"contracts/{product.lower()}-pin.yaml"
 
 
+#: THE PLAIN SCALAR: a text that begins with a letter, `_` or `.`, and holds
+#: only letters, digits and `_./@:+-`. `adopt-project.py`'s `y` writes a
+#: plan's text bare only where it is one and the reader reads it back
+#: (#181), and `neutral_pin_entry` writes a pin's product bare only where
+#: `y` would, so the rule is here, once, for both (#924). It ends at `\Z`,
+#: not `$`: `$` also matches before a FINAL newline, and wrote a file named
+#: `Icon\n` bare, over two lines of the plan (#199).
+PLAIN_SCALAR_RE = re.compile(r"^[A-Za-z_.][A-Za-z0-9_./@:+-]*\Z")
+
+
+def neutral_pin_entry(product: str) -> str:
+    """One `neutral_product_pins:` entry, as `scaffold-project.py` and
+    `adopt-project.py execute` both write it: `product` bare where it is a
+    plain scalar (`PLAIN_SCALAR_RE`) that the project's reader reads back as
+    `product`, and `double_quoted` (#284) where it is not.
+
+    ONE SPELLING, WHICHEVER TOOL MADE THE ROOT (#924). The scaffold wrote a
+    product bare wherever the reader read it back, and adopt wrote it as `y`
+    writes the plan's `product:`, so `--pin 0x1F@<commit>` was `- 0x1F` in a
+    scaffolded manifest and `- "0x1F"` in an adopted one, and `1_000`,
+    `1e3`, `3dGlass` and `-x` the same. The project's reader reads both back
+    as typed, but a standard YAML reader (PyYAML's `safe_load`) took the
+    scaffold's `0x1F` for 31 and its `1_000` for 1000. Both tools call this
+    one function now, and it is adopt's rule: a name that begins with a
+    digit or `-` is double-quoted, as `plan` quotes it in `product:`, and
+    `openGlass`, `007` and `yes` are written as both tools wrote them. A
+    bare `yes`, `on`, `.5` or `.inf` stays bare: the project's reader reads
+    it back as typed, though PyYAML does not (#457's L2-14, #912).
+
+    THE READER IS ASKED, as `family.py` asks it of a member's id (#259),
+    rather than a list of the words it takes for something else: in the two
+    places `y` asks it, after `key: ` and as a `- ` item (#181), and once
+    more of the LIST ENTRY, as the manifest's list holds it:
+    `  - - a` is a list of its own, where `id: - a` is the text (#715;
+    `id: -` is refused since #393). A spelling the reader refuses is read
+    back as nothing, so it is double-quoted too. A name it reads back bare,
+    `openGlass` and every other plain name, is the line it always was;
+    `007`, `2026`, `1.5`, `true` and `null` are double-quoted, and a
+    double-quoted name always reads back.
+    """
+    if PLAIN_SCALAR_RE.match(product) and all(
+            _reads_back(written, read) for written, read in (
+                (f"key: {product}", {"key": product}),
+                (f"- {product}", [product]),
+                (f"neutral_product_pins:\n  - {product}",
+                 {"neutral_product_pins": [product]}))):
+        return product
+    return double_quoted(product)
+
+
+def _reads_back(written: str, read) -> bool:
+    """Does the project's reader read `written`, a line or two of YAML, as
+    `read`? A spelling it refuses is not read back as anything."""
+    try:
+        return parse_yaml(written + "\n") == read
+    except YamlError:
+        return False
+
+
 # ---------------------------------------------------------------------------
 # The FAMILY root's own lists (2026-09-04)
 # ---------------------------------------------------------------------------
@@ -1520,6 +1579,10 @@ FOLDER_REMEDIATION = (
 #: empty working tree) alike.
 CANNOT_WRITE_IN = "is a folder this user cannot write in"
 
+#: How `target_in_the_way` begins its answer for a working tree this user
+#: cannot list (#930): `cannot be read: <the system's words>`.
+CANNOT_READ = "cannot be read"
+
 #: Said when the real run's own `mkdir` fails, after the question said yes:
 #: the run has made folders by then, and no remote.
 MKDIR_REMEDIATION = (
@@ -1598,6 +1661,18 @@ def _unwritable_remediation(choose: str) -> str:
             f"folder, or choose another {choose}, and run this again.")
 
 
+def _unreadable_remediation(choose: str) -> str:
+    """What a refusal of a working tree this user cannot list says to do
+    (#930), after `_unwritable_remediation`: the run cannot tell whether the
+    folder holds a tree, so it names the permission that would let it ask,
+    and the flag `choose` that chooses another folder."""
+    return ("Remediation: nothing was created, and `--dry-run` refuses the "
+            "same. This user cannot list that folder, so whether it holds a "
+            "tree cannot be asked: give this user read, write and search "
+            f"permission on it, or choose another {choose}, and run this "
+            "again.")
+
+
 def refuse_unmakeable_folder(refusal: str, named: str, path: Path,
                              choose: str | None = None) -> None:
     """Raise `Refusal(refusal)` when `folder_cannot_be_made(path)` says why.
@@ -1664,7 +1739,7 @@ def target_in_the_way(target: Path) -> str | None:
         if any(target.iterdir()):
             return "is not empty"
     except OSError as exc:
-        return f"cannot be read: {exc.strerror or exc}"
+        return f"{CANNOT_READ}: {exc.strerror or exc}"
     if not os.access(target, os.W_OK | os.X_OK):
         return CANNOT_WRITE_IN
     return None
@@ -1679,10 +1754,19 @@ def target_remediation(why: str, holds: str, choose: str) -> str:
     for an EMPTY folder whose only fault is its permissions
     (`CANNOT_WRITE_IN`, L2-60), which is told to be given write and search
     permission for this user, or to be replaced by another folder, named by
-    `choose`, the flag the person met it by."""
-    if why != CANNOT_WRITE_IN:
-        return holds
-    return _unwritable_remediation(choose)
+    `choose`, the flag the person met it by.
+
+    AND FOR A FOLDER THIS USER CANNOT LIST (`CANNOT_READ`, #930). An empty
+    folder at mode 000, 100, 200 or 300 was told "choose an empty
+    --work-dir. There is no --force: re-running over a live tree is not a
+    scaffold", a cause the run cannot see: it cannot tell an empty folder
+    from a live tree there, and the one cause it can see is a permission.
+    It is told what `_unreadable_remediation` says, naming `choose`."""
+    if why == CANNOT_WRITE_IN:
+        return _unwritable_remediation(choose)
+    if why.startswith(f"{CANNOT_READ}: "):
+        return _unreadable_remediation(choose)
+    return holds
 
 
 # ---------------------------------------------------------------------------
@@ -3764,6 +3848,39 @@ def pin_source_path(typed: str | None, *, nothing_made: str) -> Path | None:
     return Path(typed)
 
 
+def folder_flag_path(typed, flag: str, code: str, *, names: str,
+                     absent: str) -> Path | None:
+    """A folder flag as the `Path` the tool reads, or None when it was not
+    given; a value that names no path is refused as `code`.
+
+    `pin_source_path`'s question, asked of the folders the scaffold and
+    `family.py init` make things in (#972's review, S2): `--work-dir` and
+    `--local-remote-dir` in both, and `init`'s `--into`. Each was parsed as
+    a `Path`, and `Path("")` is `Path(".")`, so a flag passed empty was read
+    as the directory the tool ran in, without a word: from the root of a
+    checkout of openRepoShape, `init --into ''` planned the holder inside
+    it, where no `--into` is refused as `family-landing-in-standard`. Each
+    tool takes them as TEXT now and asks here, before anything exists and
+    before any process starts, under `--dry-run` alike. A typed `.` still
+    means the current directory, and a flag not given keeps its default.
+
+    `names` says what the folder is for and `absent` what the run does with
+    no flag, each in the tool's words, so the remedy names the three ways
+    on: a path, `.`, or no flag at all.
+    """
+    if typed is None:
+        return None
+    if not str(typed):
+        raise Refusal(
+            code,
+            f"`{flag} ''` names no path. An empty path would be read as the "
+            "directory this runs in.",
+            "Remediation: nothing was created, and `--dry-run` refuses the "
+            f"same. Give {names} (`{flag} <dir>`), or `.` to mean this "
+            f"directory; with no {flag}, {absent}.")
+    return Path(typed)
+
+
 def refuse_an_unread_pin_source(pin_source, pins, chain=None, *,
                                 nothing_made: str) -> None:
     """`--pin-source` is read by this run, or this refuses it as
@@ -4501,6 +4618,38 @@ def _unmountable_reason(text: str) -> str | None:
     return None
 
 
+def refuse_an_unholdable_name(refusal: str, flag: str, name: str, *,
+                              names: str, remediation: str) -> None:
+    """`name`, typed as `flag`, is a name a Windows disk can make a folder
+    of, or this refuses it as `refusal`: before anything exists, under
+    `--dry-run` alike, and with no process started.
+
+    ONE QUESTION FOR EVERY NAME A TOOL MAKES A FOLDER OF (#989). `family.py
+    init` asked it of `--family` since #688 (`family-bad-holder-name`), and
+    the scaffold never asked it of `--project`: `--project NUL` and `Con`,
+    each one CamelCase token, which is all the naming policy asks, made the
+    three repositories, the working trees and, under `--local-remote-dir`,
+    the bare `NUL.git`, a root no Windows disk can clone. Each tool asks it
+    here now, so the two cannot part again.
+
+    THE QUESTION IS THE LEG PATH RULE'S (`_unmountable_reason`), asked of a
+    path of one segment: a Windows device name, with or without an
+    extension, in any case (`CON`, `Nul`, `com1`, `NUL.git`); a name ending
+    in a dot or a space; one of Git's own names. Each tool asks it after its
+    naming policy has said what the name may hold, so in practice a device
+    name is the answer. A device name is the WHOLE name: `Nullable` and
+    `NUL-spec` are folders Windows makes. As `refuse_bad_leg_paths` does,
+    the caller gives its own code, the flag, what the name names (`names`,
+    the sentence's middle: "which names <names>, and <reason>.") and its own
+    remediation, so each tool refuses in its own voice."""
+    reason = _unmountable_reason(name)
+    if reason:
+        raise Refusal(refusal,
+                      f"{flag} is {name!r}, which names {names}, and "
+                      f"{reason}.",
+                      remediation)
+
+
 #: The templates the rule below reads its lines from: the shape's own
 #: `templates/`, which both tools render a project from (`SHAPE_ROOT /
 #: "templates"`, and this file is `SHAPE_ROOT/scripts/`). A test points it
@@ -5070,10 +5219,11 @@ def manifest_invalid(values: dict, policy: NamingPolicy, what: dict,
     asked as the project asks it. `values` must be the complete table;
     `policy` is the naming policy the project carries a copy of. A WARNING of
     the validator (a chain link it cannot check offline) is a note and never
-    a refusal, exactly as the project's own exit code treats it. Where the
-    project's own YAML reader refuses the file before the validator can be
-    asked, each sentence is the reader's, naming the value on the line it
-    refuses (`_unread_sentences`, #708).
+    a refusal, exactly as the project's own exit code treats it, and so is
+    its `  note` (a `SHAPE_PIN_SOURCE_<LINK>` the run guard passed over,
+    #990). Where the project's own YAML reader refuses the file before the
+    validator can be asked, each sentence is the reader's, naming the value
+    on the line it refuses (`_unread_sentences`, #708).
     """
     return [sentence for _, sentence in _invalid_problems(
         values, policy, what, template_dir, ignore, not_text)]
@@ -5114,10 +5264,18 @@ CARRIED_BY = {"ASSEMBLY_REPOSITORY": "ORG", "SPEC_REPOSITORY": "ORG",
 
 
 def _unread_sentences(values: dict, what: dict, template_dir: Path,
-                      refusal: YamlError) -> list[str]:
+                      refusal: YamlError, manifest: str = MANIFEST_TEMPLATE,
+                      carried_by: dict | None = None,
+                      reader: str = "the project's own YAML reader"
+                      ) -> list[str]:
     """A sentence for each value of `what` that a line of the manifest the
     project's own reader refuses carries, in the reader's words, and the
     reader's `refusal` of the whole file where no such line is found.
+
+    `manifest`, `carried_by` (`CARRIED_BY` when None) and `reader`, the
+    words that name the reader, are the project's unless the caller gives
+    its own: `family.py init` asks it of the holder's `family.yaml`, whose
+    `repository:` carries `--org` (#929).
 
     THE VALUE IS NAMED AGAIN (#708). Until #392 and #393 the reader took
     `repository: @x/Atlas` for text, so `--org @x` reached the validator,
@@ -5130,31 +5288,34 @@ def _unread_sentences(values: dict, what: dict, template_dir: Path,
     `_misread_rows` reads one, and a value is named where the reader
     refuses one of its lines.
     """
+    carried_by = CARRIED_BY if carried_by is None else carried_by
     said: dict[str, list[str]] = {}
-    template = (Path(template_dir) / MANIFEST_TEMPLATE).read_text(
-        encoding="utf-8")
+    template = (Path(template_dir) / manifest).read_text(encoding="utf-8")
     for line in template.splitlines():
-        carried = {CARRIED_BY.get(key, key) for key in _placeholders_of(line)}
+        carried = {carried_by.get(key, key) for key in _placeholders_of(line)}
         named = [key for key in what if key in carried and key in values]
         if not named or line.lstrip().startswith("#"):
             continue
-        reading = _reading_of(render(line, values, MANIFEST_TEMPLATE))
+        reading = _reading_of(render(line, values, manifest))
         if isinstance(reading, YamlError):
             for key in named:
                 said.setdefault(key, []).append(f"{reading}.")
     if not said:
-        return ["the manifest this run would write is a file the project's "
-                f"own YAML reader refuses: {refusal}."]
-    return [f"{what[key]} is {str(values[key])!r}, which the project's own "
-            f"YAML reader refuses: {' '.join(words)}"
-            for key, words in said.items()]
+        return ["the manifest this run would write is a file "
+                f"{reader} refuses: {refusal}."]
+    return [f"{what[key]} is {str(values[key])!r}, which {reader} refuses: "
+            f"{' '.join(words)}" for key, words in said.items()]
 
 
 def _validator_notes(values: dict, policy: NamingPolicy, template_dir: Path,
                      ignore: tuple) -> list[str] | YamlError:
     """The FINDINGs the project's own validator makes of the `project.yaml`
-    these `values` render, less its WARNINGs and the codes in `ignore`; or
-    the `YamlError` its reader raised, where it cannot read that file."""
+    these `values` render, less its WARNINGs, its `  note`s and the codes
+    in `ignore`; or the `YamlError` its reader raised, where it cannot read
+    that file. A `  note` is no finding, as the validator's own `main`
+    counts it (#990): `_findings` returns its `link-source-collides` note
+    beside the findings, and read as one, `manifest_invalid` gave it as a
+    refusal and `manifest_judged` said None (RV1011's SHOULD-1)."""
     template = (Path(template_dir) / MANIFEST_TEMPLATE).read_text(
         encoding="utf-8")
     try:
@@ -5168,7 +5329,8 @@ def _validator_notes(values: dict, policy: NamingPolicy, template_dir: Path,
         raise _validator_unusable(
             "raised when it was asked", f"{type(exc).__name__}: {exc}"
         ) from exc
-    return [note for note in notes if not note.startswith("WARNING")
+    return [note for note in notes
+            if not note.startswith(("WARNING", "  note "))
             and _code_of(note) not in ignore]
 
 
@@ -5228,13 +5390,17 @@ MANIFEST_INVALID_REMEDIATION = (
 #: Where the project's own YAML reader refuses the manifest before its
 #: validator can be asked (#708), the words are the reader's, and a sentence
 #: may name no value (`_unread_sentences`), so the remedy says neither that
-#: they are the validator's nor that a value is always named.
-MANIFEST_UNREADABLE_REMEDIATION = (
+#: they are the validator's nor that a value is always named. Its first
+#: sentence is `UNREADABLE_CHOICE`, which `family.py init`'s remedy for the
+#: holder's reader opens with too (#929).
+UNREADABLE_CHOICE = (
     "Remediation: choose another value for each one named; where none is "
-    "named, the text the reader's words quote holds it. The words are the "
-    "project's own YAML reader's, which refuses the manifest this run would "
-    "write before its validate-manifest.py can be asked, and a project "
-    "whose manifest it refuses is one whose first bootstrap would fail.")
+    "named, the text the reader's words quote holds it.")
+MANIFEST_UNREADABLE_REMEDIATION = (
+    f"{UNREADABLE_CHOICE} The words are the project's own YAML reader's, "
+    "which refuses the manifest this run would write before its "
+    "validate-manifest.py can be asked, and a project whose manifest it "
+    "refuses is one whose first bootstrap would fail.")
 #: The remedy for each kind of problem, so a refusal names it by its kind
 #: (#708), with no conditional nested in another.
 KIND_REMEDIATIONS = {KIND_MISREAD: MANIFEST_MISREAD_REMEDIATION,

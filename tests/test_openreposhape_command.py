@@ -39,6 +39,10 @@ from conftest import (BASH, BASH_SKIP, REF_PARTS, REPO,
                       assert_a_copy_answers_as_git_does,
                       assert_the_refusal_states_the_ref_rule, bash_path, git,
                       native_path)
+from conftest import (A_LETTER_PAST_ASCII, CONTROL, CONTROL_RULE,
+                      REPO_WITH_A_LEADING_DASH, TAKEN,
+                      assert_a_copy_answers_as_the_rule_does,
+                      the_rules_answer)
 
 COMMAND = REPO / "openRepoShape"
 SETUP = REPO / "setup.sh"
@@ -121,7 +125,8 @@ def command_env(home: Path | None = None, env: dict | None = None,
 
 def run_cmd(*args: str, home: Path | None = None, env: dict | None = None,
             setup_sh: Path | None = SETUP, command: Path = COMMAND,
-            cwd: Path | None = None) -> subprocess.CompletedProcess:
+            cwd: Path | None = None,
+            errors: str | None = None) -> subprocess.CompletedProcess:
     """The command, run from its file, with that environment.
 
     `input=""` means stdin is a pipe rather than a terminal, which is what the
@@ -133,11 +138,14 @@ def run_cmd(*args: str, home: Path | None = None, env: dict | None = None,
     `command` is this checkout's file unless a test names an INSTALLED copy,
     which is how the record `--install` leaves beside one is read (#564).
     `cwd`, where a relative path the command is handed must land.
+    `errors`, how its output is read where it may print a byte that is not
+    UTF-8: `surrogateescape` hands such a byte back as the surrogate a test
+    spelled it with (#940).
     """
     return subprocess.run([BASH, bash_path(command), *args],
                           capture_output=True, text=True, check=False,
                           input="", env=command_env(home, env, setup_sh),
-                          start_new_session=True,
+                          start_new_session=True, errors=errors,
                           cwd=None if cwd is None else str(cwd))
 
 
@@ -887,6 +895,47 @@ def test_install_sh_carries_the_launchers_misdrawn_check_as_it_is():
     The two are one text, so neither file can refuse a directory the other
     places, or name it otherwise."""
     assert misdrawn_check(REPO / "install.sh") == misdrawn_check(COMMAND)
+
+
+#: A CHECK FOR A CONTROL CHARACTER IN A REPOSITORY OR A REF, as the
+#: launcher, `setup.sh` and `install.sh` write each (#940): a one-line `if`
+#: whose subshell asks `[[:cntrl:]]`. The directory's (#760, #858) span
+#: lines, so none is such a line.
+CONTROL_CHECK_LINE = re.compile(r"^\s*if \((.*\[\[:cntrl:\]\].*)\); then$",
+                                re.M)
+
+#: #760's rule, as each such line asks it of the value, written `$value`.
+CONTROL_CHECK = ('LC_ALL=C; case "$value" in *[[:cntrl:]]* | '
+                 r"*$'\302'[$'\200'-$'\237']*) exit 0 ;; *) exit 1 ;; esac")
+
+#: `setup.sh`'s arm for U+2028 and U+2029, by their bytes (#940), in place
+#: of the launcher's `misdrawn_characters`, which it has no copy of.
+SEPARATORS_ARM = r" | *$'\342\200'[$'\250'$'\251']*"
+
+
+def control_checks(path: Path) -> list[str]:
+    """Each such line in the file at `path`, apart from what may differ
+    between them: the value it asks of, the leading `-` arm of the two
+    guards that hand a repository to `git clone`, and `SEPARATORS_ARM`."""
+    return [re.sub(r'case "[^"]*" in (-\* \| )?', 'case "$value" in ', line)
+            .replace(SEPARATORS_ARM, "")
+            for line in CONTROL_CHECK_LINE.findall(
+                path.read_text(encoding="utf-8"))]
+
+
+@pytest.mark.parametrize("name, count", [("openRepoShape", 2),
+                                         ("setup.sh", 2), ("install.sh", 3)])
+def test_the_seven_control_checks_carry_one_rule_as_it_is(name, count):
+    """The launcher's `checked_repo` and `ref_character_fault`, `setup.sh`'s
+    two guards, and `install.sh`'s `checked_repo`, `checked_version` and
+    option check ask #760's rule, one text in all seven (#940): under
+    `LC_ALL=C`, in a subshell, `[[:cntrl:]]` or U+0080 to U+009F's two
+    bytes. No locale this suite can count on tells a check without
+    `LC_ALL=C` from one with it: a Latin-1 locale's `[[:cntrl:]]` holds
+    `0x80` to `0x9F`, so a lone `0x9B` byte would be refused there, where
+    `C` and `C.UTF-8` take it. So the text is held here, as
+    `misdrawn_characters`'s is above."""
+    assert control_checks(REPO / name) == [CONTROL_CHECK] * count
 
 
 #: Every code point whose UTF-8 starts with the bytes one of `MISDRAWN`
@@ -2288,18 +2337,20 @@ CLONE_URLS = [
 ]
 
 
-def cloned_for(tmp_path, repo: str, caller: str) -> list:
+def cloned_for(tmp_path, repo: str, caller: str,
+               env: dict | None = None) -> list:
     """What the clone `caller` makes is handed for `$OPENREPOSHAPE_REPO`:
     the value setup.sh is given to clone, through a setup.sh that prints
     it, or the URL `--doctor`'s own `git clone` names, through a `git` that
     prints it and fails, from a copy of the command with no checkout of the
-    standard beside it. Nothing is cloned and nothing is fetched."""
+    standard beside it. Nothing is cloned and nothing is fetched. `env` is
+    put over the rest, such as a locale (#940)."""
     if caller == "setup.sh":
         stub = tmp_path / "setup.sh"
         write_script(stub, '#!/usr/bin/env bash\n'
                      'printf "CLONES %s\\n" "$OPENREPOSHAPE_REPO"\n')
         result = run_cmd("--preflight", setup_sh=stub,
-                         env={"OPENREPOSHAPE_REPO": repo})
+                         env={"OPENREPOSHAPE_REPO": repo, **(env or {})})
         assert result.returncode == 0, result.stdout + result.stderr
     else:
         fake = tmp_path / "fake-path"
@@ -2311,7 +2362,7 @@ def cloned_for(tmp_path, repo: str, caller: str) -> list:
         copy.write_bytes(COMMAND.read_bytes())
         result = run_cmd("--doctor", str(tmp_path), command=copy, env={
             "OPENREPOSHAPE_REPO": repo, "TMPDIR": str(tmp_path),
-            "PATH": f"{fake}{os.pathsep}{os.environ['PATH']}"})
+            "PATH": f"{fake}{os.pathsep}{os.environ['PATH']}", **(env or {})})
         assert result.returncode == 2, result.stdout + result.stderr
         assert "could not clone" in result.stderr
     return re.findall(r"^CLONES (.*)$", result.stdout, re.M)
@@ -2370,28 +2421,32 @@ def ref_drawn_as_another(named: str) -> str:
             "or commit this tool will pass to `git checkout` holds one.")
 
 
-#: Each variable holding a C0 control (an escape), a C1 control (U+009B),
-#: U+202E and U+200B, each before a `forged` tail, with the whole refusal
-#: (#866); a repository whose clone URL starts with `-`, the third thing
-#: `checked_repo` refuses; and a path, a URL and an scp address that end in
-#: a newline, which `$(shape_clone_url)` drops, so the check looks at the
-#: value as typed too (rv866's SHOULD-1).
+def refused_as(variable: str, said: str) -> str:
+    """The whole refusal of a value in `variable` that `CONTROL_RULE` says
+    `said` of, a control character or a code point: `checked_repo`'s, or
+    `ref_character_fault`'s for `$OPENREPOSHAPE_REF` (#940)."""
+    if variable == "OPENREPOSHAPE_REPO":
+        return (REPO_NOT_FOR_A_CLONE if said == CONTROL
+                else repo_drawn_as_another(said))
+    return (REF_CARRIES_A_CONTROL_CHARACTER if said == CONTROL
+            else ref_drawn_as_another(said))
+
+
+#: Each variable ending in each value `CONTROL_RULE` refuses, with the whole
+#: refusal (#866, #940): an escape, U+009B, U+202E and U+200B among them,
+#: each before a `forged` tail, and a newline at the end; a repository
+#: whose clone URL starts with `-`, the third thing `checked_repo` refuses;
+#: and a path, a URL and an scp address that end in a newline, which
+#: `$(shape_clone_url)` drops, so the check looks at the value as typed too
+#: (rv866's SHOULD-1).
 UNPRINTABLE_VALUES = [
-    *(pytest.param("OPENREPOSHAPE_REPO", "acme/r" + character + "forged",
-                   said, id=f"repo-{name}")
-      for character, said, name in (
-          (ESCAPE + "[31m", REPO_NOT_FOR_A_CLONE, "an-escape"),
-          (C1_CSI + "31m", REPO_NOT_FOR_A_CLONE, "a-c1-csi"),
-          (RLO, repo_drawn_as_another("U+202E"), "u+202e"),
-          (chr(0x200B), repo_drawn_as_another("U+200B"), "u+200b"))),
-    *(pytest.param("OPENREPOSHAPE_REF", "v1" + character + "forged",
-                   said, id=f"ref-{name}")
-      for character, said, name in (
-          (ESCAPE + "[31m", REF_CARRIES_A_CONTROL_CHARACTER, "an-escape"),
-          (C1_CSI + "31m", REF_CARRIES_A_CONTROL_CHARACTER, "a-c1-csi"),
-          (RLO, ref_drawn_as_another("U+202E"), "u+202e"),
-          (chr(0x200B), ref_drawn_as_another("U+200B"), "u+200b"))),
-    pytest.param("OPENREPOSHAPE_REPO", "-forged://acme/r",
+    *(pytest.param(variable, start + row.values[0],
+                   refused_as(variable, row.values[1]),
+                   id=f"{name}-{row.id}")
+      for variable, start, name in (("OPENREPOSHAPE_REPO", "acme/r", "repo"),
+                                    ("OPENREPOSHAPE_REF", "v1", "ref"))
+      for row in CONTROL_RULE if row.values[1] != TAKEN),
+    pytest.param("OPENREPOSHAPE_REPO", REPO_WITH_A_LEADING_DASH,
                  REPO_NOT_FOR_A_CLONE, id="repo-a-leading-dash"),
     *(pytest.param("OPENREPOSHAPE_REPO", value, REPO_NOT_FOR_A_CLONE,
                    id=f"repo-a-trailing-newline-{form}")
@@ -2531,18 +2586,159 @@ def test_version_prints_every_value_the_check_passes_as_typed(
 
 
 @NO_NON_ASCII_INTO_GIT_BASH
+@pytest.mark.parametrize("locale", LOCALES)
 @pytest.mark.parametrize("name", NOT_CONTROLS)
-def test_version_prints_a_path_a_utf_8_locale_prints(name):
+def test_version_prints_a_path_a_utf_8_locale_prints(name, locale):
     """A path holding a letter past ASCII, U+200C, U+200D or a tag is no
-    fault under `C.UTF-8`, whose `[![:print:]]` passes each of
-    `NOT_CONTROLS` (#866). Under `C` that class matches every byte past
-    ASCII, so there the path is refused, as setup.sh's clone and the
-    doctor's refuse it."""
+    fault in either locale (#866, #940). The control check is #760's byte
+    rule, under `LC_ALL=C`, which passes each of `NOT_CONTROLS`, as the
+    directory's does. It was `[![:print:]]`, which `C.UTF-8` passed each
+    of them by, and which under `C` matches every byte past ASCII, so there
+    the path was refused as carrying a control character."""
     path = f"/srv/{name}/openRepoShape.git"
     result = run_cmd("--version", env={"OPENREPOSHAPE_REPO": path,
-                                       "LC_ALL": "C.UTF-8"})
+                                       "LC_ALL": locale})
     assert result.returncode == 0, result.stdout + result.stderr
     assert result.stdout == f"openRepoShape ({path} @ main)\n"
+
+
+#: Where a test puts how a value ends (`CONTROL_RULE`): after the start of
+#: a path, a URL and an scp address, three forms of repository a clone is
+#: handed as they are (`CLONE_URLS`), and after the start of a ref (#940).
+VALUE_FORMS = [
+    pytest.param("OPENREPOSHAPE_REPO", "/srv/", id="repo-path"),
+    pytest.param("OPENREPOSHAPE_REPO", "https://example.invalid/",
+                 id="repo-url"),
+    pytest.param("OPENREPOSHAPE_REPO", "git@example.invalid:", id="repo-scp"),
+    pytest.param("OPENREPOSHAPE_REF", "v1", id="ref"),
+]
+
+
+def version_line(variable: str, value: str) -> str:
+    """What `--version` prints with `variable` set to `value`."""
+    if variable == "OPENREPOSHAPE_REPO":
+        return f"openRepoShape ({value} @ main)\n"
+    return f"openRepoShape (opensoft/openRepoShape @ {value})\n"
+
+
+@NO_NON_ASCII_INTO_GIT_BASH
+@pytest.mark.parametrize("locale", LOCALES)
+@pytest.mark.parametrize("variable, start", VALUE_FORMS)
+@pytest.mark.parametrize("end, said", CONTROL_RULE)
+def test_version_answers_a_repository_or_ref_as_the_control_rule_does(
+        end, said, variable, start, locale):
+    """`checked_repo` and `ref_character_fault` held the repository and the
+    ref to `[![:print:]]`, which under `C` matches every byte past ASCII:
+    `--version` refused `/srv/café` and a ref `v1café` as
+    carrying a control character, and printed both under `C.UTF-8` (#940).
+    Each now asks #760's byte rule, under `LC_ALL=C`, and gives each row of
+    `CONTROL_RULE` its answer in both locales: a value it takes is printed
+    as typed, exit 0, a lone `0x9B` byte as well, which is the trade
+    (#867); a control character is refused, exit 2, in the words it had,
+    and U+202E, U+200B, U+2028 and U+2029 by their code points (#837),
+    none of it echoed."""
+    value = start + end
+    result = run_cmd("--version", env={variable: value, "LC_ALL": locale},
+                     errors="surrogateescape")
+    assert_a_copy_answers_as_the_rule_does(
+        f"openRepoShape's check of ${variable}", end, said,
+        the_rules_answer(result.stderr, result.returncode == 0))
+    if said == TAKEN:
+        assert result.stdout == version_line(variable, value)
+        return
+    refusal = refused_as(variable, said)
+    assert assert_refused_saying(result, refusal) == f"REFUSED: {refusal}"
+
+
+# The runs a repository or a ref with a letter past ASCII went through under
+# `C.UTF-8`, and from #872 to #940 did not under `C` (#940). Each takes
+# `tmp_path`, the variable, its value and the locale, and holds the run to
+# what it does under `C.UTF-8`.
+
+def scaffolds(tmp_path, variable, value, locale):
+    """A scaffold run asks the fake `gh` for `setup.sh` with the value,
+    once, and runs what it is served."""
+    result, calls = run_against_a_fake_github(
+        tmp_path, ("Atlas", "--org", "acme"), False,
+        {variable: value, "LC_ALL": locale})
+    assert result.returncode == 0, result.stdout + result.stderr
+    assert STUB_MARKER in result.stdout
+    [call] = calls
+    assert call.startswith("gh api repos/"), call
+    assert value in call, call
+
+
+def installs(tmp_path, variable, value, locale):
+    """`--install` from a file places this command."""
+    result = run_cmd("--install", home=tmp_path, cwd=tmp_path, env={
+        variable: value, "LC_ALL": locale,
+        "OPENREPOSHAPE_BIN_DIR": bash_path(tmp_path / "bin")})
+    assert result.returncode == 0, result.stdout + result.stderr
+    assert (tmp_path / "bin" / "openRepoShape").read_bytes() \
+        == COMMAND.read_bytes()
+
+
+def clones_for_the_doctor(tmp_path, _variable, value, locale):
+    """`--doctor`, with no checkout beside the command, hands a fake `git`
+    the repository to clone."""
+    assert cloned_for(tmp_path, value, "doctor", {"LC_ALL": locale}) \
+        == [value]
+
+
+def hands_setup_sh_the_repository(tmp_path, _variable, value, locale):
+    """`--preflight` hands `setup.sh` the repository to clone."""
+    assert cloned_for(tmp_path, value, "setup.sh", {"LC_ALL": locale}) \
+        == [value]
+
+
+def runs_the_doctor_beside_a_checkout(tmp_path, variable, value, locale):
+    """`--doctor` beside a checkout, which a `shape-doctor.py` that says it
+    ran stands for, runs it: there the ref names nothing to check out."""
+    copy = tmp_path / "beside" / "openRepoShape"
+    copy.parent.mkdir()
+    copy.write_bytes(COMMAND.read_bytes())
+    write_script(copy.parent / "shape-doctor.py", "print('DOCTOR RAN')\n")
+    result = run_cmd("--doctor", str(tmp_path), command=copy,
+                     env={variable: value, "LC_ALL": locale})
+    assert result.returncode == 0, result.stdout + result.stderr
+    assert result.stdout == "DOCTOR RAN\n"
+
+
+def hands_setup_sh_the_ref(tmp_path, variable, value, locale):
+    """`--preflight` hands `setup.sh` the ref, as `--shape-ref`."""
+    stub = tmp_path / "setup.sh"
+    write_script(stub, STUB_SETUP_SH)
+    result = run_cmd("--preflight", setup_sh=stub,
+                     env={variable: value, "LC_ALL": locale})
+    assert result.returncode == 0, result.stdout + result.stderr
+    match = re.search(rf"{STUB_MARKER} in .+ args: (.*)", result.stdout)
+    assert match, result.stdout + result.stderr
+    assert match.group(1).split() == ["--shape-ref", value, "--preflight"]
+
+
+@NO_NON_ASCII_INTO_GIT_BASH
+@pytest.mark.parametrize("locale", LOCALES)
+@pytest.mark.parametrize("variable, start, run", [
+    *(pytest.param(*form.values, run, id=f"{form.id}-{run.__name__}")
+      for form in VALUE_FORMS if form.values[0] == "OPENREPOSHAPE_REPO"
+      for run in (scaffolds, installs, clones_for_the_doctor,
+                  hands_setup_sh_the_repository)),
+    *(pytest.param(*form.values, run, id=f"{form.id}-{run.__name__}")
+      for form in VALUE_FORMS if form.values[0] == "OPENREPOSHAPE_REF"
+      for run in (scaffolds, installs, runs_the_doctor_beside_a_checkout,
+                  hands_setup_sh_the_ref)),
+])
+def test_a_letter_past_ascii_goes_through_every_run_in_either_locale(
+        tmp_path, variable, start, run, locale):
+    """#872 checked the repository and the ref before every run but
+    `--help`, with `[![:print:]]`, so under `C` a URL, a path or an scp
+    address with a letter past ASCII, or a ref with one, stopped every run
+    that `C.UTF-8` let through, most of which v1.1.0 had run (#940). Now
+    each run does what it does under `C.UTF-8`, in both locales: a scaffold run
+    fetches `setup.sh`, `--install` places the command, `--doctor` clones
+    the repository or runs beside a checkout, and `--preflight` hands
+    `setup.sh` the repository or the ref."""
+    run(tmp_path, variable, start + A_LETTER_PAST_ASCII, locale)
 
 
 # --- the ref `--install` records, and the installed command runs (#564) -----

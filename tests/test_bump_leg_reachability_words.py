@@ -135,6 +135,19 @@ def local_only(commit: str) -> tuple[str, str]:
         "of the world cannot bootstrap.")
 
 
+def tag_reaches(commit: str) -> tuple[str, str]:
+    """`bump-leg-commit-local-only`'s two lines where a tag of the leg's
+    remote reaches `commit` and no branch does (#898): no claim that nobody
+    can fetch it."""
+    return (
+        f"REFUSED bump-leg-commit-local-only: {commit} is in the leg's own "
+        f"object store, and a tag of {REPOSITORY} reaches it, but no branch "
+        f"of {REPOSITORY} does",
+        "Remediation: push it to a branch of the leg and re-run \u2014 a bump "
+        "pins only a commit a branch of the leg's remote reaches, and a tag "
+        "is not a branch.")
+
+
 # --- R613 p03: a commit only a tag of the remote reaches --------------------
 
 @pytest.mark.parametrize("typed", ["commit", "annotated-tag"])
@@ -167,31 +180,27 @@ def test_a_commit_only_a_tag_of_the_remote_reaches_is_told_so(
                                 made if typed == "commit" else tag,
                                 "bump-leg-commit-local-only", before)
 
-    assert refusal(stderr) == (
-        f"REFUSED bump-leg-commit-local-only: {made} is in the leg's own "
-        f"object store, and a tag of {REPOSITORY} reaches it, but no branch "
-        f"of {REPOSITORY} does",
-        "Remediation: push it to a branch of the leg and re-run — a bump "
-        "pins only a commit a branch of the leg's remote reaches, and a tag "
-        "is not a branch.")
+    assert refusal(stderr) == tag_reaches(made)
 
     pushed(project, made, "refs/heads/release-w898")
     pins(project, run, made)
 
 
+@pytest.mark.parametrize("kind", ["lightweight", "annotated"])
 def test_a_tag_of_the_same_name_at_another_commit_keeps_the_plain_words(
-        project, scaffolded):
+        project, scaffolded, kind):
     """THE REMOTE IS ASKED BY ID, NOT BY NAME. The leg tags a commit only it
-    holds `v-same`, and the remote has a `v-same` of its own, at the pin.
-    That tag does not reach the commit, so both runs keep the plain words,
-    "a pin the rest of the world cannot fetch" included, which are true of
-    it; the fetch leaves the leg's own tag as it was."""
+    holds `v-same`, and the remote has a `v-same` of its own, at the pin,
+    lightweight or annotated (listed with its `^{}` line, the pin too). That
+    tag does not reach the commit, so both runs keep the plain words, "a pin
+    the rest of the world cannot fetch" included, which are true of it; the
+    fetch leaves the leg's own tag as it was."""
     remotes = private_remote(project, scaffolded)
     leg = project / "spec"
     made = made_in_the_leg(project, "SAME")
     git("tag", "v-same", made, cwd=leg)
     pinned = git("rev-parse", "HEAD", cwd=leg).stdout.strip()
-    git("tag", "v-same", pinned, cwd=bare_of(remotes))
+    tag_as(bare_of(remotes), kind, "v-same", pinned, "the remote's")
     assert git("cat-file", "-e", made, cwd=bare_of(remotes),
                check=False).returncode != 0, (
         "premise: the remote does not hold it, so its `v-same` cannot reach "
@@ -206,6 +215,114 @@ def test_a_tag_of_the_same_name_at_another_commit_keeps_the_plain_words(
     assert refusal(stderr) == local_only(made)
     assert git("rev-parse", "v-same", cwd=leg).stdout.strip() == made, (
         "the leg's own tag is as it was")
+
+
+def tag_as(work: Path, kind: str, name: str, target: str, whose: str) -> str:
+    """`name` on `target` in `work`, `lightweight`, `annotated` or
+    `tag-of-a-tag`; returns what `git rev-parse name` prints, a commit for
+    the first and the tag object's own id for the others. A tag of a tag is
+    an annotated `name` on an annotated `<name>-inner` on `target`, and the
+    inner one's ref is then deleted: only the outer tag names it. `whose` is
+    in an annotated tag's words, so two made on one commit are two objects,
+    never the one that two tags of the same words made in one second would
+    be."""
+    if kind == "tag-of-a-tag":
+        inner = tag_as(work, "annotated", f"{name}-inner", target,
+                       f"{whose} inner")
+        tag_as(work, "annotated", name, inner, whose)
+        git("tag", "-d", f"{name}-inner", cwd=work)
+    elif kind == "annotated":
+        git("tag", "-a", "-m", f"{whose} v1", name, target, cwd=work)
+    else:
+        git("tag", name, target, cwd=work)
+    return git("rev-parse", name, cwd=work).stdout.strip()
+
+
+@pytest.mark.parametrize("kinds", [
+    ("lightweight", "annotated"), ("annotated", "annotated"),
+    ("annotated", "lightweight"), ("tag-of-a-tag", "tag-of-a-tag"),
+    ("tag-of-a-tag", "lightweight"), ("tag-of-a-tag", "annotated")],
+    ids=["leg-lightweight-remote-annotated", "both-annotated-made-apart",
+         "leg-annotated-remote-lightweight", "both-tags-of-a-tag-made-apart",
+         "leg-tag-of-a-tag-remote-lightweight",
+         "leg-tag-of-a-tag-remote-annotated"])
+@pytest.mark.parametrize("via", VIA)
+def test_a_tag_at_the_commit_reaches_it_whatever_its_object_is(
+        project, scaffolded, via, kinds):
+    """#982. THE COMMITS TAGS POINT TO ARE COMPARED, NOT THE TAG OBJECTS ALONE.
+    A commit on no branch of the leg's remote, which a tag of the remote
+    reaches, under a `v1` the leg has too and made on its own: a lightweight
+    `v1` of the leg beside an annotated `v1` of the remote, two annotated
+    `v1` made apart, and the reverse of the first. The two tags are two
+    objects and name one commit, and the check compared the objects, so each
+    got the plain words, "a pin the rest of the world cannot fetch"
+    included, where a tag of the remote does reach the commit. Both runs now
+    tell the true reason, as for a tag the leg and the remote share, through
+    the leg's `origin` and through `--local-remote-dir`, with nothing moved
+    and the leg's own `v1` as it was.
+
+    THROUGH A TAG OF A TAG TOO: the leg's `v1` a tag of a tag, beside a tag
+    of a tag made apart, a lightweight or an annotated `v1` of the remote.
+    Git before 2.44 reads `%(*objectname)` one level, to the inner tag, so
+    these kept the plain words while the leg's tags were read that way
+    (measured, git 2.43); `git rev-parse <id>^{}` peels to the commit."""
+    leg_kind, remote_kind = kinds
+    remotes = private_remote(project, scaffolded)
+    bare = bare_of(remotes)
+    leg = project / "spec"
+    made = made_in_the_leg(project, "ONE")
+    remote_tag = tag_as(leg, remote_kind, "v1-w982", made, "the remote's")
+    pushed(project, "refs/tags/v1-w982", "refs/tags/v1-w982")
+    git("tag", "-d", "v1-w982", cwd=leg)
+    leg_tag = tag_as(leg, leg_kind, "v1-w982", made, "the leg's")
+    assert git("rev-parse", "refs/tags/v1-w982", cwd=bare
+               ).stdout.strip() == remote_tag, (
+        "premise: the remote holds the tag the leg first made")
+    assert leg_tag != remote_tag, "premise: the two tags are two objects"
+    for work in (leg, bare):
+        assert git("rev-parse", "refs/tags/v1-w982^{}", cwd=work
+                   ).stdout.strip() == made, "premise: both name the commit"
+    assert not contains(bare, made, "refs/heads/"), (
+        "premise: no branch of the leg's remote reaches it")
+    assert not contains(leg, made, "refs/remotes/"), (
+        "premise: no remote-tracking ref of the leg does")
+    branched(project)
+    run = runner(project, remotes, via)
+    before = snapshot(project)
+
+    stderr = assert_one_refusal(project, run, made,
+                                "bump-leg-commit-local-only", before)
+
+    assert refusal(stderr) == tag_reaches(made)
+    assert "cannot fetch" not in stderr
+    assert git("rev-parse", "v1-w982", cwd=leg).stdout.strip() == leg_tag, (
+        "the leg's own tag is as it was")
+
+
+@pytest.mark.parametrize("via", VIA)
+def test_a_tag_of_a_tag_the_two_share_reaches_it(project, scaffolded, via):
+    """#982. A TAG OF A TAG THE LEG AND THE REMOTE SHARE, the leg's own
+    pushed with its inner tag's ref deleted: the remote lists the outer tag
+    and its `^{}` line, the commit. Both runs give the tag words, through
+    the leg's `origin` and through `--local-remote-dir`, with nothing
+    moved."""
+    remotes = private_remote(project, scaffolded)
+    leg = project / "spec"
+    made = made_in_the_leg(project, "SHARED")
+    shared = tag_as(leg, "tag-of-a-tag", "v1-w982", made, "the shared")
+    pushed(project, "refs/tags/v1-w982", "refs/tags/v1-w982")
+    assert git("rev-parse", "refs/tags/v1-w982", cwd=bare_of(remotes)
+               ).stdout.strip() == shared, "premise: the two share the tag"
+    assert not contains(bare_of(remotes), made, "refs/heads/"), (
+        "premise: no branch of the leg's remote reaches it")
+    branched(project)
+    run = runner(project, remotes, via)
+    before = snapshot(project)
+
+    stderr = assert_one_refusal(project, run, made,
+                                "bump-leg-commit-local-only", before)
+
+    assert refusal(stderr) == tag_reaches(made)
 
 
 # --- R613 p10: a leg with no remote named `origin` --------------------------
@@ -580,7 +697,7 @@ def test_the_legs_own_refspecs_are_forced_as_the_first_is(project,
     own = git(*FILE_PROTOCOL, "fetch", "origin", cwd=leg, check=False)
     assert own.returncode == 1, "premise: the person's own fetch refuses it"
     assert "non-fast-forward" in own.stderr
-    # A fetch that failed must not be answered from the branch it brought.
+    # Remove the tracking ref the push wrote, so the fetch has to bring it.
     git("update-ref", "-d", "refs/remotes/origin/rewound-w898", cwd=leg)
     configured = git("config", "--get-all", "remote.origin.fetch",
                      cwd=leg).stdout
