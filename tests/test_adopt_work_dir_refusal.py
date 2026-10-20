@@ -160,6 +160,13 @@ def real(base: Path, name: str) -> Path:
     return Path(os.path.realpath(base)) / name
 
 
+def through_a_loop(loop: Path) -> str:
+    """Why a `--work-dir` that is no link, under `loop`, a link to itself,
+    cannot be made (#978)."""
+    return ("the way to it leads round a loop, at the symbolic link "
+            f"{ticked(str(loop))}")
+
+
 def plan_cannot_write(work: Path, repository: str) -> str:
     """Why `plan` refuses `--work-dir work` for the `org/repo` source
     `repository`: as `check` and `execute` say it, up to what the command
@@ -278,10 +285,8 @@ def test_a_work_dir_under_a_symlink_loop_is_refused(tmp_path, command):
     planned(tmp_path, {}, {}, {})
     linked(tmp_path / "loop", "loop")
     loop = real(tmp_path, "loop")
-    refused_for_a_link(
-        command, tmp_path, tmp_path / "loop" / "sub",
-        f"the way to it leads round a loop, at the symbolic link "
-        f"{ticked(str(loop))}", loop)
+    refused_for_a_link(command, tmp_path, tmp_path / "loop" / "sub",
+                       through_a_loop(loop), loop)
 
 
 @pytest.fixture(scope="module")
