@@ -19,7 +19,11 @@ from that checkout's `origin` remote.
 Either way it checks your machine, works out which organisation you are
 scaffolding into, checks the three repository names against the naming policy,
 shows you the plan, asks once, creates the three repositories, clones the
-assembly root and bootstraps it. Nothing is created before you have said yes.
+assembly root and bootstraps it. Nothing that stays is created before you have
+said yes: the run makes a few short-lived folders along the way, such as
+`.openreposhape-write-probe-*` above the clone and `openreposhape-seed-*` and
+`openreposhape-branch-*` in the temporary folder, and takes each away again (the
+checkout `--keep-shape-checkout` keeps is the one exception).
 
 WHY THIS FILE IS THE FLOW AND `setup.sh` IS NOT. It arrived as the second
 entry point, for Windows: bash is not there, and neither is the `python3` a
@@ -2689,11 +2693,15 @@ def names_flag(word: str, flag: str) -> bool:
 
 def passed_values(passthrough: list, flag: str) -> list:
     """Every value the passthrough gives `flag`, in order: `flag=value`, or
-    the word after `flag`. A value never starts with `-` in the second
-    spelling, because argparse reads such a word as a flag, so a word that
-    does is not this flag's value (`--pin --referent-chain x` gives `--pin`
-    none, and the scaffold's plan refuses it) and is read again as the flag
-    it is (#608, L2-27). The `=` spelling takes whatever follows it."""
+    the word after `flag`. In the second spelling a word that starts with
+    `-` is not this flag's value, as argparse reads most of them: it is
+    another flag (`--pin --referent-chain x` gives `--pin` none, and the
+    scaffold's plan refuses it) and is read again as the flag it is (#608,
+    L2-27). Not all of them: argparse takes `-`, a negative number such as
+    `-5` or `-1.5`, and a word with a space in it such as `-x y` (but not
+    `-h y`, which it reads as `-h`) as the value, so for those this reads
+    fewer values than the scaffold does and step (4) reports from fewer
+    (#923, U062). The `=` spelling takes whatever follows it."""
     words = scaffold_words(passthrough)
     values = []
     for index, word in enumerate(words):
