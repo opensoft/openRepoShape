@@ -10100,14 +10100,20 @@ def _refuse_symlinks_checked_out_as_files(plan: Plan, source: Source,
 #   which is its `--template` too: no hook runs and none is copied in, and a
 #   `-c` outranks every config file and `GIT_CONFIG_COUNT`.
 # * ONE GIT CANNOT MAKE OR ASK IS A FINDING (`UNASKED`), never `git-failed`:
-#   a setting `git init` refuses (`init.defaultBranch = a..b`, which the
-#   split's own clone refuses too), or git failing a step there. It says
+#   a `git init` that fails there, or git failing a step there. It says
 #   where and why, and `execute`, which asks the same in its own work
 #   directory before it makes either leg, refuses it there. A work directory
 #   no directory can be made in at all is `adopt-work-dir-unwritable`'s, as
 #   `check` asks it the same way (#524), and `execute` refuses it before it
 #   asks anything: one cause, one finding, and a NOTE of what went unasked.
 #   The questions after one that cannot be asked are not asked.
+# * NO `init.defaultBranch`. Each `git init` here names its branch
+#   (`THROWAWAY_BRANCH`), as the split's own `git init -b` does, so a name
+#   git will not take there (`a..b`) stops no question. Read, it stopped
+#   them all as `adopt-git-unasked`, which `execute` refused, though the
+#   split's `git clone` of the source does not stop at it on git 2.55,
+#   which CI runs (CI on #1031). On git 2.43 that clone stops at it, a
+#   clone `check` does not make.
 
 #: `check`'s finding, and the code of `execute`'s refusal, for the paths of
 #: the source commit that this machine's git will not hold in an index, and
@@ -10130,6 +10136,9 @@ UNASKED = "adopt-git-unasked"
 #: The empty directory beside each throwaway repository: its `--template`, so
 #: `git init` copies nothing in, and its `core.hooksPath`, so no hook runs.
 THROWAWAY_EMPTY = "empty"
+#: The branch each throwaway repository's `git init` names (`-b`), so that it
+#: reads no `init.defaultBranch`, as the split's own `git init`s read none.
+THROWAWAY_BRANCH = "throwaway"
 
 
 class _Unasked(Refusal):
@@ -10195,9 +10204,17 @@ def _throwaway(prefix: str, source: Source | None) -> Path:
     """A new directory for a throwaway repository of `check`'s, named from
     `prefix`, in the work directory `source` was opened in (#910), or in the
     system's temporary directory for a `Source` no command opened; it is
-    `_Unasked` where none can be made there."""
+    `_Unasked` where none can be made there.
+
+    A work directory not made yet is made first, as `_work_root` makes a
+    missing `--work-dir` (`_made_0755`). `_work_root` has made it for every
+    command, but a `Source` opened outside one, as a test opens it with
+    `Plan.open_source`, may name one that is not there: in `TMPDIR` its
+    questions were asked, and it must not lose them to a NOTE."""
     where = source.work_root if source is not None else None
     try:
+        if where is not None:
+            _made_0755(where)
         return Path(tempfile.mkdtemp(prefix=prefix, dir=where))
     except OSError as exc:
         raise _Unasked(where or Path(tempfile.gettempdir()),
@@ -10207,10 +10224,10 @@ def _throwaway(prefix: str, source: Source | None) -> Path:
 def _throwaway_made(scratch: Path, repository: Path, source: Source | None,
                     env: dict) -> list[str]:
     """`git init` of `repository` in `scratch`, as `check` makes each of its
-    throwaway repositories (#910): from the empty `THROWAWAY_EMPTY` and with
-    the source's object format. Returns the `-c` every git command run there
-    takes: `core.hooksPath` that same empty directory. `_Unasked` where it
-    cannot be made."""
+    throwaway repositories (#910): from the empty `THROWAWAY_EMPTY`, with
+    the source's object format, and on `THROWAWAY_BRANCH`. Returns the `-c`
+    every git command run there takes: `core.hooksPath` that same empty
+    directory. `_Unasked` where it cannot be made."""
     formats = ([] if source is None
                else [f"--object-format={source.object_format()}"])
     empty = scratch / THROWAWAY_EMPTY
@@ -10219,7 +10236,8 @@ def _throwaway_made(scratch: Path, repository: Path, source: Source | None,
         empty.mkdir()
         made = subprocess.run(["git", *hooks_off, "init", "-q",
                                f"--template={empty}", *formats,
-                               str(repository)], cwd=str(scratch), env=env,
+                               "-b", THROWAWAY_BRANCH, str(repository)],
+                              cwd=str(scratch), env=env,
                               capture_output=True, check=False)
     if made.returncode:
         raise _Unasked(scratch.parent, (

@@ -35,6 +35,7 @@ from __future__ import annotations
 
 import importlib.util
 import os
+import shutil
 import subprocess
 import tempfile
 from argparse import Namespace
@@ -43,8 +44,9 @@ from types import SimpleNamespace
 
 import pytest
 
-from conftest import (ADOPT, appended_to_command_scope, findings, git,
-                      planned, refused_before_any_leg, run_script)
+from conftest import (ADOPT, WINDOWS_SKIP, appended_to_command_scope,
+                      findings, git, planned, refused_before_any_leg,
+                      run_script)
 from test_adopt_nested_attributes import (KEEP_GITHUB, ROOT, ROOT_ATTRIBUTES,
                                           SOURCE, YML_CRLF, adoption_plan,
                                           committed_raw, github)
@@ -475,38 +477,72 @@ def bad_default_branch(base: Path) -> dict:
     return config_with(base, "[init]", "\tdefaultBranch = a..b")
 
 
+#: What the stub `git` of `refusing_init` says for each throwaway `git init`.
+REFUSED_INIT = "fatal: r1031: no repository can be made here"
+
+
+def refusing_init(base: Path) -> dict:
+    """The environment of a git that makes no throwaway repository: a stub
+    first on PATH refuses each `git init` given a `--template`, as every one
+    `check` makes is given one, and hands any other command to the real git.
+    Which setting stops a `git init` is git's version's to say (CI on
+    #1031), so the rows below do not lean on one."""
+    stubs = base / "stubs"
+    stubs.mkdir()
+    stub = stubs / "git"
+    stub.write_bytes("\n".join([
+        "#!/bin/sh",
+        'for arg in "$@"; do',
+        '  case "$arg" in --template=*) ;; *) continue ;; esac',
+        '  for word in "$@"; do',
+        '    [ "$word" = init ] || continue',
+        f'    echo "{REFUSED_INIT}" >&2',
+        "    exit 128",
+        "  done",
+        "done",
+        'exec "$REAL_GIT" "$@"', ""]).encode("ascii"))
+    stub.chmod(0o755)
+    return {"PATH": str(stubs) + os.pathsep + os.environ["PATH"],
+            "REAL_GIT": shutil.which("git")}
+
+
+@WINDOWS_SKIP  # a `#!` stub named `git` first on PATH
 def test_a_repository_git_cannot_make_is_one_finding_that_says_why(
         tmp_path):
     plan = planned(a_source(tmp_path), tmp_path, {})
+    work = tmp_path / "work"
+    result = checked(plan, refusing_init(tmp_path), "--work-dir", str(work))
+    assert "REFUSED" not in result.stderr, result.stderr
+    assert result.returncode == 1, result.stderr
+    assert finding_lines(result) == [
+        f"FINDING {UNASKED}: " + UNASKED_OPENS.format(os.path.realpath(work))
+        + f"`git init` there exited 128: {REFUSED_INIT}" + UNASKED_ENDS]
+    assert list(work.iterdir()) == []
+
+
+def test_a_default_branch_git_will_not_take_stops_no_question(tmp_path):
+    """Each throwaway `git init` names its branch, as the split's own `git
+    init -b` does, so `init.defaultBranch = a..b` stops none of `check`'s
+    questions, on any git: the CRLF file the plan keeps is found. Read, it
+    was `adopt-git-unasked`, which `execute` refused, though git 2.55's
+    `git clone`, which CI runs, does not stop at it (CI on #1031)."""
+    plan = planned(a_source(tmp_path, files={ROOT_ATTRIBUTES: TEXT_EOL_LF,
+                                             NOTES: CRLF}),
+                   tmp_path, {NOTES: ROOT})
     work = tmp_path / "work"
     result = checked(plan, bad_default_branch(tmp_path), "--work-dir",
                      str(work))
     assert "REFUSED" not in result.stderr, result.stderr
     assert result.returncode == 1, result.stderr
-    lines = finding_lines(result)
-    assert len(lines) == 1, result.stderr
-    assert lines[0].startswith(f"FINDING {UNASKED}: " + UNASKED_OPENS.format(
-        os.path.realpath(work)) + "`git init` there exited 128: "), lines[0]
-    assert "init.defaultBranch" in lines[0]
-    assert lines[0].endswith(UNASKED_ENDS), lines[0]
+    assert codes(result) == [REENCODED_FILES], result.stderr
     assert list(work.iterdir()) == []
 
 
-def test_the_splits_own_clone_refuses_that_setting_too(tmp_path):
-    """The control, and why it is a finding and not a NOTE: the split's
-    clone of the source fails under the same config."""
-    source = a_source(tmp_path)
-    cloned = subprocess.run(
-        ["git", "clone", "-q", str(source), str(tmp_path / "clone")],
-        capture_output=True, check=False,
-        env={**os.environ, **bad_default_branch(tmp_path)})
-    assert cloned.returncode != 0, cloned.stderr
-
-
+@WINDOWS_SKIP  # a `#!` stub named `git` first on PATH
 def test_execute_refuses_it_before_any_leg_exists(adopter, monkeypatch,
                                                  tmp_path):
     plan = planned(a_source(tmp_path), tmp_path, {})
-    for name, value in bad_default_branch(tmp_path).items():
+    for name, value in refusing_init(tmp_path).items():
         monkeypatch.setenv(name, value)
     monkeypatch.setattr(adopter, "_require_filter_repo", lambda: None)
     remotes = tmp_path / "remotes"
@@ -515,6 +551,7 @@ def test_execute_refuses_it_before_any_leg_exists(adopter, monkeypatch,
             plan=str(plan), source=None, local_remote_dir=remotes,
             allow_empty_leg=[], yes=True, work_dir=tmp_path / "work"))
     assert caught.value.code == UNASKED
+    assert REFUSED_INIT in caught.value.detail
     assert "no leg repository was created" in caught.value.remediation
     assert not remotes.exists()
 
