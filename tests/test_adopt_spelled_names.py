@@ -249,7 +249,9 @@ def test_git_commit_keeps_every_line_of_the_split_message(adopter, tmp_path):
 def test_a_follow_up_is_shown_in_the_message_as_execute_prints_it(adopter):
     """A follow-up is the plan's text, which a person may edit: `execute`
     prints it `_shown` before it begins, and the message now writes it the
-    same way. On c7a3ff16 the ESC went into the commit raw."""
+    same way. On c7a3ff16 `_split_message` wrote the ESC raw; `check` and
+    `execute` refuse such an item (`plan-unwritable-value`), so this row
+    asks the message itself."""
     message = split_message(adopter, {"root": ["README.md"]},
                             follow_ups=["merge a\x1b[2J into b"])
     assert "\n  - `merge a\\x1b[2J into b`\n" in message, message
@@ -292,6 +294,65 @@ def test_the_issues_source_adopts_and_the_message_names_each_kept_path(
     kept = message.split(b"\nSTAYS IN THE ASSEMBLY ROOT:\n", 1)[1]
     assert kept.split(b"\n\n", 1)[0].split(b"\n") == [
         b"  README.md", b"  `caf\\udce9.md`", b"  `cr\\r`"], message
+
+
+#: Code-leg files that name `docs/`, which moves to the spec leg, each
+#: with a character `_spelled_character` escapes and `_shown` leaves as it
+#: is: so the read-across follow-up names each, and the table and the
+#: split message's listing name it as it is.
+CODE_FILES = ['q"uote.py', "t`ick.py", "b\\ack.py"]
+
+
+#: What a read-across follow-up says after the file it names.
+NAMES = " in the code leg names "
+
+
+def files_named(text: str) -> list[str]:
+    """The files the read-across follow-ups in `text` begin with, each as
+    it is written, from every line of the form `  - <file> in the code leg
+    names ...`."""
+    return sorted(line[len("  - "):].partition(NAMES)[0]
+                  for line in text.split("\n")
+                  if line.startswith("  - ") and NAMES in line)
+
+
+@needs_filter_repo
+@POSIX_ONLY
+def test_the_read_across_follow_up_names_a_file_as_the_listing_does(
+        adopter, tmp_path):
+    """r1030's MUST-1 on #1030: `cross_leg_references` named each file it
+    found in the plan's escape form, with no backticks, so `q"uote.py`, which
+    `plan`'s table and the split message's listing name as it is, was
+    `q\\"uote.py` in the follow-up of the same report and the same commit
+    (and `t\\x60ick.py` and `b\\\\ack.py` beside them). Each follow-up now
+    begins with the name as `_shown` gives it, in `plan`'s report and in the
+    split commit's message."""
+    source = make_source_repo(tmp_path / "Thing",
+                              {"README.md": "# Thing\n",
+                               "docs/guide.md": "guide\n",
+                               "src/app.py": "VALUE = 1\n"}, edits=())
+    for name in CODE_FILES:
+        (source / name).write_text("PATH = 'docs/'\n", encoding=UTF8)
+    git("add", "-A", "--", ".", cwd=source)
+    git("commit", "-q", "-m", "Code files that name docs/", cwd=source)
+    plan = tmp_path / "adoption-plan.yaml"
+    written = planned(source, plan)
+    assert written.returncode == 0, written.stderr + written.stdout
+    expected = sorted(adopter._shown(name) for name in CODE_FILES)
+    report = written.stdout.decode(UTF8)
+    assert files_named(report) == expected, report
+    checked = adopted("check", "--plan", str(plan))
+    assert checked.returncode == 0, checked.stderr + checked.stdout
+    ran = adopted("execute", "--plan", str(plan), "--yes",
+                  "--local-remote-dir", str(tmp_path / "remotes"),
+                  "--work-dir", str(tmp_path / "work"))
+    assert ran.returncode == 0, ran.stderr + ran.stdout
+    message = subprocess.run(
+        ["git", "log", "-1", "--format=%B", SPLIT_BRANCH], cwd=str(source),
+        capture_output=True, check=True).stdout.decode(UTF8)
+    assert files_named(message) == expected, message
+    for name in CODE_FILES:
+        assert f"\n  {adopter._shown(name)}\n" in message, message
 
 
 # --- plan's report: a policy's question and rule id ------------------------

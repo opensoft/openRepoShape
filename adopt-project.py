@@ -3208,9 +3208,10 @@ def cross_leg_references(source: "Source",
     `:cache` read as the pathspec `cache` and `*` matched files in the spec
     leg, so `--literal-pathspecs`. `-l` C-quoted a name outside printable
     ASCII (`"src/\\303\\234bersicht.py"`), so `-z`, read as `Source.tree`
-    reads names, and each hit is spelled as a question spells a path, with
-    no backticks: one line of UTF-8 whatever its bytes; so is the spec
-    directory's own name. `--no-color`, because `color.grep=always` wraps
+    reads names, and each hit is named as `plan`'s table and the split
+    message's listing name it (`_shown`, #900), and the spec directory as a
+    sentence names a path, between backticks: one line of UTF-8 whatever
+    its bytes. `--no-color`, because `color.grep=always` wraps
     each name in escapes. A grep that FAILS is said, never read as "no file
     names it", and so is one that cannot be asked: `-F` splits a pattern at
     a line feed.
@@ -3254,7 +3255,7 @@ def cross_leg_references(source: "Source",
         # being read at all.
         hits.sort(key=lambda h: ("fixture" in h or h.startswith("tests/"), h))
         for hit in hits[:8]:
-            shown = "".join(map(_spelled_character, hit))
+            shown = _shown(hit)
             out.append(
                 f"{shown} in the code leg names `{named}`, which moves to "
                 "the spec leg: it must read across the assembly root — from "
@@ -5341,7 +5342,7 @@ def _print_plan_report(args, source: Source, tree: list, entries: list,
     _print_summary(entries)
     print(f"\nfollow-ups ({len(follow_ups)}):")
     for item in follow_ups:
-        print(f"  - {item}")
+        print(f"  - {_shown(item)}")
     for line in seeding_warnings(seeded, set(args.allow_empty_leg or [])):
         print(line)
     for line in _kept_collision_notes(args, entries, tree):
