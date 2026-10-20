@@ -126,7 +126,8 @@ ROWS = [
                  "GNUmakefile", id="all-three"),
 ]
 
-#: `(path, leg)` rows no rule writes, a person's answers: `MAKEFILE` kept in
+#: `(path, leg)` rows no shipped rule writes, which a `--path-policy` rule can
+#: (a person's answer in the plan changes no follow-up): `MAKEFILE` kept in
 #: the root, a name GNU make never reads where case is kept and one a disk
 #: that ignores case takes for `Makefile`; and `makefile` and `GNUmakefile`
 #: sent to the legs, which leaves the root nothing GNU make reads but the
@@ -329,18 +330,19 @@ def test_readme_says_which_makefile_exports_contracts_dir():
 
 
 def test_the_handbook_reads_the_sentence_as_it_now_stands():
-    """The handbook's `adopt` section reads README.md § Adopting an existing
-    repository, and says what the sentence leans on: a shape file whose name
-    the source holds, `Makefile` among them, is written under `shape/`. Its
-    marker records the section as it now stands, so the page was read
-    against the new sentence."""
+    """The handbook's `adopt` section reads README.md \u00a7 Adopting an
+    existing repository, and says what the sentence leans on: a shape file
+    whose name the source holds, `Makefile` among them, is written under
+    `shape/`. Its marker records the section as it now stands, so the page
+    was read against the new sentence."""
     page = (REPO / "docs" / "handbook.html").read_text(encoding="utf-8")
     section = page.split('<section id="adopt">', 1)[1].split("</section>",
                                                               1)[0]
-    marker = re.search(rf"<!-- reads README\.md § {re.escape(ADOPTING)}: "
+    marker = re.search(rf"<!-- reads README\.md \u00a7 {re.escape(ADOPTING)}: "
                        r"blob ([0-9a-f]{40}) -->", section)
     assert marker is not None
     assert marker.group(1) == readme_fingerprint(segment(ADOPTING))
     text = " ".join(html.unescape(re.sub(r"<[^>]+>", "", section)).split())
-    assert ("A shape file whose name the source already holds — README.md, "
-            "Makefile, .gitignore — is written under shape/") in text
+    assert ("A shape file whose name the source already holds \u2014 "
+            "README.md, Makefile, .gitignore \u2014 is written under "
+            "shape/") in text
