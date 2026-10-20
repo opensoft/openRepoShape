@@ -265,21 +265,10 @@ class LinkSources:
     directory.
     That is `validate-pins.py`'s reading of `--pin-source` (#295), with a
     chain link where that file has a declared pin, so the two copied tools
-    read `[PRODUCT=]PATH` one way OVER ASCII ONLY (#444), and for a name that
-    holds no `=` (#980). That file still ends a key at the first `=`, so a
-    declared pin holding one is never a `--pin-source` key there; no
-    scaffold writes such a pin, since `--pin` names are `[A-Za-z0-9_.-]`,
-    and it is left as its own change. Outside ASCII they part
-    company: `templates/assembly-root/scripts/validate-pins.py` still keys
-    `--pin-source PRODUCT=` by `casefold()`, in `PinSources.__init__`, which
-    builds the table, and in `resolve_neutral_pin_source`, which looks a pin
-    up in it, so `--pin-source openss=` answers for a declared `openß`
-    where `--link-source openss=` no longer answers for the link `openß`. It
-    is left, and the issue leaves it as its own change, because a pin's digest
-    stops a wrong source from passing: `validate-pins.py` checks it, a wrong
-    source cannot match it, and so that reading can turn a wrong source into
-    a finding and never into a pass. The follow-up is on #459's checklist
-    (the shipped validators and the helpers they share).
+    read `[PRODUCT=]PATH` one way: both key by `pin_product_key` (#444 here,
+    #712 there), and both read the longest name before an `=` that leaves a
+    path after it, `_read_source` here (#980) and `PinSources._read_source`
+    there (#1053).
 
     WHAT EACH VALUE CAME TO. Every lookup records what it asked
     (`link_pins_from_trees(..., tried=)`), so once every name is classified a

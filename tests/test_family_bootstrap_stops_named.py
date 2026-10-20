@@ -52,6 +52,18 @@ skipped where git does not crash; a wrapper `git` that answers (a)'s
 update with 139, or is killed by SIGSEGV, holds both shapes on every git.
 A code no signal gives, 128 or 255, reads as before.
 
+A SIGNAL GIT'S UPDATE WENT ON PAST (#1056), lane 5's rv996 on #1045: git
+keeps only the last code that is not 0, so a member's crash or kill
+before a later gitlink's 128 or 1 left no signal in the update's code,
+and bootstrap said ok with the advice. Git's own trace of the update
+gives the dead git's `child_exit`, and the first is named now: P3, or
+IRRS's `git checkout` killed by a `post-checkout` hook standing in for the
+OOM killer, then IRSS's pin moved on with no credential, or IRSS's
+checkout refused, or B4 at IRSS, which is named after the signal. A hook's
+own 137 is no signal, and a git killed in an update that exits 0 is told
+nowhere. With a token in use, the update is not traced, and a signal
+before a later failure is still the credential's skip, a row pins that.
+
 A CREDENTIAL IN USE (#996): B4 with `SHAPE_LEGS_TOKEN` or
 `SHAPE_LEGS_APP_TOKEN` set said the advice to set the token that was set,
 and ok. It is named now, and the token is in no output and no file under
@@ -786,17 +798,13 @@ def test_a_member_s_gitmodules_read_up_to_a_bad_line_is_read_as_before(
 
 # --- git's update ended on a signal (#998) ----------------------------------
 
-def test_p3_a_member_s_gitmodules_git_crashes_on_fails_naming_the_signal(
-        family, holder, offline, tmp_path):
+def p3(holder: Path, env: dict) -> None:
     """Lane 5's P3 on #954: IRRS's own `.gitmodules` gives its `code` leg
     a `branch` with no value, committed there and recorded by hand, as
     `family.py bump`'s own git reads that file too. Git 2.43.0's update
-    crashes in IRRS (`submodule--helper died of signal 11`), goes on to
-    IRSS, and exits 139; bootstrap said ok with the credential advice. It
-    names the signal and the code now, gives no advice, and fails on git's
-    update. Skipped where git does not crash so: from 2.43.1 git refuses
-    that line as it refuses a `url` with none, and dies (128)."""
-    env = cloning(offline, tmp_path, family)
+    crashes in IRRS (`submodule--helper died of signal 11`) and goes on
+    to IRSS; from 2.43.1 git refuses that line as it refuses a `url` with
+    none, and dies there (128)."""
     member = holder / ROW
     data = (member / GITMODULES).read_bytes()
     line = (chr(9) + "path = code" + chr(10)).encode()
@@ -806,6 +814,16 @@ def test_p3_a_member_s_gitmodules_git_crashes_on_fails_naming_the_signal(
     raw(member, env, "add", "--", GITMODULES)
     moved_by_hand(holder, env, MEMBER,
                   committed(member, env, "A branch with no value"))
+
+
+def test_p3_a_member_s_gitmodules_git_crashes_on_fails_naming_the_signal(
+        family, holder, offline, tmp_path):
+    """P3 (`p3`): git 2.43.0's update crashes in IRRS, goes on to IRSS,
+    and exits 139; bootstrap said ok with the credential advice. It names
+    the signal and the code now, gives no advice, and fails on git's
+    update. Skipped where git does not crash so."""
+    env = cloning(offline, tmp_path, family)
+    p3(holder, env)
 
     result = bootstrap(holder, env, "--skip-members")
     update = git_update(holder, env)
@@ -1149,3 +1167,304 @@ def test_with_a_credential_in_use_a_commit_a_fetch_brings_is_untold(
         f"{REWRITE_LOGGED} fetch origin | {REFETCHED}",
         *([f"{REWRITE_LOGGED} fetch origin {commit} | {REFETCHED}"]
           if second else [])]
+
+
+# --- a signal git's update went on past (#1056) -----------------------------
+
+#: What (a)'s line says of a signal a git that git's update ran died of,
+#: where git's update went on past it and ended with another code, which
+#: git's trace tells (#1056), and the failure such a run ends on.
+WENT_ON = ("a git that git's update ran died of signal {signum} ({name}, "
+           "exit {code}), and git's update went on and ended with exit "
+           "{ended}. Git's own words above say which git and where.")
+DIED_FAILED = ("family bootstrap FAILED: git's update (a git it ran died of "
+               "signal {signum})")
+
+#: A hook here is a POSIX shell script that signals the git running it.
+POSIX_HOOK = pytest.mark.skipif(
+    os.name == "nt", reason="a hook here sends a POSIX signal to the git "
+    "that runs it, which Windows does not give")
+
+
+def hooked(checkout: Path, env: dict, name: str, line: str) -> None:
+    """A `name` hook in the store `checkout` reads, a shell script that
+    runs `line`."""
+    hooks = raw(checkout, env, "rev-parse", "--git-path",
+                "hooks").stdout.decode().strip()
+    hook = checkout / hooks / name
+    hook.parent.mkdir(exist_ok=True)
+    hook.write_bytes(chr(10).join(["#!/bin/sh", line, ""]).encode())
+    hook.chmod(0o755)
+
+
+def checkout_hooked(root: Path, env: dict, line: str,
+                    project: str = MEMBER) -> None:
+    """`project`'s gitlink and pin, IRRS's unless said, moved by hand to
+    its checkout's HEAD~1, which its store holds and a ref reaches, so git's
+    update fetches nothing there and runs `git checkout -q` of it; and a
+    `post-checkout` hook in that store that runs `line`, after the
+    checkout has moved HEAD."""
+    member = root / "members" / project
+    older = raw(member, env, "rev-parse", "HEAD~1").stdout.decode().strip()
+    moved_by_hand(root, env, project, older)
+    hooked(member, env, "post-checkout", line)
+
+
+def killed_checkout(root: Path, env: dict) -> None:
+    """IRRS's checkout killed (`checkout_hooked`): the hook sends SIGKILL
+    to the `git checkout` that runs it, as the OOM killer would. Git's
+    update says `checkout died of signal 9`, cannot check IRRS out (137,
+    `git checkout`'s code) and goes on to IRSS."""
+    checkout_hooked(root, env, "kill -s KILL $PPID")
+
+
+def checkout_refused(root: Path, env: dict, family, tmp_path: Path) -> Path:
+    """IRSS's checkout moved on by hand to a commit of its own that
+    changes `NOTES.md`, then `NOTES.md` edited and not committed, while
+    the holder still records the pin: git's checkout of the pin there
+    refuses to overwrite the edit, `git checkout`'s own 1, which git's
+    update passes and ends with."""
+    member = root / OTHER_ROW
+    (member / "NOTES.md").write_bytes(b"moved on by hand" + chr(10).encode())
+    raw(member, env, "add", "--", "NOTES.md")
+    committed(member, env, "NOTES.md moved on by hand")
+    (member / "NOTES.md").write_bytes(b"edited" + chr(10).encode())
+    return root
+
+
+def without_the_credential(env: dict, offline, tmp_path: Path) -> dict:
+    """The run's environment with the file transport refused, as for want
+    of a credential."""
+    return isolated(offline, tmp_path)
+
+
+def with_the_credential(env: dict, offline, tmp_path: Path) -> dict:
+    """The run's environment as the state was made in, the file transport
+    allowed."""
+    return env
+
+
+@POSIX_HOOK
+def test_a_killed_checkout_alone_is_named_as_before(family, holder, offline,
+                                                    tmp_path):
+    """The control: IRRS's checkout killed and nothing after it failing,
+    with the credential. Git's update ends with the signal's 137, which
+    its trace gives for IRRS's `git checkout` too, and the run names it as
+    #998 does."""
+    env = cloning(offline, tmp_path, family)
+    killed_checkout(holder, env)
+
+    result = bootstrap(holder, env, "--skip-members")
+
+    assert result.returncode == 1, result.stdout + result.stderr
+    assert said_after_the_fetch(result) == [
+        KILLED_LEAD + DIED_OF.format(signum=9, name="SIGKILL", code=137),
+        KILLED_FAILED.format(signum=9)]
+
+
+#: `(what fails in IRSS after IRRS's killed checkout, the run's
+#: environment, git's update's exit code)`: IRSS's pin moved on with no
+#: credential (128), and IRSS's checkout refused with the credential (1).
+AFTER_THE_SIGNAL = {
+    "pin-moved-on-no-credential": (pin_moved_on, without_the_credential,
+                                   128),
+    "checkout-refused-with-the-credential": (checkout_refused,
+                                             with_the_credential, 1),
+}
+
+
+@POSIX_HOOK
+@pytest.mark.parametrize("then, given, code", AFTER_THE_SIGNAL.values(),
+                         ids=AFTER_THE_SIGNAL)
+def test_a_killed_checkout_before_a_later_failure_fails_naming_it(
+        family, holder, offline, tmp_path, then, given, code):
+    """#1056: IRRS's checkout killed, then a failure at IRSS, which git's
+    update comes to after it. Git keeps only its last code, so the later
+    128 or 1 replaced the signal's 137, and bootstrap said ok with the
+    advice. Git's trace gives the `child_exit` of IRRS's `git checkout`,
+    137, and the run names that signal now, gives no advice, and fails on
+    git's update."""
+    env = cloning(offline, tmp_path, family)
+    killed_checkout(holder, env)
+    then(holder, env, family, tmp_path)
+
+    result = bootstrap(holder, given(env, offline, tmp_path),
+                       "--skip-members")
+
+    assert result.returncode == 1, result.stdout + result.stderr
+    assert said_after_the_fetch(result) == [
+        KILLED_LEAD + WENT_ON.format(signum=9, name="SIGKILL", code=137,
+                                     ended=code),
+        DIED_FAILED.format(signum=9)]
+
+
+def test_p3_before_a_later_failure_fails_naming_the_signal(
+        family, holder, offline, tmp_path):
+    """#1056, rv996's state: P3 in IRRS, then IRSS's pin moved on, and no
+    credential. Git 2.43.0's update crashes in IRRS, goes on, and dies at
+    IRSS for want of the credential (128); bootstrap said ok with the
+    advice. Git's trace gives the `child_exit` of IRRS's own update, 139,
+    and the run names SIGSEGV now, with no advice. Skipped where git does
+    not crash in P3: with the credential, its update then exits 139 only
+    where it does."""
+    env = cloning(offline, tmp_path, family)
+    p3(holder, env)
+    pin_moved_on(holder, env, family, tmp_path)
+
+    result = bootstrap(holder, isolated(offline, tmp_path), "--skip-members")
+    update = git_update(holder, env)
+
+    if update.returncode != 139:
+        pytest.skip(f"this git's update exits {update.returncode} here, "
+                    "where git 2.43.0's crashes (exit 139)")
+    assert result.returncode == 1, result.stdout + result.stderr
+    assert said_after_the_fetch(result) == [
+        KILLED_LEAD + WENT_ON.format(signum=11, name="SIGSEGV", code=139,
+                                     ended=128),
+        DIED_FAILED.format(signum=11)]
+
+
+@POSIX_HOOK
+def test_a_signal_and_b4_after_it_are_both_named_the_signal_first(
+        family, holder, offline, tmp_path):
+    """IRRS's checkout killed, then B4 at IRSS, with the credential: git's
+    update died at IRSS (128), and B4 alone was named. Both are named now,
+    in git's order, the signal first, each with its failure line."""
+    env = cloning(offline, tmp_path, family)
+    killed_checkout(holder, env)
+    commit = b4(holder, env, family, tmp_path)
+
+    result = bootstrap(holder, env, "--skip-members")
+
+    assert result.returncode == 1, result.stdout + result.stderr
+    assert said_after_the_fetch(result) == [
+        KILLED_LEAD + WENT_ON.format(signum=9, name="SIGKILL", code=137,
+                                     ended=128),
+        LEAD + ABSENT_SAID.format(path=OTHER_ROW, commit=commit,
+                                  owner="this holder", tail=BUMP_NAMED),
+        DIED_FAILED.format(signum=9) + f", {OTHER_ROW} (git stopped at it)"]
+
+
+def two_members(root: Path, env: dict) -> None:
+    """IRRS's checkout killed by SIGKILL, then IRSS's by SIGTERM."""
+    killed_checkout(root, env)
+    checkout_hooked(root, env, "kill -s TERM $PPID", OTHER)
+
+
+def two_legs(root: Path, env: dict) -> None:
+    """Every member and leg checked out; then each of IRRS's two legs
+    moved on by a commit of its own, so git's update in IRRS checks out
+    the commit IRRS records there, `code`'s checkout killed by SIGKILL and
+    then `spec`'s by SIGTERM. IRRS's own update ends 143, and git's update
+    writes that `child_exit` after both, in a file of its own that comes
+    first, since git's update started before IRRS's."""
+    assert git_update(root, env).returncode == 0
+    for leg, signame in (("code", "KILL"), ("spec", "TERM")):
+        checkout = root / ROW / leg
+        committed(checkout, env, "Moved on by hand")
+        hooked(checkout, env, "post-checkout", f"kill -s {signame} $PPID")
+
+
+#: Two signals, SIGKILL first, then SIGTERM, whose 143 git's update ends
+#: with: at two members' checkouts, and at two legs' in IRRS.
+TWO_SIGNALS = {"two-members": two_members, "two-legs": two_legs}
+
+
+@POSIX_HOOK
+@pytest.mark.parametrize("make", TWO_SIGNALS.values(), ids=TWO_SIGNALS)
+def test_the_first_signal_is_named(family, holder, offline, tmp_path, make):
+    """The first signal git's update met is named, SIGKILL, not SIGTERM,
+    whose 143 it ended with and whose `child_exit` git's trace holds last
+    in time, and first in its files where two legs' checkouts were
+    killed."""
+    env = cloning(offline, tmp_path, family)
+    make(holder, env)
+
+    result = bootstrap(holder, env, "--skip-members")
+
+    assert result.returncode == 1, result.stdout + result.stderr
+    assert said_after_the_fetch(result) == [
+        KILLED_LEAD + WENT_ON.format(signum=9, name="SIGKILL", code=137,
+                                     ended=143),
+        DIED_FAILED.format(signum=9)]
+
+
+@POSIX_HOOK
+def test_a_hook_s_own_code_is_no_signal(family, holder, offline, tmp_path):
+    """No misfire: IRRS's `post-checkout` hook exits 137, whose
+    `child_exit` git's trace holds for the hook, and `git checkout` exits
+    1 over it; then IRSS's pin moved on, and no credential. Git's update
+    dies at IRSS (128), no git it ran died of a signal, and the run reads
+    as before, the advice and ok."""
+    env = cloning(offline, tmp_path, family)
+    checkout_hooked(holder, env, "exit 137")
+    pin_moved_on(holder, env, family, tmp_path)
+
+    result = bootstrap(holder, isolated(offline, tmp_path), "--skip-members")
+
+    assert result.returncode == 0, result.stdout + result.stderr
+    assert said_after_the_fetch(result) == [ALONE]
+    assert result.stdout.endswith("\nfamily bootstrap ok\n"), result.stdout
+
+
+@POSIX_HOOK
+def test_a_git_killed_in_an_update_that_exits_0_is_not_said(
+        family, holder, offline, tmp_path):
+    """No misfire: IRSS's pin moved on, and a `reference-transaction` hook
+    in IRSS's store that kills, once, the git whose ref update it sees
+    committed: git's `fetch` there, after it wrote the branch that holds
+    the commit. Git's update then finds the commit reached, checks it out
+    and exits 0, though its trace holds the fetch's 137, and the run says
+    every member and leg was fetched, as before."""
+    env = cloning(offline, tmp_path, family)
+    pin_moved_on(holder, env, family, tmp_path)
+    once = tmp_path / "killed-once"
+    hooked(holder / OTHER_ROW, env, "reference-transaction",
+           f'if [ "$1" = committed ] && [ ! -e {shlex.quote(str(once))} ]; '
+           f"then : > {shlex.quote(str(once))}; kill -s KILL $PPID; fi")
+
+    result = bootstrap(holder, env, "--skip-members")
+
+    assert result.returncode == 0, result.stdout + result.stderr
+    assert once.is_file()
+    assert "  every member and leg fetched" in result.stdout.splitlines()
+    assert result.stdout.endswith("\nfamily bootstrap ok\n"), result.stdout
+
+
+#: `(what follows IRRS's killed checkout, the run's environment, the
+#: run's exit code, what (a) says after git's words)` with a token in use:
+#: nothing, where git's update ends with the signal's 137, which is named
+#: as before; and IRSS's pin moved on, the token's transport refused,
+#: where it ends 128 and was not traced, so the signal is not told: the
+#: advice and ok.
+WITH_A_TOKEN_KILLED = {
+    "alone": (in_place, with_the_credential, 1, [
+        KILLED_LEAD + DIED_OF.format(signum=9, name="SIGKILL", code=137),
+        KILLED_FAILED.format(signum=9)]),
+    "then-pin-moved-on": (pin_moved_on, without_the_credential, 0, [ALONE]),
+}
+
+
+@POSIX_HOOK
+@pytest.mark.parametrize("then, given, code, said",
+                         WITH_A_TOKEN_KILLED.values(), ids=WITH_A_TOKEN_KILLED)
+def test_with_a_credential_in_use_a_signal_is_told_only_from_git_s_code(
+        family, holder, offline, tmp_path, then, given, code, said):
+    """#1056's limit: with a token in use git's update is not traced
+    (#996), and its own exit code is all that tells a signal. IRRS's
+    checkout killed is named where git's update ends with its 137; where
+    IRSS's failure after it ends the update 128, it is the credential's
+    skip, as before, the advice and ok. The token is in no output and no
+    file under TMPDIR, with every trace the person may ask for on."""
+    env = cloning(offline, tmp_path, family)
+    killed_checkout(holder, env)
+    then(holder, env, family, tmp_path)
+    token = {**given(env, offline, tmp_path), "SHAPE_LEGS_TOKEN": TOKEN}
+
+    result = bootstrap(holder, traced_by_the_caller(token, offline, tmp_path),
+                       "--skip-members")
+
+    assert result.returncode == code, result.stdout + result.stderr
+    assert said_after_the_fetch(result, "SHAPE_LEGS_TOKEN") == said
+    assert TOKEN not in result.stdout + result.stderr
+    assert files_holding(offline.temp, TOKEN) == []

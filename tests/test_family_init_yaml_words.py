@@ -26,6 +26,7 @@ suite's `gh` guard.
 
 from __future__ import annotations
 
+import re
 import sys
 
 import pytest
@@ -54,14 +55,25 @@ READER_REMEDY = (
     "`init` cannot be run again over a pushed holder: there is no --force.")
 
 #: The validator's remedy, as `init` gives it, before the sentence it ends
-#: with: what a finding of the validator's is told, and what the manifest
-#: that is not a mapping is still told (lane 5's review of #960, NIT 3).
+#: with: what a finding of the validator's is told.
 VALIDATOR_REMEDY = (
     "Remediation: choose a value the holder's own validate-family.py "
     "accepts; the words after each value are the validator's own. A holder "
     "it refuses is red from its first commit, because `make validate` and "
     "the `validate` workflow run it first, and `init` cannot be run again "
     "over a pushed holder: there is no --force.")
+
+#: What the manifest that is not a mapping is told (#1059): the defect of the
+#: standard, aimed at the template's own `family.yaml`, and not the
+#: validator's remedy above, which it was told until #1059 (lane 5's review
+#: of #960, NIT 3, asked a test to hold its kind and remedy; lane 5 agreed on
+#: #473 that this was the better remedy, as no value reaches it).
+NOT_A_MAPPING_REMEDY = (
+    "Remediation: this is a defect in the copy of this standard you ran, "
+    "not in your values: templates/family-root/family.yaml is broken "
+    "there, as the holder's own YAML reader makes no mapping of it. Restore "
+    "it from the standard's repository, or reinstall the standard, and run "
+    "again.")
 
 #: The misread remedy, as `init` gives it, before the sentence it ends with.
 MISREAD_REMEDY = (
@@ -135,11 +147,14 @@ def test_a_finding_of_the_validator_keeps_the_validators_remedy():
 
 def test_a_manifest_that_is_not_a_mapping_keeps_its_kind_and_remedy(
         tmp_path):
-    """LANE 5'S REVIEW OF #960, NIT 3. The manifest that is not a mapping
-    is still `invalid` in `_manifest_problems`, so it keeps main's words
-    and the validator's remedy, as the body says. The existing test of it
-    (`test_family_init_values.py`) holds only the sentence; this holds the
-    remedy too, so moving its kind to the reader's fails a test."""
+    """LANE 5'S REVIEW OF #960, NIT 3, MOVED BY #1059. The manifest that is
+    not a mapping keeps its code, `family-manifest-invalid`, and its words,
+    and its kind is `not-a-mapping`, whose remedy is the defect of the
+    standard and names `templates/family-root/family.yaml`. The existing
+    test of it (`test_family_init_values.py`) holds only the sentence; this
+    holds the remedy too, so a change of its kind (#960's mutant M2 made it
+    `unreadable`) fails a test, and so does a return to the validator's
+    remedy, which sends a person to retype a value that was never wrong."""
     template = template_copy(tmp_path, "list", quoted=True)
     (template / "family.yaml").write_bytes(b"- one\n- two\n")
     module = family_module()
@@ -149,7 +164,41 @@ def test_a_manifest_that_is_not_a_mapping_keeps_its_kind_and_remedy(
     assert caught.value.detail == (
         "the manifest this run would write is not a mapping, which is what "
         "the holder's own YAML reader makes of it.")
-    assert caught.value.remediation == VALIDATOR_REMEDY + NOTHING
+    assert caught.value.remediation == NOT_A_MAPPING_REMEDY + NOTHING
+
+
+def test_the_not_a_mapping_remedy_names_each_manifests_own_template():
+    """#1059: the remedy is one sentence, built once, for both manifests, and
+    each names the template file its own reader reads (`family.yaml` under
+    `family-root`, `project.yaml` under `assembly-root`) and no other; the
+    file it names is there. Every kind of problem has a remedy in each
+    manifest's table, so a kind added to one and not the other is a
+    `KeyError` where a person was to be told what to do."""
+    family = family_module()
+    project = shape_materialize.PROJECT_MANIFEST
+    holder = family.HOLDER_MANIFEST
+    kinds = {shape_materialize.KIND_MISREAD, shape_materialize.KIND_INVALID,
+             shape_materialize.KIND_UNREADABLE,
+             shape_materialize.KIND_NOT_A_MAPPING}
+    assert set(project.remediations) == kinds
+    assert set(holder.remediations) == kinds
+    assert family.KIND_NOT_A_MAPPING is shape_materialize.KIND_NOT_A_MAPPING
+    assert holder.remediations[family.KIND_NOT_A_MAPPING] == (
+        NOT_A_MAPPING_REMEDY)
+    assert project.remediations[shape_materialize.KIND_NOT_A_MAPPING] == (
+        "Remediation: this is a defect in the copy of this standard you ran, "
+        "not in your values: templates/assembly-root/project.yaml is broken "
+        "there, as the project's own YAML reader makes no mapping of it. "
+        "Restore it from the standard's repository, or reinstall the "
+        "standard, and run again.")
+    for each, template, manifest in (
+            (holder, "family-root", "family.yaml"),
+            (project, "assembly-root", "project.yaml")):
+        remedy = each.remediations[shape_materialize.KIND_NOT_A_MAPPING]
+        named = re.findall(r"templates/[A-Za-z0-9./_-]+?(?=\s)", remedy)
+        assert named == [f"templates/{template}/{manifest}"], remedy
+        assert (REPO / named[0]).is_file(), named
+        assert (each.template, each.manifest) == (template, manifest)
 
 
 def test_the_projects_remedy_keeps_its_words():

@@ -446,13 +446,15 @@ def test_an_ordinary_mount_fetches_the_branch_and_moves_nothing_else(
 
 
 #: Each refspec a mount may keep, and whether `bump`'s fetch carries it. The
-#: id names the clause of `_origin_fetch_refspecs` that leaves it out, the
-#: first that matches in its order: OUTSIDE `origin/`; A SOURCE THAT CAN NAME
-#: A TAG, by one of the three ways of `_can_name_a_tag` (`tag-source` under
+#: id names the clause of `shape_materialize`'s `origin_fetch_refspecs`, the
+#: rule `_origin_fetch_refspecs` asks (#1037), that leaves it out, the first
+#: that matches in its order: OUTSIDE `origin/`; A SOURCE THAT CAN NAME A
+#: TAG, by one of the three ways of `can_name_a_tag` (`tag-source` under
 #: `refs/tags/`, `tag-pattern` a pattern that takes the tags too, and, no
 #: pattern and not under `refs/`, `tag-short-name` a name git completes,
 #: trying a tag before a branch, and `tag-object-id` an exact object id);
-#: THE BRANCHES' GLOB; `carried` where none does.
+#: THE BRANCHES' GLOB; `carried` where none does. `bump-leg.py`'s fetch of a
+#: leg is asked the same rows (`test_bump_leg_fetch_refspecs.py`).
 WHICH_CLAUSE = pytest.mark.parametrize("refspec, carried", [
     pytest.param("+refs/heads/*:refs/heads/*", False, id="outside-heads"),
     pytest.param("+refs/*:refs/*", False, id="outside-mirror"),

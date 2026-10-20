@@ -349,7 +349,9 @@ def test_the_validators_sentence_is_left_out_where_unsafe_value_fires(
 
 def test_adopt_gives_the_one_reader_remedy(adopter):
     """`check`'s remedy is the scaffold's and `plan`'s, not a second copy."""
-    assert adopter.MANIFEST_UNREADABLE_REMEDIATION is (
+    assert adopter.PROJECT_MANIFEST is shape_materialize.PROJECT_MANIFEST
+    assert adopter.PROJECT_MANIFEST.remediations[
+        shape_materialize.KIND_UNREADABLE] is (
         shape_materialize.MANIFEST_UNREADABLE_REMEDIATION)
     assert NOT_THE_VALIDATORS not in (
         shape_materialize.MANIFEST_UNREADABLE_REMEDIATION)
