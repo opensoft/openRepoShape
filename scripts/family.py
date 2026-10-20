@@ -197,9 +197,10 @@ from shape_materialize import (  # noqa: E402
 # `project.yaml`, asked of `family.yaml` (#925), and the first sentence of
 # the remedy where the holder's reader refuses it (#929).
 from shape_materialize import (  # noqa: E402
-    FAMILY_TEMPLATED, KIND_INVALID, KIND_MISREAD, KIND_UNREADABLE,
-    UNREADABLE_CHOICE, TemplateManifest, manifest_invalid, manifest_misreads,
-    manifest_validator, manifest_value_problems, refuse_manifest_problems,
+    FAMILY_TEMPLATED, KIND_INVALID, KIND_MISREAD, KIND_NOT_A_MAPPING,
+    KIND_UNREADABLE, UNREADABLE_CHOICE, TemplateManifest, manifest_invalid,
+    manifest_misreads, manifest_not_a_mapping_remediation, manifest_validator,
+    manifest_value_problems, refuse_manifest_problems,
 )
 # How every command this prints for a person to paste spells its paths
 # (#486), the quoting the holder's `scripts/siblings.py` uses too.
@@ -3554,10 +3555,17 @@ MANIFEST_UNREADABLE_REMEDIATION = (
     "red from its first commit, because `make validate` and the `validate` "
     "workflow run that validator first, and `init` cannot be run again over "
     "a pushed holder: there is no --force.")
+#: Where the holder's own reader reads the template's `family.yaml` as
+#: something other than a mapping (#1059), no value `init` is handed did it,
+#: so the remedy is the defect of the standard, aimed at that file, and it
+#: is the project's sentence (`shape_materialize`), said of the holder's.
+MANIFEST_NOT_A_MAPPING_REMEDIATION = manifest_not_a_mapping_remediation(
+    "family-root", MANIFEST, "the holder's own YAML reader")
 #: The remedy for each kind of problem the questions name.
 KIND_REMEDIATIONS = {KIND_MISREAD: MANIFEST_MISREAD_REMEDIATION,
                      KIND_INVALID: MANIFEST_INVALID_REMEDIATION,
-                     KIND_UNREADABLE: MANIFEST_UNREADABLE_REMEDIATION}
+                     KIND_UNREADABLE: MANIFEST_UNREADABLE_REMEDIATION,
+                     KIND_NOT_A_MAPPING: MANIFEST_NOT_A_MAPPING_REMEDIATION}
 
 
 def _holder_findings(validator, manifest: dict, policy: NamingPolicy):

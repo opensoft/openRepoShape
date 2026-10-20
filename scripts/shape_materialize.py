@@ -5038,11 +5038,13 @@ CARRIED_BY = {"ASSEMBLY_REPOSITORY": "ORG", "SPEC_REPOSITORY": "ORG",
 
 #: The kinds of problem `manifest_value_problems` names, each spelled once
 #: (#708): a value the project's reader reads back as something else, one
-#: its validator refuses, and a manifest the reader refuses before the
-#: validator can be asked, which `refuse_manifest_values` refuses under the
+#: its validator refuses, a manifest the reader refuses before the validator
+#: can be asked, and a manifest the reader reads as something other than a
+#: mapping (#1059), which no value a person types can make (only a broken
+#: template does). `refuse_manifest_values` refuses the last three under the
 #: code `invalid` still.
-KIND_MISREAD, KIND_INVALID, KIND_UNREADABLE = (
-    "misread", "invalid", "unreadable")
+KIND_MISREAD, KIND_INVALID, KIND_UNREADABLE, KIND_NOT_A_MAPPING = (
+    "misread", "invalid", "unreadable", "not-a-mapping")
 
 #: The remediation, without the sentence only the caller can write (what was
 #: or was not created, whether `--dry-run` refuses the same).
@@ -5087,11 +5089,38 @@ MANIFEST_UNREADABLE_REMEDIATION = (
     "which refuses the manifest this run would write before its "
     "validate-manifest.py can be asked, and a project whose manifest it "
     "refuses is one whose first bootstrap would fail.")
+
+
+def manifest_not_a_mapping_remediation(template: str, manifest: str,
+                                       reader: str) -> str:
+    """The remedy where the template's own manifest is not a mapping to its
+    reader (#1059), for the manifest `manifest` in `templates/<template>/`
+    and the reader `reader` names (`the project's own YAML reader`).
+
+    NO VALUE A PERSON TYPES MAKES IT ONE, and only a broken template does:
+    `validate-manifest.py` and `validate-family.py` each refuse a file that
+    is not a mapping before they ask a question, and no value on the
+    template's lines turns a mapping into a list. So the remedy is the
+    defect-of-the-standard one (`_validator_unusable`'s) aimed at the right
+    file, the template's manifest, and not the invalid-value one, which
+    sends a person to retype a value that was never wrong. One sentence for
+    both manifests, so that the holder's and the project's cannot drift.
+    """
+    return (
+        "Remediation: this is a defect in the copy of this standard you ran, "
+        f"not in your values: templates/{template}/{manifest} is broken "
+        f"there, as {reader} makes no mapping of it. Restore it from the "
+        "standard's repository, or reinstall the standard, and run again.")
+
+
+MANIFEST_NOT_A_MAPPING_REMEDIATION = manifest_not_a_mapping_remediation(
+    "assembly-root", MANIFEST_TEMPLATE, "the project's own YAML reader")
 #: The remedy for each kind of problem, so a refusal names it by its kind
 #: (#708), with no conditional nested in another.
 KIND_REMEDIATIONS = {KIND_MISREAD: MANIFEST_MISREAD_REMEDIATION,
                      KIND_INVALID: MANIFEST_INVALID_REMEDIATION,
-                     KIND_UNREADABLE: MANIFEST_UNREADABLE_REMEDIATION}
+                     KIND_UNREADABLE: MANIFEST_UNREADABLE_REMEDIATION,
+                     KIND_NOT_A_MAPPING: MANIFEST_NOT_A_MAPPING_REMEDIATION}
 
 
 def _project_findings(validator, manifest: dict, policy: NamingPolicy):
@@ -5386,12 +5415,14 @@ def manifest_invalid(values: dict, policy: NamingPolicy, what: dict,
 
     The WHOLE manifest is rendered and read, so a rule about how one value
     relates to another (`topic` to `id`, a leg's repository to its role) is
-    asked as the project asks it. `values` must be the complete table;
-    `policy` is the naming policy the project carries a copy of. A WARNING of
-    the validator (a chain link it cannot check offline) is a note and never
-    a refusal, exactly as the project's own exit code treats it, and so is
-    its `  note` (a `SHAPE_PIN_SOURCE_<LINK>` the run guard passed over,
-    #990). Where the project's own YAML reader refuses the file before the
+    asked as the manifest's own validator asks it. `values` must be the
+    complete table; `policy` is the naming policy the validator is handed.
+    A line `manifest_kind.passed_over` names is a note and never a refusal,
+    as that validator's own exit code treats it: the project's WARNING (a
+    chain link it cannot check offline) and its `  note` (a
+    `SHAPE_PIN_SOURCE_<LINK>` the run guard passed over, #990). The holder
+    passes over none (#925), so every line its validator makes is a refusal.
+    Where the manifest's own YAML reader refuses the file before the
     validator can be asked, each sentence is the reader's, naming the value
     on the line it refuses (`_unread_sentences`, #708).
     """
@@ -5404,12 +5435,16 @@ def _invalid_problems(values: dict, policy: NamingPolicy, what: dict,
                       manifest_kind: TemplateManifest = PROJECT_MANIFEST
                       ) -> list[tuple[str, str]]:
     """`manifest_invalid`'s sentences, each with its kind: `invalid` for a
-    finding of the validator's, and `unreadable` where the reader refuses
-    the file the validator would read (#708, the holder's #929), whose
-    words are the reader's and whose remedy is its own
-    (`MANIFEST_UNREADABLE_REMEDIATION`)."""
+    finding of the validator's, `unreadable` where the reader refuses the
+    file the validator would read (#708, the holder's #929), whose words are
+    the reader's and whose remedy is its own
+    (`MANIFEST_UNREADABLE_REMEDIATION`), and `not-a-mapping` where the
+    reader reads that file as something other than a mapping (#1059), whose
+    remedy aims at the template's manifest."""
     notes = _validator_notes(values, policy, template_dir, ignore,
                              manifest_kind)
+    if isinstance(notes, _NotAMapping):
+        return [(KIND_NOT_A_MAPPING, notes.sentence)]
     if isinstance(notes, YamlError):
         return [(KIND_UNREADABLE, sentence) for sentence in _unread_sentences(
             values, what, template_dir, notes, manifest_kind)]
@@ -5459,16 +5494,25 @@ def _unread_sentences(values: dict, what: dict, template_dir: Path,
             f"{' '.join(words)}" for key, words in said.items()]
 
 
+class _NotAMapping(NamedTuple):
+    """What `_validator_notes` answers where the manifest these values render
+    is read as something other than a mapping (#1059): the one `sentence`
+    that says so, a problem of its own kind and not a finding."""
+
+    sentence: str
+
+
 def _validator_notes(values: dict, policy: NamingPolicy, template_dir: Path,
                      ignore: tuple,
                      manifest_kind: TemplateManifest = PROJECT_MANIFEST
-                     ) -> list[str] | YamlError:
+                     ) -> list[str] | YamlError | _NotAMapping:
     """The FINDINGs the validator of the manifest of `manifest_kind` (the
     project's, by default) makes of the manifest these `values` render, less
     the lines `manifest_kind.passed_over` names and the codes in `ignore`;
-    or the `YamlError` its reader raised, where it cannot read that file.
-    The project's WARNINGs and `  note`s are no finding, as its validator's
-    own `main` counts them (#990): `_findings` returns its
+    or the `YamlError` its reader raised, where it cannot read that file, or
+    a `_NotAMapping`, where it reads the file as something other than a
+    mapping. The project's WARNINGs and `  note`s are no finding, as its
+    validator's own `main` counts them (#990): `_findings` returns its
     `link-source-collides` note beside the findings, and read as one,
     `manifest_invalid` gave it as a refusal and `manifest_judged` said None
     (RV1011's SHOULD-1). The holder's validator keeps its findings apart
@@ -5477,7 +5521,11 @@ def _validator_notes(values: dict, policy: NamingPolicy, template_dir: Path,
 
     A MANIFEST THAT IS NOT A MAPPING is one sentence that says so, and is
     about no value: each validator's own `main` refuses such a file before
-    it asks a question, so its question is never put to one (#307).
+    it asks a question, so its question is never put to one (#307). It is
+    a `_NotAMapping` and not a list, because no value a person types makes
+    it and only a broken template does: its kind has the remedy that says
+    so (`KIND_NOT_A_MAPPING`, #1059), and the invalid-value one would send
+    a person to retype a value that was never wrong.
 
     THE VALIDATOR'S OWN DEFECT, NEVER A FINDING (#307). One that raises,
     one that EXITS (a `sys.exit(0)` would end this run with a zero, having
@@ -5493,8 +5541,9 @@ def _validator_notes(values: dict, policy: NamingPolicy, template_dir: Path,
     except YamlError as exc:
         return exc
     if not isinstance(manifest, dict):
-        return ["the manifest this run would write is not a mapping, which "
-                f"is what {manifest_kind.reader} makes of it."]
+        return _NotAMapping(
+            "the manifest this run would write is not a mapping, which "
+            f"is what {manifest_kind.reader} makes of it.")
     validator = manifest_validator(template_dir, manifest_kind=manifest_kind)
     try:
         notes = list(manifest_kind.findings(validator, manifest, policy))
@@ -5537,7 +5586,7 @@ def manifest_judged(values: dict, policy: NamingPolicy,
     """
     notes = _validator_notes(values, policy, template_dir, ignore,
                              manifest_kind)
-    if isinstance(notes, YamlError):
+    if isinstance(notes, (YamlError, _NotAMapping)):
         return None
     judged = {manifest_kind.finding_placeholder.get(_code_of(note))
               for note in notes}
@@ -5551,8 +5600,9 @@ def manifest_value_problems(values: dict, policy: NamingPolicy, what: dict,
                             manifest_kind: TemplateManifest = PROJECT_MANIFEST
                             ) -> list[tuple[str, str]]:
     """`(kind, sentence)` for everything wrong with the values, `kind` being
-    `misread`, `invalid` or `unreadable` (`_invalid_problems`); `[]` when
-    the manifest of `manifest_kind` would hold every one.
+    `misread`, `invalid`, `unreadable` or `not-a-mapping`
+    (`_invalid_problems`); `[]` when the manifest of `manifest_kind` would
+    hold every one.
 
     A misread comes FIRST and alone: a value the reader turns into something
     else makes the manifest invalid in ways that are its consequence (`id:
@@ -5578,7 +5628,8 @@ def refuse_manifest_values(prefix: str, values: dict, policy: NamingPolicy,
     its `tail` finishes the remediation with what only it knows. A manifest
     the project's reader refuses is `-invalid` still, the code a value it
     refuses had when the validator was the one to refuse it, with the
-    reader's remedy (#708)."""
+    reader's remedy (#708); so is one it reads as something other than a
+    mapping, with the remedy for a defect of the standard (#1059)."""
     refuse_manifest_problems(
         prefix, manifest_value_problems(values, policy, what,
                                         misreads=misreads), tail)
