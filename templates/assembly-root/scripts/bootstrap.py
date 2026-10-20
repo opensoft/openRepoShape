@@ -67,13 +67,21 @@ WHAT IT DOES, in order:
       too, the line gives git's words. Every name git prints back is read
       as bytes and decoded so that it reaches git again as the bytes it
       was (#710). The commands it prints for a person to paste (the
-      `merge --ff-only` that brings a moved-back branch forward, and the
-      `--continue` and `--abort` of an operation in progress) name the
-      leg's path and the upstream as ONE shell word each: quoted, and,
-      where the name holds a byte that is not UTF-8 or a character a
-      terminal must not be handed, a `printf` that prints its bytes
-      again, so a paste names what is on disk and not its escape (#932).
-      Advancing a pin
+      `merge --ff-only` that brings a moved-back branch forward, the
+      `--continue` and `--abort` of an operation in progress, and the
+      `git submodule update --init --` of a leg that is not there) name
+      the leg's path, and the upstream where there is one, as ONE shell
+      word each: quoted (a word that begins with `=` too, which zsh would
+      expand), and, where the name holds a byte that is not UTF-8, a
+      character a terminal must not be handed, or a character this stdout
+      cannot write, or writes as other bytes than git is handed, a
+      `printf` that prints those bytes again, so a paste names what is on
+      disk and not its escape (#932, #961). The `--init` of a path that
+      begins with `:`, which git reads as pathspec magic even after the
+      `--`, names `./:spec`. A name no `printf` can print, one that ends
+      in a line feed, holds a NUL or has a character git cannot be handed
+      (a lone surrogate, or one `os.fsencode` cannot write), is printed
+      spelled, as it was. Advancing a pin
       remains an explicit commit in this repository — see `README.md`, "The
       lockstep invariant". This is why `.gitmodules` carries no `branch=`:
       that would buy the same ergonomics by weakening the pin, and then "what
@@ -529,15 +537,23 @@ def _initialized(root: Path, sub: Path, where: str, path: str) -> bool:
     one, or `_say_unreadable` where the `stat` of its `.git` is refused
     (#430). `Path.exists()` raised that refusal out of the run up to Python
     3.13, a traceback, and from 3.14 answered False, so an initialized leg
-    in a mount this user cannot search was NOT INITIALIZED."""
+    in a mount this user cannot search was NOT INITIALIZED.
+
+    The command is for a person to paste, so the leg's path is ONE word of
+    it, as `_paste_word` words it, after a `--`: `my spec` was two
+    pathspecs, `=spec` was expanded by zsh, a byte that is not UTF-8 was
+    its escape text and `-spec` was an option. The path is a pathspec, so
+    one that begins with `:` is read as magic even after the `--`
+    (`:spec` matched nothing): `./` before it makes it the path (#961)."""
     try:
         there = _found(sub / ".git")
     except _Unreadable as unread:
         _say_unreadable(where, root, unread)
         return False
     if not there:
+        word = _paste_word(f"./{path}" if path.startswith(":") else path)
         print(f"  {where}: NOT INITIALIZED. Run "
-              f"`git submodule update --init {spelled(path)}` — the "
+              f"`git submodule update --init -- {word}` — the "
               f"validators below will refuse until you do.")
     return there
 
@@ -1247,24 +1263,50 @@ def _sequence_in_progress(gitdir: Path) -> tuple[str, str, str] | None:
     return SEQUENCER_TODO, "a cherry-pick", "cherry-pick"
 
 
+def _handed_to_git(text: str) -> bytes:
+    """The bytes git is handed for `text` as a name (#961): `os.fsencode`'s
+    on POSIX, which is what `subprocess` passes. On Windows git is handed
+    UTF-16 and stores UTF-8, which is what Git Bash reads a paste as, so
+    they are UTF-8 there, and not what `os.fsencode` makes of the text
+    under `PYTHONLEGACYWINDOWSFSENCODING=1` (`mbcs`, a character the code
+    page lacks replaced). A name git cannot be handed raises
+    `UnicodeEncodeError`: a lone surrogate on Windows, which UTF-8 has no
+    bytes for, and on POSIX one the filesystem encoding cannot write."""
+    if os.name == "nt":
+        return text.encode("utf-8")
+    return os.fsencode(text)
+
+
 def _prints_as_it_is(text: str) -> bool:
-    """Whether `print` writes `text` as it is (#932): `spelled` has no
-    escape to make in it, and this stdout holds every character of it, so
-    what the terminal shows is the text and a paste of it names the same."""
+    """Whether `print` writes `text` as it is, and a paste of that gives git
+    the bytes it is handed (#932, #961): `spelled` has no escape to make in
+    it, this stdout holds every character of it and, where the text is not
+    ASCII, writes the bytes git is handed (`_handed_to_git`), so what the
+    terminal shows is the text and a paste of it names the same."""
+    if spelled(text) != text:
+        return False
+    encoding = getattr(sys.stdout, "encoding", None) or "utf-8"
     try:
-        text.encode(getattr(sys.stdout, "encoding", None) or "utf-8")
+        written = text.encode(encoding)
+        return text.isascii() or written == _handed_to_git(text)
     except (LookupError, UnicodeEncodeError):
         return False
-    return spelled(text) == text
 
 
 def _paste_word(name: str) -> str:
     """`name`, a leg's path or a ref's name, as ONE word of a command line
-    printed for a person to paste into a POSIX shell (#932).
+    printed for a person to paste into a POSIX shell (#932, #961).
 
     WHERE THE TEXT PRINTS AS IT IS it is `spelled(shlex.quote(name))`, as
     every such word was: an ordinary name, and a printable one that is not
-    ASCII, are byte for byte what they were (`_prints_as_it_is`).
+    ASCII where this stdout writes the bytes git is handed, are byte for
+    byte what they were (`_prints_as_it_is`).
+
+    ONE CHANGE: a word that begins with `=` is quoted, as
+    `repo_shape.shell_quoted` quotes it (#486). zsh expands a bare `=ls` to
+    `/usr/bin/ls` and stops a line at `=x` with `zsh: x not found`, where
+    dash and bash read both as they are; `=` anywhere else is itself to all
+    three. `shlex.quote` leaves a word bare only where it holds no `'`.
 
     WHAT WAS WRONG. `spelled` writes what a terminal must not be handed as
     an escape (#391), and a shell reads that text as the characters it is.
@@ -1274,8 +1316,8 @@ def _paste_word(name: str) -> str:
     something we can merge`. A path with a tab, an ESC or a U+2028 in it, or
     one this stdout cannot write, was printed as its escape too.
 
-    ANY OTHER NAME is written as the bytes `os.fsencode` gives it, in a
-    command substitution that prints them again:
+    ANY OTHER NAME is written as the bytes git is handed (`_handed_to_git`),
+    in a command substitution that prints them again:
     `"$(printf -- 'origin/a\\377b')"`. Each byte outside `PRINTF_BARE` is a
     three-digit octal escape, which the `printf` of dash, bash and zsh
     reads, and a dash before 0.5.13 has no `$'...'` for. `--` keeps a name
@@ -1284,15 +1326,22 @@ def _paste_word(name: str) -> str:
     ASCII, so it is the same on any stdout. It is `sh`'s dialect, as
     `shlex.quote` already was.
 
-    A NAME WITH NO SUCH FORM keeps `spelled`'s text, as it was: one whose
-    bytes do not read back as it (`os.fsdecode` of them is another name: a
-    lone surrogate with no byte, or a Windows code page that replaces), and
-    one that ENDS IN A LINE FEED, which `$(...)` strips, so the word would
-    name another path. A ref's name is neither: git refuses a control
-    character in one, and `_try_git` reads its bytes back. So it is a leg's
-    path, and one with no bytes is no directory a leg is moved in; a path
-    that ends in a line feed, which only a hand-made manifest holds, is the
-    one name left with no pasteable word.
+    A NAME WITH NO SUCH FORM keeps `spelled`'s text, as it was:
+    - one git cannot be handed, which `_handed_to_git` raises on: a lone
+      surrogate with no byte, or on POSIX a character the filesystem
+      encoding lacks;
+    - one whose bytes `$(...)` does not give back, so the word would name
+      another path: it strips a trailing line feed and drops a NUL.
+
+    The bytes are not read back as the name (#961): git IS handed them, so
+    a name `os.fsdecode` would read as another has its word, as
+    `sp\\udcc3\\udca9c` has `"$(printf -- 'sp\\303\\251c')"`, the bytes of the
+    directory `spéc`. On Windows they are UTF-8 whatever the code page,
+    which Git Bash reads a paste as. A ref's name is neither: git refuses a
+    control character in one, and `_try_git` reads its bytes back. So it is
+    a leg's path, and one with no bytes is no directory a leg is moved in;
+    a path that ends in a line feed, which only a hand-made manifest holds,
+    is the one name left with no pasteable word.
 
     A COPY, as `inherited_child_environment` is: a root re-copies its pinned
     files one row at a time, so this file may meet a `repo_shape.py` older
@@ -1300,13 +1349,15 @@ def _paste_word(name: str) -> str:
     `tests/test_bootstrap_pasteable_lines.py` runs each form it writes.
     """
     quoted = shlex.quote(name)
+    if quoted.startswith("="):
+        quoted = f"'{quoted}'"
     if _prints_as_it_is(quoted):
         return quoted
     try:
-        raw = os.fsencode(name)
+        raw = _handed_to_git(name)
     except UnicodeEncodeError:
         return spelled(quoted)
-    if os.fsdecode(raw) != name or raw.endswith(b"\n"):
+    if raw.endswith(b"\n") or b"\0" in raw:
         return spelled(quoted)
     escaped = "".join(chr(byte) if byte in PRINTF_BARE else f"\\{byte:03o}"
                       for byte in raw)
