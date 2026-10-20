@@ -43,8 +43,8 @@ own locale and in one that translates git.
 A SEED FOUND ONLY ON ANOTHER BRANCH IS SAID (#921). The re-run takes a seed
 that sits on `seed/scaffold`, the branch the ruleset hint made before #506,
 creates the tracking branch at it and leaves that branch as it is. Its NOTE
-names each such branch, says it remains and that on GitHub it may be the
-leg's default branch, in a dry run as in the real run, and says nothing
+names each such branch, says it remains and, on GitHub only, that it may be
+the leg's default branch, in a dry run as in the real run, and says nothing
 where the tracking branch holds the seed too.
 """
 
@@ -222,19 +222,19 @@ def seed_pushed_to(tmp_path, template_dir, *branches: str) -> str:
 
 
 def seed_branch_note(tmp_path, tracking: str, *branches: str) -> str:
-    """The NOTE a re-run prints for the spec leg's seed found only on
-    `branches` (#921)."""
+    """The NOTE a `--local-remote-dir` re-run prints for the spec leg's seed
+    found only on `branches` (#921): no word of GitHub, as the leg is a bare
+    repository on disk."""
     if len(branches) > 1:
         found = ("branches " + ", ".join(f"`{name}`" for name in branches[:-1])
                  + f" and `{branches[-1]}`")
-        left = "them, so they remain, and on GitHub one of them may be"
+        left = "them, so they remain"
     else:
         found = f"branch `{branches[0]}`"
-        left = (f"`{branches[0]}`, so that branch remains, and on GitHub it "
-                "may be")
+        left = f"`{branches[0]}`, so that branch remains"
     return (f"NOTE the seed in {bare(tmp_path, 'spec')} was found only on its "
             f"{found}: this run creates `{tracking}` at it and does not "
-            f"touch {left} the leg's default branch.")
+            f"touch {left}.")
 
 
 def test_a_seed_pushed_to_a_seed_branch_alone_is_taken_too(
@@ -243,7 +243,8 @@ def test_a_seed_pushed_to_a_seed_branch_alone_is_taken_too(
     which the ruleset lets through, and `main` absent. Its one commit is the
     seed, so the re-run takes it and creates `main` AT it: a new branch, not
     a rewrite. And it SAYS which branch remains (#921): `seed/scaffold` is
-    left as it is, and on GitHub it may be the leg's default branch."""
+    left as it is. It says nothing of GitHub's default branch, as a bare
+    repository on disk is no GitHub's."""
     seed = seed_pushed_to(tmp_path, template, "seed/scaffold")
     assert seed and not tip(tmp_path, "spec")
     result = scaffold(tmp_path, "w2", "--reuse-empty-repo",
@@ -256,6 +257,7 @@ def test_a_seed_pushed_to_a_seed_branch_alone_is_taken_too(
     assert result.stdout.count(note) == 1, result.stdout
     assert result.stdout.count("NOTE the seed in") == 1, (
         "the code leg was empty and the root is no leg: one leg, one NOTE")
+    assert "GitHub" not in result.stdout, result.stdout
     assert result.stdout.index(f"reuse {bare(tmp_path, 'spec')} (one commit") \
         < result.stdout.index(note), "the NOTE follows the leg's reuse line"
 
@@ -274,7 +276,7 @@ def test_a_dry_run_says_the_seed_branch_too_and_makes_nothing(
     assert tip(tmp_path, "spec", "refs/heads/seed/scaffold") == seed
 
 
-def test_a_seed_on_the_tracking_branch_as_well_says_no_branch_remains(
+def test_a_seed_on_the_tracking_branch_as_well_prints_no_seed_note(
         tmp_path, template):  # noqa: F811
     """`main` holds the seed beside `seed/scaffold`: the re-run creates
     nothing and takes the seed from `main`, so there is no seed found only
@@ -328,6 +330,10 @@ def test_a_branch_name_is_shown_safe_in_the_seed_note(
                  ("seed/scaffold",), id="a-pull-request-beside-the-branch"),
     pytest.param(("refs/heads/mainline",), ("mainline",),
                  id="a-name-that-starts-with-the-tracking-name"),
+    pytest.param(("refs/heads/seed/main",), ("seed/main",),
+                 id="a-branch-ending-in-the-tracking-name"),
+    pytest.param(("refs/tags/main", "refs/heads/seed/scaffold"),
+                 ("seed/scaffold",), id="a-tag-named-as-the-tracking-branch"),
 ])
 def test_the_branches_a_seed_was_found_on(scaffold_module, refs, found_on):
     """#921: `_seed_branches` names each branch, by name and in order, and
@@ -335,21 +341,64 @@ def test_the_branches_a_seed_was_found_on(scaffold_module, refs, found_on):
     assert scaffold_module._seed_branches(refs, "main") == found_on
 
 
+@pytest.mark.parametrize("local,branches,said", [
+    pytest.param(
+        True, ("seed/scaffold",),
+        "NOTE the seed in T was found only on its branch `seed/scaffold`: "
+        "this run creates `main` at it and does not touch `seed/scaffold`, "
+        "so that branch remains.",
+        id="local-one-branch-and-no-word-of-github"),
+    pytest.param(
+        True, ("other", "seed/scaffold"),
+        "NOTE the seed in T was found only on its branches `other` and "
+        "`seed/scaffold`: this run creates `main` at it and does not touch "
+        "them, so they remain.",
+        id="local-two-branches-and-no-word-of-github"),
+    pytest.param(
+        False, ("seed/scaffold",),
+        "NOTE the seed in T was found only on its branch `seed/scaffold`: "
+        "this run creates `main` at it and does not touch `seed/scaffold`, "
+        "so that branch remains, and on GitHub it may be the leg's default "
+        "branch.",
+        id="github-one-branch-may-be-the-default"),
+    pytest.param(
+        False, ("other", "seed/scaffold"),
+        "NOTE the seed in T was found only on its branches `other` and "
+        "`seed/scaffold`: this run creates `main` at it and does not touch "
+        "them, so they remain, and on GitHub one of them may be the leg's "
+        "default branch.",
+        id="github-two-branches-one-may-be-the-default"),
+])
+def test_the_seed_note_says_github_only_on_github(scaffold_module, local,
+                                                  branches, said):
+    """#921: "on GitHub it may be the leg's default branch" is said of a
+    GitHub leg, as the issue says it, and not of a bare repository under
+    `--local-remote-dir`, which has no GitHub to be the default branch of."""
+    assert scaffold_module._seed_branch_note(
+        "T", branches, "main", local) == said
+
+
 def test_dry_run_help_says_the_mode_bits_and_nothing_that_stays(tmp_path):
     """#923 U063 and #921 U088, the scaffold's half: `--dry-run`'s help says
-    its answer about a folder is the mode bits' (`os.access`), and that it
-    leaves "nothing that stays" where it once said "make no folder": it
-    makes and removes `openreposhape-seed-*` and `openreposhape-branch-*` in
-    the temporary folder. The wording is `docs/cli.md`'s too."""
+    the write question is asked of `os.access`, which on Windows says yes for
+    every folder, so a quota, a Windows ACL or a read-only drive there can
+    pass it, and that it leaves "nothing that stays" where it once said "make
+    no folder": it makes and removes `openreposhape-seed-*` and
+    `openreposhape-branch-*` in the temporary folder. The wording is
+    `docs/cli.md`'s too."""
     result = run_script(SCAFFOLD, "--help", cwd=tmp_path)
     assert result.returncode == 0, result.stderr
     said = " ".join(result.stdout.split())
-    assert ("The answer about each folder is its mode bits' (`os.access`), "
-            "so a quota or a Windows ACL the bits do not show can pass here "
-            "and be refused by the real run. It leaves nothing that stays: "
-            "it makes and removes temporary folders, creates no remote and "
-            "pushes nothing") in said, said
+    assert ("Whether each folder can be written in is asked of `os.access`, "
+            "which reads the mode bits and on Windows says yes for every "
+            "folder, so a quota, a Windows ACL or a read-only drive on "
+            "Windows can pass here and be refused by the real run. It leaves "
+            "nothing that stays: it makes and removes temporary folders, "
+            "creates no remote and pushes nothing") in said, said
     assert "make no folder" not in said
+    assert "its mode bits'" not in said, (
+        "only the write question is `os.access`'s: a file in the way and a "
+        "tree's contents are not the mode bits'")
 
 
 def test_a_leg_holding_the_seed_without_the_flag_names_the_flag(

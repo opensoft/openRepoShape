@@ -348,13 +348,14 @@ options:
                         trees in it, --local-remote-dir) and whether each of
                         the three repositories already exists (`gh repo view`
                         and its commit listing, or the bare repositories with
-                        --local-remote-dir), refusing what it refuses. The
-                        answer about each folder is its mode bits'
-                        (`os.access`), so a quota or a Windows ACL the bits do
-                        not show can pass here and be refused by the real run.
-                        It leaves nothing that stays: it makes and removes
-                        temporary folders, creates no remote and pushes
-                        nothing
+                        --local-remote-dir), refusing what it refuses. Whether
+                        each folder can be written in is asked of `os.access`,
+                        which reads the mode bits and on Windows says yes for
+                        every folder, so a quota, a Windows ACL or a read-only
+                        drive on Windows can pass here and be refused by the
+                        real run. It leaves nothing that stays: it makes and
+                        removes temporary folders, creates no remote and
+                        pushes nothing
   --local-remote-dir LOCAL_REMOTE_DIR
                         create bare repositories here instead of calling `gh
                         repo create` (the TEST path; no network). An empty

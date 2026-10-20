@@ -373,11 +373,13 @@ def main(argv: list[str] | None = None) -> int:
                              "three repositories already exists (`gh repo "
                              "view` and its commit listing, or the bare "
                              "repositories with --local-remote-dir), "
-                             "refusing what it refuses. The answer about "
-                             "each folder is its mode bits' (`os.access`), "
-                             "so a quota or a Windows ACL the bits do not "
-                             "show can pass here and be refused by the real "
-                             "run. It leaves nothing that stays: it makes "
+                             "refusing what it refuses. Whether each "
+                             "folder can be written in is asked of "
+                             "`os.access`, which reads the mode bits and on "
+                             "Windows says yes for every folder, so a quota, "
+                             "a Windows ACL or a read-only drive on Windows "
+                             "can pass here and be refused by the real run. "
+                             "It leaves nothing that stays: it makes "
                              "and removes temporary folders, creates no "
                              "remote and pushes nothing")
     # TEXT, not `type=Path`, as `--pin-source` and `--work-dir` are: `Path("")`
@@ -626,25 +628,29 @@ def _seed_branches(refs: tuple[str, ...], tracking: str) -> tuple[str, ...]:
     return () if tracking in branches else tuple(branches)
 
 
-def _seed_branch_note(target, branches: tuple[str, ...],
-                      tracking: str) -> str:
+def _seed_branch_note(target, branches: tuple[str, ...], tracking: str,
+                      local: bool = False) -> str:
     """The NOTE for a seed found only on `branches`, not on `tracking`
     (#921): the re-run creates `tracking` at it and touches none of them, so
-    each remains, and on GitHub one may be the leg's default branch (#921
-    did not verify that there: it says "may"). The names come from the
-    remote, so each is spelt as `shown_path` spells a path: as it is, or as
-    `repr` where a character in it is not printable.
+    each remains. On GitHub it adds that one may be the leg's default branch
+    (#921 did not verify that there: it says "may"); under
+    `--local-remote-dir` it does not, as that is a bare repository on disk
+    and no GitHub. The names come from the remote, so each is spelt as
+    `shown_path` spells a path: as it is, or as `repr` where a character in
+    it is not printable.
     """
     names = [f"`{shown_path(branch)}`" for branch in branches]
     if len(names) > 1:
         found = f"branches {', '.join(names[:-1])} and {names[-1]}"
-        left = "them, so they remain, and on GitHub one of them may be"
+        left = "them, so they remain"
+        default = "and on GitHub one of them may be the leg's default branch"
     else:
         found = f"branch {names[0]}"
-        left = f"{names[0]}, so that branch remains, and on GitHub it may be"
+        left = f"{names[0]}, so that branch remains"
+        default = "and on GitHub it may be the leg's default branch"
     return (f"NOTE the seed in {target} was found only on its {found}: this "
-            f"run creates `{tracking}` at it and does not touch {left} the "
-            "leg's default branch.")
+            f"run creates `{tracking}` at it and does not touch {left}"
+            + ("." if local else f", {default}."))
 
 
 #: The `fatal:` line git prints when the program it reaches a remote through
@@ -713,9 +719,10 @@ def _reusable_remotes(names: dict, urls: dict, repositories: dict,
     A SEED FOUND ONLY ON ANOTHER BRANCH is taken, and said (#921). Where the
     leg's one commit is on no branch named `tracking`, `seed/scaffold`
     above all, the re-run creates `tracking` at it and leaves the branch it
-    was found on, which remains and may be the leg's default branch on
-    GitHub (`_seed_branch_note`). The one NOTE is printed after the `reuse`
-    line, by a dry run as by the real run.
+    was found on, which remains and, on GitHub, may be the leg's default
+    branch (`_seed_branch_note`: a local bare repository is said no such
+    thing). The one NOTE is printed after the `reuse` line, by a dry run as
+    by the real run.
 
     A LOCAL REMOTE IS NAMED AS `shown_path` NAMES A PATH (#766), as
     `family.py init` names its holder's: it is a path under
@@ -741,7 +748,7 @@ def _reusable_remotes(names: dict, urls: dict, repositories: dict,
                     f"(one commit, {seed[:12]}: the seed this scaffold "
                     "pushes)"))
                 if found_on:
-                    print(_seed_branch_note(target, found_on, tracking))
+                    print(_seed_branch_note(target, found_on, tracking, local))
                 continue
             raise Refusal(
                 "scaffold-remote-exists",
