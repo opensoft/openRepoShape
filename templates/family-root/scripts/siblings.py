@@ -78,6 +78,14 @@ WHAT IT DOES:
            through git, as a remote is, and not copied file by file, so a
            repack running in it cannot fail the clone half way (#440).
 
+           THE TOKEN IS IN NO TRACE (#1055). The clone, and the fetch below,
+           carry the credential's rewrite in their argv, which a trace
+           writes, so with a token in use each runs with every `GIT_TRACE*`
+           variable taken out and trace2 turned off (`rewrite_environment`),
+           as `make bootstrap` runs every git it gives the token (#996). The
+           member's own bootstrap is given no token, and keeps the traces
+           the caller asked for.
+
   PRESENT  `git fetch`, AND NOTHING ELSE. No checkout, no reset, no pull, no
            stash, no branch switch. Somebody is working in that clone — that
            is what it is for — and a utility that "helpfully" moved their HEAD
@@ -207,20 +215,25 @@ from repo_shape import (  # noqa: E402
 # token they used or where a member is mounted. So is the environment a
 # member's make gets under the holder's `make -jN`
 # (`member_make_environment`, #888, #987): one reading of `MAKEFLAGS` and of
-# the member's make for every verb. Both files are copies of openRepoShape
-# that travel together in `contracts/shape-pin.yaml`. A holder that keeps its
-# own `bootstrap.py` with `update-shape.py apply --accept-local`, while the
-# apply writes this file, is refused before a byte is written for each name
-# this list takes that its kept copy does not define
+# the member's make for every verb. And so is the environment a git given the
+# token runs in (`untraced`, #996, #1055): one answer to which traces a
+# command carrying the token is kept out of, for `make bootstrap` and `make
+# siblings` alike. Both files are copies of openRepoShape that travel
+# together in `contracts/shape-pin.yaml`. A holder that keeps its own
+# `bootstrap.py` with `update-shape.py apply --accept-local`, while the apply
+# writes this file, is refused before a byte is written for each name this
+# list takes that its kept copy does not define
 # (`update-accept-local-missing-name`, #536), and merges its `bootstrap.py`
 # by hand first. That refusal is the price of one copy of the jobserver code
-# (#987); #950 had copied the code here to spare such a holder it. The
-# function's name is new with #987 so that a kept `bootstrap.py` of #950's,
-# whose `member_make_env` took no make, is refused too, rather than ending
-# `make park` in a `TypeError`.
+# (#987), and of the trace rule (#1055); #950 had copied the code here to
+# spare such a holder it. The function's name is new with #987 so that a
+# kept `bootstrap.py` of #950's, whose `member_make_env` took no make, is
+# refused too, rather than ending `make park` in a `TypeError`; `untraced`
+# is new with #996, so a kept `bootstrap.py` from before it is refused by
+# that name.
 from bootstrap import (  # noqa: E402
     REWRITE_TARGETS, credential, member_make_environment, member_path,
-    members_of,
+    members_of, untraced,
 )
 
 MANIFEST = "family.yaml"
@@ -599,7 +612,9 @@ def git_prefix() -> tuple[list[str], str, str]:
 
     Resolved by `bootstrap.py`'s own `credential()`, in the same order, and
     used ONLY through a `url.<...>.insteadOf` rewrite for the duration of one
-    command: never written into `.git/config`, never persisted, never printed.
+    command: never written into `.git/config`, never persisted, never
+    printed, and never traced: each command given it runs in
+    `rewrite_environment`'s environment (#1055).
     """
     source, token = credential()
     args: list[str] = []
@@ -608,6 +623,27 @@ def git_prefix() -> tuple[list[str], str, str]:
             args += ["-c", f"url.https://x-access-token:{token}@github.com/"
                            f".insteadOf={target}"]
     return args, source, token
+
+
+def rewrite_environment(token: str) -> dict[str, str] | None:
+    """The environment of a git given `git_prefix`'s rewrite: `bootstrap.py`'s
+    own `untraced()` where a token is in use, and None, this process's own,
+    where none is (#1055).
+
+    A TRACE WRITES A COMMAND'S ARGUMENTS, and the rewrite that carries the
+    token is one: with `SHAPE_LEGS_TOKEN` or `SHAPE_LEGS_APP_TOKEN` set, the
+    clone in `place` and the fetch wrote it, as the `start` event of each, to
+    every trace2 target the caller named, in the environment (`GIT_TRACE2`,
+    `GIT_TRACE2_EVENT`, `GIT_TRACE2_PERF`) or in the global or the system
+    config (`trace2.eventTarget`, `normalTarget`, `perfTarget`), and
+    `GIT_TRACE_PERFORMANCE`'s file held it too, on git 2.43.0 and 2.47.1
+    alike (measured). So both run with every
+    `GIT_TRACE*` variable taken out and trace2's three targets set to `0`,
+    as `make bootstrap` runs every git it gives the token (#996). With no
+    token there is nothing to keep out, and the two keep the traces the
+    caller asked for. The member's own `scripts/bootstrap.py`, which `place`
+    runs after a clone, is given no token and keeps them too."""
+    return untraced() if token else None
 
 
 def scrub(text: str, token: str) -> str:
@@ -982,7 +1018,7 @@ def place(root: Path, row: dict, urls: dict[str, str], prefix: list[str],
              *([f"--branch={branch}"] if branch else []), "--",
              url, str(target)],
             capture_output=True, text=True, encoding="utf-8",
-            errors="replace", check=False)
+            errors="replace", check=False, env=rewrite_environment(token))
         if proc.returncode != 0:
             sibling.state = "CLONE FAILED"
             sibling.finding = (
@@ -1011,7 +1047,8 @@ def place(root: Path, row: dict, urls: dict[str, str], prefix: list[str],
     print(f"  [{who}] present at {at}; fetching only")
     fetched = subprocess.run(["git", *prefix, "fetch", "--quiet", "origin"],
                              cwd=str(target), capture_output=True, text=True,
-                             encoding="utf-8", errors="replace", check=False)
+                             encoding="utf-8", errors="replace", check=False,
+                             env=rewrite_environment(token))
     # NO CHECKOUT, NO RESET, NO PULL: somebody is working in here.
     sibling.state = "present, fetched" if fetched.returncode == 0 \
         else "present, fetch failed"
