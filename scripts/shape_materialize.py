@@ -1122,8 +1122,8 @@ def copy_in_the_way(target: Path, actual: str) -> str | None:
     a symlink to one is. `adopt-project.py check` finds what a plan keeps
     there before any leg exists (`plan-root-blocks-shape-copy`; a symlink
     there whose target `plan-empty-symlink` or `plan-bad-symlink-target`
-    names is that finding's alone, #979); this is the same question asked
-    of the disk, for a caller that skipped `check`.
+    names one by one is that finding's alone, #979); this is the same
+    question asked of the disk, for a caller that skipped `check`.
     """
     parts = actual.split("/")
     for end in range(1, len(parts) + 1):
@@ -4669,11 +4669,14 @@ def _materialize(shape_root: Path, template_root: Path, target: Path,
                     "`plan-root-blocks-shape-copy`, before any leg exists, "
                     "except a symlink there whose target "
                     "`plan-empty-symlink` or `plan-bad-symlink-target` "
-                    "names: that finding names it, once. Send that path to "
-                    "a leg or `drop` it in the plan; for such a symlink "
-                    "give it a target of its own in the source, or remove "
-                    "it there, and re-run `plan`, since no answer in the "
-                    "plan changes a target. Then run `execute` again with "
+                    "names one by one: that finding names it, once. Send "
+                    "that path to a leg or `drop` it in the plan. For such "
+                    "a symlink, first give it a target of its own in the "
+                    "source, or remove it there, commit, and re-run "
+                    "`plan`, since no answer in the plan changes a target. "
+                    "A link kept there with a target of its own is then "
+                    "`plan-root-blocks-shape-copy`'s, and the answer above "
+                    "is the one that helps. Then run `execute` again with "
                     "fresh leg repositories and "
                     "an empty `--work-dir`, or none: this run made both "
                     "legs and cloned them into the work directory it was "

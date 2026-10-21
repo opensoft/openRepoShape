@@ -1087,33 +1087,62 @@ def test_the_materializer_stops_at_a_link_at_the_copy(tmp_path):
     assert not (target / "nowhere.md").exists()
 
 
+#: A symlink blob whose target holds a NUL byte after its first 4, which
+#: `plan-bad-symlink-target` names, and what a clone holds of it at the
+#: copy: a link to the 4 bytes before the NUL where git makes links, and a
+#: plain file of all 8 where `core.symlinks` is false.
+LATE_NUL_TARGET = b"spec\0.md"
+
+
+@pytest.mark.parametrize("as_a_link", [
+    pytest.param(True, marks=needs_disk_symlinks,
+                 id="a-link-where-git-makes-links"),
+    pytest.param(False, id="a-file-where-core-symlinks-is-false"),
+])
 def test_the_materializer_names_a_bad_link_at_the_copy_by_its_own_finding(
-        tmp_path):
+        tmp_path, as_a_link):
     """#979 left a link at the copy whose target `plan-empty-symlink` or
-    `plan-bad-symlink-target` names out of `plan-root-blocks-shape-copy`
-    (#1089, N4). The materializer's refusal and `copy_in_the_way`'s docstring
-    still said `check` reports a path kept at the copy as that finding alone,
-    and for a caller that skipped `check` they now say what names such a
-    link, and what helps it: `drop` does not."""
-    target = materialized_beside(tmp_path, {"README.md": "# Thing\n",
-                                            "shape/README.md": OWN_NOTES})
+    `plan-bad-symlink-target` names one by one out of
+    `plan-root-blocks-shape-copy` (#1089, N4). The materializer's refusal
+    and `copy_in_the_way`'s docstring still said `check` reports a path kept
+    at the copy as that finding alone, and for a caller that skipped `check`
+    they now say what names such a link, and what helps it: a target of its
+    own, or none, committed in the source BEFORE any answer in the plan,
+    since `drop` does not change a target, and a new target alone does not
+    free the copy. The link at `shape/README.md` is in either form a clone
+    holds it, and the materializer refuses both and leaves each as it was."""
+    target = materialized_beside(tmp_path, {"README.md": "# Thing\n"})
+    (target / "shape").mkdir()
+    at_the_copy = target / "shape" / "README.md"
+    if as_a_link:
+        at_the_copy.symlink_to(LATE_NUL_TARGET.split(b"\0")[0].decode())
+    else:
+        at_the_copy.write_bytes(LATE_NUL_TARGET)
     with pytest.raises(Refusal) as caught:
         materialize_assembly_root(REPO, target, template_values(),
                                   collision_dir="shape")
+    assert caught.value.code == BLOCKED
+    assert "`shape/README.md` is already there" in caught.value.detail
     remediation = " ".join(caught.value.remediation.split())
-    for said in (
-            f"reports a plan that does as `{COPY_IN_THE_WAY}`, before any "
+    assert (f"reports a plan that does as `{COPY_IN_THE_WAY}`, before any "
             "leg exists, except a symlink there whose target "
-            "`plan-empty-symlink` or `plan-bad-symlink-target` names: that "
-            "finding names it, once.",
-            "for such a symlink give it a target of its own in the source, "
-            "or remove it there, and re-run `plan`, since no answer in the "
-            "plan changes a target."):
-        assert said in remediation
+            "`plan-empty-symlink` or `plan-bad-symlink-target` names one by "
+            "one: that finding names it, once. Send that path to a leg or "
+            "`drop` it in the plan. For such a symlink, first give it a "
+            "target of its own in the source, or remove it there, commit, "
+            "and re-run `plan`, since no answer in the plan changes a "
+            "target. A link kept there with a target of its own is then "
+            f"`{COPY_IN_THE_WAY}`'s, and the answer above is the one that "
+            "helps. Then run `execute` again") in remediation
+    if as_a_link:
+        assert os.readlink(at_the_copy) == "spec"
+    else:
+        assert at_the_copy.read_bytes() == LATE_NUL_TARGET
+    assert not (target / "shape" / "spec").exists()
     doc = " ".join(shape_materialize.copy_in_the_way.__doc__.split())
     assert (f"(`{COPY_IN_THE_WAY}`; a symlink there whose target "
-            "`plan-empty-symlink` or `plan-bad-symlink-target` names is "
-            "that finding's alone, #979)") in doc
+            "`plan-empty-symlink` or `plan-bad-symlink-target` names one by "
+            "one is that finding's alone, #979)") in doc
 
 
 def test_the_materializer_still_writes_a_copy_where_the_way_is_free(tmp_path):
