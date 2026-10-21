@@ -62,8 +62,16 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
+  # ubuntu-24.04, NOT ubuntu-latest (#1096). The Ubuntu 26.04 that
+  # `ubuntu-latest` now gives out runs this suite out of disk: #1092's run of
+  # this job (job 119050702775, image `ubuntu-26.04` version 20261012.163.1)
+  # ended `2436 failed, 11382 passed, 380 skipped, 5579 errors in 3048.23s`,
+  # with 28325 lines of `[Errno 122] Disk quota exceeded`, and later `No space
+  # left on device`, all under pytest's basetemp in /tmp,
+  # `/tmp/pytest-of-runner/pytest-0`. The same job passed on 24.04. It stays
+  # on 24.04 until the suite runs on 26.04, which #1096 tracks.
   tests:
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     steps:
       # PINNED BY COMMIT, not by tag — the rule this repository spends a
       # whole README section on. A tag can be moved and a commit cannot.
@@ -268,8 +276,17 @@ jobs:
   # Python, one file for every system; the release workflow (#563's next
   # pull request) installs it on Linux, macOS and Windows before it uploads
   # anything.
+  #
+  # ubuntu-24.04, NOT ubuntu-latest (#1094). 3.9 is `requires-python`'s
+  # floor, and the Ubuntu 26.04 that `ubuntu-latest` now gives out has no 3.9
+  # build for setup-python: its manifest lists 3.10 to 3.15 there, and 3.8 to
+  # 3.15 for 24.04. A run that landed on a 26.04 runner failed in setup-python
+  # with `The version '3.9' with architecture 'x64' was not found for Ubuntu
+  # 26.04.` The `tests` job above is on ubuntu-24.04 too, for a reason of its
+  # own (#1096), and `tests-git-bash` runs on windows-latest. In release.yml,
+  # `build` asks for `3.12` on ubuntu-latest, which 26.04 has.
   package:
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     steps:
       # The same two commits the other jobs pin.
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262  # v4

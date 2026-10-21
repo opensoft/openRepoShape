@@ -900,8 +900,12 @@ jobs:
             python: '3.x'
           - os: windows-latest
             python: '3.x'
-          # The oldest Python the package supports (`requires-python`).
-          - os: ubuntu-latest
+          # The oldest Python the package supports (`requires-python`), on
+          # ubuntu-24.04 and not ubuntu-latest (#1094): the Ubuntu 26.04 that
+          # `ubuntu-latest` now gives out has no 3.9 build for setup-python,
+          # which lists 3.10 to 3.15 there and 3.8 to 3.15 for 24.04. The
+          # rows above ask for `3.x`, which 26.04 has, and stay on the latest.
+          - os: ubuntu-24.04
             python: '3.9'
     env:
       WHEEL: ${{ needs.build.outputs.wheel }}

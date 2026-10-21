@@ -34,7 +34,7 @@ THE POWERSHELL FORM OF A LINE IS CHECKED AS TEXT AND NEVER RUN (#415).
 ask `quote_arg` for it (`platform="nt"`, from any host) and compare the
 string; no test here pastes a line into `powershell`. A Windows-only test
 would not change that, because no job runs this file on Windows: `tests.yml`
-runs the suite on ubuntu-latest alone (the macOS and Windows jobs were
+runs the suite on ubuntu-24.04 alone (the macOS and Windows jobs were
 dropped, #597), and its one Windows job, `tests-git-bash`, runs three files
 of the launcher's and the installer's suites and no other. A
 `skipif(os.name != "nt")` test added here would be skipped by every runner
