@@ -199,14 +199,17 @@ def test_plan_reports_every_name_whatever_its_stdout_can_encode(tmp_path,
                            "`os.fsencode` and `os.fsdecode` are UTF-8, which "
                            "has no byte 0xff, so the byte path below raises "
                            "before any directory is made")
-def test_a_name_that_is_not_utf8_still_comes_out_as_its_own_bytes(tmp_path,
-                                                                   encoding):
+def test_a_name_that_is_not_utf8_is_spelled_and_the_report_still_comes_out(
+        tmp_path, encoding):
     """`plan --out` into a directory whose name holds byte 0xff, which is not
-    UTF-8: Python reads it in as U+DCFF, and a `surrogateescape` stdout
-    writes it back as 0xff. It still does, in the same report that shows
-    `日本.md` -- escaped on cp1252 -- where plain `backslashreplace` would
-    print `\\udcff` instead. POSIX only: neither Windows nor macOS holds a
-    file name that is not UTF-8."""
+    UTF-8: Python reads it in as U+DCFF, which a `surrogateescape` stdout
+    writes back as 0xff. `plan written to` no longer prints that path as it
+    is: it spells the byte as `_shown` spells every name in the report,
+    `\\udcff` between backticks (#1115), so no raw byte reaches the
+    terminal. The report still comes out whole, with `日本.md` in the table
+    -- escaped on cp1252 -- as it did where the byte was written back.
+    POSIX only: neither Windows nor macOS holds a file name that is not
+    UTF-8."""
     skip_where_a_name_cannot_be_not_utf_8(tmp_path)
     parent = os.path.join(os.fsencode(tmp_path), b"b\xffd")
     os.mkdir(parent)
@@ -225,8 +228,8 @@ def test_a_name_that_is_not_utf8_still_comes_out_as_its_own_bytes(tmp_path,
     written = [line for line in stdout.splitlines()
                if line.startswith(b"plan written to ")]
     assert len(written) == 1, stdout
-    assert written[0].endswith(b"/b\xffd/plan.yaml"), written
-    assert b"\\udcff" not in stdout, stdout
+    assert written[0].endswith(b"/b\\udcffd/plan.yaml`"), written
+    assert b"\xff" not in stdout, stdout
     codec = encoding.split(":")[0]
     assert shown(ANSWERED, encoding).encode(codec) in stdout, stdout
 
