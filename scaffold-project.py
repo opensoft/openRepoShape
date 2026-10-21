@@ -2301,10 +2301,11 @@ def _host_key_remedy(output: str, repo: str, reused: bool) -> str:
     (`GITHUB_FINGERPRINTS`) first, nothing is pushed while it is not one of
     them, and only then is the old key removed and the new one kept, with
     `HOST_KEY_CHECK`, answering yes only to a fingerprint GitHub publishes,
-    which can be another of its keys than the one checked: the `ssh -T` is
-    a new connection, which asks first about a key type ssh holds, and can
-    be sent another key than the push's. A key ssh does not know is
-    checked the same way, before it is kept."""
+    which can be another of its keys than the one checked: the push's ssh
+    asked first for the key type it held, and once that key is removed the
+    `ssh -T` asks first for ssh's default, ED25519, and it can be sent
+    another key than the push's. A key ssh does not know is checked the
+    same way, before it is kept."""
     said = _without_remote_lines(output)
     if not any(words in said for words in HOST_KEY_FAILED):
         return ""
