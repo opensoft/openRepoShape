@@ -54,11 +54,11 @@ LINE_RE = re.compile(r"source {5}.+ @ (?P<commit>[0-9a-f]{12}) "
 #: A bidirectional override and an isolate, the two line boundaries of
 #: `str.splitlines` that git allows (U+0085, U+2028), and a zero-width space.
 BRANCH_CHARACTERS = {
-    "bidi-override": ("‮", "\\u202e"),
-    "bidi-isolate": ("⁦", "\\u2066"),
+    "bidi-override": ("\u202e", "\\u202e"),
+    "bidi-isolate": ("\u2066", "\\u2066"),
     "next-line": ("\x85", "\\x85"),
-    "line-separator": (" ", "\\u2028"),
-    "zero-width-space": ("​", "\\u200b"),
+    "line-separator": ("\u2028", "\\u2028"),
+    "zero-width-space": ("\u200b", "\\u200b"),
 }
 EACH_BRANCH_CHARACTER = pytest.mark.parametrize(
     ("char", "spelled"), list(BRANCH_CHARACTERS.values()),
