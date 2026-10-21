@@ -2339,8 +2339,9 @@ def env_commit(work: Path, message: str) -> None:
     locale with that mode off -- and git keeps the bytes it is given. An
     adoption's split message already carried an em dash, which reached git
     there as a cp1252 byte, and it names each entry path as the source spells
-    it: `Übersicht.md` would land as another byte that is not UTF-8, and
-    `文書.md` would raise `UnicodeEncodeError` after both legs are pushed.
+    it (a printable one; see below): `Übersicht.md` would land as another byte
+    that is not UTF-8, and `文書.md` would raise `UnicodeEncodeError` after
+    both legs are pushed.
     Every caller's message goes the same way: `scaffold-project.py`'s
     assembly commit, `scripts/family.py`'s holder commit, and each first
     commit `git_init_commit` makes (a scaffolded leg, a seeded one).
