@@ -81,12 +81,13 @@ def runner(project: Path, remotes: Path, via: str):
         *extra)
 
 
-def made_in_the_leg(project: Path, name: str) -> str:
-    """A commit made inside the leg's mount, adding `<name>.md`, with the leg
-    put back where it stood, detached at the pin. Returns the commit."""
+def made_in_the_leg(project: Path, name: str, on: str = "HEAD") -> str:
+    """A commit made inside the leg's mount, adding `<name>.md`, on top of
+    `on` (the pin unless a commit is named), with the leg put back where it
+    stood, detached at the pin. Returns the commit."""
     leg = project / "spec"
     pinned = git("rev-parse", "HEAD", cwd=leg).stdout.strip()
-    git("checkout", "-q", "--detach", cwd=leg)
+    git("checkout", "-q", "--detach", on, cwd=leg)
     (leg / f"{name}.md").write_text(f"{name}\n", encoding="utf-8")
     git("add", "--", f"{name}.md", cwd=leg)
     git("commit", "-qm", name, cwd=leg)
@@ -331,6 +332,95 @@ def test_a_tag_of_a_tag_the_two_share_reaches_it(project, scaffolded, via):
                                 "bump-leg-commit-local-only", before)
 
     assert refusal(stderr) == tag_reaches(made)
+
+
+@pytest.mark.parametrize("kinds", [
+    ("annotated", "annotated"), ("lightweight", "annotated"),
+    ("annotated", "lightweight")],
+    ids=["both-annotated-made-apart", "leg-lightweight-remote-annotated",
+         "leg-annotated-remote-lightweight"])
+@pytest.mark.parametrize("via", VIA)
+def test_a_tag_at_a_descendant_of_the_commit_reaches_it(
+        project, scaffolded, via, kinds):
+    """#1019. A TAG AT A DESCENDANT OF THE COMMIT REACHES IT, as a tag at the
+    commit does: the leg's tags are listed with `for-each-ref --contains`, a
+    tag at the commit or at any commit made on top of it, where `--points-at`
+    lists only a tag AT the commit. A commit on no branch of the leg's remote
+    and a commit made on top of it, on none either; the leg and the remote
+    each tag the DESCENDANT `v1`, made apart (the reviewer's case J of #988).
+    Both runs refuse the commit `bump-leg-commit-local-only` in the tag
+    words, through the leg's `origin` and through `--local-remote-dir`, with
+    nothing moved and the leg's own `v1` as it was. Every row before this one
+    tagged the commit itself, so `--points-at` in place of `--contains`, the
+    mutant M9 of #988's review, survived all 54 of them."""
+    leg_kind, remote_kind = kinds
+    remotes = private_remote(project, scaffolded)
+    bare = bare_of(remotes)
+    leg = project / "spec"
+    made = made_in_the_leg(project, "BELOW")
+    above = made_in_the_leg(project, "ABOVE", on=made)
+    remote_tag = tag_as(leg, remote_kind, "v1-w1019", above, "the remote's")
+    pushed(project, "refs/tags/v1-w1019", "refs/tags/v1-w1019")
+    git("tag", "-d", "v1-w1019", cwd=leg)
+    leg_tag = tag_as(leg, leg_kind, "v1-w1019", above, "the leg's")
+    assert git("rev-parse", f"{above}^", cwd=leg).stdout.strip() == made, (
+        "premise: the commit is the parent of the one the tags name")
+    assert leg_tag != remote_tag, "premise: the two tags are two objects"
+    for work in (leg, bare):
+        assert git("rev-parse", "refs/tags/v1-w1019^{}", cwd=work
+                   ).stdout.strip() == above, (
+            "premise: both tags name the descendant")
+        assert git("for-each-ref", "--points-at", made, "refs/tags/",
+                   cwd=work).stdout == "", (
+            "premise: no tag is AT the commit")
+    run, before = only_a_tag_reaches(project, remotes, via, made)
+
+    stderr = assert_one_refusal(project, run, made,
+                                "bump-leg-commit-local-only", before)
+
+    assert refusal(stderr) == tag_reaches(made)
+    assert "cannot fetch" not in stderr
+    assert git("rev-parse", "v1-w1019", cwd=leg).stdout.strip() == leg_tag, (
+        "the leg's own tag is as it was")
+
+
+@pytest.mark.parametrize("via", VIA)
+def test_a_tag_at_an_ancestor_of_the_commit_alone_keeps_the_plain_words(
+        project, scaffolded, via):
+    """#1019's CONTROL, the row above turned over. The commit the run names is
+    the CHILD here, which the leg's remote does not hold, and the leg and the
+    remote both tag its PARENT, which only a tag reaches. A tag at an
+    ancestor does not reach a commit made on top of it: `for-each-ref
+    --contains` lists the tags at the commit and above it, never below it. So
+    both runs keep the plain words, "a pin the rest of the world cannot
+    fetch" included, which are true of the child, through `origin` and
+    through `--local-remote-dir`. A check that read the tags the other way
+    round (`--merged`) would tell the tag words here."""
+    remotes = private_remote(project, scaffolded)
+    bare = bare_of(remotes)
+    leg = project / "spec"
+    parent = made_in_the_leg(project, "PARENT")
+    child = made_in_the_leg(project, "CHILD", on=parent)
+    tag_as(leg, "annotated", "v-below-w1019", parent, "the parent's")
+    pushed(project, "refs/tags/v-below-w1019", "refs/tags/v-below-w1019")
+    assert git("rev-parse", f"{child}^", cwd=leg).stdout.strip() == parent, (
+        "premise: the commit named is the child of the one tagged")
+    assert contains(bare, parent, "refs/tags/"), (
+        "premise: a tag of the leg's remote reaches the parent")
+    assert git("cat-file", "-e", child, cwd=bare, check=False
+               ).returncode != 0, "premise: the remote does not hold the child"
+    assert not contains(leg, child, "refs/tags/"), (
+        "premise: no tag of the leg reaches the child")
+    assert not contains(leg, child, "refs/remotes/"), (
+        "premise: no remote-tracking ref of the leg does")
+    branched(project)
+    run = runner(project, remotes, via)
+    before = snapshot(project)
+
+    stderr = assert_one_refusal(project, run, child,
+                                "bump-leg-commit-local-only", before)
+
+    assert refusal(stderr) == local_only(child)
 
 
 # --- R613 p10: a leg with no remote named `origin` --------------------------
