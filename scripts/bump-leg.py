@@ -1032,12 +1032,11 @@ def peeled_target(submodule: Path, repository: str, target: str) -> str:
             return target
         if names == "commit":
             return peeled
-    if kind != "tag":
-        what = f"names a {kind}"
-    elif names in ("tree", "blob"):
-        what = f"is an annotated tag of a {names}"
-    else:
-        what = "is an annotated tag that names no commit"
+    # A tag that names a commit, or whose peel cannot be read, has returned,
+    # and `^{}` peels through every tag: what is left names a tree or a
+    # blob, or is a tag of one (#1103).
+    what = (f"is an annotated tag of a {names}" if kind == "tag"
+            else f"names a {kind}")
     raise Refusal(
         "bump-leg-target-not-a-commit",
         f"--to {target} {what} in the leg ({repository}), not a commit",
@@ -1250,6 +1249,12 @@ def _unreachable_refusal(submodule: Path, repository: str, commit: str,
     network or credential failed. A held commit a TAG of the remote reaches
     is told that, after a fetch that worked. Every other case keeps its
     words, with the stale-refs sentence after a fetch that failed.
+
+    A TAG THE LEG HOLDS WITHOUT ITS COMMIT reaches here as typed, since
+    `peeled_target` cannot peel it there (#912). With no `origin` it was
+    told it "is not in the leg's own object store", which the tag is: it
+    is told the leg holds the tag and not the commit it names (#1103).
+    With an `origin`, "no branch containing" it is true as it stands.
     """
     stale = ("" if fetched else
              " The fetch above FAILED, so this was answered from stale "
@@ -1284,6 +1289,17 @@ def _unreachable_refusal(submodule: Path, repository: str, commit: str,
             "commonest such commit was made inside the leg's mount and never "
             "pushed. A pin the rest of the world cannot fetch is a root the "
             "rest of the world cannot bootstrap." + stale)
+    if not has_origin and object_kind(submodule, commit) == "tag":
+        return Refusal(
+            "bump-leg-commit-not-on-remote",
+            f"{commit} is an annotated tag the leg's own object store holds "
+            f"without the commit it names, and the leg's mount, {mount}, has "
+            "no remote named `origin` to fetch that commit from, so whether "
+            f"a branch of {repository} reaches it is not known",
+            "Remediation: check the tag — the commit it names belongs to the "
+            "LEG, not to the assembly root — and push that commit to a branch "
+            "of the leg first if it is not pushed yet; "
+            f"{_origin_back(submodule, repository)}.")
     if not has_origin:
         return Refusal(
             "bump-leg-commit-not-on-remote",

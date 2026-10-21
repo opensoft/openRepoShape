@@ -84,14 +84,20 @@ SPELLED = {
 YAML_WORDS = ("y", "Y", "yes", "Yes", "YES", "n", "N", "no", "No", "NO",
               "true", "True", "TRUE", "false", "False", "FALSE",
               "on", "On", "ON", "off", "Off", "OFF", "null", "Null", "NULL")
-#: Floats `--pin` admits, so beginning with a point: YAML 1.1's `.inf` and
-#: `.nan`; its pattern as written (`\.[0-9.]*`, `.`, `..` and `.5.5`
-#: among it, with a signed exponent); and as its example `685.230_15e+03`,
-#: PyYAML and ruamel.yaml read it, with `_` among the digits, and YAML 1.2's
-#: unsigned exponent.
+#: Floats a plain scalar can spell, so beginning with a point: YAML 1.1's
+#: `.inf` and `.nan`; its pattern as written (`\.[0-9.]*`, `.`, `..` and
+#: `.5.5` among it, with a signed exponent); and as its example
+#: `685.230_15e+03`, PyYAML and ruamel.yaml read it, with `_` among the
+#: digits, and YAML 1.2's unsigned exponent. The last five have exponents
+#: of two digits (#1103): every other exponent here has one, and
+#: `PIN_NAMES` stops at three characters, so a rule that took one exponent
+#: digit passed every row. `.5.5e-10` only the pattern as written takes,
+#: and `.5_e-10` and `.5e10` only the one with `_`, so each of the rule's
+#: two exponents is held on its own.
 YAML_FLOATS = (".inf", ".Inf", ".INF", ".nan", ".NaN", ".NAN",
                ".", "..", ".5.5", ".e+5", ".5", ".05", ".5e+3", ".5E-3",
-               "._", ".5_", "._5", ".5_5", ".5e3", ".5E3")
+               "._", ".5_", "._5", ".5_5", ".5e3", ".5E3",
+               ".5e-10", ".5E+10", ".5_e-10", ".5e10", ".5.5e-10")
 #: Names that only look like one of those, which every reader reads as
 #: text: each is written bare, as on main.
 LOOK_ALIKES = ("openGlass", "openYes", "yEs", "nO", "oN", "Nan", "inf", "_",

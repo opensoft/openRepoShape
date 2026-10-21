@@ -17,6 +17,8 @@ THE STATES #795 FIXED IN `family.py bump` (#686), IN `bump-leg.py`'S TWINS:
   the network or the credential". The note, `bump-leg-commit-local-only` and
   `bump-leg-commit-not-on-remote` now say it has no remote named `origin`,
   and to give it back; a leg config git cannot read is git's failure, quoted.
+  A tag the leg holds without its commit is told that the leg holds the tag
+  and not the commit, not that the id is missing from the store (#1103).
 - A BRANCH DELETED ON THE REMOTE SINCE THE LAST FETCH. Its stale
   remote-tracking ref counted, so a commit no ref of the remote keeps was
   pinned. The fetch now prunes, with `--no-prune-tags`: a ref under
@@ -38,6 +40,7 @@ session's spec remote, beside the root; the leg's `origin` points at it.
 
 from __future__ import annotations
 
+import subprocess
 import sys
 from pathlib import Path
 
@@ -440,6 +443,63 @@ def test_an_id_a_leg_with_no_origin_lacks_is_not_put_down_to_the_network(
         "Remediation: check the commit — it belongs to the LEG, not to the "
         "assembly root — and push it to a branch of the leg first if it is "
         f"not pushed yet; {origin_back(project)}.")
+
+
+def held_without_its_commit(project: Path, remotes: Path) -> tuple[str, str]:
+    """`(tag, commit)`: an annotated tag of a commit pushed nowhere, made in
+    a clone of the leg's remote beside the root, whose object alone is
+    written into the leg, from its bytes. No fetch brings the commit: the
+    remote has neither."""
+    work = cloned_just_pushed(bare_of(remotes), project.parent / "tag-work",
+                              recurse=False)
+    git("checkout", "-q", "--detach", cwd=work)
+    (work / "HELD.md").write_text("held by a tag alone\n", encoding="utf-8")
+    git("add", "--", "HELD.md", cwd=work)
+    git("commit", "-qm", "A commit pushed nowhere", cwd=work)
+    commit = git("rev-parse", "HEAD", cwd=work).stdout.strip()
+    tag = tagged(work, "held-w1103", commit)
+    raw = subprocess.run(["git", "cat-file", "tag", tag], cwd=work,
+                         capture_output=True, check=True).stdout
+    made = subprocess.run(["git", "hash-object", "-t", "tag", "-w",
+                           "--stdin"], cwd=project / "spec", input=raw,
+                          capture_output=True, check=True)
+    assert made.stdout.decode().strip() == tag
+    return tag, commit
+
+
+def test_a_tag_a_leg_with_no_origin_holds_alone_is_told_it_is_held(
+        project, scaffolded):
+    """#1103, rv1090's NIT on #1090. A tag id the leg holds without the
+    commit it names, in a leg with no `origin`: `peeled_target` cannot peel
+    it there, so it reaches this verdict as typed (#912), and both runs
+    said it "is not in the leg's own object store", which the tag is. They
+    now say the leg holds the tag and not the commit it names, under the
+    same code, and to push that commit and give the leg its `origin` back."""
+    remotes = private_remote(project, scaffolded)
+    tag, commit = held_without_its_commit(project, remotes)
+    leg = project / "spec"
+    assert git("cat-file", "-t", tag, cwd=leg).stdout.strip() == "tag", (
+        "premise: the leg holds the tag")
+    assert git("cat-file", "-e", commit, cwd=leg,
+               check=False).returncode != 0, "premise: and not its commit"
+    without_origin(project, "renamed")
+    branched(project)
+    run = runner(project, remotes, "origin")
+    before = snapshot(project)
+
+    stderr = assert_one_refusal(project, run, tag,
+                                "bump-leg-commit-not-on-remote", before)
+
+    assert told_no_origin(stderr) == (
+        f"REFUSED bump-leg-commit-not-on-remote: {tag} is an annotated tag "
+        "the leg's own object store holds without the commit it names, and "
+        f"the leg's mount, {project.resolve() / 'spec'}, has no remote named "
+        "`origin` to fetch that commit from, so whether a branch of "
+        f"{REPOSITORY} reaches it is not known",
+        "Remediation: check the tag — the commit it names belongs to the "
+        "LEG, not to the assembly root — and push that commit to a branch of "
+        f"the leg first if it is not pushed yet; {origin_back(project)}.")
+    assert "is not in the leg's own object store" not in stderr
 
 
 #: A `url` with no value under the leg's `[remote "origin"]`. Git's config
