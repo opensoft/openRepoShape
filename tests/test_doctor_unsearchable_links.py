@@ -287,7 +287,16 @@ def test_the_git_questions_raise_a_refused_stat(standard, tmp_path,
     answered = {"carries_git": True, "origin_org": "acme",
                 "repo_local_origin_name": "Orbit"}
     assert question(root) == answered[ask]
-    # The controls: no `.git`, or a name under a file, is no repository.
+    # The controls: a `.git` that is a gitdir FILE, as `--separate-git-dir`,
+    # a linked worktree or a submodule's checkout writes it, is a repository;
+    # no `.git`, or a name under a file, is none.
+    separate = tmp_path / "Separate"
+    separate.mkdir()
+    git("init", "-q", "-b", "main", f"--separate-git-dir={tmp_path / 'kept'}",
+        ".", cwd=separate)
+    git("remote", "add", "origin", ORIGIN, cwd=separate)
+    assert (separate / ".git").is_file()
+    assert question(separate) == answered[ask]
     plain = tmp_path / "Plain"
     plain.mkdir()
     (tmp_path / "file").write_text("x\n", encoding="utf-8")
@@ -350,24 +359,33 @@ def test_beside_what_it_can_read_the_row_names_what_it_cannot_first(
     assert row.detail["Makefile"] is True
 
 
+@pytest.mark.parametrize("error, why", [
+    pytest.param(PermissionError(errno.EACCES, DENIED), ADVISORY_WHY,
+                 id="permission"),
+    pytest.param(OSError(errno.EIO, IO_ERROR),
+                 ADVISORY_WHY.replace(DENIED, IO_ERROR), id="io-error"),
+])
 def test_the_advisory_names_a_git_it_cannot_reach_and_says_nothing(
-        tmp_path, monkeypatch):
+        tmp_path, monkeypatch, error, why):
     """`shape_advisory`: `repository_names` raises the refused `stat` where
     3.14 dropped `origin`'s name, and `read()` answers `not-answered`, which
-    every reader keeps silent, naming the `.git` in `why`, where 3.14 said
-    `not-a-repository`."""
+    every reader keeps silent, naming the `.git` and the system's reason in
+    `why`, where 3.14 said `not-a-repository`."""
     root = repository_here(tmp_path / "Atlas")
     quiet = tmp_path / "agent-protocol"
     quiet.mkdir()
     env = {"AGENT_PROTOCOL_ROOT": str(quiet)}
     assert shape_advisory.repository_names(root) == ["Atlas", "Orbit"]
     assert shape_advisory.read(root, env=env).state == shape_advisory.ADVISE
-    refused_stat(monkeypatch, ".git")
-    with pytest.raises(PermissionError):
+    if isinstance(error, PermissionError):
+        refused_stat(monkeypatch, ".git")
+    else:
+        refusing(monkeypatch, "stat", ".git", error)
+    with pytest.raises(type(error)):
         shape_advisory.repository_names(root)
     reading = shape_advisory.read(root, env=env)
     assert reading.state == shape_advisory.NOT_ANSWERED
-    assert reading.why == ADVISORY_WHY
+    assert reading.why == why
     assert reading.advise is False
 
 
