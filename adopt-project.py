@@ -11651,10 +11651,10 @@ def _split_clone_asked(source: Source) -> None:
     NIT-1, measured: 117 MiB for a 115 MiB pack). That is a cost, not a
     fault: each of `execute`'s own clones of such a source is a full copy
     too. So such a clone also runs the `uploadpack.packObjectsHook` that
-    this machine's protected config names (its system or global config, or
-    a `-c`; git takes none from the source's own) to pack what it copies,
-    as each of `execute`'s clones of that source runs it (r1119b's
-    NIT-C)."""
+    this machine's global or system config names, to pack what it copies,
+    as each of `execute`'s clones of that source runs it. git takes none
+    from the source's own config, and a parent's `-c` did not reach it
+    (measured with git 2.43: 1, 0 and 0 runs; r1119b's NIT-C)."""
     env = _split_clone_env()
     scratch = _throwaway("openreposhape-clone-", source)
     try:
