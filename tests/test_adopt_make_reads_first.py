@@ -129,14 +129,22 @@ ROWS = [
 #: `(path, leg)` rows no shipped rule writes, which a `--path-policy` rule can
 #: (a person's answer in the plan changes no follow-up): `MAKEFILE` kept in
 #: the root, a name GNU make never reads where case is kept and one a disk
-#: that ignores case takes for `Makefile`; and `makefile` and `GNUmakefile`
-#: sent to the legs, which leaves the root nothing GNU make reads but the
-#: shape's.
+#: that ignores case takes for `Makefile`; `makefile` and `GNUmakefile` sent
+#: to the legs, which leaves the root nothing GNU make reads but the shape's;
+#: and `makefile/`, a directory the root keeps as an entry of its own, which
+#: `_root_keeps` finds by its directory form and `twins` must read without
+#: the slash, or be empty and have `twins[0]` raise in `plan` (#1061's (a):
+#: no test failed on it). GNU make 4.3 stops on it with `makefile: Is a
+#: directory.` (r1046's measure), so the case is contrived, and the line it
+#: gets is the one a kept `makefile` file gets.
 ANSWERED = [
     pytest.param((("MAKEFILE", "root"),), SHAPES + written_as("MAKEFILE"),
                  id="MAKEFILE"),
     pytest.param((("makefile", "code"), ("GNUmakefile", "spec")),
                  MAKEFILE_FOLLOW_UP, id="sent-to-legs"),
+    pytest.param((("makefile/", "root"),),
+                 SHAPES + written_as("makefile") + reads("makefile"),
+                 id="makefile-directory"),
 ]
 
 
@@ -172,7 +180,10 @@ def test_a_name_only_a_disk_that_ignores_case_takes_for_makefile(
     """`MAKEFILE` is no name GNU make reads where case is kept, and the
     shape's `Makefile` is the root's there; where case is ignored `place`
     finds `Makefile` taken by it and writes the shape's to `shape/Makefile`.
-    A name sent to a leg is in no root at all."""
+    A name sent to a leg is in no root at all. A kept directory is the entry
+    `makefile/`, no file: the line names it `makefile` all the same, both as
+    the name a disk that ignores case takes for `Makefile` and as the one
+    GNU make reads, so `twins` must read the entry without its slash."""
     assert makefile_lines(follow_ups_of(adopter, monkeypatch, rows)) == [said]
 
 
