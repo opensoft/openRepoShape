@@ -415,6 +415,51 @@ def test_the_flags_and_the_plan_keys_name_the_same_values(adopter):
     assert mapped - {"PROJECT_NAME"} <= set(adopter.MANIFEST_FLAGS)
 
 
+#: A `submodules:` and an `answered_paths:` row each of whose four keys the
+#: project's validator refuses, and a third record that is not a list, so
+#: that every code the two records' findings can carry is made (#914).
+BAD_RECORDS = (
+    "submodules:\n"
+    "  - path: ../x\n    leg: root\n    resolution: 7\n"
+    "    source_commit: nope\n"
+    "  - 7\n"
+    "answered_paths: 7\n")
+
+
+def test_the_records_codes_have_no_placeholder_row(tmp_path, monkeypatch):
+    """#914's L1-K4, said rather than mapped. No placeholder carries a row
+    of `submodules:` or `answered_paths:` -- `execute` appends both after
+    the render its gate asks -- so the codes the project's validator makes
+    of them have no `FINDING_PLACEHOLDER` row, and a manifest that held one
+    is one `manifest_judged` can name no value of: None, every value left to
+    the validator. Asked of the validator the template ships, over a
+    manifest of nothing but the records, with every other code ignored."""
+    monkeypatch.setattr(shape_materialize, "_VALIDATORS", {})
+    copy = tmp_path / "assembly-root"
+    shutil.copytree(REPO / "templates" / "assembly-root", copy,
+                    ignore=shutil.ignore_patterns("__pycache__", "*.pyc"))
+    policy = shape_materialize.NamingPolicy.load(
+        REPO / shape_materialize.NAMING_POLICY_YAML)
+    stems = ("manifest-submodule", "manifest-answered")
+    made = set()
+    for record in ("submodules", "answered_paths"):
+        body = BAD_RECORDS if record == "submodules" else BAD_RECORDS.replace(
+            "submodules:", "answered_paths:", 1).replace(
+            "answered_paths: 7", "submodules: 7")
+        (copy / "project.yaml").write_text(body, encoding=UTF8)
+        codes = {shape_materialize._code_of(note) for note in
+                 shape_materialize._validator_notes({}, policy, copy, ())}
+        ours = {code for code in codes if code.startswith(stems)}
+        others = tuple(codes - ours)
+        assert shape_materialize.manifest_judged(
+            {}, policy, copy, ignore=others) is None, ours
+        made |= ours
+    assert made == {f"{stem}{tail}" for stem, plural in (
+        ("manifest-submodule", "s"), ("manifest-answered", "-paths"))
+        for tail in ("-path", "-leg", "-resolution", "-commit", plural)}
+    assert not made & set(shape_materialize.FINDING_PLACEHOLDER)
+
+
 def test_a_value_plan_filled_in_is_named_by_where_it_came_from(adopter):
     """#529 and L1-39: the four values `plan` fills in when its flag is not
     given are named by the default, in the words `_flag_fields` and the
@@ -940,11 +985,12 @@ def test_a_text_value_the_template_now_holds_is_no_finding_in_the_list_check_pri
 
 # --- a validator that cannot be asked ---------------------------------------
 
-def a_copy_of_the_standard(base: Path, remake) -> Path:
+def a_copy_of_the_standard(base: Path, remake,
+                           rel: str = "scripts/validate-manifest.py") -> Path:
     """The standard, as its own git checkout (the tools name their revision),
-    with its template's `validate-manifest.py` made over by `remake`, which is
-    given the real text and returns the text to put there, or None to remove
-    the file."""
+    with its template's `validate-manifest.py`, or the template file `rel`,
+    made over by `remake`, which is given the real text and returns the text
+    to put there, or None to remove the file."""
     copy = base / "standard"
     shutil.copytree(REPO, copy, symlinks=True, ignore=shutil.ignore_patterns(
         ".git", "__pycache__", ".pytest_cache", "tests", "docs", "handoffs"))
@@ -952,8 +998,7 @@ def a_copy_of_the_standard(base: Path, remake) -> Path:
     git("add", "-A", cwd=copy)
     git("-c", "user.name=t", "-c", "user.email=t@t", "commit", "-q",
         "--no-gpg-sign", "-m", "a copy of the standard", cwd=copy)
-    path = copy / "templates" / "assembly-root" / "scripts" / (
-        "validate-manifest.py")
+    path = copy / "templates" / "assembly-root" / rel
     remade = remake(path.read_text(encoding=UTF8))
     if remade is None:
         path.unlink()
@@ -994,4 +1039,61 @@ def test_plan_and_check_name_a_validator_that_cannot_be_asked(
         assert said in result.stderr, result.stderr
         assert "a defect in the copy of this standard you ran" in result.stderr
         assert "Traceback" not in result.stderr
+    assert not out.exists(), "a plan was written"
+
+
+# --- a template's manifest that is no mapping (#1059) ------------------------
+
+#: What `plan` and `check` say where the template's `project.yaml` is read as
+#: something other than a mapping: the code is `plan-manifest-invalid` still,
+#: and the remedy is the defect of the standard, aimed at the template file.
+#: No value of the plan is at fault, so `check` says nothing of the plan's
+#: values: the invalid-value remedy ("choose a value ... accepts") and the
+#: sentence `check` adds to it (`execute` writes the plan's values as they
+#: stand, so correct each one) sent a person to retype a value that was never
+#: wrong.
+NOT_A_MAPPING = ("the manifest this run would write is not a mapping, which "
+                 "is what the project's own YAML reader makes of it.")
+NOT_A_MAPPING_REMEDY = (
+    "Remediation: this is a defect in the copy of this standard you ran, not "
+    "in your values: templates/assembly-root/project.yaml is broken there, as "
+    "the project's own YAML reader makes no mapping of it. Restore it from "
+    "the standard's repository, or reinstall the standard, and run again.")
+
+
+@pytest.mark.parametrize("made", [
+    pytest.param("- one\n- two\n", id="a-list"),
+    pytest.param("# nothing here but a comment\n", id="only-a-comment"),
+])
+def test_check_says_a_template_that_is_no_mapping_is_the_standards_defect(
+        world, tmp_path, made):
+    """`check` gave this case the invalid-value remedy, and its sentence about
+    the plan's values, though `plan` and the scaffold said the defect was the
+    copy's (#1059): the remedy comes from the kind, as the other tools' does,
+    and no sentence names a value, for none is at fault."""
+    copy = a_copy_of_the_standard(tmp_path, lambda real: made, "project.yaml")
+    checked = run_script(copy / "adopt-project.py", "check", "--plan",
+                         str(world["plan"]))
+    assert checked.returncode == 1, checked.stderr + checked.stdout
+    # The whole of what `check` says: one finding, and the remedy on the
+    # line after it, which ends where the remedy does.
+    assert (f"{FINDING}: {NOT_A_MAPPING}\n{NOT_A_MAPPING_REMEDY}\n\n"
+            "1 finding(s) in ") in checked.stderr, checked.stderr
+    assert checked.stderr.count("Remediation: ") == 1, checked.stderr
+    for words in (shape_materialize.MANIFEST_INVALID_REMEDIATION,
+                  "`execute` writes the plan's values",
+                  "correct each one named here in the plan",
+                  "re-run `plan` with a value the validator accepts"):
+        assert words not in checked.stderr, checked.stderr
+    assert "Traceback" not in checked.stderr
+    # `plan` asks the same question of the same template, and says it in the
+    # same remedy, with its own sentence after it.
+    out = tmp_path / "not-written.yaml"
+    planned = run_script(
+        copy / "adopt-project.py", "plan", "--source", str(world["source"]),
+        "--project", PROJECT, "--org", "testorg", "--elected-by", "Test Human",
+        "--elected-on", "2026-09-02", "--out", str(out))
+    assert planned.returncode == 2, planned.stderr + planned.stdout
+    assert (f"REFUSED {INVALID}: {NOT_A_MAPPING}\n{NOT_A_MAPPING_REMEDY} "
+            "No plan was written.\n") in planned.stderr, planned.stderr
     assert not out.exists(), "a plan was written"

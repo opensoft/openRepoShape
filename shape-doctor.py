@@ -241,12 +241,19 @@ it, one added since the adoption too: no file is held to the row's
 `source_commit:`. A row naming a directory of its leg without the `/` a
 directory's row ends with answers nothing under it, as a plan entry spelled
 so covers nothing, and the leg's entry names it under `unslashed`, said and
-never a finding.
+never a finding. A row naming a file of its leg WITH that `/` answers nothing
+either, since no file is under it (#914): the leg's entry names it under
+`slashed`, said the same way.
 
-AN EMPTY `.gitmodules` ASKS NOTHING (#655). One that holds no byte -- what a
-plain `git rm` of a leg's only submodule leaves, tracked -- registers no
-submodule, so the policy's question of it has no subject. The leg's entry
-names it under `empty_gitmodules`, the row says so, and it is no question.
+AN EMPTY `.gitmodules` ASKS NOTHING (#655, #914). One that holds no section
+-- no byte, which a plain `git rm` of a leg's only submodule leaves tracked,
+or only blank lines, comments and a byte-order mark, which git's own reader
+passes over -- registers no submodule, so in a leg that holds none the
+policy's question of it has no subject. The leg's entry names it under
+`empty_gitmodules`, the row says so and how to remove it, and it is no
+question. Beside a submodule of its leg it stays the question it was, since
+no section registers that submodule: the leg's entry names each under
+`unregistered_submodules`, and the row says how to register it or remove it.
 
 A SUBMODULE MOVED OR REMOVED SINCE THE ADOPTION (#525). Its row is a
 person's to change, by hand, in the pull request that bumps the pins; no
@@ -632,13 +639,21 @@ MOVED = "moved"
 #: leg holds (#525); present only where there is one.
 UNHELD = "unheld"
 #: The key of a leg's entry naming its `.gitmodules` where that file holds
-#: no byte, so the policy has nothing to ask of it (#655); present only on a
-#: leg that has one.
+#: no section and the leg no submodule, so the policy has nothing to ask of
+#: it (#655, #914); present only on a leg that has one.
 EMPTY_GITMODULES = "empty_gitmodules"
+#: The key of a leg's entry naming each submodule it holds beside a
+#: `.gitmodules` that holds no section, so that nothing registers it (#914);
+#: present only on a leg that has one.
+UNREGISTERED_SUBMODULES = "unregistered_submodules"
 #: The key of a leg's entry naming each `answered_paths:` row for that leg
 #: whose path is a directory of it written without its `/` (#655); present
 #: only on a leg that has one.
 UNSLASHED = "unslashed"
+#: The key of a leg's entry naming each `answered_paths:` row for that leg
+#: whose path is a file of it written with the `/` a directory's row ends
+#: with (#914); present only on a leg that has one.
+SLASHED = "slashed"
 #: The `why` of a row whose every path in the wrong leg is a submodule moved
 #: since the adoption (#525). Its NEXT is this doctor again, as the
 #: `manifest kinds` row's is for a file only a person can mend
@@ -8090,8 +8105,10 @@ def held_clauses(detail: dict) -> str:
     clauses = (kept_submodules(detail.get("submodules") or []),
                answered_clause(legs),
                empty_clause(legs),
+               unregistered_clause(legs),
                answers_clause(detail.get(ANSWERED_PATHS) or []),
                unslashed_clause(legs),
+               slashed_clause(legs),
                unheld_clause(detail.get(UNHELD) or []))
     said = "; ".join(clause for clause in clauses if clause)
     return f"; {said}" if said else ""
@@ -8127,16 +8144,70 @@ def answers_clause(answered: list) -> str:
 
 
 def empty_clause(legs: list) -> str:
-    """The clause naming each leg's `.gitmodules` that holds no byte, or ""
-    where none does (#655). SAID, as the one the record answers is: a reader
-    who knows the policy asks about every `.gitmodules` is owed why this one
-    was not asked."""
+    """The clause naming each leg's `.gitmodules` that holds no section, in a
+    leg that holds no submodule, or "" where none does (#655, #914). SAID, as
+    the one the record answers is: a reader who knows the policy asks about
+    every `.gitmodules` is owed why this one was not asked. AND HOW TO REMOVE
+    IT (#914), since no record can answer it and nothing needs it. `git rm
+    -f`, because a plain `git rm` refuses the file where it is staged and not
+    committed (what a plain `git rm` of a leg's only submodule leaves) or
+    changed on disk and not staged (measured, git 2.43); `-f` takes it out of
+    the index and the disk in each state, and discards no section, since the
+    clause is printed only where the disk copy holds none."""
     empty = [path for leg in legs for path in leg.get(EMPTY_GITMODULES) or []]
     if not empty:
         return ""
     return (f"the policy asks nothing of {len(empty)} `.gitmodules` that "
-            "hold(s) no byte and so register(s) no submodule (#655): "
-            f"{', '.join(empty)}")
+            "hold(s) no section and so register(s) no submodule, in a leg "
+            f"that holds none (#655, #914): {', '.join(empty)}; nothing "
+            "needs one, and `git rm -f .gitmodules` in its leg removes it")
+
+
+def unregistered_clause(legs: list) -> str:
+    """The clause naming each submodule a leg holds beside a `.gitmodules`
+    that holds no section, or "" where there is none (#914).
+
+    SAID, because that `.gitmodules` is not the empty one `empty_clause`
+    names: it stays the question it was, and the way out is not to remove
+    it. No section registers the submodule, so a recursive clone of the leg
+    exits 0 and leaves its directory empty, and `git submodule status` there
+    exits 128 with `no submodule mapping found in .gitmodules` (measured,
+    git 2.43). Neither record can say where its repository is, and `git
+    submodule add` refuses a path the index holds: the person writes its
+    section, or removes the gitlink.
+
+    THE REMOVAL TYPED AS PRINTED WORKS (measured, git 2.43). `git rm
+    --cached` dies with `please stage your changes to .gitmodules` where the
+    leg's tracked `.gitmodules` has an edit that is not staged, so the clause
+    says to stage it first; and it names the path as the leg spells it,
+    because the row's own `code/vendor/lib` is the project's spelling, which
+    the leg does not know.
+    """
+    held = [path for leg in legs
+            for path in leg.get(UNREGISTERED_SUBMODULES) or []]
+    if not held:
+        return ""
+    return (f"{len(held)} submodule(s) sit beside a `.gitmodules` of their "
+            "leg that holds no section, so nothing registers them and a "
+            "recursive clone of the leg leaves each empty (#914): "
+            f"{first_three(held)}; give each a section with its `path` and "
+            "`url` in that `.gitmodules`, or, once that `.gitmodules` is "
+            "staged (`git add .gitmodules`), remove its gitlink with `git rm "
+            "--cached <its path in the leg>` in its leg")
+
+
+def slashed_clause(legs: list) -> str:
+    """The clause naming each `answered_paths:` row that names a file of its
+    leg with the `/` a directory's row ends with, or "" where none does
+    (#914). SAID, as `unslashed_clause` says the other spelling, and for
+    the same reason: such a row answers nothing, since no file is under a
+    file, and never a finding."""
+    rows = [path for leg in legs for path in leg.get(SLASHED) or []]
+    if not rows:
+        return ""
+    return (f"{len(rows)} row(s) of {THE_ANSWERS} name a file with the `/` "
+            "only a directory's row ends with, so each answers nothing "
+            f"(#914): {first_three(rows)}")
 
 
 def unslashed_clause(legs: list) -> str:
@@ -8513,9 +8584,12 @@ def answered_questions(adopt, review: list, role: str, files: list,
     return still, answered
 
 
-def empty_gitmodules(adopt, review: list, mount: Path) -> tuple:
+def empty_gitmodules(adopt, review: list, mount: Path, rel: str,
+                     paths: list, held: list) -> tuple:
     """The leg's questions less its `.gitmodules` where that file holds no
-    byte, and that file's path in the row, or [] (#655).
+    section and the leg no submodule, and that file's path in the row, or
+    [] (#655, #914); and each submodule the leg holds beside such a file, as
+    its path in the row, or [] (#914).
 
     AN EMPTY `.gitmodules` REGISTERS NO SUBMODULE, so the question rule
     `ambiguous-gitmodules` asks of it -- which leg owns the submodules it
@@ -8525,30 +8599,76 @@ def empty_gitmodules(adopt, review: list, mount: Path) -> tuple:
     leaves `.gitmodules` out, and `submodules:` answers it only where the
     leg keeps a submodule. Not asking is the fix, rather than a row a
     person writes by hand into the manifest to quiet a question that has
-    no subject.
+    no subject, and the row says how to remove it (`empty_clause`).
 
-    NO BYTE, AND A REGULAR FILE, read on this disk as `leg_tracked_files`
-    reads a size: the file git's submodule commands read. One holding
-    anything -- a blank line, a comment, a section -- is one only git's own
-    reader could say registers nothing, so it stays the question it was.
-    git refuses to index a `.gitmodules` that is a symlink, and reads the
-    index's copy where the disk has none, so neither is the empty file.
+    EMPTY IS NO SECTION (#914), as `holds_no_section` reads it: no byte, or
+    only what git's own config reader passes over -- a byte-order mark,
+    blank lines, comments. One that holds a section, even one with no key,
+    stays the question it was. Read on this disk, a regular file and not a
+    link, as `leg_tracked_files` reads a size: the file git's submodule
+    commands read. git refuses to index a `.gitmodules` that is a symlink,
+    and reads the index's copy where the disk has none, so neither is the
+    empty file.
+
+    BUT NOT BESIDE A SUBMODULE (#914). In a leg that holds a gitlink, a
+    `.gitmodules` with no section is no emptied file: it fails to register
+    that gitlink, and the question of which leg owns the leg's submodules
+    has a subject. So it stays the question it was -- asked, or answered by
+    `submodules:` (`gitmodules_the_record_answers`) -- and each gitlink
+    `held` is returned to be named with what to do (`unregistered_clause`).
     """
+    if adopt.GITMODULES not in paths or not holds_no_section(
+            mount / adopt.GITMODULES):
+        return review, [], []
+    if held:
+        return review, [], [f"{rel}/{path}" for path in held]
     for row in review:
-        if (row["path_in_leg"] == adopt.GITMODULES
-                and holds_no_byte(mount / adopt.GITMODULES)):
+        if row["path_in_leg"] == adopt.GITMODULES:
             return [other for other in review if other is not row], [
-                row["path"]]
-    return review, []
+                row["path"]], []
+    return review, [], []
 
 
-def holds_no_byte(path: Path) -> bool:
-    """Is `path` a regular file, not a link, of no byte (#655)?"""
+#: The bytes git's config reader passes over before the first line of a file
+#: (#914): a UTF-8 byte-order mark, as Windows Notepad writes one. Only the
+#: whole mark, and only at the start: git refuses a part of one.
+UTF8_BOM = b"\xef\xbb\xbf"
+#: What git's config reader counts as blank between the lines it reads
+#: (#914): its own `isspace`, which leaves out the vertical tab and the form
+#: feed Python's `bytes.strip` would take, and which git refuses.
+CONFIG_BLANKS = b" \t\r"
+#: The two bytes that open a comment for git's config reader, to the line's
+#: end (#914).
+CONFIG_COMMENTS = (b"#", b";")
+
+
+def holds_no_section(path: Path) -> bool:
+    """Is `path` a regular file, not a link, that holds no section and no
+    key: no byte, or only a byte-order mark, blank lines and comments, which
+    git's config reader passes over (#655, #914)?
+
+    git's reader at the top of a file is a loop over bytes: a `\\n` ends a
+    comment, a blank is passed over, `#` or `;` opens a comment, and
+    anything else opens a section (`[`), opens a key, or is a bad line. So
+    a file whose every line, after its blanks, is empty or opens a comment
+    holds neither, and `git config --file` lists nothing from it and exits
+    0 (measured, git 2.43). A file that cannot be read is not known to be
+    empty.
+    """
     try:
         found = path.lstat()
+        if not stat.S_ISREG(found.st_mode):
+            return False
+        data = path.read_bytes()
     except OSError:
         return False
-    return stat.S_ISREG(found.st_mode) and found.st_size == 0
+    if data.startswith(UTF8_BOM):
+        data = data[len(UTF8_BOM):]
+    for line in data.split(b"\n"):
+        line = line.lstrip(CONFIG_BLANKS)
+        if line and not line.startswith(CONFIG_COMMENTS):
+            return False
+    return True
 
 
 def unslashed_rows(answers: dict, role: str, rel: str, files: list) -> list:
@@ -8572,6 +8692,26 @@ def unslashed_rows(answers: dict, role: str, rel: str, files: list) -> list:
     directories = {path[:index] for path in files
                    for index, char in enumerate(path) if char == "/"}
     return [f"{rel}/{path}" for path in rows if path in directories]
+
+
+def slashed_rows(answers: dict, role: str, rel: str, files: list) -> list:
+    """Each `answered_paths:` row for THIS leg whose path is a file of it
+    written with the `/` a directory's row ends with, as its path in the
+    row (#914).
+
+    SUCH A ROW ANSWERS NOTHING: `_covering` reads a path with its `/` as a
+    directory's, and no file is under a file. It is `unslashed_rows`' other
+    spelling, said the same way and for the same reason, and never read as
+    the file's row nor made a finding. `execute` never writes one, since
+    `check` finds the plan entry spelled so (`plan-empty-entry`, beside
+    `plan-uncovered` for the file); a hand edit does.
+    """
+    rows = [path for path, row in answers.items()
+            if row.get("leg") == role and path.endswith("/")]
+    if not rows:
+        return []
+    named = set(files)
+    return [f"{rel}/{path}" for path in rows if path[:-1] in named]
 
 
 def audit_leg(adopt, policy, patterns: list, role: str, rel: str,
@@ -8625,14 +8765,16 @@ def audit_leg(adopt, policy, patterns: list, role: str, rel: str,
     (`gitmodules_the_record_answers`): the file is placed, and the leg's
     entry names it under `answered` instead of as a question.
     Otherwise a real adoption, whose leg always holds the `.gitmodules` that
-    registers its submodules, could never read `ok`. One that holds no byte
-    asks nothing at all (`empty_gitmodules`, #655).
+    registers its submodules, could never read `ok`. One that holds no
+    section, in a leg that holds no submodule, asks nothing at all
+    (`empty_gitmodules`, #655, #914).
 
     AND `answered_paths:` IS READ FOR THE QUESTIONS AND FOR THE PATHS IN THE
     WRONG LEG ALIKE (#525, #655): `answered_questions` takes from each those
-    the record answers into this leg, which are returned apart, and
+    the record answers into this leg, which are returned apart,
     `unslashed_rows` names the rows for this leg that name a directory
-    without its `/`.
+    without its `/`, and `slashed_rows` those that name a file with one
+    (#914).
 
     AND A LEG'S `single-repository.yaml` IS ASKED THE RECORD'S QUESTION ONLY
     WHERE IT IS THE RECORD (#691). The walk asks it by name; `plan`'s own
@@ -8692,8 +8834,9 @@ def audit_leg(adopt, policy, patterns: list, role: str, rel: str,
     submodules, wrong = leg_submodules(policy, role, rel, held, record)
     answered = gitmodules_the_record_answers(adopt, submodules, unwritable)
     misplaced, review, settled = walked_findings(walked, role, rel, answered)
-    review, empty = empty_gitmodules(adopt, review, mount)
     paths = [path for path, _ in kept]
+    review, empty, unregistered = empty_gitmodules(adopt, review, mount, rel,
+                                                   paths, held)
     review, recorded = answered_questions(adopt, review, role, paths, answers)
     misplaced, against = answered_questions(adopt, misplaced, role, paths,
                                             answers)
@@ -8708,7 +8851,9 @@ def audit_leg(adopt, policy, patterns: list, role: str, rel: str,
                   "misplaced": len(misplaced),
                   "review_required": len(review)})
     for key, said in ((ANSWERED, settled), (EMPTY_GITMODULES, empty),
-                      (UNSLASHED, unslashed_rows(answers, role, rel, paths))):
+                      (UNREGISTERED_SUBMODULES, unregistered),
+                      (UNSLASHED, unslashed_rows(answers, role, rel, paths)),
+                      (SLASHED, slashed_rows(answers, role, rel, paths))):
         if said:
             # Only when there is one, so that no other leg's entry changes.
             entry[key] = said

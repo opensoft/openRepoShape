@@ -1555,6 +1555,165 @@ def readable_branch(what: str, value) -> str:
 
 
 # ---------------------------------------------------------------------------
+# What a fetch for a branch's answer carries (#686, #898, #1037)
+# ---------------------------------------------------------------------------
+#
+# `family.py bump` fetches a member's `origin` (#686), and `bump-leg.py` a
+# leg's (#898), and each then asks one question of what is under
+# `refs/remotes/origin/`: does a BRANCH of the remote reach the commit? So
+# each fetch carries every branch and, so that `--prune` keeps what they
+# keep, the repository's own refspecs that write there. Which of those it
+# carries is ONE RULE, asked by both (#1037): #946 and #1027 wrote it in
+# `family.py` alone, and the leg's fetch went on carrying every refspec of
+# the leg's own that can bring a tag under `origin/`.
+#
+# IT LIVES HERE AND NOT IN `scripts/repo_shape.py`, which is a SHAPE COPY
+# every root digest-pins, and no root's own copy fetches for a pin (see
+# "Commit trailers" below for the same argument). This module is in no copy
+# list and both tools already import it. Each tool still reads the
+# repository's `remote.origin.fetch` its own way, and says why its own
+# refspecs ride along.
+
+#: What the fetch always asks of the remote: every branch, into the
+#: namespace both tools read branches from, forced as a remote-tracking ref
+#: is.
+ORIGIN_BRANCHES = "+refs/heads/*:refs/remotes/origin/*"
+
+#: The names `ORIGIN_BRANCHES` gives the branches (#905): a refspec of the
+#: repository's own that gives another namespace these very names is not
+#: carried (`origin_fetch_refspecs`).
+ORIGIN_BRANCH_NAMES = ORIGIN_BRANCHES.partition(":")[2]
+
+#: Where a repository keeps its tags: a refspec of the repository's own
+#: whose source can name a ref here is not carried (`can_name_a_tag`,
+#: #1009).
+TAGS_PREFIX = "refs/tags/"
+
+
+def can_name_a_tag(source: str) -> bool:
+    """Whether a fetch refspec's `source` can name a tag of the remote, so
+    that the fetch does not carry the repository's refspec that has it
+    (`origin_fetch_refspecs`; #905, RV946's S1, #1009, #1037). Three ways,
+    each measured on git 2.43:
+
+    UNDER `refs/tags/`: `+refs/tags/*:refs/remotes/origin/*`, onto the
+    branches' names, `+refs/tags/*:refs/remotes/origin/tags/*`, or one tag.
+
+    A PATTERN WHOSE PART BEFORE THE `*` IS A START OF `refs/tags/`, `refs/*`
+    or `*`: git matches a pattern against each ref's whole name and never
+    completes it, so it takes the tags too, and a mirror into `origin/`
+    (`+refs/*:refs/remotes/origin/*`) or into a folder there
+    (`+refs/*:refs/remotes/origin/all/*`) brings every tag.
+
+    NO PATTERN, AND NOT UNDER `refs/`: a short name, which git completes,
+    trying the name itself, then `refs/<name>`, then `refs/tags/<name>`
+    before `refs/heads/<name>`. With a branch and a tag `x`,
+    `+x:refs/remotes/origin/x` took the tag; `+heads/main:` took the branch
+    `main`, as `refs/heads/main` comes first, and names a tag only where the
+    remote has none of the names before it. An exact object id
+    (`+<40 hex>:refs/remotes/origin/pinned`) is no pattern and not under
+    `refs/` either, and is left out with them: it names a commit and no
+    branch, and under `origin/` it answered for one.
+
+    A FULL NAME THAT IS NO PATTERN IS NOT LEFT OUT, though git falls back to
+    a tag for it too: `+refs/heads/zz:refs/remotes/origin/zz` took the tag
+    `refs/tags/refs/heads/zz` where the remote had no branch `zz`. Leaving
+    out every full name would leave out the pull requests and the review
+    refs the fetch keeps (#946's U184 rows).
+    """
+    fixed, star, _ = source.partition("*")
+    if source.startswith(TAGS_PREFIX):
+        return True
+    if star:
+        return TAGS_PREFIX.startswith(fixed)
+    return not source.startswith("refs/")
+
+
+def origin_fetch_refspecs(configured: list[str]) -> list[str]:
+    """The refspecs a fetch for a branch's answer carries: `ORIGIN_BRANCHES`,
+    then each value of the repository's own `remote.origin.fetch` in
+    `configured` that no clause below leaves out, forced, in its order and
+    without duplicates. `family.py`'s `_origin_fetch_refspecs` asks it of a
+    member's mount (#686) and `bump-leg.py`'s `_leg_fetch_refspecs` of a leg
+    (#898, #1037), each with `configured` read its own way.
+
+    A NEGATIVE REFSPEC (`^refs/heads/wip`) IS SKIPPED: a narrowing refspec
+    never decides reachability, and git applies a configured negative one
+    only to a fetch with none on its command line (measured, git 2.43). A
+    POSITIVE ONE IS FORCED, whether or not it was written with its `+`: a
+    remote-tracking ref only mirrors the remote, and a refspec without it
+    would fail the fetch on a ref force-pushed.
+
+    THREE CLAUSES LEAVE A REFSPEC OUT, asked in this order, and the first
+    that matches is the one that leaves it out: a destination OUTSIDE
+    `refs/remotes/origin/`, A SOURCE THAT CAN NAME A TAG, and THE BRANCHES'
+    GLOB.
+
+    A DESTINATION OUTSIDE `refs/remotes/origin/`, a mirror's `+refs/*:refs/*`
+    or `+refs/heads/*:refs/heads/*`, is never carried, so no refspec the
+    fetch names writes outside it.
+
+    A SOURCE THAT CAN NAME A TAG IS LEFT OUT, wherever under `origin/` it
+    writes (#905, #459's U183, RV946's S1, #1009, #1037): a tag is not a
+    branch, and under `origin/` it answers for one. `can_name_a_tag` says
+    which sources can, three ways: one under `refs/tags/`; a pattern that
+    takes the tags too, such as the mirror into `origin/`
+    (`+refs/*:refs/remotes/origin/*`) or into a folder there
+    (`+refs/*:refs/remotes/origin/all/*`); and one that is no pattern and
+    not under `refs/`, a short name or an exact object id. A full name that
+    is no pattern is not asked, though git falls back to a tag for it too
+    (`can_name_a_tag` says why). Carried, it clashed with the first refspec
+    wherever it put a tag on a branch's name: the fetch exited 128 ("Cannot
+    fetch both refs/heads/feat and refs/tags/feat to
+    refs/remotes/origin/feat"; for the mirror in a folder, a branch
+    `all/tags/v1` and a tag `v1`) where `git fetch origin` exits 0, and the
+    tool said its fetch had failed and sent the person to the network or
+    the credential. Where no name was shared, the tags it put there
+    answered for branches: both tools read every ref under
+    `refs/remotes/origin/`, so a commit only a tag of the remote reaches was
+    pinned, against the rule (#613) that a tag is not a branch (measured on
+    git 2.43, each). #946 left out a source under `refs/tags/` and a mirror
+    onto the branches' glob, so a mirror in a folder was still carried and
+    failed both ways (#1009), and a leg's fetch left out neither until
+    #1037. Left out, the fetch works and a tag there answers for nothing:
+    the prune drops such a ref, as any ref under `origin/` no refspec of the
+    fetch maps, and the repository's own next `git fetch origin` writes it
+    back. A refspec that can name no tag and writes a folder of its own
+    under `origin/` (pull requests, `+refs/pull/*/head:
+    refs/remotes/origin/pr/*`) still rides along.
+
+    THE BRANCHES' GLOB: ONE THAT GIVES ANOTHER NAMESPACE THE BRANCHES' NAMES
+    IS LEFT OUT (#905, #459's U183), a refspec whose destination is the
+    first refspec's own, `refs/remotes/origin/*`, and whose source is not
+    under `refs/heads/`. The tags onto the branches' names and the mirror
+    into `origin/` meet it too, and the clause before has left them out
+    already; this one alone leaves out a source that can name no tag, such
+    as pull requests onto the branches' names
+    (`+refs/pull/*/head:refs/remotes/origin/*`). Carried, that clashed with
+    the first refspec wherever a pull request and a branch share a name
+    ("Cannot fetch both refs/heads/7 and refs/pull/7/head to
+    refs/remotes/origin/7") where `git fetch origin` exits 0 (measured, git
+    2.43).
+    """
+    refspecs = [ORIGIN_BRANCHES]
+    for spec in (value.strip() for value in configured):
+        if spec.startswith("^"):
+            continue  # a narrowing refspec never decides reachability (p07)
+        spec = spec if spec.startswith("+") else "+" + spec
+        source, _, destination = spec[1:].partition(":")
+        if not destination.startswith("refs/remotes/origin/"):
+            continue
+        if can_name_a_tag(source):
+            continue  # a tag is not a branch (RV946's S1, #1009, #1037)
+        if (destination == ORIGIN_BRANCH_NAMES
+                and not source.startswith("refs/heads/")):
+            continue  # it gives other refs the branches' names (U183)
+        if spec not in refspecs:
+            refspecs.append(spec)
+    return refspecs
+
+
+# ---------------------------------------------------------------------------
 # What a run asks before its first write: the folders it makes (#609)
 # ---------------------------------------------------------------------------
 #
@@ -1618,7 +1777,8 @@ def folder_in_the_way(path: Path) -> tuple[Path, str] | None:
     `path` and the folders above it that exists is the one that answers. A
     file there, or above it, is named, and so is a folder this user cannot
     write in (the system's own answer, `os.access`, where it has one; it
-    says yes for root, and for any folder on Windows, as `mkdir` would). A
+    says yes for root, and for any folder on Windows, where the real `mkdir`
+    can still be refused: an ACL, a quota). A
     `path` nothing stands at is asked of the folder above it.
 
     `folder_cannot_be_made` says it as one sentence, naming the folder as
@@ -5018,6 +5178,17 @@ _VALIDATORS: dict = {}
 #: Which placeholder carries the value a finding of the validator is about,
 #: for the ones a tool is handed a value for. A finding with no row is still
 #: refused, in the validator's words and without a flag to point at.
+#:
+#: THE TWO RECORDS' CODES HAVE NO ROW, ON PURPOSE (#914): #189's
+#: `submodules:` (`manifest-submodules`, `manifest-submodule-*`) and #525's
+#: `answered_paths:` (`manifest-answered-paths`, `manifest-answered-*`),
+#: which the validator spells from its `_Record`s. No placeholder carries a row
+#: of either: `adopt-project.py execute` appends both to `project.yaml` after
+#: the render its gate asks, so no tool is handed a value of theirs and no
+#: such finding can arise there today. Should a caller render a record into
+#: that question, a finding about one is about no placeholder, and
+#: `manifest_judged` answers None: every value is left to the validator, the
+#: safe direction, and none is named as one a flag carries.
 FINDING_PLACEHOLDER = {
     "manifest-id": "PROJECT_ID", "manifest-topic": "PROJECT_ID",
     "manifest-name": "PROJECT_NAME", "manifest-elected-by": "ELECTED_BY",
@@ -5038,11 +5209,13 @@ CARRIED_BY = {"ASSEMBLY_REPOSITORY": "ORG", "SPEC_REPOSITORY": "ORG",
 
 #: The kinds of problem `manifest_value_problems` names, each spelled once
 #: (#708): a value the project's reader reads back as something else, one
-#: its validator refuses, and a manifest the reader refuses before the
-#: validator can be asked, which `refuse_manifest_values` refuses under the
+#: its validator refuses, a manifest the reader refuses before the validator
+#: can be asked, and a manifest the reader reads as something other than a
+#: mapping (#1059), which no value a person types can make (only a broken
+#: template does). `refuse_manifest_values` refuses the last three under the
 #: code `invalid` still.
-KIND_MISREAD, KIND_INVALID, KIND_UNREADABLE = (
-    "misread", "invalid", "unreadable")
+KIND_MISREAD, KIND_INVALID, KIND_UNREADABLE, KIND_NOT_A_MAPPING = (
+    "misread", "invalid", "unreadable", "not-a-mapping")
 
 #: The remediation, without the sentence only the caller can write (what was
 #: or was not created, whether `--dry-run` refuses the same).
@@ -5087,11 +5260,38 @@ MANIFEST_UNREADABLE_REMEDIATION = (
     "which refuses the manifest this run would write before its "
     "validate-manifest.py can be asked, and a project whose manifest it "
     "refuses is one whose first bootstrap would fail.")
+
+
+def manifest_not_a_mapping_remediation(template: str, manifest: str,
+                                       reader: str) -> str:
+    """The remedy where the template's own manifest is not a mapping to its
+    reader (#1059), for the manifest `manifest` in `templates/<template>/`
+    and the reader `reader` names (`the project's own YAML reader`).
+
+    NO VALUE A PERSON TYPES MAKES IT ONE, and only a broken template does:
+    `validate-manifest.py` and `validate-family.py` each refuse a file that
+    is not a mapping before they ask a question, and no value on the
+    template's lines turns a mapping into a list. So the remedy is the
+    defect-of-the-standard one (`_validator_unusable`'s) aimed at the right
+    file, the template's manifest, and not the invalid-value one, which
+    sends a person to retype a value that was never wrong. One sentence for
+    both manifests, so that the holder's and the project's cannot drift.
+    """
+    return (
+        "Remediation: this is a defect in the copy of this standard you ran, "
+        f"not in your values: templates/{template}/{manifest} is broken "
+        f"there, as {reader} makes no mapping of it. Restore it from the "
+        "standard's repository, or reinstall the standard, and run again.")
+
+
+MANIFEST_NOT_A_MAPPING_REMEDIATION = manifest_not_a_mapping_remediation(
+    "assembly-root", MANIFEST_TEMPLATE, "the project's own YAML reader")
 #: The remedy for each kind of problem, so a refusal names it by its kind
 #: (#708), with no conditional nested in another.
 KIND_REMEDIATIONS = {KIND_MISREAD: MANIFEST_MISREAD_REMEDIATION,
                      KIND_INVALID: MANIFEST_INVALID_REMEDIATION,
-                     KIND_UNREADABLE: MANIFEST_UNREADABLE_REMEDIATION}
+                     KIND_UNREADABLE: MANIFEST_UNREADABLE_REMEDIATION,
+                     KIND_NOT_A_MAPPING: MANIFEST_NOT_A_MAPPING_REMEDIATION}
 
 
 def _project_findings(validator, manifest: dict, policy: NamingPolicy):
@@ -5386,12 +5586,14 @@ def manifest_invalid(values: dict, policy: NamingPolicy, what: dict,
 
     The WHOLE manifest is rendered and read, so a rule about how one value
     relates to another (`topic` to `id`, a leg's repository to its role) is
-    asked as the project asks it. `values` must be the complete table;
-    `policy` is the naming policy the project carries a copy of. A WARNING of
-    the validator (a chain link it cannot check offline) is a note and never
-    a refusal, exactly as the project's own exit code treats it, and so is
-    its `  note` (a `SHAPE_PIN_SOURCE_<LINK>` the run guard passed over,
-    #990). Where the project's own YAML reader refuses the file before the
+    asked as the manifest's own validator asks it. `values` must be the
+    complete table; `policy` is the naming policy the validator is handed.
+    A line `manifest_kind.passed_over` names is a note and never a refusal,
+    as that validator's own exit code treats it: the project's WARNING (a
+    chain link it cannot check offline) and its `  note` (a
+    `SHAPE_PIN_SOURCE_<LINK>` the run guard passed over, #990). The holder
+    passes over none (#925), so every line its `findings` returns is a refusal.
+    Where the manifest's own YAML reader refuses the file before the
     validator can be asked, each sentence is the reader's, naming the value
     on the line it refuses (`_unread_sentences`, #708).
     """
@@ -5404,12 +5606,16 @@ def _invalid_problems(values: dict, policy: NamingPolicy, what: dict,
                       manifest_kind: TemplateManifest = PROJECT_MANIFEST
                       ) -> list[tuple[str, str]]:
     """`manifest_invalid`'s sentences, each with its kind: `invalid` for a
-    finding of the validator's, and `unreadable` where the reader refuses
-    the file the validator would read (#708, the holder's #929), whose
-    words are the reader's and whose remedy is its own
-    (`MANIFEST_UNREADABLE_REMEDIATION`)."""
+    finding of the validator's, `unreadable` where the reader refuses the
+    file the validator would read (#708, the holder's #929), whose words are
+    the reader's and whose remedy is its own
+    (`MANIFEST_UNREADABLE_REMEDIATION`), and `not-a-mapping` where the
+    reader reads that file as something other than a mapping (#1059), whose
+    remedy aims at the template's manifest."""
     notes = _validator_notes(values, policy, template_dir, ignore,
                              manifest_kind)
+    if isinstance(notes, _NotAMapping):
+        return [(KIND_NOT_A_MAPPING, notes.sentence)]
     if isinstance(notes, YamlError):
         return [(KIND_UNREADABLE, sentence) for sentence in _unread_sentences(
             values, what, template_dir, notes, manifest_kind)]
@@ -5459,16 +5665,25 @@ def _unread_sentences(values: dict, what: dict, template_dir: Path,
             f"{' '.join(words)}" for key, words in said.items()]
 
 
+class _NotAMapping(NamedTuple):
+    """What `_validator_notes` answers where the manifest these values render
+    is read as something other than a mapping (#1059): the one `sentence`
+    that says so, a problem of its own kind and not a finding."""
+
+    sentence: str
+
+
 def _validator_notes(values: dict, policy: NamingPolicy, template_dir: Path,
                      ignore: tuple,
                      manifest_kind: TemplateManifest = PROJECT_MANIFEST
-                     ) -> list[str] | YamlError:
+                     ) -> list[str] | YamlError | _NotAMapping:
     """The FINDINGs the validator of the manifest of `manifest_kind` (the
     project's, by default) makes of the manifest these `values` render, less
     the lines `manifest_kind.passed_over` names and the codes in `ignore`;
-    or the `YamlError` its reader raised, where it cannot read that file.
-    The project's WARNINGs and `  note`s are no finding, as its validator's
-    own `main` counts them (#990): `_findings` returns its
+    or the `YamlError` its reader raised, where it cannot read that file, or
+    a `_NotAMapping`, where it reads the file as something other than a
+    mapping. The project's WARNINGs and `  note`s are no finding, as its
+    validator's own `main` counts them (#990): `_findings` returns its
     `link-source-collides` note beside the findings, and read as one,
     `manifest_invalid` gave it as a refusal and `manifest_judged` said None
     (RV1011's SHOULD-1). The holder's validator keeps its findings apart
@@ -5477,7 +5692,11 @@ def _validator_notes(values: dict, policy: NamingPolicy, template_dir: Path,
 
     A MANIFEST THAT IS NOT A MAPPING is one sentence that says so, and is
     about no value: each validator's own `main` refuses such a file before
-    it asks a question, so its question is never put to one (#307).
+    it asks a question, so its question is never put to one (#307). It is
+    a `_NotAMapping` and not a list, because no value a person types makes
+    it and only a broken template does: its kind has the remedy that says
+    so (`KIND_NOT_A_MAPPING`, #1059), and the invalid-value one would send
+    a person to retype a value that was never wrong.
 
     THE VALIDATOR'S OWN DEFECT, NEVER A FINDING (#307). One that raises,
     one that EXITS (a `sys.exit(0)` would end this run with a zero, having
@@ -5493,8 +5712,9 @@ def _validator_notes(values: dict, policy: NamingPolicy, template_dir: Path,
     except YamlError as exc:
         return exc
     if not isinstance(manifest, dict):
-        return ["the manifest this run would write is not a mapping, which "
-                f"is what {manifest_kind.reader} makes of it."]
+        return _NotAMapping(
+            "the manifest this run would write is not a mapping, which "
+            f"is what {manifest_kind.reader} makes of it.")
     validator = manifest_validator(template_dir, manifest_kind=manifest_kind)
     try:
         notes = list(manifest_kind.findings(validator, manifest, policy))
@@ -5537,7 +5757,7 @@ def manifest_judged(values: dict, policy: NamingPolicy,
     """
     notes = _validator_notes(values, policy, template_dir, ignore,
                              manifest_kind)
-    if isinstance(notes, YamlError):
+    if isinstance(notes, (YamlError, _NotAMapping)):
         return None
     judged = {manifest_kind.finding_placeholder.get(_code_of(note))
               for note in notes}
@@ -5551,8 +5771,9 @@ def manifest_value_problems(values: dict, policy: NamingPolicy, what: dict,
                             manifest_kind: TemplateManifest = PROJECT_MANIFEST
                             ) -> list[tuple[str, str]]:
     """`(kind, sentence)` for everything wrong with the values, `kind` being
-    `misread`, `invalid` or `unreadable` (`_invalid_problems`); `[]` when
-    the manifest of `manifest_kind` would hold every one.
+    `misread`, `invalid`, `unreadable` or `not-a-mapping`
+    (`_invalid_problems`); `[]` when the manifest of `manifest_kind` would
+    hold every one.
 
     A misread comes FIRST and alone: a value the reader turns into something
     else makes the manifest invalid in ways that are its consequence (`id:
@@ -5578,7 +5799,8 @@ def refuse_manifest_values(prefix: str, values: dict, policy: NamingPolicy,
     its `tail` finishes the remediation with what only it knows. A manifest
     the project's reader refuses is `-invalid` still, the code a value it
     refuses had when the validator was the one to refuse it, with the
-    reader's remedy (#708)."""
+    reader's remedy (#708); so is one it reads as something other than a
+    mapping, with the remedy for a defect of the standard (#1059)."""
     refuse_manifest_problems(
         prefix, manifest_value_problems(values, policy, what,
                                         misreads=misreads), tail)

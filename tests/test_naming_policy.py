@@ -241,17 +241,48 @@ def test_those_are_the_characters_the_two_patterns_disagree_on():
     assert between == sorted(NO_ID_CHARACTERS)
 
 
+#: The shapes of a root or family name, one for each form a name can take
+#: that holds a run of letters and digits (#916's L2-91): `{c}` is where the
+#: character goes. A plain CamelCase name (`project-leg`); `neutral-product`,
+#: `open` and a capital, then a tail; and `domain-descendant`, a stem, then
+#: `x` and a capital, with the character in the stem. A policy that let one of
+#: those two patterns take `_` passed the first shape alone.
+NAME_SHAPES = ("North{c}Wind", "openDo{c}x", "Med{c}xScribe")
+#: The neutral products the descendant shape pins, so that a descendant's
+#: referent is REACHED (`classify` calls a name a descendant only then).
+REFERENTS = {"openScribe", "openxScribe"}
+
+
+@pytest.mark.parametrize("shape", NAME_SHAPES)
 @pytest.mark.parametrize("character", NO_ID_CHARACTERS)
 def test_no_root_or_family_name_holds_a_character_no_id_takes(policy,
-                                                              character):
+                                                              character,
+                                                              shape):
     """#658 and #659 tell a derived id refused for one of these characters
     to change `--project` or `--family` to one CamelCase token, never to
     pass an `--id`, and, in place, that the source cannot be adopted under
     that name. That holds while the policy classifies no such name as an
-    assembly root or a family holder."""
-    name = f"North{character}Wind"
+    assembly root or a family holder, whichever of the forms it is spelled
+    like: no form takes the name at all, and none classifies it with its
+    referent reached or declared."""
+    name = shape.format(c=character)
+    assert policy.matches(name) == [], name
+    assert policy.matches(name, "assembly") == [], name
     assert policy.classify(name, "assembly", set()) is None, name
+    assert policy.classify(name, "assembly", REFERENTS) is None, name
     assert policy.classify(name, "family") is None, name
+
+
+@pytest.mark.parametrize("shape, form", [
+    ("North{c}Wind", "project-leg"), ("openDo{c}x", "neutral-product"),
+    ("Med{c}xScribe", "domain-descendant")])
+def test_each_name_shape_is_one_a_form_takes_without_the_character(
+        policy, shape, form):
+    """The three shapes above are live: with no character in them each is
+    taken by the form it is there to ask about, so the test above cannot
+    pass for want of a name any form would take."""
+    name = shape.format(c="")
+    assert form in {family for family, _ in policy.matches(name, "assembly")}
 
 
 def test_overlaps_are_reported_not_hidden(policy):

@@ -20,10 +20,11 @@ calls NOT A SHAPE ROOT. That is a finding of its own now, which fails closed
 as the gitlink checks do.
 
 EVERY TEST BUT THE LAST THREE CALLS `_verify` DIRECTLY on hand-made commits,
-their gitlinks written with `git update-index --cacheinfo 160000,...`. No `git
-filter-repo` is involved, so a machine that has none still runs all of
-those. The last three run `execute`, so they need `git filter-repo` and are
-skipped without it, as every `execute` test is: one proves `cmd_execute` hands
+their gitlinks written with `git update-index --cacheinfo 160000,...`, or its
+`_account_for` on one path (#914). No `git filter-repo` is involved, so a
+machine that has none still runs all of those. The last three run `execute`,
+so they need `git filter-repo` and are skipped without it, as every `execute`
+test is: one proves `cmd_execute` hands
 `_verify` the PLAN'S mount paths and that the assembly clones and bootstraps
 from them, the other two that a source submodule, and the source's own
 `project.yaml`, that a broken plan check let into the root fail the run.
@@ -437,6 +438,53 @@ def test_a_dropped_project_yaml_is_never_the_sources_own(verify, beside):
     assert verified == (1 if beside else 0), err
     assert findings(err) == ([manifest_not_shape(BESIDE)] if beside else [])
     assert (VERIFIED in out) == (not beside)
+
+
+def test_an_identical_drop_is_counted_as_dropped(verify):
+    """#914's L1-87. The source's `project.yaml` holds the very bytes the
+    root's manifest does, and the plan dropped it: on main the table said
+    `root 2 of 4` and `drop 0 of 4`, counting the shape's file as the
+    source's landing. The drop is asked first now, so the dropped path is
+    counted `drop`, and nothing else moves."""
+    verified, out, err = verify(source_files={MANIFEST: ROOT_FILES[MANIFEST]},
+                                drop=(MANIFEST,))
+    assert verified == 0, err
+    assert [row(out, leg) for leg in ("spec", "code", "root", "drop")] == [
+        "spec       1 of 4 source paths", "code       1 of 4 source paths",
+        "root       1 of 4 source paths", "drop       1 of 4 source paths"]
+    assert findings(err) == []
+
+
+#: `(where the source path's blob is afterwards, whether the plan dropped
+#: it, the counts that move, the findings)`: only a dropped path whose one
+#: landing is the root's moves, from `root` to `drop` (#914's L1-87).
+OID = "a" * 40
+DROP_CASES = [
+    pytest.param([f"root:{OID}"], True, {"drop": 1}, [],
+                 id="dropped-and-the-root-holds-its-bytes"),
+    pytest.param([], True, {"drop": 1}, [], id="dropped-and-nowhere"),
+    pytest.param([f"code:{OID}"], True, {"code": 1}, [],
+                 id="dropped-and-in-a-leg"),
+    pytest.param([f"code:{OID}", f"root:{OID}"], True, {}, [
+        f"FINDING adopt-duplicated: `docs/a.md` is in code:{OID}, root:{OID}"],
+        id="dropped-and-in-a-leg-and-the-root"),
+    pytest.param([f"root:{OID}"], False, {"root": 1}, [],
+                 id="kept-in-the-root"),
+    pytest.param([f"root:{'b' * 40}"], True, {"drop": 1}, [],
+                 id="dropped-and-the-root-holds-other-bytes"),
+]
+
+
+@pytest.mark.parametrize("landed, dropped, moved, found", DROP_CASES)
+def test_the_drop_is_asked_before_the_root(adopter, landed, dropped, moved,
+                                           found):
+    """`_account_for` on one source path, `docs/a.md`, under a directory's
+    drop entry where it is dropped."""
+    counts, findings_made = adopter._account_for(
+        {"docs/a.md": OID}, {"docs/a.md": landed},
+        ["docs/"] if dropped else ["other/"])
+    assert counts == {"spec": 0, "code": 0, "root": 0, "drop": 0, **moved}
+    assert findings_made == found
 
 
 #: `execute` REQUIRES `git filter-repo`; without it, the three tests below are

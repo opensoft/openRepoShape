@@ -21,7 +21,10 @@ before this change, on git 2.43.0, in the holder and in a plain clone:
 WHAT TELLS THEM FROM A MISSING CREDENTIAL, never git's words: for B5, the
 member's own index, read as the holder's is (`init_stop`); for B4, a
 commit the member's store lacks after the update, where git's own trace
-of the run says its fetch there exited 0. The store alone tells
+of the run says its fetch there exited 0, or, with a token in use, whose
+rewrite a trace would write, where `git fetch origin` made again there,
+untraced, exits 0 and the commit is still absent after `git fetch origin
+<commit>` (#996). The store alone tells
 nothing: a member checked out before the run whose pin moved to a commit
 its remote holds, fetched with no credential, is as short of it, which
 was measured, and that is still the credential's skip, a control here,
@@ -30,16 +33,43 @@ beside a member checked out whole whose own nested gitlink has its url.
 WHERE NEITHER TELLS, the run reads as before, the advice and ok, and a row
 pins each: a member's own `.gitmodules` git cannot read, or reads only up
 to a bad line; a stray git never came to, since a clone that failed ended
-its update 1; B4 with a credential in use, which is never traced; a member
-git did not check out at its pin, refused (exit 1) or dead on an
-`index.lock` (128), since git's update may have ended there, even at a
-commit its store holds and no ref reaches, which git's fetch does not stop
-at; a leg this user cannot search; and a member whose fetch reached
-another member's remote but not its own. A gitlink git's update skips
+its update 1; a member git did not check out at its pin, refused (exit 1)
+or dead on an `index.lock` (128), since git's update may have ended there,
+even at a commit its store holds and no ref reaches, which git's fetch
+does not stop at; a leg this user cannot search; and a member whose fetch
+reached another member's remote but not its own. A gitlink git's update skips
 (`update = none` in the member's config or its `.gitmodules`, or `active =
 false`) is passed as git passes it, and a stop past it is named. B5 and B4
 a level down, in a leg, are named up to the holder, and B5 is named before
 a leg git never fetched.
+
+GIT'S UPDATE ENDED ON A SIGNAL (#998), lane 5's P3 on #954: IRRS's own
+`.gitmodules` gives its `code` leg a `branch` with no value, git 2.43.0's
+update crashes in IRRS (`submodule--helper died of signal 11`), goes on
+and exits 139, and bootstrap said `ok` with the credential advice. It
+names the signal and the code now, gives no advice, and fails. P3 is
+skipped where git does not crash; a wrapper `git` that answers (a)'s
+update with 139, or is killed by SIGSEGV, holds both shapes on every git.
+A code no signal gives, 128 or 255, reads as before.
+
+A SIGNAL GIT'S UPDATE WENT ON PAST (#1056), lane 5's rv996 on #1045: git
+keeps only the last code that is not 0, so a member's crash or kill
+before a later gitlink's 128 or 1 left no signal in the update's code,
+and bootstrap said ok with the advice. Git's own trace of the update
+gives the dead git's `child_exit`, and the first is named now: P3, or
+IRRS's `git checkout` killed by a `post-checkout` hook standing in for the
+OOM killer, then IRSS's pin moved on with no credential, or IRSS's
+checkout refused, or B4 at IRSS, which is named after the signal. A hook's
+own 137 is no signal, and a git killed in an update that exits 0 is told
+nowhere. With a token in use, the update is not traced, and a signal
+before a later failure is still the credential's skip, a row pins that.
+
+A CREDENTIAL IN USE (#996): B4 with `SHAPE_LEGS_TOKEN` or
+`SHAPE_LEGS_APP_TOKEN` set said the advice to set the token that was set,
+and ok. It is named now, and the token is in no output and no file under
+TMPDIR, with every trace the person may ask for on; a wrapper `git` logs
+the two fetches made again, their argv and their trace variables. With
+the token's transport refused, the run is still the credential's skip.
 
 THE SAME FAMILY, OFFLINE RULES AND HELPERS as
 `tests/test_family_holder_remedies_compose.py` (#879). A missing credential
@@ -53,7 +83,11 @@ other row's push puts it on a remote (`unpushed`).
 
 from __future__ import annotations
 
+import itertools
+import os
 import re
+import shlex
+import shutil
 from pathlib import Path
 
 import pytest
@@ -82,6 +116,22 @@ from test_validate_family_unnamed_mounts import spare_commits, stage_gitlink
 #: How (a)'s line begins where git's update died past the holder's own
 #: records.
 LEAD = "  UPDATE STOPPED, and not for want of a credential: "
+
+#: How it begins where git's update ended on a signal (#998).
+KILLED_LEAD = "  UPDATE KILLED, and not for want of a credential: "
+
+#: What it says of a signal a git that git's update ran died of, which
+#: git's code past 128 gives, and of one that killed git itself, which
+#: Python gives as a negative code.
+DIED_OF = ("git's update ended on signal {signum} ({name}, exit {code}), "
+           "which a git it ran died of. Git's own words above say which git "
+           "and where.")
+KILLED_IT = ("git's update ended on signal {signum} ({name}, exit {code}), "
+             "which killed it.")
+
+#: The failure a run whose update ended on a signal ends on.
+KILLED_FAILED = ("family bootstrap FAILED: git's update (ended on signal "
+                 "{signum})")
 
 #: What it says of a gitlink an `owner`'s own index records with no url
 #: (B5), and what cures it, up to the gitlink `above` records for `owner`.
@@ -121,9 +171,9 @@ def said_after_the_fetch(result, source: str = "none") -> list[str]:
     credential's `source`, as `after_fetch_line` reads them, the line this
     change adds included."""
     ours = [line for line in result.stderr.splitlines()
-            if line.startswith((*OURS, LEAD))]
+            if line.startswith((*OURS, LEAD, KILLED_LEAD))]
     assert ours, result.stderr
-    assert re.fullmatch(r"  FETCH INCOMPLETE \(git exit \d+\) using "
+    assert re.fullmatch(r"  FETCH INCOMPLETE \(git exit -?\d+\) using "
                         rf"credential source '{source}':", ours[0]), (
         result.stderr)
     return ours[1:]
@@ -175,6 +225,10 @@ def b5(root: Path, env: dict, family) -> None:
     bumped(root, env, family, stray_in(root / ROW, family, env))
 
 
+#: A number for each commit `unpushed` makes in this session.
+MADE = itertools.count(1)
+
+
 def unpushed(family, env: dict, tmp_path: Path,
              remote: str = OTHER) -> tuple[Path, str]:
     """A clone of the fixture's `remote` (OTHER's unless said) of the
@@ -192,11 +246,19 @@ def unpushed(family, env: dict, tmp_path: Path,
     and the walk never ran. CI, which runs these rows less than a second
     apart, failed the refused checkout's row so at 4f97fedb and the
     unreadable leg's at 938a83ef; a commit date fixed by
-    `GIT_COMMITTER_DATE` and `GIT_AUTHOR_DATE` fails both on git 2.43.0."""
+    `GIT_COMMITTER_DATE` and `GIT_AUTHOR_DATE` fails both on git 2.43.0.
+
+    AND A NUMBER OF ITS OWN (`MADE`), since the clone's path alone is not
+    one: under `tmp_path_retention_policy=failed` pytest removes a passed
+    row's directory, and gives the next row whose name begins with the
+    same 30 characters the same one. Two rows of #996 so named,
+    `test_with_a_credential_in_use_0` both, made one commit in the same
+    second, and the second row's commit was on a branch of the remote."""
     clone = tmp_path / f"unpushed-{remote}"
     raw(tmp_path, env, "clone", "-q", "--",
         str(family["remotes"] / f"{remote}.git"), str(clone))
-    return clone, committed(clone, env, f"Made in {clone} and never pushed")
+    return clone, committed(clone, env, f"Made in {clone} and never pushed "
+                                        f"({next(MADE)})")
 
 
 def moved_by_hand(root: Path, env: dict, project: str, commit: str) -> None:
@@ -734,6 +796,147 @@ def test_a_member_s_gitmodules_read_up_to_a_bad_line_is_read_as_before(
     assert git_update(holder, env).returncode == 128
 
 
+# --- git's update ended on a signal (#998) ----------------------------------
+
+def p3(holder: Path, env: dict) -> None:
+    """Lane 5's P3 on #954: IRRS's own `.gitmodules` gives its `code` leg
+    a `branch` with no value, committed there and recorded by hand, as
+    `family.py bump`'s own git reads that file too. Git 2.43.0's update
+    crashes in IRRS (`submodule--helper died of signal 11`) and goes on
+    to IRSS; from 2.43.1 git refuses that line as it refuses a `url` with
+    none, and dies there (128)."""
+    member = holder / ROW
+    data = (member / GITMODULES).read_bytes()
+    line = (chr(9) + "path = code" + chr(10)).encode()
+    assert data.count(line) == 1, data
+    bare = (chr(9) + "branch" + chr(10)).encode()
+    (member / GITMODULES).write_bytes(data.replace(line, line + bare))
+    raw(member, env, "add", "--", GITMODULES)
+    moved_by_hand(holder, env, MEMBER,
+                  committed(member, env, "A branch with no value"))
+
+
+def test_p3_a_member_s_gitmodules_git_crashes_on_fails_naming_the_signal(
+        family, holder, offline, tmp_path):
+    """P3 (`p3`): git 2.43.0's update crashes in IRRS, goes on to IRSS,
+    and exits 139; bootstrap said ok with the credential advice. It names
+    the signal and the code now, gives no advice, and fails on git's
+    update. Skipped where git does not crash so."""
+    env = cloning(offline, tmp_path, family)
+    p3(holder, env)
+
+    result = bootstrap(holder, env, "--skip-members")
+    update = git_update(holder, env)
+
+    if update.returncode != 139:
+        pytest.skip(f"this git's update exits {update.returncode} here, "
+                    "where git 2.43.0's crashes (exit 139)")
+    assert result.returncode == 1, result.stdout + result.stderr
+    assert said_after_the_fetch(result) == [
+        KILLED_LEAD + DIED_OF.format(signum=11, name="SIGSEGV", code=139),
+        KILLED_FAILED.format(signum=11)]
+
+
+#: A wrapper `git` here is a POSIX shell script, which Windows does not run
+#: by its `#!` line.
+POSIX_WRAPPER = pytest.mark.skipif(
+    os.name == "nt", reason="a wrapper `git` here is a POSIX shell script, "
+    "which Windows does not execute by its `#!` line")
+
+
+#: The update (a) runs and the fetches the walk runs, as the wrapper's
+#: `case` matches them among the commands bootstrap runs itself.
+UPDATE_CASE = '*" submodule update --init --recursive "*'
+FETCH_CASE = '*" fetch "*'
+
+
+def wrapped(env: dict, tmp_path: Path, action: str = ":",
+            log: Path | None = None) -> dict:
+    """`env` with a wrapper `git` first on PATH, which runs `action`, a
+    shell command, for the `git submodule update --init --recursive` that
+    (a) runs, and the real git, by its absolute path, for every other
+    command, bootstrap's own and the walk's; the gits git starts find its
+    own first on their PATH. With `log`, it first writes a line there for
+    that update and for each fetch: the command's arguments, a token in
+    them masked as `<token>`, then the `GIT_TRACE*` variables and the
+    `GIT_PROTOCOL_FROM_USER` its environment holds."""
+    real = shutil.which("git", path=env["PATH"])
+    assert real, env["PATH"]
+    shim = tmp_path / "wrapper"
+    shim.mkdir()
+    script = shim / "git"
+    logged = [] if log is None else [
+        'case " $* " in', f"{UPDATE_CASE}|{FETCH_CASE})",
+        'args=$(printf "%s" "$*" | sed '
+        '"s/x-access-token:[^@]*@/x-access-token:<token>@/g")',
+        'traces=$(env | grep -E "^(GIT_TRACE|GIT_PROTOCOL_FROM_USER)" '
+        '| sort | paste -s -d " " -)',
+        f'echo "$args | $traces" >> {shlex.quote(str(log))} ;;', "esac"]
+    script.write_bytes(chr(10).join([
+        "#!/bin/sh", *logged,
+        'case " $* " in', f"{UPDATE_CASE}) {action} ;;", "esac",
+        f'exec {shlex.quote(real)} "$@"', ""]).encode())
+    script.chmod(0o755)
+    return {**env, "PATH": str(shim) + os.pathsep + env["PATH"]}
+
+
+#: `(what the wrapper answers (a)'s update with, what (a)'s line says of
+#: it)`: 139, the code git's update ends with where a git it ran died of
+#: SIGSEGV, as git 2.43.0's in P3; and the wrapper killed by SIGSEGV itself,
+#: with no core file, whose code Python gives as -11.
+KILLED_BY = {
+    "exit-139": ("exit 139",
+                 DIED_OF.format(signum=11, name="SIGSEGV", code=139)),
+    "sigsegv": ("ulimit -c 0; kill -s SEGV $$",
+                KILLED_IT.format(signum=11, name="SIGSEGV", code=-11)),
+}
+
+
+@POSIX_WRAPPER
+@pytest.mark.parametrize("action, said", KILLED_BY.values(), ids=KILLED_BY)
+def test_an_update_ended_on_a_signal_fails_naming_it(family, holder, offline,
+                                                     tmp_path, action, said):
+    """#998's two shapes on any git, every member checked out at its pin:
+    git's update ended on SIGSEGV, a git it ran dead of it (139) or git
+    itself killed by it (-11). Bootstrap said ok with the credential
+    advice for both. It names the signal and the code now, gives no
+    advice, and fails on git's update. The credential's own 128 keeps the
+    advice and ok (`test_the_credential_s_skip_is_as_it_was`)."""
+    env = cloning(offline, tmp_path, family)
+
+    result = bootstrap(holder, wrapped(env, tmp_path, action),
+                       "--skip-members")
+
+    assert result.returncode == 1, result.stdout + result.stderr
+    assert said_after_the_fetch(result) == [KILLED_LEAD + said,
+                                            KILLED_FAILED.format(signum=11)]
+
+
+#: What the wrapper answers (a)'s update with, where no signal gives the
+#: code: git's own `die`, 128, which the walk past the holder's records
+#: asks, and finds nothing in with every member checked out at its pin;
+#: and 255, past every signal's `128 + N`, which git exits with where a
+#: command of its returns -1.
+NO_SIGNAL = {"exit-128": "exit 128", "exit-255": "exit 255"}
+
+
+@POSIX_WRAPPER
+@pytest.mark.parametrize("action", NO_SIGNAL.values(), ids=NO_SIGNAL)
+def test_a_code_no_signal_gives_is_read_as_before(family, holder, offline,
+                                                  tmp_path, action):
+    """No misfire: where git's update exits with a code no signal gives,
+    nothing is said of a signal, and the run reads as before, the advice
+    and ok."""
+    env = cloning(offline, tmp_path, family)
+
+    result = bootstrap(holder, wrapped(env, tmp_path, action),
+                       "--skip-members")
+
+    assert result.returncode == 0, result.stdout + result.stderr
+    assert said_after_the_fetch(result) == [ALONE]
+    assert result.stdout.endswith("\nfamily bootstrap ok\n"), result.stdout
+
+
 # --- a credential in use -----------------------------------------------------
 
 def test_with_a_credential_in_use_b5_is_named_and_the_token_is_not(
@@ -755,16 +958,513 @@ def test_with_a_credential_in_use_b5_is_named_and_the_token_is_not(
     assert TOKEN not in result.stdout + result.stderr
 
 
-def test_with_a_credential_in_use_b4_is_read_as_before(family, holder,
-                                                       offline, tmp_path):
-    """What it cannot tell: a run with a credential in use is not traced,
-    since trace2 writes a command's arguments and the credential is one, so
-    B4 is the advice and ok, as before."""
+#: The two variables a credential arrives in, the App's first.
+CREDENTIALS = ("SHAPE_LEGS_APP_TOKEN", "SHAPE_LEGS_TOKEN")
+
+#: The trace files `traced_by_the_caller` asks for that a run writes where
+#: every remote is a local path: GIT_TRACE_CURL's is written for http only.
+TRACES = ("trace.txt", "trace2-event.json", "trace2-normal.txt",
+          "trace2-perf.txt")
+
+
+def traced_by_the_caller(env: dict, offline, tmp_path: Path) -> dict:
+    """`env` with every trace a person may ask for written under the run's
+    TMPDIR: `GIT_TRACE`, `GIT_TRACE2_EVENT` and `GIT_TRACE_CURL` in the
+    environment, and trace2's normal and perf targets in the global
+    config, a copy of the one `env` names with `trace2.normalTarget` and
+    `trace2.perfTarget` added."""
+    temp = offline.temp
+    config = tmp_path / "traced-gitconfig"
+    config.write_bytes(
+        Path(env["GIT_CONFIG_GLOBAL"]).read_bytes() + chr(10).join([
+            "[trace2]",
+            f'{chr(9)}normalTarget = "{(temp / TRACES[2]).as_posix()}"',
+            f'{chr(9)}perfTarget = "{(temp / TRACES[3]).as_posix()}"',
+            ""]).encode())
+    return {**env, "GIT_CONFIG_GLOBAL": str(config),
+            "GIT_TRACE": str(temp / TRACES[0]),
+            "GIT_TRACE2_EVENT": str(temp / TRACES[1]),
+            "GIT_TRACE_CURL": str(temp / "trace-curl.txt")}
+
+
+def files_holding(temp: Path, text: str) -> list[str]:
+    """Every file under `temp` whose bytes hold `text`, as a path relative
+    to it."""
+    return [path.relative_to(temp).as_posix()
+            for path in sorted(temp.rglob("*"))
+            if path.is_file() and text.encode() in path.read_bytes()]
+
+
+@pytest.mark.parametrize("variable", CREDENTIALS)
+def test_with_a_credential_in_use_b4_is_named_and_the_token_is_not(
+        family, holder, offline, tmp_path, variable):
+    """#996, lane 5's SHOULD 4 on #954: B4 at IRSS with a token in
+    `variable`. Git's update, which carries the token's rewrite in its
+    argv, is not traced, and the run gave the advice to set the token that
+    was set, and ok. The two fetches git's update makes in IRSS are made
+    again, untraced: the first reaches the remote, the commit is still
+    absent after the second, and B4 is named, exit 1, with no advice.
+    Every trace the person asked for is on, the environment's and the
+    global config's, and the walk's own gits, which carry no token, write
+    each; the token is in none of them, nor in any other file under
+    TMPDIR, nor in the output. Before, git's update wrote it into
+    `GIT_TRACE2_EVENT`'s file."""
+    env = {**cloning(offline, tmp_path, family), variable: TOKEN}
+    commit = b4(holder, env, family, tmp_path)
+
+    result = bootstrap(holder, traced_by_the_caller(env, offline, tmp_path),
+                       "--skip-members")
+
+    assert result.returncode == 1, result.stdout + result.stderr
+    assert said_after_the_fetch(result, variable) == [
+        LEAD + ABSENT_SAID.format(path=OTHER_ROW, commit=commit,
+                                  owner="this holder", tail=BUMP_NAMED),
+        STOP_FAILED.format(path=OTHER_ROW)]
+    assert TOKEN not in result.stdout + result.stderr
+    assert files_holding(offline.temp, TOKEN) == []
+    assert [name for name in TRACES
+            if (offline.temp / name).is_file()] == list(TRACES)
+
+
+#: The states the credential's skip is asked in with a token in use:
+#: IRSS's pin moved on to a commit its remote holds, and B4 at IRSS.
+WITH_A_TOKEN_REFUSED = {"pin-moved-on": pin_moved_on, "b4": b4}
+
+
+@pytest.mark.parametrize("make", WITH_A_TOKEN_REFUSED.values(),
+                         ids=WITH_A_TOKEN_REFUSED)
+def test_with_a_credential_in_use_the_credential_s_skip_is_as_it_was(
+        family, holder, offline, tmp_path, make):
+    """No misfire with a token in use (#996): IRSS's pin moved on, or B4
+    at IRSS, and a remote the token's transport cannot reach, the file
+    transport refused. Git's update dies at IRSS (128), and the first
+    fetch made again there fails as git's own did, since it is given only
+    the transports git's update gives a url (`GIT_PROTOCOL_FROM_USER=0`),
+    so it is the credential's skip: the advice and ok, as before, and the
+    token is in no output and no file under TMPDIR."""
+    env = cloning(offline, tmp_path, family)
+    make(holder, env, family, tmp_path)
+    without = {**isolated(offline, tmp_path), "SHAPE_LEGS_TOKEN": TOKEN}
+
+    result = bootstrap(holder,
+                       traced_by_the_caller(without, offline, tmp_path),
+                       "--skip-members")
+
+    assert result.returncode == 0, result.stdout + result.stderr
+    assert said_after_the_fetch(result, "SHAPE_LEGS_TOKEN") == [ALONE]
+    assert result.stdout.endswith("\nfamily bootstrap ok\n"), result.stdout
+    assert TOKEN not in result.stdout + result.stderr
+    assert files_holding(offline.temp, TOKEN) == []
+    assert git_update(holder, without).returncode == 128
+
+
+#: The token's two `-c`s, as the wrapper's log masks them, and the trace
+#: variables a git given the token runs with: trace2's three targets off,
+#: and no other; and for each fetch made again, `GIT_PROTOCOL_FROM_USER`
+#: too, as `git submodule` gives every git it starts.
+REWRITE_LOGGED = " ".join(
+    f"-c url.https://x-access-token:<token>@github.com/.insteadOf={target}"
+    for target in ("https://github.com/", "git@github.com:"))
+UNTRACED = "GIT_TRACE2=0 GIT_TRACE2_EVENT=0 GIT_TRACE2_PERF=0"
+REFETCHED = f"GIT_PROTOCOL_FROM_USER=0 {UNTRACED}"
+UPDATE_ARGS = "submodule update --init --recursive"
+
+
+def logged(log: Path) -> list[str]:
+    """The wrapper's log, a line for each command it logged."""
+    return log.read_bytes().decode().splitlines()
+
+
+@POSIX_WRAPPER
+def test_with_a_credential_in_use_the_two_fetches_are_made_again_untraced(
+        family, holder, offline, tmp_path):
+    """#996's fetches, as a wrapper `git` logs the commands bootstrap runs
+    itself, B4 at IRSS with a token in use: git's update, then `git fetch
+    origin` and `git fetch origin <commit>` in IRSS, as git's update makes
+    them there, each with the token's rewrite in its argv, as the update
+    was given it, and with `GIT_PROTOCOL_FROM_USER=0`. Every trace the
+    person may ask for is on, and each of the three runs with no
+    `GIT_TRACE*` variable but trace2's three targets set to 0."""
     env = {**cloning(offline, tmp_path, family), "SHAPE_LEGS_TOKEN": TOKEN}
+    commit = b4(holder, env, family, tmp_path)
+    log = tmp_path / "git-calls.log"
+    traced = traced_by_the_caller(env, offline, tmp_path)
+
+    result = bootstrap(holder, wrapped(traced, tmp_path, log=log),
+                       "--skip-members")
+
+    assert result.returncode == 1, result.stdout + result.stderr
+    assert logged(log) == [
+        f"{REWRITE_LOGGED} {UPDATE_ARGS} | {UNTRACED}",
+        f"{REWRITE_LOGGED} fetch origin | {REFETCHED}",
+        f"{REWRITE_LOGGED} fetch origin {commit} | {REFETCHED}"]
+
+
+@POSIX_WRAPPER
+def test_with_no_credential_the_walk_makes_no_fetch_of_its_own(
+        family, holder, offline, tmp_path):
+    """With no token, B4 is told by git's own trace of its update (#892),
+    which the run asks for in a directory of its own under TMPDIR: the
+    walk makes no fetch of its own (#996), and B4 is named."""
+    env = cloning(offline, tmp_path, family)
     b4(holder, env, family, tmp_path)
+    log = tmp_path / "git-calls.log"
+
+    result = bootstrap(holder, wrapped(env, tmp_path, log=log),
+                       "--skip-members")
+
+    assert result.returncode == 1, result.stdout + result.stderr
+    (update,) = logged(log)
+    traced = f"{UPDATE_ARGS} | GIT_TRACE2_EVENT={offline.temp}"
+    assert re.fullmatch(re.escape(traced + os.sep + "bootstrap-trace-")
+                        + r"\S+", update), update
+
+
+def pinned_off_branch(holder: Path, env: dict, family,
+                      tmp_path: Path) -> Path:
+    """IRSS's gitlink and pin moved on to a commit its remote holds at a
+    ref that is no branch, `refs/pins/<commit>`: `git fetch origin`, which
+    fetches its branches, does not bring it, and `git fetch origin
+    <commit>` does, the remote advertising that ref."""
+    clone, commit = unpushed(family, env, tmp_path)
+    raw(clone, env, "push", "-q", str(family["remotes"] / f"{OTHER}.git"),
+        f"{commit}:refs/pins/{commit[:12]}")
+    moved_by_hand(holder, env, OTHER, commit)
+    return holder
+
+
+#: `(how IRSS's pin moved on, whether the second fetch is made)`: to a
+#: commit on a branch of its remote, which the first fetch made again
+#: brings, and to one at a ref that is no branch, which only the second
+#: brings.
+BROUGHT_BY = {"first-fetch": (pin_moved_on, False),
+              "second-fetch": (pinned_off_branch, True)}
+
+
+@POSIX_WRAPPER
+@pytest.mark.parametrize("make, second", BROUGHT_BY.values(), ids=BROUGHT_BY)
+def test_with_a_credential_in_use_a_commit_a_fetch_brings_is_untold(
+        family, holder, offline, tmp_path, make, second):
+    """Where a fetch made again brings the commit, nothing is said (#996):
+    git's update dies before it fetches in IRSS, as the wrapper stands in
+    for by answering it 128 having fetched nothing, and IRSS's pin moved
+    on to a commit its remote holds. Where `git fetch origin` brings it,
+    `git fetch origin <commit>` is not made; where only that second fetch
+    brings it, it is made, and the commit is no B4. The run reads as
+    before, the advice and ok."""
+    env = {**cloning(offline, tmp_path, family), "SHAPE_LEGS_TOKEN": TOKEN}
+    make(holder, env, family, tmp_path)
+    commit = pinned(holder, OTHER)
+    log = tmp_path / "git-calls.log"
+
+    result = bootstrap(holder, wrapped(env, tmp_path, "exit 128", log),
+                       "--skip-members")
+
+    assert result.returncode == 0, result.stdout + result.stderr
+    assert said_after_the_fetch(result, "SHAPE_LEGS_TOKEN") == [ALONE]
+    assert logged(log) == [
+        f"{REWRITE_LOGGED} {UPDATE_ARGS} | {UNTRACED}",
+        f"{REWRITE_LOGGED} fetch origin | {REFETCHED}",
+        *([f"{REWRITE_LOGGED} fetch origin {commit} | {REFETCHED}"]
+          if second else [])]
+
+
+# --- a signal git's update went on past (#1056) -----------------------------
+
+#: What (a)'s line says of a signal a git that git's update ran died of,
+#: where git's update went on past it and ended with another code, which
+#: git's trace tells (#1056), and the failure such a run ends on.
+WENT_ON = ("a git that git's update ran died of signal {signum} ({name}, "
+           "exit {code}), and git's update went on and ended with exit "
+           "{ended}. Git's own words above say which git and where.")
+DIED_FAILED = ("family bootstrap FAILED: git's update (a git it ran died of "
+               "signal {signum})")
+
+#: A hook here is a POSIX shell script that signals the git running it.
+POSIX_HOOK = pytest.mark.skipif(
+    os.name == "nt", reason="a hook here sends a POSIX signal to the git "
+    "that runs it, which Windows does not give")
+
+
+def hooked(checkout: Path, env: dict, name: str, line: str) -> None:
+    """A `name` hook in the store `checkout` reads, a shell script that
+    runs `line`."""
+    hooks = raw(checkout, env, "rev-parse", "--git-path",
+                "hooks").stdout.decode().strip()
+    hook = checkout / hooks / name
+    hook.parent.mkdir(exist_ok=True)
+    hook.write_bytes(chr(10).join(["#!/bin/sh", line, ""]).encode())
+    hook.chmod(0o755)
+
+
+def checkout_hooked(root: Path, env: dict, line: str,
+                    project: str = MEMBER) -> None:
+    """`project`'s gitlink and pin, IRRS's unless said, moved by hand to
+    its checkout's HEAD~1, which its store holds and a ref reaches, so git's
+    update fetches nothing there and runs `git checkout -q` of it; and a
+    `post-checkout` hook in that store that runs `line`, after the
+    checkout has moved HEAD."""
+    member = root / "members" / project
+    older = raw(member, env, "rev-parse", "HEAD~1").stdout.decode().strip()
+    moved_by_hand(root, env, project, older)
+    hooked(member, env, "post-checkout", line)
+
+
+def killed_checkout(root: Path, env: dict) -> None:
+    """IRRS's checkout killed (`checkout_hooked`): the hook sends SIGKILL
+    to the `git checkout` that runs it, as the OOM killer would. Git's
+    update says `checkout died of signal 9`, cannot check IRRS out (137,
+    `git checkout`'s code) and goes on to IRSS."""
+    checkout_hooked(root, env, "kill -s KILL $PPID")
+
+
+def checkout_refused(root: Path, env: dict, family, tmp_path: Path) -> Path:
+    """IRSS's checkout moved on by hand to a commit of its own that
+    changes `NOTES.md`, then `NOTES.md` edited and not committed, while
+    the holder still records the pin: git's checkout of the pin there
+    refuses to overwrite the edit, `git checkout`'s own 1, which git's
+    update passes and ends with."""
+    member = root / OTHER_ROW
+    (member / "NOTES.md").write_bytes(b"moved on by hand" + chr(10).encode())
+    raw(member, env, "add", "--", "NOTES.md")
+    committed(member, env, "NOTES.md moved on by hand")
+    (member / "NOTES.md").write_bytes(b"edited" + chr(10).encode())
+    return root
+
+
+def without_the_credential(env: dict, offline, tmp_path: Path) -> dict:
+    """The run's environment with the file transport refused, as for want
+    of a credential."""
+    return isolated(offline, tmp_path)
+
+
+def with_the_credential(env: dict, offline, tmp_path: Path) -> dict:
+    """The run's environment as the state was made in, the file transport
+    allowed."""
+    return env
+
+
+@POSIX_HOOK
+def test_a_killed_checkout_alone_is_named_as_before(family, holder, offline,
+                                                    tmp_path):
+    """The control: IRRS's checkout killed and nothing after it failing,
+    with the credential. Git's update ends with the signal's 137, which
+    its trace gives for IRRS's `git checkout` too, and the run names it as
+    #998 does."""
+    env = cloning(offline, tmp_path, family)
+    killed_checkout(holder, env)
+
+    result = bootstrap(holder, env, "--skip-members")
+
+    assert result.returncode == 1, result.stdout + result.stderr
+    assert said_after_the_fetch(result) == [
+        KILLED_LEAD + DIED_OF.format(signum=9, name="SIGKILL", code=137),
+        KILLED_FAILED.format(signum=9)]
+
+
+#: `(what fails in IRSS after IRRS's killed checkout, the run's
+#: environment, git's update's exit code)`: IRSS's pin moved on with no
+#: credential (128), and IRSS's checkout refused with the credential (1).
+AFTER_THE_SIGNAL = {
+    "pin-moved-on-no-credential": (pin_moved_on, without_the_credential,
+                                   128),
+    "checkout-refused-with-the-credential": (checkout_refused,
+                                             with_the_credential, 1),
+}
+
+
+@POSIX_HOOK
+@pytest.mark.parametrize("then, given, code", AFTER_THE_SIGNAL.values(),
+                         ids=AFTER_THE_SIGNAL)
+def test_a_killed_checkout_before_a_later_failure_fails_naming_it(
+        family, holder, offline, tmp_path, then, given, code):
+    """#1056: IRRS's checkout killed, then a failure at IRSS, which git's
+    update comes to after it. Git keeps only its last code, so the later
+    128 or 1 replaced the signal's 137, and bootstrap said ok with the
+    advice. Git's trace gives the `child_exit` of IRRS's `git checkout`,
+    137, and the run names that signal now, gives no advice, and fails on
+    git's update."""
+    env = cloning(offline, tmp_path, family)
+    killed_checkout(holder, env)
+    then(holder, env, family, tmp_path)
+
+    result = bootstrap(holder, given(env, offline, tmp_path),
+                       "--skip-members")
+
+    assert result.returncode == 1, result.stdout + result.stderr
+    assert said_after_the_fetch(result) == [
+        KILLED_LEAD + WENT_ON.format(signum=9, name="SIGKILL", code=137,
+                                     ended=code),
+        DIED_FAILED.format(signum=9)]
+
+
+def test_p3_before_a_later_failure_fails_naming_the_signal(
+        family, holder, offline, tmp_path):
+    """#1056, rv996's state: P3 in IRRS, then IRSS's pin moved on, and no
+    credential. Git 2.43.0's update crashes in IRRS, goes on, and dies at
+    IRSS for want of the credential (128); bootstrap said ok with the
+    advice. Git's trace gives the `child_exit` of IRRS's own update, 139,
+    and the run names SIGSEGV now, with no advice. Skipped where git does
+    not crash in P3: with the credential, its update then exits 139 only
+    where it does."""
+    env = cloning(offline, tmp_path, family)
+    p3(holder, env)
+    pin_moved_on(holder, env, family, tmp_path)
+
+    result = bootstrap(holder, isolated(offline, tmp_path), "--skip-members")
+    update = git_update(holder, env)
+
+    if update.returncode != 139:
+        pytest.skip(f"this git's update exits {update.returncode} here, "
+                    "where git 2.43.0's crashes (exit 139)")
+    assert result.returncode == 1, result.stdout + result.stderr
+    assert said_after_the_fetch(result) == [
+        KILLED_LEAD + WENT_ON.format(signum=11, name="SIGSEGV", code=139,
+                                     ended=128),
+        DIED_FAILED.format(signum=11)]
+
+
+@POSIX_HOOK
+def test_a_signal_and_b4_after_it_are_both_named_the_signal_first(
+        family, holder, offline, tmp_path):
+    """IRRS's checkout killed, then B4 at IRSS, with the credential: git's
+    update died at IRSS (128), and B4 alone was named. Both are named now,
+    in git's order, the signal first, each with its failure line."""
+    env = cloning(offline, tmp_path, family)
+    killed_checkout(holder, env)
+    commit = b4(holder, env, family, tmp_path)
+
+    result = bootstrap(holder, env, "--skip-members")
+
+    assert result.returncode == 1, result.stdout + result.stderr
+    assert said_after_the_fetch(result) == [
+        KILLED_LEAD + WENT_ON.format(signum=9, name="SIGKILL", code=137,
+                                     ended=128),
+        LEAD + ABSENT_SAID.format(path=OTHER_ROW, commit=commit,
+                                  owner="this holder", tail=BUMP_NAMED),
+        DIED_FAILED.format(signum=9) + f", {OTHER_ROW} (git stopped at it)"]
+
+
+def two_members(root: Path, env: dict) -> None:
+    """IRRS's checkout killed by SIGKILL, then IRSS's by SIGTERM."""
+    killed_checkout(root, env)
+    checkout_hooked(root, env, "kill -s TERM $PPID", OTHER)
+
+
+def two_legs(root: Path, env: dict) -> None:
+    """Every member and leg checked out; then each of IRRS's two legs
+    moved on by a commit of its own, so git's update in IRRS checks out
+    the commit IRRS records there, `code`'s checkout killed by SIGKILL and
+    then `spec`'s by SIGTERM. IRRS's own update ends 143, and git's update
+    writes that `child_exit` after both, in a file of its own that comes
+    first, since git's update started before IRRS's."""
+    assert git_update(root, env).returncode == 0
+    for leg, signame in (("code", "KILL"), ("spec", "TERM")):
+        checkout = root / ROW / leg
+        committed(checkout, env, "Moved on by hand")
+        hooked(checkout, env, "post-checkout", f"kill -s {signame} $PPID")
+
+
+#: Two signals, SIGKILL first, then SIGTERM, whose 143 git's update ends
+#: with: at two members' checkouts, and at two legs' in IRRS.
+TWO_SIGNALS = {"two-members": two_members, "two-legs": two_legs}
+
+
+@POSIX_HOOK
+@pytest.mark.parametrize("make", TWO_SIGNALS.values(), ids=TWO_SIGNALS)
+def test_the_first_signal_is_named(family, holder, offline, tmp_path, make):
+    """The first signal git's update met is named, SIGKILL, not SIGTERM,
+    whose 143 it ended with and whose `child_exit` git's trace holds last
+    in time, and first in its files where two legs' checkouts were
+    killed."""
+    env = cloning(offline, tmp_path, family)
+    make(holder, env)
+
+    result = bootstrap(holder, env, "--skip-members")
+
+    assert result.returncode == 1, result.stdout + result.stderr
+    assert said_after_the_fetch(result) == [
+        KILLED_LEAD + WENT_ON.format(signum=9, name="SIGKILL", code=137,
+                                     ended=143),
+        DIED_FAILED.format(signum=9)]
+
+
+@POSIX_HOOK
+def test_a_hook_s_own_code_is_no_signal(family, holder, offline, tmp_path):
+    """No misfire: IRRS's `post-checkout` hook exits 137, whose
+    `child_exit` git's trace holds for the hook, and `git checkout` exits
+    1 over it; then IRSS's pin moved on, and no credential. Git's update
+    dies at IRSS (128), no git it ran died of a signal, and the run reads
+    as before, the advice and ok."""
+    env = cloning(offline, tmp_path, family)
+    checkout_hooked(holder, env, "exit 137")
+    pin_moved_on(holder, env, family, tmp_path)
+
+    result = bootstrap(holder, isolated(offline, tmp_path), "--skip-members")
+
+    assert result.returncode == 0, result.stdout + result.stderr
+    assert said_after_the_fetch(result) == [ALONE]
+    assert result.stdout.endswith("\nfamily bootstrap ok\n"), result.stdout
+
+
+@POSIX_HOOK
+def test_a_git_killed_in_an_update_that_exits_0_is_not_said(
+        family, holder, offline, tmp_path):
+    """No misfire: IRSS's pin moved on, and a `reference-transaction` hook
+    in IRSS's store that kills, once, the git whose ref update it sees
+    committed: git's `fetch` there, after it wrote the branch that holds
+    the commit. Git's update then finds the commit reached, checks it out
+    and exits 0, though its trace holds the fetch's 137, and the run says
+    every member and leg was fetched, as before."""
+    env = cloning(offline, tmp_path, family)
+    pin_moved_on(holder, env, family, tmp_path)
+    once = tmp_path / "killed-once"
+    hooked(holder / OTHER_ROW, env, "reference-transaction",
+           f'if [ "$1" = committed ] && [ ! -e {shlex.quote(str(once))} ]; '
+           f"then : > {shlex.quote(str(once))}; kill -s KILL $PPID; fi")
 
     result = bootstrap(holder, env, "--skip-members")
 
     assert result.returncode == 0, result.stdout + result.stderr
-    assert said_after_the_fetch(result, "SHAPE_LEGS_TOKEN") == [ALONE]
+    assert once.is_file()
+    assert "  every member and leg fetched" in result.stdout.splitlines()
+    assert result.stdout.endswith("\nfamily bootstrap ok\n"), result.stdout
+
+
+#: `(what follows IRRS's killed checkout, the run's environment, the
+#: run's exit code, what (a) says after git's words)` with a token in use:
+#: nothing, where git's update ends with the signal's 137, which is named
+#: as before; and IRSS's pin moved on, the token's transport refused,
+#: where it ends 128 and was not traced, so the signal is not told: the
+#: advice and ok.
+WITH_A_TOKEN_KILLED = {
+    "alone": (in_place, with_the_credential, 1, [
+        KILLED_LEAD + DIED_OF.format(signum=9, name="SIGKILL", code=137),
+        KILLED_FAILED.format(signum=9)]),
+    "then-pin-moved-on": (pin_moved_on, without_the_credential, 0, [ALONE]),
+}
+
+
+@POSIX_HOOK
+@pytest.mark.parametrize("then, given, code, said",
+                         WITH_A_TOKEN_KILLED.values(), ids=WITH_A_TOKEN_KILLED)
+def test_with_a_credential_in_use_a_signal_is_told_only_from_git_s_code(
+        family, holder, offline, tmp_path, then, given, code, said):
+    """#1056's limit: with a token in use git's update is not traced
+    (#996), and its own exit code is all that tells a signal. IRRS's
+    checkout killed is named where git's update ends with its 137; where
+    IRSS's failure after it ends the update 128, it is the credential's
+    skip, as before, the advice and ok. The token is in no output and no
+    file under TMPDIR, with every trace the person may ask for on."""
+    env = cloning(offline, tmp_path, family)
+    killed_checkout(holder, env)
+    then(holder, env, family, tmp_path)
+    token = {**given(env, offline, tmp_path), "SHAPE_LEGS_TOKEN": TOKEN}
+
+    result = bootstrap(holder, traced_by_the_caller(token, offline, tmp_path),
+                       "--skip-members")
+
+    assert result.returncode == code, result.stdout + result.stderr
+    assert said_after_the_fetch(result, "SHAPE_LEGS_TOKEN") == said
     assert TOKEN not in result.stdout + result.stderr
+    assert files_holding(offline.temp, TOKEN) == []
