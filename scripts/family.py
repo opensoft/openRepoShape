@@ -6581,8 +6581,9 @@ def _checked_member_id(family: Family, repository: str, project: str,
     row = _row_recording(family, project_id)
     if row is not None:
         name = row["project"]
-        # THE `bump` IT NAMES RUNS AS PRINTED (#927), with this holder's
-        # `--family-root`, as `member-already-present`'s does.
+        # THE `remove` AND THE `bump` IT NAMES RUN AS PRINTED (#1005, #927),
+        # each with this holder's `--family-root`, which both verbs require,
+        # as `member-already-present`'s `bump` does.
         raise Refusal(
             "member-duplicate-id",
             f"{project} is already a member of {family.data.get('name')} "
@@ -6592,9 +6593,10 @@ def _checked_member_id(family: Family, repository: str, project: str,
             "project twice, which `validate-family.py` refuses",
             "Remediation: a family pins each project once. If "
             f"{repository} is {row.get('repository')} renamed at the forge, "
-            f"`family.py remove --member {name}` takes the old row out and "
-            "this `add` then pins it under the new name; `family.py bump "
-            f"--family-root {shell_quoted(family.root)} --member {name} "
+            "`family.py remove --family-root "
+            f"{shell_quoted(family.root)} --member {name}` takes the old row "
+            "out and this `add` then pins it under the new name; `family.py "
+            f"bump --family-root {shell_quoted(family.root)} --member {name} "
             "--to <commit>` moves the row that is there instead. Two "
             "projects that record one id are a fault in one of their "
             "`project.yaml` files, mended in that project, not in the "
@@ -8628,6 +8630,9 @@ def _checked_bumped_id(family: Family, row: dict, commit: str,
     if held is None:
         return
     repository = row.get("repository")
+    # THE `remove` IT NAMES RUNS AS PRINTED (#1005): `remove` requires
+    # `--family-root`, so the line names this holder, spelled by
+    # `shell_quoted` as `member-already-present`'s `bump` is (#927).
     raise Refusal(
         "member-duplicate-id",
         f"{repository} at {commit[:12]} is already a member of "
@@ -8638,7 +8643,8 @@ def _checked_bumped_id(family: Family, row: dict, commit: str,
         "Remediation: a family pins each project once. Pass `--to` a commit "
         f"of {repository} whose project.yaml records an id no other row "
         f"records. If {repository} and {held.get('repository')} are one "
-        f"project, `family.py remove --member {held['project']}` takes the "
+        "project, `family.py remove --family-root "
+        f"{shell_quoted(family.root)} --member {held['project']}` takes the "
         "other row out first. Two projects that record one id are a fault in "
         "one of their `project.yaml` files, mended in that project, not in "
         "the family.")
@@ -9324,11 +9330,16 @@ def cmd_bump(args) -> int:
     project = checked_value("--member", repo_basename(args.member))
     row = family.member(project)
     if row is None:
+        # THE `add` IT NAMES RUNS AS PRINTED (#1005): `add` requires
+        # `--family-root`, so the line names this holder, spelled by
+        # `shell_quoted` as `_add_command`'s is (#486). `<org>` is left for
+        # the person to fill in: nothing here says whose repository it is.
         raise Refusal(
             "member-unknown",
             f"{project} is not a member of {family.data.get('name')}",
-            "Remediation: `family.py add --member <org>/" + project
-            + "` puts it in the family first.")
+            "Remediation: `family.py add --family-root "
+            f"{shell_quoted(family.root)} --member <org>/{project}` puts it "
+            "in the family first.")
     project = str(row["project"])
     commit = checked_value("--to", args.to).lower()
     if not COMMIT_RE.match(commit):

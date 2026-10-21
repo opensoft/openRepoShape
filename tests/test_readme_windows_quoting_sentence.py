@@ -61,8 +61,8 @@ NAMED = {
     "shape-doctor.py": EVERY_LINE,
     # "`setup-project.py`'s family lines": the `switch -c` and `add` it prints.
     "setup-project.py": {"family_next_command": 2},
-    # "`family.py`'s `NEXT`, `switch -c`, `add`, `cd`, `git rm -r --cached`
-    # and `bump` lines".
+    # "`family.py`'s `NEXT`, `switch -c`, `add`, `cd`, `git rm -r --cached`,
+    # `bump` and `remove` lines".
     "scripts/family.py": {
         "_print_next": 1,          # the `NEXT` line: `git push -u origin ...`
         "_switch_command": 1,      # the `git switch -c <branch>` line
@@ -70,7 +70,11 @@ NAMED = {
         "_print_next_steps": 2,    # `init`'s block: its `switch -c` and `cd`
         "_checked_mount_path": 1,  # the `git rm -r --cached -- <path>` remedy
         "_checked_add_target": 1,  # `member-already-present`'s `bump` line
-        "_checked_member_id": 1,   # `member-duplicate-id`'s `bump` line (#927)
+        # `add`'s `member-duplicate-id`: its `bump` line (#927) and its
+        # `remove` line (#1005)
+        "_checked_member_id": 2,
+        "_checked_bumped_id": 1,   # `bump`'s `member-duplicate-id`: `remove`
+        "cmd_bump": 1,             # `bump`'s `member-unknown`: its `add` line
     },
 }
 
