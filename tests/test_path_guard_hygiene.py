@@ -181,11 +181,23 @@ BENIGN = _entries({
     (AP, "Source.clone", "os.path.lexists(path)"): (
         "DEST", "the clone target in the run's own --work-dir; "
         "`_occupied_clone_target` or the clone names it (#652)"),
+    (AP, "_PlannedRoot._into_git",
+     'self._git().is_dir(here.rpartition("/")[0])'): (
+        "OWN", "not the disk: `_CloneGit`, the run's own model in memory of "
+        "the names git makes in the clone's `.git` (#904), a set lookup "
+        "with no `stat` in it"),
+    (AP, "_PlannedRoot._no_directory", "self._git().is_dir(here)"): (
+        "OWN", "the same model of the clone's `.git`, not the disk"),
     (AP, "_PlannedRoot._over", "os.path.isdir(walk.landed)"): (
         "DELIBERATE", "words a refusal, `a directory` or `a file`, for a "
         "path a symlink leads to outside the source tree"),
     (AP, "_SplitRehearsal.place", "target.is_symlink()"): (
         "OWN", "the throwaway work tree `check` writes (#910)"),
+    (AP, "_clone_ref_store",
+     '(probe / CLONE_GIT_DIR / "reftable").is_dir()'): (
+        "OWN", "`git init`'s throwaway, a `mkdtemp` of this user's (0700) "
+        "in the run's own work directory (#904); one it cannot write or "
+        "search stops at the `mkdtemp`, before this"),
     (AP, "_create_leg_remote", "bare.exists()"): (
         "DEST", "the --local-remote-dir backstop, asked before either leg "
         "was made (#798); `git init --bare` fails by name"),
