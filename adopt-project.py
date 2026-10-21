@@ -7704,10 +7704,11 @@ def _resolved(base: str, urls: list[str],
     `git init` in `TMPDIR` stopped `check` with "a git or gh command
     failed", exit 2, under an `init.defaultBranch` git will not take or a
     `GIT_DEFAULT_HASH` that names no hash. `_Unasked` where git cannot make
-    or ask it there."""
+    or ask it there. The environment is read before the throwaway is made,
+    so that nothing raised reading it leaves one behind (r1119's NIT-3)."""
+    env = _inherited_env()
     scratch = _throwaway("openreposhape-url-", source)
     repository = scratch / THROWAWAY_REPOSITORY
-    env = _inherited_env()
     try:
         hooks_off = _throwaway_made(scratch, repository, source, env)
         with _asked_there(scratch.parent):
@@ -7913,10 +7914,11 @@ def _answers(urls: list[str], source: Source | None = None
     makes its own (#1083): in the work directory `source` was opened in,
     with no hook and under `_inherited_env()`, which leaves out a `GIT_DIR`
     or a `GIT_CONFIG_PARAMETERS` around this process; `_Unasked` where git
-    cannot make it there."""
+    cannot make it there. The environment is read before the throwaway is
+    made, as `_resolved` reads it."""
+    env = {**_inherited_env(), **ON_THIS_DISK_ONLY}
     scratch = _throwaway("openreposhape-ask-", source)
     repository = scratch / THROWAWAY_REPOSITORY
-    env = {**_inherited_env(), **ON_THIS_DISK_ONLY}
     try:
         hooks_off = _throwaway_made(scratch, repository, source, env)
         out = []
@@ -10982,7 +10984,10 @@ def _refuse_symlinks_checked_out_as_files(plan: Plan, source: Source,
 #   rolled back; `GIT_DEFAULT_HASH=bogus` stops every clone the same way.
 #   Asked here, either is `adopt-git-unasked`, which `execute` refuses
 #   before either leg, and on a git whose clone takes the name, as 2.55's
-#   does, it is no finding, and every question is asked.
+#   does, it is no finding, and every question is asked. It takes the `-c`
+#   settings a parent git hands this process, as `execute`'s clone does,
+#   and no variable naming another repository, which it would write into
+#   (`_split_clone_env`, r1119's SHOULD-1 and SHOULD-2).
 # * THE SUBMODULE URLS' OWN (#1083). `_resolved` and `_answers` ask git how
 #   a kept submodule's url resolves and whether it answers, each in a
 #   repository of its own, made the same way here: their plain `git init`
@@ -11051,7 +11056,8 @@ class _Unasked(Refusal):
                         f"in {_spelled(str(self.where))}, the work directory, "
                         f"to ask this machine's git what the split will make "
                         f"of the source: {self.why}. It asked nothing about "
-                        "the source's paths and files there; run `check` "
+                        "the source's paths and files there, nor about the "
+                        "urls of the submodules the plan keeps; run `check` "
                         "again with a --work-dir this user can write in."]
         return [f"FINDING {self.code}: {self.detail}"], []
 
@@ -11154,6 +11160,44 @@ def _throwaway_git(scratch: Path, hooks_off: list[str], args: list,
     return done.stdout.decode("utf-8", "replace").strip()
 
 
+#: The `-c` settings a parent git hands each command it runs, in git's own
+#: quoted form: `git -c <key>=<value>` running an alias, or a hook, that
+#: runs `adopt-project.py`. `_inherited_env()` leaves it out, and only the
+#: split's own clone takes it back (`_split_clone_env`).
+CONFIG_PARAMETERS = "GIT_CONFIG_PARAMETERS"
+
+
+def _split_clone_env() -> dict:
+    """The environment `_split_clone_asked` makes the split's own clone in:
+    `_inherited_env()`, and the `-c` settings a parent git hands this
+    process (`CONFIG_PARAMETERS`) where it hands some, as `execute`'s own
+    clone of the source takes them, in the whole environment (r1119's
+    SHOULD-2).
+
+    THOSE SETTINGS, SO THAT THE CLONE ANSWERS AS THE SPLIT'S. Measured on
+    bdcf9952 with git 2.43: under `GIT_CONFIG_PARAMETERS` holding
+    `'init.defaultbranch'='a..b'`, `check` said `plan ok`, and `execute`
+    made both legs and stopped extracting the spec leg, `fatal: invalid
+    branch name`, with nothing rolled back, where the same setting in a
+    config file or in `GIT_CONFIG_COUNT` was `adopt-git-unasked` already. A
+    parent's `-c core.hooksPath` runs no hook in the clone: git reads the
+    command's own `-c` after the parent's, and takes a key's last value.
+    An `attr.tree` among them, which is why `_inherited_env()` leaves them
+    out of the questions a checkout answers, changes nothing in a clone
+    that checks nothing out (`attr.tree=bogus` measured: it clones).
+
+    NOTHING ELSE `_inherited_env()` LEAVES OUT. Each of those names another
+    repository, its objects, an index or a work tree, and the clone would
+    write there: in the whole environment, under a `GIT_OBJECT_DIRECTORY`
+    naming the source's own objects, it wrote `objects/info/alternates`
+    into the source, which `check` never writes to (r1119's SHOULD-1)."""
+    env = _inherited_env()
+    parameters = os.environ.get(CONFIG_PARAMETERS)
+    if parameters is not None:
+        env[CONFIG_PARAMETERS] = parameters
+    return env
+
+
 def _split_clone_asked(source: Source) -> None:
     """The split's own `git clone` of the source, made in a throwaway
     directory in the work directory and removed again (#1083): nothing
@@ -11168,14 +11212,23 @@ def _split_clone_asked(source: Source) -> None:
     source's format, makes its repository. So `check` said `plan ok`, and
     `execute` stopped after both legs existed. Asked as that clone is made,
     the answer is the split's on every version of git: with `FILE_PROTOCOL`,
-    as `execute` gives each of its clones, and the template this machine's
-    git copies in, as `_extract_leg`'s clone takes it. Left out is only what
-    the other questions ask, or what would run here: `--no-checkout`, as the
-    rehearsal asks what a checkout makes of each file and
-    `_paths_git_refuses` which paths git holds at all; `--shared`, so no
-    object is copied; and, as in every throwaway, any hook of this
-    machine's (`core.hooksPath` an empty directory) and the environment
-    `_inherited_env()` leaves out."""
+    as `execute` gives each of its clones, the template this machine's git
+    copies in, as `_extract_leg`'s clone takes it, and the `-c` settings a
+    parent git hands this process (`_split_clone_env`). Left out is only
+    what the other questions ask, or what would run or write here:
+    `--no-checkout`, as the rehearsal asks what a checkout makes of each
+    file and `_paths_git_refuses` which paths git holds at all; any hook of
+    this machine's (`core.hooksPath` an empty directory), as in every
+    throwaway; and each variable that names another repository, which
+    `_split_clone_env()` leaves out.
+
+    `--shared` copies no object of a source that is not shallow: the clone
+    borrows the source's. git ignores it for a shallow source, and says
+    nothing, so that clone is a full copy of the source's objects (r1119's
+    NIT-1, measured: 117 MiB for a 115 MiB pack). That is a cost, not a
+    fault: each of `execute`'s own clones of such a source is a full copy
+    too."""
+    env = _split_clone_env()
     scratch = _throwaway("openreposhape-clone-", source)
     try:
         empty = scratch / THROWAWAY_EMPTY
@@ -11185,8 +11238,7 @@ def _split_clone_asked(source: Source) -> None:
                 ["git", *FILE_PROTOCOL, "-c", f"core.hooksPath={empty}",
                  "clone", "-q", "--no-checkout", "--shared",
                  str(source.path), str(scratch / THROWAWAY_REPOSITORY)],
-                cwd=str(scratch), env=_inherited_env(), capture_output=True,
-                check=False)
+                cwd=str(scratch), env=env, capture_output=True, check=False)
         if cloned.returncode:
             raise _Unasked(scratch.parent, (
                 f"the split's `git clone` of the source exited "

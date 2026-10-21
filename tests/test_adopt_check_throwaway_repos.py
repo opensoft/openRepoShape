@@ -394,14 +394,38 @@ def in_the_command_scope(_base: Path, hooks: Path) -> dict:
                                      [("core.hooksPath", hooks.as_posix())])
 
 
-@pytest.mark.parametrize("configured", [
+def appended_to_parameters(entries) -> dict:
+    """`GIT_CONFIG_PARAMETERS` as a parent `git -c <key>=<value>` hands it
+    to each command it runs, an alias or a hook: `entries` after any the
+    environment holds, each in git's own quoted form, `'<key>'='<value>'`
+    (git 2.43 writes the key in the case it was given)."""
+    held = os.environ.get("GIT_CONFIG_PARAMETERS", "")
+    added = " ".join(f"'{key}'='{value}'" for key, value in entries)
+    return {"GIT_CONFIG_PARAMETERS": f"{held} {added}".strip()}
+
+
+def from_a_parent_git(_base: Path, hooks: Path) -> dict:
+    return appended_to_parameters([("core.hooksPath", hooks.as_posix())])
+
+
+#: Where a hook's directory is configured: the second and third reach the
+#: split's own clone as a parent git hands them (r1119's SHOULD-2), where
+#: that clone's own `-c core.hooksPath` comes after them.
+HOOKS_CONFIGURED = [
     pytest.param(in_the_global_config, id="global-config"),
-    pytest.param(in_the_command_scope, id="git-config-count")])
+    pytest.param(in_the_command_scope, id="git-config-count"),
+    pytest.param(from_a_parent_git, id="git-config-parameters")]
+
+
+@pytest.mark.parametrize("configured", HOOKS_CONFIGURED)
 def test_no_hook_of_this_machines_runs_in_a_throwaway_repository(
         tmp_path, configured):
     """The source keeps its own root `.gitattributes`, so #619's question
     of `git add` is asked as well as the rehearsal's: on c7a3ff16 the
-    global config's hook ran 12 times in this `check`."""
+    global config's hook ran 12 times in this `check`. The split's own
+    clone writes refs, which runs `reference-transaction`, and takes the
+    settings a parent git hands it too (`git-config-parameters`), so its
+    own `-c core.hooksPath` must come after them."""
     plan = planned(a_source(tmp_path, files={ROOT_ATTRIBUTES: b"*.md text\n"}),
                    tmp_path, {})
     hooks, log = counting_hooks(tmp_path)
@@ -410,9 +434,7 @@ def test_no_hook_of_this_machines_runs_in_a_throwaway_repository(
     assert runs(log) == []
 
 
-@pytest.mark.parametrize("configured", [
-    pytest.param(in_the_global_config, id="global-config"),
-    pytest.param(in_the_command_scope, id="git-config-count")])
+@pytest.mark.parametrize("configured", HOOKS_CONFIGURED)
 def test_the_counting_hook_runs_where_this_machines_config_reaches(
         tmp_path, configured):
     """The control: the same config runs the hook in a repository of its
@@ -680,7 +702,8 @@ UNMADE_NOTE = ("NOTE `check` could not make a throwaway repository in `{}`, "
                "the work directory, to ask this machine's git what the split "
                "will make of the source: a directory or a file could not be "
                "made there (Permission denied). It asked nothing about the "
-               "source's paths and files there; run `check` again with a "
+               "source's paths and files there, nor about the urls of the "
+               "submodules the plan keeps; run `check` again with a "
                "--work-dir this user can write in.")
 
 
@@ -1034,4 +1057,284 @@ def test_case_twins_are_both_held_under_core_ignorecase(adopter, monkeypatch,
     held = git("ls-files", cwd=control).stdout.split()
     assert len(held) < 2, held
     assert adopter._paths_git_refuses(opened, opened.tree()) == []
+    assert list(work.iterdir()) == []
+
+
+# ---------------------------------------------------------------------------
+# r1119: what the split's own clone inherits, and what it must not
+# ---------------------------------------------------------------------------
+
+def with_parameters(_base: Path, entries) -> dict:
+    """`entries` as a parent git hands them: `git -c <key>=<value>`
+    running an alias or a hook that runs `adopt-project.py`."""
+    return appended_to_parameters(entries)
+
+
+def with_command_scope(_base: Path, entries) -> dict:
+    """`entries` in git's command scope (`GIT_CONFIG_COUNT`)."""
+    return appended_to_command_scope(os.environ, entries)
+
+
+def with_global_config(base: Path, entries) -> dict:
+    """`entries` in a global config file."""
+    lines = []
+    for key, value in entries:
+        section, _, name = key.rpartition(".")
+        lines += [f"[{section}]", f"\t{name} = {value}"]
+    return config_with(base, *lines)
+
+
+#: The two forms in which a parent git hands this process its settings. On
+#: bdcf9952 `_inherited_env()` gave the split's own clone the second and
+#: left out the first, which `execute`'s clone takes (r1119's SHOULD-2).
+FROM_A_PARENT = [
+    pytest.param(with_parameters, id="git-config-parameters"),
+    pytest.param(with_command_scope, id="git-config-count")]
+BAD_DEFAULT_BRANCH = [("init.defaultBranch", "a..b")]
+
+
+@pytest.mark.parametrize("handed", FROM_A_PARENT)
+def test_a_parent_gits_default_branch_is_asked_of_the_splits_own_clone(
+        tmp_path, handed):
+    """`init.defaultBranch = a..b`, handed down by a parent git, as the
+    global config's is asked above: git 2.43's `git clone` stops at it,
+    and `check` says so as one `adopt-git-unasked`. On bdcf9952 the clone
+    took no `GIT_CONFIG_PARAMETERS`, and `check` said `plan ok` where
+    `execute`'s clone, which takes the whole environment, stopped after
+    both legs existed. git 2.55's clone takes the name, and there the CRLF
+    file the plan keeps is found."""
+    plan = planned(a_source(tmp_path, files={ROOT_ATTRIBUTES: TEXT_EOL_LF,
+                                             NOTES: CRLF}),
+                   tmp_path, {NOTES: ROOT})
+    work = tmp_path / "work"
+    env = handed(tmp_path, BAD_DEFAULT_BRANCH)
+    clone = this_gits_clone(tmp_path, env)
+    result = checked(plan, env, "--work-dir", str(work))
+    assert "REFUSED" not in result.stderr, result.stderr
+    assert result.returncode == 1, result.stderr
+    if clone.returncode == 0:
+        assert codes(result) == [REENCODED_FILES], result.stderr
+    else:
+        assert finding_lines(result) == [unasked_clone(
+            work, clone.returncode, clone.stderr.decode().strip())]
+    assert list(work.iterdir()) == []
+
+
+@pytest.mark.parametrize("handed", FROM_A_PARENT)
+def test_execute_refuses_a_parent_gits_default_branch_before_any_leg(
+        adopter, monkeypatch, tmp_path, handed):
+    """Measured on bdcf9952 with git 2.43 and `GIT_CONFIG_PARAMETERS`:
+    `execute` made both legs and stopped extracting the spec leg, `fatal:
+    invalid branch name`, with nothing rolled back."""
+    plan = planned(a_source(tmp_path), tmp_path, {})
+    env = handed(tmp_path, BAD_DEFAULT_BRANCH)
+    if this_gits_clone(tmp_path, env).returncode == 0:
+        pytest.skip("this git's `git clone` takes `init.defaultBranch = "
+                    "a..b`, as 2.55's does: the split clones there")
+    for name, value in env.items():
+        monkeypatch.setenv(name, value)
+    monkeypatch.setattr(adopter, "_require_filter_repo", lambda: None)
+    remotes = tmp_path / "remotes"
+    with pytest.raises(adopter.Refusal) as caught:
+        adopter.cmd_execute(Namespace(
+            plan=str(plan), source=None, local_remote_dir=remotes,
+            allow_empty_leg=[], yes=True, work_dir=tmp_path / "work"))
+    assert caught.value.code == UNASKED
+    assert "invalid branch name" in caught.value.detail
+    assert not remotes.exists()
+
+
+#: The setting the stub `git` of `refusing_a_setting` reads, under a key no
+#: config of a machine this runs on sets, and what it says when it is set.
+REFUSING_KEY = "test.refusesplitclone"
+REFUSED_BY_SETTING = "fatal: f1119: a setting this clone reads refuses it"
+
+
+def refusing_a_setting(base: Path) -> dict:
+    """The environment of a git whose `git clone` stops at a setting, on
+    every version: a stub first on PATH asks the real git whether the
+    config that clone reads -- the files, `GIT_CONFIG_COUNT` and
+    `GIT_CONFIG_PARAMETERS` alike -- sets `REFUSING_KEY` to `yes`, and
+    refuses the clone where it does. Any other command is the real git's.
+    `init.defaultBranch = a..b` stops git 2.43's clone and not 2.55's (CI
+    on #1031), so the rows below do not lean on it."""
+    stubs = base / "setting-stubs"
+    stubs.mkdir()
+    stub = stubs / "git"
+    stub.write_bytes("\n".join([
+        "#!/bin/sh",
+        'for arg in "$@"; do',
+        '  [ "$arg" = clone ] || continue',
+        f'  if [ "$("$REAL_GIT" config --get {REFUSING_KEY})" = yes ]; then',
+        f'    echo "{REFUSED_BY_SETTING}" >&2',
+        "    exit 128",
+        "  fi",
+        "  break",
+        "done",
+        'exec "$REAL_GIT" "$@"', ""]).encode("ascii"))
+    stub.chmod(0o755)
+    return {"PATH": str(stubs) + os.pathsep + os.environ["PATH"],
+            "REAL_GIT": shutil.which("git")}
+
+
+#: Each form a setting can reach the split's clone in: a file, as the rows
+#: of #1083 ask it, and the two a parent git hands down.
+EVERY_FORM = [pytest.param(with_global_config, id="global-config"),
+              *FROM_A_PARENT]
+
+
+@WINDOWS_SKIP  # a `#!` stub named `git` first on PATH
+@pytest.mark.parametrize("handed", EVERY_FORM)
+def test_a_setting_that_stops_the_clone_is_asked_in_every_form(tmp_path,
+                                                               handed):
+    """Whatever form the setting comes in, `check`'s clone reads it as the
+    split's does, and one that stops it is one `adopt-git-unasked`, on any
+    version of git. On bdcf9952 `git-config-parameters` was `plan ok`."""
+    plan = planned(a_source(tmp_path), tmp_path, {})
+    work = tmp_path / "work"
+    env = {**refusing_a_setting(tmp_path),
+           **handed(tmp_path, [(REFUSING_KEY, "yes")])}
+    result = checked(plan, env, "--work-dir", str(work))
+    assert "REFUSED" not in result.stderr, result.stderr
+    assert result.returncode == 1, result.stderr
+    assert finding_lines(result) == [
+        unasked_clone(work, 128, REFUSED_BY_SETTING)]
+    assert list(work.iterdir()) == []
+
+
+@WINDOWS_SKIP  # a `#!` stub named `git` first on PATH
+@pytest.mark.parametrize("handed", EVERY_FORM)
+def test_execute_refuses_a_setting_that_stops_its_clone_before_any_leg(
+        adopter, monkeypatch, tmp_path, handed):
+    """`execute`'s first clone of the source reads the setting in the whole
+    environment; on bdcf9952, under `git-config-parameters`, it was the
+    first to read it, after both legs existed."""
+    plan = planned(a_source(tmp_path), tmp_path, {})
+    env = {**refusing_a_setting(tmp_path),
+           **handed(tmp_path, [(REFUSING_KEY, "yes")])}
+    for name, value in env.items():
+        monkeypatch.setenv(name, value)
+    monkeypatch.setattr(adopter, "_require_filter_repo", lambda: None)
+    remotes = tmp_path / "remotes"
+    with pytest.raises(adopter.Refusal) as caught:
+        adopter.cmd_execute(Namespace(
+            plan=str(plan), source=None, local_remote_dir=remotes,
+            allow_empty_leg=[], yes=True, work_dir=tmp_path / "work"))
+    assert caught.value.code == UNASKED
+    assert REFUSED_BY_SETTING in caught.value.detail
+    assert "no leg repository was created" in caught.value.remediation
+    assert not remotes.exists()
+
+
+def test_the_clone_takes_a_parent_gits_settings_and_no_other_repository(
+        adopter, monkeypatch, tmp_path):
+    """`_split_clone_env()`: `_inherited_env()`, which keeps
+    `GIT_CONFIG_COUNT` but an `attr.tree` in it, and the parent's
+    `GIT_CONFIG_PARAMETERS` as it stands; and none of the variables that
+    name another repository, its objects, an index or a work tree, nor
+    `GIT_ATTR_SOURCE`. With no parent setting there is none."""
+    named = {"GIT_DIR": "git-dir", "GIT_WORK_TREE": "work-tree",
+             "GIT_INDEX_FILE": "index", "GIT_COMMON_DIR": "common",
+             "GIT_OBJECT_DIRECTORY": "objects", "GIT_ATTR_SOURCE": "HEAD"}
+    for name, value in named.items():
+        monkeypatch.setenv(name, str(tmp_path / value))
+    parameters = "'test.parentone'='one' 'core.hooksPath'='/nowhere'"
+    monkeypatch.setenv("GIT_CONFIG_PARAMETERS", parameters)
+    for name, value in appended_to_command_scope(
+            {}, [("attr.tree", "HEAD"), ("test.heldone", "one")]).items():
+        monkeypatch.setenv(name, value)
+    env = adopter._split_clone_env()
+    assert env["GIT_CONFIG_PARAMETERS"] == parameters
+    assert [env.get(name) for name in named] == [None] * len(named)
+    assert (env["GIT_CONFIG_COUNT"], env["GIT_CONFIG_KEY_0"],
+            env["GIT_CONFIG_VALUE_0"]) == ("1", "test.heldone", "one")
+    monkeypatch.delenv("GIT_CONFIG_PARAMETERS")
+    assert "GIT_CONFIG_PARAMETERS" not in adopter._split_clone_env()
+
+
+def objects_of(repository: Path) -> dict:
+    """Each file below `repository`'s object directory, and its bytes."""
+    objects = repository / ".git" / "objects"
+    return {path.relative_to(objects).as_posix(): path.read_bytes()
+            for path in sorted(objects.rglob("*")) if path.is_file()}
+
+
+def test_the_clone_writes_nothing_into_an_object_directory_around_it(
+        tmp_path):
+    """r1119's SHOULD-1: `GIT_OBJECT_DIRECTORY` names the source's own
+    objects, as it does for a command git runs in the source. `check`
+    promises never to write into the source, and its clone of it takes
+    no such variable (`_inherited_env()`): `plan ok`, and the source's
+    object directory as it was. In the whole environment the clone wrote
+    `objects/info/alternates` there, naming the throwaway's own objects,
+    which `check` then removes (r1119, M6)."""
+    source = a_source(tmp_path)
+    plan = planned(source, tmp_path, {})
+    before = objects_of(source)
+    work = tmp_path / "work"
+    result = checked(plan, {"GIT_OBJECT_DIRECTORY": str(
+        source / ".git" / "objects")}, "--work-dir", str(work))
+    assert result.returncode == 0, result.stderr
+    assert "plan ok" in result.stdout
+    assert objects_of(source) == before
+    assert list(work.iterdir()) == []
+
+
+def test_a_repository_around_check_rewrites_no_url_it_asks(tmp_path):
+    """`_answers` asks each url in a throwaway repository of its own, so
+    that no repository's config around this process rewrites a url, as
+    the assembly's recursive clone would not: here `GIT_DIR` names the
+    source, as it does for a hook git runs there, and the source's own
+    config rewrites the on-disk url to a directory that holds nothing
+    (the control: git there expands it so). `check` says what it says with
+    no `GIT_DIR`; in the whole environment `_answers` read the rewrite,
+    and found the url answering nothing (r1119, M14). Nor is the source's
+    config written: `_resolved` sets `remote.origin.url` in its own
+    repository, which in the whole environment is the source."""
+    dependency = tmp_path / "dependency"
+    source = source_with(tmp_path, SIBLING, second=dependency.as_posix(),
+                         dependency=dependency)
+    nowhere = (tmp_path / "nowhere").as_posix()
+    git("config", f"url.{nowhere}.insteadOf", dependency.as_posix(),
+        cwd=source)
+    assert git("ls-remote", "--get-url", dependency.as_posix(),
+               cwd=source).stdout.strip() == nowhere
+    plan = planned_with_urls(source, tmp_path,
+                             answers={**BOTH_IN_CODE, EXTRA: "code"})
+    config = (source / ".git" / "config").read_bytes()
+    for env in ({}, {"GIT_DIR": str(source / ".git")}):
+        result = checked(plan, env)
+        assert "REFUSED" not in result.stderr, result.stderr
+        assert codes(result) == [RELATIVE_URL], (env, result.stderr)
+        assert (source / ".git" / "config").read_bytes() == config, env
+
+
+@pytest.mark.parametrize("asked", [
+    pytest.param(lambda adopter, source: adopter._resolved(
+        "..", ["../x"], None, source), id="resolved"),
+    pytest.param(lambda adopter, source: adopter._answers(["/x"], source),
+                 id="answers"),
+    pytest.param(lambda adopter, source: adopter._split_clone_asked(source),
+                 id="split-clone")])
+def test_an_environment_read_that_raises_leaves_no_throwaway(
+        adopter, monkeypatch, tmp_path, asked):
+    """r1119's NIT-3: each reads its environment before it makes its
+    throwaway, so that a raise there leaves none in the work directory.
+    On bdcf9952 `_resolved` and `_answers` made it first. (By reading, a
+    `GIT_CONFIG_COUNT` of a superscript two raised in `_inherited_env()`,
+    whose `isdigit()` is true and whose `int()` raises; measured, git
+    refuses that count itself, `bogus count in GIT_CONFIG_COUNT`, at
+    `check`'s first command, before any throwaway.)"""
+    plan = adopter.Plan.load(planned(a_source(tmp_path), tmp_path, {}))
+    work = tmp_path / "work"
+    work.mkdir()
+    opened = plan.open_source(None, work)
+    opened.object_format()
+
+    def unreadable():
+        raise RuntimeError("f1119: no environment")
+
+    monkeypatch.setattr(adopter, "_inherited_env", unreadable)
+    with pytest.raises(RuntimeError, match="f1119: no environment"):
+        asked(adopter, opened)
     assert list(work.iterdir()) == []
