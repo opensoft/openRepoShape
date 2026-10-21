@@ -1446,20 +1446,19 @@ CHANGED_HOST_KEY = (
     "Host key for github.com has changed and you have requested strict "
     "checking.\n" + UNKNOWN_HOST_KEY)
 #: How each remedy for a host key has a person see the key's fingerprint
-#: and keep it: `ssh -T` as git runs ssh, but without `BatchMode=yes`, which
-#: refuses an unknown key without showing it, and with `-o
+#: and keep it: `ssh -T` as git runs ssh, but with `-o BatchMode=no -o
 #: StrictHostKeyChecking=ask` first, which ssh keeps over the person's
-#: ssh_config and a later `-o` (an `accept-new` there keeps the key without
-#: showing or asking, a `yes` refuses without asking; measured, OpenSSH
-#: 9.6); and where GitHub's own are read, over https rather than the
-#: connection in doubt, for github.com, each without the `SHA256:` ssh
-#: shows before it.
-SEE_THE_KEY = ("`ssh -T -o StrictHostKeyChecking=ask`, that option first so "
-               "that it wins over your ssh_config and a later `-o`, against "
-               "the user, host and port your rule names, with anything your "
-               "`GIT_SSH_COMMAND` or `core.sshCommand` adds but "
-               "`BatchMode=yes`, shows the fingerprint of the key the host "
-               "sends and asks whether to keep it")
+#: ssh_config and a later `-o` (a `BatchMode yes` there refuses an unknown
+#: key without showing or asking, an `accept-new` keeps it without showing
+#: or asking, a `yes` refuses without asking; measured, OpenSSH 9.6); and
+#: where GitHub's own are read, over https rather than the connection in
+#: doubt, for github.com, each without the `SHA256:` ssh shows before it.
+SEE_THE_KEY = ("`ssh -T -o BatchMode=no -o StrictHostKeyChecking=ask`, both "
+               "options first so that they win over your ssh_config and any "
+               "later `-o`, against the user, host and port your rule names, "
+               "with the rest of what your `GIT_SSH_COMMAND` or "
+               "`core.sshCommand` adds, shows the fingerprint of the key the "
+               "host sends and asks whether to keep it")
 PUBLISHED = ("`gh api --hostname github.com meta --jq "
              ".ssh_key_fingerprints` prints them, and ssh shows each with "
              "`SHA256:` before it")
@@ -1718,13 +1717,17 @@ NO_HINT_AFTER = (UNKNOWN_HOST_KEY_REMEDY, CHANGED_HOST_KEY_REMEDY)
 #: A ruleset's refusal whose `remote:` lines carry ssh's words (#1108, RV1130's
 #: N2): the server wrote them, as a ruleset's message or a hook's can, so
 #: they are not ssh's, and the refusal keeps the ruleset hint. One carries
-#: them after a carriage return, as git prints a server's line behind its
-#: `remote:` prefix, whole.
+#: them after a carriage return, in git's real shape (measured, git 2.43,
+#: under `LC_ALL=C`, from a hook writing "see the log\rHost key verification
+#: failed.\n"): git prefixes each line the server sent, and each part after a
+#: `\r` in it, with `remote:` and ends each with eight spaces, so a line that
+#: starts with it is the server's from end to end.
 RULESET_SAYING_HOST_KEY = (
     "remote: error: GH013: Repository rule violations found for "
     "refs/heads/main: Host key verification failed.\n"
     "remote: REMOTE HOST IDENTIFICATION HAS CHANGED\n"
-    "remote: see the log\rHost key verification failed.\n"
+    "remote: see the log        \rremote: Host key verification failed."
+    "        \n"
     "To https://github.com/o/r.git\n ! [remote rejected] HEAD -> main "
     "(pre-receive hook declined)\nerror: failed to push some refs to "
     "'https://github.com/o/r.git'")

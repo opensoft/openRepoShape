@@ -2190,19 +2190,20 @@ GITHUB_FINGERPRINTS = ("`gh api --hostname github.com meta --jq "
                        "each with `SHA256:` before it")
 
 #: How a person sees the fingerprint of the key the host sends, and keeps
-#: it (#1108): ssh asked as git asks it, as `SSH_KEY_CHECK` is, but without
-#: `BatchMode=yes`, under which ssh refuses an unknown key without showing
-#: or asking anything, and with `-o StrictHostKeyChecking=ask` first: ssh
-#: keeps the first value it is given for an option, so that one wins over
-#: the person's ssh_config and over a later `-o`, where `accept-new` keeps
-#: an unknown key without showing its fingerprint or asking, and `yes`
-#: refuses it without asking (all measured, OpenSSH 9.6, in a terminal).
-HOST_KEY_CHECK = ("`ssh -T -o StrictHostKeyChecking=ask`, that option first "
-                  "so that it wins over your ssh_config and a later `-o`, "
-                  "against the user, host and port your rule names, with "
-                  "anything your `GIT_SSH_COMMAND` or `core.sshCommand` adds "
-                  "but `BatchMode=yes`, shows the fingerprint of the key the "
-                  "host sends and asks whether to keep it")
+#: it (#1108): ssh asked as git asks it, as `SSH_KEY_CHECK` is, but with
+#: `-o BatchMode=no -o StrictHostKeyChecking=ask` first. ssh keeps the first
+#: value it is given for an option, so those two win over the person's
+#: ssh_config and over a later `-o`, which `GIT_SSH_COMMAND` or
+#: `core.sshCommand` can add: `BatchMode yes` refuses an unknown key without
+#: showing or asking anything, `accept-new` keeps it without showing its
+#: fingerprint or asking, and `yes` refuses it without asking (all
+#: measured, OpenSSH 9.6, in a terminal).
+HOST_KEY_CHECK = ("`ssh -T -o BatchMode=no -o StrictHostKeyChecking=ask`, "
+                  "both options first so that they win over your ssh_config "
+                  "and any later `-o`, against the user, host and port your "
+                  "rule names, with the rest of what your `GIT_SSH_COMMAND` "
+                  "or `core.sshCommand` adds, shows the fingerprint of the "
+                  "key the host sends and asks whether to keep it")
 
 
 def _then_re_run(fix: str, reused: bool) -> str:
@@ -2276,11 +2277,12 @@ def _login_remedy(output: str, repo: str, reused: bool) -> str:
 
 
 def _without_remote_lines(output: str) -> str:
-    """`output` without the lines the server sent (#1108): git prefixes each
-    with `remote:`, and a ruleset's message, or a hook's, is the server's to
-    write, so its words are no evidence of what ssh did. Split at newlines
-    alone: a `\\r` or another separator inside a line stays in it, as git
-    prints it behind its prefix."""
+    """`output` without the lines the server sent (#1108). git prefixes each
+    line the server sent, and each part after a carriage return in it, with
+    `remote:` (measured, git 2.43), so a line that starts with it is the
+    server's from end to end, and a split at newlines alone keeps it whole.
+    A ruleset's message, or a hook's, is the server's to write, so its words
+    are no evidence of what ssh did."""
     return "\n".join(line for line in output.split("\n")
                      if not line.startswith("remote:"))
 
