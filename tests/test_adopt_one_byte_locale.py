@@ -44,7 +44,7 @@ from conftest import ADOPT, blank_unnamed_pin_sources, spelled
 from test_adopt_git_rm_bytes import C_LOCALE, LOCALE_KEYS, c_locale_or_skip
 from test_adopt_temp_work_roots import recorded
 from test_adopt_unenterable_source_and_locale import (
-    ACCENTED, KEEP_THE_CLONE, written_in_utf8_mode,
+    ACCENTED, kept_clones, written_in_utf8_mode,
 )
 
 #: The locale #1078 names, as `LC_ALL` names the one built here.
@@ -235,22 +235,8 @@ def test_the_clone_at_the_record_is_kept_under_a_one_byte_locale(
     stayed on the list of clones to remove, #803's bug again. Asked as
     `_recorded_source` asks it, that one clone is taken off, and a clone
     made elsewhere stays."""
-    env = {**c_locale_or_skip(), **latin1}
-    base = Path(os.path.realpath(tmp_path))
-    clone = base / ACCENTED / "source-readonly" / "Thing"
-    elsewhere = base / "work" / "source-readonly" / "Thing"
-    for directory in (clone, elsewhere):
-        directory.mkdir(parents=True)
-
-    child = subprocess.run(
-        [sys.executable, "-c", KEEP_THE_CLONE, os.fsencode(ADOPT).hex(),
-         json.dumps(str(clone)), os.fsencode(clone).hex(),
-         os.fsencode(elsewhere).hex()],
-        capture_output=True, env=env, stdin=subprocess.DEVNULL, check=False)
-
-    assert child.returncode == 0, child.stderr.decode("utf-8", "replace")
-    answer = json.loads(child.stdout.decode("ascii"))
-    assert answer["spells"] is True, "premise: Latin-1 spells the record"
-    left = [os.fsdecode(bytes.fromhex(held)) for held in answer["left"]]
-    assert left == [str(elsewhere)], (
+    spells, left, elsewhere = kept_clones(
+        tmp_path, {**c_locale_or_skip(), **latin1})
+    assert spells is True, "premise: Latin-1 spells the record"
+    assert left == [elsewhere], (
         f"the clone at the record is not taken off: {left}")
