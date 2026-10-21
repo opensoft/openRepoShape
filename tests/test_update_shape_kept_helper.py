@@ -557,7 +557,7 @@ def test_the_reader_finds_all_three_of_validate_pins_statements(update_shape):
 def test_what_siblings_takes_from_the_holders_bootstrap_is_found_defined(
         update_shape):
     """The other helper a shipped copy imports from: the holder's
-    `siblings.py` takes five names from its `bootstrap.py`."""
+    `siblings.py` takes six names from its `bootstrap.py`."""
     family = REPO / "templates" / "family-root" / "scripts"
     taken = update_shape._names_imported(
         (family / "siblings.py").read_bytes())["bootstrap"]
