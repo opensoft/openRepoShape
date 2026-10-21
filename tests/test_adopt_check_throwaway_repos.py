@@ -1355,12 +1355,12 @@ def test_the_clone_writes_nothing_into_an_object_directory_around_it(
     assert list(work.iterdir()) == []
 
 
-def rewritten_in_the_source(source: Path, url: str, nowhere: str) -> None:
-    """The source's own config rewrites `url` to `nowhere`; the control:
-    git there expands it so."""
-    git("config", f"url.{nowhere}.insteadOf", url, cwd=source)
+def rewritten_in_the_source(source: Path, url: str, target: str) -> None:
+    """The source's own config rewrites `url` to `target`; the control:
+    git there expands it so (`--get-url` contacts nothing)."""
+    git("config", f"url.{target}.insteadOf", url, cwd=source)
     assert git("ls-remote", "--get-url", url,
-               cwd=source).stdout.strip() == nowhere
+               cwd=source).stdout.strip() == target
 
 
 def test_a_repository_around_check_rewrites_no_url_it_asks(tmp_path):
@@ -1385,24 +1385,42 @@ def test_a_repository_around_check_rewrites_no_url_it_asks(tmp_path):
         assert (source / ".git" / "config").read_bytes() == config, env
 
 
+#: How the NOTE begins that names each kept url `check` did not ask, as a
+#: config here rewrites it off the disk.
+URL_NOT_ASKED = ("NOTE `check` did not ask whether the url of each "
+                 "submodule the plan keeps")
+#: Where the source's own config sends the on-disk url: a directory that
+#: holds nothing, which `git ls-remote` finds answering nothing, and a
+#: network, which `check` names in `URL_NOT_ASKED` and does not ask.
+REWRITTEN_TO = [
+    pytest.param(lambda _source, nowhere: nowhere,
+                 id="a-directory-holding-nothing"),
+    pytest.param(lambda source, _nowhere: "https://f1119c.invalid/"
+                 + source.name, id="a-network")]
+
+
+@pytest.mark.parametrize("rewritten_to", REWRITTEN_TO)
 def test_a_work_directory_inside_the_source_rewrites_no_url_it_asks(
-        tmp_path):
+        tmp_path, rewritten_to):
     """`--work-dir` inside the source's own work tree, whose config
-    rewrites the on-disk url to a directory that holds nothing: `_answers`
-    asks git in its throwaway repository, which git finds before the
-    source around it, so `check` says what it says with a work directory
-    outside the source, leaves nothing there and writes nothing into the
-    source's config. Asked in the throwaway's own directory, which is no
-    repository, git found the source around it and read its rewrite: a
-    false `plan-submodule-url-answers-nothing` (r1119b's NIT-A, R8)."""
+    rewrites the on-disk url: `_answers` asks git in its throwaway
+    repository, which git finds before the source around it, so `check`
+    says what it says with a work directory outside the source, leaves
+    nothing there and writes nothing into the source's config. Asked in
+    the throwaway's own directory, which is no repository, git found the
+    source around it and read its rewrite (r1119b's NIT-A): `git
+    ls-remote` there gave a false `plan-submodule-url-answers-nothing`
+    (R8), and `--get-url` there a NOTE of a url on a network not asked."""
     source, url, nowhere = a_url_and_nowhere(tmp_path)
-    rewritten_in_the_source(source, url, nowhere)
+    rewritten_in_the_source(source, url, rewritten_to(source, nowhere))
     plan = kept_in_the_code_leg(source, tmp_path)
     config = (source / ".git" / "config").read_bytes()
     for work in (tmp_path / "work", source / "work"):
         result = checked(plan, None, "--work-dir", str(work))
         assert "REFUSED" not in result.stderr, result.stderr
         assert codes(result) == [RELATIVE_URL], (work, result.stderr)
+        assert URL_NOT_ASKED not in result.stdout + result.stderr, \
+            (work, result.stdout)
         assert list(work.iterdir()) == []
     assert (source / ".git" / "config").read_bytes() == config
 
