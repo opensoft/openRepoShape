@@ -40,7 +40,7 @@ names the link now, and the way out is to remove it or make it lead to a
 directory. A dangling link is still made where it leads.
 
 And (#1074) what r1065, the review of #1065, found no test held, or got
-wrong. On main at 2a119f28 on Python 3.12, `--work-dir w` with `w ->
+wrong. On main at 6da757cb on Python 3.12, `--work-dir w` with `w ->
 loop/../d/self2` (`loop -> loop`, `d -> realdir`, `realdir/self2 ->
 self2`) was "a symbolic link that leads to `<A>/d/self2`, which is not a
 directory": `_the_loop_in` ended its walk at `d`, a link that does not
@@ -74,7 +74,7 @@ from conftest import (ADOPT, git, load_without_bytecode, make_source_repo,
 from test_adopt_plan_leg_path_help import HELP_ENV, option_help, option_lines
 from test_adopt_root_symlinks import (  # noqa: F401
     BASIC, PLAN_FILE, PROJECT, REMOTES, THING, WORK_FLAG, cannot_write_in,
-    check, no_leg_was_created, planned, ticked, unwritable_work,
+    no_leg_was_created, planned, ticked, unwritable_work,
 )
 from test_adopt_shape_pin_and_work_dir import (
     FIX, WORK_DIR_UNWRITABLE, cannot_write,
@@ -161,15 +161,18 @@ def listed(base: Path) -> list[str]:
 
 
 def refused_for_a_link(command: str, base: Path, work: Path, why: str,
-                       link: Path) -> None:
+                       link: Path, *, cwd: Path | None = None,
+                       named: Path | None = None) -> None:
     """`command --work-dir work` refuses it by name, exit 2, as `why`, with
     the way out for `link`: before any leg exists, with no plan written,
-    and with nothing made or changed under `base` (#978)."""
+    and with nothing made or changed under `base` (#978). It runs in `cwd`,
+    and the refusal names the `--work-dir` as `named`, `work` by default."""
     before = listed(base)
-    result = run_in(command, base, work)
+    result = run_in(command, base, work, cwd=cwd)
     assert result.returncode == 2, result.stderr + result.stdout
     assert result.stderr == refused(
-        command, f"--work-dir {ticked(str(work))} cannot be made: {why}",
+        command,
+        f"--work-dir {ticked(str(named or work))} cannot be made: {why}",
         link_fix(link))
     assert listed(base) == before
     assert not (base / AGAIN).exists()
@@ -209,9 +212,12 @@ def mkdir_says(work: Path) -> str:
 def cannot_make(work: Path) -> str:
     """Why `--work-dir work` is refused when it cannot be made. The path
     is read as `_work_root` reads it, with `os.path.realpath`, which takes
-    a symlink loop as it is where Python 3.12's `Path.resolve` raises."""
-    return (f"--work-dir {ticked(os.path.realpath(work))} cannot be made: "
-            f"making it a directory failed ({mkdir_says(work)})")
+    a symlink loop as it is where Python 3.12's `Path.resolve` raises, and
+    that path is the one made: for a symlink at `work`, the system's words
+    are of where it leads (#1074)."""
+    real_path = os.path.realpath(work)
+    return (f"--work-dir {ticked(real_path)} cannot be made: making it a "
+            f"directory failed ({mkdir_says(Path(real_path))})")
 
 
 def refused_alike(command: str, base: Path, work: Path) -> None:
@@ -311,6 +317,94 @@ def test_a_work_dir_under_a_symlink_loop_is_refused(tmp_path, command):
                        through_a_loop(loop), loop)
 
 
+#: `w -> loop/../d/self2`, a link into a loop past a loop (#1074's N1): the
+#: links as `(name, target)`, made in turn, after the folder `realdir`.
+PAST_A_LOOP = (("realdir/self2", "self2"), ("d", "realdir"),
+               ("loop", "loop"), ("w", "loop/../d/self2"))
+
+
+@pytest.mark.parametrize("command", COMMANDS)
+def test_a_link_that_does_not_loop_is_passed_over_to_the_one_that_does(
+        tmp_path, command):
+    """`--work-dir w`, with `w -> loop/../d/self2`, `loop -> loop`, `d ->
+    realdir` and `realdir/self2 -> self2` (#1074's N1). Python 3.12's
+    `os.path.realpath` stops at `loop`, leaves the rest unread, and folds
+    its `..`: it reads `<A>/d/self2`, where `d` is a link that does not loop
+    and `self2` one that does. `_the_loop_in` ended its walk at `d`, so on
+    main at 6da757cb `w` was "a symbolic link that leads to `<A>/d/self2`,
+    which is not a directory". It passes `d` over now and names `self2`.
+    Python 3.13 and later read on past a loop and give
+    `<A>/realdir/self2`, with no link before `self2`, so the link named is
+    `os.path.realpath`'s reading on each; the direct test below holds the
+    walk on every Python."""
+    planned(tmp_path, {}, {}, {})
+    (tmp_path / "realdir").mkdir()
+    for name, target in PAST_A_LOOP:
+        linked(tmp_path / name, target)
+    work = tmp_path / "w"
+    refused_for_a_link(
+        command, tmp_path, work,
+        f"{LOOPS}, at the symbolic link {ticked(os.path.realpath(work))}",
+        work)
+
+
+@pytest.mark.parametrize("command", COMMANDS)
+def test_a_work_dir_read_as_the_link_in_the_loop_is_named_as_read(
+        tmp_path, command):
+    """`--work-dir <A>/nothere/../self`, with `self -> self` and no
+    `nothere` (#1074's N5). The system finds no entry at the path as typed,
+    so it is no link, and `os.path.realpath` takes its `..` as spelled and
+    reads `<A>/self`, the link in the loop itself. On main at 6da757cb the
+    reason said "the way to it leads round a loop, at the symbolic link
+    `<A>/self`", which is not the way to it but it; it says what is read
+    now. The way out, to remove or mend `<A>/self`, is as it was."""
+    planned(tmp_path, {}, {}, {})
+    linked(tmp_path / "self", "self")
+    loop = real(tmp_path, "self")
+    refused_for_a_link(command, tmp_path, tmp_path / "nothere" / ".." / "self",
+                       f"read as {ticked(str(loop))}, {LOOPS}", loop)
+
+
+@pytest.mark.parametrize("command", COMMANDS)
+def test_a_loop_spelled_through_a_linked_folder_is_named_once(tmp_path,
+                                                             command):
+    """CONTROL, as on main at 6da757cb (#1074's S2): `--work-dir
+    <A>/viadir/self`, with `viadir -> realdir` and `realdir/self -> self`.
+    `os.path.realpath` reads it as `<A>/realdir/self`, a spelling the
+    person never typed, and `_same_entry` asks `os.lstat` of both, so the
+    loop is the `--work-dir` itself and is named once. r1065's R5, which
+    compares the two spellings, said it leads round a loop "at the symbolic
+    link `<A>/realdir/self`", the same link again. On Linux CI `tmp_path`
+    holds no symlink, so no other row spells a path through one."""
+    planned(tmp_path, {}, {}, {})
+    (tmp_path / "realdir").mkdir()
+    linked(tmp_path / "viadir", "realdir")
+    linked(tmp_path / "realdir" / "self", "self")
+    work = tmp_path / "viadir" / "self"
+    refused_for_a_link(command, tmp_path, work, LOOPS, work)
+
+
+@pytest.mark.parametrize("command", COMMANDS)
+@pytest.mark.parametrize("spelling", ["relative", "dot-dot"])
+def test_a_work_dir_is_named_as_given_made_absolute_and_not_resolved(
+        tmp_path, command, spelling):
+    """CONTROL, as on main at 6da757cb (#1074's N3): `self -> self`, given
+    as `self` from `<A>`, and as `<A>/x/../self`. The first is named
+    `<A>/self`, made absolute from where the command runs; r1065's R19
+    named it `self`. The second is named as typed, its `..` kept; R20,
+    `os.path.abspath`, named it `<A>/self`. The way out names the same."""
+    planned(tmp_path, {}, {}, {})
+    (tmp_path / "x").mkdir()
+    linked(tmp_path / "self", "self")
+    if spelling == "relative":
+        absolute = real(tmp_path, "self")
+        refused_for_a_link(command, tmp_path, Path("self"), LOOPS, absolute,
+                           cwd=tmp_path, named=absolute)
+        return
+    work = tmp_path / "x" / ".." / "self"
+    refused_for_a_link(command, tmp_path, work, LOOPS, work)
+
+
 @pytest.fixture(scope="module")
 def adopter():
     """`adopt-project.py` loaded as a module, for `_the_loop_in`."""
@@ -322,17 +416,67 @@ def test_only_a_symlink_that_loops_is_called_a_loop(adopter, tmp_path):
     and no other (#978). `os.path.realpath` leaves only such a link in the
     path it returns, and the system is asked all the same (ELOOP), so that
     a link left there for any other reason, one to a file or to a
-    directory, is never called a loop."""
+    directory, is never called a loop. Nor is a dangling one, CONTROL as on
+    main at 6da757cb (#1074's N2): r1065's R3, which takes any `stat` that
+    fails for a loop, called it one."""
     (tmp_path / "a-dir").mkdir()
     (tmp_path / "a-file").write_text(MINE)
     for name, target in (("loop", "loop"), ("to-file", "a-file"),
-                         ("to-dir", "a-dir")):
+                         ("to-dir", "a-dir"), ("dangling", "missing")):
         linked(tmp_path / name, target)
     loop = real(tmp_path, "loop")
     assert adopter._the_loop_in(loop) == loop
     assert adopter._the_loop_in(loop / "sub") == loop
-    for name in ("to-file", "to-dir/sub", "a-dir/sub"):
+    for name in ("to-file", "to-dir/sub", "a-dir/sub", "dangling"):
         assert adopter._the_loop_in(real(tmp_path, name)) is None, name
+
+
+def test_a_link_that_does_not_loop_does_not_end_the_walk(adopter, tmp_path):
+    """`<A>/to-dir/self2`, with `to-dir -> a-dir` and `a-dir/self2 ->
+    self2`: the link that does not loop is passed over, and the one under
+    it that does is named (#1074's N1). On main at 6da757cb the walk ended
+    at `to-dir` and found no loop. `os.path.realpath` leaves such a path
+    only on Python 3.12 and before (`w -> loop/../d/self2`, above), so the
+    walk is asked here directly, which holds it on every Python."""
+    (tmp_path / "a-dir").mkdir()
+    linked(tmp_path / "to-dir", "a-dir")
+    linked(tmp_path / "a-dir" / "self2", "self2")
+    looped = real(tmp_path, "to-dir/self2")
+    assert adopter._the_loop_in(looped) == looped
+    assert adopter._the_loop_in(looped / "sub") == looped
+
+
+@pytest.mark.parametrize(("code", "winerror", "loops"), [
+    pytest.param(errno.EINVAL, 1921, True, id="winerror-1921"),
+    pytest.param(errno.EINVAL, None, False, id="control-EINVAL"),
+    pytest.param(errno.EINVAL, 123, False, id="control-winerror-123"),
+])
+def test_windows_cannot_resolve_is_a_loop_too(adopter, monkeypatch,
+                                              tmp_path, code, winerror,
+                                              loops):
+    """Windows' "cannot resolve", winerror 1921, which
+    `_ABSENT_WINERRORS` counts, is what `os.stat` of a symlink round a loop
+    raises there, with an errno that is not ELOOP (#1074's N6): it is a
+    loop too, as the gate's `_what_stands` reads it. On main at 6da757cb
+    only ELOOP was. The two CONTROLS: the same errno with no such
+    `winerror`, and Windows' "invalid name" (123), which says nothing is
+    there, are no loop. Built by hand, since only Windows raises one: an
+    `OSError` with `winerror` set on it, from `os.stat` of the one link."""
+    (tmp_path / "a-dir").mkdir()
+    linked(tmp_path / "link", "a-dir")
+    link = real(tmp_path, "link")
+    error = OSError(code, os.strerror(code), str(link))
+    if winerror is not None:
+        error.winerror = winerror
+    system_stat = os.stat
+
+    def stat(path, *args, **kwargs):
+        if path == link:
+            raise error
+        return system_stat(path, *args, **kwargs)
+
+    monkeypatch.setattr(os, "stat", stat)
+    assert adopter._the_loop_in(link) == (link if loops else None)
 
 
 @pytest.mark.parametrize("command", COMMANDS)
@@ -353,6 +497,78 @@ def test_a_work_dir_that_is_a_symlink_to_a_file_is_refused(tmp_path,
         f"it is a symbolic link that leads to "
         f"{ticked(str(real(tmp_path, a_file.name)))}, which is not a "
         "directory", work)
+    assert a_file.read_text() == MINE
+
+
+@pytest.fixture
+def locked_folder(tmp_path):
+    """`locked`, a folder at mode 555, or a skip where `chmod` cannot keep
+    this user from making a directory in it (root, Windows)."""
+    locked = tmp_path / "locked"
+    locked.mkdir()
+    locked.chmod(0o555)
+    if not cannot_write_in(locked):
+        locked.chmod(0o755)
+        pytest.skip("chmod cannot keep this user from writing a directory")
+    yield locked
+    locked.chmod(0o755)
+
+
+def refused_in_the_systems_words(command: str, base: Path,
+                                 work: Path) -> None:
+    """`command --work-dir work` refuses it as `refused_alike` does, in the
+    system's words of where `os.path.realpath` reads it and with #524's way
+    out, and makes or changes nothing under `base`."""
+    before = listed(base)
+    refused_alike(command, base, work)
+    assert listed(base) == before
+
+
+@pytest.mark.parametrize("command", COMMANDS)
+def test_a_symlink_to_a_path_under_a_file_keeps_the_systems_words(
+        tmp_path, command):
+    """CONTROL, as on main at 6da757cb (#1074's S1): `--work-dir w`, with
+    `w -> a-file/sub`. `os.mkdir` of where it leads fails with ENOTDIR, not
+    EEXIST: the link is not what is in the way, so the reason is the
+    system's, of `<A>/a-file/sub`, with #524's way out. r1065's R9, which
+    drops the EEXIST test, called `w` a link to what is no directory."""
+    planned(tmp_path, {}, {}, {})
+    a_file = tmp_path / "a-file"
+    a_file.write_text(MINE)
+    linked(tmp_path / "w", "a-file/sub")
+    refused_in_the_systems_words(command, tmp_path, tmp_path / "w")
+    assert a_file.read_text() == MINE
+
+
+@pytest.mark.parametrize("command", COMMANDS)
+def test_a_symlink_into_a_folder_this_user_cannot_write_in_keeps_its_words(
+        tmp_path, command, locked_folder):
+    """CONTROL, as on main at 6da757cb (#1074's S1): `--work-dir w`, with
+    `w -> locked/x` and `locked` at mode 555. `os.mkdir` of where it leads
+    fails with EACCES, and the reason is the system's "Permission denied",
+    of `<A>/locked/x`, with #524's way out, which is the one for it. R9
+    said "it is a symbolic link that leads to `<A>/locked/x`, which is not
+    a directory", of a path where nothing is."""
+    planned(tmp_path, {}, {}, {})
+    linked(tmp_path / "w", f"{locked_folder.name}/x")
+    refused_in_the_systems_words(command, tmp_path, tmp_path / "w")
+
+
+@pytest.mark.parametrize("command", COMMANDS)
+def test_a_work_dir_under_a_symlink_to_a_file_is_named_as_read(tmp_path,
+                                                              command):
+    """CONTROL, as on main at 6da757cb (#1074's N4): `--work-dir
+    <A>/tofile/sub`, with `tofile -> a-file`. No link is AT the
+    `--work-dir`, `os.mkdir` fails with ENOTDIR, and the fallback names
+    `os.path.realpath`'s reading of it, `<A>/a-file/sub`, in the system's
+    words; r1065's R11 named `<A>/tofile/sub`. It names no link, as #1065
+    left it."""
+    planned(tmp_path, {}, {}, {})
+    a_file = tmp_path / "a-file"
+    a_file.write_text(MINE)
+    linked(tmp_path / "tofile", a_file.name)
+    refused_in_the_systems_words(command, tmp_path,
+                                 tmp_path / "tofile" / "sub")
     assert a_file.read_text() == MINE
 
 
