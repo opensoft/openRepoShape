@@ -246,8 +246,11 @@ def test_a_leading_dash_is_an_escape_so_printf_reads_no_option():
 
 
 def test_the_bang_is_an_octal_escape_as_in_a_branch():
-    """The word is double-quoted, where a shell with history on reads a `!`
-    as #1079 says for a branch; spelled `\\041`, no line holds one."""
+    """`!` is spelled `\\041`, as #1079 spells it in a branch, so no line
+    holds one. A GUARD, NOT A MEASURED NEED: bash 5.2 and zsh 5.9 with
+    history on (`-i`) expand the `!` of `"x!echo"`, but no `!` inside
+    `"$(printf '...')"` (RV1098); the escape is kept for shells nobody has
+    measured here."""
     family = family_module()
     leg = read_as_the_module_does(b"fix!ec!\xe9")
 
