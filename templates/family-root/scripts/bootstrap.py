@@ -70,12 +70,22 @@ WHAT IT DOES, in order:
       row is left not checked out but for want of a credential, and the
       run names only where git's init in this holder stopped.
 
-      Where git's update ends on a signal, read from its exit code alone,
-      `128 + N` where a git it ran died of signal N and `-N` where it was
-      itself killed, the run fails naming the signal and the code, with
-      no advice (`ended_on`, #998): no credential crashes git or kills
-      it. It said `ok` there, with the advice, beside the 139 of git
-      2.43.0 crashing on a member's own `.gitmodules`.
+      Where git's update met a signal and did not exit 0, a git it ran
+      dead of one or itself killed, the run fails naming the signal and
+      the code, with no advice (`signal_met`, #998, #1056): no credential
+      crashes git or kills it. It is told by the code, never git's words:
+      where the update was traced, by the first git it ran whose exit
+      git's trace gives as `128 + N` (`died_in`), wherever the update met
+      it; else by the update's own exit code, `128 + N` where a git it
+      ran died of signal N and `-N` where it was itself killed
+      (`ended_on`). It said `ok` there, with the advice, beside the 139
+      of git 2.43.0 crashing on a member's own `.gitmodules` (#998), and
+      beside the 128 or the 1 of a gitlink git's update came to after
+      the signal, since git keeps only the last code that is not 0
+      (#1056). With a token in use the update is not traced, so a signal
+      is told only where its code is that last one. Where the update
+      also died past this holder's own records, as above, both are said,
+      the signal first, in the order git met them.
 
       "every member and leg fetched" is said only where git exited 0 AND
       every row's member is checked out (#648). A member left NOT CHECKED
@@ -153,8 +163,8 @@ WHAT IT DOES, in order:
       gitlink this holder records with no url or at an unmerged
       `.gitmodules` (#879), or found where git's update died past this
       holder's own records, in a member's own index or at a member's
-      commit no fetch brought (#892), or found that git's update ended
-      on a signal (#998); an exit 128 none of those shows is no failure
+      commit no fetch brought (#892), or found that git's update met a
+      signal (#998, #1056); an exit 128 none of those shows is no failure
       here, as (a) says. Any
       other member that is not checked out is REPORTED and skipped, not a
       failure: it is the state a missing credential leaves, and it is
@@ -235,15 +245,17 @@ UPDATE_STOPPED = "UPDATE STOPPED"
 #: member, and a checkout that refuses is passed with `git checkout`'s own
 #: 1, so no other code is asked past this holder's records
 #: (`stopped_below`, #892). A code past it that a signal gives is read
-#: apart (`ended_on`, #998).
+#: apart (`died_of`, #998).
 GIT_DIED = 128
-#: What (a)'s line says where git's update ended on a signal (`ended_on`,
-#: #998): a git it ran crashed, or it was killed, and no credential does
-#: either.
+#: What (a)'s line says where git's update met a signal (`signal_met`,
+#: #998, #1056): a git it ran crashed or was killed, or it was killed
+#: itself, and no credential does either.
 UPDATE_KILLED = "UPDATE KILLED"
+#: How (a)'s line ends where a git that git's update ran died of a signal.
+WHERE_SAID = "Git's own words above say which git and where."
 #: The trace2 target git's update is run with where no credential is in
 #: use, a directory, so each git it starts writes its events to a file of
-#: its own there (`fetched_in`, #892).
+#: its own there (`fetched_in`, #892; `died_in`, #1056).
 TRACE_ENV = "GIT_TRACE2_EVENT"
 #: How the name of each variable that asks git for a trace begins
 #: (`GIT_TRACE`, `GIT_TRACE2_EVENT`, `GIT_TRACE_CURL` and the rest): each is
@@ -419,16 +431,17 @@ def fetch_members(root: Path, rows: list[dict]) -> list[str]:
     #879); where its init in this holder died at a gitlink this holder
     records with no url, it is for that gitlink (`updated_none`, #879).
     Its line says no member was updated, or, where `rows` names none,
-    nothing was (lane 1's NIT 5 on #889). Where none of that is so and
-    git's update ended on a signal (`ended_on`, #998), the one failure
-    line is for git's update, and its line names the signal and the code;
-    where it died past this holder's own records, in a member's own
-    index or at a member's commit no fetch brought (`stopped_below`,
-    #892), the one failure line is for the gitlink git stopped at, and
-    its line says the update stopped there. Whether a fetch there reached
-    its remote is git's own trace's answer, or, where a token is in use
-    and git's update was not traced, that of the two fetches made again
-    with the token's rewrite (`fetch_reached`, #996).
+    nothing was (lane 1's NIT 5 on #889). Where none of that is so, a
+    signal git's update met (`signal_met`, #998, #1056) and where it died
+    past this holder's own records, in a member's own index or at a
+    member's commit no fetch brought (`stopped_below`, #892), are each
+    said where there is one, the signal first (`told_past`), each with a
+    failure line of its own: for git's update, its line naming the
+    signal and the code, and for the gitlink git stopped at, its line
+    saying the update stopped there. Whether a fetch there reached its
+    remote is git's own trace's answer, or, where a token is in use and
+    git's update was not traced, that of the two fetches made again with
+    the token's rewrite (`fetch_reached`, #996).
 
     Returns a failure line for each of `rows` whose member it leaves not
     checked out where no credential would check it out (`unfetchable`), for
@@ -448,16 +461,16 @@ def fetch_members(root: Path, rows: list[dict]) -> list[str]:
     args = ["git", *rewrite, "submodule", "update", "--init", "--recursive"]
     print(f"  credential source: {source}")
     sys.stdout.flush()
-    proc, fetched = run_update(args, root, traced=not token)
+    proc, trace = run_update(args, root, traced=not token)
     left, stopper, modules = unfetched(root, rows, proc, source, token)
     whole = updated_none(stopper, modules)
-    signum = ended_on(proc.returncode)
+    died = signal_met(proc.returncode, trace)
     below = (None if left or whole or proc.returncode != GIT_DIED
-             else stopped_below(root, fetch_reached(fetched, rewrite)))
+             else stopped_below(root, fetch_reached(trace.fetched, rewrite)))
     if proc.returncode != 0:
         fetch_incomplete(proc, source, token,
                          credential_advice(bool(left), stopper, modules,
-                                           below, signum))
+                                           below, died))
     if left:
         print("  NOT CHECKED OUT, and not for want of a credential: "
               + ", ".join(f"{spelled(path)} ({reason(why, stopper, modules)})"
@@ -472,24 +485,68 @@ def fetch_members(root: Path, rows: list[dict]) -> list[str]:
               file=sys.stderr)
         return [f"{spelled(stopper)} (git stopped at it)" if whole == STOPPED
                 else f"{GITMODULES} (git cannot read it)"]
-    if signum is not None:
+    failed = told_past(died, below, proc.returncode)
+    if not failed and proc.returncode == 0:
+        print("  every member and leg fetched")
+    return failed
+
+
+def told_past(died: Died | None, below: Below | None,
+              returncode: int) -> list[str]:
+    """(a)'s line for each of `died`, the signal git's update met
+    (`signal_met`, #998, #1056), and `below`, where it died past this
+    holder's own records (`stopped_below`, #892), where there is one,
+    printed, and the failure line of each, in git's order: the signal
+    first. A death past this holder's records (128) ends git's update,
+    so where both are told, git met the signal at a gitlink before it
+    and went on past it (#1056), and git's own words above say them in
+    that order too."""
+    failed = []
+    if died is not None:
         print(f"  {UPDATE_KILLED}, and not for want of a credential: "
-              + killed_said(signum, proc.returncode), file=sys.stderr)
-        return [f"git's update (ended on signal {signum})"]
+              + killed_said(died, returncode), file=sys.stderr)
+        failed.append("git's update (" + (
+            f"ended on signal {died.signum})" if died.code == returncode
+            else f"a git it ran died of signal {died.signum})"))
     if below is not None:
         print(f"  {UPDATE_STOPPED}, and not for want of a credential: "
               + below_said(below), file=sys.stderr)
-        return [f"{spelled(below.path)} (git stopped at it)"]
-    if proc.returncode == 0:
-        print("  every member and leg fetched")
-    return []
+        failed.append(f"{spelled(below.path)} (git stopped at it)")
+    return failed
+
+
+class Died(NamedTuple):
+    """A signal git's update met (`signal_met`, #998, #1056): `signum`,
+    and `code`, the exit code that gives it, either that of a git git's
+    update ran, `128 + signum`, as git's trace gives it (`died_in`), or
+    the update's own (`ended_on`)."""
+
+    signum: int
+    code: int
+
+
+class Trace(NamedTuple):
+    """What git's own trace of its update says (`run_update`): `fetched`,
+    each work tree in which a fetch it made reached its remote
+    (`fetched_in`, #892), None where the update was not traced; and
+    `died`, the first git it ran that died of a signal (`died_in`,
+    #1056), or None."""
+
+    fetched: frozenset[str] | None
+    died: Died | None = None
+
+
+#: What an update that was not traced says: nothing (`run_update`).
+NOT_TRACED = Trace(None)
 
 
 def run_update(args: list[str], root: Path, traced: bool
-               ) -> tuple[subprocess.CompletedProcess, frozenset[str] | None]:
-    """(a)'s `git submodule update`, run as `args` say in `root`, and the
-    work trees in which a fetch it made reached its remote (`fetched_in`,
-    #892), or None where the run was not traced.
+               ) -> tuple[subprocess.CompletedProcess, Trace]:
+    """(a)'s `git submodule update`, run as `args` say in `root`, and what
+    git's own trace of it says (`Trace`): the work trees in which a fetch
+    it made reached its remote (`fetched_in`, #892) and the first git it
+    ran that died of a signal (`died_in`, #1056), or `NOT_TRACED` where
+    the run was not traced.
 
     TRACED ONLY WHERE `traced` SAYS, which `fetch_members` says where
     neither `SHAPE_LEGS_TOKEN` nor `SHAPE_LEGS_APP_TOKEN` is set
@@ -506,8 +563,11 @@ def run_update(args: list[str], root: Path, traced: bool
     NIT 1 on #954). The trace is a directory of the run's own, made with
     `tempfile.mkdtemp`, readable by its owner alone, and removed whatever
     the run does, so only a run killed before it ends leaves it behind;
-    one that cannot be made leaves the run untraced. Raises the
-    `git-not-runnable` refusal where git cannot be started (#694)."""
+    one that cannot be made leaves the run untraced. An update not traced
+    has only its own exit code to say a signal it met (`ended_on`), so one
+    a later gitlink's code replaced is not told then (`credential_advice`
+    says that limit, #1056). Raises the `git-not-runnable` refusal where
+    git cannot be started (#694)."""
     trace = None
     if traced:
         try:
@@ -518,7 +578,7 @@ def run_update(args: list[str], root: Path, traced: bool
            else {**os.environ, TRACE_ENV: str(trace)})
     try:
         proc = started(args, root, env)
-        return proc, None if trace is None else fetched_in(trace)
+        return proc, NOT_TRACED if trace is None else traced_in(trace)
     finally:
         if trace is not None:
             shutil.rmtree(trace, ignore_errors=True)
@@ -539,11 +599,19 @@ def started(args: list[str], root: Path, env: dict[str, str] | None
         raise refusal from exc
 
 
-def fetched_in(trace: Path) -> frozenset[str]:
+def traced_in(trace: Path) -> Trace:
+    """What the trace2 events in `trace`, a file for each git git's update
+    started (`trace_events`), say of it (`Trace`): where a fetch reached
+    its remote (`fetched_in`, #892), and the first git it ran that died of
+    a signal (`died_in`, #1056)."""
+    events = trace_events(trace)
+    return Trace(fetched_in(events), died_in(events))
+
+
+def fetched_in(events: list[dict]) -> frozenset[str]:
     """Each work tree (`same_place`) in which a `git fetch` git's update
     made exited 0, so reached the remote it fetched from, read from the
-    trace2 events in `trace`, a file for each git the update started
-    (#892).
+    trace2 `events` of the gits the update started (`traced_in`, #892).
 
     TOLD BY THE EXIT CODE, NEVER GIT'S WORDS, as `gitmodules_listed`
     tells a listing (#856): git's event format is JSON, a line an event,
@@ -557,7 +625,7 @@ def fetched_in(trace: Path) -> frozenset[str]:
     exit 128. A line that is no event is skipped, and a git with no trace2
     (before 2.22) writes nothing, so nothing is said to be fetched."""
     runs: dict[str, dict] = {}
-    for event in trace_events(trace):
+    for event in events:
         run = runs.setdefault(str(event.get("sid")), {})
         kind = event.get("event")
         if kind == "cmd_name":
@@ -569,6 +637,62 @@ def fetched_in(trace: Path) -> frozenset[str]:
     return frozenset(same_place(run["worktree"]) for run in runs.values()
                      if run.get("name") == "fetch" and run.get("code") == 0
                      and isinstance(run.get("worktree"), str))
+
+
+def died_in(events: list[dict]) -> Died | None:
+    """The first git that git's update ran and that died of a signal, as
+    the trace2 `events` of the gits it started say it (`traced_in`,
+    #1056), or None.
+
+    TOLD BY THE EXIT CODE, NEVER GIT'S WORDS, as `fetched_in` tells a
+    fetch: a git writes a `child_start` event for each child it starts,
+    with its argv, and a `child_exit` with its code as it ends, each
+    giving the child's `child_id`, which `child_of` pairs with the git's
+    own `sid`. A `child_exit` whose code is `128 + N`, N below
+    `signal.NSIG` (`died_of`), as `run_command` gives a child dead of
+    signal N, for a child whose argv begins `git` (`git_child`), as git
+    writes a git it runs, is a git dead of signal N: the `git checkout`
+    or `git fetch` git's update runs in a member, or the member's own
+    update. Not a hook or another program, whose code is its own: a
+    `post-checkout` hook that exits 137 is no signal, and `git checkout`
+    exits 1 over it (measured, git 2.43.0 and 2.47.1). A git that passes
+    a dead child's code up gives the same N.
+
+    WHERE THE UPDATE MET IT, wherever that was. Git keeps only the last
+    code that is not 0 (`update_submodules` in git 2.47.1's
+    submodule--helper.c), so a later gitlink's 128 or 1 replaces a
+    signal's in the update's own exit code, and `ended_on` sees none
+    there (#1056); the trace keeps each.
+
+    FIRST BY THE TIME EACH EVENT GIVES, the order git met them in, and
+    in the order of the files and their lines where trace2 gives none
+    (its brief form): the files go in the order their gits started, so
+    a member's own update, which writes the `child_exit` of a leg's
+    checkout before git's update writes its own for that member's
+    update, comes after it there (measured, git 2.43.0 and 2.47.1:
+    SIGKILL at IRRS's `code`, then SIGTERM at its `spec`, which ended
+    IRRS's update 143, and that 143 came first in the files)."""
+    gits = {child_of(event) for event in events if git_child(event)}
+    for event in sorted(events, key=lambda event: str(event.get("time", ""))):
+        if event.get("event") == "child_exit" and child_of(event) in gits:
+            signum = died_of(event.get("code"))
+            if signum is not None:
+                return Died(signum, event["code"])
+    return None
+
+
+def child_of(event: dict) -> tuple[str, str]:
+    """The child a `child_start` or `child_exit` event names: the git that
+    wrote it, its `sid`, and the `child_id` it gave the child."""
+    return str(event.get("sid")), str(event.get("child_id"))
+
+
+def git_child(event: dict) -> bool:
+    """Whether `event` is a `child_start` for a git: its argv begins
+    `git`, as trace2 writes a child git runs as a git command."""
+    argv = event.get("argv")
+    return (event.get("event") == "child_start"
+            and isinstance(argv, list) and argv[:1] == ["git"])
 
 
 def trace_events(trace: Path) -> list[dict]:
@@ -714,7 +838,7 @@ def fetch_incomplete(proc: subprocess.CompletedProcess, source: str,
 
 def credential_advice(denied: bool, stopper: str | None,
                       modules: Gitmodules, below: Below | None = None,
-                      signum: int | None = None) -> str:
+                      died: Died | None = None) -> str:
     """(a)'s advice to set a credential, or nothing where git asked for none
     (#839): where its init died at a gitlink it has no url for (`stopper`),
     or it read nothing from `.gitmodules`, a merge leaving it unmerged, a
@@ -724,14 +848,38 @@ def credential_advice(denied: bool, stopper: str | None,
     Nor where git's update died past this holder's own records at what no
     credential cures (`below`, `stopped_below`, #892): a gitlink a member
     gives no url, or a member's commit a fetch that reached its remote did
-    not bring. Nor where it ended on a signal (`signum`, `ended_on`,
-    #998): a crash or a kill is no want of a credential, and a fetch git
-    could not make ends git's update there with 128, so an update that
-    ends `128 + N` met none. Anywhere else a fetch git made failed, a
-    member's, or a leg's in a member checked out, and the advice stands;
-    where a row is said to be no credential's beside it (`denied`), it is
-    for the members that line does not name."""
-    if (stopper is not None or below is not None or signum is not None
+    not bring. Anywhere else a fetch git made failed, a member's, or a
+    leg's in a member checked out, and the advice stands; where a row is
+    said to be no credential's beside it (`denied`), it is for the members
+    that line does not name.
+
+    NOR WHERE GIT'S UPDATE MET A SIGNAL (`died`, `signal_met`, #998,
+    #1056): a crash or a kill is no want of a credential, and the run
+    fails on it. A fetch git could not make may have failed in the same
+    update: a member's fetch that fails ends it with 128, but a clone that
+    fails, a member's or a leg's, gives 1, and git's update goes on (rv996's
+    NIT 2 on #1045), and the advice is not said beside the signal then
+    either. A run made again, where nothing is killed, says it.
+
+    WITH A TOKEN IN USE A SIGNAL IS TOLD ONLY WHERE ITS CODE IS GIT'S
+    LAST (#1056). Git's update is not traced then (`run_update`, #996),
+    and its own exit code is all there is (`ended_on`): a signal it met
+    before a later gitlink failed, whose 128 or 1 replaced the signal's
+    code, is not told, and the run reads as that failure does, the
+    advice and `ok` where it is the credential's skip, beside git's own
+    `died of signal` line. Measured, git 2.43.0 and 2.47.1: a trace of
+    that update writes the token, which the top git's `start` event
+    gives in its argv (the rewrite's `-c`), and, the rewrite given in
+    the environment instead, git 2.43.0's remote helper's `start` and
+    `child_start` events give in its url. Git's one target that is no
+    file, an `af_unix:` socket, would have to be served by this process
+    while the update runs, every git it starts waiting on it once Linux
+    has queued 10 events (`net.unix.max_dgram_qlen`), and its path
+    within the 107 bytes Linux takes for one, which a TMPDIR may not be
+    (151 in this repository's test runs); and git for Windows builds
+    without it (read, not run). A row pins the limit
+    (`tests/test_family_bootstrap_stops_named.py`)."""
+    if (stopper is not None or below is not None or died is not None
             or modules.unmerged or modules.refused or modules.unreadable):
         return ""
     which = ("the members the next line does not name" if denied
@@ -742,42 +890,85 @@ def credential_advice(denied: bool, stopper: str | None,
             "bootstrapped below.")
 
 
+def signal_met(returncode: int, trace: Trace) -> Died | None:
+    """The signal (a) tells for git's update, which exited `returncode`
+    (#998, #1056): the first git it ran that died of one, where its trace
+    says it (`Trace.died`, `died_in`), else the one its own exit code
+    gives (`ended_on`), or None. NOTHING WHERE IT EXITED 0: git's update
+    did all it set out to do then, whatever a git it ran died of on the
+    way, and the run says every member and leg was fetched. A fetch it
+    made killed after it wrote the ref it was for leaves the commit
+    reached, and git checks it out and exits 0 (measured, git 2.43.0 and
+    2.47.1, a `reference-transaction` hook killing that fetch)."""
+    if returncode == 0:
+        return None
+    if trace.died is not None:
+        return trace.died
+    signum = ended_on(returncode)
+    return None if signum is None else Died(signum, returncode)
+
+
 def ended_on(returncode: int) -> int | None:
-    """The signal git's update ended on, or None (#998). TOLD BY THE EXIT
-    CODE ALONE, never git's words, as `stopped_below` tells a 128:
-    - `128 + N`, where a git it ran died of signal N, as `run_command`
-      gives a child's signal, and git's update goes on past that gitlink
-      and ends with that code (measured, git 2.43.0: `submodule--helper
-      died of signal 11` on a member's own `.gitmodules` giving a `branch`
-      no value, exit 139);
+    """The signal git's update's own exit code gives, or None (#998). TOLD
+    BY THE EXIT CODE ALONE, never git's words, as `stopped_below` tells a
+    128:
+    - `128 + N` (`died_of`), where a git it ran died of signal N, as
+      `run_command` gives a child's signal, and no gitlink after it
+      failed: git's update goes on past that gitlink, and keeps only the
+      last code that is not 0 (`update_submodules`), so a later 128 or 1
+      replaces it (#1056) (measured, git 2.43.0: `submodule--helper died
+      of signal 11` on a member's own `.gitmodules` giving a `branch` no
+      value, exit 139, and exit 128 with a member after it whose pin moved
+      past what git could fetch);
     - `-N`, where git itself was killed by signal N, as Python gives it.
     Not 128, git's `die`, which `stopped_below` asks about, nor a code from
     `128 + signal.NSIG` on, which numbers no signal this system has, as
     255, which git exits with where a command of its returns -1: those are
-    read as before, the advice and `ok` where nothing else is told."""
+    read as before, the advice and `ok` where nothing else is told.
+
+    WHERE GIT'S UPDATE WAS TRACED, its trace says a signal a later code
+    replaced (`died_in`), and `signal_met` asks it first. WITH A TOKEN IN
+    USE it was not (#996), and this is all there is: a signal git's update
+    met before a later gitlink failed is not told, as `credential_advice`
+    says, where it says why no trace is read then (#1056)."""
     if returncode < 0:
         return -returncode
-    if GIT_DIED < returncode < GIT_DIED + signal.NSIG:
-        return returncode - GIT_DIED
+    return died_of(returncode)
+
+
+def died_of(code: object) -> int | None:
+    """N where `code` is `128 + N`, N below `signal.NSIG`, the code
+    `run_command` gives a child dead of signal N (#998), else None: not
+    128, git's `die`, nor a code from `128 + signal.NSIG` on, which
+    numbers no signal this system has, as 255, which git exits with where
+    a command of its returns -1, nor what is no number."""
+    if isinstance(code, int) and GIT_DIED < code < GIT_DIED + signal.NSIG:
+        return code - GIT_DIED
     return None
 
 
-def killed_said(signum: int, returncode: int) -> str:
-    """(a)'s line, after its lead, where git's update ended on `signum`
-    with `returncode` (`ended_on`, #998): the signal by its number and,
-    where this system names it, its name, then the code; a code past 128
-    is a git it ran that died of it, whose own words git printed above,
-    and a negative one is git itself killed."""
+def killed_said(died: Died, returncode: int) -> str:
+    """(a)'s line, after its lead, for the signal git's update met
+    (`signal_met`, #998, #1056), where it exited `returncode`: the signal
+    by its number and, where this system names it, its name, then the
+    code that gives it. Where that is git's update's own, it ended on it:
+    a code past 128 is a git it ran that died of it, whose own words git
+    printed above, and a negative one is git itself killed. Where it is
+    not, git's trace gave it, for a git git's update ran, and git's update
+    went on past it, and ended with its own code (`died_in`)."""
     try:
-        name = f"{signal.Signals(signum).name}, "
+        name = f"{signal.Signals(died.signum).name}, "
     except ValueError:
         name = ""
-    said = (f"git's update ended on signal {signum} ({name}exit "
-            f"{returncode}), ")
+    said = f"signal {died.signum} ({name}exit {died.code})"
+    if died.code != returncode:
+        return (f"a git that git's update ran died of {said}, and git's "
+                f"update went on and ended with exit {returncode}. "
+                + WHERE_SAID)
     if returncode < 0:
-        return said + "which killed it."
-    return (said + "which a git it ran died of. Git's own words above say "
-            "which git and where.")
+        return f"git's update ended on {said}, which killed it."
+    return (f"git's update ended on {said}, which a git it ran died of. "
+            + WHERE_SAID)
 
 
 def git_not_started(exc: OSError) -> Refusal | None:
@@ -789,13 +980,18 @@ def git_not_started(exc: OSError) -> Refusal | None:
     FAILED`, though nothing had failed. Git's is told by its NAME, as
     `validate-pins.py` tells it: a `filename` of `git`, or none at all on a
     `FileNotFoundError` or a `PermissionError`, as Windows raises them, or
-    on an `OSError` whose `winerror` is 193, Windows' `[WinError 193]` for a
-    `git.exe` it cannot execute (#1001); one naming a directory is not
-    git's. The code, and the remedy's first sentence, are
-    `validate-family.py`'s."""
+    on an `OSError` whose `winerror` says Windows could not start the
+    program itself: 193, a `git.exe` it cannot execute (#1001), the rest of
+    193's `ENOEXEC` family (11, 188 to 202), 216, one built for another
+    architecture, 1260, one AppLocker or a software restriction policy
+    blocks, and 4551, one App Control for Business blocks (#1040). One
+    naming a directory is not git's, nor is a nameless `[WinError 267]`, a
+    `cwd` that is not a folder, nor any other `winerror`. The code, and the
+    remedy's first sentence, are `validate-family.py`'s."""
     nameless = (exc.filename is None
                 and (isinstance(exc, (FileNotFoundError, PermissionError))
-                     or getattr(exc, "winerror", None) == 193))
+                     or getattr(exc, "winerror", None)
+                     in (11, *range(188, 203), 216, 1260, 4551)))
     if exc.filename != "git" and not nameless:
         return None
     return Refusal(
