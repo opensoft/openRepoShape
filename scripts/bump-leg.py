@@ -43,9 +43,11 @@ WHAT IT REFUSES, and why each is a refusal rather than a warning:
   * a commit the leg's REMOTE does not have. A pin nobody else can fetch is a
     root nobody else can bootstrap. The fetch that asks prunes, so a branch
     the remote has deleted no longer counts, and moves no local branch of
-    the leg (#898). Where a TAG of the remote reaches a commit the leg holds
-    and no branch does, or the leg has no remote named `origin`, the refusal
-    says so instead of "never pushed" or "fix the network".
+    the leg (#898). It carries no refspec of the leg's own that can bring a
+    tag under `origin/`, where it reads branches, so a tag never answers for
+    one there (#1037). Where a TAG of the remote reaches a commit the leg
+    holds and no branch does, or the leg has no remote named `origin`, the
+    refusal says so instead of "never pushed" or "fix the network".
   * a dirty root. The commit is made with explicit pathspecs, so unrelated
     edits would not be swept in — but a lockstep commit that cannot be read as
     exactly one change is the thing the rule exists to keep readable.
@@ -152,6 +154,9 @@ from shape_materialize import readable_branch  # noqa: E402
 # U+FEFF by the reader's own name, which `rewrite_pin` takes off line 1 as
 # `parse_yaml` does, and puts back (#933). On its own line, as the one above.
 from repo_shape import BYTE_ORDER_MARK  # noqa: E402
+# Which of the leg's own refspecs its fetch carries: the rule `family.py
+# bump` asks of a member's fetch, one function for both (#1037).
+from shape_materialize import origin_fetch_refspecs  # noqa: E402
 from shape_materialize import (  # noqa: E402
     CommandFailed, captured_child_environment, check_program, commit_trailers,
     escape_what_stdout_cannot_encode, is_nested_key, pin_values_in,
@@ -1046,16 +1051,15 @@ def on_a_remote_branch(submodule: Path, commit: str) -> bool:
     return proc.returncode == 0 and bool(proc.stdout.strip())
 
 
-#: What the leg's fetch always asks of its remote: every branch, into the
-#: namespace `on_a_remote_branch` reads, forced as a remote-tracking ref is.
-LEG_BRANCHES = "+refs/heads/*:refs/remotes/origin/*"
-
-
 def _leg_fetch_refspecs(submodule: Path) -> list[str]:
-    """The refspecs the leg's fetch carries (#898): every branch of the
-    remote, then what the leg's own `remote.origin.fetch` keeps under
-    `refs/remotes/origin/`, and none of what it excludes. `family.py`'s
-    `_origin_fetch_refspecs` (#686), asked of a leg.
+    """The refspecs the leg's fetch carries (#898, #1037): every branch of
+    the remote, then what the leg's own `remote.origin.fetch` keeps under
+    `refs/remotes/origin/`, and none of what it excludes, nor one whose
+    source can name a tag, nor what gives another namespace the names the
+    branches take there. Which of the leg's are carried is
+    `shape_materialize`'s `origin_fetch_refspecs`, the rule `family.py`'s
+    `_origin_fetch_refspecs` asks of a member's mount (#686, #905, #1009);
+    its docstring says which clause leaves out what, and why.
 
     WHY THE LEG'S OWN ARE ADDED. The fetch prunes, and `--prune` deletes
     every ref under `refs/remotes/origin/` that no refspec on the command
@@ -1064,11 +1068,30 @@ def _leg_fetch_refspecs(submodule: Path) -> list[str]:
     (`+refs/pull/*/head:refs/remotes/origin/pr/*`) would lose them to a
     prune made for a deleted branch, in a dry run too. So each positive
     refspec of the leg whose destination is under `refs/remotes/origin/`
-    goes on the command line as well, forced as the first is, and is pruned
-    only against itself. One whose destination is outside it, a mirror's
-    `+refs/*:refs/*` or `+refs/heads/*:refs/heads/*`, is never added, so no
-    refspec this fetch names writes outside `refs/remotes/origin/`. A ref
-    put under `origin/` by hand, which no refspec maps, is pruned.
+    and that no clause leaves out goes on the command line as well, forced
+    as the first is, and is pruned only against itself. One whose
+    destination is outside it, a mirror's `+refs/*:refs/*` or
+    `+refs/heads/*:refs/heads/*`, is never added, so no refspec this fetch
+    names writes outside `refs/remotes/origin/`. A ref put under `origin/`
+    by hand, which no refspec maps, is pruned.
+
+    A REFSPEC THAT CAN BRING A TAG UNDER `origin/` IS LEFT OUT (#1037),
+    and so is one onto the branches' names from another namespace, as
+    #946 and #1027 left them out of `family.py bump`'s fetch. This fetch
+    carried every one: the tags onto the branches' names or in a folder, a
+    mirror into `origin/` or in a folder, and a short name, which git
+    completes to a tag before a branch. Where the remote had a branch and a
+    tag of the name such a refspec writes, the fetch exited 128 ("Cannot
+    fetch both"), where the leg's own `git fetch origin` exits 0, so both
+    runs gave the failed-fetch note and answered from stale refs. Where no
+    name was shared, `on_a_remote_branch` read the tag as a branch, and a
+    commit only a tag of the remote reaches was pinned. A short name gave
+    two answers by turns: a fetch that finds the ref the short name wrote
+    prunes it, as the remote has no ref of that very name, and the fetch
+    after it writes it back, so a dry run pinned the commit and the real
+    run after it refused it (measured, git 2.43). Left out, such a ref
+    under `origin/` is pruned, and the leg's own next `git fetch origin`
+    writes it back.
 
     A NEGATIVE REFSPEC (`^refs/heads/wip`) IS SKIPPED. A narrowing refspec
     never decides reachability: a positive one that leaves a branch out is
@@ -1079,12 +1102,9 @@ def _leg_fetch_refspecs(submodule: Path) -> list[str]:
     WHERE GIT CANNOT SATISFY A REFSPEC OF THE LEG'S OWN, THE FETCH FAILS,
     where the fetch of every branch alone worked: one naming a ref the
     remote no longer has (`couldn't find remote ref`, as the person's own
-    `git fetch origin` fails), or a tags-into-`origin/` refspec where the
-    remote has a branch and a tag of one name (`Cannot fetch both ...`,
-    where `git fetch origin` exits 0). Both exit 128, so the note follows,
-    the stale-refs sentence after it where the refusal has one, and nothing
-    is pruned (measured, git 2.43). `family.py` shares both; #905 holds
-    them.
+    `git fetch origin` fails). That exits 128, so the note follows, the
+    stale-refs sentence after it where the refusal has one, and nothing is
+    pruned (measured, git 2.43).
 
     READ BY A LISTING, `git config --list`, which exits 0 whether or not the
     leg has a refspec (an `origin` with a URL and nothing else has none, and
@@ -1096,16 +1116,7 @@ def _leg_fetch_refspecs(submodule: Path) -> list[str]:
     configured = [value for key, _, value in
                   (line.partition("=") for line in listed.splitlines())
                   if key == "remote.origin.fetch"]
-    refspecs = [LEG_BRANCHES]
-    for spec in (value.strip() for value in configured):
-        if spec.startswith("^"):
-            continue  # a narrowing refspec never decides reachability
-        spec = spec if spec.startswith("+") else "+" + spec
-        if not spec.partition(":")[2].startswith("refs/remotes/origin/"):
-            continue
-        if spec not in refspecs:
-            refspecs.append(spec)
-    return refspecs
+    return origin_fetch_refspecs(configured)
 
 
 def _has_origin(submodule: Path) -> bool:
@@ -1300,10 +1311,12 @@ def fetch_leg(submodule: Path, repository: str, commit: str,
     remote keeps, so it was pinned. `--prune` drops every ref under
     `refs/remotes/origin/` that no refspec of the fetch maps a ref of the
     remote to; the leg's own refspecs that write there ride along
-    (`_leg_fetch_refspecs`), so what its configuration keeps there stays.
-    `--no-prune-tags` is belt and braces: git 2.43 applies no `pruneTags`
-    setting to a fetch with refspecs on its command line (measured).
-    `origin/HEAD` stays. Offline nothing is pruned. Under
+    (`_leg_fetch_refspecs`), so what its configuration keeps there stays,
+    but for what a refspec it leaves out writes, a tag under `origin/`
+    among it (#1037), which is pruned until the leg's own next `git fetch
+    origin`. `--no-prune-tags` is belt and braces: git 2.43 applies no
+    `pruneTags` setting to a fetch with refspecs on its command line
+    (measured). `origin/HEAD` stays. Offline nothing is pruned. Under
     `--local-remote-dir` the prune deletes the `origin/*` tracking refs the
     stand-in directory lacks, a branch the leg's real `origin` still has
     included; that is deliberate, as the fetch has always written that
@@ -1318,8 +1331,9 @@ def fetch_leg(submodule: Path, repository: str, commit: str,
     holding a commit never pushed was moved off it), and a leg standing on
     such a branch failed the fetch with "refusing to fetch into branch". The
     configured refspecs that write under `origin/` are on the command line
-    already, so nothing else is lost, and the fetch writes nothing outside
-    `refs/remotes/origin/` and the tags git follows.
+    already, but for those `_leg_fetch_refspecs` leaves out, whose refs the
+    prune drops in any case, so nothing else is lost, and the fetch writes
+    nothing outside `refs/remotes/origin/` and the tags git follows.
 
     WHERE IT CANNOT ANSWER, THE REFUSAL SAYS WHY (#898), in the code it had.
     A leg with no remote named `origin` (`_has_origin`, asked only of a

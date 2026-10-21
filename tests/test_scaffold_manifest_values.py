@@ -1040,14 +1040,20 @@ def test_a_validator_that_failed_to_load_is_not_remembered(tmp_path):
 
 #: What the scaffold says where its template's `project.yaml` is not a
 #: mapping: the sentence `family.py init` says of the holder's, in the
-#: project's words, where it was the validator's `AttributeError`.
+#: project's words, where it was the validator's `AttributeError`. The code
+#: is `-manifest-invalid` still, and the remedy is the defect of the
+#: standard, aimed at `templates/assembly-root/project.yaml` (#1059): no
+#: value reaches this case, so the validator's remedy ("choose a value ...
+#: accepts"), which it carried from #1057 to #1059, sent a person to retype
+#: a value that was never wrong.
 NOT_A_MAPPING = (
     "REFUSED scaffold-manifest-invalid: the manifest this run would write is "
     "not a mapping, which is what the project's own YAML reader makes of "
-    "it.\nRemediation: choose a value the project's own validate-manifest.py "
-    "accepts; the words after each value are the validator's own, and a "
-    "project it refuses is one whose first bootstrap would fail. Nothing was "
-    "created, and `--dry-run` refuses the same.\n")
+    "it.\nRemediation: this is a defect in the copy of this standard you "
+    "ran, not in your values: templates/assembly-root/project.yaml is broken "
+    "there, as the project's own YAML reader makes no mapping of it. Restore "
+    "it from the standard's repository, or reinstall the standard, and run "
+    "again. Nothing was created, and `--dry-run` refuses the same.\n")
 
 
 def test_a_manifest_that_is_not_a_mapping_is_said_and_not_a_validator_defect(
@@ -1070,6 +1076,31 @@ def test_a_manifest_that_is_not_a_mapping_is_said_and_not_a_validator_defect(
     assert "validator-unusable" not in result.stderr
     assert result.stdout == ""
     assert sorted(p.name for p in run.iterdir()) == [SCRATCH]
+
+
+def test_a_manifest_that_is_not_a_mapping_is_a_kind_of_its_own(tmp_path):
+    """#1059: the questions name the problem `not-a-mapping`, which is
+    neither a finding (`invalid`) nor a line the reader refuses
+    (`unreadable`), because its remedy is the defect of the standard and not
+    a value to choose. The public sentences are the same list of text they
+    were, and no value can be said to pass the validator of a file it was
+    never asked about (`manifest_judged` is None, as for a line the reader
+    refuses)."""
+    copy = tmp_path / "assembly-root"
+    shutil.copytree(REPO / "templates" / "assembly-root", copy,
+                    ignore=shutil.ignore_patterns("__pycache__", "*.pyc"))
+    (copy / "project.yaml").write_text("- one\n- two\n", encoding="utf-8")
+    policy = shape_materialize.NamingPolicy.load(
+        REPO / shape_materialize.NAMING_POLICY_YAML)
+    sentence = ("the manifest this run would write is not a mapping, which "
+                "is what the project's own YAML reader makes of it.")
+    assert shape_materialize.KIND_NOT_A_MAPPING == "not-a-mapping"
+    assert shape_materialize.manifest_value_problems(
+        {}, policy, {}, template_dir=copy) == [
+        (shape_materialize.KIND_NOT_A_MAPPING, sentence)]
+    assert shape_materialize.manifest_invalid({}, policy, {}, copy) == [
+        sentence]
+    assert shape_materialize.manifest_judged({}, policy, copy) is None
 
 
 def test_a_validator_that_cannot_be_asked_says_so_in_the_projects_words(
