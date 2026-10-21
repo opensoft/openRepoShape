@@ -2300,10 +2300,11 @@ def _host_key_remedy(output: str, repo: str, reused: bool) -> str:
     so its fingerprint, which ssh printed, is checked against GitHub's
     (`GITHUB_FINGERPRINTS`) first, nothing is pushed while it is not one of
     them, and only then is the old key removed and the new one kept, with
-    `HOST_KEY_CHECK`, answering yes only to the fingerprint checked: the
-    `ssh -T` is a new connection, which can be sent another key than the
-    push's. A key ssh does not know is checked the same way, before it is
-    kept."""
+    `HOST_KEY_CHECK`, answering yes only to a fingerprint GitHub publishes,
+    which can be another of its keys than the one checked: the `ssh -T` is
+    a new connection, which asks first about a key type ssh holds, and can
+    be sent another key than the push's. A key ssh does not know is
+    checked the same way, before it is kept."""
     said = _without_remote_lines(output)
     if not any(words in said for words in HOST_KEY_FAILED):
         return ""
@@ -2319,8 +2320,9 @@ def _host_key_remedy(output: str, repo: str, reused: bool) -> str:
                "fingerprint ssh printed above is one GitHub publishes ("
                + GITHUB_FINGERPRINTS + "); only then remove the old key (the "
                "`ssh-keygen -R` line ssh printed) and keep the new one ("
-               + HOST_KEY_CHECK + "), answering yes only to the fingerprint "
-               "you checked")
+               + HOST_KEY_CHECK + "), answering yes only to a fingerprint "
+               "GitHub publishes, which can be another of its keys than "
+               "the one you checked")
     else:
         fix = (f"ssh could not verify the key of the host the push to {repo} "
                "reached: a `url.<base>.insteadOf` or "

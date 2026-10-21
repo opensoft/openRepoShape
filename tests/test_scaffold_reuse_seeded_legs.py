@@ -1487,8 +1487,9 @@ CHANGED_HOST_KEY_REMEDY = (
     "and push nothing to it, until you have checked that the fingerprint ssh "
     f"printed above is one GitHub publishes ({PUBLISHED}); only then remove "
     "the old key (the `ssh-keygen -R` line ssh printed) and keep the new one "
-    f"({SEE_THE_KEY}), answering yes only to the fingerprint you checked, "
-    "then re-run ")
+    f"({SEE_THE_KEY}), answering yes only to a fingerprint GitHub "
+    "publishes, which can be another of its keys than the one you "
+    "checked, then re-run ")
 #: What the scaffold prints after the ruleset hint on GitHub (#1108): the
 #: prompts the hint's re-run can still wait at, as `STILL_ASKS` says them of
 #: every other re-run, in a paragraph of its own that names that re-run.
@@ -1721,13 +1722,18 @@ NO_HINT_AFTER = (UNKNOWN_HOST_KEY_REMEDY, CHANGED_HOST_KEY_REMEDY)
 #: under `LC_ALL=C`, from a hook writing "see the log\rHost key verification
 #: failed.\n"): git prefixes each line the server sent, and each part after a
 #: `\r` in it, with `remote:` and ends each with eight spaces, so a line that
-#: starts with it is the server's from end to end.
+#: starts with it is the server's from end to end. Another carries a form
+#: feed, which git keeps inside one prefixed line (measured, git 2.43, with
+#: `cat -A`: "remote: ff^LHost key verification failed.        $"), so a
+#: split at every separator `str.splitlines` knows (`\v`, `\f`, `\x1c` to
+#: `\x1e`, `\x85`, U+2028 and U+2029) would cut the server's line in two.
 RULESET_SAYING_HOST_KEY = (
     "remote: error: GH013: Repository rule violations found for "
     "refs/heads/main: Host key verification failed.\n"
     "remote: REMOTE HOST IDENTIFICATION HAS CHANGED\n"
     "remote: see the log        \rremote: Host key verification failed."
     "        \n"
+    "remote: see the log\x0cHost key verification failed.        \n"
     "To https://github.com/o/r.git\n ! [remote rejected] HEAD -> main "
     "(pre-receive hook declined)\nerror: failed to push some refs to "
     "'https://github.com/o/r.git'")
