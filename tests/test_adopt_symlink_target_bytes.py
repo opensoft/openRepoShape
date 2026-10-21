@@ -59,7 +59,8 @@ from test_adopt_empty_symlinks import (
     planned, put_link, symlinks_off,
 )
 from test_adopt_root_symlinks import (
-    GITHUB, ROOT, check as check_root, planned as planned_root, ticked,
+    A_PIN, GITHUB, ROOT, check as check_root, declare,
+    planned as planned_root, ticked,
 )
 
 CODE = "plan-bad-symlink-target"
@@ -807,6 +808,61 @@ def test_a_named_link_at_the_pin_is_found_there_and_no_case_twin_is_asked(
     alone, = adopter._pin_findings(plan, [twin], named)
     assert "the file `contracts/Shape-pin.yaml` " in alone
     assert "once case is ignored" in alone
+
+
+#: Where a named link sits beside a SECOND path the shape also writes, kept
+#: in the root, so that `check` makes two findings and not one: the link's
+#: own and the second path's (#1089, SHOULD-2 of r1070). What the skips leave
+#: out is the link and no other path, and each case is a mutant of them that
+#: #1070's whole file let live, because the second finding was the only one
+#: it lost: a link at `shape/README.md` beside a case twin of that copy (M12),
+#: a link at a declared pin's file beside a file at the shape's own pin (M13),
+#: and a link at the README copy beside a file at the Makefile copy (M14). In
+#: each the second path is asked after the link's, on the same disk or the
+#: next.
+#:
+#: The source's other files, a declared pin, the link, what the plan keeps in
+#: the root, the code of the second finding and what it says of its path.
+LINK_BESIDE_A_SECOND_PATH = [
+    pytest.param(
+        {"Shape/README.md": "the case twin\n"}, False, "shape/README.md",
+        {"shape/": ROOT, "Shape/": ROOT, "README.md": ROOT}, COPY,
+        "That path is the file `Shape/README.md` once case is ignored",
+        id="a-case-twin-of-the-readme-copy"),
+    pytest.param(
+        {"contracts/shape-pin.yaml": "not the shape's pin\n"}, True,
+        "contracts/openglass-pin.yaml", {"contracts/": ROOT}, HOLDS_PIN,
+        "the plan keeps the file `contracts/shape-pin.yaml` in the assembly "
+        "root", id="a-file-at-the-shape-pin-after-a-declared-pins-link"),
+    pytest.param(
+        {"Makefile": "all:\n", "shape/Makefile": "the source's own\n"}, False,
+        "shape/README.md",
+        {"shape/Makefile": ROOT, "Makefile": ROOT, "README.md": ROOT}, COPY,
+        "the shape's copy of `Makefile` is written to `shape/Makefile`",
+        id="a-file-at-the-makefile-copy-after-the-readme-copys-link"),
+]
+
+
+@pytest.mark.parametrize("files, declared, link, kept, second, says",
+                         LINK_BESIDE_A_SECOND_PATH)
+def test_a_named_link_leaves_out_its_own_finding_and_no_other(
+        tmp_path, files, declared, link, kept, second, says):
+    """Left out for the link's own sake, the second path is still asked: its
+    finding is made, and its remedy (send it to a leg, `drop` it) helps the
+    file it names. The link is named once, by its own finding, and
+    #908's remediation is said once after the findings."""
+    _, plan = planned_root(tmp_path, files, {link: LATE_NUL}, kept)
+    if declared:
+        declare(plan, A_PIN)
+    result = check_root(plan)
+    assert result.returncode == 1, result.stdout + result.stderr
+    own, made = findings_of(result)
+    assert own.startswith(
+        f"FINDING {CODE}: `{link}` is a symlink whose target holds a NUL "
+        "byte after its first 4 bytes")
+    assert made.startswith(f"FINDING {second}: ")
+    assert says in made
+    assert result.stderr.count(FACT_OF_THE_SOURCE) == 1
 
 
 @pytest.mark.parametrize("files, link, kept, second", AT_A_COPY_OR_A_PIN)

@@ -10622,6 +10622,14 @@ def _root_symlink_findings(plan: Plan, source: Source, tree: list,
     is a symlink AT a declared pin's file or AT the shape's own pin, #273's
     `plan-root-holds-pin` (`_links_at_a_pin`, #524).
 
+    A link AT a copy or AT a pin's file whose target `plan-empty-symlink`
+    or `plan-bad-symlink-target` names one by one is the exception to both
+    (#979): `_root_shape_findings` and `_kept_pin_findings` leave it out,
+    and it is named once, by its own finding alone, as a link AT
+    `project.yaml` is. A link those two findings only count, past the
+    twenty each names, is still #262's or #273's to say
+    (`_named_symlinks`).
+
     A walk that stops at a symlink with an empty target, or one that begins
     with a NUL byte (#388), is #303's to say: `plan-empty-symlink` names
     every such symlink in the source, first in `_entry_findings`' list, with

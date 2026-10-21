@@ -1052,6 +1052,35 @@ def test_the_materializer_never_writes_a_copy_over_what_is_there(
     assert (target / kept).read_bytes() == before
 
 
+def test_the_materializer_names_a_bad_link_at_the_copy_by_its_own_finding(
+        tmp_path):
+    """#979 left a link at the copy whose target `plan-empty-symlink` or
+    `plan-bad-symlink-target` names out of `plan-root-blocks-shape-copy`
+    (#1089, N4). The materializer's refusal and `copy_in_the_way`'s docstring
+    still said `check` reports a path kept at the copy as that finding alone,
+    and for a caller that skipped `check` they now say what names such a
+    link, and what helps it: `drop` does not."""
+    target = materialized_beside(tmp_path, {"README.md": "# Thing\n",
+                                            "shape/README.md": OWN_NOTES})
+    with pytest.raises(Refusal) as caught:
+        materialize_assembly_root(REPO, target, template_values(),
+                                  collision_dir="shape")
+    remediation = " ".join(caught.value.remediation.split())
+    for said in (
+            f"reports a plan that does as `{COPY_IN_THE_WAY}`, before any "
+            "leg exists, except a symlink there whose target "
+            "`plan-empty-symlink` or `plan-bad-symlink-target` names: that "
+            "finding names it, once.",
+            "for such a symlink give it a target of its own in the source, "
+            "or remove it there, and re-run `plan`, since no answer in the "
+            "plan changes a target."):
+        assert said in remediation
+    doc = " ".join(shape_materialize.copy_in_the_way.__doc__.split())
+    assert (f"(`{COPY_IN_THE_WAY}`; a symlink there whose target "
+            "`plan-empty-symlink` or `plan-bad-symlink-target` names is "
+            "that finding's alone, #979)") in doc
+
+
 def test_the_materializer_still_writes_a_copy_where_the_way_is_free(tmp_path):
     """The refusal is for a taken copy only: the collision it handled before
     is still written beside the file the source keeps."""
