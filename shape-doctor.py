@@ -8884,11 +8884,12 @@ def unregistered_gitlinks(adopt, mount: Path, rel: str, tracked: list,
     submodule's directory empty, and `git submodule status` there exits 128
     with `no submodule mapping found in .gitmodules` (measured, git 2.43),
     or, where the copy holds a line git refuses, both exit 128 with `bad
-    config line`. A `.gitmodules` the doctor cannot read as git does (`registered_paths`)
-    names nothing, as `holds_no_section` calls no such file empty: one that
-    is unmerged, while its copy on this disk is the conflict, registers the
-    submodule or is not there; one that git refuses; or one that is not a
-    regular file here (a link, which git reads through, or a directory).
+    config line`. A `.gitmodules` the doctor cannot read as git does
+    (`registered_paths`) names nothing, as `holds_no_section` calls no such
+    file empty: one that is unmerged, while its copy on this disk is the
+    conflict, registers the submodule or is not there; one that git
+    refuses; or one that is not a regular file here (a link, which git
+    reads through, or a directory).
     """
     if not held:
         return [], None

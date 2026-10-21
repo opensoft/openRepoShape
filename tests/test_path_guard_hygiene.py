@@ -490,6 +490,9 @@ BENIGN = _entries({
     (SD, "unclonable", "sibling.is_symlink()"): ("DELIBERATE", "the same"),
     (SD, "unloaded_manifest_row", "used.is_file()"): (
         "ASKED", "`validator_for` asked by `is_a` (slice C)"),
+    (SD, "unregistered_gitlinks",
+     "os.path.lexists(mount / adopt.GITMODULES)"): (
+        "ASKED", "a leg git listed the index of first, by `lstat` (#1093)"),
     (SD, "validator_row", "used.is_file()"): (
         "ASKED", "`validator_for` asked by `is_a` (slice C)"),
     # --- src/openreposhape/ -------------------------------------------------
