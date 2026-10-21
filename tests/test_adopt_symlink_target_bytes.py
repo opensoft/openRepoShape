@@ -819,7 +819,10 @@ def test_a_named_link_at_the_pin_is_found_there_and_no_case_twin_is_asked(
 #: a link at a declared pin's file beside a file at the shape's own pin (M13),
 #: and a link at the README copy beside a file at the Makefile copy (M14). In
 #: each the second path is asked after the link's, on the same disk or the
-#: next.
+#: next. The link's own entry is answered `root` where `plan` proposes
+#: another leg for it (`shape/README.md`: `spec`, by its `.md` extension),
+#: because a link sent to a leg is not kept in the root, and the copy skip
+#: that M14 breaks is never reached for it.
 #:
 #: The source's other files, a declared pin, the link, what the plan keeps in
 #: the root, the code of the second finding and what it says of its path.
@@ -837,7 +840,8 @@ LINK_BESIDE_A_SECOND_PATH = [
     pytest.param(
         {"Makefile": "all:\n", "shape/Makefile": "the source's own\n"}, False,
         "shape/README.md",
-        {"shape/Makefile": ROOT, "Makefile": ROOT, "README.md": ROOT}, COPY,
+        {"shape/Makefile": ROOT, "shape/README.md": ROOT, "Makefile": ROOT,
+         "README.md": ROOT}, COPY,
         "the shape's copy of `Makefile` is written to `shape/Makefile`",
         id="a-file-at-the-makefile-copy-after-the-readme-copys-link"),
 ]
@@ -856,7 +860,9 @@ def test_a_named_link_leaves_out_its_own_finding_and_no_other(
         declare(plan, A_PIN)
     result = check_root(plan)
     assert result.returncode == 1, result.stdout + result.stderr
-    own, made = findings_of(result)
+    found = findings_of(result)
+    assert len(found) == 2, f"the second finding is lost: {found}"
+    own, made = found
     assert own.startswith(
         f"FINDING {CODE}: `{link}` is a symlink whose target holds a NUL "
         "byte after its first 4 bytes")
