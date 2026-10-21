@@ -1964,6 +1964,10 @@ SOURCE_UNREADABLE = "source-unreadable"
 SOURCE_UNREADABLE_PERMISSION = (
     "Make it readable by this user: `chmod u+rx` on the directory and on "
     "every directory above it, or fix who owns them. ")
+#: The same for a file, a `.git` that names the git directory (#1099).
+SOURCE_UNREADABLE_FILE_PERMISSION = (
+    "Make it readable by this user: `chmod u+r` on the file and `chmod "
+    "u+rx` on every directory above it, or fix who owns them. ")
 SOURCE_UNREADABLE_OTHER = (
     "The operating system gave another reason than permission, which no "
     "`chmod` puts right: put right what it names. ")
@@ -2041,15 +2045,18 @@ def _ambiguous(spec: str, name: str) -> Refusal:
 
 
 def _source_unreadable(named: str, exc: OSError, untold: str,
-                       instead: str = "") -> Refusal:
+                       instead: str = "", *,
+                       permission: str = SOURCE_UNREADABLE_PERMISSION
+                       ) -> Refusal:
     """`source-unreadable` (#430): `named` (`--source '<it>'`, or the plan's
     `source.local_path`) is a path whose `stat` the operating system refused
     for another reason than that nothing is there, `<named>: cannot be read
     (<reason>)`, as `validate-pins.py`'s `_cannot_read` words it; `untold` is
     what that leaves unknown, which is not guessed. The way out follows the
-    cause (`SOURCE_UNREADABLE_PERMISSION`, `SOURCE_UNREADABLE_OTHER`), and
+    cause (`permission`, a directory's `SOURCE_UNREADABLE_PERMISSION` unless
+    the caller names a file's, or `SOURCE_UNREADABLE_OTHER`), and
     `instead`, another way to name the source, ends it."""
-    advice = (SOURCE_UNREADABLE_PERMISSION if isinstance(exc, PermissionError)
+    advice = (permission if isinstance(exc, PermissionError)
               else SOURCE_UNREADABLE_OTHER)
     return Refusal(
         SOURCE_UNREADABLE,
@@ -2631,6 +2638,41 @@ def _not_a_whole_clone(path: Path, commit: str) -> str | None:
             git_out([GIT_CAT_FILE, "-e", f"{commit}^{{commit}}"], cwd=path)
         except Refusal:
             return f"it no longer holds the plan's commit {commit[:12]}"
+    return None
+
+
+def _git_refused(path: Path) -> tuple[OSError, bool] | None:
+    """`(the OSError, whether the .git is a file)`: how the operating system
+    refuses this user the `.git` in `path`; None where `path` holds no
+    `.git`, or one git can be let into (#1099).
+
+    GIT SAYS "NOT A GIT REPOSITORY" OF A `.git` IT CANNOT READ, as it says
+    of a clone emptied, and climbs to the directory above, which may be
+    another repository. So a clone `plan` made whose `.git` is at mode 000
+    was "no longer whole (git finds no repository there)", and its
+    `source.repository` was cloned again from GitHub beside it. The `.git`
+    is asked here, before git runs, as `_is_a` asks a path (#430): a
+    directory by whether the `HEAD` in it is there, a `stat` that needs the
+    directory searched and nothing of `HEAD` itself, and a file, which names
+    the git directory elsewhere, by opening it, as git reads it. Nothing
+    there, a `HEAD` that is not there, or a `.git` that is neither, is git's
+    own question, asked as before. A `.git` whose own `stat` is refused is
+    in a `path` this user cannot search, which is `path`'s to name
+    (`_top_level`, `_not_a_whole_clone`, #918)."""
+    dot_git = path / ".git"
+    try:
+        a_directory = _is_a(dot_git, stat.S_ISDIR)
+        a_file = not a_directory and _is_a(dot_git, stat.S_ISREG)
+    except OSError:
+        return None
+    try:
+        if a_directory:
+            # only its refusal is asked: a `HEAD` not there is git's to read
+            _is_there(dot_git / "HEAD")
+        elif a_file:
+            os.close(os.open(dot_git, os.O_RDONLY))
+    except OSError as exc:
+        return None if _absent(exc) else (exc, a_file)
     return None
 
 
@@ -6658,7 +6700,12 @@ class Plan:
         GitHub beside the one still there. So is a directory this user
         cannot enter (#918): git runs in it, and at mode 000 that was a
         `PermissionError` traceback where `plan` did not make it, and "no
-        longer whole (git finds no repository there)" where it did.
+        longer whole (git finds no repository there)" where it did. So is a
+        directory whose `.git` this user cannot read (`_git_refused`,
+        #1099), named by that `.git`: git says "not a git repository" of it,
+        so at mode 000 that was `git-failed` where `plan` did not make it,
+        and "no longer whole (git finds no repository there)", cloned again
+        from GitHub, where it did.
 
         A PATH THIS LOCALE CANNOT SPELL IS ASKED AS ITS UTF-8 BYTES
         (`_recorded_spelling`, #918): a plan written in UTF-8 mode for
@@ -6682,6 +6729,9 @@ class Plan:
             there = _is_there(path)
         except OSError as exc:
             raise unreadable(exc) from exc
+        refused = _git_refused(path) if there else None
+        if refused is not None:
+            raise self._git_unreadable(local_path, *refused) from refused[0]
         if self.source.get("cloned") is not True:
             if there:
                 return Source.in_place(_top_level(path, f"{named},",
@@ -6732,6 +6782,25 @@ class Plan:
             PLAN_SOURCE_GONE,
             f"the plan's `source.local_path`, {_spelled(local_path)}, "
             f"{state}, and {why}", PLAN_SOURCE_GONE_REMEDY)
+
+    def _git_unreadable(self, local_path: str, exc: OSError,
+                        a_file: bool) -> Refusal:
+        """`source-unreadable` of the `.git` in the plan's
+        `source.local_path`, which the operating system refuses this user
+        (`exc`; `a_file` where that `.git` is a file), naming that `.git` and
+        the reason, as a recorded path this user cannot enter is named
+        (#918). What git would find there cannot be told, so the clone is
+        neither read nor called no longer whole nor cloned again (#1099)."""
+        return _source_unreadable(
+            f"the `.git` in the plan's `source.local_path`, "
+            f"{_spelled(os.path.join(local_path, '.git'))}", exc,
+            ("whether `plan`'s clone is still whole, to be read, or no longer "
+             "whole, to be cloned again," if self.source.get("cloned") is True
+             else "whether a repository is there"),
+            "pass the source again with --source, which is held to the "
+            "plan's `commit:`",
+            permission=(SOURCE_UNREADABLE_FILE_PERMISSION if a_file
+                        else SOURCE_UNREADABLE_PERMISSION))
 
     def names(self) -> dict[str, str]:
         """The three repository names the plan declares, validated as values.
@@ -17521,8 +17590,9 @@ SOURCE_OVERRIDE_HELP = (
     "whole, its `source.repository` is cloned again, and any other "
     "`local_path` that is gone is refused as `plan-source-gone`; one that "
     "is a file, or a directory inside a repository, as "
-    "`source-not-top-level`; and one this user cannot reach, a clone "
-    "`plan` made included, as `source-unreadable`, never cloned again.")
+    "`source-not-top-level`; and one this user cannot reach, or one whose "
+    "`.git` this user cannot read, a clone `plan` made included, as "
+    "`source-unreadable`, never cloned again.")
 
 
 def main(argv: list[str] | None = None) -> int:
