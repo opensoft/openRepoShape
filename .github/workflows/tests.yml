@@ -62,16 +62,11 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
-  # ubuntu-24.04, NOT ubuntu-latest (#1096). The Ubuntu 26.04 that
-  # `ubuntu-latest` now gives out runs this suite out of disk: #1092's run of
-  # this job (job 119050702775, image `ubuntu-26.04` version 20261012.163.1)
-  # ended `2436 failed, 11382 passed, 380 skipped, 5579 errors in 3048.23s`,
-  # with 28325 lines of `[Errno 122] Disk quota exceeded`, and later `No space
-  # left on device`, all under pytest's basetemp in /tmp,
-  # `/tmp/pytest-of-runner/pytest-0`. The same job passed on 24.04. It stays
-  # on 24.04 until the suite runs on 26.04, which #1096 tracks.
+  # ubuntu-26.04 BY NAME, FOR #1096'S PROOF RUN ONLY: the image
+  # `ubuntu-latest` now gives out, named so that this pull request's run
+  # lands on it. It goes back to ubuntu-latest once the suite passes there.
   tests:
-    runs-on: ubuntu-24.04
+    runs-on: ubuntu-26.04
     steps:
       # PINNED BY COMMIT, not by tag — the rule this repository spends a
       # whole README section on. A tag can be moved and a commit cannot.
@@ -126,8 +121,34 @@ jobs:
             echo "GIT_COMMITTER_EMAIL=ci@openreposhape.invalid"
           } >> "$GITHUB_ENV"
 
+      # THE SUITE'S TEMPORARY FILES GO ON THE RUNNER'S DISK, NOT IN /tmp
+      # (#1096). On the Ubuntu 26.04 that `ubuntu-latest` now gives out, the
+      # suite filled /tmp under pytest's default basetemp: #1092's run of
+      # this job (job 119050702775, image `ubuntu-26.04` 20261012.163.1)
+      # ended `2436 failed, 11382 passed, 380 skipped, 5579 errors`, with
+      # 28325 lines of `Disk quota exceeded` and then `No space left on
+      # device`, all under `/tmp/pytest-of-runner/pytest-0`. The same suite
+      # passed on 24.04 with its basetemp in /tmp.
+      #
+      # So the basetemp is `$RUNNER_TEMP/pytest`, and `TMPDIR` is
+      # `runner.temp` for everything this step starts: `tests/conftest.py`
+      # points `TMPDIR` at `<basetemp>/tmpdir` once the session starts, and
+      # this one holds what is written before then and after, such as
+      # pytest's own capture files. `runner.temp` and NOT the workspace:
+      # the workspace is this checkout, a git work tree, and a test's folder
+      # inside it would be inside this repository for every git that looks
+      # upward from it. The `df` lines put the two filesystems' room in the
+      # log, before the suite and after it.
       - name: tests
-        run: python3 -m pytest tests -q
+        env:
+          TMPDIR: ${{ runner.temp }}
+        run: |
+          df -hT /tmp "$RUNNER_TEMP"
+          status=0
+          python3 -m pytest tests -q \
+              --basetemp="$RUNNER_TEMP/pytest" || status=$?
+          df -hT /tmp "$RUNNER_TEMP"
+          exit "$status"
 
       # PINNED, checksum-verified, no `go install`/`pip` package exists for
       # this: a static release binary downloaded straight from the tag this
@@ -282,9 +303,9 @@ jobs:
   # build for setup-python: its manifest lists 3.10 to 3.15 there, and 3.8 to
   # 3.15 for 24.04. A run that landed on a 26.04 runner failed in setup-python
   # with `The version '3.9' with architecture 'x64' was not found for Ubuntu
-  # 26.04.` The `tests` job above is on ubuntu-24.04 too, for a reason of its
-  # own (#1096), and `tests-git-bash` runs on windows-latest. In release.yml,
-  # `build` asks for `3.12` on ubuntu-latest, which 26.04 has.
+  # 26.04.` The `tests` job above asks for `3.x`, and release.yml's `build`
+  # for `3.12` on ubuntu-latest, both of which 26.04 has; `tests-git-bash`
+  # runs on windows-latest.
   package:
     runs-on: ubuntu-24.04
     steps:
