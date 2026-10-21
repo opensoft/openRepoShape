@@ -315,13 +315,16 @@ ADOPTING = "Adopting an existing repository"
 #: The sentence, in r906's words as its re-check corrected them, with
 #: `Makefile` spelled as the file it is: a source that keeps `makefile` has
 #: the shape's Makefile written as the root's `Makefile` on a disk that
-#: keeps case.
+#: keeps case. It ends with what #1046's review (NIT-D, #1061's (b)) found
+#: missing: `make` at the root reads a kept `GNUmakefile` or `makefile`
+#: instead, as the line `plan` writes says of the file it names.
 SENTENCE = (
     "the shape's Makefile exports `CONTRACTS_DIR`, pointing at the "
     "`contracts/` of the spec leg where the plan mounts it "
     "(`$(CURDIR)/spec/contracts` by default); it is the root's Makefile, or, "
     "where the source keeps a `Makefile` of its own, `shape/Makefile`, which "
-    "holds the export until a person merges the two.")
+    "holds the export until a person merges the two; `make` at the root reads "
+    "a kept `GNUmakefile` or `makefile` instead.")
 
 
 def segment(name: str) -> str:
@@ -334,7 +337,9 @@ def segment(name: str) -> str:
 def test_readme_says_which_makefile_exports_contracts_dir():
     """It said "the root Makefile it materializes exports `CONTRACTS_DIR`",
     and where the source keeps a `Makefile` of its own the root's is the
-    source's, untouched, and the export is in `shape/Makefile` only."""
+    source's, untouched, and the export is in `shape/Makefile` only. The
+    sentence that fixed it said nothing of the file `make` reads first,
+    where the source keeps a `GNUmakefile` or a `makefile` (#1061)."""
     said = " ".join(segment(ADOPTING).split())
     assert SENTENCE in said
     assert "the root Makefile it materializes" not in said
