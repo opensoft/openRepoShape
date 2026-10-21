@@ -1124,8 +1124,9 @@ cd Atlas &amp;&amp; python3 scripts/bootstrap.py   # what `make bootstrap` runs<
         re-running it. A leg with other commits is refused, and a root that HAS commits is a live
         repository, which <a href="#adopt"><code>adopt-project.py</code></a> converts in place
         instead.</li>
-        <li>That re-run, as every run, turns off git&rsquo;s own terminal prompt and no other: an
-        ssh passphrase or host-key prompt, a credential helper that prompts, or
+        <li>The <code>--reuse-empty-repo</code> re-run, as every run, turns off git&rsquo;s own
+        terminal prompt and no other: an ssh passphrase or host-key prompt, a credential helper
+        that prompts, or
         <code>GIT_ASKPASS</code>, <code>SSH_ASKPASS</code> or <code>core.askPass</code> can still
         make it wait. A key in an ssh agent, a helper that answers without prompting, or
         <code>GIT_SSH_COMMAND='ssh -o BatchMode=yes'</code> (with anything your

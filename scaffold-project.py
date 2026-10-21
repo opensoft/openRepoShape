@@ -402,10 +402,11 @@ def main(argv: list[str] | None = None) -> int:
                              "re-running it with this. A root with commits, "
                              "and a leg with any other, is still refused: "
                              "that is a live repository, not a slot. A run "
-                             "with it, like every run, turns off git's own "
-                             "terminal prompt and no other, so it can still "
-                             "wait at an ssh passphrase or host-key prompt, "
-                             "at a credential helper that prompts, or at "
+                             "with it on GitHub, like every run there, turns "
+                             "off git's own terminal prompt and no other, so "
+                             "it can still wait at an ssh passphrase or "
+                             "host-key prompt, at a credential helper that "
+                             "prompts, or at "
                              "`GIT_ASKPASS`, `SSH_ASKPASS` or "
                              "`core.askPass`: a key loaded into an ssh "
                              "agent, a helper that answers without "
@@ -530,6 +531,7 @@ def seed_tree(role: str, values: dict, tracking: str, scratch: Path) -> str:
 #: `docs/cli.md`, the README, the handbook and each remedy that sends a
 #: person into that re-run on GitHub say a prompt can still come, and how a
 #: person keeps a run from waiting in their own setup (`PROMPTS_STILL_ASK`).
+#: `RULESET_HINT`, the ruleset's refusal, does not say it yet (#1108).
 REMOTE_ENV = {"GIT_TERMINAL_PROMPT": "0"}
 
 #: What `only_commit`'s two commands run with: the prompt rule, and git's
@@ -561,6 +563,8 @@ PUSH_ENV = {**REMOTE_ENV, "LC_ALL": "C"}
 #: `core.sshCommand`, so the person carries over what theirs adds. Said by
 #: `_exists_remedy` and `_login_remedy`; not under `--local-remote-dir`,
 #: whose paths on disk git reads with no ssh, helper or askpass at all.
+#: `RULESET_HINT`, the ruleset's refusal, also sends a person into that
+#: re-run and does not say it yet (#1108).
 PROMPTS_STILL_ASK = (
     "turns off git's own terminal prompt and no other, so it can still wait "
     "at an ssh passphrase or host-key prompt, at a credential helper that "
