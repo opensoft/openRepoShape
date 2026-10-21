@@ -1818,18 +1818,62 @@ def _recorded_spelling(recorded: str) -> tuple[str, str]:
     locale's encoding, which cannot spell the text: a plan written under
     another locale of one byte to a character, Latin-1 say, recorded
     other bytes. A surrogate no byte is read as cannot be those bytes
-    either, and no name on the disk holds it: it is asked as written."""
+    either, and no name on the disk holds it: it is asked as written.
+    Where this locale spells the text otherwise than its UTF-8, as Latin-1
+    spells `\\u00e9` as one byte, `_recorded_path` asks those bytes too
+    (#1078)."""
     try:
         os.fsencode(recorded)
         return recorded, ""
     except UnicodeEncodeError:
         pass
-    try:
-        spelling = os.fsdecode(recorded.encode("utf-8", "surrogateescape"))
-    except UnicodeEncodeError:
+    spelling = _utf8_spelling(recorded)
+    if spelling is None:
         return recorded, ""
     return spelling, (f" as UTF-8 spells it (this locale's file names, "
                       f"{sys.getfilesystemencoding()}, cannot spell it)")
+
+
+def _utf8_spelling(recorded: str) -> str | None:
+    """`recorded`'s UTF-8 bytes, a byte that is not UTF-8 as its surrogate
+    (`surrogateescape`), as `os.fsdecode` spells them in this locale: the
+    name a plan written in UTF-8 records (#918, #1078). None for a surrogate
+    no byte is read as, which no name on the disk holds, and on Windows for
+    a byte that is not UTF-8, which `os.fsdecode` refuses there."""
+    try:
+        return os.fsdecode(recorded.encode("utf-8", "surrogateescape"))
+    except UnicodeError:
+        return None
+
+
+def _recorded_path(recorded: str) -> tuple[Path, bool, str]:
+    """`(path, there, said)`: `recorded`, a path a plan records as text, as
+    `_recorded_spelling` spells it, `~` expanded; whether anything is there,
+    asked as `_is_there` asks it, so a `stat` the operating system refused
+    is raised (#430); and `_recorded_spelling`'s `said`.
+
+    WHERE THAT NAMES NOTHING, THE PLAN'S UTF-8 BYTES ARE ASKED TOO (#1078).
+    Under a locale of one byte to a character, Latin-1 say, `os.fsencode`
+    spells `Thing\\u00e9` as written, its last character as the one byte
+    0xE9, so `_recorded_spelling` asks it as written; but a plan written in
+    UTF-8 holds the name `plan` read there, whose bytes are 0xC3 0xA9, and
+    `check` refused `plan-source-gone`, "names nothing that exists", of a
+    source that is there. The spelling as written is asked FIRST, so a plan
+    written under that locale, which records the name as that locale read
+    it, reads as it did. Where neither names anything, the path is the
+    spelling as written, and every word of a refusal is as before. Under a
+    UTF-8 locale, and for text that is all ASCII, the two are one name,
+    asked once."""
+    spelling, said = _recorded_spelling(recorded)
+    path = Path(os.path.expanduser(spelling))
+    if _is_there(path):
+        return path, True, said
+    utf8 = _utf8_spelling(recorded)
+    if utf8 is not None and utf8 != spelling:
+        other = Path(os.path.expanduser(utf8))
+        if _is_there(other):
+            return other, True, said
+    return path, False, said
 
 
 # ---------------------------------------------------------------------------
@@ -6482,13 +6526,12 @@ class Plan:
         the plan's source again, as the clone `_recorded_source` makes there
         is. On main `check` removed it, and the next run cloned it once
         more. The record is spelled as `_recorded_source` asks the disk for
-        it (`_recorded_spelling`, #918)."""
+        it (`_recorded_path`, #918, #1078)."""
         record = self.source.get("local_path")
         if not (made and record):
             return
         try:
-            at = os.path.realpath(os.path.expanduser(
-                _recorded_spelling(str(record))[0]))
+            at = os.path.realpath(_recorded_path(str(record))[0])
         except (OSError, ValueError):
             return
         made[:] = [claim for claim in made
@@ -6566,9 +6609,10 @@ class Plan:
         (`_recorded_spelling`, #918): a plan written in UTF-8 mode for
         `Thing\\u00e9` and checked under `LC_ALL=C PYTHONUTF8=0` was
         `plan-source-gone`, "names nothing that exists", of a source that is
-        there. It is named as the plan records it."""
-        spelling, said = _recorded_spelling(local_path)
-        path = Path(os.path.expanduser(spelling))
+        there. It is named as the plan records it. A path this locale
+        spells otherwise than UTF-8, as Latin-1 does, is asked as written
+        and, where that names nothing, as the plan's UTF-8 bytes too
+        (`_recorded_path`, #1078): it was `plan-source-gone` too."""
         named = f"the plan's `source.local_path`, {_spelled(local_path)}"
 
         def unreadable(exc: OSError) -> Refusal:
@@ -6581,7 +6625,7 @@ class Plan:
                 "plan's `commit:`")
 
         try:
-            there = _is_there(path)
+            path, there, said = _recorded_path(local_path)
         except OSError as exc:
             raise unreadable(exc) from exc
         if self.source.get("cloned") is not True:
