@@ -47,6 +47,17 @@ reach, as it reaches a `github.com` member. A local path is no https url, so
 2.43.0 and 2.47.1 by lane 5's review of #1075. The row stays offline behind a
 dead proxy: the clone fails at once, `siblings.py` says so, and nothing
 leaves the host.
+
+AND THAT ROW DOES NOT DEPEND ON THE CALLER'S GIT CONFIG (#1075's landing
+gate). `conftest.py`'s session global file includes the caller's, and a
+caller's `url.<x>.insteadOf` for GitHub's url, which `~/.gitconfig` of the
+person running the suite may hold, outranks the token's `-c` rewrite of the
+same prefix: the gate's row went over ssh to a real repository, and the
+clone succeeded. So the row gives its git a global file and no system file of
+its own (`hermetic_config`), checks what git makes of the url before the
+token's `-c` (`url_after_config`), and runs once for each stand-in for a
+caller's config that would send the url to a reachable remote
+(`as_the_callers_config`).
 """
 
 from __future__ import annotations
@@ -64,6 +75,7 @@ import pytest
 
 from conftest import (
     NO_BYTECODE, appended_to_command_scope, command_scope_at, run_script,
+    session_global_config,
 )
 from test_family import (  # noqa: F401 (the `family` and `estate` fixtures)
     FAMILY, MEMBERS, ORG, allow_file_protocol, estate, family,
@@ -292,17 +304,19 @@ def written(temp: Path, traced: Traced) -> list[str]:
     return [name for name in traced.written if (temp / name).is_file()]
 
 
-def given_a_github_url(holder: Path, project: str) -> None:
+def given_a_github_url(holder: Path, project: str) -> str:
     """`project`'s url in the holder's `.gitmodules`, a local path, spelled
-    as GitHub's: `https://github.com/<org>/<project>.git`, which the token's
-    rewrite reaches. The file is read by `siblings.py` as it stands."""
+    as GitHub's, which the token's rewrite reaches, and that url:
+    `https://github.com/<org>/<project>.git`. The file is read by
+    `siblings.py` as it stands."""
+    url = f"https://github.com/{ORG}/{project}.git"
     path = holder / ".gitmodules"
     spelled, found = re.subn(
-        rf"(?m)^(\turl = ).*/{project}\.git$",
-        rf"\g<1>https://github.com/{ORG}/{project}.git",
+        rf"(?m)^(\turl = ).*/{project}\.git$", rf"\g<1>{url}",
         path.read_text(encoding="utf-8"))
     assert found == 1, path.read_text(encoding="utf-8")
     path.write_text(spelled, encoding="utf-8")
+    return url
 
 
 def behind_a_dead_proxy(env: dict) -> dict:
@@ -312,6 +326,68 @@ def behind_a_dead_proxy(env: dict) -> dict:
     held = {**os.environ, **env}
     return {**env, **appended_to_command_scope(
         held, [("http.proxy", DEAD_PROXY)]), "NO_PROXY": "", "no_proxy": ""}
+
+
+def hermetic_config(env: dict, tmp_path: Path) -> dict:
+    """`env` with git's configuration the row's own, so that the caller's
+    cannot send an https url anywhere: a global file of the session's own
+    settings alone (`session_global_config("")`: automatic maintenance off,
+    and no include of the caller's file), no system file, and no ssh.
+
+    THE LEAST INVASIVE WAY: only the one row that has an https url sets it.
+    The session's file stays as `conftest.py` writes it, with the caller's
+    settings still applying to every row whose remotes are local paths, which
+    no rewrite of GitHub's url reaches; and `conftest.py` is not touched.
+    `GIT_CONFIG_GLOBAL` set takes git's two user-level files out of the
+    reading, and `GIT_CONFIG_NOSYSTEM` the system file, whatever
+    `GIT_CONFIG_SYSTEM` says. `GIT_SSH_COMMAND=false` is the second wall: a
+    url somehow sent over ssh runs `false`, not a real ssh."""
+    config = tmp_path / "hermetic-global-gitconfig"
+    config.write_bytes(session_global_config(""))
+    return {**env, "GIT_CONFIG_GLOBAL": str(config),
+            "GIT_CONFIG_NOSYSTEM": "1", "GIT_SSH_COMMAND": "false"}
+
+
+def url_after_config(env: dict, cwd: Path, url: str) -> str:
+    """What git makes of `url` under `env` laid over this process's: `git
+    ls-remote --get-url`, which applies the config's `insteadOf` rewrites
+    and asks nothing of the network, read and never written. The token's
+    `-c` is not in it, so it is the caller's config alone."""
+    shown = subprocess.run(
+        ["git", "ls-remote", "--get-url", url], cwd=str(cwd),
+        env={**os.environ, **env}, capture_output=True, text=True,
+        encoding="utf-8", errors="replace", check=False)
+    assert shown.returncode == 0, shown.stderr + shown.stdout
+    return shown.stdout.strip()
+
+
+#: Where a caller's git config can be, for the https row: none that rewrites
+#: the url (the control), the global file, and the system file.
+CALLERS_CONFIG = ("none", "global", "system")
+
+
+def as_the_callers_config(monkeypatch, tmp_path: Path, where: str,
+                          url: str, remote: Path) -> None:
+    """Stand in for a caller whose git config sends `url`, GitHub's url of
+    the https member, to `remote`, a bare repository of the test's own that
+    a clone reaches: a scratch file of the test's own, in the global
+    (`GIT_CONFIG_GLOBAL`, which the session file includes) or the system
+    scope (`GIT_CONFIG_SYSTEM`) of this process, and never a file of the
+    person running the suite. Nothing leaves the host. `where` of `none`
+    changes nothing."""
+    if where == "none":
+        return
+    uri = remote.resolve().as_uri().replace("\\", "\\\\").replace(
+        '"', '\\"')
+    rewrite = f'[url "{uri}"]\n\tinsteadOf = {url}\n'.encode("utf-8")
+    config = tmp_path / f"callers-{where}-gitconfig"
+    if where == "global":
+        config.write_bytes(session_global_config("") + rewrite)
+        monkeypatch.setenv("GIT_CONFIG_GLOBAL", str(config))
+    else:
+        config.write_bytes(rewrite)
+        monkeypatch.setenv("GIT_CONFIG_SYSTEM", str(config))
+        monkeypatch.setenv("GIT_CONFIG_NOSYSTEM", "0")
 
 
 @pytest.mark.parametrize("variable", CREDENTIALS)
@@ -358,8 +434,9 @@ def test_with_no_token_the_clone_and_the_fetch_are_traced_as_asked(
 
 
 @needs_make
+@pytest.mark.parametrize("callers", CALLERS_CONFIG)
 def test_an_https_member_with_a_token_in_use_is_in_no_trace(
-        family, estate, offline, tmp_path):
+        family, estate, offline, tmp_path, monkeypatch, callers):
     """#1055, lane 5's review of #1075 (rv1075): the token in
     `SHAPE_LEGS_TOKEN`, the trace variables set, and one member whose remote
     is GitHub's (`HTTPS_MEMBER`), behind a dead proxy. The rewrite reaches
@@ -370,15 +447,27 @@ def test_an_https_member_with_a_token_in_use_is_in_no_trace(
     remote-https` lines, and so did the trace2 files; the token is now in no
     output and in no file under the test's directory, every trace the
     variables ask for is written by the run's other gits, and a mutant that
-    keeps the caller's `GIT_TRACE` for the clone is found."""
+    keeps the caller's `GIT_TRACE` for the clone is found.
+
+    WHATEVER THE CALLER'S GIT CONFIG SAYS: `callers` stands in for one that
+    sends the https url to the member's own bare remote, a path the clone
+    reaches, in the global or the system scope (`as_the_callers_config`).
+    The row's git reads neither (`hermetic_config`), the url is checked to
+    be unrewritten before the token's `-c`, and the clone still fails at the
+    proxy; a row whose git read the caller's file cloned from the remote,
+    placed both members and exited 0 (the landing gate's, on a person's
+    `~/.gitconfig`)."""
     traced = TRACED_BY["variables"]
     setup = offline_env(offline)
-    env = behind_a_dead_proxy(
+    env = behind_a_dead_proxy(hermetic_config(
         traced.asks({**setup, "SHAPE_LEGS_TOKEN": TOKEN}, offline.temp,
-                    tmp_path))
-    given_a_github_url(estate["holder"], HTTPS_MEMBER)
+                    tmp_path), tmp_path))
+    url = given_a_github_url(estate["holder"], HTTPS_MEMBER)
+    as_the_callers_config(monkeypatch, tmp_path, callers, url,
+                          estate["remotes"] / f"{HTTPS_MEMBER}.git")
     assert f"http.proxy={DEAD_PROXY}" in command_scope_at(
         env, estate["holder"])
+    assert url_after_config(env, estate["holder"], url) == url
 
     result = cloning_by_make(estate, env, setup)
 
