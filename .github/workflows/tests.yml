@@ -268,8 +268,16 @@ jobs:
   # Python, one file for every system; the release workflow (#563's next
   # pull request) installs it on Linux, macOS and Windows before it uploads
   # anything.
+  #
+  # ubuntu-24.04, NOT ubuntu-latest (#1094). 3.9 is `requires-python`'s
+  # floor, and the Ubuntu 26.04 that `ubuntu-latest` now gives out has no 3.9
+  # build for setup-python: its manifest lists 3.10 to 3.15 there, and 3.8 to
+  # 3.15 for 24.04. A run that landed on a 26.04 runner failed in setup-python
+  # with `The version '3.9' with architecture 'x64' was not found for Ubuntu
+  # 26.04.` Every other job asks for `3.x` or `3.12`, which 26.04 has, and
+  # stays on ubuntu-latest.
   package:
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     steps:
       # The same two commits the other jobs pin.
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262  # v4

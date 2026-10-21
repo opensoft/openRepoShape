@@ -559,9 +559,14 @@ def test_the_install_check_runs_on_three_systems_and_python_3_9(workflow):
     host by the recorded digest."""
     install = workflow["jobs"]["install"]
     legs = install["strategy"]["matrix"]["include"]
-    assert {leg["os"] for leg in legs} == {"ubuntu-latest", "macos-latest",
-                                            "windows-latest"}
-    assert {"os": "ubuntu-latest", "python": "3.9"} in legs
+    assert {leg["os"] for leg in legs} == {"ubuntu-latest", "ubuntu-24.04",
+                                            "macos-latest", "windows-latest"}
+    assert {"os": "ubuntu-24.04", "python": "3.9"} in legs
+    # #1094: `ubuntu-latest` now gives out Ubuntu 26.04, which has no 3.9
+    # build for setup-python, so the 3.9 row stays on 24.04 and every row on
+    # the latest image asks for a Python 26.04 has.
+    assert [leg["python"] for leg in legs if leg["os"] == "ubuntu-latest"] \
+        == ["3.x"]
     assert install["strategy"]["fail-fast"] is False
     assert install["env"]["PIP_INDEX_URL"] == "https://pypi.org/simple/"
     for step in install["steps"]:
@@ -574,6 +579,25 @@ def test_the_install_check_runs_on_three_systems_and_python_3_9(workflow):
     assert verified < names.index(
         "pipx installs the wheel into a fresh environment, its dependency "
         "from PyPI")
+
+
+def test_the_package_job_runs_its_python_3_9_on_ubuntu_24_04():
+    """#1094: `tests.yml`'s `package` job builds and installs on 3.9, the
+    floor of `requires-python`, and the Ubuntu 26.04 that `ubuntu-latest` now
+    gives out has no 3.9 build for setup-python, so a run that landed there
+    failed in setup-python. The job names 24.04, and no job of the file asks
+    for 3.9 on `ubuntu-latest`."""
+    jobs = load_yaml(WORKFLOWS / "tests.yml")["jobs"]
+    package = jobs["package"]
+    assert package["runs-on"] == "ubuntu-24.04"
+    pythons = [step["with"]["python-version"] for step in package["steps"]
+               if step.get("uses", "").startswith("actions/setup-python@")]
+    assert pythons == ["3.9"]
+    for name, job in jobs.items():
+        asked = [step["with"]["python-version"] for step in job["steps"]
+                 if step.get("uses", "").startswith("actions/setup-python@")]
+        if "3.9" in asked:
+            assert job["runs-on"] == "ubuntu-24.04", name
 
 
 def test_the_header_says_how_to_release(workflow):
