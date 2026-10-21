@@ -47,7 +47,8 @@ from test_doctor_recorded_answers import (
 )
 from test_shape_doctor import (  # noqa: F401
     adoption_module, needs_filter_repo, project, record_gitlink,
-    record_submodules, scaffolded_here, stage, stage_gitlink, standard,
+    record_submodules, scaffolded_here, stage, stage_gitlink, stage_unmerged,
+    standard,
 )
 
 sys.path.insert(0, str(REPO / "scripts"))
@@ -453,10 +454,22 @@ NO_GITMODULES_CLAUSE = (
     "empty (#1080): code/vendor/lib; give each a section with its `path` "
     "and `url` in a `.gitmodules` added to its leg, or remove its gitlink "
     "with `git rm --cached <its path in the leg>` in its leg")
+#: What the row says of it beside a `.gitmodules` the leg's index tracks
+#: and this disk lacks, whose copy in the index git reads (#1093).
+INDEX_COPY_CLAUSE = (
+    "1 submodule(s) sit beside a `.gitmodules` their leg's index tracks and "
+    "this disk lacks, whose copy in the index, which git reads, has no "
+    "section for them, so nothing registers them and a recursive clone of "
+    "the leg leaves each empty (#1093): code/vendor/lib; first restore that "
+    "`.gitmodules` in its leg (`git restore .gitmodules`), then give each a "
+    "section with its `path` and `url` in it, or, once it is staged (`git "
+    "add .gitmodules`), remove its gitlink with `git rm --cached <its path "
+    "in the leg>` in its leg")
 #: Each state's clause, by what the leg's entry says the submodule sits
 #: beside (`unregistered_beside`).
 BESIDE = {"other_sections": OTHER_SECTIONS_CLAUSE,
-          "no_gitmodules": NO_GITMODULES_CLAUSE}
+          "no_gitmodules": NO_GITMODULES_CLAUSE,
+          "index_copy": INDEX_COPY_CLAUSE}
 
 
 def submodule_status(leg: Path):
@@ -472,6 +485,11 @@ def submodule_status(leg: Path):
 #: does, names nothing, as #914's reading calls no such file empty. A limit
 #: the module docstring of `shape-doctor.py` names.
 REFUSED = b'[submodule "lib"]\n\tpath\n'
+#: A `.gitmodules` git refuses whole whichever copy it reads, a value git
+#: dies on (`git_dies_on`): `git submodule status` exits 128 beside it, and
+#: the doctor names nothing, as beside `REFUSED` on this disk (#1093). A
+#: bare `path` is not that in the index's copy, which git reads up to it.
+DIES = SECTIONED + b"\tupdate = bogus\n"
 
 
 def pinned_at_its_head(root: Path, role: str) -> None:
@@ -504,7 +522,9 @@ def gitmodules_beside_gitlink(root: Path, body, kept: str) -> Path:
     - `head`: committed with the gitlink, then removed with `git rm`, so
       that the index and this disk hold none and git reads HEAD's copy.
       The leg's new HEAD is made its pin (`pinned_at_its_head`), so that
-      the verdict is still the placement row's.
+      the verdict is still the placement row's;
+    - `deleted`: in the index, then deleted from this disk with the
+      deletion not staged, so that git reads the index's copy (#1093).
     """
     leg = root / "code"
     if kept == "untracked":
@@ -519,6 +539,8 @@ def gitmodules_beside_gitlink(root: Path, body, kept: str) -> Path:
         git("commit", "-q", "-m", "a .gitmodules in HEAD", cwd=leg)
         pinned_at_its_head(root, "code")
         git("rm", "-q", "--", GITMODULES, cwd=leg)
+    if kept == "deleted":
+        (leg / GITMODULES).unlink()
     return leg
 
 
@@ -542,13 +564,24 @@ def gitmodules_beside_gitlink(root: Path, body, kept: str) -> Path:
     (SECTIONED, False, "head", None),
     (OTHER_SECTION, False, "head", "no_gitmodules"),
     (OTHER_SECTION + b"!!!\n" + SECTIONED, False, "head", "no_gitmodules"),
+    (SECTIONED, False, "deleted", None),
+    (b"", False, "deleted", "index_copy"),
+    (OTHER_SECTION, False, "deleted", "index_copy"),
+    (OTHER_SECTION, True, "deleted", "index_copy"),
+    (OTHER_SECTION + b"!!!\n" + SECTIONED, False, "deleted", "index_copy"),
+    (REFUSED, False, "deleted", "index_copy"),
+    (DIES, False, "deleted", None),
 ], ids=["other-sections", "a-section-with-no-key", "its-path-given-over",
         "a-name-git-ignores", "its-path-with-a-slash",
         "other-sections-and-an-unstaged-edit", "no-gitmodules",
         "no-gitmodules-and-recorded", "its-path-given-last",
         "untracked-and-registering", "untracked-with-other-sections",
         "untracked-and-refused", "in-head-and-registering",
-        "in-head-with-other-sections", "in-head-read-to-its-first-bad-line"])
+        "in-head-with-other-sections", "in-head-read-to-its-first-bad-line",
+        "deleted-and-registering", "deleted-with-no-section",
+        "deleted-with-other-sections", "deleted-and-recorded",
+        "deleted-read-to-its-first-bad-line", "deleted-read-to-a-bare-path",
+        "deleted-and-refused-whole"])
 def test_a_gitlink_no_section_registers_is_said(standard, project, body,
                                                 recorded, kept, beside):
     """#1080: #914 named a submodule beside a `.gitmodules` that holds no
@@ -572,23 +605,34 @@ def test_a_gitlink_no_section_registers_is_said(standard, project, body,
     section, a bad line, and then the submodule's, git exits 128 and the
     submodule is named.
 
+    AND FROM THE INDEX'S COPY where the leg's index tracks a `.gitmodules`
+    this disk lacks (#1093), which git reads there: where it registers the
+    submodule, nothing is named; where it holds no section, or sections
+    for other paths, the submodule is named beside it, under its own
+    `unregistered_beside`. It is read up to its first bad line, as HEAD's
+    is, so a bare `path` in it ends the reading rather than refusing it,
+    and a copy git refuses whole (`DIES`) names nothing.
+
     THE REMOVAL TYPED AS PRINTED, in each state: beside sections it stages
     the edited `.gitmodules` first, as #914's does, and `git rm --cached`
     alone dies there (rc 128); where the index tracks no `.gitmodules`
     there is nothing to stage, beside an untracked one or HEAD's too, and
-    `git rm --cached` alone exits 0."""
+    `git rm --cached` alone exits 0. Beside the index's copy it restores
+    the file first, then stages it, and the index's copy is the one it
+    was: every other section it held is kept."""
     leg = gitmodules_beside_gitlink(project, body, kept)
     if recorded:
         record_submodules(project, (GITLINK_PATH, "code"))
     status = submodule_status(leg)
     assert status.returncode == (
-        0 if beside is None and body != REFUSED else 128), status.stderr
+        0 if beside is None and body not in (REFUSED, DIES) else 128), (
+        status.stderr)
     result, verdict, row = placement(standard, project)
     assert result.returncode == 0, result.stdout + result.stderr
     assert verdict == COMPLIANT
     code = leg_entry(row, "code")
     questions = [item["path"] for item in row["detail"]["review_required"]]
-    indexed = body is not None and kept in ("index", "unstaged")
+    indexed = body is not None and kept in ("index", "unstaged", "deleted")
     assert questions == (["code/.gitmodules"] if indexed and not recorded
                          else []), row
     assert row["status"] == ("ok" if recorded else "note"), row
@@ -605,16 +649,22 @@ def test_a_gitlink_no_section_registers_is_said(standard, project, body,
                     check=False)
         assert (alone.returncode, "stage your changes to .gitmodules" in (
             alone.stderr)) == (128, True), alone.stderr
+    copy = git("ls-files", "--stage", "--", GITMODULES, cwd=leg).stdout
     typed_in(leg, BESIDE[beside])
     assert git("ls-files", "--stage", "--", GITLINK_PATH,
                cwd=leg).stdout == ""
+    if kept == "deleted":
+        assert copy, copy
+        assert (leg / GITMODULES).read_bytes() == body
+        assert git("ls-files", "--stage", "--", GITMODULES,
+                   cwd=leg).stdout == copy
 
 
 @pytest.mark.parametrize("body, kept", [
     (OTHER_SECTION, "index"), (None, "index"), (OTHER_SECTION, "untracked"),
-    (OTHER_SECTION, "head"),
+    (OTHER_SECTION, "head"), (OTHER_SECTION, "deleted"),
 ], ids=["other-sections", "no-gitmodules", "untracked-with-other-sections",
-        "in-head-with-other-sections"])
+        "in-head-with-other-sections", "deleted-with-other-sections"])
 def test_a_section_written_for_the_gitlink_registers_it(standard, project,
                                                         body, kept):
     """#1080's other way out, typed: a section with the submodule's `path`
@@ -622,12 +672,42 @@ def test_a_section_written_for_the_gitlink_registers_it(standard, project,
     then reads a mapping for it (`git submodule status` exits 0), and the
     row names nothing. Where the leg's index tracks no `.gitmodules`, the
     section is written in the untracked one on this disk, or in a new one
-    beside HEAD's, and the file added (`git add .gitmodules`)."""
+    beside HEAD's, and the file added (`git add .gitmodules`). Where this
+    disk lacks the one the index tracks (#1093), the clause's first
+    command puts the index's copy back, and the section is written in it.
+    """
     leg = gitmodules_beside_gitlink(project, body, kept)
     assert submodule_status(leg).returncode == 128
+    if kept == "deleted":
+        restore = printed_git(INDEX_COPY_CLAUSE)[0]
+        assert restore == ["restore", GITMODULES], restore
+        git(*restore, cwd=leg)
+        assert (leg / GITMODULES).read_bytes() == body
     stage_bytes(leg, GITMODULES, (body or b"") + SECTIONED)
     status = submodule_status(leg)
     assert status.returncode == 0, status.stderr
+    row = placement(standard, project)[2]
+    code = leg_entry(row, "code")
+    assert "unregistered_submodules" not in code, code
+    assert "unregistered_beside" not in code, code
+    assert "nothing registers them" not in row["reason"], row["reason"]
+
+
+def test_an_unmerged_gitmodules_this_disk_lacks_names_nothing(standard,
+                                                             project):
+    """#1093's limit, kept: while the leg's `.gitmodules` is unmerged, git
+    reads no copy of it (`git submodule status` exits 128, and `git restore
+    .gitmodules` refuses the path), and with none on this disk the index
+    holds no `:.gitmodules` either. The doctor names nothing there, as
+    beside an unmerged file whose copy on this disk holds the conflict,
+    rather than read no copy as one with no section."""
+    leg = project / "code"
+    stage_gitlink(leg, GITLINK_PATH)
+    stage_unmerged(leg, GITMODULES, {1: "file", 2: "file", 3: "file"})
+    assert not (leg / GITMODULES).exists()
+    assert submodule_status(leg).returncode == 128
+    restore = git("restore", GITMODULES, cwd=leg, check=False)
+    assert "is unmerged" in restore.stderr, restore.stderr
     row = placement(standard, project)[2]
     code = leg_entry(row, "code")
     assert "unregistered_submodules" not in code, code
