@@ -9892,14 +9892,52 @@ def confirm_digest(ctx: Context) -> str:
 
 
 def check_agent_files(ctx: Context) -> Row:
-    present = {name: (ctx.root / name).is_file() for name in AGENT_FILES}
+    """`AGENTS-shape.md`, `AGENTS.md` and `CLAUDE.md` at the root: each
+    there, or the command that puts it back.
+
+    A FILE THIS USER CANNOT REACH IS THERE, AND SAID SO (#1110). Each is
+    asked with `is_a`, which raises a `stat` the operating system refused: an
+    `AGENTS.md` that is a link into a folder this user cannot search ended
+    this row in `could not be run` up to Python 3.13, which `run_checks` made
+    a FINDING, and from 3.14, where `is_file()` answers False to any
+    `OSError`, it was `absent: AGENTS.md` with `scaffold-project.py --help`
+    over a file that is there. It is now `<name>: cannot be read (<reason>)`,
+    in `validate-pins.py`'s words, with this doctor again as the NEXT and the
+    gate's advice for the cause as the WHY (`cannot_read_why`), on every
+    Python. `files` keeps `true` for it, since it is there, and
+    `cannot_be_read` lists the lines.
+
+    A FINDING ONLY WHERE THE PIN NAMES IT, as for a file that is absent: the
+    project's own `validate-pins.py` refuses a pinned copy it cannot read by
+    name, and this row agrees with it; a rendered file nothing pins is a
+    `note`, and moves no verdict. Beside a file that IS absent, that file's
+    command stays the NEXT, as the `legs` row keeps its checkout line beside
+    a pin it cannot read, and the gate's advice is added to its `why`.
+    """
+    present: dict[str, bool] = {}
+    refused: dict[str, OSError] = {}
+    for name in AGENT_FILES:
+        try:
+            present[name] = is_a(ctx.root / name, stat.S_ISREG)
+        except OSError as exc:
+            present[name] = True
+            refused[name] = exc
     absent = [name for name, there in present.items() if not there]
     detail = {"files": present}
-    if not absent:
+    if not absent and not refused:
         return Row("agent-files", LABEL_AGENT_FILES, OK,
                    ", ".join(f"{name} present" for name in AGENT_FILES),
                    None, detail)
     pinned = pinned_paths(ctx.root)
+    unread = [cannot_be_read(name, exc) for name, exc in refused.items()]
+    advice = cannot_read_why(list(refused.values())) if refused else None
+    if refused:
+        detail["cannot_be_read"] = unread
+    unread_pinned = any(name in pinned for name in refused)
+    if not absent:
+        return Row("agent-files", LABEL_AGENT_FILES,
+                   FINDING if unread_pinned else NOTE, ", ".join(unread),
+                   doctor_line(ctx), detail, why=advice)
     detail["pinned"] = sorted(name for name in absent if name in pinned)
     # WHICH FIX DEPENDS ON WHETHER THE PIN ALREADY NAMES IT, and getting that
     # backwards hands somebody a command that refuses. A path the pin has a
@@ -9937,9 +9975,13 @@ def check_agent_files(ctx: Context) -> Row:
     # without one is a root nothing in this standard says anything about, and
     # failing it here would be the `leg shape files` mistake again, one file
     # along.
-    status = FINDING if detail["pinned"] else NOTE
-    return Row("agent-files", LABEL_AGENT_FILES, status,
-               "absent: " + ", ".join(absent), fix, detail, why=why)
+    status = FINDING if detail["pinned"] or unread_pinned else NOTE
+    reason = "absent: " + ", ".join(absent)
+    if refused:
+        reason += "; " + ", ".join(unread)
+        why += ". " + advice
+    return Row("agent-files", LABEL_AGENT_FILES, status, reason, fix, detail,
+               why=why)
 
 
 def detached(path: Path, git_dir: Path | None = None) -> bool | None:
@@ -10960,6 +11002,24 @@ def origin_name(root: Path) -> str | None:
     return name[:-4] if name.endswith(".git") else name or None
 
 
+def carries_git(root: Path) -> bool:
+    """Whether `root` ITSELF carries a `.git` -- a directory, a gitdir file,
+    or a link to either -- asked with `is_a`, which RAISES the `OSError` of a
+    `stat` the operating system refused, for the caller to name (#1110).
+
+    NOT `(root / ".git").exists()`, which follows a link. A `.git` that is a
+    link into a folder this user cannot search raised `PermissionError` out of
+    every reader up to Python 3.13, and from 3.14, where `exists()` answers
+    False to any `OSError`, it was no repository at all: `the way in` sent
+    the person to `setup.sh` to scaffold three new repositories over the one
+    in front of them, and `origin_org` and `repo_local_origin_name` gave the
+    answer for a folder that is not a repository. Nothing there, or a part of
+    the path that is not a directory, is False as it always was (`is_a`,
+    #430's set).
+    """
+    return is_a(root / ".git", lambda _mode: True)
+
+
 def repo_local_origin_name(root: Path) -> str | None:
     """`origin`'s name, but only when `root` ITSELF carries the `.git` it
     belongs to.
@@ -10973,8 +11033,13 @@ def repo_local_origin_name(root: Path) -> str | None:
     OWN identity -- `naming` and `the way in` -- share this guard rather
     than each re-deriving "is this directory itself a repository" on its
     own.
+
+    A `.git` THIS USER CANNOT REACH RAISES (`carries_git`, #1110): None is
+    the answer for a folder with no repository of its own, and that one may
+    have one. `naming` catches it and says `origin`'s name was not read, and
+    `the way in` asks the `.git` itself before it asks this.
     """
-    return origin_name(root) if (root / ".git").exists() else None
+    return origin_name(root) if carries_git(root) else None
 
 
 def origin_org(root: Path) -> str | None:
@@ -11003,9 +11068,12 @@ def origin_org(root: Path) -> str | None:
 
     ONLY WHEN `root` CARRIES ITS OWN `.git`, for `repo_local_origin_name`'s
     reason: `git remote get-url origin` walks UP to the nearest ancestor
-    repository, and an ancestor's organisation is not this directory's.
+    repository, and an ancestor's organisation is not this directory's. A
+    `.git` this user cannot reach RAISES (`carries_git`, #1110), where it was
+    None, the answer for a folder that is no repository: `the way in` asks
+    the `.git` first, and offers no way in over it.
     """
-    if not (root / ".git").exists():
+    if not carries_git(root):
         return None
     try:
         url = git_out(["remote", "get-url", "origin"], cwd=root)
@@ -11026,10 +11094,19 @@ def check_not_a_root_naming(ctx: Context) -> Row:
     so a loose directory nested inside somebody else's checkout is classified
     on its own name alone, the same fact `the way in` row now reads it by
     (Copilot, PR #110).
+
+    A `.git` THIS USER CANNOT REACH (#1110) leaves the directory's own name
+    to classify, and the row says that `origin`'s was not read, rather than
+    treat the folder as one with no repository. The line and its cure are
+    the `what is here` row's, which reads every name in the directory, so
+    they are said once. `detail.cannot_be_read` carries the line.
     """
     script = ctx.shape / NAMING_SCRIPT
     names = [ctx.root.name]
-    remote = repo_local_origin_name(ctx.root)
+    try:
+        remote, unread = repo_local_origin_name(ctx.root), None
+    except OSError as exc:
+        remote, unread = None, cannot_be_read(".git", exc)
     if remote and remote not in names:
         names.append(remote)
     # `--` BEFORE THE NAMES. Without it a directory literally named `--help`
@@ -11047,6 +11124,11 @@ def check_not_a_root_naming(ctx: Context) -> Row:
         ctx, script, ["--explain", "--", *names])
     detail = {"names": names, "origin": remote, "exit": code,
               "explain": ascii_text(whole).strip().splitlines()[:40]}
+    if unread is not None:
+        detail["cannot_be_read"] = unread
+    unread_said = ("" if unread is None else
+                   "; origin's name is not read while .git cannot be read "
+                   "(see `what is here`)")
     spelled = " ".join(quote_arg(name) for name in names)
     command = f"{PYTHON} {quote_arg(script)} --explain -- {spelled}"
     # A CHECKOUT WHOSE OWN POLICY DOES NOT LOAD SAID NOTHING ABOUT THE NAME
@@ -11065,19 +11147,39 @@ def check_not_a_root_naming(ctx: Context) -> Row:
         return naming_crashed_row(code, crash, command, detail, names)
     if code >= 2:
         return Row("naming", "naming", FINDING,
-                   f"{', '.join(names)}: {naming_refuses_words(code, quoted)}",
-                   command, detail)
+                   f"{', '.join(names)}: {naming_refuses_words(code, quoted)}"
+                   f"{unread_said}", command, detail)
     reason = f"{', '.join(names)}: " + (
         "classifies under the naming policy" if code == 0
-        else (quoted or "matches no family in the policy"))
+        else (quoted or "matches no family in the policy")) + unread_said
     return Row("naming", "naming", OK if code == 0 else FINDING, reason,
                None if code == 0 else command, detail)
 
 
 def check_what_is_here(ctx: Context) -> Row:
-    """What IS in this directory, said plainly, so the reader can place it."""
+    """What IS in this directory, said plainly, so the reader can place it.
+
+    A NAME THIS USER CANNOT REACH IS THERE, AND SAID SO HERE, ONCE (#1110).
+    Each name is asked with `is_a`, which raises a `stat` the operating
+    system refused. A `.git` or an `AGENTS.md` that is a link into a folder
+    this user cannot search ended this row in `could not be run` up to Python
+    3.13, which `run_checks` made a FINDING in each row that asked it, four
+    times for a `.git`; from 3.14, where `exists()` answers False to any
+    `OSError`, it was not there at all, and the row called the directory
+    `an ordinary directory`. Now the row says `<name>: cannot be read
+    (<reason>)`, in `validate-pins.py`'s words, before what it did find, with
+    this doctor again as the NEXT and the gate's advice for the cause as the
+    WHY (`cannot_read_why`), on every Python. It is the one row that reads
+    every name here, so the cure is said in it and nowhere else: `the way
+    in` offers no way in while the `.git` cannot be read, and points here.
+    Still `n/a`: nothing asserts a name in a directory that is no shape root,
+    and its verdict reads no row. The name's entry in `detail` is `true`,
+    since it is there, and `cannot_be_read` lists the lines.
+    """
     root = ctx.root
     facts: list[str] = []
+    unread: list[str] = []
+    refused: list[OSError] = []
     detail = {}
     for name, note in ((".git", "a git repository"),
                        (".gitmodules", "a .gitmodules"),
@@ -11092,7 +11194,13 @@ def check_what_is_here(ctx: Context) -> Row:
                        # whose row says what it found in it.
                        (shape_advisory.RECORD_FILE,
                         f"a {shape_advisory.RECORD_FILE}")):
-        there = (root / name).exists()
+        try:
+            there = is_a(root / name, lambda _mode: True)
+        except OSError as exc:
+            detail[name] = True
+            unread.append(cannot_be_read(name, exc))
+            refused.append(exc)
+            continue
         detail[name] = there
         if there:
             facts.append(note)
@@ -11105,6 +11213,12 @@ def check_what_is_here(ctx: Context) -> Row:
         # never here, because its filename makes the root that kind (#205).
         facts.append("a manifest file that declares neither `kind: "
                      "project-manifest` nor `kind: family-manifest`")
+    if unread:
+        detail["cannot_be_read"] = unread
+        return Row("contents", "what is here", NA,
+                   "; ".join([", ".join(unread)]
+                             + ([", ".join(facts)] if facts else [])),
+                   doctor_line(ctx), detail, why=cannot_read_why(refused))
     return Row("contents", "what is here", NA,
                ", ".join(facts) if facts else
                "no git repository, no manifest, no contracts/ -- an ordinary "
@@ -11471,9 +11585,30 @@ def check_the_way_in(ctx: Context) -> Row:
     environment row naming the checkout's file, in a plain directory and in
     a repository, which is also told of `the other way in` below. A leg
     clone, which is offered no command, is the row it always was.
+
+    A `.git` THIS USER CANNOT REACH OFFERS NO WAY IN (#1110). A `.git` that
+    is a link into a folder this user cannot search raised `PermissionError`
+    up to Python 3.13, which `run_checks` made a FINDING here and in three
+    other rows; from 3.14, where `exists()` answers False to any `OSError`,
+    this row said `there is no repository here to adopt` and named
+    `setup.sh`, three new repositories, over the one in front of the person.
+    Whether it is a repository to adopt is not known until the `.git` can be
+    read, so this row offers neither command and asks nothing of `origin`
+    (`carries_git`, asked first). It is `n/a`, as every answer here is, and
+    points at `what is here`, which names the `.git` with the cure once.
     """
     root = ctx.root
-    is_repo = (root / ".git").exists()
+    try:
+        is_repo = carries_git(root)
+    except OSError as exc:
+        line = cannot_be_read(".git", exc)
+        return Row("way-in", "the way in", NA,
+                   "its .git cannot be read, so it is not known whether this "
+                   "is a git repository to adopt, and neither way in is "
+                   "offered until it can be: `what is here` says how", None,
+                   {"git_repository": None, "suggested_project": None,
+                    "origin_org": None, "cannot_be_read": line,
+                    "path": ".git"})
     project, refusal = way_in_project(ctx)
     org = origin_org(root)
     if is_repo and leg_clone(ctx):
@@ -11595,8 +11730,18 @@ def check_the_other_way_in(ctx: Context) -> Row | None:
     sent to its assembly root (`leg_clone`, asked as `check_the_way_in` asks
     it). A row that repeated the scaffold there would be this report
     printing the same line twice, or contradicting the Triad row above it.
+
+    SILENT TOO WHERE THE `.git` CANNOT BE READ (#1110): whether this is a
+    repository is not known, so `the way in` offers neither command and this
+    row offers no second one. On Python 3.14 `exists()` answered that `.git`
+    False, and the row was left out as for a folder with no repository; up
+    to 3.13 it raised, and `run_checks` named the `.git` here a fourth time.
     """
-    if not (ctx.root / ".git").exists() or leg_clone(ctx):
+    try:
+        repository = carries_git(ctx.root)
+    except OSError:
+        return None
+    if not repository or leg_clone(ctx):
         return None
     project, refusal = way_in_project(ctx)
     if refusal is not None:

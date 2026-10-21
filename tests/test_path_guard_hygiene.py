@@ -620,31 +620,6 @@ KNOWN_OPEN = _entries({
     (f"{FR}/siblings.py", "submodule_urls", "path.is_file()"): (
         FOLLOW_UP, "the same, in the pinned `siblings.py`: no url read, "
         "so a member is cloned from its row's default"),
-    (SD, "check_agent_files", "(ctx.root / name).is_file()"): (
-        FOLLOW_UP, "an agent file that is a link into a folder this user "
-        "cannot search reads `absent` in the `agent files` note"),
-    (SD, "check_what_is_here", "(root / name).exists()"): (
-        FOLLOW_UP, "the same for the NOT A SHAPE ROOT row's facts"),
-    # r1111's M1: the root's `.git`, asked by a `stat` that follows a link.
-    (SD, "check_the_way_in", '(root / ".git").exists()'): (
-        FOLLOW_UP, "a `.git` that is a link into a folder this user cannot "
-        "search: the `way-in` row says there is no repository to adopt and "
-        "sends the person to `setup.sh` to scaffold three new ones"),
-    (SD, "check_the_other_way_in", '(ctx.root / ".git").exists()'): (
-        FOLLOW_UP, "the same `.git`: the `way-in-scaffold` row is left out"),
-    (SD, "origin_org", '(root / ".git").exists()'): (
-        FOLLOW_UP, "the same `.git`: None, the answer for a folder that is "
-        "no repository"),
-    (SD, "repo_local_origin_name", '(root / ".git").exists()'): (
-        FOLLOW_UP, "the same `.git`: None, so the `naming` row classifies "
-        "the folder's name alone and drops the origin's"),
-    ("scripts/shape_advisory.py", "_read", '(root / ".git").exists()'): (
-        FOLLOW_UP, "the same `.git`: `not-a-repository`, so the Triad "
-        "advisory row is left out"),
-    ("scripts/shape_advisory.py", "repository_names",
-     '(root / ".git").exists()'): (
-        FOLLOW_UP, "the same `.git`: the origin's name is not read for the "
-        "Triad advice"),
 })
 
 

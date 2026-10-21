@@ -137,7 +137,13 @@ NOT_A_REPOSITORY = "not-a-repository"
 #: construction is the one thing in a run that must never be the reason it
 #: crashed. So whatever `read()` meets that it did not expect (a record nested
 #: past the interpreter's recursion limit, a NUL in a configured path) ends
-#: here: silent, with the exception's NAME in `why` for `--json`.
+#: here: silent, with the exception's NAME in `why` for `--json`. So does a
+#: `.git` this user cannot reach, the one such case `_read` asks for itself
+#: (#1110), with its line in `validate-pins.py`'s words, `.git: cannot be read
+#: (<reason>)`, in `why`. It is no new state: whether this is a repository is
+#: not known, which is "could not be read here", and every reader already
+#: answers this one with silence -- the doctor's `Triad` row and `leg_clone`,
+#: and `adopt-project.py`'s `triad` lines.
 NOT_ANSWERED = "not-answered"
 STATES = (ADVISE, TRIAD_ROOT, FAMILY_HOLDER, LEG_CLONE, WORKSPACE,
           RECORDED_SINGLE, NOT_A_REPOSITORY, NOT_ANSWERED)
@@ -490,9 +496,16 @@ def repository_names(root: Path) -> list[str]:
     `naming` row and the `Triad` row read one identity. The directory's own
     name, the leg's `AGENTS.md` and the person's `workspace.yaml` still
     answer.
+
+    A `.git` THIS USER CANNOT REACH RAISES (`_is_a`, #1110). It is a link
+    into a folder this user cannot search, and `exists()` follows it: up to
+    Python 3.13 that raised too, and from 3.14 it answered False, so the
+    origin's name was dropped (`['Atlas']` for `['Atlas', 'Orbit']`) as for
+    a folder with no repository. `_read` asks the `.git` first and answers
+    for it by name; a caller asking this alone gets the `OSError`.
     """
     names = [root.name]
-    if (root / ".git").exists():
+    if _is_a(root / ".git", lambda _mode: True):
         try:
             url = git_out(["remote", "get-url", "origin"], cwd=root)
         except (Refusal, OSError, UnicodeDecodeError):
@@ -776,7 +789,18 @@ def _read(root: Path, shape: Path, env, commit: str | None) -> Reading:
         return Reading(FAMILY_HOLDER, f"{FAMILY_MANIFEST} declares a family "
                                       "holder, which pins projects and is "
                                       "not one")
-    if not (root / ".git").exists():
+    try:
+        repository = _is_a(root / ".git", lambda _mode: True)
+    except OSError as exc:
+        # A `.git` THIS USER CANNOT REACH (#1110): not `NOT_A_REPOSITORY`,
+        # which is what 3.14's `exists()` made of it, and no new state
+        # either -- see `NOT_ANSWERED`.
+        return Reading(NOT_ANSWERED, f".git: cannot be read "
+                                     f"({exc.strerror or type(exc).__name__}),"
+                                     " so whether this is a repository is not "
+                                     "known here, and the advisory says "
+                                     "nothing")
+    if not repository:
         return Reading(NOT_A_REPOSITORY, "there is no repository here to "
                                          "advise about")
     policy = _naming_policy(shape)
