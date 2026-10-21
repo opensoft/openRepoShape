@@ -768,9 +768,10 @@ SHAPE_POINTER_LINE = ("Read AGENTS-shape.md first — the rules of this "
 ASSISTANT_INSTRUCTIONS = ("AGENTS.md", "CLAUDE.md")
 #: The make targets of the shape's own `Makefile` that a person runs. A root
 #: that kept the source's `Makefile` has none of them until the shape's copy
-#: is merged into it (#480), and, where the root also keeps a `GNUmakefile` or
-#: a `makefile`, which GNU make reads first, not even then (#1048). The
-#: collision follow-up says both.
+#: is merged into it (#480); where the root also keeps a `GNUmakefile` or a
+#: `makefile`, which GNU make reads first, the merge alone brings them only
+#: where that file includes `Makefile` (#1048, #1105's review). The collision
+#: follow-up says what each root takes.
 #: `tests/test_adopt_e2e.py` holds this to the template's own targets.
 SHAPE_MAKE_TARGETS = ("bootstrap", "validate", "pins", "park", "resume")
 #: The names GNU make looks for when no `-f` is given, in its order: it reads
@@ -1004,10 +1005,14 @@ def collision_follow_up(intended: str, actual: str,
                         reads_first: str | None = None) -> str:
     """The follow-up for ONE collision, in one place.
 
-    Both callers say it: `adopt-project.py plan` PREDICTS the collisions from
-    the plan's surviving root paths, and `execute` reports the ones that
-    actually happened. Two spellings of the same instruction is how the plan a
-    human approves stops matching the commit message they read afterwards.
+    `adopt-project.py plan` says it: `_predict_collisions` PREDICTS the
+    collisions from the plan's surviving root paths, the plan stores each
+    follow-up in `follow_ups:`, and `execute` carries those items into the
+    split commit's message, so the plan a human approves and the commit
+    message they read afterwards hold one spelling of each. `execute` names
+    the collisions that actually happened by path only: its `beside` lines,
+    and the split message's "WRITTEN BESIDE" list. `Materialized.follow_ups()`
+    would say this of them, and nothing calls it (#1105's review, NIT-4).
 
     A `.gitattributes` THAT IS A SYMLINK gets no block (`_append_eol_block`),
     so `attributes_link` says which of two things happened, and the follow-up
@@ -1030,16 +1035,23 @@ def collision_follow_up(intended: str, actual: str,
     BUT GNU MAKE READS THE FIRST OF `GNUmakefile`, `makefile` AND `Makefile`
     IT FINDS, AND ONLY THAT ONE (#1048, measured on #1046's review). Where
     the root keeps a `GNUmakefile` or a `makefile` beside the source's own
-    `Makefile`, the merge makes no target arrive: after `cat shape/Makefile
-    >> Makefile`, `make -n bootstrap` at the root still exits 2 with the same
-    `No rule`, for `make` reads the other file. `reads_first` names that
-    file, the one `adopt-project.py`'s `_makefile_follow_up` names (#977), as
-    its caller reads it from the plan's root paths; the follow-up then says
-    `make` reads it, that the targets reach `make` there only once it holds
+    `Makefile`, `make` reads that file, so the merge alone brings the targets
+    only where that file includes `Makefile`: after `cat shape/Makefile >>
+    Makefile`, `make -n bootstrap` at the root still exits 2 with the same
+    `No rule` where it does not, and exits 0 where it ends in `include
+    Makefile` (#1105's review, SHOULD-1). `reads_first` names that file, the
+    one `adopt-project.py`'s `_makefile_follow_up` names (#977), as its
+    caller reads it from the plan's root paths; the follow-up then says
+    `make` reads it, that the targets reach `make` there only once it has
     them or includes a Makefile that does, and, as before, what runs
-    meanwhile. With none, the Makefile's follow-up is what it was, byte for
-    byte: a root whose only Makefile is the source's is the one where the
-    merge is all it takes. It is read by no other collision.
+    meanwhile, in the words `execute`'s NEXT uses (#1047). It says nothing of
+    the merge alone, which turns on that file's own lines. Where
+    `scripts/bootstrap.py` went aside as well, it says `python3
+    scripts/bootstrap.py` runs the shape's bootstrap once that script is
+    merged, and not that `make bootstrap` does. With none, the Makefile's
+    follow-up is what it was, byte for byte: a root whose only Makefile is
+    the source's is one where `make` reads the merged file. It is read by no
+    other collision.
 
     AND A PINNED COPY'S FOLLOW-UP SAYS WHAT HAPPENS TO ITS ROW (#502). The
     shape pin has a row for a copied file at the path it landed on, so once
@@ -1097,23 +1109,24 @@ def collision_follow_up(intended: str, actual: str,
         joint = ", and"
         meanwhile = ("`python3 scripts/bootstrap.py` is what `make "
                      "bootstrap` runs")
+        until = "before both merges are made"
     else:
         listed = _listed([f"`{name}`" for name in GNU_MAKE_READS])
         arrive = (
             f"GNU make at the root reads the source's `{reads_first}`, the "
             f"first of {listed} it finds, so the shape's make targets "
-            f"({targets}) reach `make` there only once `{reads_first}` holds "
-            "them, or includes a Makefile that does, and not with that merge "
-            "alone")
+            f"({targets}) reach `make` there only once `{reads_first}` has "
+            "them, or includes a Makefile that does")
         joint = "; and"
         meanwhile = ("`python3 scripts/bootstrap.py` is what the shape's "
-                     "`bootstrap` target runs")
+                     "`make bootstrap` runs")
+        until = f"until then, and then `python3 {BOOTSTRAP}` runs it"
     if script is None:
         return f"{merge}. {arrive}; until then {meanwhile}"
     return (f"{merge}. {arrive}{joint} the root's {BOOTSTRAP} is the source's "
             f"own until {script} is merged into it as well, so neither `make "
             f"bootstrap` nor `python3 {BOOTSTRAP}` runs the shape's "
-            "bootstrap before both merges are made")
+            f"bootstrap {until}")
 
 
 def _attributes_link_follow_up(intended: str, actual: str,

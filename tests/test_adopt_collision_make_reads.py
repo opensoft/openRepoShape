@@ -24,6 +24,17 @@ project, so it names the three names, in the order the code reads them. Where
 the root keeps only the source's `Makefile` the collision follow-up is what it
 was, byte for byte (`tests/test_adopt_e2e.py` pins it).
 
+And neither says more than `make` does (#1105's review). Where the file
+`make` reads ends in `include Makefile`, a common idiom, the merge alone
+brings the targets, so the follow-up says they reach `make` once that file has
+them or includes a Makefile that does, and not that the merge alone fails;
+where `scripts/bootstrap.py` went aside too, it says what the script's merge
+lets `python3 scripts/bootstrap.py` run, and not that `make bootstrap` runs it
+after both merges (NIT-2); and the pinned file says `make` reads the shape's
+Makefile there only where that file includes it (NIT-3). The words are those
+of `execute`'s NEXT (#1047): "has them", and "what the shape's `make
+bootstrap` runs".
+
 The tests that run `execute` need `git filter-repo` and skip without it, and
 the ones that run `make` skip without it. No network and no GitHub: the legs
 are bare repositories on disk, and `tests/conftest.py` keeps a `gh` guard
@@ -70,12 +81,24 @@ MERGE_IS_ENOUGH = (
     f"The shape's make targets ({TARGETS}) arrive only with that merge; "
     "until then `python3 scripts/bootstrap.py` is what `make bootstrap` runs")
 MEANWHILE = ("; until then `python3 scripts/bootstrap.py` is what the "
-             "shape's `bootstrap` target runs")
+             "shape's `make bootstrap` runs")
+#: How the follow-up goes on where `scripts/bootstrap.py` went aside too.
 SCRIPT_ASIDE = (
-    "; and the root's scripts/bootstrap.py is the source's own until "
+    " the root's scripts/bootstrap.py is the source's own until "
     "shape/scripts/bootstrap.py is merged into it as well, so neither `make "
     "bootstrap` nor `python3 scripts/bootstrap.py` runs the shape's "
-    "bootstrap before both merges are made")
+    "bootstrap ")
+#: ... where `make` reads the merged `Makefile`: `make bootstrap` waits for
+#: the two merges and nothing else (#493's review, F2).
+BOTH_MERGES = ", and" + SCRIPT_ASIDE + "before both merges are made"
+#: ... where `make` reads another file: the script's merge is what lets
+#: `python3 scripts/bootstrap.py` run the shape's bootstrap, and `make
+#: bootstrap` runs it only once that file has the targets or includes a
+#: Makefile that does, with or without the `Makefile` merge (#1105's review,
+#: NIT-2), which the sentence before says.
+SCRIPT_MERGED = ("; and" + SCRIPT_ASIDE
+                 + "until then, and then `python3 scripts/bootstrap.py` runs "
+                 "it")
 
 
 def reads_instead(first: str, then: str) -> str:
@@ -83,8 +106,13 @@ def reads_instead(first: str, then: str) -> str:
     which GNU make reads before `Makefile`; `then` is how it ends."""
     return (f"GNU make at the root reads the source's `{first}`, the first of "
             f"{LISTED} it finds, so the shape's make targets ({TARGETS}) "
-            f"reach `make` there only once `{first}` holds them, or includes "
-            f"a Makefile that does, and not with that merge alone{then}")
+            f"reach `make` there only once `{first}` has them, or includes "
+            f"a Makefile that does{then}")
+
+
+#: The claim #1105's review measured untrue (SHOULD-1): where the file `make`
+#: reads ends in `include Makefile`, the merge alone brings the targets.
+MERGE_ALONE_FAILS = "not with that merge alone"
 
 
 #: `(the root paths the plan keeps, the Makefile collision follow-up's last
@@ -105,10 +133,10 @@ COLLISIONS = [
     pytest.param(
         ("Makefile", "scripts/"),
         f"The shape's make targets ({TARGETS}) arrive only with that merge"
-        + SCRIPT_ASIDE.replace("; and", ", and", 1), None,
+        + BOTH_MERGES, None,
         id="Makefile+scripts"),
     pytest.param(("Makefile", "GNUmakefile", "scripts/"),
-                 reads_instead("GNUmakefile", SCRIPT_ASIDE), "GNUmakefile",
+                 reads_instead("GNUmakefile", SCRIPT_MERGED), "GNUmakefile",
                  id="Makefile+GNUmakefile+scripts"),
 ]
 
@@ -119,17 +147,40 @@ def collisions_of(adopter, *kept: str) -> list:
         entries_of(*[(path, "root") for path in kept]))
 
 
+@pytest.mark.parametrize("first", ["GNUmakefile", "makefile"])
+def test_where_make_reads_another_file_the_script_tail_says_no_make_bootstrap(
+        adopter, first):
+    """#1105's review, NIT-2. Where `scripts/bootstrap.py` went aside too and
+    `make` reads a kept `GNUmakefile` or `makefile`, "neither `make
+    bootstrap` nor `python3 scripts/bootstrap.py` runs the shape's bootstrap
+    before both merges are made" read as if `make bootstrap` ran it after
+    them, which it does not where that file neither has the targets nor
+    includes a Makefile that does; and where that file has them, `make
+    bootstrap` runs it once the script is merged, with no `Makefile` merge at
+    all. The tail says what the
+    script's merge does, and names `python3 scripts/bootstrap.py` as what runs
+    then, as `execute`'s NEXT does (#1047)."""
+    (line,) = [item for item in collisions_of(adopter, "Makefile", first,
+                                              "scripts/")
+               if item.startswith(MERGE_MAKEFILE)]
+    assert "before both merges are made" not in line, line
+    assert line.endswith(SCRIPT_MERGED), line
+
+
 @pytest.mark.parametrize("kept, tail, first", COLLISIONS)
 def test_the_makefile_collision_names_the_file_gnu_make_reads_first(
         adopter, kept, tail, first):
     """THE MEASURED CLAIM (#1048, r1046's NIT-B). "The shape's make targets
     arrive only with that merge" holds where the merged `Makefile` is the
     file `make` reads. Where the root keeps `GNUmakefile` or `makefile`
-    beside it, `make` reads that one, so the follow-up names it, and does not
-    say the merge brings the targets. Where the root keeps only the source's
-    `Makefile`, the sentence is what it was, byte for byte."""
+    beside it, `make` reads that one, so the follow-up names it, and says
+    neither that the merge brings the targets nor that it does not: that
+    turns on whether the file includes `Makefile` (#1105's review,
+    SHOULD-1). Where the root keeps only the source's `Makefile`, the
+    sentence is what it was, byte for byte."""
     (line,) = [item for item in collisions_of(adopter, *kept)
                if item.startswith(MERGE_MAKEFILE)]
+    assert MERGE_ALONE_FAILS not in line, line
     assert line.endswith(". " + tail), line
     assert ("arrive only with that merge" in line) is (first is None)
     assert (f"reads the source's `{first}`, the first of {LISTED} it finds"
@@ -299,3 +350,47 @@ def test_the_sentences_are_true_of_what_make_does_in_the_clone(
             assert printed.returncode == 0, printed.stderr
             assert Path(printed.stdout.strip()) == (
                 fixed.resolve() / SPEC_PATH / "contracts")
+
+
+#: A kept file GNU make reads before `Makefile` that adds a rule of its own
+#: and then reads `Makefile` too: a common idiom (#1105's review, SHOULD-1).
+INCLUDING = "{name}-only:\n\t@echo {name} only\n\ninclude Makefile\n"
+
+
+@needs_filter_repo
+@needs_make
+@pytest.mark.parametrize("first", ["GNUmakefile", "makefile"])
+def test_where_the_file_make_reads_includes_makefile_the_merge_alone_is_enough(
+        tmp_path, first):
+    """#1105's review, SHOULD-1, measured in a real adoption's clone. The
+    source keeps `Makefile` and a `GNUmakefile` or a `makefile` that ends in
+    `include Makefile`. Before the merge the follow-up asks for, `make -n
+    bootstrap` at the root has no rule; after `cat shape/Makefile >>
+    Makefile` alone it runs the shape's recipe, and `make contracts-dir`
+    prints the spec leg's `contracts/`. The split message's follow-up says
+    `make` reads that file and that the targets reach it once it includes a
+    Makefile that has them, which the merge makes so, and does not say they
+    do not arrive with that merge alone."""
+    if not disk_keeps_case(tmp_path):
+        pytest.skip("this disk ignores case: it cannot hold the rows apart")
+    tree = tree_keeping(("Makefile", first))
+    tree[first] = INCLUDING.format(name=first)
+    adopted = adopt_with_legs_mounted_away(tmp_path, by_hand=False, tree=tree)
+    clone = adopted["clone"]
+    message = " ".join(git("log", "-1", "--format=%B", SPLIT_BRANCH,
+                           cwd=adopted["source"]).stdout.split())
+    before = make(clone, "-n", "bootstrap")
+    assert before.returncode != 0, before.stdout + before.stderr
+    # THE MERGE THE FOLLOW-UP ASKS FOR, and nothing else.
+    appended(clone / "Makefile", (clone / "shape" / "Makefile").read_text(
+        encoding="utf-8"))
+    after = make(clone, "-n", "bootstrap")
+    assert after.returncode == 0, after.stdout + after.stderr
+    assert "python3 scripts/bootstrap.py" in after.stdout, after.stdout
+    printed = make(clone, "contracts-dir")
+    assert printed.returncode == 0, printed.stderr
+    assert Path(printed.stdout.strip()) == (
+        clone.resolve() / SPEC_PATH / "contracts")
+    # What the follow-up says of it.
+    assert MERGE_ALONE_FAILS not in message, message
+    assert reads_instead(first, MEANWHILE) in message, message
