@@ -62,11 +62,8 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
-  # ubuntu-26.04 BY NAME, FOR #1096'S PROOF RUN ONLY: the image
-  # `ubuntu-latest` now gives out, named so that this pull request's run
-  # lands on it. It goes back to ubuntu-latest once the suite passes there.
   tests:
-    runs-on: ubuntu-26.04
+    runs-on: ubuntu-latest
     steps:
       # PINNED BY COMMIT, not by tag — the rule this repository spends a
       # whole README section on. A tag can be moved and a commit cannot.
@@ -122,13 +119,16 @@ jobs:
           } >> "$GITHUB_ENV"
 
       # THE SUITE'S TEMPORARY FILES GO ON THE RUNNER'S DISK, NOT IN /tmp
-      # (#1096). On the Ubuntu 26.04 that `ubuntu-latest` now gives out, the
-      # suite filled /tmp under pytest's default basetemp: #1092's run of
+      # (#1096). On the Ubuntu 26.04 that `ubuntu-latest` now gives out, /tmp
+      # is a tmpfs of 7.9G, and the suite writes about 25G. #1092's run of
       # this job (job 119050702775, image `ubuntu-26.04` 20261012.163.1)
-      # ended `2436 failed, 11382 passed, 380 skipped, 5579 errors`, with
-      # 28325 lines of `Disk quota exceeded` and then `No space left on
-      # device`, all under `/tmp/pytest-of-runner/pytest-0`. The same suite
-      # passed on 24.04 with its basetemp in /tmp.
+      # filled /tmp under pytest's default basetemp and ended `2436 failed,
+      # 11382 passed, 380 skipped, 5579 errors`, with 28325 lines of `Disk
+      # quota exceeded` and then `No space left on device`, all under
+      # `/tmp/pytest-of-runner/pytest-0`. With the basetemp below, #1097's
+      # run on 26.04 (job 119180581846) passed, and the `df` lines showed
+      # /tmp unused and the runner's disk at 58G used before the suite and
+      # 83G after.
       #
       # So the basetemp is `$RUNNER_TEMP/pytest`, and `TMPDIR` is
       # `runner.temp` for everything this step starts: `tests/conftest.py`
@@ -303,9 +303,9 @@ jobs:
   # build for setup-python: its manifest lists 3.10 to 3.15 there, and 3.8 to
   # 3.15 for 24.04. A run that landed on a 26.04 runner failed in setup-python
   # with `The version '3.9' with architecture 'x64' was not found for Ubuntu
-  # 26.04.` The `tests` job above asks for `3.x`, and release.yml's `build`
-  # for `3.12` on ubuntu-latest, both of which 26.04 has; `tests-git-bash`
-  # runs on windows-latest.
+  # 26.04.` The other jobs keep their runners: `tests` here asks for `3.x`
+  # and release.yml's `build` for `3.12` on ubuntu-latest, both of which
+  # 26.04 has, and `tests-git-bash` runs on windows-latest.
   package:
     runs-on: ubuntu-24.04
     steps:
