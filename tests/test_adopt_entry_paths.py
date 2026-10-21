@@ -101,16 +101,24 @@ def run_check(plan: Path):
     return run_script(ADOPT, "check", "--plan", str(plan))
 
 
+#: The `resolution:` line `answer` writes below the `leg:` it answers.
+RESOLVED = "    resolution: \"answered by the test\"\n"
+
+
 def answer(plan: Path, spelled: str, old: str, new: str) -> None:
     """Re-answer the entry whose `path:` is written `spelled`, from `old` to
-    `new`, LF as `plan` wrote it (see `conftest.resolve`)."""
+    `new`, LF as `plan` wrote it (see `conftest.resolve`). An entry this
+    helper answered before keeps its one `resolution:` line: a second one
+    below it would be a key written twice in one mapping, which the reader
+    refuses since #917, and `check` with it."""
     text = plan.read_text(encoding=UTF8)
     needle = f"  - path: {spelled}\n    leg: {old}\n"
     assert needle in text, f"{spelled} is not an entry with leg: {old}"
+    if needle + RESOLVED in text:
+        needle += RESOLVED
     with plan.open("w", encoding=UTF8, newline="\n") as handle:
         handle.write(text.replace(
-            needle, f"  - path: {spelled}\n    leg: {new}\n"
-                    "    resolution: \"answered by the test\"\n", 1))
+            needle, f"  - path: {spelled}\n    leg: {new}\n" + RESOLVED, 1))
 
 
 def planned(tmp_path: Path, tree: dict,
@@ -657,8 +665,8 @@ NOT_UTF8_FINDING = (
     "will not extract it into a leg: it holds `\\udce9`, which is not UTF-8 "
     "and which `execute` refuses as policy, though git and `git filter-repo` "
     "would take it literally: a name that holds one prints as an escape and "
-    "never as itself, the split commit's message would list it with a `?` "
-    "for that byte, and adopting one is not yet measured on macOS or Windows")
+    "never as itself, the split commit's message included, and adopting one "
+    "is not yet measured on macOS or Windows")
 
 
 def test_a_byte_that_is_not_utf8_is_found_and_refused_before_any_leg(

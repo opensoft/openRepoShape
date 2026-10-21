@@ -182,11 +182,12 @@ over <path> (default `.`) and prints one row per check and ONE verdict:
 `COMPLIANT`, `COMPLIANT, SHAPE BEHIND`, `DRIFTED`, `MISPLACED`, `INVALID`,
 `NOT A SHAPE ROOT` or `CANNOT ANSWER`. Every finding names the command that
 fixes it. Exit 0 compliant, 1 findings, 2 not a shape root, 3 when it cannot
-answer (`CANNOT ANSWER`, no such <path>, a `--placement-plan` it cannot
-write); this command's own refusals exit 2. `--json` is the same report as
-one JSON object. The doctor writes no file but the `--placement-plan <file>`
-you name, at the path you give (a relative <file> lands in the directory you
-ran this from, even inside the repository), and moves nothing.
+answer (`CANNOT ANSWER`, no such <path>, a <path> this user cannot search, a
+`--placement-plan` it cannot write); this command's own refusals exit 2.
+`--json` is the same report as one JSON object. The doctor writes no file but
+the `--placement-plan <file>` you name, at the path you give (a relative
+<file> lands in the directory you ran this from, even inside the repository),
+and moves nothing.
 
 Run beside a checkout of the standard, it uses that one. Run from anywhere
 else, it clones the standard into a temporary directory first and KEEPS it,
@@ -347,11 +348,19 @@ options:
                         trees in it, --local-remote-dir) and whether each of
                         the three repositories already exists (`gh repo view`
                         and its commit listing, or the bare repositories with
-                        --local-remote-dir), refusing what it refuses; make no
-                        folder, create no remote and push nothing
+                        --local-remote-dir), refusing what it refuses. Whether
+                        each folder can be written in is asked of `os.access`,
+                        which reads the mode bits and on Windows says yes for
+                        every folder, so a quota, a Windows ACL or a read-only
+                        drive on Windows can pass here and be refused by the
+                        real run. It leaves nothing that stays: it makes and
+                        removes temporary folders, creates no remote and
+                        pushes nothing
   --local-remote-dir LOCAL_REMOTE_DIR
                         create bare repositories here instead of calling `gh
-                        repo create` (the TEST path; no network)
+                        repo create` (the TEST path; no network). An empty
+                        value is refused as `local-remote-dir-no-path`, and
+                        `.` means the directory the run stands in.
   --no-push
   --reuse-empty-repo    if <org>/<Project>, <Project>-spec or <Project>-code
                         already exists and has ZERO commits, use it instead of
@@ -392,7 +401,9 @@ options:
                         top level, or a bare clone's: any other path is
                         refused as `pin-source-not-a-clone`.
   --work-dir WORK_DIR   where the working trees are built (default: a
-                        temporary directory)
+                        temporary directory). An empty value is refused as
+                        `work-dir-no-path`, and `.` means the directory the
+                        run stands in.
   --no-next-steps       leave out the closing NEXT STEPS (the clone, the cd
                         and `make bootstrap`): setup-project.py passes it,
                         because it runs those steps itself next. `Working
@@ -448,7 +459,11 @@ options:
                         --show-toplevel` prints it): `source-not-top-level`
                         refuses a file, or a directory inside a repository.
                         `source-unresolvable` refuses an empty value, and one
-                        that is neither a path that exists nor an `org/repo`.
+                        that is neither a path that exists nor an `org/repo`;
+                        `source-unreadable`, a path this user cannot reach
+                        (under a directory it may not search, or one it may
+                        not enter), which is never read as one that is not
+                        there, nor cloned as an `org/repo`.
   --project PROJECT     the assembly-root name; for an in-place adoption it is
                         the source repository's own name. `execute` refuses
                         one over 95 characters without --local-remote-dir:
@@ -615,7 +630,9 @@ options:
                         longer whole, its `source.repository` is cloned again,
                         and any other `local_path` that is gone is refused as
                         `plan-source-gone`; one that is a file, or a directory
-                        inside a repository, as `source-not-top-level`.
+                        inside a repository, as `source-not-top-level`; and
+                        one this user cannot reach, a clone `plan` made
+                        included, as `source-unreadable`, never cloned again.
   --local-remote-dir LOCAL_REMOTE_DIR
                         the directory `execute --local-remote-dir` will be
                         given (the TEST path): each relative submodule url the
@@ -672,7 +689,9 @@ options:
                         longer whole, its `source.repository` is cloned again,
                         and any other `local_path` that is gone is refused as
                         `plan-source-gone`; one that is a file, or a directory
-                        inside a repository, as `source-not-top-level`.
+                        inside a repository, as `source-not-top-level`; and
+                        one this user cannot reach, a clone `plan` made
+                        included, as `source-unreadable`, never cloned again.
   --local-remote-dir LOCAL_REMOTE_DIR
                         create the legs as bare repositories here instead of
                         calling `gh` (the TEST path). Both are asked about
@@ -915,24 +934,36 @@ options:
                         slot.
   --local-remote-dir LOCAL_REMOTE_DIR
                         create a bare repository here instead of calling `gh
-                        repo create` (the TEST path; no network)
+                        repo create` (the TEST path; no network). An empty
+                        value is refused as `local-remote-dir-no-path`, and
+                        `.` means the directory the run stands in.
   --into DIR            the PARENT directory the family folder is made in
                         (default: the directory you are standing in, which is
                         refused inside a checkout of openRepoShape: from its
                         root, pass `--into ..`). The holder lands at
                         <into>/<Family>/<Family>, beside where `make siblings`
-                        clones the members.
+                        clones the members. An empty value is refused as
+                        `into-no-path`, and `.` means the directory the run
+                        stands in.
   --work-dir WORK_DIR   THE OVERRIDE: land the holder at <work-dir>/<Family>
                         and make no family folder at all. Mutually exclusive
-                        with --into.
+                        with --into. An empty value is refused as `work-dir-
+                        no-path`, and `.` means the directory the run stands
+                        in.
   --no-push
   --dry-run             print the plan and ask, as the real run does, whether
                         each folder it makes can be made (the family folder or
                         --work-dir, the holder in it, --local-remote-dir) and
                         whether <org>/<Family> already exists (`gh repo view`
                         and its commit listing; with --local-remote-dir, the
-                        bare repository), refusing what it refuses; make no
-                        folder, remote or repository
+                        bare repository), refusing what it refuses. Whether
+                        each folder can be written in is asked of `os.access`,
+                        which reads the mode bits and on Windows says yes for
+                        every folder, so a quota, a Windows ACL or a read-only
+                        drive on Windows can pass here and be refused by the
+                        real run. It leaves nothing that stays: it makes and
+                        removes temporary folders, creates no remote or
+                        repository and pushes nothing
 ```
 
 #### `scripts/family.py add`
@@ -1084,19 +1115,20 @@ options:
                         where a chain LINK's own tree is, so its
                         `neutral_product_pins:` can be read and the link
                         VERIFIED — e.g. --link-source openXdox=../openXdox.
-                        The text before the first `=` is a PRODUCT only when
-                        it names a chain link (an entry of --referent-chain,
-                        or of a leg's naming.referent_chain: under --project),
-                        and then that reading wins even over a directory
-                        spelled like the whole value (./PATH reads that
-                        directory); any other value is a bare PATH: the tree
-                        of the chain's FIRST link (the pin the project holds),
-                        read when that link has no more specific answer, and
-                        never a later link's, which needs its own
-                        PRODUCT=PATH, its SHAPE_PIN_SOURCE_<PRODUCT> or a
-                        checkout beside the project. When the chains read here
-                        begin at two different links, a bare PATH is read for
-                        neither. A value that names no path (PRODUCT=, or
+                        The text before an `=` is a PRODUCT only when it names
+                        a chain link (an entry of --referent-chain, or of a
+                        leg's naming.referent_chain: under --project), and the
+                        longest such text that leaves a path after it is the
+                        one read, so a link may hold `=`; that reading wins
+                        even over a directory spelled like the whole value
+                        (./PATH reads that directory); any other value is a
+                        bare PATH: the tree of the chain's FIRST link (the pin
+                        the project holds), read when that link has no more
+                        specific answer, and never a later link's, which needs
+                        its own PRODUCT=PATH, its SHAPE_PIN_SOURCE_<PRODUCT>
+                        or a checkout beside the project. When the chains read
+                        here begin at two different links, a bare PATH is read
+                        for neither. A value that names no path (PRODUCT=, or
                         empty) is refused. Repeatable; a value no link used is
                         noted. Every link is tried against PRODUCT=PATH,
                         SHAPE_PIN_SOURCE_<PRODUCT> and a checkout beside the
@@ -1182,18 +1214,19 @@ options:
   --pin-source [PRODUCT=]PATH
                         a local checkout to recompute a neutral-product pin's
                         digest from, instead of `gh api` — e.g. --pin-source
-                        openGlass=../openGlass. The text before the first `=`
-                        is a PRODUCT only when it names a pin project.yaml
-                        declares, and then that reading wins even over a
-                        directory spelled like the whole value (./PATH reads
-                        that directory); any other value is a bare PATH, which
-                        applies to whichever declared pin has no more specific
-                        answer (the common case is exactly one). Repeatable; a
-                        value no pin used is noted, and one that cannot be
-                        read is a finding. SHAPE_PIN_SOURCE_<PRODUCT> (env)
-                        and a checkout sitting beside this assembly root are
-                        also tried, before `gh api` and before this flag's
-                        bare form.
+                        openGlass=../openGlass. The text before an `=` is a
+                        PRODUCT only when it names a pin project.yaml
+                        declares, and the longest such text that leaves a path
+                        after it is the one read, so a pin may hold `=`; that
+                        reading wins even over a directory spelled like the
+                        whole value (./PATH reads that directory); any other
+                        value is a bare PATH, which applies to whichever
+                        declared pin has no more specific answer (the common
+                        case is exactly one). Repeatable; a value no pin used
+                        is noted, and one that cannot be read is a finding.
+                        SHAPE_PIN_SOURCE_<PRODUCT> (env) and a checkout
+                        sitting beside this assembly root are also tried,
+                        before `gh api` and before this flag's bare form.
 ```
 
 ### `templates/family-root/scripts/bootstrap.py`

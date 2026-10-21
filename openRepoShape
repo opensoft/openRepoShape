@@ -145,11 +145,12 @@ over <path> (default `.`) and prints one row per check and ONE verdict:
 `COMPLIANT`, `COMPLIANT, SHAPE BEHIND`, `DRIFTED`, `MISPLACED`, `INVALID`,
 `NOT A SHAPE ROOT` or `CANNOT ANSWER`. Every finding names the command that
 fixes it. Exit 0 compliant, 1 findings, 2 not a shape root, 3 when it cannot
-answer (`CANNOT ANSWER`, no such <path>, a `--placement-plan` it cannot
-write); this command's own refusals exit 2. `--json` is the same report as
-one JSON object. The doctor writes no file but the `--placement-plan <file>`
-you name, at the path you give (a relative <file> lands in the directory you
-ran this from, even inside the repository), and moves nothing.
+answer (`CANNOT ANSWER`, no such <path>, a <path> this user cannot search, a
+`--placement-plan` it cannot write); this command's own refusals exit 2.
+`--json` is the same report as one JSON object. The doctor writes no file but
+the `--placement-plan <file>` you name, at the path you give (a relative
+<file> lands in the directory you ran this from, even inside the repository),
+and moves nothing.
 
 Run beside a checkout of the standard, it uses that one. Run from anywhere
 else, it clones the standard into a temporary directory first and KEEPS it,
@@ -603,11 +604,12 @@ install_commands() {
 	# spelling below is. The control characters go first, and their refusal
 	# says nothing of the value, so that no refusal after it echoes one that
 	# can forge a line of output. It is `[[:cntrl:]]` and not
-	# `[![:print:]]`, which is what this file holds the repository and the
-	# ref to: a name with a letter the locale does not print, as `café`
-	# under LC_ALL=C, is no fault of the directory's. The check runs under
-	# `LC_ALL=C` and names U+0080 to U+009F's two bytes (`\302`, then `\200`
-	# to `\237`), so a C1 control is refused in every locale, whatever else
+	# `[![:print:]]`: a name with a letter the locale does not print, as
+	# `café` under LC_ALL=C, is no fault of the directory's, and the
+	# repository and the ref are held to these same bytes (#940,
+	# `checked_repo` below). The check runs under `LC_ALL=C` and names
+	# U+0080 to U+009F's two bytes (`\302`, then `\200` to `\237`), so a
+	# C1 control is refused in every locale, whatever else
 	# the value holds, unless the locale reads those bytes as text (#858,
 	# below); U+2028 and U+2029, which only a UTF-8 locale's `[[:cntrl:]]`
 	# matched, are the next check's (#837). Left to the locale,
@@ -794,11 +796,27 @@ find_python() {
 # sent by the fetch with it. An owner/name keeps it inside the URL, before
 # `.git`, so only those three forms lost it.
 #
+# A CONTROL CHARACTER IS #760's, AS `install_commands` READS ONE IN THE
+# DIRECTORY (#940): under `LC_ALL=C`, in a subshell, `[[:cntrl:]]` or
+# U+0080 to U+009F's two bytes (`\302`, then `\200` to `\237`), so the
+# answer is the same in every locale. It was `[![:print:]]`, which is the
+# locale's: under `C` and POSIX it matches every byte past ASCII, so a URL
+# or a path with a letter past ASCII (`/srv/café/openRepoShape.git`) was
+# refused there as carrying a control character, which it does not carry,
+# where a UTF-8 locale and the package's `--version` took it. The trade is
+# the directory's (#867): a byte that is not UTF-8, as a lone `0x9B` or an
+# overlong form of a control, passes, in every locale, as it passes the
+# package's check, and `--version` prints it: a terminal that reads UTF-8
+# draws it as a character it cannot read, and only one set to an 8-bit
+# charset acts on it. `setup.sh`, which is handed the clone URL as
+# `$OPENREPOSHAPE_REPO`, holds it to the same rule, and refuses U+2028 and
+# U+2029 there too, which this file refuses first by their code points
+# (below).
+#
 # A CHARACTER A TERMINAL DRAWS AS SOMETHING OTHER THAN ITSELF IS REFUSED
 # FIRST (#837), in words that name it by its code point and nothing else of
-# the value. First, because `[![:print:]]` is the locale's: under `C` it
-# matches every byte past ASCII, and under a UTF-8 locale none of these
-# characters, so after it the words would change with the locale.
+# the value. The control check after it matches none of these characters,
+# in any locale, so this is the check that refuses them.
 #
 # install.sh's `checked_repo` is stricter, an owner/name and nothing else,
 # because it builds only github.com URLs from the value.
@@ -808,9 +826,9 @@ checked_repo() {
 	misdrawn="$(LC_ALL=C; misdrawn_characters "$REPO")"
 	[ -z "$misdrawn" ] ||
 		die "OPENREPOSHAPE_REPO holds a character a terminal draws as something other than itself ($misdrawn): one that is invisible, is drawn as another character, ends a line or reorders the text around it. This tool will not put it on a \`git clone\` command line. Set it to a URL or a path."
-	case "$url$REPO" in
-	-* | *[![:print:]]*) die "OPENREPOSHAPE_REPO is not a value this tool will put on a \`git clone\` command line: it starts with '-' or carries a control character. Set it to a URL or a path." ;;
-	esac
+	if (LC_ALL=C; case "$url$REPO" in -* | *[[:cntrl:]]* | *$'\302'[$'\200'-$'\237']*) exit 0 ;; *) exit 1 ;; esac); then
+		die "OPENREPOSHAPE_REPO is not a value this tool will put on a \`git clone\` command line: it starts with '-' or carries a control character. Set it to a URL or a path."
+	fi
 }
 
 # A CHECKOUT OF THE STANDARD, made the way `setup.sh` self-bootstraps one:
@@ -874,9 +892,9 @@ shape_checkout() {
 # A CHARACTER A TERMINAL DRAWS AS SOMETHING OTHER THAN ITSELF (#837) is a
 # fault between the length and the control character, named by its code
 # point and never echoed, as `checked_repo` refuses one: before the
-# control check, whose `[![:print:]]` is the locale's, so the words do not
-# change with the locale, and before the shape, which echoes the value.
-# Those two are `ref_character_fault`'s, below.
+# control check, which matches none of these characters in any locale
+# (#940), and before the shape, which echoes the value. Those two are
+# `ref_character_fault`'s, below.
 #
 # THE SHAPE IS GIT'S RULE PART BY PART (#874), as `setup.sh`'s and
 # `install.sh`'s are: no `..`, no empty part between slashes, no part that
@@ -913,6 +931,13 @@ ref_fault() {
 # as it reads, and an install that does not record the ref takes one that
 # names no ref at all (workBenches', `record_ref`), so those two are left to
 # where a ref is used.
+#
+# THE CONTROL CHARACTER IS `checked_repo`'s RULE, #760's bytes under
+# `LC_ALL=C`, with its trade (#940): a byte that is not UTF-8, as a lone
+# `0x9B` or an overlong form of a control, passes. A ref with a letter past
+# ASCII (`café`) carries no control character in any locale, and is the
+# shape's to refuse where the ref is used, in the shape's words, as a UTF-8
+# locale had it.
 ref_character_fault() {
 	local ref="$1" what="$2" misdrawn
 	misdrawn="$(LC_ALL=C; misdrawn_characters "$ref")"
@@ -920,9 +945,9 @@ ref_character_fault() {
 		printf '%s' "$what holds a character a terminal draws as something other than itself ($misdrawn): one that is invisible, is drawn as another character, ends a line or reorders the text around it. No branch, tag or commit this tool will pass to \`git checkout\` holds one."
 		return 0
 	fi
-	case "$ref" in
-	*[![:print:]]*) printf '%s' "$what carries a control character, which is not a branch, tag or commit this tool will pass to \`git checkout\`." ;;
-	esac
+	if (LC_ALL=C; case "$ref" in *[[:cntrl:]]* | *$'\302'[$'\200'-$'\237']*) exit 0 ;; *) exit 1 ;; esac); then
+		printf '%s' "$what carries a control character, which is not a branch, tag or commit this tool will pass to \`git checkout\`."
+	fi
 }
 
 checked_ref() {

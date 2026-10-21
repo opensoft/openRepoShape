@@ -103,30 +103,35 @@ def test_no_two_characters_are_spelled_alike(adopter):
 def test_a_character_is_spelled_as_the_plan_writes_it(adopter):
     """The finding and the plan spell one name the same way, character by
     character: the plan's writer is the table, and `_spelled` asks it. A
-    backslash and a backtick are the finding's own (the backticks delimit
-    it) and a double quote is the plan's own, so those three are left out."""
+    backslash and a double quote are the plan's own escapes since #900, and
+    a backtick, which delimits the finding's name, is left out: it is
+    `\\x60`, a code point the plan's reader resolves, where the plan writes
+    it as it is."""
     for code in [*range(0x10000), 0x10000, 0x1F600, 0xE0001, 0x10FFFF]:
         char = chr(code)
-        if char in '"\\`':
+        if char == "`":
             continue
         assert adopter._spelled_character(char) == double_quoted(char)[1:-1], (
             f"U+{code:04X}")
 
 
-def test_a_backslash_and_a_backtick_are_escaped_as_before(adopter):
-    assert adopter._spelled("a\\b`c") == "`a\\\\b\\`c`"
+def test_a_backslash_and_a_backtick_are_escaped(adopter):
+    """A backslash as before, and a backtick as `\\x60`, the plan's code
+    point for one, which holds no backtick (#900): the backslash that went
+    before it was no escape the plan's reader resolves."""
+    assert adopter._spelled("a\\b`c") == "`a\\\\b\\x60c`"
 
 
 def test_a_spelled_name_is_the_entry_the_plan_holds(adopter):
     """The failure, read as the reader does: a person who copies a spelled
     name into the plan between double quotes gets THAT name back, byte for
     byte, for each of the 256 characters and each of the 128 bytes. On main
-    `\\x85` for the byte read back as the character."""
+    `\\x85` for the byte read back as the character; until #900 a backtick
+    read back with a backslash before it, and a double quote ended the
+    quoting, so none is left out."""
     names = [chr(code) for code in range(0x100)]
     names += [as_byte(byte) for byte in range(0x80, 0x100)]
     for name in names:
-        if name in '"\\`':
-            continue
         body = adopter._spelled("caf" + name + "x")[1:-1]
         assert parse_yaml(f'path: "{body}"\n') == {
             "path": "caf" + name + "x"}, (body, name)
@@ -187,11 +192,12 @@ def test_a_clone_url_that_is_not_text_is_named_as_the_plan_spells_it(adopter):
 def test_python_repr_and_a_spelled_name_agree_on_every_character(adopter):
     """Why the two messages above need no table of their own: `repr` and
     `_spelled` escape every character alike, a backslash included. Only the
-    backtick differs, which `_spelled` escapes because backticks delimit the
-    name and `repr` does not."""
+    backtick and the double quote differ, which `_spelled` escapes because
+    backticks delimit the name and double quotes the plan's entry (#900),
+    and `repr` does not."""
     for code in [*range(0x10000), 0x10000, 0x1F600, 0xE0001, 0x10FFFF]:
         char = chr(code)
-        if char == "`":
+        if char in '`"':
             continue
         assert repr(char)[1:-1] == adopter._spelled(char)[1:-1], (
             f"U+{code:04X}")

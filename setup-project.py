@@ -19,7 +19,11 @@ from that checkout's `origin` remote.
 Either way it checks your machine, works out which organisation you are
 scaffolding into, checks the three repository names against the naming policy,
 shows you the plan, asks once, creates the three repositories, clones the
-assembly root and bootstraps it. Nothing is created before you have said yes.
+assembly root and bootstraps it. Nothing that stays is created before you have
+said yes: the run makes a few short-lived folders along the way, such as
+`.openreposhape-write-probe-*` above the clone and `openreposhape-seed-*` and
+`openreposhape-branch-*` in the temporary folder, and takes each away again (the
+checkout `--keep-shape-checkout` keeps is the one exception).
 
 WHY THIS FILE IS THE FLOW AND `setup.sh` IS NOT. It arrived as the second
 entry point, for Windows: bash is not there, and neither is the `python3` a
@@ -77,6 +81,7 @@ import subprocess
 import sys
 import tempfile
 from pathlib import Path
+from urllib.parse import unquote
 
 UPSTREAM_ORG = "opensoft"
 DEFAULT_SHAPE_REPO = "https://github.com/opensoft/openRepoShape.git"
@@ -864,6 +869,63 @@ def is_shape_checkout(directory) -> bool:
             and (root / "contracts" / "repository-naming.yaml").is_file())
 
 
+#: THE CHARACTERS A TERMINAL DRAWS AS SOMETHING OTHER THAN THEMSELVES (#837,
+#: #953), by code point, a range as its first and last: the launcher's
+#: `MISDRAWN_CHARACTERS` (`openRepoShape`), entry for entry, where the reason
+#: for each entry, and for each character left out, is written down. A line
+#: that prints a value holding one shows another value: one is invisible, is
+#: drawn as another character, ends a line or reorders the text around it.
+#: A COPY, NOT AN IMPORT, for `checked_value`'s reason: self-bootstrap mode
+#: runs before there is a checkout to read the launcher from.
+#: `tests/test_setup_project_repo_misdrawn.py` holds it equal to the
+#: launcher's list, as `tests/test_openreposhape_package.py` holds the
+#: package's copy. `checked_repo` refuses an `$OPENREPOSHAPE_REPO` holding
+#: one.
+MISDRAWN_CHARACTERS = ("00AD", "061C", "200B", "200E-200F", "2028-202E",
+                       "2060-206F", "FEFF", "FFF9-FFFB", "1D173-1D17A",
+                       "E0001")
+
+
+def misdrawn_characters(value: str) -> str:
+    """Which characters of `MISDRAWN_CHARACTERS` `value` holds, each once, as
+    `U+XXXX`, comma-separated, in code point order; or "" when it holds none.
+
+    The launcher's `misdrawn_characters` looks for each one's UTF-8 bytes;
+    this looks for the character, as `CONTROL_RE` does, and as the package's
+    `standard.misdrawn_characters` does.
+    """
+    named = []
+    for entry in MISDRAWN_CHARACTERS:
+        first, _, last = entry.partition("-")
+        for code in range(int(first, 16), int(last or first, 16) + 1):
+            if chr(code) in value:
+                named.append("U+%04X" % code)
+    return ", ".join(named)
+
+
+def checked_repo(value: str) -> str:
+    """A non-empty `$OPENREPOSHAPE_REPO`, checked before any line names it
+    and before `git clone` is handed it (#953).
+
+    A CHARACTER A TERMINAL DRAWS AS SOMETHING OTHER THAN ITSELF IS REFUSED
+    FIRST, in the launcher's words (its `checked_repo`, and the package's
+    `clone_url`), which name each such character by its code point and say
+    nothing else of the value. `PATH_RE` takes every one of them, so
+    `acme/r`, U+202E, `forged` was printed raw in the clone line
+    `self_bootstrap` prints, and handed to git. Then `checked_value`, as
+    before: a leading `-` is an option to git, and a control character
+    forges a line.
+    """
+    misdrawn = misdrawn_characters(value)
+    if misdrawn:
+        die("OPENREPOSHAPE_REPO holds a character a terminal draws as "
+            "something other than itself (%s): one that is invisible, is "
+            "drawn as another character, ends a line or reorders the text "
+            "around it. This tool will not put it on a `git clone` command "
+            "line. Set it to a URL or a path." % misdrawn)
+    return checked_value("OPENREPOSHAPE_REPO", value, PATH_RE)
+
+
 def self_bootstrap(opts: Options, original_argv, invocation_dir: str) -> int:
     """setup.sh:157-206, in Python: clone, re-run from there, clean up."""
     if not opts.org:
@@ -882,9 +944,14 @@ def self_bootstrap(opts: Options, original_argv, invocation_dir: str) -> int:
     # `checked_value` refuses that (and a control character) by the same rule
     # and in the same words as every flag on the command line; the `--` below
     # guards the argv too, so the refusal is not the only thing standing
-    # between this value and `git`'s own argument parser.
+    # between this value and `git`'s own argument parser. Before it, a
+    # character a terminal draws as something other than itself is refused
+    # by its code point, in the launcher's words (#953): `checked_repo`.
+    # Both come before the first line this run prints and before the clone;
+    # the one git call before them is `is_shape_checkout`'s, which asks
+    # whether this file stands in a checkout and names nothing of the value.
     raw_shape_repo = os.environ.get("OPENREPOSHAPE_REPO")
-    shape_repo = (checked_value("OPENREPOSHAPE_REPO", raw_shape_repo, PATH_RE)
+    shape_repo = (checked_repo(raw_shape_repo)
                   if raw_shape_repo else DEFAULT_SHAPE_REPO)
 
     say("openRepoShape setup")
@@ -1285,37 +1352,293 @@ def _offer_login(offering: bool = True) -> bool:
     return True
 
 
-def _credential_helper_configured() -> bool:
-    """Will ANYTHING answer git's credential question for github.com?
+#: Every `credential.<url>.helper` key, as `git config --get-regexp` reads
+#: a key: its section and its name in lower case, its url as written, and
+#: an empty url (`[credential ""]`) too, which is why `.*` and not `.+`.
+URL_HELPER_KEYS = r"^credential\..*\.helper$"
+
+
+def _credential_helpers() -> list:
+    """Which credential helpers is git configured with for github.com?
+
+    CONFIGURED IS NOT STORED (#992). A helper answers git's question for
+    github.com only with a login it holds, so this list says whom git will
+    ask and never what they will answer: `_why_no_login` asks that, where it
+    can.
 
     The scoped key first, because that is where gh writes its own helper -
     and it writes an empty line before it, to reset the list, which is why
-    this reads the whole answer and strips it rather than counting lines.
-    The machine-wide key can hold something else entirely at the same time,
-    and either of them answering is enough.
+    each line is stripped and the empty ones dropped rather than counted.
+    The machine-wide key can hold something else entirely at the same time.
+
+    EVERY OTHER SPELLING OF THE SCOPED KEY COUNTS TOO (#1013). git asks the
+    helpers of every `credential.<url>.helper` whose url matches the push,
+    not the best match alone: measured, `store` in `credential.helper`
+    beside a helper under `credential.https://github.com/.helper` (with the
+    slash) gives a push the second one's login. So every such key is read
+    (`URL_HELPER_KEYS`), and its helpers are counted with the two keys'
+    where `_names_github` says its url may be github.com's. An empty line
+    resets git's list; dropping it instead can only count a helper git no
+    longer asks, which makes this quieter and never louder.
     """
+    helpers = []
     for key in ("credential.https://github.com.helper", "credential.helper"):
         configured = run(["git", "config", "--get-all", key], capture=True)
-        if (configured.stdout or "").strip():
-            return True
-    return False
+        helpers += [line.strip() for line in
+                    (configured.stdout or "").splitlines() if line.strip()]
+    scoped = run(["git", "config", "-z", "--get-regexp", URL_HELPER_KEYS],
+                 capture=True)
+    for entry in (scoped.stdout or "").split("\0"):
+        key, _, value = entry.partition("\n")
+        url = key[len("credential."):-len(".helper")]
+        if (value.strip() and url != "https://github.com"
+                and _names_github(url)):
+            helpers.append(value.strip())
+    return helpers
+
+
+def _names_github(url: str) -> bool:
+    """Whether git may ask the helpers of `credential.<url>.helper` for a
+    push to https://github.com: True of every url git asks them for, and
+    of some it does not.
+
+    Measured against git's own `credential fill` (git 2.43, #1013): git
+    asks them where the url's scheme is `https` in any case, or there is
+    none; its host is `github.com` in any case once its `%XX` escapes are
+    decoded, or empty, or one a `*` stands in for a part of
+    (`https://*.com`); and its port is none, or 443 with or without zeros
+    before it (`:0443`), and not 0. A user, a path, a query, a port on a
+    url with no scheme and a `*` git would not match are read past here,
+    where git asks only for a push that names the same: what this reads
+    beyond git is a helper counted that git will not ask, so what it costs
+    is silence, never a warning git would contradict.
+    """
+    scheme, separator, rest = url.partition("://")
+    if separator and scheme.lower() != "https":
+        return False
+    authority = re.split(r"[/?#]", rest if separator else url, maxsplit=1)[0]
+    host, _, port = authority.rpartition("@")[2].partition(":")
+    host = unquote(host).lower()
+    return ((port == "" or port.lstrip("0") == "443")
+            and (host in ("", "github.com") or "*" in host))
+
+
+#: The key `_home_path` hands git a `~/` path under, to read it back
+#: expanded: one no config of git's or anybody's sets, and a `-c` outranks
+#: every file that might.
+HOME_PATH_KEY = "openreposhape.storefile"
+
+
+def _home_path(path: str):
+    """`path`, a `~/` path, as git expands it: "" where git reads no such
+    file, and None where git gave no answer this can read.
+
+    ASKED OF GIT (#1013), because `store` reads its files under git's `~`,
+    and git's is not always Python's: with `HOME` unset git expands no `~`
+    at all (measured: `failed to expand user dir`, exit 128), so `store`
+    reads no `~` file there, where `os.path.expanduser` would fall back to
+    the account's home; and Git for Windows sets a `HOME` of its own where
+    there is none. A failure with `HOME` set is not that one, and is one
+    this cannot read: None.
+    """
+    asked = run(["git", "-c", "%s=%s" % (HOME_PATH_KEY, path), "config",
+                 "--type=path", "--get", HOME_PATH_KEY], capture=True)
+    expanded = (asked.stdout or "").rstrip("\n")
+    if asked.returncode == 0 and expanded:
+        return expanded
+    return None if os.environ.get("HOME") is not None else ""
+
+
+def _store_files(helper: str):
+    """The files git's `store` helper reads, or None where `helper` is not
+    `store` as this can read it.
+
+    `store` alone reads `~/.git-credentials`, then
+    `$XDG_CONFIG_HOME/git/credentials`, or `~/.config/git/credentials` where
+    that is unset or empty, each `~` as git expands it (`_home_path`): none
+    of the `~` ones where git expands no `~`, so an empty list where that
+    leaves none. `store --file=<path>`, or `--file <path>`, reads that one
+    file. git runs a helper through `sh`, in the folder it is pushing from,
+    so a path is taken only where `sh` reads it as itself
+    (`SHELL_BARE_POSIX`: no `~`, `$`, quote or blank) and it is absolute.
+    Any other helper, or any other spelling of this one, holds what this
+    cannot read: None.
+    """
+    words = helper.split()
+    if words == ["store"]:
+        config_home = os.environ.get("XDG_CONFIG_HOME")
+        read = [_home_path("~/.git-credentials"),
+                os.path.join(config_home, "git", "credentials")
+                if config_home else _home_path("~/.config/git/credentials")]
+        if None in read:
+            return None
+        return [path for path in read if path]
+    if len(words) == 3 and words[:2] == ["store", "--file"]:
+        path = words[2]
+    elif (len(words) == 2 and words[0] == "store"
+          and words[1].startswith("--file=")):
+        path = words[1][len("--file="):]
+    else:
+        return None
+    if SHELL_BARE_POSIX.fullmatch(path) and Path(path).is_absolute():
+        return [path]
+    return None
+
+
+def _a_github_login(line: str) -> bool:
+    """Is this line of a `store` file a login `store` gives a push to
+    https://github.com?
+
+    Read as git reads it (`credential_from_url`), and measured against git's
+    own `store` (#992): the scheme exactly `https`; before the first `@`, a
+    user and a password, which a `:` between them shows; after it, up to the
+    first `/`, `?` or `#`, the host `github.com` once its `%XX` escapes are
+    decoded, in that case and with no port. Any path: git's question for a
+    push names none unless `credential.useHttpPath` is set. Blanks at either
+    end are set aside here and kept by git, which then finds nothing: the
+    one place this reads a login git does not, so what it costs is silence,
+    never a warning git would contradict.
+    """
+    scheme, separator, rest = line.strip().partition("://")
+    if scheme != "https" or not separator:
+        return False
+    user, at, host = re.split(r"[/?#]", rest, maxsplit=1)[0].partition("@")
+    return bool(at) and ":" in user and unquote(host) == "github.com"
+
+
+def _holds_a_github_login(path: str):
+    """True where the file at `path` holds a login `_a_github_login` reads,
+    False where it holds none or is not there (git's `store` reads an absent
+    file as an empty one), and None where it cannot be read here: a file
+    this account may not open, or a folder. git's `store` reads the first
+    as an empty one and dies over the second (measured, #1013), so a push
+    fails over either; but what such a file holds is not something this
+    can say, and this says nothing of it. Its lines are read for that one
+    question and never printed.
+    """
+    try:
+        text = Path(path).read_bytes().decode("utf-8", errors="replace")
+    except FileNotFoundError:
+        return False
+    except OSError:
+        return None
+    return any(_a_github_login(line) for line in text.split("\n"))
+
+
+def _why_no_login() -> str:
+    """Why git has no login to give a push to github.com, or "" where it may
+    have one: what `_check_credential_helper` warns of.
+
+    NO HELPER AT ALL, and git has nobody to ask. EVERY HELPER `store`
+    (`_store_files`), AND NO FILE OF THEIRS HOLDING A LOGIN FOR github.com
+    (`_holds_a_github_login`): measured, `store` over an empty
+    `~/.git-credentials` answers nothing, and with its prompt off git could
+    not read a username (#992). Every push the scaffold makes runs with that
+    prompt off (#915), so either way its first push fails. Any other helper
+    beside them may answer, and a file this cannot read is one it says
+    nothing of (`_holds_a_github_login`): "".
+
+    NO FILE AT ALL is the third (#1013): every helper `store` alone, `HOME`
+    unset and `XDG_CONFIG_HOME` unset or empty, so git expands no `~` and
+    `store` has no file to read (measured: it dies `unable to set up
+    default path`, and git then cannot read a username).
+    """
+    helpers = _credential_helpers()
+    if not helpers:
+        return ("git has no credential helper for github.com, so the first "
+                "push over HTTPS will fail.")
+    files = []
+    for helper in helpers:
+        read = _store_files(helper)
+        if read is None:
+            return ""
+        files += [path for path in read if path not in files]
+    if not files:
+        return ("git's credential helper for github.com is `store`, and with "
+                "`HOME` not set git gives it no file to read, so the first "
+                "push over HTTPS will fail.")
+    if any(_holds_a_github_login(path) is not False for path in files):
+        return ""
+    return ("git's credential helper for github.com is `store`, and no login "
+            "for github.com is stored in %s, so the first push over HTTPS "
+            "will fail." % " or ".join(files))
+
+
+def _git_asks_a_helper(opts: Options) -> bool:
+    """Whether git sends the run's github.com urls over HTTP or HTTPS,
+    where it asks a credential helper for them (#1013).
+
+    The scaffold's remotes are `https://github.com/<org>/...`
+    (`clone_and_bootstrap`), and a `url.<base>.insteadOf` rule can send
+    them over ssh, where git logs in with an ssh key and asks no helper
+    (`SSH_KEY_CLAUSE`, scaffold-project.py). `git ls-remote --get-url` says
+    where a url goes with every such rule applied, and contacts nothing.
+    It is asked of `https://github.com/<org>/`, with `--org`'s organisation,
+    since a rule may be keyed to one organisation alone, and of
+    `https://github.com/` where the run names none: a url every remote of
+    the run starts with. An answer starting `https://` or `http://` keeps
+    the warnings, since git asks a helper over either (measured with
+    `credential fill`), though the checks behind them read github.com's
+    https keys and logins alone; any other answer, `git@github.com:` or
+    `ssh://`, silences them. It applies no `pushInsteadOf` (measured), so a
+    rule for pushes alone leaves the answer HTTPS, as it leaves the clone
+    of a private repository. Where git says nothing this can read, today's
+    answer: git asks.
+
+    A KNOWN LIMIT: git reads the config of the folder the run starts in,
+    `.git/config` too where that is a repository, and the scaffold pushes
+    from repositories of its own, which do not carry a rule kept there
+    alone; so such a rule silences both warnings for pushes it does not
+    reach (measured). The helper keys are read from the same folder, as
+    they have been since #992.
+    """
+    url = ("https://github.com/%s/" % opts.org if opts.org
+           else "https://github.com/")
+    asked = run(["git", "ls-remote", "--get-url", "--", url], capture=True)
+    answer = (asked.stdout or "").strip()
+    return (asked.returncode != 0 or not answer
+            or answer.startswith(("https://", "http://")))
 
 
 def _check_credential_helper(opts: Options, offering: bool = True) -> None:
     """WARN, DO NOT REFUSE - the class `_warn_autocrlf` belongs to.
 
     The scaffold clones and pushes over HTTPS (`clone_and_bootstrap`), so a
-    machine with NO credential helper at all creates three repositories and
-    then fails on the first push. That is worth a `[??]` while nothing has
-    been created yet, and an offer of the one command that fixes it.
+    machine whose git has no login for github.com creates three repositories
+    and then fails on the first push, which runs with git's prompt off
+    (#915). That is worth a `[??]` while nothing has been created yet, and
+    an offer of the one command that fixes it. `_why_no_login` names the
+    machines it can see: one with NO credential helper at all, and one
+    whose helpers are all `store` with no login for github.com stored in
+    them, or no file to store one in.
 
-    A machine that HAS a helper is left alone, whatever it is. `osxkeychain`,
-    Windows' `manager`, `store`, a devcontainer's own: they all answer git's
-    question for github.com without gh being involved, and warning about them
-    would be this tool disliking somebody's ~/.gitconfig - the objection
-    `_warn_autocrlf` records. That is also why gh's own test for ITS helper
-    (`isOurCredentialHelper`: a line starting `!` whose first word's basename
-    is gh) is not transcribed here. A helper that is not gh's still pushes.
+    NOTHING IS SAID WHERE GIT ASKS NO HELPER (#1013): where a
+    `url.<base>.insteadOf` rule sends the run's urls over ssh
+    (`_git_asks_a_helper`), neither warning is true, and `gh auth
+    setup-git` does nothing for an ssh key.
+
+    THE KEYS READ (`_credential_helpers`): `credential.helper`,
+    `credential.https://github.com.helper`, where gh writes its own, and
+    every other `credential.<url>.helper` whose url may be github.com's
+    (`_names_github`): `https://github.com/` with its slash, `github.com`
+    with no scheme, a host in capitals, and the rest git matches.
+
+    A CONFIGURED HELPER IS NOT A STORED LOGIN (#992). A helper answers git's
+    question for github.com only with a login it holds. `store`, the one
+    kind measured, answers it only with a login stored in it: over none it
+    answers nothing, and git then asks at the terminal where it may and
+    fails where it may not, as at every push the scaffold makes. `store`
+    keeps its logins in a file, and the file is read; no helper is ever
+    ASKED, because asking is `git credential fill`, which runs every helper
+    configured, and one may open a window or ask at a keychain.
+
+    ANY OTHER HELPER IS LEFT ALONE, whatever it is: `osxkeychain`, Windows'
+    `manager`, `cache`, a devcontainer's own. What they hold is not
+    something this can read, and warning about them anyway would be this
+    tool disliking somebody's ~/.gitconfig - the objection `_warn_autocrlf`
+    records. That is also why gh's own test for ITS helper
+    (`isOurCredentialHelper`: a line starting `!` whose first word's
+    basename is gh) is not transcribed here.
 
     NEVER IN THE `checked` LIST. It cannot fail the run and it cannot fail
     `--preflight`: a warning that refuses is a refusal, and this one would
@@ -1326,17 +1649,17 @@ def _check_credential_helper(opts: Options, offering: bool = True) -> None:
     A `yes` here makes gh write its helper into the person's global git
     config, which is no part of a run that ends at the plan.
     """
-    if opts.local_mode:
+    if opts.local_mode or not _git_asks_a_helper(opts):
         return
-    if _credential_helper_configured():
+    why = _why_no_login()
+    if not why:
         return
-    warn("git has no credential helper for github.com, so the first push "
-         "over HTTPS will fail. Fix it once: gh auth setup-git")
+    warn(why + " Fix it once: gh auth setup-git")
     if not offer("gh auth setup-git", offering):
         return
     if run_at_the_terminal(["gh", "auth", "setup-git"]).returncode != 0:
         return
-    if _credential_helper_configured():
+    if not _why_no_login():
         ok("git will ask gh for github.com credentials")
 
 
@@ -2370,11 +2693,15 @@ def names_flag(word: str, flag: str) -> bool:
 
 def passed_values(passthrough: list, flag: str) -> list:
     """Every value the passthrough gives `flag`, in order: `flag=value`, or
-    the word after `flag`. A value never starts with `-` in the second
-    spelling, because argparse reads such a word as a flag, so a word that
-    does is not this flag's value (`--pin --referent-chain x` gives `--pin`
-    none, and the scaffold's plan refuses it) and is read again as the flag
-    it is (#608, L2-27). The `=` spelling takes whatever follows it."""
+    the word after `flag`. In the second spelling a word that starts with
+    `-` is not this flag's value, as argparse reads most of them: it is
+    another flag (`--pin --referent-chain x` gives `--pin` none, and the
+    scaffold's plan refuses it) and is read again as the flag it is (#608,
+    L2-27). Not all of them: argparse takes `-`, a negative number such as
+    `-5` or `-1.5`, and a word with a space in it such as `-x y` (but not
+    `-h y`, which it reads as `-h`) as the value, so for those this reads
+    fewer values than the scaffold does and step (4) reports from fewer
+    (#923, U062). The `=` spelling takes whatever follows it."""
     words = scaffold_words(passthrough)
     values = []
     for index, word in enumerate(words):
@@ -2418,12 +2745,13 @@ def as_the_plan_reads_it(shape_root: Path, path: str) -> str:
     (`check_names`), not from the checkout a relative path is read from.
 
     AND THE NAMING CHECK CANNOT READ IT AS `LINK=PATH`. It takes the text
-    before a `--link-source`'s first `=` for a product when that is a link
-    of the chain, so `openXdox=layer`, which the scaffold reads as the one
-    path it is, would be read as `layer` for `openXdox`. An absolute path
-    has a separator or a drive before its first `=`, which no link's name
-    holds (a link is read at its last `/`), so it is one path to the naming
-    check too, as `./openXdox=layer` was.
+    before an `=` of a `--link-source` for a product when that is a link of
+    the chain, the longest such text that leaves a path after it (#980), so
+    `openXdox=layer`, which the scaffold reads as the one path it is, would
+    be read as `layer` for `openXdox`. An absolute path has a separator or a
+    drive before its first `=`, and so before every one, which no link's
+    name holds (a link is read at its last `/`), so it is one path to the
+    naming check too, as `./openXdox=layer` was.
 
     AN EMPTY PATH IS NEVER GIVEN TO IT. Since #570 the scaffold takes
     `--pin-source` as text and refuses an exactly empty value as

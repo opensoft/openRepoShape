@@ -28,6 +28,17 @@ And (#796) `plan` refuses a `--source` that is a file, a directory inside
 a repository, empty or under a `~user` this machine has not, before it makes
 the `--work-dir`: on main it made it first.
 
+And (#978) a `--work-dir` that is a symlink round a loop is refused in
+words that name the link and the loop. On main at 1a47ed07 a link to
+itself, or one of a pair that lead to each other, was refused as "making
+it a directory failed (File exists)", which reads as a file in the way,
+with the way out for a folder this user cannot write in; a link that leads
+into a loop it is not part of, or one whose path runs through a loop, said
+`File exists` or `Too many levels of symbolic links` of a path the person
+never typed, and a link to a file named the file and not the link. Each
+names the link now, and the way out is to remove it or make it lead to a
+directory. A dangling link is still made where it leads.
+
 `chmod` keeps neither root nor a Windows user from making a directory, so
 the tests of such a directory skip where it cannot (`unwritable_work`).
 Nothing here reaches `gh`: every refusal comes before any clone.
@@ -40,8 +51,8 @@ from pathlib import Path
 
 import pytest
 
-from conftest import (ADOPT, git, make_source_repo, rmtree, run_script,
-                      write_plan)
+from conftest import (ADOPT, git, load_without_bytecode, make_source_repo,
+                      rmtree, run_script, write_plan)
 from test_adopt_plan_leg_path_help import HELP_ENV, option_help, option_lines
 from test_adopt_root_symlinks import (  # noqa: F401
     BASIC, PLAN_FILE, PROJECT, REMOTES, THING, WORK_FLAG, check,
@@ -90,11 +101,70 @@ def run_in(command: str, base: Path, work: Path, *source: str):
                       WORK_FLAG, str(work))
 
 
-def refused(command: str, detail: str) -> str:
-    """The whole of stderr when `command` refuses a `--work-dir`."""
+def refused(command: str, detail: str, fix: str = FIX) -> str:
+    """The whole of stderr when `command` refuses a `--work-dir`, with the
+    way out `fix`."""
     done = NOTHING_PUSHED if command == EXECUTE else ""
     return (f"REFUSED {WORK_DIR_UNWRITABLE}: {detail}\n"
-            f"Remediation: {done}{FIX}\n")
+            f"Remediation: {done}{fix}\n")
+
+
+#: What a `--work-dir` that is a symlink round a loop is refused for, in
+#: #978's words.
+LOOPS = "it is a symbolic link that leads round a loop"
+
+
+def link_fix(link: Path) -> str:
+    """The way out of a `--work-dir` that cannot be made because of the
+    symlink `link`, the `--work-dir` or one on the way to it (#978)."""
+    return (f"Remove the symbolic link {ticked(str(link))}, or make it lead "
+            "to a directory, or pass another --work-dir, or none: without "
+            "one, each run makes a new one.")
+
+
+def linked(link: Path, target: str) -> None:
+    """`link`, a symlink to `target`; the test skips on a machine that
+    cannot make one."""
+    try:
+        link.symlink_to(target)
+    except OSError:
+        pytest.skip("this machine cannot make a symlink")
+
+
+def listed(base: Path) -> list[str]:
+    """Every entry under `base`, a symlink as itself and never followed."""
+    return sorted(os.path.relpath(os.path.join(top, name), base)
+                  for top, directories, files in os.walk(base)
+                  for name in (*directories, *files))
+
+
+def refused_for_a_link(command: str, base: Path, work: Path, why: str,
+                       link: Path) -> None:
+    """`command --work-dir work` refuses it by name, exit 2, as `why`, with
+    the way out for `link`: before any leg exists, with no plan written,
+    and with nothing made or changed under `base` (#978)."""
+    before = listed(base)
+    result = run_in(command, base, work)
+    assert result.returncode == 2, result.stderr + result.stdout
+    assert result.stderr == refused(
+        command, f"--work-dir {ticked(str(work))} cannot be made: {why}",
+        link_fix(link))
+    assert listed(base) == before
+    assert not (base / AGAIN).exists()
+    no_leg_was_created(base)
+
+
+def real(base: Path, name: str) -> Path:
+    """`name` in `base`, the directory read as `os.path.realpath` reads it:
+    the spelling `_work_root` finds a link in."""
+    return Path(os.path.realpath(base)) / name
+
+
+def through_a_loop(loop: Path) -> str:
+    """Why a `--work-dir` that is no link, under `loop`, a link to itself,
+    cannot be made (#978)."""
+    return ("the way to it leads round a loop, at the symbolic link "
+            f"{ticked(str(loop))}")
 
 
 def plan_cannot_write(work: Path, repository: str) -> str:
@@ -153,18 +223,132 @@ def test_a_work_dir_that_a_file_is_in_the_way_of_is_refused(
 
 
 @pytest.mark.parametrize("command", COMMANDS)
-def test_a_work_dir_that_is_a_symlink_loop_is_refused(tmp_path, command):
-    """A symlink at the `--work-dir` that leads to itself: no directory can
-    be made there, and each command refuses it by name, where Python 3.12's
-    `Path.resolve` ended it in a `RuntimeError` traceback before `mkdir`."""
+@pytest.mark.parametrize("pair", [pytest.param(False, id="to-itself"),
+                                  pytest.param(True, id="a-pair")])
+def test_a_work_dir_that_is_a_symlink_loop_is_refused(tmp_path, command,
+                                                      pair):
+    """A symlink at the `--work-dir` that leads to itself, or to another
+    that leads back to it: no directory can be made there, and each command
+    refuses it by name, where Python 3.12's `Path.resolve` ended it in a
+    `RuntimeError` traceback before `mkdir`. The reason names the link and
+    the loop, and the way out the link (#978): on main at 1a47ed07 both
+    were refused as "making it a directory failed (File exists)", the words
+    of a file in the way, with the way out for a folder this user cannot
+    write in."""
     planned(tmp_path, {}, {}, {})
     loop = tmp_path / "loop"
-    try:
-        loop.symlink_to(loop.name)
-    except OSError:
-        pytest.skip("this machine cannot make a symlink")
-    refused_alike(command, tmp_path, loop)
-    assert loop.is_symlink()
+    linked(loop, "other" if pair else loop.name)
+    if pair:
+        linked(tmp_path / "other", loop.name)
+    refused_for_a_link(command, tmp_path, loop, LOOPS, loop)
+    assert os.readlink(loop) == ("other" if pair else loop.name)
+
+
+#: `--work-dir work`, a symlink into a loop it is not part of: the links,
+#: as `(name, target)`, and the one in the loop `os.path.realpath` stops at.
+#: It leads to one of a pair of links that lead to each other, or to a path
+#: under a link to itself, which fails `mkdir` with ELOOP and not EEXIST.
+INTO_A_LOOP = {
+    "into-a-pair": ((("work", "a"), ("a", "b"), ("b", "a")), "a"),
+    "through-a-loop": ((("work", "loop/sub"), ("loop", "loop")), "loop"),
+}
+
+
+@pytest.mark.parametrize("command", COMMANDS)
+@pytest.mark.parametrize("shape", list(INTO_A_LOOP))
+def test_a_work_dir_that_leads_into_a_loop_is_refused(tmp_path, command,
+                                                      shape):
+    """The `--work-dir` is a symlink that leads round a loop further on.
+    The reason names it, and the link in the loop where `os.path.realpath`
+    stopped; the way out names the `--work-dir`, which can be removed or
+    mended whatever the loop is. On main at 1a47ed07 the reason named only
+    the link in the loop, as if it were the `--work-dir`, with `File
+    exists` or `Too many levels of symbolic links`."""
+    planned(tmp_path, {}, {}, {})
+    links, stop = INTO_A_LOOP[shape]
+    for name, target in links:
+        linked(tmp_path / name, target)
+    work = tmp_path / "work"
+    refused_for_a_link(
+        command, tmp_path, work,
+        f"{LOOPS}, at the symbolic link {ticked(str(real(tmp_path, stop)))}",
+        work)
+
+
+@pytest.mark.parametrize("command", COMMANDS)
+def test_a_work_dir_under_a_symlink_loop_is_refused(tmp_path, command):
+    """The `--work-dir` is no link, but the way to it runs through a link
+    to itself: the reason says so and names that link, and the way out is
+    to remove or mend it. On main at 1a47ed07 it said only `Too many levels
+    of symbolic links`, with the way out for a folder this user cannot
+    write in."""
+    planned(tmp_path, {}, {}, {})
+    linked(tmp_path / "loop", "loop")
+    loop = real(tmp_path, "loop")
+    refused_for_a_link(command, tmp_path, tmp_path / "loop" / "sub",
+                       through_a_loop(loop), loop)
+
+
+@pytest.fixture(scope="module")
+def adopter():
+    """`adopt-project.py` loaded as a module, for `_the_loop_in`."""
+    return load_without_bytecode(ADOPT, "adopt_work_dir_refusal")
+
+
+def test_only_a_symlink_that_loops_is_called_a_loop(adopter, tmp_path):
+    """`_the_loop_in` names the symlink in a path that leads round a loop,
+    and no other (#978). `os.path.realpath` leaves only such a link in the
+    path it returns, and the system is asked all the same (ELOOP), so that
+    a link left there for any other reason, one to a file or to a
+    directory, is never called a loop."""
+    (tmp_path / "a-dir").mkdir()
+    (tmp_path / "a-file").write_text(MINE)
+    for name, target in (("loop", "loop"), ("to-file", "a-file"),
+                         ("to-dir", "a-dir")):
+        linked(tmp_path / name, target)
+    loop = real(tmp_path, "loop")
+    assert adopter._the_loop_in(loop) == loop
+    assert adopter._the_loop_in(loop / "sub") == loop
+    for name in ("to-file", "to-dir/sub", "a-dir/sub"):
+        assert adopter._the_loop_in(real(tmp_path, name)) is None, name
+
+
+@pytest.mark.parametrize("command", COMMANDS)
+def test_a_work_dir_that_is_a_symlink_to_a_file_is_refused(tmp_path,
+                                                           command):
+    """A symlink at the `--work-dir` that leads to a file is no loop, and
+    is not said to be one: the reason names the link and the file it leads
+    to, and the way out the link. On main at 1a47ed07 it named the file
+    alone, as if it were the `--work-dir`, with `File exists`. A file AT
+    the `--work-dir` is still `File exists` (above)."""
+    planned(tmp_path, {}, {}, {})
+    a_file = tmp_path / "a-file"
+    a_file.write_text(MINE)
+    work = tmp_path / "work"
+    linked(work, a_file.name)
+    refused_for_a_link(
+        command, tmp_path, work,
+        f"it is a symbolic link that leads to "
+        f"{ticked(str(real(tmp_path, a_file.name)))}, which is not a "
+        "directory", work)
+    assert a_file.read_text() == MINE
+
+
+@pytest.mark.parametrize("command", (PLAN_VERB, CHECK))
+@pytest.mark.parametrize("target", ["target-a", "missing-dir/target-b"])
+def test_a_dangling_symlink_work_dir_is_made_where_it_leads(tmp_path,
+                                                            command, target):
+    """CONTROL, as on main: a `--work-dir` that is a symlink to nothing is
+    read with `os.path.realpath` as the path it leads to, which is made,
+    with any directory missing above it, and the run goes on. So a dangling
+    link never meets #978's refusal (r903's measure on #963)."""
+    planned(tmp_path, {}, {}, {})
+    work = tmp_path / "work"
+    linked(work, target)
+    result = run_in(command, tmp_path, work)
+    assert result.returncode == 0, result.stderr + result.stdout
+    assert (tmp_path / target).is_dir()
+    assert os.readlink(work) == target
 
 
 @pytest.mark.parametrize("command", COMMANDS)

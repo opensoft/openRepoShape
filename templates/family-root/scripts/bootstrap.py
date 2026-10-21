@@ -17,8 +17,12 @@ WHAT IT DOES, in order:
       called this) first, then a `SHAPE_LEGS_TOKEN` PAT, then nothing at all.
       Whichever it finds is used ONLY through a `git -c
       url.<...>.insteadOf=<...>` rewrite for the duration of the one command,
-      covering both the HTTPS and SSH spellings a submodule URL may carry. It
-      is never written into `.git/config`, never persisted, never printed.
+      covering both the HTTPS and SSH spellings a submodule URL may carry,
+      and of the two fetches made again where that command dies (below). It
+      is never written into `.git/config`, never persisted, never printed,
+      and never traced: each of those commands runs with every `GIT_TRACE*`
+      variable taken out of its environment and trace2 turned off
+      (`untraced`, #996), since a trace writes a command's arguments.
 
       With no credential this is a plain `git submodule update --init
       --recursive`, exactly as it was for a family whose members are public.
@@ -37,12 +41,51 @@ WHAT IT DOES, in order:
       as below, with no advice (#879). It said `family bootstrap ok`
       there, beside git's exit 128, as a run with every member checked
       out passes (#648), and gave the advice where git stopped at a
-      gitlink. This holder's records are the test, so an exit 128 they do
-      not show is read as before, the advice and `ok` where every member
-      is checked out: git stopped inside a member, at a gitlink in that
-      member's own index with no url, or at a gitlink of this holder's at
-      a commit no remote holds (`not our ref`) (lane 1's SHOULD 4 on
-      #889).
+      gitlink.
+
+      So it fails where git's update died (exit 128) past this holder's
+      own records, in the two places that are told from a missing
+      credential there, each asked as git asks it, in git's order, and
+      never of git's words (`stopped_below`, #892):
+      - at a gitlink in a member's own index that git has no url for,
+        read in the member checked out at the commit this holder records
+        as this holder's own index is read (`init_stop`): git's `No url
+        found` there said `ok`;
+      - at a member whose store still lacks the commit this holder
+        records for it where git's fetch there reached the member's
+        remote, by the fetch's exit code: git's own trace of the run
+        says it (`fetched_in`), or, with `SHAPE_LEGS_TOKEN` or
+        `SHAPE_LEGS_APP_TOKEN` set, whose rewrite a trace would write,
+        so that git's update is never traced, the two fetches git's
+        update makes there, made again in this process, untraced, say it
+        (`refetched`, #996): its `not our ref` said `ok` too, and with a
+        token set it still did, with the advice to set the token that
+        was set (lane 5's SHOULD 4 on #954). A fetch git could not make,
+        as for want of a credential, leaves the store as short, so the
+        store alone tells nothing.
+      A leg in a member is asked as a member is, and a gitlink git's
+      update passes without a look, its `update` `none` or the gitlink
+      inactive, is passed (lane 5's SHOULD 1 on #954). Where neither
+      tells, an exit 128 is read as before, the advice and `ok` where no
+      row is left not checked out but for want of a credential, and the
+      run names only where git's init in this holder stopped.
+
+      Where git's update met a signal and did not exit 0, a git it ran
+      dead of one or itself killed, the run fails naming the signal and
+      the code, with no advice (`signal_met`, #998, #1056): no credential
+      crashes git or kills it. It is told by the code, never git's words:
+      where the update was traced, by the first git it ran whose exit
+      git's trace gives as `128 + N` (`died_in`), wherever the update met
+      it; else by the update's own exit code, `128 + N` where a git it
+      ran died of signal N and `-N` where it was itself killed
+      (`ended_on`). It said `ok` there, with the advice, beside the 139
+      of git 2.43.0 crashing on a member's own `.gitmodules` (#998), and
+      beside the 128 or the 1 of a gitlink git's update came to after
+      the signal, since git keeps only the last code that is not 0
+      (#1056). With a token in use the update is not traced, so a signal
+      is told only where its code is that last one. Where the update
+      also died past this holder's own records, as above, both are said,
+      the signal first, in the order git met them.
 
       "every member and leg fetched" is said only where git exited 0 AND
       every row's member is checked out (#648). A member left NOT CHECKED
@@ -106,24 +149,39 @@ WHAT IT DOES, in order:
       as far as make's lines tell it (`MakeErrors` says where they do not);
       make's stderr reaches the terminal through this run, and `run_make`
       says what that changes for a member (#884). Under the holder's `make
-      -jN`, each member's make runs its jobs one at a time and says
-      nothing of it: the jobserver of the make above this run, and the
-      `-j` that comes with it, are taken out of the `MAKEFLAGS` it
-      inherits (`member_make_env`, #888).
+      -jN`, each member's make shares the holder's jobs where the holder's
+      make is GNU make 4.4 or later, whose jobserver is a named pipe, and
+      the member's make says it is too (#987). Everywhere else it runs its
+      jobs one at a time and says nothing of it: the jobserver of the make
+      above this run, and the `-j` that comes with it, are taken out of
+      the `MAKEFLAGS` it inherits (`member_make_environment`, #888).
 
   (c) EXITS 0 unless a member's own command failed, or (a) left a member not
       checked out that no credential would check out, or found a line or a
       value in `.gitmodules` that git cannot read (#768), or found that,
       with every member checked out, git's init in this holder died at a
       gitlink this holder records with no url or at an unmerged
-      `.gitmodules` (#879); an exit 128 this holder's records do not show
-      is no failure here, as (a) says. Any
+      `.gitmodules` (#879), or found where git's update died past this
+      holder's own records, in a member's own index or at a member's
+      commit no fetch brought (#892), or found that git's update met a
+      signal (#998, #1056); an exit 128 none of those shows is no failure
+      here, as (a) says. Any
       other member that is not checked out is REPORTED and skipped, not a
       failure: it is the state a missing credential leaves, and it is
       already reported in (a).
       Where (a) cannot start git, the run STOPS there, exit 2, refused
       `git-not-runnable` as `validate-family.py` refuses it (#694): each
       member's own bootstrap runs git too, so (b) would only say it again.
+      And where (a) or (b) cannot ask whether a row's member is checked
+      out, or whether it has a `Makefile`, because the operating system
+      refused the `stat` of its `.git` or its `Makefile` (a `members/` this
+      user cannot search), the run STOPS there, exit 2, refused
+      `member-unreadable`, naming the path and the cure (#430). On Python
+      3.14 that member read as NOT CHECKED OUT, or as having no Makefile,
+      and was skipped, and the run said `family bootstrap ok`; before it,
+      the run ended in a `PermissionError` traceback. A `family.yaml` whose
+      `stat` is refused is `family-manifest-unreadable`, never
+      `family-manifest-missing`.
 
 THE FAMILY CONFERS NOTHING and neither does this command. It fetches, it
 delegates, and it says what it could not reach.
@@ -132,13 +190,19 @@ delegates, and it says what it could not reach.
 from __future__ import annotations
 
 import argparse
+import errno
+import json
 import os
 import re
 import shlex
 import shutil
+import signal
+import stat
 import subprocess
 import sys
+import tempfile
 from collections import Counter
+from collections.abc import Callable
 from pathlib import Path
 from typing import NamedTuple
 
@@ -171,6 +235,41 @@ STOPPED = "git stopped at {}, a gitlink it has no url for"
 #: names any row: under "0 member(s)" it said no member was updated (lane
 #: 1's NIT 5 on #889).
 NONE_UPDATED = {True: "NO MEMBER UPDATED", False: "NOTHING UPDATED"}
+#: What (a)'s line says where git's update died past this holder's own
+#: records (`stopped_below`, #892): git updated what came before the stop
+#: in its order, so it is no `NONE_UPDATED`.
+UPDATE_STOPPED = "UPDATE STOPPED"
+#: The exit code of git's update where it died (`die`), which `Failed to
+#: recurse into submodule path` passes up from a member unchanged. A clone
+#: that fails ends git's update 1, before it checks out or enters any
+#: member, and a checkout that refuses is passed with `git checkout`'s own
+#: 1, so no other code is asked past this holder's records
+#: (`stopped_below`, #892). A code past it that a signal gives is read
+#: apart (`died_of`, #998).
+GIT_DIED = 128
+#: What (a)'s line says where git's update met a signal (`signal_met`,
+#: #998, #1056): a git it ran crashed or was killed, or it was killed
+#: itself, and no credential does either.
+UPDATE_KILLED = "UPDATE KILLED"
+#: How (a)'s line ends where a git that git's update ran died of a signal.
+WHERE_SAID = "Git's own words above say which git and where."
+#: The trace2 target git's update is run with where no credential is in
+#: use, a directory, so each git it starts writes its events to a file of
+#: its own there (`fetched_in`, #892; `died_in`, #1056).
+TRACE_ENV = "GIT_TRACE2_EVENT"
+#: How the name of each variable that asks git for a trace begins
+#: (`GIT_TRACE`, `GIT_TRACE2_EVENT`, `GIT_TRACE_CURL` and the rest): each is
+#: taken out of the environment of a git given the token (`untraced`, #996).
+TRACE_PREFIX = "GIT_TRACE"
+#: trace2's three targets, each set to `0` for a git given the token: git
+#: reads a target the system or the global config names (`trace2.
+#: eventTarget`) where its variable is absent or empty, and `0` turns it
+#: off (`untraced`, #996).
+TRACE2_OFF = ("GIT_TRACE2", "GIT_TRACE2_EVENT", "GIT_TRACE2_PERF")
+#: What `git submodule` sets to `0` for every git it starts, so a url from
+#: a `.gitmodules` is given no transport git gives only a person's own
+#: (`user`); the fetches made again are given it too (`refetched`, #996).
+FROM_USER_ENV = "GIT_PROTOCOL_FROM_USER"
 #: The whys a `.gitmodules` git read only up to a line it cannot parse, or
 #: up to a key with no value it stops at, may be the cause of, since what
 #: it did not read is past that line (`Gitmodules.cut`, #856).
@@ -216,6 +315,102 @@ CREDENTIAL_ENV = ("SHAPE_LEGS_APP_TOKEN", "SHAPE_LEGS_TOKEN")
 #: HTTPS one for the duration of a single command.
 REWRITE_TARGETS = ("https://github.com/", "git@github.com:")
 
+#: The `OSError`s that `Path.is_file()` and `Path.exists()` answered False to
+#: on Python 3.9 to 3.13 (pathlib's `_ignore_error`), because each means there
+#: is nothing at the name to open: no such file, a part of the path that is
+#: not a directory, a bad descriptor, a symlink loop, and Windows' "not
+#: ready", "invalid name" and "cannot resolve". Every other one was raised.
+_ABSENT_ERRNOS = (errno.ENOENT, errno.ENOTDIR, errno.EBADF, errno.ELOOP)
+_ABSENT_WINERRORS = (21, 123, 1921)
+
+#: What a path the operating system refused for ANOTHER reason than
+#: permission is told: an I/O error, a name longer than the filesystem
+#: takes, a file replaced while this ran. No `chmod` puts one right.
+#: `validate-pins.py`'s words for the same refusal (#712, #430).
+OTHER_REASON = (
+    "Where the operating system gave another reason, put a regular file this "
+    "user can open back in its place, or take away one nobody wants, and make "
+    "sure nothing is changing the directory while this runs. ")
+
+
+def _is_a(path: Path, kind: Callable[[int], bool]) -> bool:
+    """Whether `path` is there and of `kind` (`stat.S_ISREG`, `_anything`),
+    raising the `OSError` of a `stat` the operating system REFUSED (#430).
+
+    NOT `Path.is_file()` OR `Path.exists()`, whose answer depends on the
+    Python. Up to 3.13 they raised a refused `stat` (`PermissionError`), and
+    `make bootstrap` ended in that traceback; from 3.14 they answer False to
+    ANY `OSError`. On 3.14 a member mounted under a `members/` this user
+    cannot search was NOT CHECKED OUT, skipped, beside the advice to set a
+    credential, and one whose `Makefile` could not be reached had none, and
+    the run said `family bootstrap ok` over members nothing ran in. Asked
+    here, every Python answers as 3.9 to 3.13 did, and a refused `stat` is a
+    refusal that names the path (`unreadable`). A name the system cannot
+    take at all (a NUL in a row's `path:`) is no file, as `exists()`
+    answered it. This file's own copy, as each pinned copy keeps one (#370,
+    #610): `bump-leg.py` has the same.
+    """
+    try:
+        mode = path.stat().st_mode
+    except OSError as exc:
+        if (exc.errno in _ABSENT_ERRNOS
+                or getattr(exc, "winerror", None) in _ABSENT_WINERRORS):
+            return False
+        raise
+    except ValueError:
+        return False
+    return kind(mode)
+
+
+def _anything(mode: int) -> bool:
+    """Any kind of file at all: what `Path.exists()` asks of a `.git`,
+    which is a file in a mounted member and a folder in a clone (#430)."""
+    return stat.S_IFMT(mode) != 0
+
+
+def unreadable(code: str, named: str, exc: OSError, what: str) -> Refusal:
+    """`code`'s refusal of a path this command must ask about and the
+    operating system will not let it: its `stat` refused (`_is_a`), as in a
+    folder this user cannot search (#430). The line is `validate-pins.py`'s
+    `_cannot_read`, `<named>: cannot be read (<the system's reason>)`, with
+    `named` relative to the holder and spelled; `what` says what was not
+    done, and why the question matters. THE ADVICE FOLLOWS THE CAUSE, in
+    `validate-pins.py`'s `_unreadable_file`'s words, word for word, since
+    every path this command asks about is inside the holder: a permission
+    (`PermissionError`, which is `EACCES` and `EPERM`) is put right by the
+    mode or the owner, and any other cause is `OTHER_REASON`, which is not
+    told to `chmod`."""
+    advice = (
+        "Make what this user may not open readable by this user: `chmod u+r` "
+        "on a file, `chmod u+rx` on a directory (and on every directory above "
+        "it inside the root), or fix who owns it. "
+        if isinstance(exc, PermissionError) else OTHER_REASON)
+    return Refusal(
+        code,
+        f"{named}: cannot be read ({exc.strerror or type(exc).__name__})",
+        f"Remediation: {what} A path this command cannot read is a question "
+        f"it cannot answer, never a pass. {advice}Then run the same command "
+        "again.")
+
+
+def checked_out(root: Path, row: dict) -> bool:
+    """Whether the row's member is checked out: its mount holds a `.git`,
+    asked as `_is_a` asks it, or the `member-unreadable` refusal naming that
+    `.git` where its `stat` was refused (#430). (a) asks it of every row
+    (`unfetchable`) and (b) before it runs anything in the member
+    (`run_member_target`); on Python 3.14 the answer was "not checked out",
+    and the member was skipped."""
+    git_dir = member_path(root, row) / ".git"
+    try:
+        return _is_a(git_dir, _anything)
+    except OSError as exc:
+        raise unreadable(
+            "member-unreadable", spelled(f"{row_path(row)}/.git"), exc,
+            "Each row's mount is asked whether git checked its member out "
+            "before anything is run in it, and this one could not be asked, "
+            "so the run stopped there: no member's command was run after "
+            "it.") from exc
+
 
 def credential() -> tuple[str, str]:
     """`(source, token)`; `("none", "")` when the environment carries none."""
@@ -236,7 +431,17 @@ def fetch_members(root: Path, rows: list[dict]) -> list[str]:
     #879); where its init in this holder died at a gitlink this holder
     records with no url, it is for that gitlink (`updated_none`, #879).
     Its line says no member was updated, or, where `rows` names none,
-    nothing was (lane 1's NIT 5 on #889).
+    nothing was (lane 1's NIT 5 on #889). Where none of that is so, a
+    signal git's update met (`signal_met`, #998, #1056) and where it died
+    past this holder's own records, in a member's own index or at a
+    member's commit no fetch brought (`stopped_below`, #892), are each
+    said where there is one, the signal first (`told_past`), each with a
+    failure line of its own: for git's update, its line naming the
+    signal and the code, and for the gitlink git stopped at, its line
+    saying the update stopped there. Whether a fetch there reached its
+    remote is git's own trace's answer, or, where a token is in use and
+    git's update was not traced, that of the two fetches made again with
+    the token's rewrite (`fetch_reached`, #996).
 
     Returns a failure line for each of `rows` whose member it leaves not
     checked out where no credential would check it out (`unfetchable`), for
@@ -244,29 +449,28 @@ def fetch_members(root: Path, rows: list[dict]) -> list[str]:
     fetched only where there is none and git exited 0. The advice to set a
     credential is printed only where git asked for one
     (`credential_advice`, #839). Raises the `git-not-runnable` refusal
-    where git cannot be started (#694)."""
+    where git cannot be started (#694), and `member-unreadable` where a
+    row's mount cannot be asked about, after git's own words (`unfetched`,
+    #430)."""
     source, token = credential()
-    args = ["git"]
+    rewrite: list[str] = []
     if token:
         for target in REWRITE_TARGETS:
-            args += ["-c", f"url.https://x-access-token:{token}@github.com/"
-                           f".insteadOf={target}"]
-    args += ["submodule", "update", "--init", "--recursive"]
+            rewrite += ["-c", f"url.https://x-access-token:{token}@github.com/"
+                              f".insteadOf={target}"]
+    args = ["git", *rewrite, "submodule", "update", "--init", "--recursive"]
     print(f"  credential source: {source}")
     sys.stdout.flush()
-    try:
-        proc = subprocess.run(args, cwd=str(root), capture_output=True,
-                              text=True, encoding="utf-8", errors="replace",
-                              check=False)
-    except OSError as exc:
-        refusal = git_not_started(exc)
-        if refusal is None:
-            raise
-        raise refusal from exc
-    left, stopper, modules = unfetchable(root, rows, proc.returncode == 0)
+    proc, trace = run_update(args, root, traced=not token)
+    left, stopper, modules = unfetched(root, rows, proc, source, token)
+    whole = updated_none(stopper, modules)
+    died = signal_met(proc.returncode, trace)
+    below = (None if left or whole or proc.returncode != GIT_DIED
+             else stopped_below(root, fetch_reached(trace.fetched, rewrite)))
     if proc.returncode != 0:
         fetch_incomplete(proc, source, token,
-                         credential_advice(bool(left), stopper, modules))
+                         credential_advice(bool(left), stopper, modules,
+                                           below, died))
     if left:
         print("  NOT CHECKED OUT, and not for want of a credential: "
               + ", ".join(f"{spelled(path)} ({reason(why, stopper, modules)})"
@@ -274,7 +478,6 @@ def fetch_members(root: Path, rows: list[dict]) -> list[str]:
               + ". " + cures(left, stopper, rows, modules), file=sys.stderr)
         return [f"{spelled(row.get('project') or '?')} (not checked out)"
                 for row, _, _ in left]
-    whole = updated_none(stopper, modules)
     if whole is not None:
         print(f"  {NONE_UPDATED[bool(rows)]}, and not for want of a "
               "credential: " + reason(whole, stopper, modules) + ". "
@@ -282,9 +485,340 @@ def fetch_members(root: Path, rows: list[dict]) -> list[str]:
               file=sys.stderr)
         return [f"{spelled(stopper)} (git stopped at it)" if whole == STOPPED
                 else f"{GITMODULES} (git cannot read it)"]
-    if proc.returncode == 0:
+    failed = told_past(died, below, proc.returncode)
+    if not failed and proc.returncode == 0:
         print("  every member and leg fetched")
-    return []
+    return failed
+
+
+def told_past(died: Died | None, below: Below | None,
+              returncode: int) -> list[str]:
+    """(a)'s line for each of `died`, the signal git's update met
+    (`signal_met`, #998, #1056), and `below`, where it died past this
+    holder's own records (`stopped_below`, #892), where there is one,
+    printed, and the failure line of each, in git's order: the signal
+    first. A death past this holder's records (128) ends git's update,
+    so where both are told, git met the signal at a gitlink before it
+    and went on past it (#1056), and git's own words above say them in
+    that order too."""
+    failed = []
+    if died is not None:
+        print(f"  {UPDATE_KILLED}, and not for want of a credential: "
+              + killed_said(died, returncode), file=sys.stderr)
+        failed.append("git's update (" + (
+            f"ended on signal {died.signum})" if died.code == returncode
+            else f"a git it ran died of signal {died.signum})"))
+    if below is not None:
+        print(f"  {UPDATE_STOPPED}, and not for want of a credential: "
+              + below_said(below), file=sys.stderr)
+        failed.append(f"{spelled(below.path)} (git stopped at it)")
+    return failed
+
+
+class Died(NamedTuple):
+    """A signal git's update met (`signal_met`, #998, #1056): `signum`,
+    and `code`, the exit code that gives it, either that of a git git's
+    update ran, `128 + signum`, as git's trace gives it (`died_in`), or
+    the update's own (`ended_on`)."""
+
+    signum: int
+    code: int
+
+
+class Trace(NamedTuple):
+    """What git's own trace of its update says (`run_update`): `fetched`,
+    each work tree in which a fetch it made reached its remote
+    (`fetched_in`, #892), None where the update was not traced; and
+    `died`, the first git it ran that died of a signal (`died_in`,
+    #1056), or None."""
+
+    fetched: frozenset[str] | None
+    died: Died | None = None
+
+
+#: What an update that was not traced says: nothing (`run_update`).
+NOT_TRACED = Trace(None)
+
+
+def run_update(args: list[str], root: Path, traced: bool
+               ) -> tuple[subprocess.CompletedProcess, Trace]:
+    """(a)'s `git submodule update`, run as `args` say in `root`, and what
+    git's own trace of it says (`Trace`): the work trees in which a fetch
+    it made reached its remote (`fetched_in`, #892) and the first git it
+    ran that died of a signal (`died_in`, #1056), or `NOT_TRACED` where
+    the run was not traced.
+
+    TRACED ONLY WHERE `traced` SAYS, which `fetch_members` says where
+    neither `SHAPE_LEGS_TOKEN` nor `SHAPE_LEGS_APP_TOKEN` is set
+    (`CREDENTIAL_ENV`): trace2 writes each command's arguments, and the
+    rewrite that carries that token is one, as is the url a remote helper
+    is given with it, which git 2.43 writes unredacted (2.47.1 redacts the
+    url, not the argument). Where `traced` says no, git's update runs in
+    `untraced()`'s environment, so no trace the person asked for writes
+    that token either: with `GIT_TRACE2_EVENT` set in this run's own
+    environment, git wrote the rewrite into that file, the token in it
+    (#996). A credential the person's own git config gives,
+    a url rewrite in a config file or in `GIT_CONFIG_COUNT`, is read by the
+    gits the update starts and can reach the trace files too (lane 5's
+    NIT 1 on #954). The trace is a directory of the run's own, made with
+    `tempfile.mkdtemp`, readable by its owner alone, and removed whatever
+    the run does, so only a run killed before it ends leaves it behind;
+    one that cannot be made leaves the run untraced. An update not traced
+    has only its own exit code to say a signal it met (`ended_on`), so one
+    a later gitlink's code replaced is not told then (`credential_advice`
+    says that limit, #1056). Raises the `git-not-runnable` refusal where
+    git cannot be started (#694)."""
+    trace = None
+    if traced:
+        try:
+            trace = Path(tempfile.mkdtemp(prefix="bootstrap-trace-"))
+        except OSError:
+            trace = None
+    env = (untraced() if not traced else None if trace is None
+           else {**os.environ, TRACE_ENV: str(trace)})
+    try:
+        proc = started(args, root, env)
+        return proc, NOT_TRACED if trace is None else traced_in(trace)
+    finally:
+        if trace is not None:
+            shutil.rmtree(trace, ignore_errors=True)
+
+
+def started(args: list[str], root: Path, env: dict[str, str] | None
+            ) -> subprocess.CompletedProcess:
+    """`args` run in `root` under `env` (None for this process's own), or
+    the `git-not-runnable` refusal where git cannot be started (#694)."""
+    try:
+        return subprocess.run(args, cwd=str(root), capture_output=True,
+                              text=True, encoding="utf-8", errors="replace",
+                              check=False, env=env)
+    except OSError as exc:
+        refusal = git_not_started(exc)
+        if refusal is None:
+            raise
+        raise refusal from exc
+
+
+def traced_in(trace: Path) -> Trace:
+    """What the trace2 events in `trace`, a file for each git git's update
+    started (`trace_events`), say of it (`Trace`): where a fetch reached
+    its remote (`fetched_in`, #892), and the first git it ran that died of
+    a signal (`died_in`, #1056)."""
+    events = trace_events(trace)
+    return Trace(fetched_in(events), died_in(events))
+
+
+def fetched_in(events: list[dict]) -> frozenset[str]:
+    """Each work tree (`same_place`) in which a `git fetch` git's update
+    made exited 0, so reached the remote it fetched from, read from the
+    trace2 `events` of the gits the update started (`traced_in`, #892).
+
+    TOLD BY THE EXIT CODE, NEVER GIT'S WORDS, as `gitmodules_listed`
+    tells a listing (#856): git's event format is JSON, a line an event,
+    and a process's `cmd_name` event names its command, its `exit` event
+    gives its code, and its `def_repo` event for repository 1 gives the
+    work tree it runs in (a `git submodule` process opens each member as
+    another repository, 2 and up, which are not its own). Measured, git
+    2.43.0: where a member's commit is on no branch of its remote, git's
+    `fetch` there exits 0 and its fetch of the commit 128 (`not our ref`);
+    where git cannot reach the remote, as for want of a credential, both
+    exit 128. A line that is no event is skipped, and a git with no trace2
+    (before 2.22) writes nothing, so nothing is said to be fetched."""
+    runs: dict[str, dict] = {}
+    for event in events:
+        run = runs.setdefault(str(event.get("sid")), {})
+        kind = event.get("event")
+        if kind == "cmd_name":
+            run["name"] = event.get("name")
+        elif kind == "def_repo" and event.get("repo") == 1:
+            run["worktree"] = event.get("worktree")
+        elif kind == "exit":
+            run["code"] = event.get("code")
+    return frozenset(same_place(run["worktree"]) for run in runs.values()
+                     if run.get("name") == "fetch" and run.get("code") == 0
+                     and isinstance(run.get("worktree"), str))
+
+
+def died_in(events: list[dict]) -> Died | None:
+    """The first git that git's update ran and that died of a signal, as
+    the trace2 `events` of the gits it started say it (`traced_in`,
+    #1056), or None.
+
+    TOLD BY THE EXIT CODE, NEVER GIT'S WORDS, as `fetched_in` tells a
+    fetch: a git writes a `child_start` event for each child it starts,
+    with its argv, and a `child_exit` with its code as it ends, each
+    giving the child's `child_id`, which `child_of` pairs with the git's
+    own `sid`. A `child_exit` whose code is `128 + N`, N below
+    `signal.NSIG` (`died_of`), as `run_command` gives a child dead of
+    signal N, for a child whose argv begins `git` (`git_child`), as git
+    writes a git it runs, is a git dead of signal N: the `git checkout`
+    or `git fetch` git's update runs in a member, or the member's own
+    update. Not a hook or another program, whose code is its own: a
+    `post-checkout` hook that exits 137 is no signal, and `git checkout`
+    exits 1 over it (measured, git 2.43.0 and 2.47.1). A git that passes
+    a dead child's code up gives the same N.
+
+    WHERE THE UPDATE MET IT, wherever that was. Git keeps only the last
+    code that is not 0 (`update_submodules` in git 2.47.1's
+    submodule--helper.c), so a later gitlink's 128 or 1 replaces a
+    signal's in the update's own exit code, and `ended_on` sees none
+    there (#1056); the trace keeps each.
+
+    FIRST BY THE TIME EACH EVENT GIVES, the order git met them in, and
+    in the order of the files and their lines where trace2 gives none
+    (its brief form): the files go in the order their gits started, so
+    a member's own update, which writes the `child_exit` of a leg's
+    checkout before git's update writes its own for that member's
+    update, comes after it there (measured, git 2.43.0 and 2.47.1:
+    SIGKILL at IRRS's `code`, then SIGTERM at its `spec`, which ended
+    IRRS's update 143, and that 143 came first in the files)."""
+    gits = {child_of(event) for event in events if git_child(event)}
+    for event in sorted(events, key=lambda event: str(event.get("time", ""))):
+        if event.get("event") == "child_exit" and child_of(event) in gits:
+            signum = died_of(event.get("code"))
+            if signum is not None:
+                return Died(signum, event["code"])
+    return None
+
+
+def child_of(event: dict) -> tuple[str, str]:
+    """The child a `child_start` or `child_exit` event names: the git that
+    wrote it, its `sid`, and the `child_id` it gave the child."""
+    return str(event.get("sid")), str(event.get("child_id"))
+
+
+def git_child(event: dict) -> bool:
+    """Whether `event` is a `child_start` for a git: its argv begins
+    `git`, as trace2 writes a child git runs as a git command."""
+    argv = event.get("argv")
+    return (event.get("event") == "child_start"
+            and isinstance(argv, list) and argv[:1] == ["git"])
+
+
+def trace_events(trace: Path) -> list[dict]:
+    """Every trace2 event in the files in `trace`, in the order of their
+    names, then of their lines; a file that cannot be read, or a line that
+    is no event, is skipped."""
+    try:
+        names = sorted(os.listdir(trace))
+    except OSError:
+        return []
+    events: list[dict] = []
+    for name in names:
+        try:
+            text = (trace / name).read_text(encoding="utf-8",
+                                            errors="replace")
+        except OSError:
+            continue
+        events += filter(None, map(trace_event, text.splitlines()))
+    return events
+
+
+def trace_event(line: str) -> dict | None:
+    """One trace2 event, or None where `line` is not one."""
+    try:
+        event = json.loads(line)
+    except ValueError:
+        return None
+    return event if isinstance(event, dict) else None
+
+
+def same_place(path: str | Path) -> str:
+    """`path` as one spelling for one directory: its real path, in the
+    case the disk compares names in where it folds case."""
+    return os.path.normcase(os.path.realpath(path))
+
+
+#: How the walk asks, of a checkout whose store lacks the commit recorded
+#: for it and that commit, whether a fetch there reached its remote and
+#: did not bring it (B4, `entered`): `fetch_reached` makes one.
+Reached = Callable[[Path, str], bool]
+
+
+def fetch_reached(fetched: frozenset[str] | None, rewrite: list[str]
+                  ) -> Reached:
+    """How the walk asks whether a fetch git's update made in a checkout
+    reached its remote (`entered`). Where `rewrite`, the token's `-c`, is
+    given, git's update was not traced, and the two fetches it makes there
+    are made again (`refetched`, #996); else the trace answers, by whether
+    `fetched` holds that checkout's work tree (`fetched_in`, #892), and
+    no fetch reached any remote where the run was not traced (`fetched`
+    None)."""
+    if rewrite:
+        return lambda checkout, commit: refetched(checkout, commit, rewrite)
+    return lambda checkout, commit: (fetched is not None
+                                     and same_place(checkout) in fetched)
+
+
+def refetched(checkout: Path, commit: str, rewrite: list[str]) -> bool:
+    """Whether a fetch in `checkout` reaches its remote and leaves its
+    store without `commit` (#996): the two fetches git's update makes
+    there (`run_update_procedure` in git 2.43's submodule--helper.c),
+    made again in this process, since a run with a token in use is not
+    traced (`run_update`). `git fetch origin`, then, where the store still
+    lacks `commit`, `git fetch origin <commit>`, each with `rewrite`, the
+    token's `-c`, in its argv, as git's update was given it, and in
+    `untraced()`'s environment, so neither writes the token anywhere; what
+    they print is neither read nor shown. Each runs with
+    `GIT_PROTOCOL_FROM_USER=0`, as `git submodule` runs every git it
+    starts, so a url a member's config took from a `.gitmodules` is given
+    only the transports git's update gives it: a plain fetch took the
+    `file` transport, which git's update refused (`protocol.file.allow`
+    is `user`), and brought a commit git's update could not (measured,
+    git 2.43.0).
+
+    TOLD BY THE EXIT CODE AND THE STORE, never git's words: B4 where the
+    first exits 0, so reached the remote, and the store still lacks
+    `commit` after the second. A first that fails, as where the token
+    does not reach that remote, is the credential's, as git's own was;
+    and where either brings the commit, git's update did not die for want
+    of it as far as this tells, so nothing is said. Asked only of a
+    checkout the walk reaches whose store lacks its commit after git's
+    update exited 128 with a token in use, where the walk ends, so it
+    costs two fetches at most."""
+    env = {**untraced(), FROM_USER_ENV: "0"}
+    first = subprocess.run(["git", *rewrite, "fetch", "origin"],
+                           cwd=str(checkout), capture_output=True,
+                           check=False, env=env)
+    if first.returncode != 0 or commit_held(checkout, commit):
+        return False
+    subprocess.run(["git", *rewrite, "fetch", "origin", commit],
+                   cwd=str(checkout), capture_output=True, check=False,
+                   env=env)
+    return not commit_held(checkout, commit)
+
+
+def untraced() -> dict[str, str]:
+    """This run's environment for a git given the token in its argv
+    (#996): every variable whose name begins `GIT_TRACE` (`TRACE_PREFIX`)
+    taken out, which on Windows `os.environ` spells in upper case
+    whatever case it was set in, and trace2's targets set to `0`
+    (`TRACE2_OFF`), which turns off one the system or the global config
+    names too. A trace writes a command's arguments, the token's rewrite
+    among them, and the url a remote helper is given, the token in it, to
+    a file or a socket."""
+    env = {name: value for name, value in os.environ.items()
+           if not name.startswith(TRACE_PREFIX)}
+    env.update(dict.fromkeys(TRACE2_OFF, "0"))
+    return env
+
+
+def unfetched(root: Path, rows: list[dict],
+              proc: subprocess.CompletedProcess, source: str, token: str
+              ) -> tuple[list[tuple[dict, str, str]], str | None,
+                         Gitmodules]:
+    """`unfetchable`, asked after git's update `proc` (#430). Where it
+    refuses a mount it cannot ask about (`member-unreadable`) and git did
+    not exit 0, git's own words for the update are printed first
+    (`fetch_incomplete`), with no advice: what git said of that mount is
+    the same fact, the refusal after it names the cure, and no credential
+    is it. It refused before they were printed, and they were lost."""
+    try:
+        return unfetchable(root, rows, proc.returncode == 0)
+    except Refusal:
+        if proc.returncode != 0:
+            fetch_incomplete(proc, source, token, "")
+        raise
 
 
 def fetch_incomplete(proc: subprocess.CompletedProcess, source: str,
@@ -303,19 +837,50 @@ def fetch_incomplete(proc: subprocess.CompletedProcess, source: str,
 
 
 def credential_advice(denied: bool, stopper: str | None,
-                      modules: Gitmodules) -> str:
+                      modules: Gitmodules, below: Below | None = None,
+                      died: Died | None = None) -> str:
     """(a)'s advice to set a credential, or nothing where git asked for none
     (#839): where its init died at a gitlink it has no url for (`stopper`),
     or it read nothing from `.gitmodules`, a merge leaving it unmerged, a
     value git dies on or a file it cannot parse, it fetched nothing. Every
     row (a) then leaves not checked out is said to be no credential's, and
     the advice beside that was its denial (w768's candidate 1 on #819).
-    Anywhere else a fetch git made failed, a member's, or a leg's in a
-    member checked out, and the advice stands; where a row is said to be no
-    credential's beside it (`denied`), it is for the members that line does
-    not name."""
-    if (stopper is not None or modules.unmerged or modules.refused
-            or modules.unreadable):
+    Nor where git's update died past this holder's own records at what no
+    credential cures (`below`, `stopped_below`, #892): a gitlink a member
+    gives no url, or a member's commit a fetch that reached its remote did
+    not bring. Anywhere else a fetch git made failed, a member's, or a
+    leg's in a member checked out, and the advice stands; where a row is
+    said to be no credential's beside it (`denied`), it is for the members
+    that line does not name.
+
+    NOR WHERE GIT'S UPDATE MET A SIGNAL (`died`, `signal_met`, #998,
+    #1056): a crash or a kill is no want of a credential, and the run
+    fails on it. A fetch git could not make may have failed in the same
+    update: a member's fetch that fails ends it with 128, but a clone that
+    fails, a member's or a leg's, gives 1, and git's update goes on (rv996's
+    NIT 2 on #1045), and the advice is not said beside the signal then
+    either. A run made again, where nothing is killed, says it.
+
+    WITH A TOKEN IN USE A SIGNAL IS TOLD ONLY WHERE ITS CODE IS GIT'S
+    LAST (#1056). Git's update is not traced then (`run_update`, #996),
+    and its own exit code is all there is (`ended_on`): a signal it met
+    before a later gitlink failed, whose 128 or 1 replaced the signal's
+    code, is not told, and the run reads as that failure does, the
+    advice and `ok` where it is the credential's skip, beside git's own
+    `died of signal` line. Measured, git 2.43.0 and 2.47.1: a trace of
+    that update writes the token, which the top git's `start` event
+    gives in its argv (the rewrite's `-c`), and, the rewrite given in
+    the environment instead, git 2.43.0's remote helper's `start` and
+    `child_start` events give in its url. Git's one target that is no
+    file, an `af_unix:` socket, would have to be served by this process
+    while the update runs, every git it starts waiting on it once Linux
+    has queued 10 events (`net.unix.max_dgram_qlen`), and its path
+    within the 107 bytes Linux takes for one, which a TMPDIR may not be
+    (151 in this repository's test runs); and git for Windows builds
+    without it (read, not run). A row pins the limit
+    (`tests/test_family_bootstrap_stops_named.py`)."""
+    if (stopper is not None or below is not None or died is not None
+            or modules.unmerged or modules.refused or modules.unreadable):
         return ""
     which = ("the members the next line does not name" if denied
              else "the members")
@@ -323,6 +888,87 @@ def credential_advice(denied: bool, stopper: str | None,
             "PAT with contents:read on them) or export an App-minted "
             "SHAPE_LEGS_APP_TOKEN, then re-run. What did arrive is "
             "bootstrapped below.")
+
+
+def signal_met(returncode: int, trace: Trace) -> Died | None:
+    """The signal (a) tells for git's update, which exited `returncode`
+    (#998, #1056): the first git it ran that died of one, where its trace
+    says it (`Trace.died`, `died_in`), else the one its own exit code
+    gives (`ended_on`), or None. NOTHING WHERE IT EXITED 0: git's update
+    did all it set out to do then, whatever a git it ran died of on the
+    way, and the run says every member and leg was fetched. A fetch it
+    made killed after it wrote the ref it was for leaves the commit
+    reached, and git checks it out and exits 0 (measured, git 2.43.0 and
+    2.47.1, a `reference-transaction` hook killing that fetch)."""
+    if returncode == 0:
+        return None
+    if trace.died is not None:
+        return trace.died
+    signum = ended_on(returncode)
+    return None if signum is None else Died(signum, returncode)
+
+
+def ended_on(returncode: int) -> int | None:
+    """The signal git's update's own exit code gives, or None (#998). TOLD
+    BY THE EXIT CODE ALONE, never git's words, as `stopped_below` tells a
+    128:
+    - `128 + N` (`died_of`), where a git it ran died of signal N, as
+      `run_command` gives a child's signal, and no gitlink after it
+      failed: git's update goes on past that gitlink, and keeps only the
+      last code that is not 0 (`update_submodules`), so a later 128 or 1
+      replaces it (#1056) (measured, git 2.43.0: `submodule--helper died
+      of signal 11` on a member's own `.gitmodules` giving a `branch` no
+      value, exit 139, and exit 128 with a member after it whose pin moved
+      past what git could fetch);
+    - `-N`, where git itself was killed by signal N, as Python gives it.
+    Not 128, git's `die`, which `stopped_below` asks about, nor a code from
+    `128 + signal.NSIG` on, which numbers no signal this system has, as
+    255, which git exits with where a command of its returns -1: those are
+    read as before, the advice and `ok` where nothing else is told.
+
+    WHERE GIT'S UPDATE WAS TRACED, its trace says a signal a later code
+    replaced (`died_in`), and `signal_met` asks it first. WITH A TOKEN IN
+    USE it was not (#996), and this is all there is: a signal git's update
+    met before a later gitlink failed is not told, as `credential_advice`
+    says, where it says why no trace is read then (#1056)."""
+    if returncode < 0:
+        return -returncode
+    return died_of(returncode)
+
+
+def died_of(code: object) -> int | None:
+    """N where `code` is `128 + N`, N below `signal.NSIG`, the code
+    `run_command` gives a child dead of signal N (#998), else None: not
+    128, git's `die`, nor a code from `128 + signal.NSIG` on, which
+    numbers no signal this system has, as 255, which git exits with where
+    a command of its returns -1, nor what is no number."""
+    if isinstance(code, int) and GIT_DIED < code < GIT_DIED + signal.NSIG:
+        return code - GIT_DIED
+    return None
+
+
+def killed_said(died: Died, returncode: int) -> str:
+    """(a)'s line, after its lead, for the signal git's update met
+    (`signal_met`, #998, #1056), where it exited `returncode`: the signal
+    by its number and, where this system names it, its name, then the
+    code that gives it. Where that is git's update's own, it ended on it:
+    a code past 128 is a git it ran that died of it, whose own words git
+    printed above, and a negative one is git itself killed. Where it is
+    not, git's trace gave it, for a git git's update ran, and git's update
+    went on past it, and ended with its own code (`died_in`)."""
+    try:
+        name = f"{signal.Signals(died.signum).name}, "
+    except ValueError:
+        name = ""
+    said = f"signal {died.signum} ({name}exit {died.code})"
+    if died.code != returncode:
+        return (f"a git that git's update ran died of {said}, and git's "
+                f"update went on and ended with exit {returncode}. "
+                + WHERE_SAID)
+    if returncode < 0:
+        return f"git's update ended on {said}, which killed it."
+    return (f"git's update ended on {said}, which a git it ran died of. "
+            + WHERE_SAID)
 
 
 def git_not_started(exc: OSError) -> Refusal | None:
@@ -333,11 +979,19 @@ def git_not_started(exc: OSError) -> Refusal | None:
     `FileNotFoundError` traceback, exit 1, the code of `family bootstrap
     FAILED`, though nothing had failed. Git's is told by its NAME, as
     `validate-pins.py` tells it: a `filename` of `git`, or none at all on a
-    `FileNotFoundError` or a `PermissionError`, as Windows raises them; one
-    naming a directory is not git's. The code, and the remedy's first
-    sentence, are `validate-family.py`'s."""
-    nameless = exc.filename is None and isinstance(
-        exc, (FileNotFoundError, PermissionError))
+    `FileNotFoundError` or a `PermissionError`, as Windows raises them, or
+    on an `OSError` whose `winerror` says Windows could not start the
+    program itself: 193, a `git.exe` it cannot execute (#1001), the rest of
+    193's `ENOEXEC` family (11, 188 to 202), 216, one built for another
+    architecture, 1260, one AppLocker or a software restriction policy
+    blocks, and 4551, one App Control for Business blocks (#1040). One
+    naming a directory is not git's, nor is a nameless `[WinError 267]`, a
+    `cwd` that is not a folder, nor any other `winerror`. The code, and the
+    remedy's first sentence, are `validate-family.py`'s."""
+    nameless = (exc.filename is None
+                and (isinstance(exc, (FileNotFoundError, PermissionError))
+                     or getattr(exc, "winerror", None)
+                     in (11, *range(188, 203), 216, 1260, 4551)))
     if exc.filename != "git" and not nameless:
         return None
     return Refusal(
@@ -530,7 +1184,9 @@ class Gitmodules(NamedTuple):
     file, or nothing. `cut_key` is the `submodule.<name>.<key>` with no
     value that cut it, where that is what git stopped at
     (`ends_blob_reading`), a line `git config --list` takes, and empty
-    where a line it cannot parse did."""
+    where a line it cannot parse did. `updates` is `{name: update}`, the
+    `update` git takes from each section, where any gives one, for the walk
+    past this holder's records (`updated_there`, #892)."""
 
     given: Counter
     read: dict[str, str]
@@ -540,6 +1196,7 @@ class Gitmodules(NamedTuple):
     unreadable: bool = False
     cut: str = ""
     cut_key: str = ""
+    updates: dict[str, str] | None = None
 
 
 def gitmodules_sections(root: Path) -> Gitmodules:
@@ -709,11 +1366,13 @@ def read_sections(entries: list[tuple[str, str, str | None, bool]]
     option`); where two sections give one path, the later in the file
     decides, as a later value in one section replaces an earlier, and a
     section that gives a path again lets go of the one it gave, even where
-    a later section gave that one too: git then reads no section there."""
+    a later section gave that one too: git then reads no section there.
+    `updates` keeps each section's last `update`, as git keeps it (#892)."""
     sections: dict[str, dict[str, str]] = {}
     read: dict[str, str] = {}
     held: dict[str, str] = {}
     urls: dict[str, str] = {}
+    updates: dict[str, str] = {}
     for name, key, value, ignored in entries:
         sections.setdefault(name, {})[key] = "" if value is None else value
         if ignored or value is None or value.startswith("-"):
@@ -725,8 +1384,10 @@ def read_sections(entries: list[tuple[str, str, str | None, bool]]
             read[value] = name
         elif key == "url":
             urls[name] = value
+        elif key == "update":
+            updates[name] = value
     return Gitmodules(Counter(keys["path"] for keys in sections.values()
-                              if "path" in keys), read, urls)
+                              if "path" in keys), read, urls, updates=updates)
 
 
 def refused_value(root: Path, key: str, value: str | None) -> bool:
@@ -833,22 +1494,36 @@ def init_stop(root: Path, modules: Gitmodules,
     section git reads gives a path. A gitlink git has no url for
     (`has_url`) stops it. So a stray case variant or a member mounted by
     hand stops a plain clone's update, and leaves a recursive clone's to
-    the credential. Read nothing, it answers None."""
-    try:
-        index = git_out(["ls-files", "-s", "-z"], cwd=root, binary=True)
-    except Refusal:
-        return None
-    for record in index.split(b"\0"):
-        meta, _, entry = record.partition(b"\t")
-        if meta.split()[:1] != [GITLINK_MODE]:
-            continue
-        path = entry.decode("utf-8", "surrogateescape")
-        if ("submodule.active" in config
-                and not active(root, modules, config, path)):
-            continue
+    the credential. Read nothing, it answers None. Asked of a member's
+    checkout, with the member's own `.gitmodules` and config, it is where
+    git's init in that member stops (`stopped_below`, #892)."""
+    for path, _ in init_asks(root, modules, config):
         if not has_url(modules, config, path):
             return path
     return None
+
+
+def init_asks(root: Path, modules: Gitmodules,
+              config: dict[str, list[str | None]]) -> list[tuple[str, str]]:
+    """`(path, commit)` of each gitlink git's init asks about, in index
+    order (`init_stop`): every gitlink the index records, but where the
+    config sets `submodule.active` only those git counts active
+    (`active`). Empty where the index cannot be read."""
+    try:
+        index = git_out(["ls-files", "-s", "-z"], cwd=root, binary=True)
+    except Refusal:
+        return []
+    asked = []
+    for record in index.split(b"\0"):
+        meta, _, entry = record.partition(b"\t")
+        fields = meta.split()
+        if fields[:1] != [GITLINK_MODE]:
+            continue
+        path = entry.decode("utf-8", "surrogateescape")
+        if ("submodule.active" not in config
+                or active(root, modules, config, path)):
+            asked.append((path, fields[1].decode("ascii", "replace")))
+    return asked
 
 
 def active(root: Path, modules: Gitmodules,
@@ -919,10 +1594,11 @@ def unfetchable(root: Path, rows: list[dict], exited_0: bool
     same, and git's init asked where it stopped, for `fetch_members` to
     ask why git updated none (`updated_none`): this returned before
     `init_stop` there, so a run whose update git's init stopped said
-    `family bootstrap ok` (#879)."""
+    `family bootstrap ok` (#879). A row whose mount cannot be asked is
+    refused, `member-unreadable` (`checked_out`, #430)."""
     left: dict[str, dict] = {}
     for row in rows:
-        if not (member_path(root, row) / ".git").exists():
+        if not checked_out(root, row):
             left.setdefault(row_path(row), row)
     if not left and exited_0:
         return [], None, Gitmodules(Counter(), {}, {})
@@ -981,9 +1657,240 @@ def updated_none(stopper: str | None, modules: Gitmodules) -> str | None:
     return file_reason(modules) or (None if stopper is None else STOPPED)
 
 
+class Below(NamedTuple):
+    """Where git's update died past this holder's own records (#892), as
+    `stopped_below` finds it. `path` is the gitlink git stopped at, from
+    this holder; `owners` the checkouts from this holder's member down to
+    the one whose own index records `path`, none where this holder's
+    does; `commit` the commit recorded at `path`, where git's fetch there
+    reached the remote and did not bring it (B4), and empty where `path`
+    is a gitlink its owner's index records with no url (B5)."""
+
+    path: str
+    owners: tuple[str, ...]
+    commit: str = ""
+
+
+#: What a checkout answers where git's update stopped at it and why is
+#: not told (`walked`): nothing past it is asked, and nothing is said.
+UNTOLD = Below("", ())
+
+
+def stopped_below(root: Path, reached: Reached) -> Below | None:
+    """Where git's update, which died (`GIT_DIED`) where `unfetchable`
+    left no row and nothing in this holder's own records stopped it, died
+    past them (#892), or None where that is not told.
+
+    ASKED AS GIT 2.43 WALKS IT, never of git's words. Git updates the
+    gitlinks its init asks about in index order, each in turn, and in
+    each one checked out at the commit recorded for it, runs the same
+    update, whose init asks every gitlink of that checkout's own index
+    first; it dies at the first gitlink it has no url for, or at the
+    first commit a fetch did not bring, and that ends every update above
+    it (`Failed to recurse`, exit 128). So each gitlink is asked in that
+    order (`walked`):
+    - one git's update passes without a look (`updated_there`), its
+      update strategy `none` or the gitlink inactive, is passed, and
+      nothing in it asked: git prints `Skipping submodule` and goes on
+      (lane 5's SHOULD 1 on #954);
+    - one not checked out is passed, as git passes a clone that failed;
+    - one whose `.git` the operating system will not `stat`, or that git
+      cannot be run in, is untold (`checkout_stop`, lane 5's SHOULD 2);
+    - one whose store lacks its recorded commit (`commit_held`) is the
+      stop where a fetch git made there reached the remote (`reached`,
+      `fetch_reached`: git's own trace, `fetched_in`, or, with a token in
+      use, the two fetches made again, `refetched`, #996), and untold
+      where none did, as for want of a credential, or where the run was
+      not traced and no token was in use. Git asks whether a ref reaches
+      the commit (`is_tip_reachable`) before it fetches, but it dies there
+      only where its fetch of the commit fails, and a fetch of a commit
+      the store holds is answered from the store (measured, git 2.43.0:
+      exit 0), so a commit held and reached by no ref is never the stop;
+    - one at another commit than the one recorded, which git did not check
+      out there, is untold, nothing in it asked: its `git checkout` there
+      refused to overwrite a change, exit 1, which git's update passes, or
+      died, exit 128, as on an `index.lock` left in its store, which ends
+      git's update there, or a rebase or a merge `update` asks for failed,
+      and which it was is not told, so no stop past it is said where git
+      may never have come to it (measured, git 2.43.0: where it was
+      passed, an `index.lock` in IRRS named B5's stray in IRSS);
+    - and one checked out at it is asked as this holder is, its own
+      `.gitmodules` and config read as `gitmodules_sections` and
+      `submodule_config` read this holder's, and `init_stop` asked of its
+      index, then each of its gitlinks. Where git reads that `.gitmodules`
+      other than whole, a merge leaving it unmerged, a value git dies on,
+      a line it cannot parse, it is untold: git stops there other than at
+      a gitlink with no url."""
+    found = walked(root, reached, ())
+    return found if found is not None and found.path else None
+
+
+def walked(root: Path, reached: Reached,
+           owners: tuple[str, ...]) -> Below | None:
+    """`stopped_below` asked of the checkout `root`, which `owners` lead
+    to from this holder (none for this holder, whose own records
+    `unfetchable` asked): the stop, `UNTOLD`, or None where nothing there
+    stops git's update."""
+    modules = gitmodules_sections(root)
+    config = submodule_config(root)
+    if owners:
+        if file_reason(modules) is not None or modules.cut:
+            return UNTOLD
+        stop = init_stop(root, modules, config)
+        if stop is not None:
+            return Below(f"{owners[-1]}/{stop}", owners)
+    prefix = f"{owners[-1]}/" if owners else ""
+    for path, commit in init_asks(root, modules, config):
+        if not updated_there(root, modules, config, path):
+            continue
+        found = checkout_stop(root / path, prefix + path, commit, owners,
+                              reached)
+        if found is not None:
+            return found
+    return None
+
+
+def updated_there(root: Path, modules: Gitmodules,
+                  config: dict[str, list[str | None]], path: str) -> bool:
+    """Whether git's update, its init done, goes on to the gitlink at
+    `path`, as `prepare_to_clone_next_submodule` in git 2.43's
+    submodule--helper.c asks before it clones, fetches or enters it
+    (`walked`, lane 5's SHOULD 1 on #954). Not where no section git reads
+    gives that path. Not where its update strategy is `none`: the last
+    `submodule.<name>.update` this repository's config gives, else the
+    section's own `update` (`Gitmodules.updates`), which git's init copies
+    into the config where it holds none. And not where git counts it
+    inactive (`is_submodule_active`): where the config sets
+    `submodule.active`, `init_asks` asked `active` already; else its own
+    `submodule.<name>.active`, where a config scope above the one git's
+    init writes `true` in keeps it false (`git_bool`)."""
+    name = modules.read.get(path)
+    if name is None:
+        return False
+    values = config.get(f"submodule.{name}.update")
+    update = (values[-1] if values and values[-1] is not None
+              else (modules.updates or {}).get(name))
+    if update == "none":
+        return False
+    own = config.get(f"submodule.{name}.active")
+    return not own or git_bool(root, own[-1]) is not False
+
+
+def checkout_stop(checkout: Path, where: str, commit: str,
+                  owners: tuple[str, ...],
+                  reached: Reached) -> Below | None:
+    """`walked`'s answer for the gitlink at `where`, recorded at `commit`
+    by the last of `owners` (this holder where there is none), whose
+    checkout is `checkout`: None where its `.git` is not there, asked as
+    `checked_out` asks a member's (`_is_a`, #430); `UNTOLD` where the
+    operating system refused that `stat`, or refused a git run in it or
+    below it (lane 5's SHOULD 2 on #954: `Path.exists` raised that
+    refusal, a traceback, before Python 3.14, and from 3.14 reads it as no
+    checkout); else `entered`'s answer."""
+    try:
+        if not _is_a(checkout / ".git", _anything):
+            return None
+        return entered(checkout, where, commit, owners, reached)
+    except OSError:
+        return UNTOLD
+
+
+def entered(checkout: Path, where: str, commit: str,
+            owners: tuple[str, ...],
+            reached: Reached) -> Below | None:
+    """`checkout_stop`'s answer for a checkout whose `.git` is there: B4
+    where its store lacks `commit` and a fetch in it reached the remote
+    and did not bring it (`reached`), `UNTOLD` where none did or where it
+    is at another commit, and else what `walked` finds in it."""
+    if not commit_held(checkout, commit):
+        if reached(checkout, commit):
+            return Below(where, owners, commit)
+        return UNTOLD
+    if head_commit(checkout) != commit:
+        return UNTOLD
+    return walked(checkout, reached, (*owners, where))
+
+
+def commit_held(checkout: Path, commit: str) -> bool:
+    """Whether the store `checkout` reads holds `commit`: `git cat-file -e
+    <commit>^{commit}` exits 0. Not whether a ref reaches it, as git's
+    update asks before it fetches (`is_tip_reachable`): git's fetch of a
+    commit its store holds is answered from the store, so its update does
+    not die for want of one (measured, git 2.43.0), and a held commit no
+    ref reaches, whose checkout died, was named B4 (#954's round 1)."""
+    proc = subprocess.run(["git", "cat-file", "-e", f"{commit}^{{commit}}"],
+                          cwd=str(checkout), capture_output=True,
+                          check=False)
+    return proc.returncode == 0
+
+
+def head_commit(checkout: Path) -> str | None:
+    """The commit `checkout`'s HEAD is at, or None where it is at none."""
+    try:
+        return git_out(["rev-parse", "--verify", "--quiet", "HEAD^{commit}"],
+                       cwd=checkout)
+    except Refusal:
+        return None
+
+
+def below_said(below: Below) -> str:
+    """(a)'s line, after its lead, for where git's update died past this
+    holder's records (`stopped_below`, #892): where git stopped and why,
+    then what cures it, which is the repository's that records the
+    gitlink, the last of `below.owners` or this holder.
+
+    - A gitlink a member's own index records with no url (B5): no clone of
+      that member can check it out. `git -C <owner> rm --cached` takes it
+      out of that index, or a section gives it its url; committed and
+      pushed there where its HEAD records it, the gitlink that records the
+      member moves to that commit: this holder's with its pin (`family.py
+      bump`), and a leg's in its member, up to this holder.
+    - A commit no fetch brought (B4): pushed to that remote from a clone
+      that holds it, or the gitlink moved to one the remote holds, which
+      `validate-family.py` names, with the `bump` that moves the pin too,
+      where this holder records it, and up to this holder where a member
+      does."""
+    owner = below.owners[-1] if below.owners else "this holder"
+    path, commit = spelled(below.path), below.commit
+    if commit:
+        tail = (f": `{PYTHON} scripts/validate-family.py` names the `bump` "
+                "that moves it with its pin." if not below.owners else
+                ", and so on up to this holder.")
+        return (f"git stopped at {path}, whose fetch reached its remote and "
+                f"did not bring {commit}, the commit {spelled(owner)} "
+                f"records there. Push {commit} to that remote from a clone "
+                f"that holds it, or move the gitlink {spelled(owner)} "
+                f"records there to a commit that remote holds{tail}")
+    above = below.owners[-2] if len(below.owners) > 1 else "this holder"
+    removal = shlex.join(["git", "-C", owner, "rm", "--cached", "--",
+                          below.path[len(owner) + 1:]])
+    tail = (", with its pin (`family.py bump`)." if len(below.owners) == 1
+            else ", and so on up to this holder.")
+    return (f"git stopped at {path}, a gitlink {spelled(owner)}'s own index "
+            f"records with no url. No clone of {spelled(owner)} can check it "
+            f"out: `{spelled(removal)}` takes it out of that index, or a "
+            f"section of its {GITMODULES} can give it its path and url; "
+            f"where its HEAD records it, commit that in {spelled(owner)} and "
+            f"push it, then move the gitlink {spelled(above)} records for "
+            f"{spelled(owner)} to that commit{tail}")
+
+
 def members_of(root: Path) -> tuple[str, list[dict]]:
+    """`(name:, the member rows)` out of `family.yaml`, or a refusal.
+
+    A `family.yaml` whose `stat` the operating system refused is
+    `family-manifest-unreadable`, naming it and the cure (#430), never
+    `family-manifest-missing`, which Python 3.14 said of it, whose remedy
+    sends a person to the wrong kind of root."""
     manifest_path = root / MANIFEST
-    if not manifest_path.is_file():
+    try:
+        present = _is_a(manifest_path, stat.S_ISREG)
+    except OSError as exc:
+        raise unreadable(
+            "family-manifest-unreadable", MANIFEST, exc,
+            f"{MANIFEST} declares this holder's members, and which they are "
+            "cannot be told without it.") from exc
+    if not present:
         raise Refusal(
             "family-manifest-missing",
             f"{manifest_path} does not exist, so there is no declaration of "
@@ -1035,11 +1942,20 @@ def run_member_target(root: Path, row: dict, target: str) -> str | None:
     project = spelled(row.get("project") or "?")
     path = member_path(root, row)
     named = spelled(target)
-    if not (path / ".git").exists():
+    if not checked_out(root, row):
         print(f"  [{project}] {spelled(path.name)}: NOT CHECKED OUT; skipped. "
               "See the fetch above.")
         return None
-    if not (path / "Makefile").is_file():
+    try:
+        has_makefile = _is_a(path / "Makefile", stat.S_ISREG)
+    except OSError as exc:
+        # One it cannot reach is no "no Makefile" (#430), which Python 3.14
+        # said of it, and `family bootstrap ok` after.
+        raise unreadable(
+            "member-unreadable", spelled(f"{row_path(row)}/Makefile"), exc,
+            f"`make {named}` was not run in {project}, nor in any member "
+            "after it.") from exc
+    if not has_makefile:
         print(f"  [{project}] no Makefile; skipped. A member without one is "
               "not misconfigured — it simply has nothing for this command to "
               "call.")
@@ -1148,6 +2064,29 @@ class MakeErrors:
             self.code = int(code)
 
 
+def run_members(root: Path, rows: list[dict], target: str,
+                skip: bool) -> list[str]:
+    """(b) Each member's own `make <target>`, in row order: the failure lines
+    (`run_member_target`), or none where `skip` (`--skip-members`) or no row
+    is declared. Raises `member-unreadable` at the first member whose mount
+    or `Makefile` cannot be asked about (#430), and no member after it is
+    run: `main` refuses the run there, exit 2."""
+    print(f"\n(b) each member's own `make {spelled(target)}`")
+    if skip:
+        print("  skipped (--skip-members)")
+        return []
+    if not rows:
+        print("  no members declared. A family with none is empty, not wrong: "
+              "`family.py add` is what puts one here.")
+        return []
+    failed = []
+    for row in rows:
+        failure = run_member_target(root, row, target)
+        if failure:
+            failed.append(failure)
+    return failed
+
+
 def run_make(make: str, target: str, cwd: Path) -> tuple[int, int | None]:
     """(b) `make <target>` in a member, as `(make's exit code, the exit code
     of the member's command it names)`, the second None where make names
@@ -1204,7 +2143,8 @@ def run_make(make: str, target: str, cwd: Path) -> tuple[int, int | None]:
     "Reaping losing child"), and the line would say `exited 2` for every
     failure again."""
     proc = subprocess.Popen([make, target], cwd=str(cwd),
-                            stderr=subprocess.PIPE, env=member_make_env())
+                            stderr=subprocess.PIPE,
+                            env=member_make_environment(make))
     errors = MakeErrors()
     for chunk in iter(lambda: proc.stderr.read1(65536), b""):
         passed_on(chunk)
@@ -1237,41 +2177,105 @@ def passed_on(chunk: bytes) -> None:
 #: make 3.81 writes it). `re.DOTALL` here and below, since a path may hold
 #: any character.
 JOBSERVER_WORD = re.compile(r"--jobserver-(?:auth|fds)=.*", re.DOTALL)
-#: The words `member_make_env` takes out where one names a jobserver: that
-#: word, and the jobs that come with it, `-j2`, or the bare `-j` a make
-#: before 4.2 writes beside `--jobserver-fds`.
+#: The words `member_make_environment` takes out where one names a
+#: jobserver: that word, and the jobs that come with it, `-j2`, or the
+#: bare `-j` a make before 4.2 writes beside `--jobserver-fds`.
 JOBS_WORD = re.compile(r"-j[0-9]*|--jobserver-(?:auth|fds)=.*", re.DOTALL)
 #: A word of `MAKEFLAGS` as make splits it: only at a space or a tab, and
 #: a backslash keeps the character after it in the word, a space or a tab
 #: included (`ARGS=a\ -j2` is one word). Any other character, a newline
 #: or a no-break space among them, is part of its word, as make reads it.
 MAKEFLAGS_WORD = re.compile(r"(?:\\.|[^ \t])+", re.DOTALL)
+#: The one jobserver word a member's make may be handed (#987): GNU make
+#: 4.4's named pipe, `--jobserver-auth=fifo:<path>`, which a make opens by
+#: its path, where `3,4` names descriptors this run does not hold.
+FIFO_WORD = re.compile(r"--jobserver-auth=fifo:(.+)", re.DOTALL)
+#: The version on the first line GNU make's `make --version` prints.
+GNU_MAKE_VERSION = re.compile(rb"GNU Make (\d+)\.(\d+)")
+#: The seconds `make --version` has to answer in before the answer is no.
+VERSION_TIMEOUT = 10
+#: `{make: whether it reads a fifo: word}`, `reads_fifo`'s answers: one
+#: `make --version` per make and per run.
+FIFO_READERS: dict[str, bool] = {}
 
 
-def member_make_env() -> dict[str, str]:
-    """This run's environment for a member's make: `MAKEFLAGS` without the
-    jobserver of the make above this run, where it names one, and without
-    the `-j` that comes with it (`JOBS_WORD`, #888). Every other word is
-    kept, `-k`, `-s` and a variable given on the holder's command line
-    among them, each word as make splits it: only at a space or a tab,
-    a backslash keeping either in a value (`MAKEFLAGS_WORD`). A
-    `MAKEFLAGS` that names no jobserver is left as it is: `make -j` with
-    no number, which starts none, or a person's own `MAKEFLAGS=-j8` with
-    no make above this run.
+def names_a_fifo(word: str) -> bool:
+    """Is `word` 4.4's jobserver word for a named pipe that is there now,
+    at an absolute path (`FIFO_WORD`)? Its path is read as make reads it:
+    a backslash keeps the character after it. A pipe that is gone, a path
+    that holds another kind of file, or one relative to a directory other
+    than a member's, would make a 4.4 member's make warn that it cannot
+    open the jobserver."""
+    found = FIFO_WORD.fullmatch(word)
+    if not found:
+        return False
+    path = re.sub(r"\\(.)", r"\1", found[1], flags=re.DOTALL)
+    try:
+        return os.path.isabs(path) and stat.S_ISFIFO(os.stat(path).st_mode)
+    except OSError:
+        return False
 
-    WHY. Under the holder's `make -j2 bootstrap`, `validate`, `park` or
-    `resume`, a member's make found `-j2 --jobserver-auth=3,4` in the
-    `MAKEFLAGS` it inherits, and not the two descriptors: the holder's
-    rule runs this script with no `+`, so make closes them for it, and
-    `Popen` closes every descriptor past stderr. It printed `make[1]:
-    warning: jobserver unavailable: using -j1.  Add '+' to parent make
-    rule.`, of a rule the person does not own, and ran its jobs one at a
-    time (GNU Make 4.3, measured). It runs them one at a time now, and
-    says nothing.
 
-    WHY NOT HAND THE JOBSERVER ON, as a `+` on the holder's rules and the
-    descriptors passed to the member's make would, which then ran its
-    jobs together (measured):
+def reads_fifo(make: str, env: dict[str, str]) -> bool:
+    """Does `make` say it is GNU make 4.4 or later, which reads a `fifo:`
+    jobserver word? Asked once per make and per run (`FIFO_READERS`), as
+    `make --version` under `env`, which names no jobserver, stdin closed;
+    a make that is not there, names itself otherwise, is older, exits
+    other than 0 or does not answer in `VERSION_TIMEOUT` seconds is a
+    no."""
+    if make not in FIFO_READERS:
+        try:
+            said = subprocess.run(
+                [make, "--version"], env=env, stdin=subprocess.DEVNULL,
+                stdout=subprocess.PIPE, stderr=subprocess.DEVNULL,
+                timeout=VERSION_TIMEOUT, check=False)
+        except (OSError, subprocess.SubprocessError):
+            said = None
+        found = (GNU_MAKE_VERSION.match(said.stdout)
+                 if said is not None and said.returncode == 0 else None)
+        FIFO_READERS[make] = found is not None and (
+            int(found[1]), int(found[2])) >= (4, 4)
+    return FIFO_READERS[make]
+
+
+def member_make_environment(make: str) -> dict[str, str]:
+    """This run's environment for a member's make, `make`: `MAKEFLAGS` as
+    it is where `make` can share the jobserver of the make above this run
+    (#987), and otherwise without that jobserver, where it names one, and
+    without the `-j` that comes with it (`JOBS_WORD`, #888). Every other
+    word is kept, `-k`, `-s` and a variable given on the holder's command
+    line among them, each word as make splits it: only at a space or a
+    tab, a backslash keeping either in a value (`MAKEFLAGS_WORD`). A
+    `MAKEFLAGS` that names no jobserver is left as it is, and `make` is
+    not asked: `make -j` with no number, which starts none, or a person's
+    own `MAKEFLAGS=-j8` with no make above this run.
+
+    WHERE IT IS SHARED (#987): every jobserver word `MAKEFLAGS` names is
+    GNU make 4.4's named pipe, at an absolute path where a named pipe is
+    now (`names_a_fifo`), and `make` says it is GNU make 4.4 or later
+    (`reads_fifo`). `MAKEFLAGS` is then handed on as it is, the `-jN`
+    beside the pipe included. A make opens that pipe by its path, so the
+    holder's rule needs no `+` for it: make 4.4's NEWS says that with it
+    "sub-makes will connect to the jobserver even if they are not marked
+    as recursive". The member's make then runs its jobs together, within
+    the holder's `-jN` (read, not run: no GNU make 4.4 was on the host
+    this was written on).
+
+    WHY IT IS TAKEN OUT EVERYWHERE ELSE. Under the holder's `make -j2
+    bootstrap`, `validate`, `park` or `resume`, a member's make found
+    `-j2 --jobserver-auth=3,4` in the `MAKEFLAGS` it inherits, and not the
+    two descriptors: the holder's rule runs this script with no `+`, so
+    make closes them for it, and `Popen` closes every descriptor past
+    stderr. It printed `make[1]: warning: jobserver unavailable: using
+    -j1.  Add '+' to parent make rule.`, of a rule the person does not
+    own, and ran its jobs one at a time (GNU Make 4.3, measured). It runs
+    them one at a time now, and says nothing (#888). A `-j` is never kept
+    without the jobserver beside it: alone it means as many jobs as make
+    likes (make 3.81's bare `-j`), or a pool of the member's own.
+
+    WHY NOT HAND ON A PIPE'S DESCRIPTORS, as a `+` on the holder's rules
+    and the descriptors passed to the member's make would, which then ran
+    its jobs together (measured):
     - a `+` runs its line under `make -n` too: `make -n bootstrap`
       fetched every member and leg (measured);
     - a descriptor `MAKEFLAGS` names is a number, and no proof that it is
@@ -1280,14 +2284,29 @@ def member_make_env() -> dict[str, str]:
     - the member's make is `$MAKE` or `make` on PATH, not the make that
       ran the holder, which exports no `MAKE` (measured), and a make may
       not read another's jobserver: GNU make 4.3 stops at 4.4's `fifo:`
-      (`invalid --jobserver-auth string`, measured).
-    Taken out, no make is asked to read a jobserver at all."""
+      (`invalid --jobserver-auth string`, exit 2, measured), which is why
+      `reads_fifo` asks the member's make itself before a `fifo:` word is
+      handed on.
+    Taken out, no make is asked to read a jobserver at all.
+
+    WHY THIS NAME, and not #950's `member_make_env`, which took no make
+    (#987). `siblings.py` imports this function, and `update-shape.py
+    apply --accept-local` asks a kept `bootstrap.py` for the names a
+    written `siblings.py` imports, not for their parameters
+    (`update-accept-local-missing-name`, #536). Under #950's name a kept
+    `bootstrap.py` of #950's passed that check, and the holder's `make
+    park` then stopped at its first member with a `TypeError`. Under
+    this one that apply is refused before it writes a byte."""
     env = dict(os.environ)
     words = MAKEFLAGS_WORD.findall(env.get("MAKEFLAGS", ""))
-    if any(JOBSERVER_WORD.fullmatch(word) for word in words):
-        env["MAKEFLAGS"] = " ".join(
-            word for word in words if not JOBS_WORD.fullmatch(word))
-    return env
+    named = [word for word in words if JOBSERVER_WORD.fullmatch(word)]
+    if not named:
+        return env
+    plain = {**env, "MAKEFLAGS": " ".join(
+        word for word in words if not JOBS_WORD.fullmatch(word))}
+    if all(names_a_fifo(word) for word in named) and reads_fifo(make, plain):
+        return env
+    return plain
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -1316,26 +2335,20 @@ def main(argv: list[str] | None = None) -> int:
 
     print("\n(a) members and their legs")
     failed: list[str] = []
-    if args.no_fetch:
-        print("  skipped (--no-fetch)")
-    else:
-        try:
+    try:
+        if args.no_fetch:
+            print("  skipped (--no-fetch)")
+        else:
             failed += fetch_members(root, rows)
-        except Refusal as exc:
-            print(str(exc), file=sys.stderr)
-            return 2
-
-    print(f"\n(b) each member's own `make {spelled(args.members_make)}`")
-    if args.skip_members:
-        print("  skipped (--skip-members)")
-    elif not rows:
-        print("  no members declared. A family with none is empty, not wrong: "
-              "`family.py add` is what puts one here.")
-    else:
-        for row in rows:
-            failure = run_member_target(root, row, args.members_make)
-            if failure:
-                failed.append(failure)
+        failed += run_members(root, rows, args.members_make,
+                              args.skip_members)
+    except Refusal as exc:
+        # `git-not-runnable` from (a) (#694), or `member-unreadable` from
+        # (a) or (b) (#430). Stdout first, so a log of both streams reads
+        # in the order the run went.
+        sys.stdout.flush()
+        print(str(exc), file=sys.stderr)
+        return 2
 
     print()
     if failed:

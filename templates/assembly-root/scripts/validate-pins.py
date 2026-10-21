@@ -799,11 +799,20 @@ def _git_runs(unread: str) -> Iterator[None]:
     `filename` where a program that will not start names `git`. So the rule
     is the NAME: any `OSError` whose `filename` is `git` counts, `ENOEXEC`'s
     included, and an error that names a directory or any other file passes
-    through unchanged, and so does any `OSError` that names none. The one
-    nameless error that counts is a `FileNotFoundError` or a
-    `PermissionError`: Windows' `CreateProcess` failures carry no filename,
-    so a missing git there is `[WinError 2]` with `filename` None, and
-    nothing says it was the directory.
+    through unchanged. Of the errors that name none, only a
+    `FileNotFoundError` or a `PermissionError` counts, and an `OSError`
+    whose `winerror` says Windows could not start the program itself:
+    Windows' `CreateProcess` failures carry no filename, so a missing git
+    there is `[WinError 2]` with `filename` None, and nothing says it was
+    the directory, and a `git.exe` it cannot execute is `[WinError 193]`
+    (#1001), which is neither class. Nor are the rest of 193's `ENOEXEC`
+    family, 11 and 188 to 202, `[WinError 216]`, a `git.exe` built for
+    another architecture, `[WinError 1260]`, one AppLocker or a software
+    restriction policy blocks, and `[WinError 4551]`, one App Control for
+    Business blocks, each of which says git could not be started too
+    (#1040). A nameless `[WinError 267]`, a `cwd` that is not a folder,
+    says nothing of the kind, and passes through, as does any other
+    `winerror`.
 
     `recorded_gitlink`'s `except Refusal` is not in the way: an `OSError` is
     no `Refusal`, so a missing git reaches here instead of reading as "no
@@ -813,7 +822,9 @@ def _git_runs(unread: str) -> Iterator[None]:
         yield
     except OSError as exc:
         nameless = (exc.filename is None
-                    and isinstance(exc, (FileNotFoundError, PermissionError)))
+                    and (isinstance(exc, (FileNotFoundError, PermissionError))
+                         or getattr(exc, "winerror", None)
+                         in (11, *range(188, 203), 216, 1260, 4551)))
         if exc.filename != "git" and not nameless:
             raise
         raise Refusal(
@@ -1471,9 +1482,11 @@ class PinSources:
     that a source keyed to a product `a` that nothing declares, which no pin
     ever looked up — the digest went to `gh api` and a `skip`, exit 0, with
     the skip line itself suggesting the `--pin-source` the person had just
-    passed. So the text before the first `=` is a PRODUCT only when its
+    passed. So the text before an `=` is a PRODUCT only when its
     `pin_product_key` is a declared pin's, the key the lookup below uses,
-    and any other value is a bare PATH, whole. A declared name wins
+    and any other value is a bare PATH, whole. Of the texts that do, the
+    longest that leaves a path after it is the key (`_read_source`, #1053),
+    so a declared pin may hold an `=`. A declared name wins
     even when a directory is spelled like the whole value
     (`openGlass=x/openGlass` beside a directory `openGlass=x`): the reading is
     decided by the manifest and never by what happens to be on the disk, and
@@ -1488,22 +1501,34 @@ class PinSources:
     A VALUE THAT NAMES NO PATH IS REFUSED (#442), `pin-source-no-path`:
     `openGlass=` with nothing after its `=`, or an empty value. Either was
     `Path("")`, which is `.`, so the directory this ran in was asked for the
-    pinned commit and the finding blamed `.`. `.` typed still means it. The
-    value and the product it names are spelled, as `_shown` spells them.
+    pinned commit and the finding blamed `.`. `.` typed still means it. A
+    value that ends at a declared pin holding `=` is refused so too: `open=y=`
+    names no path for `open=y`, unless a shorter declared pin leaves one
+    (`open`, with the path `y=`). The value and the product it names are
+    spelled, as `_shown` spells them.
 
     KEYED BY `pin_product_key`, the pin file's own fold (#712, after #638).
     `casefold()` took `openss=` for `openß`, two pin files, where the chain
-    readers' `LinkSources` read them as two: the two copied tools read
-    `[PRODUCT=]PATH` one way over ASCII alone. A pin's digest stopped a wrong
+    readers' `LinkSources` read them as two. A pin's digest stopped a wrong
     source from passing; the source was simply looked up under the other
     spelling.
+
+    THE TWO COPIED TOOLS READ `[PRODUCT=]PATH` ONE WAY. The naming gate's
+    `LinkSources` reads a `--link-source` as this reads a `--pin-source`,
+    with a chain link where this has a declared pin: keyed by
+    `pin_product_key` (#444 there), and to the longest name before an `=`
+    that leaves a path after it (#980 there). Before #1053 this ended every
+    key at the first `=`, so the two read one way only for a name holding
+    none.
     """
 
     def __init__(self, values: list[str], declared) -> None:
         #: The declared pins, spelled as `project.yaml` spells them.
         self.declared = [p for p in declared if isinstance(p, str) and p]
-        names = {pin_product_key(product): product
-                 for product in self.declared}
+        #: `{pin_product_key(product): spelling}` of the declared pins, the
+        #: table `_read_source` reads every value against.
+        self.names: dict[str, str] = {pin_product_key(product): product
+                                      for product in self.declared}
         #: `{pin_product_key(product): (typed, path)}`, the last value given
         #: wins.
         self.keyed: dict[str, tuple[str, Path]] = {}
@@ -1517,8 +1542,7 @@ class PinSources:
         #: The values a pin's digest was asked of, readable or not.
         self.used: set[str] = set()
         for typed in values:
-            key, sep, path = typed.partition("=")
-            product = names.get(pin_product_key(key)) if sep else None
+            product, _before, path = self._read_source(typed)
             self.reading[typed] = product
             if product is not None:
                 earlier = self.keyed.get(pin_product_key(product))
@@ -1533,7 +1557,7 @@ class PinSources:
                    f"{_shown(product)}"
                    if typed else "`--pin-source ''` names no path"
                    for typed, product in self.reading.items()
-                   if not (typed.partition("=")[2] if product else typed)]
+                   if not self._read_source(typed)[2]]
         if no_path:
             raise Refusal(
                 "pin-source-no-path",
@@ -1542,17 +1566,66 @@ class PinSources:
                 "Remediation: give the checkout's path (`--pin-source "
                 "<product>=<path>`), or `.` to mean this directory.")
 
+    def _read_source(self, typed: str) -> tuple[str | None, str, str]:
+        """`(product, before, path)` for one `--pin-source` value (#1053):
+        the declared pin it is keyed to, as `project.yaml` spells it, the
+        text before the `=` that ends its key, and the text of its path. A
+        bare PATH is `(None, before, typed)`: its path is the whole value,
+        and `before` the text before its first `=` (`""` where it holds
+        none), the shortest text the scan tried, which names no declared pin
+        either.
+
+        THE LONGEST DECLARED PIN THAT LEAVES A PATH, as the naming gate's
+        `LinkSources._read_source` reads a `--link-source` key (#980). The
+        text before an `=` is a PRODUCT only where it names a declared pin
+        by `pin_product_key`, and the LAST `=` whose text does, with a path
+        after it, ends the key. Read at the first `=`, `open=y=<path>`,
+        typed as `openGlass=<path>` is, was a bare PATH where `open=y` is
+        declared and `open` is not, so it never answered for `open=y`; and
+        where both are declared it was `open`'s, with the path `y=<path>`,
+        so `open=y` read none, and of `open=<path>` and `open=y=<path>` the
+        later replaced the earlier. Where no declared pin holds an `=`,
+        every value is read as it was: a text holding `=` can only name a
+        pin that holds one.
+
+        WHOLE: the key is the text before its `=` as typed, never stripped
+        and never cut at a `/`, so ` openGlass=x` and `opensoft/openGlass=x`
+        are bare PATHs where `openGlass` is declared, as they always were.
+
+        A VALUE THAT ENDS AT A DECLARED PIN NAMES NO PATH. Only the last `=`
+        can leave nothing after it. Where its text names a declared pin and
+        no shorter one leaves a path, the value is that pin's, with an empty
+        path, and `__init__` refuses it `pin-source-no-path` (#442), as it
+        refuses `openGlass=`: read as a bare PATH, `open=y=` would be a tree
+        for every pin with no more specific answer."""
+        before = ""
+        at = typed.rfind("=")
+        while at >= 0:
+            before = typed[:at]
+            product = self.names.get(pin_product_key(before))
+            if product is not None and typed[at + 1:]:
+                return product, before, typed[at + 1:]
+            at = typed.rfind("=", 0, at)
+        if typed.endswith("="):
+            product = self.names.get(pin_product_key(typed[:-1]))
+            if product is not None:
+                return product, typed[:-1], ""
+        return None, before, typed
+
     def read_as_path(self, typed: str | None) -> str:
         """The sentence saying a value holding `=` was read as a bare PATH,
         or `""` — what a person who meant `PRODUCT=PATH` and mistyped the
         product needs told, since nothing else in the run names it. Nothing
         when no pin is declared: the note has already said so. The key is
         spelled as `_shown` spells the value (#610), and so is each declared
-        pin, which is the manifest's text (#712)."""
+        pin, which is the manifest's text (#712). The key is the one
+        `_read_source` read, the text before the value's first `=`: a value
+        is a PATH only where no text before any of its `=` names a declared
+        pin (#1053)."""
         if typed is None or self.reading.get(typed) is not None \
                 or "=" not in typed or not self.declared:
             return ""
-        key = typed.partition("=")[0]
+        key = self._read_source(typed)[1]
         what = f"`{_shown(key)}` is not" if key else "nothing before its `=` is"
         declared = ", ".join(_shown(product) for product in self.declared)
         return (f"It was read as a PATH: {what} a declared neutral-product "
@@ -2102,10 +2175,12 @@ def main(argv: list[str] | None = None) -> int:
         metavar="[PRODUCT=]PATH",
         help="a local checkout to recompute a neutral-product pin's digest "
              "from, instead of `gh api` — e.g. --pin-source openGlass=../"
-             "openGlass. The text before the first `=` is a PRODUCT only when "
-             "it names a pin project.yaml declares, and then that reading "
-             "wins even over a directory spelled like the whole value "
-             "(./PATH reads that directory); any other value is a bare PATH, "
+             "openGlass. The text before an `=` is a PRODUCT only when it "
+             "names a pin project.yaml declares, and the longest such text "
+             "that leaves a path after it is the one read, so a pin may hold "
+             "`=`; that reading wins even over a directory spelled like the "
+             "whole value (./PATH reads that directory); any other value is "
+             "a bare PATH, "
              "which applies to whichever declared pin has no more specific "
              "answer (the common case is exactly one). Repeatable; a value no "
              "pin used is noted, and one that cannot be read is a finding. "

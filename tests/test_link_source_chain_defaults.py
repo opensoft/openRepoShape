@@ -18,6 +18,12 @@ from a project root the naming gate read the project's own manifest as
 `openXdox`'s, and `validate-pins.py` asked `.` for the pinned commit. Both
 tools now refuse it, and an empty value, by name, exit 2.
 
+#1053. `validate-pins.py` ended every `--pin-source` key at the first `=`, so
+a declared pin whose name holds one, `open=y`, was no key, and `open=y=` was a
+bare PATH. A key is now the longest declared pin before an `=` that leaves a
+path after it, so `open=y=<path>` is `open=y`'s, and `open=y=` names no path
+for it and is refused in `openXdox=`'s words.
+
 Every run is made from a directory of its own under `tmp_path`, and every
 manifest is written as bytes, so no checkout beside it answers and no line
 ending differs between systems.
@@ -32,6 +38,7 @@ import pytest
 
 from conftest import (REPO, SCAFFOLD, clear_ambient_pin_sources, git,
                       run_script)
+from test_neutral_pin_validator import declare_by_hand
 
 sys.path.insert(0, str(REPO / "scripts"))
 from repo_shape import link_pins_from_trees  # noqa: E402
@@ -384,6 +391,15 @@ def validate_pins(pinned: dict, *args: str):
     return run_script(root / "scripts" / "validate-pins.py", *args, cwd=root)
 
 
+def pin_source_no_path(said: str) -> str:
+    """`validate-pins.py`'s whole stderr refusing a value that names no
+    path, `said` naming each value and its pin."""
+    return (f"REFUSED pin-source-no-path: {said}. An empty path would be read "
+            "as the directory this runs in.\nRemediation: give the "
+            "checkout's path (`--pin-source <product>=<path>`), or `.` to "
+            "mean this directory.\n")
+
+
 @pytest.mark.parametrize("value,said", [
     pytest.param("openXdox=", "`--pin-source openXdox=` names no path for "
                  "openXdox", id="keyed"),
@@ -397,10 +413,7 @@ def test_a_pin_source_that_names_no_path_is_refused(pinned, value, said):
     the pin it is keyed to, with its own remedy and not the lockstep one."""
     result = validate_pins(pinned, "--pin-source", value)
     assert result.returncode == 2, result.stderr + result.stdout
-    assert result.stderr == (
-        f"REFUSED pin-source-no-path: {said}. An empty path would be read as "
-        "the directory this runs in.\nRemediation: give the checkout's path "
-        "(`--pin-source <product>=<path>`), or `.` to mean this directory.\n")
+    assert result.stderr == pin_source_no_path(said)
     assert result.stdout == ""
 
 
@@ -415,3 +428,57 @@ def test_a_pin_source_path_after_the_equals_sign_is_still_read(pinned):
     assert dot.returncode == 1, dot.stderr + dot.stdout
     assert ("FINDING neutral-pin-source-unreadable: contracts/openxdox-pin.yaml"
             ": . (--pin-source openXdox=...) could not answer" in dot.stderr)
+
+
+# --- #1053: validate-pins.py, a pin whose name holds `=` --------------------
+
+@pytest.fixture(scope="module")
+def equals_pinned(tmp_path_factory) -> dict:
+    """`codexDox` scaffolded as `pinned` is, with its pin on `openXdox`
+    then declared BY HAND as a pin on `open=y` over the same tree (#1053):
+    no scaffold writes a pin holding `=`."""
+    base = tmp_path_factory.mktemp("pin1053-pins")
+    product = tree(base / "src" / "openXdox", "openDox")
+    result = scaffold(base, "codexDox", product,
+                      "--local-remote-dir", str(base / "remotes"),
+                      "--work-dir", str(base / "work"))
+    assert result.returncode == 0, result.stderr + result.stdout
+    root = base / "work" / "codexDox"
+    commit = git("rev-parse", "HEAD", cwd=product).stdout.strip()
+    declare_by_hand(root, ("open=y", product, commit), seed="openXdox")
+    return {"root": root, "product": product}
+
+
+@pytest.mark.parametrize("value,said", [
+    pytest.param("open=y=", "`--pin-source open=y=` names no path for "
+                 "open=y", id="keyed"),
+    pytest.param("OPEN=Y=", "`--pin-source OPEN=Y=` names no path for "
+                 "open=y", id="keyed-in-capitals"),
+])
+def test_a_pin_source_that_ends_at_a_pin_holding_an_equals_sign_is_refused(
+        equals_pinned, value, said):
+    """`open=y=` ends at the declared pin `open=y` and no shorter pin leaves
+    a path, so it names no path for `open=y` and is refused as `openXdox=`
+    is, in the same words, exit 2 (#1053). Read at the first `=`, `open`
+    named no pin, so it was the bare PATH `open=y=` for every pin with no
+    more specific answer."""
+    result = validate_pins(equals_pinned, "--pin-source", value)
+    assert result.returncode == 2, result.stderr + result.stdout
+    assert result.stderr == pin_source_no_path(said)
+    assert result.stdout == ""
+
+
+def test_a_path_after_a_pin_holding_an_equals_sign_is_still_read(
+        equals_pinned):
+    """The control: the product's clone recomputes `open=y`'s digest, and
+    a typed `.` is still the project root, asked and named."""
+    keyed = validate_pins(equals_pinned, "--pin-source",
+                          f"open=y={equals_pinned['product']}")
+    assert keyed.returncode == 0, keyed.stderr + keyed.stdout
+    assert "digest recomputes (--pin-source open=y=...)\n" in keyed.stdout
+    assert "pins ok" in keyed.stdout
+    dot = validate_pins(equals_pinned, "--pin-source", "open=y=.")
+    assert dot.returncode == 1, dot.stderr + dot.stdout
+    assert ("FINDING neutral-pin-source-unreadable: contracts/open=y-pin.yaml"
+            ": . (--pin-source open=y=...) could not answer" in dot.stderr), (
+        dot.stderr)

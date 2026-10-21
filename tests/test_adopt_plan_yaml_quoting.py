@@ -1106,9 +1106,11 @@ def test_the_misread_rule_names_an_id_it_derived_from_the_assembly(
 #: named the branch by what was READ, with its kind, and then the text
 #: `execute` writes (review181's N2); the validator refused the id as `id is
 #: 7`. Since #259 the line is quoted and `7` reads back as the text `7`, so
-#: nothing names any of them, as on main: `execute` writes `7` for a plan
-#: that says `007`. A date or a visibility read as not text is still
-#: refused (`LATE_DATES`, `NOT_TEXT_INVALID`), and a pin's product is #273's
+#: neither rule named any of them, and `execute` wrote `7` for a plan that
+#: says `007` (L1-K3 on #457). Since #902 `check` refuses each by what was
+#: read: the branch as `plan-bad-tracking-branch`, the id as `plan-bad-id`.
+#: A date or a visibility read as not text is still refused
+#: (`LATE_DATES`, `NOT_TEXT_INVALID`), and a pin's product is #273's
 #: (`test_a_pin_whose_product_is_not_text_is_273s_finding_alone`). The
 #: source has the branch as `execute` takes it, `str` of what was read
 #: (#479).
@@ -1118,31 +1120,45 @@ READ_AS_NOT_TEXT = [
     (TRACKING_KEY, "1.50", "the number 1.5", "1.5"),
     ("id", "007", SEVEN_READ, "7"),
 ]
+#: The ones #181's misread rule is still asked about: an id read as not
+#: text is `plan-bad-id` since #902, refused before any rule is asked.
+MISREAD_AS_NOT_TEXT = [row for row in READ_AS_NOT_TEXT if row[0] != "id"]
 
 
 @pytest.mark.parametrize("key, spelled, read_as, written", READ_AS_NOT_TEXT,
                          ids=ids_of(READ_AS_NOT_TEXT, 0, 1))
-def test_check_passes_a_plan_value_read_as_not_text_as_main_does(
+def test_check_refuses_a_plan_value_read_as_not_text_by_what_was_read(
         answered_copy, tmp_path, key, spelled, read_as, written):
     """`check` named each of these, the branch as #181's misread and the id
     in the validator's words, while the template wrote its line bare. Since
     #259 the line is quoted, the text `execute` writes reads back, and
-    neither rule has a finding: `check` passes the plan, as main does, and
-    `execute` writes `str` of what was read, `7` for `007` (a residual this
-    change shares with main, in its description). `read_as` is the
-    misread rule's answer for a bare line, asked in the test below."""
+    neither rule had a finding: `check` passed the plan and `execute` wrote
+    `str` of what was read, `7` for `007` (L1-K3 on #457). Since #902 each
+    is refused by what the plan's reader made of it, and the text `execute`
+    would have taken: the branch is a finding under its key's code, and the
+    id is `plan-bad-id`, which `check` and `execute` refuse an id as."""
     source, text = answered_copy
     holding(source, key, written)
     plan = tmp_path / PLAN_FILE
     carrying(plan, text, key, spelled)
     result = checked(plan)
-    assert result.returncode == 0, result.stdout + result.stderr
-    assert PLAN_OK in result.stdout, result.stdout
-    assert ANY_FINDING not in result.stderr, result.stderr
+    said = (f"`{key}:` was read out of the plan as {read_as}, not as text, "
+            f"so `execute` would take it as the text `{written}`")
+    assert PLAN_OK not in result.stdout, result.stdout
+    if key == "id":
+        assert result.returncode == 2, result.stdout + result.stderr
+        assert result.stderr.startswith(
+            f"REFUSED plan-bad-id: {plan}: {said}\n"), result.stderr
+    else:
+        assert result.returncode == 1, result.stdout + result.stderr
+        assert [line for line in result.stderr.splitlines()
+                if line.startswith(ANY_FINDING)] == [
+            f"FINDING plan-bad-tracking-branch: {said}"], result.stderr
 
 
-@pytest.mark.parametrize("key, spelled, read_as, written", READ_AS_NOT_TEXT,
-                         ids=ids_of(READ_AS_NOT_TEXT, 0, 1))
+@pytest.mark.parametrize("key, spelled, read_as, written",
+                         MISREAD_AS_NOT_TEXT,
+                         ids=ids_of(MISREAD_AS_NOT_TEXT, 0, 1))
 def test_the_misread_rule_names_a_plan_value_that_is_not_text_by_what_was_read(
         adopter, answered, bare_template, tmp_path, key, spelled, read_as,
         written):
@@ -1235,6 +1251,100 @@ def test_the_misread_rule_asks_nothing_of_a_value_execute_never_writes(
     plan = tmp_path / PLAN_FILE
     carrying(plan, text, key, spelled)
     assert adopter._misread_findings(adopter.Plan.load(plan)) == []
+
+
+# --- #916's L1-K6: the two clauses that keep a value out of the misread rule,
+# --- each reached with the other out of the way ------------------------------
+#
+# `_execute_gets_to_write` (a visibility outside the three choices is not
+# written in every mode) and `left = judged | ...` in `_misread_findings` (a
+# value the project's own validator judges is its alone) keep the SAME
+# visibilities out, so reverting either one alone failed no test: the first
+# test above asks both at once. Each of these asks one.
+
+
+@pytest.mark.parametrize(KEY_SPELLED, NEVER_WRITTEN)
+def test_what_execute_writes_alone_keeps_a_value_it_never_writes_out(
+        adopter, answered, bare_template, tmp_path, monkeypatch, key, spelled):
+    """`_execute_gets_to_write` with no help from the validator's clause: the
+    validator is made to judge no value (`_validator_judged` answers an empty
+    set, not None), so a visibility outside the three choices that the loader
+    misreads on a bare line (`bare_template`) stays out of the rule only
+    because `_plan_fields` leaves it out. A rule that asked about it would
+    name it misread, with a remediation saying the run ends `adoption
+    verified`, where `execute` refuses it before any leg exists."""
+    monkeypatch.setattr(adopter, "_validator_judged",
+                        lambda _plan: frozenset())
+    _, text = answered
+    plan = tmp_path / PLAN_FILE
+    carrying(plan, text, key, spelled)
+    assert adopter._misread_findings(adopter.Plan.load(plan)) == []
+
+
+@pytest.fixture
+def bare_elector(adopter, bare_template) -> None:
+    """`bare_template` with the manifest's `elected_by:` and `reference:`
+    lines written bare too. Neither was bare before #259 (the elector was
+    quoted by #284 and `reference:` from the start), so `bare_template`
+    leaves both between quotes, where no value is misread. Bare, a blank one
+    reads as no value, and nothing but the validator's clause then keeps the
+    rule from naming what the validator names."""
+    written = ""
+    for rel in adopter.TEMPLATED_YAML:
+        path = bare_template / rel
+        text = path.read_text(encoding=UTF8)
+        for placeholder in (ELECTED_BY_PLACEHOLDER, REFERENCE_PLACEHOLDER):
+            text = text.replace(f'"{{{{{placeholder}}}}}"',
+                                f"{{{{{placeholder}}}}}")
+        path.write_text(text, encoding=UTF8)
+        written += text
+    for key, placeholder in ((ELECTED_BY_KEY, ELECTED_BY_PLACEHOLDER),
+                             (REFERENCE_KEY, REFERENCE_PLACEHOLDER)):
+        assert f"{key}: {{{{{placeholder}}}}}\n" in written, key
+
+
+#: `(plan key, as a plan edited by hand spells it, its placeholder)`: a blank
+#: value on a line written bare reads as no value, which the validator refuses
+#: (`manifest-elected-by`, `manifest-reference`). `_execute_gets_to_write`
+#: leaves out only a visibility and a tracking branch, so these are asked.
+JUDGED_AND_MISREAD = [
+    pytest.param(ELECTED_BY_KEY, '" "', ELECTED_BY_PLACEHOLDER,
+                 id="elector-blank"),
+    pytest.param(ELECTED_BY_KEY, '""', ELECTED_BY_PLACEHOLDER,
+                 id="elector-empty"),
+    pytest.param(REFERENCE_KEY, '" "', REFERENCE_PLACEHOLDER,
+                 id="reference-blank"),
+    pytest.param(REFERENCE_KEY, '""', REFERENCE_PLACEHOLDER,
+                 id="reference-empty"),
+]
+
+
+@pytest.mark.parametrize("key, spelled, placeholder", JUDGED_AND_MISREAD)
+def test_the_validators_judgement_alone_keeps_a_value_it_judges_out(
+        adopter, answered, bare_elector, tmp_path, capsys, key, spelled,
+        placeholder):
+    """`left = judged | ...` with no help from `_execute_gets_to_write`: these
+    values are asked about (it leaves out only a visibility outside the three
+    choices and a tracking branch `execute` never writes), the loader misreads
+    each on its bare line, and the validator judges it, so the validator's
+    finding is the only one, as `JUDGED_ONCE` has it on the shipped
+    templates. Both the rule and `check` in this process are asked: a rule
+    that did not leave the value to the validator would print it twice."""
+    _, text = answered
+    plan = tmp_path / PLAN_FILE
+    carrying(plan, text, key, spelled)
+    loaded = adopter.Plan.load(plan)
+    asked = dict(adopter._plan_fields(loaded))
+    assert placeholder in asked, "`_execute_gets_to_write` left it out"
+    assert adopter.manifest_misreads([asked[placeholder]]), (
+        "the loader reads the bare line back, so it is nobody's to judge")
+    assert placeholder in adopter._validator_judged(loaded)
+    assert adopter._misread_findings(loaded) == []
+    code, _, stderr = run_here(adopter, capsys, "check", PLAN_OPTION,
+                               str(plan))
+    assert code == 1, stderr
+    (line,) = judged_lines(stderr)
+    assert line.startswith(INVALID_FINDING), stderr
 
 
 #: A tracking branch the loader reads as no value, and git will not create.
@@ -1511,6 +1621,32 @@ def test_the_source_says_whether_execute_pushes_the_legs_to_a_branch(
     assert adopter._pushed_in_every_mode(opened, "true") is pushed
 
 
+@pytest.mark.parametrize("own, origin, clone_says_no, source_says_no", [
+    pytest.param(True, False, True, False, id="the-clones-memory-alone"),
+    pytest.param(False, True, False, True, id="the-sources-own-alone"),
+])
+def test_each_question_pushed_in_every_mode_asks_is_asked_alone(
+        adopter, tmp_path, own, origin, clone_says_no, source_says_no):
+    """#916's L1-K6: `_pushed_in_every_mode` says no where EITHER of its two
+    questions does, so a branch both refuse (`the-source-lacks-it` in
+    `BRANCH_CASES`) is no test of one: take either question out and the
+    other still says no. These are the two branches ONE question refuses,
+    with the other's answer stated as a premise, so that taking out either
+    question alone fails here. The first is what the source's clone
+    remembers of `origin` (`_tracking_branch_problem`, gh mode): the source
+    has `true` and `origin` lacks it. The second is the source's own
+    branches as `git ls-remote` lists them (`--local-remote-dir`): `origin`
+    has `true` and the source lacks it."""
+    opened = adopter.Source.open(str(branch_source(tmp_path, own, origin)),
+                                 tmp_path / "work")
+    problem = adopter._tracking_branch_problem(
+        opened, adopter.TRACKING_KEY, "true")
+    listed = adopter._branches_a_clone_gets(str(opened.path), opened.path)
+    assert (problem is not None) is clone_says_no, problem
+    assert ("true" not in listed) is source_says_no, listed
+    assert adopter._pushed_in_every_mode(opened, "true") is False
+
+
 def test_plan_asks_the_validator_before_the_misread_rule(
         adopter, answered, bare_template, tmp_path, monkeypatch, capsys):
     """rv181f's G1 at `plan`: the project's own validator is asked first,
@@ -1624,18 +1760,15 @@ def test_a_pin_whose_product_is_not_text_is_273s_finding_alone(
 UNWRITABLE_DATE = '"2026-09-02\\nx"'
 #: `(plan key, as a plan edited by hand spells it)`: values no file
 #: `execute` writes can hold, which #255 names as `plan-unwritable-value`:
-#: a line break, in a value read back as one line, and a control character
-#: such as a tab. Where the date and the pins were written bare, the
-#: project's loader would read each as something else too; the visibility
-#: is not one #181 judges (`NEVER_WRITTEN`). Beside a line break, the
-#: project's own validator lists the manifest such a value makes, as main
-#: has it (#255 before #261, `_entry_findings`); a pin holding a tab is
-#: #255's finding alone.
+#: a line break, in a value read back as one line. Where the date was
+#: written bare, the project's loader would read it as something else too;
+#: the visibility is not one #181 judges (`NEVER_WRITTEN`). Beside a line
+#: break, the project's own validator lists the manifest such a value
+#: makes, as main has it (#255 before #261, `_entry_findings`). A pin no
+#: file can hold is #273's finding alone (#901): `UNHELD_PINS`, below.
 UNWRITABLE = [
     pytest.param(ELECTED_ON_KEY, UNWRITABLE_DATE, id=ELECTED_ON_KEY),
     pytest.param(VISIBILITY_KEY, '"private\\nx"', id=VISIBILITY_KEY),
-    pytest.param(PINS_KEY, '"a\\nb"', id="pins-line-break"),
-    pytest.param(PINS_KEY, '"openGlass\\t"', id="pins-tab"),
 ]
 
 
@@ -1653,6 +1786,34 @@ def test_check_names_a_value_no_file_can_hold_once_as_unwritable(
     result = checked(plan)
     assert result.returncode == 1, result.stdout + result.stderr
     assert result.stderr.count(UNWRITABLE_FINDING) == 1, result.stderr
+    assert MISREAD_FINDING not in result.stderr, result.stderr
+    assert adopter.MANIFEST_MISREAD_REMEDIATION not in result.stderr
+
+
+#: A pin's product as a plan edited by hand spells it, holding a line break
+#: or a tab: no name `plan --pin` records, which `_read_pins` names.
+UNHELD_PINS = [
+    pytest.param('"a\\nb"', id="pins-line-break"),
+    pytest.param('"openGlass\\t"', id="pins-tab"),
+]
+
+
+@pytest.mark.parametrize("spelled", UNHELD_PINS)
+def test_check_names_a_pin_no_file_can_hold_once_as_malformed(
+        adopter, answered, tmp_path, spelled):
+    """On main at c7a3ff16 such a pin was three findings about one value:
+    `plan-pin-malformed`, then #255's `plan-unwritable-value` and the
+    validator's `plan-manifest-invalid` (#901). It is #273's finding, once,
+    which names the `plan` that records the pin whole, and never #181's."""
+    _, text = answered
+    plan = tmp_path / PLAN_FILE
+    carrying(plan, text, PINS_KEY, spelled)
+    result = checked(plan)
+    assert result.returncode == 1, result.stdout + result.stderr
+    found = [line for line in result.stderr.splitlines()
+             if line.startswith("FINDING ")]
+    assert len(found) == 1, result.stderr
+    assert found[0].startswith("FINDING plan-pin-malformed: "), found[0]
     assert MISREAD_FINDING not in result.stderr, result.stderr
     assert adopter.MANIFEST_MISREAD_REMEDIATION not in result.stderr
 
@@ -1747,7 +1908,8 @@ def test_a_manifest_its_reader_refuses_is_the_validators_alone(
                            "refuses: "), stderr
     assert stderr.count("Remediation: ") == 1, stderr
     # The words are the reader's, and since #708 so is the remedy.
-    assert adopter.MANIFEST_UNREADABLE_REMEDIATION in stderr, stderr
+    assert sys.modules["shape_materialize"].MANIFEST_UNREADABLE_REMEDIATION \
+        in stderr, stderr
     assert VALIDATOR_REMEDIATION_START not in stderr, stderr
 
 

@@ -158,8 +158,8 @@ Git Bash runs step 3's bash command and its one line, tested in CI but for a
 typed `yes`, which its preflight cannot take there. Printed commands are quoted
 for a POSIX shell, so paste them into Git Bash. Only `shape-doctor.py`'s lines,
 `setup-project.py`'s family lines and `family.py`'s `NEXT`, `switch -c`, `add`,
-`cd` and `git rm -r --cached` lines are quoted for the shell they are printed
-in, PowerShell or Git Bash, on Windows.
+`cd`, `git rm -r --cached` and `bump` lines are quoted for the shell they are
+printed in, PowerShell or Git Bash, on Windows.
 Off Windows and in Git Bash, a path `shape-doctor.py` cannot print as itself is
 written `$'…'`: bash, zsh and ksh read that; dash (`/bin/sh` on Debian and
 Ubuntu) does not.
@@ -481,9 +481,12 @@ manifest, sets the topic `xf-project-atlas` on all three, clones the root as
 `./Atlas` where you ran it (or `--into <dir>`), and runs `scripts/bootstrap.py`.
 
 > [!WARNING]
-> **If it fails part-way.** Nothing is created before the typed `yes` in (4):
-> the preflight, the naming check and the plan only read and print, and the
-> plan is literally a `--dry-run`. After the `yes`, `scaffold-project.py`
+> **If it fails part-way.** Nothing that stays is created before the typed `yes`
+> in (4): the preflight, the naming check and the plan only read and print, and
+> the plan is literally a `--dry-run`. The run makes a few short-lived folders
+> along the way, such as `.openreposhape-write-probe-*` above the clone and
+> `openreposhape-seed-*` and `openreposhape-branch-*` in the temporary folder,
+> and takes each away again. After the `yes`, `scaffold-project.py`
 > creates the three repositories with `gh repo create` in the order
 > `Atlas-spec`, `Atlas-code`, `Atlas` — the root LAST — then seeds and pushes
 > the two legs, then builds the root, pushes it, and sets the topic on all
@@ -807,13 +810,14 @@ The contracts decision costs something, and the plan says so instead of letting
 it be discovered later: `scripts/validate.py` reads `contracts/*.yaml` from
 beside it and must now read ACROSS the root. `plan` finds every such file with
 `git grep` and lists up to eight per directory in `follow_ups:`, counting the
-rest; the root Makefile it materializes exports `CONTRACTS_DIR`, pointing at the
-`contracts/` of the spec leg where the plan mounts it (`$(CURDIR)/spec/contracts`
-by default). The tool does not make the edit — naming it is the
-honest half, making it silently would be the dangerous one. And `.specify/` and
-the ten identical assistant stubs stay at the root because an assistant reading
-`CLAUDE.md` from inside the code leg would be told about specifications it
-cannot see.
+rest; the shape's Makefile exports `CONTRACTS_DIR`, pointing at the `contracts/`
+of the spec leg where the plan mounts it (`$(CURDIR)/spec/contracts` by
+default); it is the root's Makefile, or, where the source keeps a `Makefile` of
+its own, `shape/Makefile`, which holds the export until a person merges the two.
+The tool does not make the edit — naming it is the honest half, making it
+silently would be the dangerous one. And `.specify/` and the ten identical
+assistant stubs stay at the root because an assistant reading `CLAUDE.md` from
+inside the code leg would be told about specifications it cannot see.
 
 ### Ambiguous is an answer, and no source line is overwritten
 
@@ -1205,12 +1209,12 @@ one verdict, and its exit code:
 | `COMPLIANT` | 0 | no row is a `FINDING`, and the pin names this standard's commit |
 | `COMPLIANT, SHAPE BEHIND (n upstream-changed, m upstream-added)`, or `(pin <a> -> <b>, no copied file differs)` | 1 | valid, and the standard has moved on |
 | `DRIFTED (…)` | 1 | a copy was edited, deleted or no longer maps onto the standard, or a leg (a member, in a holder) is off its pin |
-| `MISPLACED (n paths)` | 1 | a tracked path sits in a leg the path policy puts elsewhere, or a submodule in a leg other than the one its `submodules:` record names |
+| `MISPLACED (n paths)` | 1 | a tracked path sits in a leg the path policy puts elsewhere (unless `answered_paths:` answers it into that leg), or a submodule in a leg other than the one its `submodules:` record names |
 | `INVALID (<rows>)` | 1 | a validator went red, or (`merge`) the index holds an unmerged path |
 | `NOT A SHAPE ROOT` | 2 | neither manifest is there — adopt, or scaffold |
 
 Exit 3 is usage or environment (a flag argparse rejects is exit 2) — nothing about
-it is a statement about the tree you pointed at: no such path, a refused
+it is a statement about the tree you pointed at: no such path, a path this user cannot search, a refused
 `--placement-plan`, a `shape-doctor.py` outside a checkout of the standard, or
 **this** checkout unable to answer (`CANNOT ANSWER`): a pin's commit it lacks, a
 partial clone missing what is compared, a read that fails, a validator of its

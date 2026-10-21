@@ -241,12 +241,19 @@ it, one added since the adoption too: no file is held to the row's
 `source_commit:`. A row naming a directory of its leg without the `/` a
 directory's row ends with answers nothing under it, as a plan entry spelled
 so covers nothing, and the leg's entry names it under `unslashed`, said and
-never a finding.
+never a finding. A row naming a file of its leg WITH that `/` answers nothing
+either, since no file is under it (#914): the leg's entry names it under
+`slashed`, said the same way.
 
-AN EMPTY `.gitmodules` ASKS NOTHING (#655). One that holds no byte -- what a
-plain `git rm` of a leg's only submodule leaves, tracked -- registers no
-submodule, so the policy's question of it has no subject. The leg's entry
-names it under `empty_gitmodules`, the row says so, and it is no question.
+AN EMPTY `.gitmodules` ASKS NOTHING (#655, #914). One that holds no section
+-- no byte, which a plain `git rm` of a leg's only submodule leaves tracked,
+or only blank lines, comments and a byte-order mark, which git's own reader
+passes over -- registers no submodule, so in a leg that holds none the
+policy's question of it has no subject. The leg's entry names it under
+`empty_gitmodules`, the row says so and how to remove it, and it is no
+question. Beside a submodule of its leg it stays the question it was, since
+no section registers that submodule: the leg's entry names each under
+`unregistered_submodules`, and the row says how to register it or remove it.
 
 A SUBMODULE MOVED OR REMOVED SINCE THE ADOPTION (#525). Its row is a
 person's to change, by hand, in the pull request that bumps the pins; no
@@ -319,8 +326,9 @@ EXIT CODES
        file that is gone
     2  NOT A SHAPE ROOT: neither `project.yaml` nor `family.yaml` is there
     3  usage or environment -- nothing here is a statement about the tree
-       that was pointed at: no such root, this file is not sitting in a
-       checkout of the standard, or THIS CHECKOUT cannot answer (a pin
+       that was pointed at: no such root, a root this user cannot search
+       (#430), this file is not sitting in a checkout of the standard, or
+       THIS CHECKOUT cannot answer (a pin
        naming a commit it does not carry; a partial clone lacking what the
        comparison reads, #683; a validator of its own that crashed or
        cannot be given its `PYTHONPATH`, its template copy or its naming
@@ -631,13 +639,21 @@ MOVED = "moved"
 #: leg holds (#525); present only where there is one.
 UNHELD = "unheld"
 #: The key of a leg's entry naming its `.gitmodules` where that file holds
-#: no byte, so the policy has nothing to ask of it (#655); present only on a
-#: leg that has one.
+#: no section and the leg no submodule, so the policy has nothing to ask of
+#: it (#655, #914); present only on a leg that has one.
 EMPTY_GITMODULES = "empty_gitmodules"
+#: The key of a leg's entry naming each submodule it holds beside a
+#: `.gitmodules` that holds no section, so that nothing registers it (#914);
+#: present only on a leg that has one.
+UNREGISTERED_SUBMODULES = "unregistered_submodules"
 #: The key of a leg's entry naming each `answered_paths:` row for that leg
 #: whose path is a directory of it written without its `/` (#655); present
 #: only on a leg that has one.
 UNSLASHED = "unslashed"
+#: The key of a leg's entry naming each `answered_paths:` row for that leg
+#: whose path is a file of it written with the `/` a directory's row ends
+#: with (#914); present only on a leg that has one.
+SLASHED = "slashed"
 #: The `why` of a row whose every path in the wrong leg is a submodule moved
 #: since the adoption (#525). Its NEXT is this doctor again, as the
 #: `manifest kinds` row's is for a file only a person can mend
@@ -1995,9 +2011,21 @@ def validator_for(ctx: Context, own: str, template: str) -> tuple:
     it is returned here, from the one place that made the choice, instead of
     being re-derived from the path by a caller (#238). It is also the row's
     `detail.own_copy`.
+
+    AN OWN COPY THIS USER CANNOT REACH IS NOT ONE THE ROOT LACKS (#430). It
+    was asked `own_path.is_file()`, which up to Python 3.13 raised a refused
+    `stat` out of the row (`could not be run: [Errno 13] ...`) and from 3.14
+    answers False: a `scripts/` this user cannot search then ran the
+    standard's TEMPLATE in the project's place and printed `ok manifest the
+    standard's templates/assembly-root/scripts/validate-manifest.py passes`,
+    a pass of a gate the project does not have, over its own that nobody
+    ran. It is asked as `validate-pins.py` asks it (`is_a`), and a refused
+    `stat` is RAISED, on every Python: each caller names the copy
+    (`unreadable_gate_row`) or names no line (`gate_line`). The template
+    stands in only for a copy that is not there at all.
     """
     own_path = ctx.root / own
-    if own_path.is_file():
+    if is_a(own_path, stat.S_ISREG):
         return own_path, f"the project's own {own}", True
     return ctx.shape / template, f"the standard's {template}", False
 
@@ -2138,6 +2166,25 @@ def lost_repo_shape_cure(ctx: Context, own: str, lost: Path, rerun: str,
                   f"the commit that made it. Then {then}")
 
 
+def unreadable_gate_row(ctx: Context, check_id: str, label: str, own: str,
+                        exc: OSError, said: str = "") -> Row:
+    """The row of a validator whose OWN copy, `own`, this user cannot reach
+    (#430): a FINDING about the repository, in `validate-pins.py`'s words for
+    the file (`cannot_be_read`), with this doctor again as the NEXT and the
+    gate's advice for the cause as the WHY (`cannot_read_why`), as #847's
+    rows give them for a pin. NOTHING IS RUN: not the copy, which cannot be
+    opened, and not the standard's template in its place, which is not this
+    project's gate (`validator_for`). `said` is what the row says first,
+    where it has more to say (`unloaded_manifest_row`)."""
+    line = cannot_be_read(own, exc)
+    return Row(check_id, label, FINDING,
+               f"{said}{line}, so the project's own gate was not run, and the "
+               "standard's copy is not run in its place", doctor_line(ctx),
+               {"validator": (ctx.root / own).as_posix(), "own_copy": True,
+                "exit": None, "cannot_be_read": line},
+               why=cannot_read_why([exc]))
+
+
 def validator_row(ctx: Context, check_id: str, label: str, own: str,
                   template: str, args: list[str], *,
                   output: list[str] | None = None) -> Row:
@@ -2194,8 +2241,15 @@ def validator_row(ctx: Context, check_id: str, label: str, own: str,
     (`skipped`, `warnings`, `notes`, from `PASS_REPORTS`), quoted in the
     reason in the order printed (`passed_but`), and no NEXT -- each names
     its own remedies, and which declaration stays is the human's call.
+
+    AN OWN COPY THIS USER CANNOT REACH IS NAMED AND NOTHING IS RUN (#430):
+    `validator_for` raises its refused `stat`, and the row is
+    `unreadable_gate_row`'s.
     """
-    used, which, own_copy = validator_for(ctx, own, template)
+    try:
+        used, which, own_copy = validator_for(ctx, own, template)
+    except OSError as exc:
+        return unreadable_gate_row(ctx, check_id, label, own, exc)
     if not used.is_file():
         return Row(check_id, label, FINDING,
                    f"neither {own} nor {template} is readable, so the "
@@ -2359,14 +2413,25 @@ def unloaded_manifest_row(ctx: Context, check_id: str, label: str, own: str,
     when pasted. Only the template copy can be refused that way: the root's
     own copy needs no `PYTHONPATH`, and `validator_for` names it whenever
     the root has one.
+
+    AND AN OWN GATE THIS USER CANNOT REACH IS NAMED BESIDE THE REFUSAL
+    (#430), as `validator_row` names it, and no line runs it or the template
+    in its place: the person makes it readable, and the doctor names the
+    gate's line once it can.
     """
     refusal = ctx.manifest_refusal
     name = ctx.manifest_path.name
-    used, which, own_copy = validator_for(ctx, own, template)
     reason = f"{name} does not load: {refusal_line(refusal)}"
-    detail = {"validator": used.as_posix(), "own_copy": own_copy,
-              "manifest": name,
-              "refusal": {"code": refusal.code, "detail": refusal.detail}}
+    refused = {"manifest": name,
+               "refusal": {"code": refusal.code, "detail": refusal.detail}}
+    try:
+        used, which, own_copy = validator_for(ctx, own, template)
+    except OSError as exc:
+        row = unreadable_gate_row(ctx, check_id, label, own, exc,
+                                  f"{reason}; ")
+        row.detail.update(refused)
+        return row
+    detail = {"validator": used.as_posix(), "own_copy": own_copy, **refused}
     if not used.is_file():
         # Neither copy to name: `validator_row` already says so, for any
         # root, and its next command is the one this row then needs.
@@ -3337,6 +3402,75 @@ def cannot_be_listed(named: str, exc: OSError) -> str:
     line `validate-pins.py` refuses a directory it cannot list with (#434),
     for the `contracts/` the `manifest kinds` row lists (#847)."""
     return f"{named}: cannot be listed ({os_reason(exc)})"
+
+
+#: The key of a leg's or a member's `--json` entry that holds the gate's line
+#: for a mount this user cannot reach (#430), beside a leg's `cannot_be_read`,
+#: which is its PIN's (#847).
+MOUNT_UNREAD = "mount_cannot_be_read"
+
+
+def mount_read(root: Path, rel: str) -> tuple:
+    """`(populated, own_git, refused)` for the leg or member mounted at `rel`:
+    whether a directory with anything in it is there, whether it holds a
+    `.git` of its own, and None, or `(the gate's line, the OSError, whether it
+    was the listing)` where the operating system refused the mount's `stat`,
+    its listing or its `.git`'s `stat` (#430).
+
+    ONE QUESTION FOR THE FOUR ROWS THAT READ A MOUNT -- `legs`, `leg shape
+    files`, `placement` and `members` -- each of which asked `mount.is_dir()
+    and any(mount.iterdir())`, and two of them `(mount / ".git").exists()`.
+    Up to Python 3.13 a mount this user cannot enter raised out of the row,
+    `could not be run: [Errno 13] ...`, and the verdict counted the empty
+    `legs` row as a leg off its pin; from 3.14 the same mount was empty, an
+    unbootstrapped submodule, or one with no `.git` of its own, and a checkout
+    was named over it. Asked here as `validate-pins.py` asks a path (`is_a`),
+    a refused read is said in the gate's words on every Python: `<rel>:
+    cannot be listed (<reason>)` for a mount it cannot list, `<rel>: cannot
+    be read (<reason>)` for one whose own `stat` is refused (a folder above
+    it this user cannot search), and `<rel>/.git: cannot be read (<reason>)`
+    for one it can list and not search, which is the line the gate refuses
+    that mount with (`pin-submodule-unreadable`).
+
+    A MOUNT WITH NOTHING IN IT HAS NO `.git`: its listing says so, so `.git`
+    is asked only of a mount with something in it, which is the answer
+    `(mount / ".git").exists()` gave an empty, absent or non-folder mount. A
+    listing that fails because nothing is there any more is nothing there.
+    """
+    mount = root / rel
+    try:
+        if not is_a(mount, stat.S_ISDIR):
+            return False, False, None
+    except OSError as exc:
+        return False, False, (cannot_be_read(rel, exc), exc, False)
+    try:
+        populated = any(mount.iterdir())
+    except OSError as exc:
+        if refused_read(exc) is None:
+            return False, False, None
+        return False, False, (cannot_be_listed(rel, exc), exc, True)
+    if not populated:
+        return False, False, None
+    try:
+        return True, is_a(mount / ".git", lambda _mode: True), None
+    except OSError as exc:
+        return True, False, (cannot_be_read((Path(rel) / ".git").as_posix(),
+                                            exc), exc, False)
+
+
+def mount_unread_said(line: str) -> str:
+    """What the `legs` and `members` rows say of a mount this user cannot
+    reach (#430), after the gate's line for it: no HEAD is read in it, so
+    nothing says whether it is at its pin."""
+    return f"{line}, so no HEAD in it is compared with the pin"
+
+
+def mount_refusals(refused: list) -> str:
+    """The gate's advice for the mounts `mount_read` was refused, each a
+    `(line, OSError, listed)` (#430): `cannot_read_why`'s, with a refused
+    listing told what a folder is told."""
+    return cannot_read_why([exc for _, exc, listed in refused if not listed],
+                           [exc for _, exc, listed in refused if listed])
 
 
 #: What a refused PERMISSION is told, in `validate-pins.py`'s words for the
@@ -6272,10 +6406,19 @@ def own_bootstrap(root: Path, make_target: bool = False) -> bool:
     `make_target` also asks for the Makefile target `make bootstrap` runs, for
     the one sentence that sends a reader there. ONE DEFINITION, because the
     `legs` and `members` rows each asked it in their own words.
+
+    A COPY THIS USER CANNOT REACH CANNOT RUN EITHER (#430), and that is the
+    answer on every Python: up to 3.13 `is_file()` raised the refused `stat`
+    out of the row, and from 3.14 it answered False. This chooses only which
+    line a row prints, and the `manifest` and `pins` rows name a `scripts/`
+    this user cannot search.
     """
     scripts = root / "scripts"
-    if not all((scripts / name).is_file()
-               for name in ("bootstrap.py", "repo_shape.py")):
+    try:
+        if not all(is_a(scripts / name, stat.S_ISREG)
+                   for name in ("bootstrap.py", "repo_shape.py")):
+            return False
+    except OSError:
         return False
     if not make_target:
         return True
@@ -6296,8 +6439,15 @@ def gate_line(ctx: Context, gate: tuple) -> tuple[Path, bool, str | None]:
     `lockstep_next`, for the `legs` and `members` rows, and the `agent-files`
     row's confirm clause (#776). Both asked `validator_for` and
     `pythonpath_unnamable` in the same words.
+
+    No line either where the root's own copy is one this user cannot reach
+    (#430): it runs nowhere until it is readable, the gate's own row names
+    it, and the template is not its stand-in (`validator_for`).
     """
-    used, _, own_copy = validator_for(ctx, *gate)
+    try:
+        used, _, own_copy = validator_for(ctx, *gate)
+    except OSError:
+        return ctx.root / gate[0], True, None
     if (not used.is_file()
             or pythonpath_unnamable(ctx.shape, own_copy) is not None):
         return used, own_copy, None
@@ -6699,6 +6849,11 @@ def kept_gitdir(root: Path, name: str) -> Path | None:
     (`os.fsdecode`), which `kept_head` and the keep line hand back to git
     unchanged. A strict decode of it found no repository for a section
     named `caf\\xe9`, and the commit on its detached HEAD got no keep line.
+
+    ASKED AS `validate-pins.py` ASKS A PATH (`is_a`, #430): a `stat` the
+    operating system refuses there is raised, on every Python, and
+    `run_checks` names it, where Python 3.14's `is_dir()` called a kept
+    repository this user cannot reach gone.
     """
     try:
         proc = subprocess.run(["git", "rev-parse", "--git-path",
@@ -6712,7 +6867,7 @@ def kept_gitdir(root: Path, name: str) -> Path | None:
     path = Path(where)
     if not path.is_absolute():
         path = root / path
-    return path if path.is_dir() else None
+    return path if is_a(path, stat.S_ISDIR) else None
 
 
 def kept_head(root: Path, git_dir: Path) -> tuple[bool | None, str | None]:
@@ -6794,13 +6949,14 @@ def keeps_modules(mount: Path) -> bool:
     repository kept for it again and checks it out, and a commit made there
     on no branch is left in its reflog alone (measured). Asked through
     `rev-parse --absolute-git-dir` in the mount, which has a `.git` of its
-    own, so git does not walk up. Read only.
+    own, so git does not walk up. Read only. A refused `stat` of `modules/`
+    is raised, as `kept_gitdir` raises one (#430).
     """
     try:
         where = git_out(["rev-parse", "--absolute-git-dir"], cwd=mount)
     except (Refusal, OSError, UnicodeDecodeError):
         return False
-    return (Path(where) / "modules").is_dir()
+    return is_a(Path(where) / "modules", stat.S_ISDIR)
 
 
 def nested_kind(carries: bool, keeps: bool) -> set:
@@ -6869,7 +7025,7 @@ def checkout_reach(root: Path, rel: str, gitlink: str, populated: bool,
     if left_in_reflog(is_detached, kept_at, gitlink):
         keep = (git_dir, kept_at, None if mount.is_dir() else root)
     return (("relink" if populated else "checkout"), keep,
-            nested_kind(carries, (git_dir / "modules").is_dir()))
+            nested_kind(carries, is_a(git_dir / "modules", stat.S_ISDIR)))
 
 
 def kept_branch_line(kept: tuple, platform: str) -> str:
@@ -7207,6 +7363,19 @@ def check_legs(ctx: Context) -> Row:
     `manifest kinds` and `shape currency` rows give them; beside the checkout
     line or the gate's line, the advice is said in its `why`, after what the
     line does.
+
+    A MOUNT THIS USER CANNOT REACH IS NAMED, AND IS NO DRIFT EITHER (#430).
+    At mode 000 the mount's listing raised out of this row, `could not be
+    run: [Errno 13] ...`, and the verdict read the empty row as DRIFTED (1
+    leg(s) not at the pin); at `r--`, Python 3.14 called it a mount with no
+    `.git` of its own and named a checkout over it. `mount_read` asks as the
+    gate asks, and the leg says the gate's line (`<rel>: cannot be listed
+    (<reason>)`, or `<rel>/.git: cannot be read (<reason>)`, which
+    `validate-pins.py` refuses it with), keeps it in `mount_cannot_be_read`,
+    which `drifted_reasons` reads, and is routed to no line: a person mends a
+    mode or an owner, so where nothing else has a line the NEXT is this
+    doctor again, and the advice is the `why`, or follows it, as for a pin.
+    Only a missing gitlink is said before it, as the lockstep fact it is.
     """
     needs = ("the legs it declares are not known and none is checked against "
              "its pin")
@@ -7229,8 +7398,11 @@ def check_legs(ctx: Context) -> Row:
     lockstep: list[str] = []
     gone: list[str] = []
     stuck: list[str] = []
-    #: The `OSError` of each pin the operating system refused to read (#847).
+    #: The `OSError` of each pin the operating system refused to read (#847),
+    #: and of each mount whose `stat` it refused (#430).
     refused: list[OSError] = []
+    #: The `OSError` of each mount it refused to list (#430).
+    unlisted: list[OSError] = []
     rerun = False
     nested: set = set()
     for leg in legs:
@@ -7244,8 +7416,7 @@ def check_legs(ctx: Context) -> Row:
         # beside an empty mount, and the verdict read the leg as drift.
         refusal = pin_read(ctx.root, pin)[1] if pinned is None else None
         gitlink = recorded_gitlink(ctx.root, rel)
-        populated = mount.is_dir() and any(mount.iterdir())
-        own_git = (mount / ".git").exists()
+        populated, own_git, unread = mount_read(ctx.root, rel)
         head = head_of(mount) if populated and own_git else None
         unborn = (unborn_branch(mount) if populated and own_git
                   and head is None else None)
@@ -7256,6 +7427,9 @@ def check_legs(ctx: Context) -> Row:
         if refusal is not None:
             entry["cannot_be_read"] = cannot_be_read(pin, refusal)
             refused.append(refusal)
+        if unread is not None:
+            entry[MOUNT_UNREAD] = unread[0]
+            (unlisted if unread[2] else refused).append(unread[1])
         problem = None
         cures = False
         #: Whether the problem is the pin's line, which no mount fact came
@@ -7265,6 +7439,11 @@ def check_legs(ctx: Context) -> Row:
             problem = (f"{rel}: no gitlink recorded, so this leg is not "
                        "mounted as a submodule at all")
             lockstep.append(rel)
+            if unread is not None:
+                problem += f", and {unread[0]}"
+        elif unread is not None:
+            # A PERSON'S, on a mode or an owner (#430): no line reaches it.
+            problem = mount_unread_said(unread[0])
         elif not populated:
             problem = (f"{rel}: the gitlink is there and the directory is "
                        "empty -- an unbootstrapped clone")
@@ -7326,8 +7505,10 @@ def check_legs(ctx: Context) -> Row:
             problems.append(problem)
     detail = {"legs": rows}
     if problems:
-        rerun = rerun or bool(lockstep) or bool(stuck) or bool(refused)
-        said = [cannot_read_why(refused)] if refused else []
+        rerun = (rerun or bool(lockstep) or bool(stuck) or bool(refused)
+                 or bool(unlisted))
+        said = ([cannot_read_why(refused, unlisted)] if refused or unlisted
+                else [])
         if checkout:
             # `make bootstrap` IS NAMED ONLY WHERE IT CAN RUN, and said for
             # what it does: it puts a leg on its tracking branch, and
@@ -7359,8 +7540,9 @@ def check_legs(ctx: Context) -> Row:
                 why += "".join(f". {sentence}" for sentence in [*said, *stuck])
             elif said or stuck:
                 why = ". ".join([*said, *stuck])
-        elif refused:
-            # A PERSON'S, on a mode or an owner, and never a git line (#847).
+        elif refused or unlisted:
+            # A PERSON'S, on a mode or an owner, and never a git line (#847,
+            # #430).
             next_command, why = doctor_line(ctx), ". ".join([*said, *stuck])
         else:
             # NO LINE CURES IT without choosing for the person (#414).
@@ -7482,14 +7664,26 @@ def shape_file_state(here: Path, there: Path, name: str) -> str:
     Split out of `check_leg_shape_files` for #134: the chain answers one
     question about one file, and the loop that calls it answers a different
     one about a leg.
+
+    A SIXTH ANSWER, `cannot be read (<reason>)`, for the leg's file whose
+    `stat` or read the operating system refuses (#430). It was `absent` on
+    Python 3.14, with a `cp` of the template over a file that is there, and
+    up to 3.13 the row `could not be run`. `there` is the standard's own copy.
     """
-    if not here.is_file():
-        return "absent"
+    try:
+        if not is_a(here, stat.S_ISREG):
+            return "absent"
+    except OSError as exc:
+        return f"cannot be read ({os_reason(exc)})"
     if name in LEG_RENDERED:
         return "rendered"
     if not there.is_file():
         return "present (the template has none)"
-    if here.read_bytes() == there.read_bytes():
+    try:
+        mine = here.read_bytes()
+    except OSError as exc:
+        return f"cannot be read ({os_reason(exc)})"
+    if mine == there.read_bytes():
         return "identical"
     return "differs"
 
@@ -7505,13 +7699,18 @@ def leg_shape_comparison(ctx: Context, role: str, rel: str) -> tuple:
     them is a fault of the repository's: a leg nobody has bootstrapped has no
     files yet, and a `templates/<role>-root/` this checkout does not carry is
     the STANDARD being short rather than the project being wrong. Both say
-    which they are, in the `state` the row prints.
+    which they are, in the `state` the row prints. A leg this user cannot
+    reach is a third, and its `state` is the gate's line for it, kept under
+    `mount_cannot_be_read` as the `legs` row keeps it (`mount_read`, #430).
 
     Split out of `check_leg_shape_files` for #134.
     """
     mount = ctx.root / rel
     template = ctx.shape / "templates" / f"{role}-root"
-    if not (mount.is_dir() and any(mount.iterdir())):
+    populated, _own_git, unread = mount_read(ctx.root, rel)
+    if unread is not None:
+        return {"role": role, "state": unread[0], MOUNT_UNREAD: unread[0]}, []
+    if not populated:
         return {"role": role, "state": "not populated"}, []
     if not template.is_dir():
         return {"role": role,
@@ -7534,6 +7733,9 @@ def leg_shape_summary(rel: str, entry: dict) -> str:
 
     Split out of `check_leg_shape_files` for #134.
     """
+    if MOUNT_UNREAD in entry:
+        # The gate's line already starts with the leg's path (#430).
+        return entry[MOUNT_UNREAD]
     if entry["state"] != "compared":
         return f"{rel}: {entry['state']}"
     named = ", ".join(f"{name} {state}"
@@ -7596,6 +7798,11 @@ def check_leg_shape_files(ctx: Context) -> Row:
     `leg_shape_summary`'s, so that this reads as the three sentences it is:
     compare every leg, say what was found, and offer a copy for the files a
     copy would fix.
+
+    A LEG OR A FILE THIS USER CANNOT REACH KEEPS THE ROW OFF `ok` (#430): it
+    is a `note`, because what is missing is a read, the `legs` row asserts
+    the mount, and "compared" is not a claim to make about a file nobody
+    read. It offers no copy: the file is there.
     """
     needs = "there are no legs to compare"
     waiting = (waiting_row(ctx, "leg-shape-files", LABEL_LEG_SHAPE_FILES,
@@ -7632,8 +7839,12 @@ def check_leg_shape_files(ctx: Context) -> Row:
         fix, why = missing_shape_file_fix(ctx, missing)
         return Row("leg-shape-files", LABEL_LEG_SHAPE_FILES, NOTE,
                    f"{summary}  (missing: {named})", fix, detail, why=why)
-    return Row("leg-shape-files", LABEL_LEG_SHAPE_FILES, OK, summary, None,
-               detail)
+    unread = any(MOUNT_UNREAD in entry
+                 or any(state.startswith("cannot be read")
+                        for state in (entry.get("files") or {}).values())
+                 for entry in per_leg.values())
+    return Row("leg-shape-files", LABEL_LEG_SHAPE_FILES,
+               NOTE if unread else OK, summary, None, detail)
 
 
 # ---------------------------------------------------------------------------
@@ -7894,8 +8105,10 @@ def held_clauses(detail: dict) -> str:
     clauses = (kept_submodules(detail.get("submodules") or []),
                answered_clause(legs),
                empty_clause(legs),
+               unregistered_clause(legs),
                answers_clause(detail.get(ANSWERED_PATHS) or []),
                unslashed_clause(legs),
+               slashed_clause(legs),
                unheld_clause(detail.get(UNHELD) or []))
     said = "; ".join(clause for clause in clauses if clause)
     return f"; {said}" if said else ""
@@ -7931,16 +8144,70 @@ def answers_clause(answered: list) -> str:
 
 
 def empty_clause(legs: list) -> str:
-    """The clause naming each leg's `.gitmodules` that holds no byte, or ""
-    where none does (#655). SAID, as the one the record answers is: a reader
-    who knows the policy asks about every `.gitmodules` is owed why this one
-    was not asked."""
+    """The clause naming each leg's `.gitmodules` that holds no section, in a
+    leg that holds no submodule, or "" where none does (#655, #914). SAID, as
+    the one the record answers is: a reader who knows the policy asks about
+    every `.gitmodules` is owed why this one was not asked. AND HOW TO REMOVE
+    IT (#914), since no record can answer it and nothing needs it. `git rm
+    -f`, because a plain `git rm` refuses the file where it is staged and not
+    committed (what a plain `git rm` of a leg's only submodule leaves) or
+    changed on disk and not staged (measured, git 2.43); `-f` takes it out of
+    the index and the disk in each state, and discards no section, since the
+    clause is printed only where the disk copy holds none."""
     empty = [path for leg in legs for path in leg.get(EMPTY_GITMODULES) or []]
     if not empty:
         return ""
     return (f"the policy asks nothing of {len(empty)} `.gitmodules` that "
-            "hold(s) no byte and so register(s) no submodule (#655): "
-            f"{', '.join(empty)}")
+            "hold(s) no section and so register(s) no submodule, in a leg "
+            f"that holds none (#655, #914): {', '.join(empty)}; nothing "
+            "needs one, and `git rm -f .gitmodules` in its leg removes it")
+
+
+def unregistered_clause(legs: list) -> str:
+    """The clause naming each submodule a leg holds beside a `.gitmodules`
+    that holds no section, or "" where there is none (#914).
+
+    SAID, because that `.gitmodules` is not the empty one `empty_clause`
+    names: it stays the question it was, and the way out is not to remove
+    it. No section registers the submodule, so a recursive clone of the leg
+    exits 0 and leaves its directory empty, and `git submodule status` there
+    exits 128 with `no submodule mapping found in .gitmodules` (measured,
+    git 2.43). Neither record can say where its repository is, and `git
+    submodule add` refuses a path the index holds: the person writes its
+    section, or removes the gitlink.
+
+    THE REMOVAL TYPED AS PRINTED WORKS (measured, git 2.43). `git rm
+    --cached` dies with `please stage your changes to .gitmodules` where the
+    leg's tracked `.gitmodules` has an edit that is not staged, so the clause
+    says to stage it first; and it names the path as the leg spells it,
+    because the row's own `code/vendor/lib` is the project's spelling, which
+    the leg does not know.
+    """
+    held = [path for leg in legs
+            for path in leg.get(UNREGISTERED_SUBMODULES) or []]
+    if not held:
+        return ""
+    return (f"{len(held)} submodule(s) sit beside a `.gitmodules` of their "
+            "leg that holds no section, so nothing registers them and a "
+            "recursive clone of the leg leaves each empty (#914): "
+            f"{first_three(held)}; give each a section with its `path` and "
+            "`url` in that `.gitmodules`, or, once that `.gitmodules` is "
+            "staged (`git add .gitmodules`), remove its gitlink with `git rm "
+            "--cached <its path in the leg>` in its leg")
+
+
+def slashed_clause(legs: list) -> str:
+    """The clause naming each `answered_paths:` row that names a file of its
+    leg with the `/` a directory's row ends with, or "" where none does
+    (#914). SAID, as `unslashed_clause` says the other spelling, and for
+    the same reason: such a row answers nothing, since no file is under a
+    file, and never a finding."""
+    rows = [path for leg in legs for path in leg.get(SLASHED) or []]
+    if not rows:
+        return ""
+    return (f"{len(rows)} row(s) of {THE_ANSWERS} name a file with the `/` "
+            "only a directory's row ends with, so each answers nothing "
+            f"(#914): {first_three(rows)}")
 
 
 def unslashed_clause(legs: list) -> str:
@@ -8317,9 +8584,12 @@ def answered_questions(adopt, review: list, role: str, files: list,
     return still, answered
 
 
-def empty_gitmodules(adopt, review: list, mount: Path) -> tuple:
+def empty_gitmodules(adopt, review: list, mount: Path, rel: str,
+                     paths: list, held: list) -> tuple:
     """The leg's questions less its `.gitmodules` where that file holds no
-    byte, and that file's path in the row, or [] (#655).
+    section and the leg no submodule, and that file's path in the row, or
+    [] (#655, #914); and each submodule the leg holds beside such a file, as
+    its path in the row, or [] (#914).
 
     AN EMPTY `.gitmodules` REGISTERS NO SUBMODULE, so the question rule
     `ambiguous-gitmodules` asks of it -- which leg owns the submodules it
@@ -8329,30 +8599,76 @@ def empty_gitmodules(adopt, review: list, mount: Path) -> tuple:
     leaves `.gitmodules` out, and `submodules:` answers it only where the
     leg keeps a submodule. Not asking is the fix, rather than a row a
     person writes by hand into the manifest to quiet a question that has
-    no subject.
+    no subject, and the row says how to remove it (`empty_clause`).
 
-    NO BYTE, AND A REGULAR FILE, read on this disk as `leg_tracked_files`
-    reads a size: the file git's submodule commands read. One holding
-    anything -- a blank line, a comment, a section -- is one only git's own
-    reader could say registers nothing, so it stays the question it was.
-    git refuses to index a `.gitmodules` that is a symlink, and reads the
-    index's copy where the disk has none, so neither is the empty file.
+    EMPTY IS NO SECTION (#914), as `holds_no_section` reads it: no byte, or
+    only what git's own config reader passes over -- a byte-order mark,
+    blank lines, comments. One that holds a section, even one with no key,
+    stays the question it was. Read on this disk, a regular file and not a
+    link, as `leg_tracked_files` reads a size: the file git's submodule
+    commands read. git refuses to index a `.gitmodules` that is a symlink,
+    and reads the index's copy where the disk has none, so neither is the
+    empty file.
+
+    BUT NOT BESIDE A SUBMODULE (#914). In a leg that holds a gitlink, a
+    `.gitmodules` with no section is no emptied file: it fails to register
+    that gitlink, and the question of which leg owns the leg's submodules
+    has a subject. So it stays the question it was -- asked, or answered by
+    `submodules:` (`gitmodules_the_record_answers`) -- and each gitlink
+    `held` is returned to be named with what to do (`unregistered_clause`).
     """
+    if adopt.GITMODULES not in paths or not holds_no_section(
+            mount / adopt.GITMODULES):
+        return review, [], []
+    if held:
+        return review, [], [f"{rel}/{path}" for path in held]
     for row in review:
-        if (row["path_in_leg"] == adopt.GITMODULES
-                and holds_no_byte(mount / adopt.GITMODULES)):
+        if row["path_in_leg"] == adopt.GITMODULES:
             return [other for other in review if other is not row], [
-                row["path"]]
-    return review, []
+                row["path"]], []
+    return review, [], []
 
 
-def holds_no_byte(path: Path) -> bool:
-    """Is `path` a regular file, not a link, of no byte (#655)?"""
+#: The bytes git's config reader passes over before the first line of a file
+#: (#914): a UTF-8 byte-order mark, as Windows Notepad writes one. Only the
+#: whole mark, and only at the start: git refuses a part of one.
+UTF8_BOM = b"\xef\xbb\xbf"
+#: What git's config reader counts as blank between the lines it reads
+#: (#914): its own `isspace`, which leaves out the vertical tab and the form
+#: feed Python's `bytes.strip` would take, and which git refuses.
+CONFIG_BLANKS = b" \t\r"
+#: The two bytes that open a comment for git's config reader, to the line's
+#: end (#914).
+CONFIG_COMMENTS = (b"#", b";")
+
+
+def holds_no_section(path: Path) -> bool:
+    """Is `path` a regular file, not a link, that holds no section and no
+    key: no byte, or only a byte-order mark, blank lines and comments, which
+    git's config reader passes over (#655, #914)?
+
+    git's reader at the top of a file is a loop over bytes: a `\\n` ends a
+    comment, a blank is passed over, `#` or `;` opens a comment, and
+    anything else opens a section (`[`), opens a key, or is a bad line. So
+    a file whose every line, after its blanks, is empty or opens a comment
+    holds neither, and `git config --file` lists nothing from it and exits
+    0 (measured, git 2.43). A file that cannot be read is not known to be
+    empty.
+    """
     try:
         found = path.lstat()
+        if not stat.S_ISREG(found.st_mode):
+            return False
+        data = path.read_bytes()
     except OSError:
         return False
-    return stat.S_ISREG(found.st_mode) and found.st_size == 0
+    if data.startswith(UTF8_BOM):
+        data = data[len(UTF8_BOM):]
+    for line in data.split(b"\n"):
+        line = line.lstrip(CONFIG_BLANKS)
+        if line and not line.startswith(CONFIG_COMMENTS):
+            return False
+    return True
 
 
 def unslashed_rows(answers: dict, role: str, rel: str, files: list) -> list:
@@ -8376,6 +8692,26 @@ def unslashed_rows(answers: dict, role: str, rel: str, files: list) -> list:
     directories = {path[:index] for path in files
                    for index, char in enumerate(path) if char == "/"}
     return [f"{rel}/{path}" for path in rows if path in directories]
+
+
+def slashed_rows(answers: dict, role: str, rel: str, files: list) -> list:
+    """Each `answered_paths:` row for THIS leg whose path is a file of it
+    written with the `/` a directory's row ends with, as its path in the
+    row (#914).
+
+    SUCH A ROW ANSWERS NOTHING: `_covering` reads a path with its `/` as a
+    directory's, and no file is under a file. It is `unslashed_rows`' other
+    spelling, said the same way and for the same reason, and never read as
+    the file's row nor made a finding. `execute` never writes one, since
+    `check` finds the plan entry spelled so (`plan-empty-entry`, beside
+    `plan-uncovered` for the file); a hand edit does.
+    """
+    rows = [path for path, row in answers.items()
+            if row.get("leg") == role and path.endswith("/")]
+    if not rows:
+        return []
+    named = set(files)
+    return [f"{rel}/{path}" for path in rows if path[:-1] in named]
 
 
 def audit_leg(adopt, policy, patterns: list, role: str, rel: str,
@@ -8429,14 +8765,16 @@ def audit_leg(adopt, policy, patterns: list, role: str, rel: str,
     (`gitmodules_the_record_answers`): the file is placed, and the leg's
     entry names it under `answered` instead of as a question.
     Otherwise a real adoption, whose leg always holds the `.gitmodules` that
-    registers its submodules, could never read `ok`. One that holds no byte
-    asks nothing at all (`empty_gitmodules`, #655).
+    registers its submodules, could never read `ok`. One that holds no
+    section, in a leg that holds no submodule, asks nothing at all
+    (`empty_gitmodules`, #655, #914).
 
     AND `answered_paths:` IS READ FOR THE QUESTIONS AND FOR THE PATHS IN THE
     WRONG LEG ALIKE (#525, #655): `answered_questions` takes from each those
-    the record answers into this leg, which are returned apart, and
+    the record answers into this leg, which are returned apart,
     `unslashed_rows` names the rows for this leg that name a directory
-    without its `/`.
+    without its `/`, and `slashed_rows` those that name a file with one
+    (#914).
 
     AND A LEG'S `single-repository.yaml` IS ASKED THE RECORD'S QUESTION ONLY
     WHERE IT IS THE RECORD (#691). The walk asks it by name; `plan`'s own
@@ -8451,7 +8789,15 @@ def audit_leg(adopt, policy, patterns: list, role: str, rel: str,
     if escaped:
         entry["state"] = escaped
         return entry, [], [], [], []
-    if not (mount.is_dir() and any(mount.iterdir())):
+    populated, _own_git, unread = mount_read(root, rel)
+    if unread is not None:
+        # A leg this user cannot reach, in the gate's words, as the `legs`
+        # row says it (#430): a READ that is missing, never a clean leg, and
+        # never `it is not a git repository`, which git said of a mount it
+        # could not enter.
+        entry["state"] = entry[MOUNT_UNREAD] = unread[0]
+        return entry, [], [], [], []
+    if not populated:
         # The `legs` row already reports this, with `make bootstrap` beside
         # it. Here it is only why this leg has no answer.
         entry["state"] = "not populated"
@@ -8488,8 +8834,9 @@ def audit_leg(adopt, policy, patterns: list, role: str, rel: str,
     submodules, wrong = leg_submodules(policy, role, rel, held, record)
     answered = gitmodules_the_record_answers(adopt, submodules, unwritable)
     misplaced, review, settled = walked_findings(walked, role, rel, answered)
-    review, empty = empty_gitmodules(adopt, review, mount)
     paths = [path for path, _ in kept]
+    review, empty, unregistered = empty_gitmodules(adopt, review, mount, rel,
+                                                   paths, held)
     review, recorded = answered_questions(adopt, review, role, paths, answers)
     misplaced, against = answered_questions(adopt, misplaced, role, paths,
                                             answers)
@@ -8504,7 +8851,9 @@ def audit_leg(adopt, policy, patterns: list, role: str, rel: str,
                   "misplaced": len(misplaced),
                   "review_required": len(review)})
     for key, said in ((ANSWERED, settled), (EMPTY_GITMODULES, empty),
-                      (UNSLASHED, unslashed_rows(answers, role, rel, paths))):
+                      (UNREGISTERED_SUBMODULES, unregistered),
+                      (UNSLASHED, unslashed_rows(answers, role, rel, paths)),
+                      (SLASHED, slashed_rows(answers, role, rel, paths))):
         if said:
             # Only when there is one, so that no other leg's entry changes.
             entry[key] = said
@@ -8567,6 +8916,9 @@ def leg_audit_summary(entry: dict) -> str:
 
     Split out of `check_placement` for #134.
     """
+    if MOUNT_UNREAD in entry:
+        # The gate's line already starts with the leg's path (#430).
+        return entry[MOUNT_UNREAD]
     if entry.get("state") != "audited":
         return f"{entry['path']}: {entry.get('state')}"
     counted = (f"{entry['paths']} path(s) over {entry['classified']} of "
@@ -9757,7 +10109,8 @@ def sibling_slot(root: Path, sibling: Path, row: dict,
     return ("not-a-clone" if unclonable(sibling) else "absent"), None
 
 
-def member_state(ctx: Context, row: dict, members_dir: str) -> dict:
+def member_state(ctx: Context, row: dict, members_dir: str,
+                 refused: list) -> dict:
     """ONE member's `--json` entry: both copies of it, as they are found.
 
     NOTHING IS ASKED OF A MOUNT THAT IS NOT POPULATED. An unbootstrapped
@@ -9781,6 +10134,12 @@ def member_state(ctx: Context, row: dict, members_dir: str) -> dict:
     WHAT STANDS AT `../<Project>` IS `sibling` (`sibling_slot`, #669), so
     a caller reads a word rather than parsing the row's sentence.
 
+    A MOUNT THIS USER CANNOT REACH IS NAMED (#430), by `mount_read`, as the
+    `legs` row names a leg's: the gate's line under `mount_cannot_be_read`,
+    and nothing asked of it. A `members/` at mode 000 was `could not be run`
+    up to Python 3.13 and an unbootstrapped submodule from 3.14. `refused`
+    collects `mount_read`'s `(line, OSError, listed)` for the row's advice.
+
     Split out of `check_members` for #134.
     """
     project = str(row.get("project") or "?")
@@ -9789,21 +10148,24 @@ def member_state(ctx: Context, row: dict, members_dir: str) -> dict:
     pin = row.get("pin") if isinstance(row.get("pin"), dict) else {}
     pinned = str(pin.get("commit") or "").lower()
     pinned = pinned if COMMIT_RE.match(pinned) else None
-    populated = mount.is_dir() and any(mount.iterdir())
-    own_git = (mount / ".git").exists()
+    populated, own_git, unread = mount_read(ctx.root, rel)
     head = head_of(mount) if populated and own_git else None
     unborn = (unborn_branch(mount) if populated and own_git and head is None
               else None)
-    loose = detached(mount) if populated else None
+    loose = detached(mount) if populated and unread is None else None
     sibling = ctx.root.parent / project
     remote = mounted_from(ctx.root, rel, str(row.get("repository") or ""))
     beside, elsewhere = sibling_slot(ctx.root, sibling, row, remote)
     clone = sibling.as_posix() if beside == "working-clone" else None
-    return {"project": project, "path": rel, "pin": pinned,
-            "populated": populated, "head": head, "own_git": own_git,
-            "unborn": unborn, "detached": loose,
-            "mounted_from": redacted(remote), "sibling": beside,
-            "working_clone": clone, "other_origin": elsewhere}
+    entry = {"project": project, "path": rel, "pin": pinned,
+             "populated": populated, "head": head, "own_git": own_git,
+             "unborn": unborn, "detached": loose,
+             "mounted_from": redacted(remote), "sibling": beside,
+             "working_clone": clone, "other_origin": elsewhere}
+    if unread is not None:
+        entry[MOUNT_UNREAD] = unread[0]
+        refused.append(unread)
+    return entry
 
 
 def member_problem(entry: dict) -> str | None:
@@ -9824,9 +10186,14 @@ def member_problem(entry: dict) -> str | None:
     THE PATH, THE PROJECT AND THE BRANCH ARE SPELLED (#673): they are a
     manifest's and git's text, printed as `siblings.py` prints them.
 
+    A MOUNT THIS USER CANNOT REACH COMES FIRST (#430): nothing else could
+    be asked of it, and the gate's line says why.
+
     Split out of `check_members` for #134.
     """
     path = spelled(entry["path"])
+    if entry.get(MOUNT_UNREAD):
+        return mount_unread_said(spelled(entry[MOUNT_UNREAD]))
     if not entry["populated"]:
         return (f"{path}: not populated -- the pinned copy is an "
                 "unbootstrapped submodule")
@@ -9933,7 +10300,7 @@ def beside_sentence(ctx: Context, entry: dict) -> str:
 
 
 def members_verdict(ctx: Context, detail: dict, members_dir: str,
-                    problems: list) -> Row:
+                    problems: list, refused: list = ()) -> Row:
     """What the members add up to: the one finding, or the two OK wordings.
 
     ONLY THE PINNED COPIES CAN MAKE THIS ROW RED. A missing working clone is
@@ -9948,6 +10315,11 @@ def members_verdict(ctx: Context, detail: dict, members_dir: str,
     says what stands there and what `make siblings` will do with it (#669),
     because a row that only said "no working clone" would leave a person
     staring at a directory of that exact name.
+
+    A MEMBER THIS USER CANNOT REACH IS ROUTED TO NO LINE (#430), as no such
+    leg is: `refused` holds `mount_read`'s `(line, OSError, listed)` for each,
+    the gate's advice for the cause is the `why`, or follows the line's, and
+    where no other member has a line the NEXT is this doctor again.
 
     Split out of `check_members` for #134.
     """
@@ -10018,7 +10390,9 @@ def members_verdict(ctx: Context, detail: dict, members_dir: str,
                     and left_in_reflog(entry["detached"], entry["head"],
                                        gitlink)):
                 moved.append(mount)
-            if member_problem(entry) is None:
+            if member_problem(entry) is None or MOUNT_UNREAD in entry:
+                # A member this user cannot reach is a person's, on a mode
+                # or an owner (#430): no line reaches it.
                 continue
             own_git = entry.get("own_git", True)
             if gitlink is None:
@@ -10053,7 +10427,8 @@ def members_verdict(ctx: Context, detail: dict, members_dir: str,
             # Its own lockstep fact (#414), as `check_legs` asks it.
             if entry["pin"] is None or gitlink != entry["pin"]:
                 rerun = True
-        rerun = rerun or lockstep or bool(stuck)
+        rerun = rerun or lockstep or bool(stuck) or bool(refused)
+        said = [mount_refusals(list(refused))] if refused else []
         # THE HOLDER'S OWN BOOTSTRAP STAYS THE NEXT WHEN IT CAN RUN: it does
         # what the plain git line does AND carries the credential rewrite a
         # PRIVATE member needs (`fetch_members`), so replacing it would
@@ -10081,7 +10456,9 @@ def members_verdict(ctx: Context, detail: dict, members_dir: str,
             # recursive too, into every member that carries legs.
             carried = ({"tree"} if any((ctx.root / entry["path"]
                                         / ".gitmodules").is_file()
-                                       for entry in rows) else set())
+                                       for entry in rows
+                                       if MOUNT_UNREAD not in entry)
+                       else set())
             why = ("what `make bootstrap` runs in a holder: it fetches every "
                    "member at its pin and leaves it detached there"
                    + checkout_notes(
@@ -10089,6 +10466,7 @@ def members_verdict(ctx: Context, detail: dict, members_dir: str,
                        nested | carried))
             if rerun:
                 why += rerun_sentence("member")
+            why += "".join(f". {sentence}" for sentence in said)
         elif checkout:
             if own_bootstrap(ctx.root):
                 # Each member that stops the bootstrap is named, routed or
@@ -10108,6 +10486,7 @@ def members_verdict(ctx: Context, detail: dict, members_dir: str,
             next_command, why = submodule_update_next(
                 ctx.root, checkout, off_pin, "member", after, rerun,
                 kept=kept, relinked=relinked, nested=nested)
+            why += "".join(f". {sentence}" for sentence in said)
         elif lockstep:
             # THE FAMILY GATE, one definition of it for this row and the
             # `family` row (`lockstep_next`), and, beside it, what no line
@@ -10115,9 +10494,12 @@ def members_verdict(ctx: Context, detail: dict, members_dir: str,
             next_command, why = lockstep_next(ctx, FAMILY_GATE, "member")
             if why:
                 why += "".join(gone_sentence(rel) for rel in gone)
-                why += "".join(f". {sentence}" for sentence in stuck)
-            elif stuck:
-                why = ". ".join(stuck)
+                why += "".join(f". {sentence}" for sentence in [*said, *stuck])
+            elif said or stuck:
+                why = ". ".join([*said, *stuck])
+        elif refused:
+            # A PERSON'S, on a mode or an owner, and never a git line (#430).
+            next_command, why = doctor_line(ctx), ". ".join([*said, *stuck])
         else:
             # NO LINE CURES IT without choosing for the person (#414).
             next_command, why = None, ". ".join(stuck)
@@ -10207,8 +10589,11 @@ def check_members(ctx: Context) -> Row:
     problems: list[str] = []
     siblings_absent: list[str] = []
     on_a_branch: list[str] = []
+    #: `mount_read`'s `(line, OSError, listed)` for each member this user
+    #: cannot reach (#430).
+    refused: list[tuple] = []
     for row in members:
-        entry = member_state(ctx, row, members_dir)
+        entry = member_state(ctx, row, members_dir, refused)
         rows.append(entry)
         problem = member_problem(entry)
         if problem:
@@ -10229,7 +10614,7 @@ def check_members(ctx: Context) -> Row:
             siblings_absent.append(entry["project"])
     detail = {"members": rows, "without_working_clone": siblings_absent,
               "on_a_branch": on_a_branch}
-    return members_verdict(ctx, detail, members_dir, problems)
+    return members_verdict(ctx, detail, members_dir, problems, refused)
 
 
 # ---------------------------------------------------------------------------
@@ -11325,8 +11710,23 @@ def run_checks(ctx: Context) -> list[Row]:
                             f"refused: {exc.detail}", None,
                             {"error": exc.code}, why=remedy_as_why(exc)))
         except OSError as exc:
-            rows.append(Row(check.id, check.label, FINDING,
-                            f"could not be run: {exc}", None, {}))
+            named = refused_in_root(ctx.root, exc)
+            if named is None:
+                rows.append(Row(check.id, check.label, FINDING,
+                                f"could not be run: {exc}", None, {}))
+                continue
+            # A PATH IN THE ROOT THIS USER CANNOT REACH (#430), however the
+            # check came to ask it: the gate's line, this doctor again, and
+            # the gate's advice, as every row that asks its own path says
+            # it, where the row said `could not be run: [Errno 13] <the
+            # absolute path>`. A statement about the repository, so no
+            # `environment`, and with no entry in it, so no drift either
+            # (`drifted_reasons`).
+            line = cannot_be_read(named, exc)
+            rows.append(Row(check.id, check.label, FINDING, line,
+                            doctor_line(ctx),
+                            {"cannot_be_read": line, "path": named},
+                            why=cannot_read_why([exc])))
     return rows
 
 
@@ -11402,6 +11802,19 @@ def drifted_reasons(by_id: dict, detail: dict) -> list:
     else, and INVALID names it; the run after the pin is mended says the
     drift.
 
+    A ROW THAT COULD NOT ASK IS NOT DRIFT EITHER (#430). The count is read
+    from the row's own entries, and a `legs` row with none -- what
+    `run_checks` makes of a check that raised, `could not be run` or a path
+    it names -- has no leg to be off its pin: with a leg mount at mode 000
+    the verdict said `DRIFTED (1 leg(s) not at the pin)` beside the very
+    rows that said they could not be run. A leg whose MOUNT cannot be read
+    (`mount_cannot_be_read`) is as uncounted as one whose pin cannot be. The
+    `members` row is drift only where a member this user CAN reach has a
+    problem. Such a row goes on down the ladder, to the gate that refuses
+    the path (`invalid_verdict`) or to the catch-all, which names it: INVALID,
+    never DRIFTED, and never CANNOT ANSWER, because a path in the root this
+    user cannot reach is a statement about the repository.
+
     Split out of `verdict_for` for #134.
     """
     reasons: list[str] = []
@@ -11410,13 +11823,15 @@ def drifted_reasons(by_id: dict, detail: dict) -> list:
     legs = by_id.get("legs")
     if legs is not None and legs.status == FINDING:
         entries = legs.detail.get("legs") or []
-        unread = [leg for leg in entries if "cannot_be_read" in leg]
-        off = [leg for leg in entries if "cannot_be_read" not in leg
-               and leg.get("head") != leg.get("pin")]
-        if off or not unread:
+        read = [leg for leg in entries
+                if "cannot_be_read" not in leg and MOUNT_UNREAD not in leg]
+        off = [leg for leg in read if leg.get("head") != leg.get("pin")]
+        if entries and (off or len(read) == len(entries)):
             reasons.append(f"{len(off) or 1} leg(s) not at the pin")
     members = by_id.get("members")
-    if members is not None and members.status == FINDING:
+    if members is not None and members.status == FINDING and any(
+            MOUNT_UNREAD not in entry and member_problem(entry)
+            for entry in members.detail.get("members") or []):
         reasons.append("a member is not at its pin")
     return reasons
 
@@ -11746,6 +12161,35 @@ def lazy_fetch_off():
             os.environ[NO_LAZY_FETCH] = before
 
 
+#: What a `--root` this user may not search is told for a refused PERMISSION
+#: (#430): `PERMISSION_ADVICE` for the root itself, which has no "inside the
+#: root" above it.
+ROOT_PERMISSION_ADVICE = (
+    "Make the root searchable by this user: `chmod u+rx` on it (and on every "
+    "directory above it), or fix who owns it.")
+
+
+def root_refusal(named: str, exc: OSError) -> str:
+    """The refusal of a `--root` whose `stat`, or whose search, the operating
+    system refused (#430): `shape-doctor-root-unreadable`, the code `main`
+    gives a root `resolve()` refuses, with the gate's line for the path and
+    its advice for the cause, then "Then run this doctor again".
+
+    BEFORE ANY ROW, BECAUSE NO ROW CAN ASK. Every row reads a name in the
+    root, and a root this user cannot search answered each of them with its
+    own `[Errno 13]` up to Python 3.13 -- `Context` reading `project.yaml`
+    ended the run in a traceback -- and from 3.14 with "nothing is here",
+    `NOT A SHAPE ROOT`; a folder above it this user cannot search read as
+    `shape-doctor-root-missing`. EXIT 3, the documented "usage or
+    environment": nothing here is a statement about the tree, which no row
+    could read, and exit 2 is `NOT A SHAPE ROOT`, a verdict about it."""
+    advice = (ROOT_PERMISSION_ADVICE if isinstance(exc, PermissionError)
+              else OTHER_REASON_FOLDER)
+    return (f"REFUSED shape-doctor-root-unreadable: --root {named}: cannot be "
+            f"read ({os_reason(exc)})\n  Remediation: {advice} Then run this "
+            "doctor again")
+
+
 @lazy_fetch_off()
 def main(argv: list[str] | None = None) -> int:
     # FIRST, so that every `print` after it -- `--help` included -- escapes
@@ -11765,7 +12209,19 @@ def main(argv: list[str] | None = None) -> int:
         print(f"REFUSED shape-doctor-root-unreadable: --root {args.root}: "
               f"{exc}", file=sys.stderr)
         return 3
-    if not root.is_dir():
+    try:
+        there = is_a(root, stat.S_ISDIR)
+        if there:
+            # SEARCH, AND NOT LISTING (#430): every row asks a name it knows,
+            # so a root this user can search and not list (mode 111) reads
+            # COMPLIANT, and is not refused. `<root>/.` is asked through
+            # `os.path`, because a `Path` drops the `.` and would ask the
+            # root's own `stat`, which only its parent decides.
+            os.stat(os.path.join(root, os.curdir))
+    except OSError as exc:
+        print(root_refusal(args.root, exc), file=sys.stderr)
+        return 3
+    if not there:
         print(f"REFUSED shape-doctor-root-missing: --root {args.root} is not a "
               "directory on this machine.\n  Remediation: pass a path to a "
               "checkout. This command reads a tree; it never clones one.",

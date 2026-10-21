@@ -288,12 +288,46 @@ def test_init_names_a_derived_id_as_derived_and_mends_it_with_an_id(
         "family folder, stays as it is.\n")
 
 
-def test_init_names_an_empty_id_as_empty(family, only_the_branch_question,
-                                         capsys, tmp_path):
+def test_init_refuses_an_empty_id_as_passed_before_its_topic(
+        family, only_the_branch_question, capsys, tmp_path):
+    """#911: `--id ''` fell back to `--family` lowercased and was named
+    `--id (empty, so --family lowercased)` here. It is a passed value now,
+    refused by name as `family-bad-id` before GitHub's limits are asked."""
     err = refused_init(family, capsys, tmp_path, "--family",
                        a_name(ID_MAX + 1), "--id", "")
-    assert err.startswith(f"{FAMILY_TOPIC_TOO_LONG}: --id (empty, so --family "
-                          "lowercased) is "), err
+    assert err.startswith("REFUSED family-bad-id: --id '' must match "), err
+    assert "empty, so" not in err
+    assert FAMILY_TOPIC_TOO_LONG not in err
+
+
+def test_init_refuses_a_long_family_before_a_passed_bad_id(
+        family, only_the_branch_question, capsys, tmp_path):
+    """#972's review, S1: a `--family` longer than GitHub keeps a
+    repository's name was refused as `family-bad-id` for a passed id that is
+    no id, and the retype then met `family-name-too-long`, which no `--id`
+    mends. The name speaks first, as `scaffold-name-too-long` does in the
+    scaffold, with no process started."""
+    err = refused_init(family, capsys, tmp_path, "--family",
+                       a_name(NAME_MAX + 5), "--id", "foo_bar")
+    assert err.startswith(f"{FAMILY_NAME_TOO_LONG}: --family is "
+                          "Abbbbbbbbbbb...bbbbbbbbbbbb, 105 characters, "), err
+    assert "family-bad-id" not in err
+
+
+def test_init_asks_no_length_of_a_local_run_before_a_passed_bad_id(
+        family, only_the_branch_question, capsys, tmp_path):
+    """Lane 4's SHOULD-1 on #972: under `--local-remote-dir` a bare
+    repository's name is the disk's, so a `--family` over GitHub's 100 with
+    a passed id that is no id is told the id, never `family-name-too-long`.
+    Only this branch reaches `_refuse_a_holder_name_github_cannot_hold`'s
+    own skip: `_refuse_what_github_cannot_hold` returns before it asks."""
+    err = refused_init(family, capsys, tmp_path, "--family",
+                       a_name(NAME_MAX + 1), "--id", "foo_bar",
+                       "--local-remote-dir", str(tmp_path / "remotes"))
+    assert err.startswith("REFUSED family-bad-id: --id 'foo_bar' must match"
+                          ), err
+    assert "family-name-too-long" not in err
+    assert not (tmp_path / "remotes").exists()
 
 
 def test_init_names_a_passed_id_as_passed(family, only_the_branch_question,
@@ -373,6 +407,30 @@ def test_init_help_says_each_bound_where_the_value_is_typed():
     for flag, sentence in INIT_SAID.items():
         entry = help_entry(result.stdout, flag)
         assert sentence in entry, (flag, entry)
+
+
+def test_init_dry_run_help_says_the_mode_bits_and_nothing_that_stays():
+    """#923 U063 and #921 U088, the family's half, as the scaffold's
+    `--dry-run` says it: the write question is asked of `os.access`, which on
+    Windows says yes for every folder, so a quota, a Windows ACL or a
+    read-only drive there can pass it, and the run leaves "nothing that
+    stays" where it once said "make no folder": it makes and removes
+    `openreposhape-branch-*` (and `openreposhape-ident-*` where an identity
+    variable is set), creates no remote or repository and pushes nothing. The
+    wording is `docs/cli.md`'s too, which `test_cli_reference.py` holds."""
+    result = run_script(FAMILY, "init", "--help")
+    assert result.returncode == 0, result.stderr
+    said = help_entry(result.stdout, "--dry-run")
+    assert ("Whether each folder can be written in is asked of `os.access`, "
+            "which reads the mode bits and on Windows says yes for every "
+            "folder, so a quota, a Windows ACL or a read-only drive on "
+            "Windows can pass here and be refused by the real run. It leaves "
+            "nothing that stays: it makes and removes temporary folders, "
+            "creates no remote or repository and pushes nothing") in said, said
+    assert "make no folder" not in said
+    assert "its mode bits'" not in said, (
+        "only the write question is `os.access`'s: a file in the way and a "
+        "folder's contents are not the mode bits'")
 
 
 # --- family.py init end to end: GitHub's refusal, by its documentation ------

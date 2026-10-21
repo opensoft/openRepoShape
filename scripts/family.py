@@ -90,7 +90,7 @@ with; it never runs `git submodule add` and writes nothing of the holder's.
 question the real run asks before it creates the holder (#537): `gh repo
 view` and the commit listing, or the bare repository with
 `--local-remote-dir`. It refuses `family-remote-exists` as the real run does,
-and makes no folder, remote or repository. Both runs ask it after whether
+and creates no remote or repository. Both runs ask it after whether
 each folder `init` makes can be made and the holder written (#609), and
 before the real run makes the family folder, so a refusal leaves none: a file
 where a folder must go, or a folder this user cannot write in, is
@@ -98,6 +98,23 @@ where a folder must go, or a folder this user cannot write in, is
 Only gh's own not-found answer says the holder does not exist; any other
 `gh repo view` failure (a bad login, a rate limit, no network) is refused as
 `remote-unreadable`.
+
+`init --dry-run` LEAVES NOTHING THAT STAYS, which is not the same as making
+no folder (#921). It makes and removes temporary folders, as the real run
+does: `openreposhape-branch-*`, where git is asked whether the tracking
+branch is a name it will create, and `openreposhape-ident-*`, one for the
+author when GIT_AUTHOR_NAME, _EMAIL or _DATE is set and not empty, and one
+for the committer when a GIT_COMMITTER_ one is. Each is empty, and a removal
+that fails is not reported. It creates no remote or repository and pushes
+nothing: the only `gh` calls it makes read (`gh repo view`, the commit
+listing).
+
+WHETHER EACH FOLDER CAN BE WRITTEN IN IS THE MODE BITS' ANSWER (#923). The
+family folder or `--work-dir`, the holder in it and `--local-remote-dir` are
+asked of `os.access`, which reads the mode bits and on Windows says yes for
+every folder, and a dry run makes none of them to ask. So a quota, a Windows
+ACL or a read-only drive on Windows can pass the dry run and be refused by the
+real run.
 
 `init` ASKS GITHUB'S LIMITS FIRST, WHERE GITHUB IS (#863), as the scaffold
 and `adopt-project.py` ask theirs (#838), before `_creator_name` and before
@@ -163,6 +180,7 @@ from __future__ import annotations
 
 import argparse
 import datetime as _dt
+import errno
 import json
 import os
 import re
@@ -173,30 +191,33 @@ import subprocess
 import sys
 import tempfile
 from pathlib import Path
-from typing import NamedTuple
+from typing import Callable, NamedTuple
 
 SHAPE_ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(SHAPE_ROOT / "scripts"))
 from repo_shape import (  # noqa: E402
     COMMIT_RE, PROJECT_ID_RE, PYTHON, TREE_DIGEST_DEFINITION,
     VISIBILITY_CHOICES, NamingPolicy, Refusal, YamlError, checked_value,
-    double_quoted, git_out, load_yaml, parse_yaml, recorded_gitlink,
-    repo_basename, same_repository, tree_digest,
+    double_quoted, git_out, load_yaml, parse_yaml, repo_basename,
+    same_repository, tree_digest,
 )
 from shape_materialize import (  # noqa: E402
     FAMILY_RULESET_HINT, SHAPE_REPOSITORY, CommandFailed, check_program,
     commit_trailers, env_commit, escape_what_stdout_cannot_encode,
-    force_stage, inherited_child_environment, make_folder,
+    folder_flag_path, force_stage, inherited_child_environment, make_folder,
     materialize_family_root, refuse_bad_branch, refuse_unless_not_found,
     refuse_unmakeable_folder, run, shown_source, stage_written,
     target_in_the_way, target_remediation, trailer_line, write_lf,
 )
 # What `init` asks of the holder's own reader and validator before it creates
-# anything (#307), imported as its own unit and not added to the lists above.
-import importlib.util  # noqa: E402
-from repo_shape import YamlError, parse_yaml  # noqa: E402
+# anything (#307): the questions the scaffold and `adopt-project.py` ask of
+# `project.yaml`, asked of `family.yaml` (#925), and the first sentence of
+# the remedy where the holder's reader refuses it (#929).
 from shape_materialize import (  # noqa: E402
-    FAMILY_TEMPLATED, PLACEHOLDER_RE, render,
+    FAMILY_TEMPLATED, KIND_INVALID, KIND_MISREAD, KIND_NOT_A_MAPPING,
+    KIND_UNREADABLE, UNREADABLE_CHOICE, TemplateManifest, manifest_invalid,
+    manifest_misreads, manifest_not_a_mapping_remediation, manifest_validator,
+    manifest_value_problems, refuse_manifest_problems,
 )
 # How every command this prints for a person to paste spells its paths
 # (#486), the quoting the holder's `scripts/siblings.py` uses too.
@@ -208,12 +229,16 @@ from repo_shape import shell_line, shell_quoted  # noqa: E402
 from shape_materialize import unwritable_reason  # noqa: E402
 # Whether `--family` names a folder a Windows disk can make (#688): the rule
 # the scaffold and `adopt-project.py` hold a leg's mount path to, asked of a
-# path of one segment.
-from shape_materialize import _unmountable_reason  # noqa: E402
+# path of one segment, by the one function the scaffold asks of `--project`
+# too (#989).
+from shape_materialize import refuse_an_unholdable_name  # noqa: E402
 # How a refusal quotes the words git echoes of a value it refused (#688): as
 # a path is quoted (#610), as it is when printable and as Python's `repr`
 # spells it when it is not.
 from repo_shape import shown_path  # noqa: E402
+# The operating system's own words for a path it would not let this read
+# (#430), as `load_yaml` gives them for a file it cannot open.
+from repo_shape import _os_reason  # noqa: E402
 # A reused holder's own visibility and the Free-plan secrets note, asked as
 # the scaffold asks them of its root (#660).
 from shape_materialize import (  # noqa: E402
@@ -232,6 +257,9 @@ from shape_materialize import (  # noqa: E402
 # What `init`'s plan says "not found" means against GitHub, in the
 # scaffold's words (#913, L2-61).
 from shape_materialize import NOT_FOUND_WITH_THIS_TOKEN  # noqa: E402
+# Which of a mount's own refspecs `bump`'s fetch carries: one rule, which
+# `bump-leg.py` asks of a leg's fetch too (#1037).
+from shape_materialize import origin_fetch_refspecs  # noqa: E402
 
 NAMING_POLICY = SHAPE_ROOT / "contracts" / "repository-naming.yaml"
 MANIFEST = "family.yaml"
@@ -289,6 +317,224 @@ LEG_SUFFIX_RE = re.compile(r"-(?:spec|code)$")
 
 
 # ---------------------------------------------------------------------------
+# A path this tool cannot read is not a path that is not there (#430)
+# ---------------------------------------------------------------------------
+#
+# `Path.is_file()`, `is_dir()` and `exists()` RAISED a refused `stat` on
+# Python 3.9 to 3.13 (`PermissionError`) and answered False only where nothing
+# was at the name; from 3.14 they answer False to ANY `OSError`. So a holder
+# this user may not search was "not a family root" on 3.14 and a traceback on
+# 3.12, a member checkout this user may not enter was `member-uninitialized`,
+# and `remove`'s rollback said the object store it could not read was "not
+# there" and made the member's directory again, empty. `os.path.lexists`, the
+# question several guards here asked, has answered False to any `OSError` on
+# every version. Asked as below, every Python answers alike, and a refused
+# `stat` is a refusal that names the path, exit 2. `bump-leg.py`'s `_is_a`
+# (#383) is the model, under the same names, which #430's hygiene test holds
+# to one errno set; `repo_shape.py` is a shape copy and stays as it is.
+
+#: The `OSError`s that `Path.is_file()` and `Path.is_dir()` answered False to
+#: on Python 3.9 to 3.13 (pathlib's `_ignore_error`), because each means there
+#: is nothing at the name to open: no such file, a part of the path that is
+#: not a directory, a bad descriptor, a symlink loop, and Windows' "not
+#: ready", "invalid name" and "cannot resolve". Every other one was raised.
+_ABSENT_ERRNOS = (errno.ENOENT, errno.ENOTDIR, errno.EBADF, errno.ELOOP)
+_ABSENT_WINERRORS = (21, 123, 1921)
+
+
+def _absent(exc: OSError) -> bool:
+    """Whether `exc`, raised by a `stat` or `lstat`, says nothing is at the
+    name (`_ABSENT_ERRNOS`, `_ABSENT_WINERRORS`)."""
+    return (exc.errno in _ABSENT_ERRNOS
+            or getattr(exc, "winerror", None) in _ABSENT_WINERRORS)
+
+
+def _is_a(path: Path, kind: Callable[[int], bool]) -> bool:
+    """Whether `path` is there and of `kind` (`stat.S_ISREG`, `stat.S_ISDIR`,
+    or any mode at all), following a link, raising the `OSError` of a `stat`
+    the operating system REFUSED (#430): `bump-leg.py`'s `_is_a` (#383).
+
+    NOT `Path.is_file()`, `is_dir()` OR `exists()`, whose answer depends on
+    the Python. Asked here, every Python answers as 3.9 to 3.13 did, and the
+    caller names the refused path instead of calling it absent.
+    """
+    try:
+        mode = path.stat().st_mode
+    except OSError as exc:
+        if _absent(exc):
+            return False
+        raise
+    except ValueError:
+        # a name the operating system cannot take at all (a NUL in it)
+        return False
+    return kind(mode)
+
+
+def _any_mode(mode: int) -> bool:
+    """`_is_a`'s `kind` for a question about any file at all, as
+    `Path.exists()` asks it."""
+    return True
+
+
+def _is_there(path: Path) -> bool:
+    """Whether anything is at `path`, NOT following a link (a dangling link
+    is there): `os.path.lexists`, asked as `_is_a` asks, so a refused `lstat`
+    is raised and not answered False (#430)."""
+    try:
+        path.lstat()
+    except OSError as exc:
+        if _absent(exc):
+            return False
+        raise
+    except ValueError:
+        return False
+    return True
+
+
+def _gone(path: Path) -> bool:
+    """Whether NOTHING is at `path`, not following a link, asked before a
+    removal or a rollback decides on it (#430): True ONLY where the `lstat`
+    says `ENOENT`, and any other `OSError` raised.
+
+    STRICTER THAN `_is_there`, ON PURPOSE. A part of the path that is not a
+    directory (`ENOTDIR`, a file where a folder was) or a link that loops
+    (`ELOOP`) says nothing is at the name for the question "is there a file
+    to read", and so `_is_a` answers. For "is there anything here to remove,
+    or was there nothing here before this run made it" it is not an answer:
+    a rollback that took it for one recorded a path as made by this run, or
+    skipped one, past something it never looked at.
+    """
+    try:
+        path.lstat()
+    except FileNotFoundError:
+        return True
+    return False
+
+
+#: What a path this tool must read and cannot is told, by cause (#430), in
+#: `validate-pins.py`'s words (`_unreadable_file`, #712) and `bump-leg.py`'s
+#: (#383): a refused permission is put right by the mode or the owner, and any
+#: other cause is not told to `chmod`.
+PERMISSION_ADVICE = (
+    "Make what this user may not open readable by this user: `chmod u+r` on "
+    "a file, `chmod u+rx` on a directory (and on every directory above "
+    "it{where}), or fix who owns it. ")
+#: The cure for a cause other than a permission, as a clause, which
+#: `OTHER_REASON` is the sentence of and the rollbacks' sentences and
+#: `remove`'s NOTE end on (#430).
+OTHER_CURE = (
+    "no `chmod` puts it right: put back in its place what belongs there, or "
+    "take away what nobody wants, and make sure nothing is changing the "
+    "holder while this runs")
+OTHER_REASON = (
+    "Where the operating system gave another reason (a part of the path that "
+    "is a file where a directory belongs, a link that loops, an I/O error), "
+    + OTHER_CURE + ". ")
+#: The cure for a permission, as a clause, for a sentence that names a path
+#: and goes on: a rollback step the operating system refused (#430). The
+#: step may have read the path or written it (an `rmdir` needs the folder
+#: above writable), so the cure gives both (r955's SHOULD-R1 on #955).
+PERMISSION_CURE = (
+    "give this user access to it (`chmod u+rw` on a file, `chmod u+rwx` on a "
+    "directory and on every directory above it inside the holder)")
+RUN_AGAIN = "Then run the same command again."
+
+
+def _cure(exc: OSError) -> str:
+    """`PERMISSION_CURE` for a `PermissionError`, else `OTHER_CURE`: the
+    advice follows the cause, as `_unreadable`'s does (#430)."""
+    return PERMISSION_CURE if isinstance(exc, PermissionError) else OTHER_CURE
+
+
+def _cannot_read(named: str, exc: OSError) -> str:
+    """`<named>: cannot be read (<the operating system's reason>)`, the line
+    every refusal of a path this tool cannot read names it with (#430)."""
+    return f"{named}: cannot be read ({_os_reason(exc)})"
+
+
+def _named_in(root: Path, path: Path) -> str:
+    """`path` as a line names it: relative to the holder `root`, in POSIX,
+    where it is under it, else whole; as `shown_path` shows a path (#766)."""
+    try:
+        return shown_path(path.relative_to(root).as_posix())
+    except ValueError:
+        return shown_path(str(path))
+
+
+def _unreadable(code: str, named: str, exc: OSError, reads: str, *,
+                where: str = " inside the holder") -> Refusal:
+    """`code`'s refusal of a path this tool must read and the operating
+    system will not let it (#430): `_cannot_read`'s line, and a remedy that
+    says what was being read (`reads`, a sentence of its own) and the cure
+    for the cause, `PERMISSION_ADVICE` naming `where` the directories above
+    are, or `OTHER_REASON`."""
+    advice = (PERMISSION_ADVICE.format(where=where)
+              if isinstance(exc, PermissionError) else OTHER_REASON)
+    return Refusal(code, _cannot_read(named, exc),
+                   f"Remediation: {reads} A path it cannot read is refused, "
+                   "never taken for one that is not there. " + advice
+                   + RUN_AGAIN)
+
+
+def _refused(exc: OSError, asked: Path) -> Path:
+    """The path the operating system names in `exc` (its `filename`), else
+    `asked`: which of several paths a record asked about was refused."""
+    return Path(exc.filename) if isinstance(exc.filename, str) else asked
+
+
+def _member_unreadable(root: Path, path: Path, exc: OSError) -> Refusal:
+    """`member-unreadable`: a member's mount, its checkout's `.git` or its
+    object store in the holder, whose `stat` the operating system refused,
+    named relative to the holder, before anything is written (#430)."""
+    return _unreadable(
+        "member-unreadable", _named_in(root, path), exc,
+        "family.py reads what it would change in the holder, a member's "
+        "mount, its `.git` and its object store among them, before it "
+        "writes anything, to say what it would change and to put back what "
+        "it changed.")
+
+
+def _undo_reason(root: Path, exc: BaseException, asked: Path) -> str:
+    """Why a rollback step failed, for the sentence that names what is left:
+    `_reason`, but for an `OSError` `<path>: <reason>; <cure>`, the path the
+    operating system refused, relative to the holder `root` (`asked` where
+    it names none), its reason and its cure (#430). A step that met
+    `Permission denied` and said only that left the person to find which
+    path, and the commands typed after it failed until the mode was given
+    back.
+
+    NOT "CANNOT BE READ" (r955's SHOULD-R1 on #955): a step reads and
+    writes, and what failed may be the write (`rmdir`, `unlink`, `mkdir`), so
+    the line gives the operating system's reason as it is, and the cure for
+    a permission names reading and writing both."""
+    if isinstance(exc, OSError):
+        return (f"{_named_in(root, _refused(exc, asked))}: "
+                f"{_os_reason(exc)}; " + _cure(exc))
+    return _reason(exc)
+
+
+def _manifest_there(root: Path) -> bool:
+    """Whether the holder `root` has a `family.yaml` that is a file, asked
+    by `Family.open` and `siblings` before anything else; where its `stat`
+    is refused, `family-root-unreadable` (#430).
+
+    A HOLDER THIS USER MAY NOT SEARCH (`r--` or `---`) WAS "NOT A FAMILY
+    ROOT" on Python 3.14, `family-root-missing`, whose remedy runs `init`
+    over a holder that exists, and a `PermissionError` traceback on 3.12.
+    The holder is named whole, as `family-root-missing` names it: it is the
+    directory the person pointed at, and the one whose mode is the cure.
+    """
+    path = root / MANIFEST
+    try:
+        return _is_a(path, stat.S_ISREG)
+    except OSError as exc:
+        raise _unreadable(
+            "family-root-unreadable", shown_path(str(path)), exc,
+            f"family.py reads the holder's {MANIFEST} before anything else, "
+            "to know that it is a family root.", where="") from exc
+
+
+# ---------------------------------------------------------------------------
 # family.yaml: reading it, and rewriting the members block
 # ---------------------------------------------------------------------------
 
@@ -305,7 +551,7 @@ class Family:
     def open(cls, root_spec) -> "Family":
         root = Path(root_spec).expanduser().resolve()
         path = root / MANIFEST
-        if not path.is_file():
+        if not _manifest_there(root):
             raise Refusal(
                 "family-root-missing",
                 f"{path} does not exist, so this is not a family root",
@@ -417,19 +663,32 @@ class Family:
         refuse a `family.yaml` holding a change HEAD does not
         (`_checked_manifest_committed`), and this refusal is only reached
         once the shape it names is committed.
+
+        THE `members:` LINE is `members:`, `members: []`, or `members:` and
+        one word the holder's reader reads as null (`_opens_members`, #920),
+        so `members: null` is found as `members:` is.
+
+        EVERY SUCH LINE IS COUNTED FIRST, and anything but one is refused
+        (#920, lane 5's review of #957, SHOULD 1). The rewrite stopped at the
+        first and never counted a second, so a `members: []` above `name:`,
+        with the real block still at the end, which the reader then took as
+        the last of two keys and the holder's gate passed, was cut off there
+        with exit 0: every key below it went, and the gate then failed the
+        commit. With the null words found, `members: null` did the same.
+
+        NO VERB REACHES A COUNT OF TWO since #974 (#1029). The reader refuses
+        a key written twice, by the line of the second, so `Family.open`
+        stops such a manifest as `yaml-unparsable` before any verb asks this.
+        The count stays as defence in depth, for a `family.yaml` changed
+        between the open and the rewrite, a caller of this method, or a
+        reader relaxed later, and it is asked of the method itself
+        (`test_two_members_lines_are_refused_by_the_rewrite_itself`). A
+        count of none is still reached through a verb: a comment on the
+        line, or no block at all.
         """
         text = self.path.read_text(encoding="utf-8")
         lines = text.splitlines()
-        out: list[str] = []
-        seen = 0
-        for line in lines:
-            if line.rstrip() in ("members:", "members: []"):
-                seen += 1
-                out.append("members: []" if not rows else "members:")
-                for row in rows:
-                    out.extend(_member_lines(row))
-                break
-            out.append(line)
+        seen = sum(1 for line in lines if _opens_members(line))
         if seen != 1:
             raise Refusal(
                 "family-members-unrecognised",
@@ -440,7 +699,49 @@ class Family:
                 "file and everything below it belongs to this tool; fix it by "
                 "hand this once and commit that (`git commit -- "
                 f"{MANIFEST}`), then run the same command again.")
+        out: list[str] = []
+        for line in lines:
+            if _opens_members(line):
+                out.append("members: []" if not rows else "members:")
+                for row in rows:
+                    out.extend(_member_lines(row))
+                break
+            out.append(line)
         return "\n".join(out) + "\n"
+
+
+def _opens_members(line: str) -> bool:
+    """Whether `line` is the `members:` line `Family.rewritten` rewrites
+    from: `members:`, `members: []`, or `members: <word>` where the word is
+    one the holder's own reader reads as null (#920).
+
+    THE READER IS ASKED OF THE WORD, NOT A LIST OF SPELLINGS, as `_member_id`
+    asks it. The finder took only `members:` and `members: []`, while the
+    reader reads the words `null`, `Null` and `NULL`, and `~`, as the null a
+    bare `members:` is, and `Family.open` and the holder's own
+    `validate-family.py` both read that null as no members. So a holder
+    whose `family.yaml` said `members: null` passed its own gate, and `add`
+    refused it as having no `members:` line at all
+    (`family-members-unrecognised`) and wrote nothing.
+
+    ONE WORD, AS THE TWO SPELLINGS ARE: the line is taken as strictly as
+    `members:` always was, at the margin, with one space before the word
+    and nothing after it but blanks. A comment after it is still a hand edit
+    this tool does not rewrite, which would drop it
+    (`test_a_manifest_this_tool_will_not_rewrite_is_refused_before_the_mount`
+    holds `members:  # edited by hand` to that), and an indented
+    `  members: null` is a key of another mapping.
+    """
+    text = line.rstrip()
+    if text in ("members:", "members: []"):
+        return True
+    word = text[len("members: "):]
+    if not text.startswith("members: ") or word.split() != [word]:
+        return False
+    try:
+        return parse_yaml(f"members: {word}\n") == {"members": None}
+    except YamlError:
+        return False
 
 
 #: What `add`, `bump` and `remove` say under `family-members-unreadable`.
@@ -686,8 +987,15 @@ def _member_url(repository: str, local_remote_dir: Path | None) -> str:
 #: (`_classify_family_name`). `family-bad-id`'s derived remedy names it in
 #: the same words, so the person who follows it is not sent from one
 #: refusal to the other (#659).
+#:
+#: AND NOT ONE OF THE TWO FORMS NO HOLDER IS (#911), in
+#: `naming-not-a-family`'s words. `--family open_glass` was told to change
+#: `--family` to one CamelCase token, and `openGlass`, which is one, was
+#: then refused as `naming-not-a-family`: an `open<Product>` name classifies
+#: as a neutral product whatever is declared.
 FAMILY_NAME_RULE = ("one CamelCase token with no hyphen, underscore, dot "
-                    "or space")
+                    "or space, and not an `open<Product>` or `<X>-Install` "
+                    "name")
 
 
 def _classify_family_name(policy: NamingPolicy, name: str) -> None:
@@ -703,9 +1011,10 @@ def _classify_family_name(policy: NamingPolicy, name: str) -> None:
         raise Refusal(
             "naming-unclassified",
             f"{name!r} matches no family in the naming policy",
-            f"Remediation: --family takes {FAMILY_NAME_RULE} — the same rule "
-            "an assembly root's name follows, because a holder is spelled "
-            "like one.")
+            f"Remediation: --family takes {FAMILY_NAME_RULE}. A holder is "
+            "spelled like an assembly root, but those two forms are "
+            "unambiguous by construction and cannot be declared into a "
+            "holder.")
     if found.family != "family":
         raise Refusal(
             "naming-not-a-family",
@@ -745,20 +1054,19 @@ def _refuse_an_unholdable_holder_name(family: str) -> None:
 
     THE QUESTION IS THE LEG PATH RULE'S (`_unmountable_reason`), the one the
     scaffold and `adopt-project.py` ask of a leg's mount path, asked of a
-    path of one segment, in its own words. It is asked after
-    `_classify_family_name` on purpose: the policy's token holds no `.`, no
-    `~` and no space, so a device name is the only answer the rule can give
-    here, and the names it also refuses (a trailing dot or space, `.git`,
-    `git~1`, `.gitmodules`) are refused before it, as `unsafe-value`,
-    `family-bad-id` or `naming-unclassified`, as they always were.
+    path of one segment, in its own words, by
+    `shape_materialize.refuse_an_unholdable_name`, which the scaffold asks of
+    `--project` too (#989). It is asked after `_classify_family_name` on
+    purpose: the policy's token holds no `.`, no `~` and no space, so a
+    device name is the only answer the rule can give here, and the names it
+    also refuses (a trailing dot or space, `.git`, `git~1`, `.gitmodules`)
+    are refused before it, as `unsafe-value`, `family-bad-id` or
+    `naming-unclassified`, as they always were.
     """
-    reason = _unmountable_reason(family)
-    if reason:
-        raise Refusal(
-            "family-bad-holder-name",
-            f"--family is {family!r}, which names the holder and the folders "
-            f"`init` makes for it, and {reason}.",
-            HOLDER_NAME_REMEDIATION)
+    refuse_an_unholdable_name(
+        "family-bad-holder-name", "--family", family,
+        names="the holder and the folders `init` makes for it",
+        remediation=HOLDER_NAME_REMEDIATION)
 
 
 def _read_member_project(path: Path, project: str, repository: str,
@@ -778,7 +1086,20 @@ def _read_member_project(path: Path, project: str, repository: str,
     every refusal here is the same either way.
     """
     manifest_path = path / "project.yaml"
-    if not manifest_path.is_file():
+    try:
+        there = _is_a(manifest_path, stat.S_ISREG)
+    except OSError as exc:
+        # A `project.yaml` WHOSE `stat` IS REFUSED, a link to a place this
+        # user may not search, was "no project.yaml" on Python 3.14, so
+        # `member-not-a-project` sent the person to scaffold a project that
+        # is one; a traceback on 3.12 (#430). It is the manifest that cannot
+        # be read, under that refusal's code and named as `shown` names it.
+        raise _unreadable(
+            "member-manifest-unreadable",
+            shown or shown_path(str(manifest_path)), exc,
+            "family.py reads the member's own project.yaml for the `id:` its "
+            "row records.", where="") from exc
+    if not there:
         # A LEG IS NAMED BY ITS ROOT (#203). The commonest way here is
         # `--member <org>/IRRS-spec`, and the legs of `IRRS-spec` are
         # `IRRS-spec-spec` and `IRRS-spec-code`, which no naming rule makes
@@ -2032,6 +2353,33 @@ def _refuse_landing_in_standard(into: Path, holder: Path,
         "override (`<dir>/<Family>`, no family folder). There is no --force.")
 
 
+def _folder_flags(args) -> None:
+    """`init`'s three folder flags as the `Path`s every later step reads,
+    each refused by name when passed empty (#972's review, S2), first, before
+    anything reads one: `--into ''` as `into-no-path`, `--work-dir ''` as
+    `work-dir-no-path` and `--local-remote-dir ''` as
+    `local-remote-dir-no-path`, as the scaffold refuses its own two.
+
+    As a `Path`, `''` is `.`, the directory `init` runs in, so each was taken
+    without a word: from the root of a checkout of openRepoShape, `--into
+    ''` planned the holder inside it, where no `--into` is refused as
+    `family-landing-in-standard`. A flag not given is None, as it was."""
+    args.into = folder_flag_path(
+        args.into, "--into", "into-no-path",
+        names="the parent folder the family folder is made in",
+        absent="it is made in the directory you stand in, which is refused "
+               "inside a checkout of openRepoShape")
+    args.work_dir = folder_flag_path(
+        args.work_dir, "--work-dir", "work-dir-no-path",
+        names="the folder the holder is made in",
+        absent="the holder lands in a family folder, by --into")
+    args.local_remote_dir = folder_flag_path(
+        args.local_remote_dir, "--local-remote-dir",
+        "local-remote-dir-no-path",
+        names="the folder the holder's bare repository is made in",
+        absent="it is created on GitHub")
+
+
 def _landing(args, family: str) -> tuple[Path | None, Path]:
     """`(the family folder, the holder)` — WHERE `init` PUTS THINGS.
 
@@ -2096,7 +2444,12 @@ FAMILY_ID_DERIVED_FROM = "--family lowercased"
 #: forms take only ASCII letters, digits and hyphens, so "pass an explicit
 #: lowercase --id" led straight to `naming-unclassified`, and so would
 #: "change --family" to `North-Wind`. The derived remedy names the rule.
-PASSED_FAMILY_ID_REMEDIATION = "Remediation: pass an explicit lowercase --id."
+#: A passed one is told what an id may hold (#911), in the scaffold's words
+#: for `scaffold-bad-id`: "an explicit lowercase --id" was said to `--id
+#: foo_bar`, which is both.
+PASSED_FAMILY_ID_REMEDIATION = ("Remediation: pass an --id of lowercase "
+                                "letters, digits and hyphens, starting with "
+                                "a letter or digit.")
 DERIVED_FAMILY_ID_REMEDIATION = (
     f"Remediation: change --family to {FAMILY_NAME_RULE}. The id is "
     f"{FAMILY_ID_DERIVED_FROM}, and an explicit --id would not change "
@@ -2104,27 +2457,45 @@ DERIVED_FAMILY_ID_REMEDIATION = (
     "its family folder.")
 
 
-def _refuse_bad_family_id(family_id: str, given: str | None) -> None:
+def _refuse_bad_family_id(family_id: str, args, policy: NamingPolicy,
+                          family: str) -> None:
     """`family-bad-id`: an id `validate-family.py` would not take
     (`PROJECT_ID_RE`), named by where it came from (#659), as the scaffold
     names `scaffold-bad-id`.
 
-    `given` is `--id` as parsed. One the person passed is named as the flag
-    they typed, value as typed, and keeps its remedy. With none, or an empty
-    one, the id is `--family` lowercased (`args.id or family.lower()`), and
-    `--id 'north_wind' must match` named a value nobody had typed: the flag
-    is named as `_manifest_flags` names one, by where its value came from,
-    and an empty `--id ''` as empty, because it was passed."""
+    `args.id` is `--id` as parsed. One the person passed, `''` among them
+    (#911), is named as the flag they typed, value as typed, and is told
+    what an id may hold (`PASSED_FAMILY_ID_REMEDIATION`). With none, the id
+    is `--family` lowercased, and `--id 'north_wind' must match` named a
+    value nobody had typed: the flag is named as `_manifest_flags` names
+    one, by where its value came from.
+
+    A REFUSED NAME SPEAKS FIRST (#911). `--family North_Wind --id
+    north_wind` was refused for its id, and the remedy's retype then met
+    `naming-unclassified`, which no `--id` mends. So a passed id is refused
+    only once `--family` is a name a holder can have: one the policy holds
+    as a holder (`_classify_family_name`), one a Windows disk can make a
+    folder of (`_refuse_an_unholdable_holder_name`), and, where GitHub is
+    asked, one GitHub keeps a repository's name to
+    (`_refuse_a_holder_name_github_cannot_hold`). `_checked_family_identity`
+    asks each of them next anyway, in this order, and none reads anything
+    but the name, the policy and whether `--local-remote-dir` was given, so
+    none starts a process: `--family NUL --id foo_bar` and a
+    `--family` of 105 characters with a bad id were told to retype the id
+    first (#972's review, S1). A derived id keeps its own refusal: its
+    remedy is already the naming rule."""
     if PROJECT_ID_RE.match(family_id):
         return
     pattern = PROJECT_ID_RE.pattern
-    if given:
+    if args.id is not None:
+        _classify_family_name(policy, family)
+        _refuse_an_unholdable_holder_name(family)
+        _refuse_a_holder_name_github_cannot_hold(args, family)
         raise Refusal("family-bad-id",
                       f"--id {family_id!r} must match {pattern}",
                       PASSED_FAMILY_ID_REMEDIATION)
-    unset = "not given" if given is None else "empty"
     raise Refusal("family-bad-id",
-                  f"--id ({unset}, so {FAMILY_ID_DERIVED_FROM}) is "
+                  f"--id (not given, so {FAMILY_ID_DERIVED_FROM}) is "
                   f"{family_id!r}, which must match {pattern}",
                   DERIVED_FAMILY_ID_REMEDIATION)
 
@@ -2162,6 +2533,23 @@ ORG_SPELLING_REMEDIATION = (
     "`<org>` of `https://github.com/<org>`.")
 
 
+def _refuse_a_holder_name_github_cannot_hold(args, family: str) -> None:
+    """`family-name-too-long`: a `--family` over GitHub's 100 for the
+    holder's repository, `<org>/<Family>` (#863). Asked first by
+    `_refuse_what_github_cannot_hold`, and before a passed id that is no id
+    (`_refuse_bad_family_id`, #972's review, S1). Not asked under
+    `--local-remote-dir`, where a bare repository's name is the disk's."""
+    if args.local_remote_dir is not None:
+        return
+    if len(family) > GITHUB_NAME_MAX:
+        raise Refusal(
+            "family-name-too-long",
+            f"--family is {_both_ends(family)}, {len(family)} characters, and "
+            "GitHub keeps a repository's name, the holder's "
+            f"`<org>/<Family>`, to at most {GITHUB_NAME_MAX}",
+            HOLDER_TOO_LONG_REMEDIATION)
+
+
 def _refuse_what_github_cannot_hold(args, family: str, family_id: str,
                                     topic: str) -> None:
     """What GitHub will not take of the holder, refused where GitHub is
@@ -2182,25 +2570,19 @@ def _refuse_what_github_cannot_hold(args, family: str, family_id: str,
     failed at `gh repo create`. Under `--local-remote-dir` none is asked: a
     bare repository on disk has no topic and no owner, and its name is the
     disk's. The id is named as `_refuse_bad_family_id` names it, by where it
-    came from."""
+    came from; a `--id ''` was refused there (#911), so a derived id is one
+    not given."""
     if args.local_remote_dir is not None:
         return
-    if len(family) > GITHUB_NAME_MAX:
-        raise Refusal(
-            "family-name-too-long",
-            f"--family is {_both_ends(family)}, {len(family)} characters, and "
-            "GitHub keeps a repository's name, the holder's "
-            f"`<org>/<Family>`, to at most {GITHUB_NAME_MAX}",
-            HOLDER_TOO_LONG_REMEDIATION)
+    _refuse_a_holder_name_github_cannot_hold(args, family)
     refuse_an_owner_github_cannot_have("family-org-too-long", args.org,
                                        "--org", ORG_REMEDIATION)
     refuse_an_owner_github_cannot_spell("family-bad-org", args.org, "--org",
                                         ORG_SPELLING_REMEDIATION)
-    if args.id:
+    if args.id is not None:
         named, remediation = "--id", PASSED_TOPIC_REMEDIATION
     else:
-        unset = "not given" if args.id is None else "empty"
-        named = f"--id ({unset}, so {FAMILY_ID_DERIVED_FROM})"
+        named = f"--id (not given, so {FAMILY_ID_DERIVED_FROM})"
         remediation = DERIVED_TOPIC_REMEDIATION
     refuse_a_topic_github_cannot_set("family-topic-too-long", topic,
                                      family_id, named, remediation)
@@ -2226,9 +2608,16 @@ def _checked_family_identity(args) -> tuple[str, str, str]:
     # too, before anything is created.
     refuse_bad_branch("family-bad-tracking-branch", "--tracking-branch",
                       args.tracking_branch)
-    family_id = checked_value("--id", args.id or family.lower())
-    _refuse_bad_family_id(family_id, args.id)
+    # A `--id ''` IS A VALUE, NOT A FLAG NOT GIVEN (#911): read by its truth,
+    # it planned `--family` lowercased without a word. Read by `is not None`,
+    # it is refused as `family-bad-id`, by name, before `checked_value` holds
+    # the id to a command line's alphabet, which would call it `unsafe-value`
+    # and which still refuses what `PROJECT_ID_RE.match` lets through, a
+    # trailing line break.
+    family_id = args.id if args.id is not None else family.lower()
     policy = NamingPolicy.load(NAMING_POLICY)
+    _refuse_bad_family_id(family_id, args, policy, family)
+    family_id = checked_value("--id", family_id)
     _classify_family_name(policy, family)
     _refuse_an_unholdable_holder_name(family)
     topic = policy.topic_for(family_id)
@@ -2423,37 +2812,44 @@ def _creator_name(args) -> str:
     set but blank and nothing else names a creator, the refusal says that
     variable is there and is the cause, instead of "no GIT_AUTHOR_NAME", and
     tells the person to unset it AND pass `--created-by`.
+
+    A `--created-by ''` IS THE FLAG'S ANSWER (#911). It was read by its
+    truth, so an empty one fell back to GIT_AUTHOR_NAME or `git config
+    user.name` without a word, and with neither `family-no-creator` said "no
+    --created-by" of a flag that was passed. It is a value now, and the
+    holder's own validator refuses it by name (`refuse_unholdable_manifest`),
+    as it refuses `--created-by ' '`; the fallbacks, and both refusals that
+    no creator was found, answer only where the flag is not given.
     """
     created_by, source = args.created_by, "--created-by"
-    blank_variable = False
-    if not created_by:
+    if created_by is None:
         named = os.environ.get("GIT_AUTHOR_NAME") or ""
         created_by, source = named.strip(), "GIT_AUTHOR_NAME"
         blank_variable = bool(named) and not created_by
-    if not created_by:
-        source = "`git config user.name`"
-        try:
-            created_by = git_out(["config", "user.name"], cwd=SHAPE_ROOT,
-                                 binary=True).decode(
-                                     "utf-8", "surrogateescape").strip()
-        except Refusal:
-            created_by = ""
-    if not created_by and blank_variable:
-        raise Refusal(
-            "family-no-creator",
-            "no --created-by, a GIT_AUTHOR_NAME of whitespace alone, and no "
-            "`git config user.name`. Creating a family is a human's act and "
-            "the manifest records whose.",
-            "Remediation: unset GIT_AUTHOR_NAME, which git would make the "
-            "holder's first commit as and refuses, and re-run with "
-            "--created-by 'Your Name'.")
-    if not created_by:
-        raise Refusal(
-            "family-no-creator",
-            "no --created-by, no GIT_AUTHOR_NAME and no `git config "
-            "user.name`. Creating a family is a human's act and the manifest "
-            "records whose.",
-            "Remediation: re-run with --created-by 'Your Name'.")
+        if not created_by:
+            source = "`git config user.name`"
+            try:
+                created_by = git_out(["config", "user.name"], cwd=SHAPE_ROOT,
+                                     binary=True).decode(
+                                         "utf-8", "surrogateescape").strip()
+            except Refusal:
+                created_by = ""
+        if not created_by and blank_variable:
+            raise Refusal(
+                "family-no-creator",
+                "no --created-by, a GIT_AUTHOR_NAME of whitespace alone, and "
+                "no `git config user.name`. Creating a family is a human's "
+                "act and the manifest records whose.",
+                "Remediation: unset GIT_AUTHOR_NAME, which git would make the "
+                "holder's first commit as and refuses, and re-run with "
+                "--created-by 'Your Name'.")
+        if not created_by:
+            raise Refusal(
+                "family-no-creator",
+                "no --created-by, no GIT_AUTHOR_NAME and no `git config "
+                "user.name`. Creating a family is a human's act and the "
+                "manifest records whose.",
+                "Remediation: re-run with --created-by 'Your Name'.")
     reason = unwritable_reason(created_by)
     if reason:
         raise Refusal(
@@ -2658,17 +3054,23 @@ def _template_values(args, family: str, family_id: str, repository: str,
     Windows path, spelled with `\\`, is quoted). Only this value is quoted:
     the block's other placeholder, `{{FAMILY}}` in `cd {{FAMILY}}`, is a
     name the naming policy spells in letters and digits.
+
+    A `--name ''` OR `--created-on ''` IS A VALUE (#911), read by `is not
+    None` as `--id` and `--created-by` are, so the holder's own validator
+    refuses it by name (`refuse_unholdable_manifest`) where its truth made
+    it the default without a word.
     """
     return {
         "FAMILY": family,
-        "FAMILY_NAME": args.name or family,
+        "FAMILY_NAME": args.name if args.name is not None else family,
         "FAMILY_ID": family_id,
         "FAMILY_REPOSITORY": repository,
         "ORG": args.org,
         "VISIBILITY": args.visibility,
         "TRACKING_BRANCH": args.tracking_branch,
         "CREATED_BY": created_by,
-        "CREATED_ON": args.created_on or _dt.date.today().isoformat(),
+        "CREATED_ON": (args.created_on if args.created_on is not None
+                       else _dt.date.today().isoformat()),
         "CLONE_URL": shell_quoted(url, "posix"),
         "SHAPE_REPOSITORY": SHAPE_REPOSITORY,
         "SHAPE_COMMIT": shape_commit,
@@ -2775,7 +3177,9 @@ def _refuse_a_taken_holder(folder: Path | None, holder: Path) -> None:
     `iterdir()` met with a `NotADirectoryError` traceback, or an empty folder
     this user cannot write in (L2-60), whose remediation names the flag the
     person landed by: `--work-dir` where there is no family folder, `--into`
-    otherwise."""
+    otherwise. A folder this user cannot list (#930) is told the same flag,
+    with the permission that would let `init` see whether it holds a tree,
+    and not this sentence about a holder that is already there."""
     why = target_in_the_way(holder)
     if why:
         raise Refusal(
@@ -3089,13 +3493,15 @@ holder         {work}
 # retyping this refuses. Whether the templates quote is #259's decision, and
 # one decision for every tool that renders them.
 #
-# THIS IS THE SMALLEST VERSION THE FAMILY NEEDS, and not `shape_materialize`'s:
-# the questions there (`manifest_misreads`, `manifest_invalid`, #261) are
-# written for the assembly root's `project.yaml` and its `validate-manifest.py`.
-# #314 added them first, and this change landed second without unifying them,
-# so the two sets of helpers exist side by side. Unifying them is an item on
-# tracking issue #459's checklist: the two differ only in the template, the
-# validator's entry point and the sentence that names the file.
+# THE QUESTIONS ARE `shape_materialize`'S (#925), the ones the scaffold and
+# `adopt-project.py` ask of `project.yaml` (`manifest_misreads`,
+# `manifest_invalid`, `manifest_value_problems`, #261), asked of
+# `family.yaml` through `HOLDER_MANIFEST`. #314 added them first, and
+# #307's `init` landed second with a copy of every helper; the two drifted,
+# and a fix to one missed the other (#817's whole-manifest words, #929).
+# What is the holder's alone is data, and it is all below: the template,
+# the validator and the question put to it, the words that name the
+# holder, and the remedies.
 
 #: The holder's template directory, and the one validator in it these
 #: questions ask. `materialize_family_root` reads the same directory.
@@ -3130,212 +3536,11 @@ FINDING_PLACEHOLDER = {
     "family-created-on": "CREATED_ON", "family-visibility": "VISIBILITY",
 }
 
-_FINDING_RE = re.compile(r"^FINDING (?P<code>[a-z0-9-]+): (?P<detail>.*)$",
-                         re.DOTALL)
-
-#: The validator modules already loaded, by the file they were loaded from.
-_VALIDATORS: dict = {}
-
-
-def _validator_unusable(what: str, why: str) -> Refusal:
-    """The refusal for a template validator that cannot be asked, and not a
-    traceback. It is a defect of the copy of the standard that was run and not
-    of any value; nothing was created, because the question is asked before
-    anything exists, and a validator that cannot answer lets no manifest
-    through unasked."""
-    return Refusal(
-        "family-validator-unusable",
-        f"templates/family-root/{FAMILY_VALIDATOR}, the validator this run "
-        f"asks about the manifest it would write, {what}: {why}",
-        "Remediation: this is a defect in the copy of this standard you ran, "
-        "not in your values: the file is missing, unreadable or broken "
-        "there, and nothing was created. Restore it from the standard's "
-        "repository, or reinstall the standard, and run again.")
-
-
-def family_validator(template_dir: Path = FAMILY_TEMPLATE):
-    """The holder's own `scripts/validate-family.py`, as a module.
-
-    LOADED FROM THE TEMPLATE IT IS COPIED FROM, so what is asked is the rule
-    the holder will apply and no second spelling of it exists. By path,
-    because the filename has a hyphen and cannot be imported by name. The
-    directory the validator puts at the front of `sys.path` for its own
-    imports is taken off again, and NO BYTECODE IS WRITTEN: importing a source
-    file makes CPython write `scripts/__pycache__/` beside it, and this file
-    is a TEMPLATE, in a tree every reader of it then meets.
-    """
-    path = Path(template_dir) / FAMILY_VALIDATOR
-    module = _VALIDATORS.get(path)
-    if module is None:
-        spec = importlib.util.spec_from_file_location(
-            "openreposhape_validate_family", path)
-        module = importlib.util.module_from_spec(spec)
-        saved_path, saved_flag = list(sys.path), sys.dont_write_bytecode
-        sys.dont_write_bytecode = True
-        try:
-            spec.loader.exec_module(module)
-        except (Exception, SystemExit) as exc:  # missing, unreadable, broken
-            raise _validator_unusable(
-                "could not be loaded", f"{type(exc).__name__}: {exc}"
-            ) from exc
-        finally:
-            sys.path[:] = saved_path
-            sys.dont_write_bytecode = saved_flag
-        for name in FAMILY_VALIDATOR_ASKS:
-            if not hasattr(module, name):
-                raise _validator_unusable(
-                    "could not be used", f"it has no `{name}`")
-        _VALIDATORS[path] = module
-    return module
-
-
-def _reading_in_words(reading) -> str:
-    """What the holder's reader made of a value, as a sentence says it."""
-    if isinstance(reading, YamlError):
-        return f"nothing at all, because it refuses the line ({reading})"
-    if reading is None:
-        return "no value at all"
-    if isinstance(reading, bool):
-        return "the boolean " + ("true" if reading else "false")
-    if isinstance(reading, (int, float)):
-        return f"the number {reading!r}"
-    if isinstance(reading, str):
-        return f"the text {reading!r}"
-    return "a list" if isinstance(reading, list) else "a mapping"
-
-
-def _line_shown(line: str) -> str:
-    """`line` in backticks, or as Python spells it where it holds a character
-    a terminal shows as something else, so that one finding stays one line."""
-    return f"`{line}`" if line.isprintable() else repr(line)
-
-
-def _reading_of(rendered: str):
-    """What the holder's reader makes of the one `key: value` line
-    `rendered`: the value, the `YamlError` it raised, or the whole answer when
-    it is not one key with one value (a value with a line break in it can
-    carry a second key into the file)."""
-    try:
-        parsed = parse_yaml(rendered.lstrip() + "\n")
-    except YamlError as exc:
-        return exc
-    if isinstance(parsed, dict) and len(parsed) == 1:
-        return next(iter(parsed.values()))
-    return parsed
-
-
-def _misread_rows(values: dict, what: dict, template_dir: Path
-                  ) -> dict[str, list[tuple]]:
-    """For each placeholder of `what` whose value the holder's reader would
-    not read back as that same text: `(rendered line, reading)` for each
-    template line that carries it."""
-    found: dict[str, list] = {}
-    for rel in FAMILY_TEMPLATED_YAML:
-        text = (Path(template_dir) / rel).read_text(encoding="utf-8")
-        for line in text.splitlines():
-            keys = [token[2:-2] for token in PLACEHOLDER_RE.findall(line)]
-            if (len(keys) != 1 or keys[0] not in what
-                    or keys[0] not in values
-                    or line.lstrip().startswith("#")):
-                continue
-            key, value = keys[0], str(values[keys[0]])
-            rendered = render(line, {key: value}, rel).lstrip()
-            reading = _reading_of(rendered)
-            if not (isinstance(reading, str) and reading == value):
-                found.setdefault(key, []).append((rendered, reading))
-    return found
-
-
-def family_manifest_misreads(values: dict, what: dict,
-                             template_dir: Path = FAMILY_TEMPLATE
-                             ) -> list[str]:
-    """A sentence for each value the holder's reader would read back as
-    anything but that same text; `[]` when every one reads back.
-
-    `values` is the substitution table; `what` names the placeholders to ask
-    about and how a refusal calls each (`{"FAMILY_ID": "--id"}`). Each
-    template line that carries exactly one of them is rendered with the
-    value, as `render` writes it, and read as the holder reads it, so a value
-    the template quotes is asked as the quoted line it is.
-    """
-    return [
-        f"{what[key]} is {str(values[key])!r}, which is written "
-        + " and ".join(f"into family.yaml as {_line_shown(line)}"
-                       for line, _ in rows)
-        + ", where the holder's own YAML reader reads it back as "
-        + f"{_reading_in_words(rows[0][1])} and not as that text."
-        for key, rows in _misread_rows(values, what, template_dir).items()]
-
-
-def _sentences_of(findings: list[str], values: dict, what: dict) -> list[str]:
-    """The FINDINGs of the validator as sentences: one for each value `init`
-    was handed, naming it and holding every finding about it, and one for each
-    finding that is about none of them."""
-    by_value: dict[str, list[str]] = {}
-    sentences: list[str] = []
-    for finding in findings:
-        match = _FINDING_RE.match(finding)
-        if match is None:
-            sentences.append(finding)
-            continue
-        code, detail = match.group("code"), match.group("detail")
-        said = f"{code}: {detail if detail.endswith('.') else detail + '.'}"
-        key = FINDING_PLACEHOLDER.get(code)
-        if key in what and key in values:
-            by_value.setdefault(key, []).append(said)
-        else:
-            sentences.append("the manifest this run would write is one the "
-                             f"holder's own validate-family.py refuses: {said}")
-    return [f"{what[key]} is {str(values[key])!r}, which the holder's own "
-            f"validate-family.py refuses: {' '.join(said)}"
-            for key, said in by_value.items()] + sentences
-
-
-def family_manifest_invalid(values: dict, policy: NamingPolicy, what: dict,
-                            template_dir: Path = FAMILY_TEMPLATE
-                            ) -> list[str]:
-    """A sentence for each FINDING the holder's own validator would make of
-    the `family.yaml` these `values` render; `[]` when it would pass.
-
-    The WHOLE manifest is rendered and read, so a rule about how one value
-    relates to another is asked as the holder asks it. `values` must be the
-    complete table and `policy` the naming policy the holder carries a copy
-    of. The validator's `Report` is asked for its findings alone: its notes
-    are what it says when nothing is wrong.
-    """
-    template = (Path(template_dir) / MANIFEST).read_text(encoding="utf-8")
-    try:
-        manifest = parse_yaml(render(template, values, MANIFEST))
-    except YamlError as exc:
-        return ["the manifest this run would write is a file the holder's "
-                f"own YAML reader refuses: {exc}."]
-    if not isinstance(manifest, dict):
-        return ["the manifest this run would write is not a mapping, which "
-                "is what the holder's own YAML reader makes of it."]
-    validator = family_validator(template_dir)
-    # THE VALIDATOR'S OWN DEFECT, NEVER A FINDING. One that raises, one that
-    # EXITS (a `sys.exit(0)` would end this run with a zero, having printed
-    # and created nothing) and one whose `Report` has no `findings`, or whose
-    # findings are not text, did not answer, and a manifest it did not answer
-    # for is not one that passed.
-    try:
-        report = validator.Report()
-        validator._check_envelope(manifest, policy, report)
-        findings = list(report.findings)
-    except SystemExit as exc:
-        raise _validator_unusable(
-            "exited when it was asked", f"SystemExit: {exc.code}") from exc
-    except Exception as exc:
-        raise _validator_unusable(
-            "raised when it was asked", f"{type(exc).__name__}: {exc}"
-        ) from exc
-    for finding in findings:
-        if not isinstance(finding, str):
-            raise _validator_unusable(
-                "answered with a finding that is not text",
-                f"its type is {type(finding).__name__}")
-    return _sentences_of(findings, values, what)
-
+#: The placeholders that carry a value of `what` into `family.yaml` where no
+#: line holds that value's own placeholder (#929): the organisation is the
+#: owner half of the holder's `repository:`, so the reader's refusal of that
+#: line is `--org`'s. `shape_materialize.CARRIED_BY` is the project's.
+CARRIED_BY = {"FAMILY_REPOSITORY": "ORG"}
 
 #: The remediation of a value the reader turns into something else, without
 #: the sentence about what was or was not created, which `init` adds. WHAT IT
@@ -3359,11 +3564,82 @@ MANIFEST_INVALID_REMEDIATION = (
     "it refuses is red from its first commit, because `make validate` and "
     "the `validate` workflow run it first, and `init` cannot be run again "
     "over a pushed holder: there is no --force.")
+#: Where the holder's own YAML reader refuses the manifest before its
+#: validator can be asked (#929), the words are the reader's and a sentence
+#: may name no value, so the remedy opens as the project's does
+#: (`UNREADABLE_CHOICE`, #708) and says the words are the reader's.
+MANIFEST_UNREADABLE_REMEDIATION = (
+    f"{UNREADABLE_CHOICE} The words are the holder's own YAML reader's, "
+    "which refuses the manifest this run would write before its "
+    "validate-family.py can be asked. A holder whose manifest it refuses is "
+    "red from its first commit, because `make validate` and the `validate` "
+    "workflow run that validator first, and `init` cannot be run again over "
+    "a pushed holder: there is no --force.")
+#: Where the holder's own reader reads the template's `family.yaml` as
+#: something other than a mapping (#1059), no value `init` is handed did it,
+#: so the remedy is the defect of the standard, aimed at that file, and it
+#: is the project's sentence (`shape_materialize`), said of the holder's.
+MANIFEST_NOT_A_MAPPING_REMEDIATION = manifest_not_a_mapping_remediation(
+    "family-root", MANIFEST, "the holder's own YAML reader")
+#: The remedy for each kind of problem the questions name.
+KIND_REMEDIATIONS = {KIND_MISREAD: MANIFEST_MISREAD_REMEDIATION,
+                     KIND_INVALID: MANIFEST_INVALID_REMEDIATION,
+                     KIND_UNREADABLE: MANIFEST_UNREADABLE_REMEDIATION,
+                     KIND_NOT_A_MAPPING: MANIFEST_NOT_A_MAPPING_REMEDIATION}
+
+
+def _holder_findings(validator, manifest: dict, policy: NamingPolicy):
+    """What the holder's `validate-family.py` finds in a manifest it has
+    read as a mapping: the findings of its envelope, from the `Report` its
+    `_check_envelope` fills. Its notes are what it says when nothing is
+    wrong, and are not asked."""
+    report = validator.Report()
+    validator._check_envelope(manifest, policy, report)
+    return report.findings
+
+
+#: The holder's `family.yaml`, which `init` writes.
+HOLDER_MANIFEST = TemplateManifest(
+    manifest=MANIFEST, templated_yaml=FAMILY_TEMPLATED_YAML,
+    template="family-root", validator=FAMILY_VALIDATOR,
+    module_name="openreposhape_validate_family", asks=FAMILY_VALIDATOR_ASKS,
+    findings=_holder_findings, passed_over=(),
+    unusable_code="family-validator-unusable", owner="holder",
+    finding_placeholder=FINDING_PLACEHOLDER, carried_by=CARRIED_BY,
+    remediations=KIND_REMEDIATIONS)
+
+
+def family_validator(template_dir: Path = FAMILY_TEMPLATE):
+    """The holder's own `scripts/validate-family.py`, as a module, loaded as
+    `shape_materialize.manifest_validator` loads the project's."""
+    return manifest_validator(template_dir, manifest_kind=HOLDER_MANIFEST)
+
+
+def family_manifest_misreads(values: dict, what: dict,
+                             template_dir: Path = FAMILY_TEMPLATE
+                             ) -> list[str]:
+    """A sentence for each value the holder's reader would read back as
+    anything but that same text; `[]` when every one reads back. `what` is
+    how a refusal calls each value (`{"FAMILY_ID": "--id"}`)."""
+    return manifest_misreads(values, what, template_dir,
+                             manifest_kind=HOLDER_MANIFEST)
+
+
+def family_manifest_invalid(values: dict, policy: NamingPolicy, what: dict,
+                            template_dir: Path = FAMILY_TEMPLATE
+                            ) -> list[str]:
+    """A sentence for each FINDING the holder's own validator would make of
+    the `family.yaml` these `values` render, or for each value on a line the
+    holder's own reader refuses (#929); `[]` when it would pass."""
+    return manifest_invalid(values, policy, what, template_dir,
+                            manifest_kind=HOLDER_MANIFEST)
 
 
 def _manifest_flags(args) -> dict:
     """`MANIFEST_FLAGS`, with a value no flag supplied named by where it came
-    from, so that a refusal does not point at a flag nobody typed."""
+    from, so that a refusal does not point at a flag nobody typed. A flag
+    passed empty supplied its value, `''`, and is named as the flag (#911),
+    as `_template_values` and `_creator_name` read it."""
     flags = dict(MANIFEST_FLAGS)
     for key, flag, given, source in (
             ("FAMILY_ID", "--id", args.id, FAMILY_ID_DERIVED_FROM),
@@ -3371,7 +3647,7 @@ def _manifest_flags(args) -> dict:
             ("CREATED_BY", "--created-by", args.created_by,
              "GIT_AUTHOR_NAME or `git config user.name`"),
             ("CREATED_ON", "--created-on", args.created_on, "today")):
-        if not given:
+        if given is None:
             flags[key] = f"{flag} (not given, so {source})"
     return flags
 
@@ -3389,21 +3665,22 @@ def refuse_unholdable_manifest(args, values: dict,
     and alone, because the validator's finding about it (`id is None`) is its
     consequence; one the validator refuses (`--created-by ' '`, `--name
     'Contoso Group'`) is `family-manifest-invalid`, in the validator's words.
+    A manifest the reader refuses before the validator can be asked (`--org
+    @x`, `repository: @x/<Family>`) is `family-manifest-invalid` still, in
+    the reader's words and with the reader's remedy (#929). The questions
+    and the refusal are the scaffold's (#925).
     """
-    flags = _manifest_flags(args)
-    nothing = " Nothing was created, and `--dry-run` refuses the same."
-    problems = family_manifest_misreads(values, flags, template_dir)
-    if problems:
-        raise Refusal("family-manifest-misread", " ".join(problems),
-                      MANIFEST_MISREAD_REMEDIATION + nothing)
-    problems = family_manifest_invalid(
-        values, NamingPolicy.load(NAMING_POLICY), flags, template_dir)
-    if problems:
-        raise Refusal("family-manifest-invalid", " ".join(problems),
-                      MANIFEST_INVALID_REMEDIATION + nothing)
+    problems = manifest_value_problems(
+        values, NamingPolicy.load(NAMING_POLICY), _manifest_flags(args),
+        template_dir=template_dir, manifest_kind=HOLDER_MANIFEST)
+    refuse_manifest_problems(
+        "family", problems,
+        "Nothing was created, and `--dry-run` refuses the same.",
+        HOLDER_MANIFEST)
 
 
 def cmd_init(args) -> int:
+    _folder_flags(args)
     family, family_id, topic = _checked_family_identity(args)
     created_by = _creator_name(args)
     local, repository, url = _holder_remote(args, family)
@@ -6055,9 +6332,17 @@ def _checked_mount_path(root: Path, project: str, path: str,
     if spelled:
         raise _spellings_refusal(path, spelled,
                                  _gitmodules_first(root, spelled))
-    # A DIRECTORY NO LISTING COULD READ hides nothing: `lexists` asks the
-    # path itself, as it always did, after every listing has answered.
-    if os.path.lexists(root / path):
+    # A DIRECTORY NO LISTING COULD READ hides nothing: the path itself is
+    # asked, as it always was, after every listing has answered. Asked as
+    # `lexists` asks it and NOT with `os.path.lexists`, which answers False
+    # to a refused `lstat` (#430): a `members/` this user may not search
+    # passed as free, and the mount died at git's clone, or, on 3.12, the
+    # rollback's record raised a traceback before it.
+    try:
+        there = _is_there(root / path)
+    except OSError as exc:
+        raise _member_unreadable(root, root / path, exc) from exc
+    if there:
         raise taken
     try:
         run(["git", "--literal-pathspecs", "add", "--dry-run",
@@ -6169,13 +6454,17 @@ def _checked_add_target(family: Family, repository: str, project: str,
     """
     held = family.holding(repository, project)
     if held is not None:
+        # THE `bump` IT NAMES RUNS AS PRINTED (#927): `bump` requires
+        # `--family-root`, so the line names this holder, spelled by
+        # `shell_quoted` as `_add_command`'s is.
         raise Refusal(
             "member-already-present",
             f"{project} is already a member of {family.data.get('name')}: "
             f"the row {held.get('project')} pins {held.get('repository')}",
-            "Remediation: `family.py bump --member "
-            f"{held.get('project')} --to <commit>` moves an existing member; "
-            "`remove` takes it out. Adding it twice is not a way to move it.")
+            "Remediation: `family.py bump --family-root "
+            f"{shell_quoted(family.root)} --member {held.get('project')} "
+            "--to <commit>` moves an existing member; `remove` takes it "
+            "out. Adding it twice is not a way to move it.")
     # Everything the mount's `--force` would otherwise let past git, but the
     # cached store, which is asked below (#242).
     _checked_mount_path(family.root, project, path,
@@ -6197,7 +6486,20 @@ def _checked_add_target(family: Family, repository: str, project: str,
     # NAMED IN POSIX: git spells this `.git/modules/<path>`, and so does the
     # human who retypes the remediation below.
     _, cached = _module_dir(family.root, path)
-    if cached.exists():
+    # A STORE THIS USER MAY NOT REACH is named, not passed as absent (#430):
+    # `exists()` said "none" on Python 3.14, and the mount then died in git's
+    # clone, and raised a traceback on 3.12.
+    # A FILE WHERE A FOLDER ABOVE IT BELONGS is no answer either (r955's
+    # NIT 4 on #955): `_is_a` takes it for nothing there, and the dry run
+    # planned a mount the real run's record then refused. `_gone`, which
+    # `MountRollback` records the store with, is asked of what reads absent.
+    try:
+        there = _is_a(cached, _any_mode)
+        if not there:
+            _gone(cached)
+    except OSError as exc:
+        raise _member_unreadable(family.root, cached, exc) from exc
+    if there:
         raise Refusal(
             "member-git-dir-cached",
             f"{cached.as_posix()} still holds the object store of a "
@@ -6279,6 +6581,8 @@ def _checked_member_id(family: Family, repository: str, project: str,
     row = _row_recording(family, project_id)
     if row is not None:
         name = row["project"]
+        # THE `bump` IT NAMES RUNS AS PRINTED (#927), with this holder's
+        # `--family-root`, as `member-already-present`'s does.
         raise Refusal(
             "member-duplicate-id",
             f"{project} is already a member of {family.data.get('name')} "
@@ -6290,9 +6594,10 @@ def _checked_member_id(family: Family, repository: str, project: str,
             f"{repository} is {row.get('repository')} renamed at the forge, "
             f"`family.py remove --member {name}` takes the old row out and "
             "this `add` then pins it under the new name; `family.py bump "
-            f"--member {name} --to <commit>` moves the row that is there "
-            "instead. Two projects that record one id are a fault in one of "
-            "their `project.yaml` files, mended in that project, not in the "
+            f"--family-root {shell_quoted(family.root)} --member {name} "
+            "--to <commit>` moves the row that is there instead. Two "
+            "projects that record one id are a fault in one of their "
+            "`project.yaml` files, mended in that project, not in the "
             "family.")
 
 
@@ -6521,7 +6826,9 @@ class MountRollback:
     NEVER OVER A COMMIT THAT LANDED. HEAD is recorded too, and if it has
     moved the one commit happened: undoing the tree under it would leave a
     working copy that contradicts its own history, so nothing is undone and
-    the sentence says so.
+    the sentence says so. The one commit `add` takes back itself, one whose
+    gitlink git recorded somewhere other than the mount path (#920), is
+    taken back by `take_back` first, so `undo` finds HEAD where it was.
 
     "EXACTLY AS IT WAS" ONLY FOR WHAT WAS COMPARED (#302). Each step puts
     back what it recorded, by its exact name. git can stage under a name no
@@ -6554,18 +6861,27 @@ class MountRollback:
         #: steps (#302).
         self.index = _index_records(root)
         self.gitlink = self._entries(path)
-        self.files = {name: (self._bytes(name), self._entries(name))
-                      for name in (GITMODULES, MANIFEST)}
         self.registration = self._registration()
         module_shown, module = _module_dir(root, path)
-        #: `(directory, as it is named, its parents that do not exist yet)`
-        #: for each of the two directories the mount makes, if it is absent
-        #: now. Parents nearest first, which is the order they empty in.
-        self.trees = [(tree, shown, [p for p in tree.parents
-                                     if not p.exists()])
-                      for tree, shown in ((root / path, path),
-                                          (module, module_shown))
-                      if not tree.exists()]
+        try:
+            self.files = {name: (self._bytes(name), self._entries(name))
+                          for name in (GITMODULES, MANIFEST)}
+            #: `(directory, as it is named, its parents that do not exist
+            #: yet)` for each of the two directories the mount makes, if it
+            #: is absent now. Parents nearest first, which is the order they
+            #: empty in. ABSENT IS `_gone`'s `ENOENT` AND NOTHING ELSE (#430):
+            #: `undo` deletes what this records, so a directory whose `stat`
+            #: was refused, recorded as made by this run, was one `undo`
+            #: would delete once it could be read; it is refused instead,
+            #: before the mount, and nothing is written.
+            self.trees = [(tree, shown, [p for p in tree.parents
+                                         if _gone(p)])
+                          for tree, shown in ((root / path, path),
+                                              (module, module_shown))
+                          if _gone(tree)]
+        except OSError as exc:
+            raise _member_unreadable(root, _refused(exc, root / path),
+                                     exc) from exc
 
     def _head(self) -> str | None:
         """The commit HEAD names, or None if it names none — read ONE way,
@@ -6586,8 +6902,14 @@ class MountRollback:
             return None
 
     def _bytes(self, name: str) -> bytes | None:
+        """`name`'s bytes in the holder, or None for no file. A file there
+        was none of is the one `undo` deletes, so "none" is `_gone`'s
+        `ENOENT`, or something there that is no file (a directory, a dangling
+        link), and a refused `stat` is raised (#430)."""
         target = self.root / name
-        return target.read_bytes() if target.is_file() else None
+        if _gone(target) or not _is_a(target, stat.S_ISREG):
+            return None
+        return target.read_bytes()
 
     def _entries(self, name: str) -> list[bytes]:
         """The index records for exactly `name`, one per stage, in the form
@@ -6642,11 +6964,17 @@ class MountRollback:
             raise _EntryNotRestored(name, changed, exc) from exc
 
     def _undo_tree(self, tree: Path, parents: list[Path]) -> bool:
-        removed = tree.exists()
+        """`tree`, which this run made, deleted, and each of `parents` it
+        made that is empty. ASKED WITH `_gone` (#430): what cannot be read,
+        a file where a parent directory was, or a link that loops is raised,
+        and `undo` names the step as not done, instead of passing it as
+        nothing there and calling the holder as it was."""
+        removed = not _gone(tree)
         if removed:
             _rmtree(tree)
         for parent in parents:
-            if parent.is_dir() and not any(parent.iterdir()):
+            if not _gone(parent) and _is_a(parent, stat.S_ISDIR) and not any(
+                    parent.iterdir()):
                 parent.rmdir()
         return removed
 
@@ -6686,6 +7014,43 @@ class MountRollback:
                 parts.append(f"{said}: {shown}{more}")
         return "; ".join(parts)
 
+    def take_back(self, made: str) -> tuple[bool, str]:
+        """Take `made`, the commit this command made, back off the branch.
+        Returns `(whether it was, the sentence that says so, or why not)`
+        (#920).
+
+        ONLY THIS COMMAND'S ONE COMMIT. The branch moves back to the commit
+        HEAD named before the mount, or is left with no commit, as it was,
+        only where `made` is one commit on that one (a root commit where
+        there was none), and only while the branch still names `made`: `git
+        update-ref` is given `made` as the value it must find there, so a
+        commit anything else put on the branch is never lost. Nothing else
+        moves. The index and the work tree keep what the commit took, which
+        is what `undo` was recorded to put back.
+        """
+        before = [self.head] if self.head is not None else []
+        try:
+            parents = git_out(["rev-list", "--parents", "--no-walk", made],
+                              cwd=self.root).split()[1:]
+            if parents != before:
+                on = (f"one commit on {self.head[:12]}, where this command "
+                      "found the branch" if self.head is not None else
+                      "a first commit, on a branch that had none")
+                return False, (f" It was NOT taken back: {made[:12]} is not "
+                               f"{on}, and this tool takes back no commit it "
+                               "did not make.")
+            moved = ["update-ref", "-m",
+                     f"family.py add: {made[:12]} taken back"]
+            git_out([*moved, "HEAD", self.head, made] if self.head is not None
+                    else [*moved, "-d", "HEAD", made], cwd=self.root)
+        except Refusal as exc:
+            return False, f" It was NOT taken back: {_reason(exc)}."
+        if self.head is None:
+            return True, (" It has been taken back: the branch has no commit "
+                          "again.")
+        return True, (" It has been taken back: the branch names "
+                      f"{self.head[:12]} again.")
+
     def undo(self) -> str:
         """Put the holder back. Returns the sentence a refusal ends with:
         what was put back, or — if any of it could not be — what is left,
@@ -6724,7 +7089,9 @@ class MountRollback:
                 failed.append(f"the index entry of {exc.name} put back as it "
                               f"was: {_reason(exc.cause)}")
             except (CommandFailed, Refusal, OSError) as exc:
-                failed.append(f"{said}: {_reason(exc)}")
+                failed.append(f"{said}: "
+                              + _undo_reason(self.root, exc,
+                                             self.root / self.path))
         # THE WHOLE INDEX, once every step has been asked (#302). A partial
         # unwind already says it is one, and names `git status`. An index
         # that cannot be read back leaves the steps undone but unconfirmed,
@@ -6787,6 +7154,84 @@ def _rewrite_members(family: Family, rows: list[dict], what: str) -> None:
             f"{exc.strerror or exc}",
             f"Remediation: make {MANIFEST} writable, and check the disk has "
             "room, then run the same command again.") from exc
+
+
+#: What `member-gitlink-misplaced` tells the human to do (#920), then how it
+#: ends: where the branch is back where `add` found it, so `undo` has put the
+#: holder back, and where it is not.
+GITLINK_MISPLACED_REMEDIATION = (
+    "Remediation: `add` asks git for the gitlink at `members/<Project>` and "
+    "nowhere else, and every cause known to record it elsewhere, another "
+    "spelling of `members/` in the index, in HEAD or on disk, is refused "
+    "before the mount, so this cause is not one of them. Find what moved it, "
+    "such as a hook or a setting like `core.ignorecase`, and mend that")
+GITLINK_TAKEN_BACK = ", then run the same command again."
+GITLINK_NOT_TAKEN_BACK = (
+    ". The commit and the mount are still there, for the reason above: `git "
+    "log` shows what the branch holds, and taking them out is yours to do "
+    "before you run the same command again.")
+
+
+def _gitlinks_at(root: Path, commit: str | None) -> dict[str, str]:
+    """`{path: the commit it records}` of every gitlink `commit` holds, by
+    `_tree_entries` with no pathspec; none for no commit."""
+    if commit is None:
+        return {}
+    return {name: oid for name, kind, oid in _tree_entries(root, commit, True)
+            if kind == INDEX_ENTRY_KINDS[0o160000]}
+
+
+def _checked_gitlink_committed(root: Path, project: str, path: str,
+                               commit: str, head: str,
+                               rollback: MountRollback) -> None:
+    """Refuse `member-gitlink-misplaced` unless `head`, the commit `add` has
+    just made, records a gitlink at exactly `path`, after taking that commit
+    back (`MountRollback.take_back`) for the caller's `undo` (#920).
+    `commit` is the member's, the one the pin records.
+
+    THE COMMIT ITSELF IS ASKED, AFTER THE FACT. `.gitmodules` and
+    `family.yaml` name `members/<Project>`, but git records the gitlink where
+    it chooses: with `core.ignorecase` set and HEAD holding
+    `Members/README.md` that the index no longer held, `add` committed it as
+    `Members/<Project>` with exit 0, and a fresh clone left the member empty
+    (#363). #574 refuses each such case variant before the mount, and this
+    is option 2 of #363, which PR #574 left out: whatever the cause, a
+    commit that records no gitlink at the path is never left on the branch.
+    It reads the whole tree of the commit, and of the one the branch named
+    before the mount (`rollback.head`), with no pathspec (`git ls-tree -r`),
+    so no pathspec setting can narrow either. The path git chose is each
+    gitlink the commit holds at a path the earlier one does not, or that
+    records `commit`, so another member's gitlink, moved by the same cause,
+    is never named as this one's (lane 5's review of #957, NIT 2).
+
+    A BRANCH BACK WHERE `add` FOUND IT holds no commit of this command's: a
+    `post-commit` hook took it off. That is said as it is, and `undo` puts
+    the holder back as for any refusal before the commit (NIT 1).
+    """
+    if head == rollback.head:
+        raise Refusal(
+            "member-gitlink-misplaced",
+            f"the branch names {head[:12]} again, where this command found "
+            "it: the commit this command made is not on it, so no gitlink at "
+            f"`{path}` is either, while {GITMODULES} and {MANIFEST} name "
+            f"`{path}`.", GITLINK_MISPLACED_REMEDIATION + GITLINK_TAKEN_BACK)
+    made = _gitlinks_at(root, head)
+    if path in made:
+        return
+    before = _gitlinks_at(root, rollback.head)
+    chosen = [name for name, oid in made.items()
+              if name not in before or oid == commit]
+    where = (f"{project}'s gitlink at "
+             + " and ".join(f"`{shown_path(name)}`" for name in chosen)
+             + f", not at `{path}`" if chosen else
+             f"no new gitlink, at `{path}` or anywhere else")
+    taken, said = rollback.take_back(head)
+    raise Refusal(
+        "member-gitlink-misplaced",
+        f"the commit {head[:12]} records {where}, while {GITMODULES} and "
+        f"{MANIFEST} name `{path}`, so a fresh clone would leave the member "
+        "empty." + said, GITLINK_MISPLACED_REMEDIATION
+        + (GITLINK_TAKEN_BACK if taken else GITLINK_NOT_TAKEN_BACK))
 
 
 def _mount_and_pin(family: Family, repository: str, project: str, path: str,
@@ -6859,6 +7304,8 @@ def _mount_and_pin(family: Family, repository: str, project: str, path: str,
         "project: its own assembly root, its own legs, its own gate. "
         "Membership confers nothing.\n",
         [GITMODULES, path, MANIFEST], trailers=trailers)
+    _checked_gitlink_committed(family.root, project, path, commit, head,
+                               rollback)
     return commit, digest, project_id, head
 
 
@@ -7015,7 +7462,9 @@ def cmd_add(args) -> int:
     (`_probe_member`, of a throwaway clone), then the member's id against the
     rows (`_checked_member_id`, #330), and only then the mount, the pin and the
     commit (`_mount_and_pin`), inside a `MountRollback` that puts the holder
-    back if anything still fails and says what it put back.
+    back if anything still fails and says what it put back, the commit
+    included where it records the gitlink anywhere but the mount path
+    (`_checked_gitlink_committed`, #920).
 
     WHEN TWO APPLY, THE EARLIER ONE IS SAID. The holder's refusals need
     nothing cloned, so they come first: a section under another name that
@@ -7187,6 +7636,17 @@ def _store_git_uses(root: Path, path: str) -> tuple[str, Path] | None:
     return None if name is None else _module_dir(root, name)
 
 
+#: The code `_unrestorable` raises for an object store this user may not
+#: read (#430), which the rollback tells apart from a store that is gone.
+#: `PinRollback._undo_work_tree` (which makes the mount again for it) and
+#: `PinRollback._work_tree_by_hand` (which types the store's update for it,
+#: and calls no store-less checkout) route on this code; the only refusal
+#: either can meet with it is `_unrestorable`'s, since `_storeless` reads
+#: nothing else of the disk. `tests/test_family_py_unreadable.py` pins the
+#: two to one value.
+STORE_UNREADABLE = "member-unreadable"
+
+
 def _unrestorable(root: Path, path: str, commit: str | None) -> str | None:
     """Why `git submodule update --init --no-fetch -- <path>`, run in
     `root`, could NOT check `commit` out of an object store git already
@@ -7200,12 +7660,27 @@ def _unrestorable(root: Path, path: str, commit: str | None) -> str | None:
     `deinit` moves an embedded `.git` into the name's own, which a check of
     the recorded one called gone. A store that does not hold `commit` is not
     used either: `update` would fetch into it.
+
+    A STORE THIS USER MAY NOT READ IS RAISED, `member-unreadable` (#430), and
+    is no answer either way. `is_dir()` called it "not there, and clone it
+    there" on Python 3.14, so the sentence said the checkout came back only
+    from its remote, and raised a traceback out of the rollback on 3.12. It
+    is there to come back from once this user can read it.
     """
     found = _store_git_uses(root, path)
     if found is None:
         return f"no section of {GITMODULES} gives git {path}"
     shown, store = found
-    if not store.is_dir():
+    try:
+        there = _is_a(store, stat.S_ISDIR)
+    except OSError as exc:
+        cure = ("`chmod u+rx` on it, and on every directory above it inside "
+                "the holder, lets git read it"
+                if isinstance(exc, PermissionError) else OTHER_CURE)
+        raise Refusal(STORE_UNREADABLE,
+                      f"git would check it out of {shown_path(shown)}, which "
+                      f"cannot be read ({_os_reason(exc)}): {cure}") from exc
+    if not there:
         return (f"git would check it out of {shown}, which is not there, and "
                 "clone it there")
     if commit is not None and not _store_holds(store, commit, root):
@@ -7222,9 +7697,22 @@ def _member_head(member: Path) -> tuple[str | None, str | None]:
     submodule deinit` has emptied is a plain directory inside the holder, and
     git asked there answers with the HOLDER's HEAD (git 2.43, probed for
     #365): the rollback would have taken the holder's commit for the
-    member's.
+    member's. A `.git` whose `lstat` is refused is raised (`_is_there`,
+    #430), not read as no checkout.
+
+    THE BRANCH IS READ AS THE BYTES GIT WROTE, as `_holder_branch` reads the
+    holder's (#918, #457's L1-70): exactly one newline and exactly
+    `refs/heads/` come off the bytes, and the rest is decoded with
+    `surrogateescape`, as #425 decodes a source's default branch. Read
+    strictly, a member checked out on a branch that is not UTF-8
+    (`caf<0xE9>`) raised `UnicodeDecodeError` out of `PinRollback`, so
+    `bump` and `remove` ended in a traceback before they wrote anything.
+    Kept as a lone surrogate, the name is handed back to git as the byte it
+    is (`_head_target`, `_head_back`), so a rollback puts the member back
+    ON that branch. And `strip()` no longer takes a trailing U+00A0 off a
+    branch's name, which named another branch (#765).
     """
-    if not os.path.lexists(member / ".git"):
+    if not _is_there(member / ".git"):
         return None, None
     try:
         at = git_out(["rev-parse", "-q", "--verify", "HEAD^{commit}"],
@@ -7232,11 +7720,13 @@ def _member_head(member: Path) -> tuple[str | None, str | None]:
     except Refusal:
         at = None
     try:
-        ref = git_out(["symbolic-ref", "-q", "HEAD"], cwd=member)
+        ref = git_out(["symbolic-ref", "-q", "HEAD"], cwd=member, binary=True)
     except Refusal:
-        ref = ""
-    return at, (ref[len(HEADS_PREFIX):] if ref.startswith(HEADS_PREFIX)
-                else None)
+        ref = b""
+    ref = ref[:-1] if ref.endswith(b"\n") else ref
+    heads = HEADS_PREFIX.encode("ascii")
+    return at, (ref[len(heads):].decode("utf-8", "surrogateescape")
+                if ref.startswith(heads) else None)
 
 
 def _head_target(member: Path, at: str, branch: str | None) -> list[str]:
@@ -7274,11 +7764,41 @@ def _head_back(member: Path, at: str | None, branch: str | None) -> bool:
     return True
 
 
+def _branch_by_hand(branch: str) -> str:
+    """`branch` as ONE word a person types into a POSIX shell, so the shell
+    hands git the branch's exact bytes (#1079).
+
+    A UTF-8 name is `shlex.quote`d, as it always was. A name read from git
+    with `surrogateescape` that holds a byte which is not UTF-8 has no
+    spelling `shlex.quote` can give it: the surrogate is printed as the text
+    `\\udce9`, which typed names a branch that is not there. It is spelled
+    `"$(printf '<escapes>')"`, a form any POSIX shell reads the same way: each
+    byte that is not printable ASCII is a three-digit octal escape (`\\351`),
+    and so are the four ASCII bytes the format, its quotes or an interactive
+    shell's history scanner would read as something else, `'`, `\\`, `%` and
+    `!` (`\\041`), so the line is ASCII whatever the stream it is printed on,
+    and never depends on a shell's history expansion. A ref name cannot hold a
+    newline, so the substitution's stripped trailing newlines lose nothing."""
+    try:
+        branch.encode("utf-8")
+    except UnicodeEncodeError:
+        pass
+    else:
+        return shlex.quote(branch)
+    escapes = "".join(
+        chr(byte) if 0x20 <= byte < 0x7f and chr(byte) not in "'\\%!"
+        else f"\\{byte:03o}"
+        for byte in branch.encode("utf-8", "surrogateescape"))
+    return f"\"$(printf '{escapes}')\""
+
+
 def _head_by_hand(path: str, at: str, branch: str | None) -> str:
     """`_head_back` as the human types it in the holder: the branch the
     checkout was on, else the commit. FROM THE RECORD, with no git call: it
-    is named when a step failed, often with `path` not on disk at all."""
-    target = f"{shlex.quote(branch)} --" if branch is not None else at
+    is named when a step failed, often with `path` not on disk at all. The
+    branch is spelled by `_branch_by_hand`, which keeps the bytes of a name
+    that is not UTF-8 (#1079)."""
+    target = f"{_branch_by_hand(branch)} --" if branch is not None else at
     return f"git -C {shlex.quote(path)} checkout -q {target}"
 
 
@@ -7395,12 +7915,25 @@ class PinRollback:
         self.head = self._head()
         self.index = _index_records(root)
         self.gitlink = self.index.get(path.encode("utf-8"), [])
-        self.files = {name: (self._bytes(name),
-                             self.index.get(name.encode("utf-8"), []))
-                      for name in files}
-        self.at, self.branch = _member_head(self.member)
         self.registration = self._registration() if unmount else []
-        self.existed = self.member.is_dir()
+        # WHAT IS ON DISK IS READ AS `_is_a` AND `_gone` READ IT (#430): a
+        # member this user may not search was a checkout with no `.git` and
+        # no directory on Python 3.14, so a failed `remove` made it again,
+        # empty, and said so, and a traceback on 3.12. It is refused here,
+        # before the first write; `bump` and `remove` ask the same paths
+        # first, so this is what a path made unreadable in between meets.
+        try:
+            self.files = {name: (self._bytes(name),
+                                 self.index.get(name.encode("utf-8"), []))
+                          for name in files}
+            self.at, self.branch = _member_head(self.member)
+            self.existed = _is_a(self.member, stat.S_ISDIR)
+            #: Whether `remove` has a checkout to bring back: one with a
+            #: `.git` of its own.
+            self.checkout = unmount and _is_there(self.member / ".git")
+        except OSError as exc:
+            raise _member_unreadable(root, _refused(exc, self.member),
+                                     exc) from exc
         #: The commit the gitlink names, which `git submodule update` checks
         #: out: its stage-0 record's, or None for one the index holds
         #: conflicted.
@@ -7408,9 +7941,6 @@ class PinRollback:
                             (record.partition(b"\t")[0].split()
                              for record in self.gitlink)
                             if fields[2:] == [b"0"]), None)
-        #: Whether `remove` has a checkout to bring back: one with a `.git`
-        #: of its own.
-        self.checkout = unmount and os.path.lexists(self.member / ".git")
         #: The object store the checkout's own `.git` named. For the
         #: sentence only: the restore asks which store git will use.
         self.store: Path | None = None
@@ -7435,6 +7965,9 @@ class PinRollback:
             except CommandFailed as exc:
                 self.unread = _reason(exc)
                 self.store, self.legs, self.discards = None, [], False
+            except OSError as exc:
+                raise _member_unreadable(root, _refused(exc, self.member),
+                                         exc) from exc
         #: Set once `remove`'s checkout has been brought back, which is when
         #: what `deinit -f` discarded is known to be gone.
         self.emptied = False
@@ -7472,7 +8005,7 @@ class PinRollback:
             head, _, name = record.partition(b"\t")
             leg = name.decode("utf-8", "surrogateescape")
             if head.startswith(b"160000 ") and leg not in legs and \
-                    os.path.lexists(self.member / leg / ".git"):
+                    _is_there(self.member / leg / ".git"):
                 legs[leg] = (leg, head.split()[1].decode("ascii"),
                              *_member_head(self.member / leg))
         return list(legs.values())
@@ -7537,7 +8070,9 @@ class PinRollback:
 
     def _storeless(self) -> str | None:
         """Why the member's checkout cannot come back from an object store
-        git has, in the sentence's words; None when it can (#365)."""
+        git has, in the sentence's words; None when it can (#365). A store
+        this user may not read is raised, as `_unrestorable` raises it: it
+        is no store that is gone (#430)."""
         if self.unread is not None:
             return ("git could not read its checkout before this command "
                     f"({self.unread}), so no object store here is known to "
@@ -7551,9 +8086,19 @@ class PinRollback:
         that store is there and is not the one git looks in: what a human
         who renamed the section by hand needs to know to bring it back."""
         found = _store_git_uses(self.root, self.path)
-        if self.store is None or not self.store.is_dir() or (
+        if self.store is None or (
                 found is not None
                 and found[1].resolve() == self.store.resolve()):
+            return ""
+        # A STORE THIS USER MAY NOT READ IS NAMED AS ONE (#430), not left
+        # out as gone: once it can be read, the checkout comes back from it.
+        try:
+            there = _is_a(self.store, stat.S_ISDIR)
+        except OSError as exc:
+            self.store_said = True
+            return ("; the object store its checkout had, "
+                    + _cannot_read(self.store.as_posix(), exc))
+        if not there:
             return ""
         self.store_said = True
         return (f"; the object store its checkout had, "
@@ -7563,22 +8108,45 @@ class PinRollback:
         """The member's directory made again, empty, if it was there before
         and is not now: a gitlink with no directory reads as deleted, which a
         later `git commit -a` would record, and an empty one is how a member
-        never checked out stands."""
-        if self.existed and not self.member.is_dir():
+        never checked out stands. A directory whose `stat` is refused is
+        raised (#430), not made again over."""
+        if self._dir_gone():
             self.member.mkdir(parents=True)
             return True
         return False
+
+    def _made_again_if_can(self) -> bool:
+        """`_made_again`, where the directory can be read: one that cannot
+        is left as it is, and the refusal already being raised names what
+        the step met first (#430)."""
+        try:
+            return self._made_again()
+        except OSError:
+            return False
+
+    def _dir_gone(self) -> bool:
+        """Whether the member's directory was there before and is not now:
+        `_is_a`'s answer, a refused `stat` raised (#430)."""
+        return self.existed and not _is_a(self.member, stat.S_ISDIR)
 
     def _undo_work_tree(self) -> str | None:
         if not self.checkout:
             return (f"{self.path} made again, empty, as it was"
                     if self._made_again() else None)
-        if os.path.lexists(self.member / ".git") and \
+        if _is_there(self.member / ".git") and \
                 _member_head(self.member) == (self.at, self.branch):
             return None
         # THE STORE GIT WILL USE IS ASKED FIRST, and `update` is not run
-        # without it: it would clone (#365).
-        why = self._storeless()
+        # without it: it would clone (#365). One this user may not read is
+        # raised from here, named, and the commands typed by hand bring the
+        # checkout back from it once it can be read (#430); the directory is
+        # made again first, as for a store that is gone.
+        try:
+            why = self._storeless()
+        except Refusal as exc:
+            if exc.code == STORE_UNREADABLE and self._made_again_if_can():
+                exc.detail += f", and {self.path} was made again, empty"
+            raise
         if why is not None:
             self.storeless = True
             if self._made_again():
@@ -7622,7 +8190,7 @@ class PinRollback:
     def _head_said(self) -> str:
         at = (self.at or "")[:12]
         if self.branch is not None:
-            return f"{self.path} back on {self.branch} at {at}"
+            return f"{self.path} back on {_shown(self.branch)} at {at}"
         return f"{self.path} checked out at {at} again"
 
     def _work_tree_said(self) -> str:
@@ -7631,7 +8199,7 @@ class PinRollback:
         if self.at is None:
             return f"{self.path} checked out again"
         said = (f"{self.path} checked out again at {self.at[:12]}"
-                + (f" on {self.branch}" if self.branch else "")
+                + (f" on {_shown(self.branch)}" if self.branch else "")
                 + " from the object store `git rm` keeps")
         if self.legs:
             said += (", and " + " and ".join(leg for leg, _, _, _ in self.legs)
@@ -7645,7 +8213,13 @@ class PinRollback:
         sentence's `git status` shows them."""
         data, entries = self.files[name]
         typed = [_entries_by_hand(name, entries)]
-        if self._bytes(name) == data:
+        try:
+            same = self._bytes(name) == data
+        except OSError:
+            # Named by the step that met it (#430); the index entry is still
+            # this command's to type, and the bytes are `git status`'s.
+            return typed
+        if same:
             return typed
         if data is None:
             return typed + [f"rm -f -- {shlex.quote(name)}"]
@@ -7685,13 +8259,21 @@ class PinRollback:
         rollback runs it with. Where git does not, the directory is made
         again, empty, and the sentence says where the checkout comes back
         from (`undo`). Nothing already back is typed again."""
-        made = ([f"mkdir {shlex.quote(self.path)}"]
-                if self.existed and not self.member.is_dir() else [])
+        try:
+            gone = self._dir_gone()
+        except OSError:
+            # Named by the step that met it; no command here reaches it.
+            gone = False
+        made = [f"mkdir {shlex.quote(self.path)}"] if gone else []
         if not self.checkout:
             return made
         try:
             storeless = self._storeless() is not None
-        except (CommandFailed, Refusal):
+        except Refusal as exc:
+            # A store this user may not read is one the checkout comes back
+            # from once it can (#430): its update is typed, after the cure.
+            storeless = exc.code != STORE_UNREADABLE
+        except CommandFailed:
             storeless = True
         if storeless:
             self.storeless = True
@@ -7834,7 +8416,8 @@ class PinRollback:
                 continue
             except (CommandFailed, Refusal, OSError) as exc:
                 missing.append(key)
-                failed.append(f"{said}: {_reason(exc)}")
+                failed.append(f"{said}: "
+                              + _undo_reason(self.root, exc, self.member))
                 typed += by_hand()
                 continue
             if done:
@@ -8146,15 +8729,15 @@ def _on_a_remote_branch(member: Path, commit: str) -> bool:
                     cwd=member))
 
 
-#: What `bump`'s fetch always asks of `origin` (#686): every branch, into the
-#: namespace `_on_a_remote_branch` reads, forced as a remote-tracking ref is.
-_ORIGIN_BRANCHES = "+refs/heads/*:refs/remotes/origin/*"
-
-
 def _origin_fetch_refspecs(member: Path) -> list[str]:
     """The refspecs `bump`'s fetch of `origin` carries (#686): every branch of
     `origin`, then what the mount's own `remote.origin.fetch` keeps under
-    `refs/remotes/origin/`, and none of what it excludes.
+    `refs/remotes/origin/`, and none of what it excludes, nor one whose
+    source can name a tag, nor what gives another namespace the names the
+    branches take there (#905, #1009). Which of the mount's are carried is
+    `shape_materialize`'s `origin_fetch_refspecs`, the one rule
+    `bump-leg.py` asks of a leg's fetch too (#1037); its docstring says
+    which clause leaves out what, and why.
 
     WHY THE MOUNT'S OWN ARE ADDED. `--prune` deletes every ref under
     `refs/remotes/origin/` that no refspec on the command line maps a ref of
@@ -8186,42 +8769,49 @@ def _origin_fetch_refspecs(member: Path) -> list[str]:
     A mount whose refspec git cannot satisfy, one that names a ref `origin`
     lacks or two that map to one destination, fails this fetch as it fails
     the person's own `git fetch origin`, and `bump` says so as it says any
-    failed fetch. One refspec of the mount's own can also clash with the
-    first, which that `git fetch origin` never meets: a mount whose only
-    refspec maps tags into `origin/` (`+refs/tags/*:refs/remotes/origin/*`),
-    and a remote with a branch and a tag of one name, fail this fetch with
-    128 ("Cannot fetch both refs/heads/feat and refs/tags/feat to
-    refs/remotes/origin/feat") where `git fetch origin` exits 0. That is
-    left for #459's checklist.
+    failed fetch.
 
-    READ BY A LISTING, `git config --list`, not `--get-all`: the dry run's
-    test holds every `git config` it runs to a listing, the one form that
-    cannot write, and a listing exits 0 whether or not the mount has a
+    READ BY A LISTING, `git config --list -z`, not `--get-all`: the dry
+    run's test holds every `git config` it runs to a listing, the one form
+    that cannot write, and a listing exits 0 whether or not the mount has a
     refspec (an `origin` with a URL and nothing else has none, and gets the
-    first refspec alone). A config git cannot read fails it with 128, which is
-    the caller's fetch failure, as the fetch's own would be.
+    first refspec alone). A config git cannot read fails it with 128, which
+    is the caller's fetch failure, as the fetch's own would be. `-z` (#905,
+    #459's U184) ends each entry with a NUL and puts a newline between its
+    key and its value, so a value that holds a newline is one value: read
+    a line at a time, an alias whose value held the line
+    `remote.origin.fetch=+refs/heads/zz:refs/remotes/origin/zz` gave the
+    mount a refspec it does not have, which `git config --get-all
+    remote.origin.fetch` does not list, and its fetch of a branch `origin`
+    lacks failed.
     """
-    listed = run(["git", "config", "--list"], cwd=member)
-    configured = [value for key, _, value in
-                  (line.partition("=") for line in listed.splitlines())
-                  if key == "remote.origin.fetch"]
-    refspecs = [_ORIGIN_BRANCHES]
-    for spec in (value.strip() for value in configured):
-        if spec.startswith("^"):
-            continue  # a narrowing refspec never decides reachability (p07)
-        spec = spec if spec.startswith("+") else "+" + spec
-        if not spec.partition(":")[2].startswith("refs/remotes/origin/"):
-            continue
-        if spec not in refspecs:
-            refspecs.append(spec)
-    return refspecs
+    listed = _git_bytes(["config", "--list", "-z"], member)
+    configured = [value.decode("utf-8", "surrogateescape")
+                  for key, _, value in (record.partition(b"\n")
+                                        for record in listed.split(b"\0"))
+                  if key == b"remote.origin.fetch"]
+    return origin_fetch_refspecs(configured)
 
 
 def _has_origin(member: Path) -> bool:
     """Whether the member's mount has a remote named `origin`, the only one
-    `bump` fetches and asks (#686). Asked once its fetch has failed: a mount
-    whose `origin` was renamed (to `upstream`, say) or removed fails that
-    fetch with no network or credential at fault, and was told to fix one.
+    `bump` fetches and asks (#686). A mount whose `origin` was renamed (to
+    `upstream`, say) or removed has none to fetch from, with no network or
+    credential at fault, and was told to fix one.
+
+    ASKED BEFORE THE FETCH (#905, #459's U185), and the fetch is made only
+    where it answers yes: one `get-url` more in every bump. Where it answers
+    no, or the fetch fails, the refusal's words ask it again
+    (`_checked_on_a_remote_branch`, `_checked_to_names_a_commit`), as they
+    did before. Asked only after a fetch that failed, it let a mount with
+    no `origin` be fetched from a PATH: git reads a remote name it does
+    not have as a path, so a repository at `origin` inside the mount (a
+    leg mounted there, say) was fetched, the fetch wrote that
+    repository's branches under `refs/remotes/origin/`, in a dry run
+    too, and `bump` answered from them as from the member's. A remote
+    `origin` with a section and no `url` is one to git: `get-url` prints
+    its name, and the fetch reads that path, as the person's own `git fetch
+    origin` does (measured, git 2.43).
 
     `git remote get-url origin` exits 2 for "No such remote" and for nothing
     else, so that exit is the answer "none"; any other failure is git's,
@@ -8237,29 +8827,49 @@ def _has_origin(member: Path) -> bool:
 
 
 def _origin_tag_reaches(member: Path, commit: str) -> bool:
-    """Whether a tag of the member's `origin` reaches `commit` (#686): a tag
-    the mount has whose commit contains it, which `origin` lists under the
-    same id. Asked only for the refusal's words, after a fetch that worked,
-    of a commit no branch of `origin` reaches; the rule stays branches.
+    """Whether a tag of the member's `origin` reaches `commit` (#686, #982):
+    a tag the mount has whose commit contains it, at a commit `origin` lists
+    a tag at too. Asked only for the refusal's words, after a fetch that
+    worked, of a commit no branch of `origin` reaches; the rule stays
+    branches.
 
     WHY IT IS ASKED. Such a commit was refused with "A pin the rest of the
     world cannot fetch", which is untrue of one a tag of the remote holds: a
     fresh clone brings every tag, so it holds the commit, and a fetch by sha
     works. The mount's own tags cannot say it alone: a tag made inside the
     mount is one only the mount has, so `git ls-remote --tags` asks `origin`
-    which of them it has, by object id, which names a tag's target for
-    ever. Only when a tag of the mount contains the commit is the remote
-    asked, so a commit made in the mount and never tagged asks nothing more.
-    A listing that fails is no answer, and the words stay the plain ones.
+    whether it has one of them, or a tag at a commit one of them names, by
+    object id, which names a tag's target for ever. Only when a tag of the
+    mount contains the commit is the remote asked, so a commit made in the
+    mount and never tagged asks nothing more. A listing that fails is no
+    answer, and the words stay the plain ones.
+
+    THE COMMITS TAGS POINT TO ARE COMPARED, NOT THE TAG OBJECTS ALONE (#982).
+    An annotated tag's own id is the id of its tag object, which two tags at
+    one commit have apart when each was made on its own, and which a
+    lightweight tag does not have at all, so comparing them alone missed a
+    lightweight `v1` of the mount beside an annotated `v1` of `origin` at
+    the same commit, and two annotated `v1` made apart (measured, git
+    2.43). Each tag of the mount is read as its own id and as the commit
+    `git rev-parse <id>^{}` peels it to, through a tag of a tag too;
+    `%(*objectname)` would not do, since git before 2.44 reads `*` one
+    level, to the tag a tag of a tag tags (measured, git 2.43). `origin` is
+    listed WITHOUT `--refs`, so each annotated tag has its `<tag>^{}` line,
+    the commit, beside its own, and a lightweight tag has its own line, the
+    commit. Every id on either side is compared, so the tag object of a tag
+    the two share still matches as it did. `bump-leg.py`'s
+    `_remote_tag_reaches`, asked of a leg, reads it the same way.
     """
-    held = set(run(["git", "for-each-ref", "--contains", commit,
-                    "--format=%(objectname)", "refs/tags/"],
-                   cwd=member).lower().split())
-    if not held:
+    tags = run(["git", "for-each-ref", "--contains", commit,
+                "--format=%(objectname)", "refs/tags/"],
+               cwd=member).lower().split()
+    if not tags:
         return False
+    held = set(tags) | set(run(["git", "rev-parse",
+                                *[f"{tag}^{{}}" for tag in tags]],
+                               cwd=member).lower().split())
     try:
-        listed = run(["git", "ls-remote", "--tags", "--refs", "origin"],
-                     cwd=member)
+        listed = run(["git", "ls-remote", "--tags", "origin"], cwd=member)
     except CommandFailed:
         return False
     return any(line.split("\t", 1)[0].lower() in held
@@ -8296,11 +8906,11 @@ def _checked_on_a_remote_branch(member: Path, path: str,
     (`_origin_tag_reaches`) is refused as one no branch reaches, which it
     is, with the way out, a push to a branch, and without "a pin the rest of
     the world cannot fetch", which a fresh clone disproves. A mount with NO
-    `origin` (`_has_origin`) failed its fetch with no network at fault: the
-    words say it has none, that whether a branch reaches the commit is
-    therefore not known, and to give the mount its `origin` back, since
-    `bump` asks no other remote, where they said the commit was on no branch
-    and to fix the network or the credential.
+    `origin` (`_has_origin`) is not fetched (#905), with no network at
+    fault: the words say it has none, that whether a branch reaches the
+    commit is therefore not known, and to give the mount its `origin` back,
+    since `bump` asks no other remote, where they said the commit was on no
+    branch and to fix the network or the credential.
     """
     if _on_a_remote_branch(member, commit):
         return commit
@@ -8393,8 +9003,8 @@ def _checked_to_names_a_commit(member: Path, path: str, row: dict,
     after the note that the fetch failed, and one they do not is refused with
     the sentence that says the answer came from stale refs. A mount with no
     `origin` at all is told that instead, in this refusal and in
-    `member-to-unknown`'s (#686): its fetch failed with no network or
-    credential at fault.
+    `member-to-unknown`'s (#686): it is not fetched (#905), and no network
+    or credential is at fault.
 
     A TAG WHOSE COMMIT IS ON NO BRANCH is refused too, and so is that
     commit, while `add --at` pins the same tag's id. Where the mount does
@@ -8730,7 +9340,15 @@ def cmd_bump(args) -> int:
     _checked_no_operation_in_progress(family.root, "bump")
     _checked_manifest_committed(family.root, "bump")
     _checked_inside_sparse_rules(family.root, "bump", [path, MANIFEST])
-    if not (member / ".git").exists():
+    # A MEMBER THIS USER MAY NOT ENTER IS NOT AN UNINITIALIZED ONE (#430):
+    # `exists()` said "no `.git`" on Python 3.14, and the remedy ran `git
+    # submodule update --init` over a checkout that is there; a traceback on
+    # 3.12. Its `.git` is named, `member-unreadable`, under `--dry-run` too.
+    try:
+        initialized = _is_a(member / ".git", _any_mode)
+    except OSError as exc:
+        raise _member_unreadable(family.root, member / ".git", exc) from exc
+    if not initialized:
         raise Refusal(
             "member-uninitialized",
             f"{path} is not an initialized submodule checkout, so the new "
@@ -8764,13 +9382,27 @@ def cmd_bump(args) -> int:
     # named a deleted branch. `--no-prune-tags` keeps a `pruneTags` setting
     # from reaching the mount's tags. The prune touches no local branch or
     # tag.
-    fetched = True
-    try:
-        run(["git", "fetch", "-q", "--prune", "--no-prune-tags", "origin",
-             *_origin_fetch_refspecs(member)], cwd=member)
-    except CommandFailed:
-        fetched = False
-        why = (" from its origin" if _has_origin(member) else
+    # FROM `origin` ALONE, AND INTO `refs/remotes/origin/` ALONE (#905).
+    # `_has_origin` is asked first, and a mount with no remote `origin` is
+    # not fetched: git read the name as a path, and fetched a repository at
+    # `origin` inside the mount. `--refmap=` (empty) takes the mount's own
+    # `remote.origin.fetch` out of the fetch's map: with refspecs on the
+    # command line, git still moved whatever a configured refspec maps each
+    # fetched branch to, so in a mount set `+refs/heads/*:refs/heads/*`, or
+    # a mirror's `+refs/*:refs/*`, a local branch holding unpushed commits
+    # was forced to the remote's, by a dry run too (measured, git 2.43). The
+    # refspecs named here are the whole map.
+    origin = _has_origin(member)
+    fetched = origin
+    if origin:
+        try:
+            run(["git", "fetch", "-q", "--prune", "--no-prune-tags",
+                 "--refmap=", "origin", *_origin_fetch_refspecs(member)],
+                cwd=member)
+        except CommandFailed:
+            fetched = False
+    if not fetched:
+        why = (" from its origin" if origin else
                ": it has no remote named `origin`")
         print(f"  note: could not fetch {path}{why}; the commit must already "
               "be in its object store and on a branch of its remote as last "
@@ -9324,6 +9956,58 @@ def _checked_index_unlocked(root: Path, path: str) -> None:
         "again.")
 
 
+def _checked_mount_readable(root: Path, path: str) -> bool:
+    """Whether the member's mount `path` is on disk, asked by `remove`
+    before it writes anything and under `--dry-run` alike; where it, or its
+    checkout's `.git`, cannot be read, `member-unreadable` (#430).
+
+    ASKED AS A REMOVAL ASKS, WITH `_gone`: `remove` empties the mount and
+    deletes it, and its rollback records what to bring back from what is
+    there. Nothing at the name (`ENOENT`) is a mount not on disk, as it
+    always was. Anything else that is not an answer is refused, a part of
+    the path that is a file (`ENOTDIR`) included: with a file where
+    `members/` was, the dry run said "not on disk", exit 0, and the real run
+    ran `git submodule deinit -f`, met `git rm`'s exit 128 and was rolled
+    back, exit 2. A `members/` this user may not search was "not on disk"
+    in the dry run, then a traceback on Python 3.12 and, on 3.14, a `git
+    submodule deinit -f` that ran before `git rm` failed.
+
+    THE OBJECT STORE GIT KEEPS FOR IT TOO (r955's SHOULD-1 on #955): a
+    store this user may not read was passed, `remove` committed, and a
+    rollback after its first write said no store held the checkout and it
+    came back only from its remote. Its `HEAD` is asked, as `_is_a` asks: a
+    store that is gone (`ENOENT`) is the member #365 removes as it always
+    has, and one that cannot be read is refused, named. The store is asked
+    whether the mount is on disk or not.
+
+    A `HEAD` THIS USER MAY NOT READ, in a store it may search, is refused
+    too (r955's NIT-R1 on #955), named: `stat` asks no read permission of
+    the file, so `remove` landed, exit 0, past a store that `git submodule
+    update`, the rollback's way back, cannot read. `os.access` asks it.
+    """
+    mount = root / path
+    try:
+        if _gone(mount):
+            on_disk = False
+        else:
+            on_disk = True
+            if _is_a(mount, stat.S_ISDIR):
+                _gone(mount / ".git")
+    except OSError as exc:
+        raise _member_unreadable(root, _refused(exc, mount), exc) from exc
+    found = _store_git_uses(root, path)
+    if found is not None:
+        head = found[1] / "HEAD"
+        try:
+            there = _is_a(head, stat.S_ISREG)
+        except OSError as exc:
+            raise _member_unreadable(root, found[1], exc) from exc
+        if there and not os.access(head, os.R_OK):
+            raise _member_unreadable(root, head, PermissionError(
+                errno.EACCES, os.strerror(errno.EACCES), str(head)))
+    return on_disk
+
+
 def _unmount_and_drop(family: Family, row: dict, path: str) -> int:
     """The part of `remove` that writes: the unmount, the row and the ONE
     commit. Returns the exit code. Runs inside the caller's `PinRollback`
@@ -9359,7 +10043,24 @@ def _unmount_and_drop(family: Family, row: dict, path: str) -> int:
     # POSIX for the same reason it is POSIX in `add`: git spells this path
     # `.git/modules/<path>`, and so does the human who deletes it.
     cached = family.root / ".git" / "modules" / path
-    if cached.exists():
+    # THE COMMIT HAS LANDED, so a store this user may not read is a NOTE
+    # that says so, exit 0, and never a silence (Python 3.14's `exists()`,
+    # False) or a traceback over a commit that is made (3.12's) (#430).
+    try:
+        left = _is_a(cached, _any_mode)
+    except OSError as exc:
+        # The cure follows the cause (#430): a permission is the mode, and
+        # any other cause is `OTHER_CURE`, never told to `chmod`.
+        then = ("once this user can read the directory, look"
+                if isinstance(exc, PermissionError) else
+                OTHER_CURE + "; then look")
+        print("  NOTE " + _cannot_read(_named_in(family.root, cached), exc)
+              + ", so whether `git rm` left that member's object store "
+              "behind is not known. It leaves one on purpose, in case "
+              f"somebody committed inside the mount: {then}, and delete it "
+              "before adding this member back.")
+        return 0
+    if left:
         # The directory alone on a line, then the command, quoted (#486),
         # exactly as `add`'s `member-git-dir-cached` names the same store.
         print("  NOTE that member's object store is left behind. `git rm` "
@@ -9370,7 +10071,7 @@ def _unmount_and_drop(family: Family, row: dict, path: str) -> int:
 
 
 def _remove_dry_run(family: Family, row: dict, path: str,
-                    suggested: str) -> int:
+                    suggested: str, on_disk: bool) -> int:
     """`remove --dry-run` (#326): what a real `remove` would take out, and
     no git command that writes.
 
@@ -9404,6 +10105,11 @@ def _remove_dry_run(family: Family, row: dict, path: str,
     (`_checked_gitmodules_as_staged`). So by here the work tree's file is the
     index's copy, or none of the work tree, the index and HEAD holds one, and
     `deinit` reads what this reads.
+
+    `on_disk` IS `_checked_mount_readable`'s ANSWER (#430): `os.path.lexists`
+    said "not on disk" of a mount in a `members/` this user may not search,
+    and the real run then raised a traceback on Python 3.12, or, on 3.14,
+    ran `git submodule deinit -f` before `git rm` failed.
     """
     project = str(row["project"])
     root = family.root
@@ -9449,7 +10155,7 @@ def _remove_dry_run(family: Family, row: dict, path: str,
     print(f"directory    {path}  " + (
         "deleted with everything in it: `git submodule deinit -f` discards "
         "uncommitted work in the member, and `git rm` the directory"
-        if os.path.lexists(root / path) else "not on disk"))
+        if on_disk else "not on disk"))
     for line in _branch_said(family, "remove", suggested):
         print(line)
     print("\n--dry-run: nothing was changed: the index, .gitmodules, "
@@ -9500,12 +10206,16 @@ def cmd_remove(args) -> int:
     # gitlink is staged by `git rm`, which refuses it the same way.
     _checked_inside_sparse_rules(family.root, "remove",
                                  [GITMODULES, path, MANIFEST])
+    # The mount and its `.git`, which `deinit -f` empties and `git rm`
+    # deletes and the rollback reads to put them back, asked as a removal
+    # asks (#430).
+    on_disk = _checked_mount_readable(family.root, path)
     # Every refusal above is the same under `--dry-run`, which leaves here,
     # before the unmount, the real run's first write (#326), and reports the
     # branch the real run refuses (#487) rather than refusing it.
     suggested = _suggested_branch("remove", str(row.get("id") or project))
     if args.dry_run:
-        return _remove_dry_run(family, row, path, suggested)
+        return _remove_dry_run(family, row, path, suggested, on_disk)
     branch = _checked_branch(family, "remove", suggested)
     # WHAT CAN BE ASKED BEFORE THE UNMOUNT IS (#365); what fails after it is
     # put back (`PinRollback`). A `members:` block this tool will not rewrite
@@ -9556,7 +10266,7 @@ def cmd_siblings(args) -> int:
     the Makefile's words, which name `update-shape.py` and its `--add`.
     """
     root = Path(args.family_root).expanduser().resolve()
-    if not (root / MANIFEST).is_file():
+    if not _manifest_there(root):
         raise Refusal(
             "family-root-missing",
             f"{root / MANIFEST} does not exist, so this is not a family root",
@@ -9564,7 +10274,18 @@ def cmd_siblings(args) -> int:
             "one; point --family-root at the HOLDER (the `<Family>/<Family>` "
             "clone), not at the family folder around it.")
     script = root / SIBLINGS_SCRIPT
-    if not script.is_file():
+    # A SCRIPT THIS USER MAY NOT REACH IS NOT ONE THE HOLDER LACKS (#430):
+    # `is_file()` said so on Python 3.14, under a remedy that adds a file
+    # the holder has with `update-shape.py`, and raised a traceback on 3.12.
+    try:
+        there = _is_a(script, stat.S_ISREG)
+    except OSError as exc:
+        raise _unreadable(
+            "siblings-script-unreadable", SIBLINGS_SCRIPT, exc,
+            f"family.py siblings runs the holder's own {SIBLINGS_SCRIPT}, as "
+            "`make siblings` does, and has no second implementation to fall "
+            "back on, so nothing was cloned or fetched.") from exc
+    if not there:
         raise Refusal(
             "siblings-script-missing",
             f"family.py siblings needs {SIBLINGS_SCRIPT}, which this holder "
@@ -9660,20 +10381,30 @@ def build_parser() -> argparse.ArgumentParser:
                            "commits, use it as the holder instead of "
                            "refusing. A repository with commits is still "
                            "refused: that is live, not a slot.")
-    init.add_argument("--local-remote-dir", type=Path, default=None,
+    # THE THREE FOLDER FLAGS ARE TEXT, not `type=Path`: `Path("")` is `.`,
+    # so an empty value could not be told from a typed `.` once parsed.
+    # `_folder_flags` makes each a `Path`, refusing an empty one first.
+    init.add_argument("--local-remote-dir", default=None,
                       help="create a bare repository here instead of calling "
-                           "`gh repo create` (the TEST path; no network)")
-    init.add_argument("--into", type=Path, default=None, metavar="DIR",
+                           "`gh repo create` (the TEST path; no network). An "
+                           "empty value is refused as "
+                           "`local-remote-dir-no-path`, and `.` means the "
+                           "directory the run stands in.")
+    init.add_argument("--into", default=None, metavar="DIR",
                       help="the PARENT directory the family folder is made "
                            "in (default: the directory you are standing in, "
                            "which is refused inside a checkout of "
                            "openRepoShape: from its root, pass `--into ..`). "
                            "The holder lands at <into>/<Family>/<Family>, "
-                           "beside where `make siblings` clones the members.")
-    init.add_argument("--work-dir", type=Path, default=None,
+                           "beside where `make siblings` clones the members. "
+                           "An empty value is refused as `into-no-path`, and "
+                           "`.` means the directory the run stands in.")
+    init.add_argument("--work-dir", default=None,
                       help="THE OVERRIDE: land the holder at "
                            "<work-dir>/<Family> and make no family folder at "
-                           "all. Mutually exclusive with --into.")
+                           "all. Mutually exclusive with --into. An empty "
+                           "value is refused as `work-dir-no-path`, and `.` "
+                           "means the directory the run stands in.")
     init.add_argument("--no-push", action="store_true")
     init.add_argument("--dry-run", action="store_true",
                       help="print the plan and ask, as the real run does, "
@@ -9682,8 +10413,15 @@ def build_parser() -> argparse.ArgumentParser:
                            "--local-remote-dir) and whether <org>/<Family> "
                            "already exists (`gh repo view` and its commit "
                            "listing; with --local-remote-dir, the bare "
-                           "repository), refusing what it refuses; make no "
-                           "folder, remote or repository")
+                           "repository), refusing what it refuses. Whether "
+                           "each folder can be written in is asked of "
+                           "`os.access`, which reads the mode bits and on "
+                           "Windows says yes for every folder, so a quota, "
+                           "a Windows ACL or a read-only drive on Windows "
+                           "can pass here and be refused by the real run. "
+                           "It leaves nothing that stays: it makes and "
+                           "removes temporary folders, creates no remote or "
+                           "repository and pushes nothing")
     init.set_defaults(func=cmd_init)
 
     add = subparsers.add_parser(

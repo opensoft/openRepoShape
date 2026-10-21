@@ -67,6 +67,11 @@ recording an identity, so this tool never records one it cannot justify:
   * A write that fails is a refusal, not a traceback (#285): a copy, an
     addition or the pin this process cannot write is `update-write-failed`,
     and every byte written before it is put back, as below.
+  * Nor is a read that fails an absence (#430). A pinned copy, the pin, the
+    root or the upstream this user cannot read -- a `scripts/` it can list
+    but not search, a `contracts/` at 000 -- is `update-unreadable`, by
+    name, where Python 3.14's `is_file()` called it missing and 3.12's
+    raised a traceback; a copy that is NOT there is `copy-missing` still.
   * Nothing is left half-done either (#202). With `--branch`, a branch git
     cannot create, an addition it cannot stage or a commit a hook refuses
     puts back the copies, the pin, the README line, the index and the
@@ -129,7 +134,8 @@ should.
 EXIT CODES
     check   0  the pin names the target and no copied file differs
             1  updates are available, or drift a human must resolve
-            2  a REFUSAL: no pin, an unresolvable upstream, an unreadable root
+            2  a REFUSAL: no pin, an unresolvable upstream, a path in the
+               root or the upstream this user cannot read
     apply   0  applied (or there was nothing to do)
             2  a REFUSAL, including a validator that went red or a branch,
                stage or commit that failed (rolled back); or a push or pull
@@ -144,6 +150,7 @@ from __future__ import annotations
 import argparse
 import ast
 import contextlib
+import errno
 import hashlib
 import json
 import os
@@ -154,7 +161,7 @@ import stat
 import subprocess
 import sys
 import tempfile
-from collections.abc import Iterator
+from collections.abc import Callable, Iterator
 from pathlib import Path
 from typing import NamedTuple
 
@@ -171,6 +178,10 @@ from repo_shape import (  # noqa: E402
 # is one to the reader (#437), and with the reader's rule for a key, so a
 # quoted key or a space before the colon is one here too (#674).
 from repo_shape import _split_key, _strip_comment  # noqa: E402
+# U+FEFF by the reader's own name: the two line rewrites take it off line 1
+# as `parse_yaml` does, and put it back (#933). On a line of its own, for the
+# reason the branch rule's import below gives.
+from repo_shape import BYTE_ORDER_MARK  # noqa: E402
 from shape_materialize import (  # noqa: E402
     ATTRIBUTES, COPIED_FROM_SHAPE, COPIED_VERBATIM, FAMILY_COPIED_FROM_SHAPE,
     FAMILY_COPIED_VERBATIM, SHAPE_REPOSITORY, CommandFailed, check_program,
@@ -280,6 +291,156 @@ FAMILY_KIND = Kind("family", "family.yaml", "templates/family-root",
                    "scripts/validate-family.py")
 
 
+# ---------------------------------------------------------------------------
+# A path this user cannot read is not a path that is not there (#430)
+# ---------------------------------------------------------------------------
+#
+# Up to Python 3.13 `Path.is_file()`, `is_dir()`, `exists()` and
+# `is_symlink()` RAISE a `stat` the operating system refused, and answer
+# False only where nothing is there; from 3.14 they answer False to ANY
+# `OSError`, and `os.path.lexists` always has. So on 3.14 a `scripts/` this
+# user can list but not search was five copies `copy-missing`, which `apply`
+# refused as `update-conflict` with a remedy that puts them back from
+# history, and a `contracts/` at 000 was `update-pin-missing`, whose remedy
+# is to adopt the project; on 3.12 each was a traceback. Every guard that
+# must tell "absent" from "unreadable" asks `_is_a` or `_lexists`, which
+# answer as 3.9 to 3.13 did, on every Python: a refused one is RAISED, and
+# `main` refuses it by name (`unreadable_refusal`).
+#
+# RAISED, NOT REFUSED, OUT OF `read_pin` AND `prepare`, because
+# `shape-doctor.py` tells the two apart: it names a raised `OSError` of a
+# file in the root as `validate-pins.py` names it (#847), and reads a
+# `Refusal` out of `prepare` as this checkout of the standard unable to
+# answer. A LOCAL COPY of `validate-pins.py`'s question, as `bump-leg.py`
+# and the doctor keep theirs: `scripts/repo_shape.py` is a shape copy, and a
+# helper there would be an `upstream-changed` row in every project (#370,
+# #610).
+
+#: The `OSError`s that `Path.is_file()` and `Path.is_dir()` answered False to
+#: on Python 3.9 to 3.13 (pathlib's `_ignore_error`), because each means
+#: there is nothing at the name to open: no such file, a part of the path
+#: that is not a directory, a bad descriptor, a symlink loop, and Windows'
+#: "not ready", "invalid name" and "cannot resolve". `validate-pins.py`'s
+#: set, and `bump-leg.py`'s. Every other one is a read the system refused.
+_ABSENT_ERRNOS = (errno.ENOENT, errno.ENOTDIR, errno.EBADF, errno.ELOOP)
+_ABSENT_WINERRORS = (21, 123, 1921)
+
+
+def _says_absent(exc: OSError) -> bool:
+    """Does `exc` say nothing is at the name (`_ABSENT_ERRNOS`), rather than
+    that the operating system refused to say what is?"""
+    return (exc.errno in _ABSENT_ERRNOS
+            or getattr(exc, "winerror", None) in _ABSENT_WINERRORS)
+
+
+def _mode_of(path: Path, *, follow: bool = True) -> int | None:
+    """`path`'s mode, by `stat` (`Path.stat`, so a link is followed) or, not
+    following, by `os.lstat`; None where nothing is there (`_says_absent`),
+    and the `OSError` of one the operating system refused RAISED (#430). A
+    name the system cannot take at all (a NUL in it) is nothing there, as
+    `is_file()` answered it."""
+    try:
+        return (path.stat() if follow else os.lstat(path)).st_mode
+    except OSError as exc:
+        if _says_absent(exc):
+            return None
+        raise
+    except ValueError:
+        return None
+
+
+def _is_a(path: Path, kind: Callable[[int], bool]) -> bool:
+    """Whether `path` is there and of `kind` (`stat.S_ISREG`, `stat.S_ISDIR`,
+    `_anything`), following a link as `is_file()` does, and raising the
+    `OSError` of a `stat` the operating system refused: `validate-pins.py`'s
+    `_is_a` (#434), asked here (#430)."""
+    mode = _mode_of(path)
+    return mode is not None and kind(mode)
+
+
+def _anything(_mode: int) -> bool:
+    """`_is_a`'s kind for "anything at all", which `exists()` asks."""
+    return True
+
+
+def _lexists(path: Path) -> bool:
+    """Whether anything at all is at `path`, a dangling link included:
+    `os.path.lexists`, which answers False to ANY `OSError` on every Python,
+    asked so that a refused `lstat` is raised (#430)."""
+    return _mode_of(path, follow=False) is not None
+
+
+def _is_link(path: Path) -> bool:
+    """`Path.is_symlink()`, asked so that a refused `lstat` is raised
+    (#430), as `_is_a` raises a refused `stat`."""
+    return stat.S_ISLNK(_mode_of(path, follow=False) or 0)
+
+
+#: `update-unreadable`: a path this command must read, and the operating
+#: system will not let it (#430).
+UNREADABLE = "update-unreadable"
+
+#: What a path the operating system refused for ANOTHER reason than
+#: permission is told (an I/O error, a name too long): `validate-pins.py`'s
+#: `OTHER_REASON`, word for word (#712), which is not told to `chmod`.
+OTHER_REASON = (
+    "Where the operating system gave another reason, put a regular file this "
+    "user can open back in its place, or take away one nobody wants, and make "
+    "sure nothing is changing the directory while this runs. ")
+
+#: What this command reads, as `update-unreadable`'s remedy says it.
+FILES_READ = ("the shape pin, the manifest, every copy the shape pin lists "
+              "and the --upstream checkout")
+
+
+def root_of(args) -> Path:
+    """`--root` as `prepare` reads it, and as `main` names a path from it."""
+    return Path(args.root).expanduser().resolve()
+
+
+def _named_from(root: Path, path: Path) -> tuple[str, bool]:
+    """`path` as `update-unreadable` names it, and whether it is inside
+    `root`: from the root and POSIX, as `validate-pins.py` names a file
+    (#712); the root itself, or a path outside it, such as the upstream,
+    in full."""
+    try:
+        relative = path.relative_to(root)
+    except ValueError:
+        return str(path), False
+    if not relative.parts:
+        return str(path), False
+    return relative.as_posix(), True
+
+
+def unreadable_refusal(root: Path, exc: OSError) -> Refusal | None:
+    """`update-unreadable` for `exc`, a read the operating system REFUSED of
+    the path it names; None where `exc` says nothing is there, or names no
+    path, neither of which this refusal can say (#430).
+
+    `validate-pins.py`'s words (`_unreadable_file`, #712): the line `<path>:
+    cannot be read (<the system's reason>)`, and a remedy whose advice
+    follows the cause. A permission (`PermissionError`: `EACCES`, `EPERM`)
+    is `chmod u+r` on a file or `chmod u+rx` on a directory, and on every
+    directory above it -- inside the root, for a path in it -- and any other
+    cause is `OTHER_REASON`."""
+    name = exc.filename
+    if _says_absent(exc) or not isinstance(name, (str, bytes, os.PathLike)):
+        return None
+    named, inside = _named_from(root, Path(os.fsdecode(name)))
+    above = " inside the root" if inside else ""
+    advice = (
+        "Make what this user may not open readable by this user: `chmod u+r` "
+        "on a file, `chmod u+rx` on a directory (and on every directory above "
+        f"it{above}), or fix who owns it. "
+        if isinstance(exc, PermissionError) else OTHER_REASON)
+    return Refusal(
+        UNREADABLE,
+        f"{named}: cannot be read ({exc.strerror or type(exc).__name__})",
+        f"Remediation: this command reads {FILES_READ}, and one it cannot "
+        "read is a question it cannot answer, never an absence. " + advice
+        + "Then run the same command again.")
+
+
 def root_kind(root: Path) -> Kind:
     """A root carrying `family.yaml` and no `project.yaml` is a family.
 
@@ -287,8 +448,14 @@ def root_kind(root: Path) -> Kind:
     checkout should not have to tell the tool what they are standing in, and
     the two manifests are mutually exclusive by construction — a family has no
     legs, so it has no `project.yaml` to mirror a pin into.
+
+    A REFUSED `stat` IS RAISED (#430), never read as "no such manifest",
+    which would pick the other kind of root. Both are in the root itself, so
+    only a root this user cannot search refuses one, and `prepare` asks
+    that first, by name.
     """
-    if (root / "family.yaml").is_file() and not (root / "project.yaml").is_file():
+    if (_is_a(root / "family.yaml", stat.S_ISREG)
+            and not _is_a(root / "project.yaml", stat.S_ISREG)):
         return FAMILY_KIND
     return PROJECT_KIND
 
@@ -491,11 +658,19 @@ def open_upstream(spec: str) -> Upstream:
     asks `gh api` for the pinned tree with the operator's `gh` credentials
     (`skip` line and exit 0 without `gh`, a login or a network), and `--push`
     and `--pr` push the branch and open its pull request.
+
+    A PATH THIS USER CANNOT READ IS NOT "NO SUCH PATH" (#430). Each of the
+    three questions raises a refused `stat`, which `main` names. On 3.14 a
+    path under a folder this user cannot search was "neither a path on this
+    machine nor an `owner/repo` name", and a relative `a/b` spelling was
+    then cloned from github.com; a checkout it cannot search was
+    `update-upstream-not-a-repo`.
     """
     candidate = Path(spec).expanduser()
-    if candidate.exists():
+    if _is_a(candidate, _anything):
         path = candidate.resolve()
-        if not (path / ".git").exists() and not (path / "HEAD").is_file():
+        if (not _is_a(path / ".git", _anything)
+                and not _is_a(path / "HEAD", stat.S_ISREG)):
             raise Refusal(
                 "update-upstream-not-a-repo",
                 f"--upstream {spec} exists but is not a git repository",
@@ -591,12 +766,20 @@ def read_pin(root: Path) -> tuple[dict, list[Row]]:
     `--branch` makes holds the unchanged link. Asked before `is_file()`,
     which follows a link, so a dangling one is named as the link it is
     rather than as a pin that "does not exist".
+
+    A PIN THIS USER CANNOT READ IS NOT A PIN THAT DOES NOT EXIST (#430). Its
+    `stat` refused (a `contracts/` this user cannot search) was a traceback
+    on 3.12 and `update-pin-missing` on 3.14, whose remedy adopts the
+    project; its read refused (a pin at mode 000) was `load_yaml`'s
+    `yaml-unreadable`, naming the absolute path with no remedy. Both RAISE
+    the `OSError`, which `main` refuses by name and the doctor names in its
+    own row (`_read_yaml`).
     """
     pin_path = root / "contracts" / "shape-pin.yaml"
     linked = linked_record(root)
     if linked is not None:
         raise rewrite_link_refusal([linked])
-    if not pin_path.is_file():
+    if not _is_a(pin_path, stat.S_ISREG):
         raise Refusal(
             "update-pin-missing",
             f"{pin_path} does not exist, so there is no record of which files "
@@ -605,7 +788,21 @@ def read_pin(root: Path) -> tuple[dict, list[Row]]:
             "Remediation: this command updates a project that was scaffolded "
             "or adopted with this shape. A project without a shape pin is "
             "adopted with `adopt-project.py`, not updated.")
-    return check_pin(load_yaml(pin_path), pin_path, root)
+    return check_pin(_read_yaml(pin_path), pin_path, root)
+
+
+def _read_yaml(path: Path):
+    """`load_yaml(path)`, with a read the operating system REFUSED raised as
+    its own `OSError` (#430), which `load_yaml` turns into `yaml-unreadable`
+    and raises its refusal from, as `validate-pins.py`'s `_load` reads it
+    (#712). Any other refusal is `load_yaml`'s, as it was."""
+    try:
+        return load_yaml(path)
+    except Refusal as exc:
+        cause = exc.__cause__
+        if isinstance(cause, OSError) and not _says_absent(cause):
+            raise cause from None
+        raise
 
 
 def check_pin(pin, pin_path, root: Path) -> tuple[dict, list[Row]]:
@@ -706,6 +903,11 @@ def merged_into(root: Path, rel: str) -> str | None:
     `copy-missing` with its own refusal, as does a pinned copy deleted
     anywhere else.
 
+    A `shape/` THIS USER CANNOT SEARCH HOLDS NO ANSWER (#430). `lexists`
+    answers False to a refused `lstat` on every Python, so `shape/X` read
+    as "nothing there", the row as merged-away, and `apply` dropped its pin
+    row. `_lexists` and `_is_a` raise a refused read, which `main` names.
+
     WHAT MERGING MEANS IS NOT JUDGED. The row is dropped and nothing is
     copied, so no byte of `X` is compared with the shape's: the follow-up is
     the person's, and `X` was never a shape copy of this pin. Read by
@@ -716,9 +918,9 @@ def merged_into(root: Path, rel: str) -> str | None:
     if not rel.startswith(prefix):
         return None
     original = rel[len(prefix):]
-    if not original or os.path.lexists(root / rel):
+    if not original or _lexists(root / rel):
         return None
-    return original if (root / original).is_file() else None
+    return original if _is_a(root / original, stat.S_ISREG) else None
 
 
 def classify(root: Path, rows: list[Row], upstream: Upstream, pinned: str,
@@ -773,9 +975,14 @@ def _classify_row(root: Path, row: Row, upstream: Upstream, pinned: str,
     in the order they were written in — the root's bytes, then the pinned
     blob, then the target blob — because `Upstream.blob` shells out to git
     and a reordering would change what a failing run prints.
+
+    `copy-missing` IS NOTHING THERE, OR NOTHING THAT IS A FILE (#430): a
+    copy whose `stat` is refused is raised by `_is_a`, as one whose read is
+    refused is raised by the read, and `main` names either. On 3.14 a
+    `scripts/` this user can list but not search was five `copy-missing`.
     """
     target_path = root / row.path
-    if not target_path.is_file():
+    if not _is_a(target_path, stat.S_ISREG):
         row.state = COPY_MISSING
         row.detail = ("pinned but absent from the root; a human decides "
                       "whether it was deleted on purpose")
@@ -1156,6 +1363,15 @@ def symlink_on_the_way(root: Path, rel: str) -> tuple[str, str] | None:
     creates what the link points at, which a root is free to point outside
     itself. The first component that cannot be `lstat`ed ends the walk: the
     ones after a missing component are missing too.
+
+    SO DOES ONE WHOSE `lstat` IS REFUSED, and that is deliberate (#430).
+    This answers "is a link on the way", and every caller asks the path
+    itself next, which names a refused read: `read_pin` and `_classify_row`
+    by `_is_a`, `find_additions` by `_lexists`, `Rollback.write` by the
+    `open`, which `ledger.writing` refuses. `_classify_row` asks only after
+    `_is_a` has searched every component. And the doctor asks
+    `linked_record` before it reads the pin, where a raise would end its
+    row before the pin could be named.
     """
     here = root
     walked: list[str] = []
@@ -1213,6 +1429,9 @@ def find_additions(root: Path, rows: list[Row], upstream: Upstream,
     `exists`, so a symlink whose target is missing, and a symlink above the
     path, are the operator's and not an absence this tool may write into.
     A path under a FILE is absent, and is remembered as `blocked` (#285).
+    And one under a folder this user cannot search is neither (#430):
+    `_lexists` raises the refused `lstat`, where `lexists` said "nothing
+    there" and `check` offered `--add` over a file the root may hold.
     """
     pinned = {row.path for row in rows}
     additions: list[Addition] = []
@@ -1227,7 +1446,7 @@ def find_additions(root: Path, rows: list[Row], upstream: Upstream,
             continue
         link = symlink_on_the_way(root, copy.path)
         additions.append(Addition(
-            copy, link is not None or os.path.lexists(root / copy.path),
+            copy, link is not None or _lexists(root / copy.path),
             data, link, not_a_directory_on_the_way(root, copy.path),
             left_dead_by(copy.path, rows)))
     return additions
@@ -1492,6 +1711,24 @@ def _header_as_it_was(line: str) -> str:
     return body + (tail if tail.strip() else "")
 
 
+def _marks_off(text: str) -> tuple[str, str]:
+    """The byte-order marks `text` starts with, and the text after them.
+
+    LINE 1 ONLY, AS THE READER TAKES THEM (#933). `parse_yaml` takes off
+    every U+FEFF the text starts with (#855), so a pin whose first line is
+    `commit:` after one, or a manifest whose first line is `shape:`, is
+    read with that key by `check` and both validators. `_repin` reads the
+    two files as `utf-8`, so the finders below met the mark as the first
+    character of the key and refused the file, in words that said the key
+    was not there. They look at the text after the marks now, and each
+    rewrite puts the marks back in front of what it returns, so they are
+    written back byte for byte, as every other line's bytes are. A mark
+    anywhere else is text, to the reader and here.
+    """
+    after = text.lstrip(BYTE_ORDER_MARK)
+    return text[:len(text) - len(after)], after
+
+
 def rewrite_shape_pin(text: str, commit: str, tree: str,
                       rows: list[Row]) -> str:
     """`commit:`, `digests.tree_sha256:` and the whole `files:` block.
@@ -1528,8 +1765,13 @@ def rewrite_shape_pin(text: str, commit: str, tree: str,
     WHAT IS RETURNED HAS BEEN READ BACK, as `rewrite_manifest`'s is
     (`shape_materialize.rewrite_fault`): a layout this line rewrite cannot
     carry is refused HERE as this tool's failure, before any byte is written.
+
+    A BYTE-ORDER MARK IN FRONT OF LINE 1 is taken off before the lines are
+    looked at and put back in front of them (`_marks_off`, #933), so a pin
+    whose first line is `commit:` after one is rewritten, mark and all.
     """
-    lines = text.splitlines()
+    marks, unmarked = _marks_off(text)
+    lines = unmarked.splitlines()
     out: list[str] = []
     seen = {"commit": 0, "tree": 0, "files": 0}
     for index, line in enumerate(lines):
@@ -1557,7 +1799,7 @@ def rewrite_shape_pin(text: str, commit: str, tree: str,
                 "exactly one was expected, so this tool will not rewrite it",
                 "Remediation: the pin was hand-edited into a shape this tool "
                 "does not recognise. Fix it by hand this once, or re-scaffold.")
-    rewritten = "\n".join(out) + "\n"
+    rewritten = marks + "\n".join(out) + "\n"
     why = rewrite_fault(text, rewritten, commit, tree)
     if why is not None:
         raise Refusal(
@@ -1595,8 +1837,15 @@ def rewrite_manifest(text: str, commit: str, tree: str, kind: Kind) -> str:
     carry — a value on the line below its key — is refused HERE, as this
     tool's failure, rather than by a validator after the fact
     (`_refuse_unless_it_reads_back`).
+
+    A BYTE-ORDER MARK IN FRONT OF LINE 1 is taken off before the block is
+    looked for and put back in front of the lines (`_marks_off`, #933), so
+    `_shape_block_bounds` finds a `shape:` header that is line 1 after one,
+    which it refused `update-manifest-no-shape` while the validators read
+    the block.
     """
-    lines = text.splitlines()
+    marks, unmarked = _marks_off(text)
+    lines = unmarked.splitlines()
     start, end = _shape_block_bounds(lines, kind)
     seen = {"commit": 0, "tree": 0}
     for index in range(start + 1, end):
@@ -1616,7 +1865,8 @@ def rewrite_manifest(text: str, commit: str, tree: str, kind: Kind) -> str:
                 "where exactly one was expected",
                 "Remediation: fix the block by hand this once; this tool will "
                 "not guess at a manifest it does not recognise.")
-    rewritten = "\n".join(lines) + ("\n" if text.endswith("\n") else "")
+    rewritten = (marks + "\n".join(lines)
+                 + ("\n" if text.endswith("\n") else ""))
     _refuse_unless_it_reads_back(text, rewritten, commit, tree, kind)
     return rewritten
 
@@ -1676,13 +1926,14 @@ def _shape_block_bounds(lines: list[str], kind: Kind) -> tuple[int, int]:
     written twice, as the reader reads it, and refused by name below.
 
     A HEADER THAT APPEARS TWICE IS REFUSED BY NAME (review of PR #558). The
-    reader keeps the last block, so a rewrite of the first would move a pin
-    nobody reads. That was left to `rewrite_fault`'s read-back, whose words
-    blame this tool's line rewrite, which is false of a key written twice.
-    And where the first header carries a comment, the exact match skipped it
-    and rewrote the last block, which is what the reader reads, so such a
-    manifest went through; this finder sees the first header, and would
-    have refused it in those same false words.
+    reader kept the last block, so a rewrite of the first would have moved a
+    pin nobody reads; since #917 it refuses the manifest, `key 'shape' is
+    written twice`, and so do the validators of a shape from then on. That
+    was left to `rewrite_fault`'s read-back, whose words blame this tool's
+    line rewrite, which is false of a key written twice. And where the first
+    header carries a comment, the exact match skipped it and rewrote the
+    last block, so such a manifest went through; this finder sees the first
+    header, and would have refused it in those same false words.
     """
     starts = [index for index, line in enumerate(lines)
               if _is_block_header(line, "shape")]
@@ -1691,11 +1942,12 @@ def _shape_block_bounds(lines: list[str], kind: Kind) -> tuple[int, int]:
             "update-manifest-unrecognised",
             f"{kind.manifest} holds the `shape:` key twice, at lines "
             + " and ".join(str(index + 1) for index in starts[:2])
-            + ", where exactly one was expected: the reader keeps the last "
-              "block, so this tool will not guess which of them is the "
-              "manifest's",
+            + ", where exactly one was expected: the reader refuses a key "
+              "written twice, so this tool will not guess which of them is "
+              "the manifest's",
             "Remediation: delete the extra `shape:` block by hand (the "
-            "validators read the last one) and run the same command again.")
+            "reader refuses a manifest that holds it twice) and run the "
+            "same command again.")
     start = starts[0] if starts else None
     if start is None:
         raise Refusal(
@@ -1882,7 +2134,17 @@ class ReadmeShapeLine:
         the common answers cost no subprocess at all and a README nobody is
         editing is classified exactly as before.
         """
-        if self.path.is_symlink():
+        try:
+            linked = _is_link(self.path)
+            there = linked or _is_a(self.path, stat.S_ISREG)
+        except OSError as exc:
+            # A REFUSED `stat` OR `lstat` IS A READING TOO (#430), this
+            # one, as a refused read below is: 3.12's `is_file()` raised it
+            # out of a classification that must not raise, and 3.14's
+            # called a README that is there `absent`.
+            self.unreadable = f"not readable — {exc.strerror or exc}"
+            return README_UNREADABLE
+        if linked:
             # NOT WRITTEN THROUGH, EVER. `is_file()` follows the link, and a
             # rewrite would then put these bytes into the link's TARGET —
             # which a root is free to point outside itself — while the
@@ -1890,7 +2152,7 @@ class ReadmeShapeLine:
             # would not contain the edit it just made somebody else's file
             # (Copilot, PR #152).
             return README_SYMLINK
-        if not self.path.is_file():
+        if not there:
             return README_ABSENT
         try:
             if self.path.stat().st_nlink > 1:
@@ -2110,9 +2372,22 @@ def counted(rows: list[Row]) -> dict[str, int]:
 
 def prepare(args) -> tuple[Path, dict, list[Row], list[Addition], Upstream,
                            str, str, Kind]:
-    root = Path(args.root).expanduser().resolve()
-    if not root.is_dir():
+    """The root, its pin, its rows judged and its additions found, the
+    upstream opened, the two commits and the kind of root: everything
+    `check` reports and `apply` acts on, read before anything is written.
+
+    A READ THE OPERATING SYSTEM REFUSED IS RAISED HERE, never refused
+    (#430): `main` names it as `update-unreadable`, and the doctor, which
+    calls this, names a refused read of a file in the root in its own row
+    (#847) and reads a `Refusal` from here as the standard unable to
+    answer. The root is asked first: its own `stat` (a folder above it
+    this user cannot search), then whether it can be searched at all
+    (`_search`). A read refused once the upstream is open closes it
+    first, as a `Refusal` does."""
+    root = root_of(args)
+    if not _is_a(root, stat.S_ISDIR):
         raise Refusal("update-root-missing", f"{root} is not a directory")
+    _search(root)
     kind = root_kind(root)
     pin, rows = read_pin(root)
     # THE MANIFEST IS THE OTHER RECORD `apply` REWRITES, so a link at it, or
@@ -2132,10 +2407,27 @@ def prepare(args) -> tuple[Path, dict, list[Row], list[Addition], Upstream,
         upstream.resolve(pinned)
         classify(root, rows, upstream, pinned, target, kind)
         additions = find_additions(root, rows, upstream, target, kind)
-    except Refusal:
+    except (Refusal, OSError):
+        # CLOSED ON A REFUSED READ TOO (#430, review of PR #976): `classify`,
+        # `find_additions` and `merged_into` raise one out of here for
+        # `main`, or the doctor, to name, and closed on a `Refusal` alone,
+        # the bare clone `open_upstream` makes of the pin's `owner/repo` was
+        # left in the temporary directory by every `update-unreadable` from
+        # this block.
         upstream.close()
         raise
     return root, pin, rows, additions, upstream, pinned, target, kind
+
+
+def _search(root: Path) -> None:
+    """Raise the `OSError` of a root this user cannot SEARCH (#430): one it
+    can `stat` and may not look inside, mode 600 say, where every path below
+    it is refused. Asked of `<root>/.`, which the system resolves only by
+    searching the root, so the refusal names the root, in full, rather than
+    the first file under it that a reader asks about: `root_kind`'s
+    `family.yaml`, which a project has not got. `os.path.join`, because
+    `pathlib` drops a `.`."""
+    os.stat(os.path.join(root, os.curdir))
 
 
 def apply_command(root: Path, label: str, target: str) -> str:
@@ -2307,7 +2599,22 @@ def confirm(args, rows: list[Row], taking: list[Addition],
 
 
 def run_validator(root: Path, script: str) -> int:
-    if not (root / script).is_file():
+    """Run the root's own `script`, `0` where it passes; a script that is
+    not there is SKIPPED, and said.
+
+    ONE THIS USER CANNOT READ IS REFUSED, never skipped (#430). On 3.14 a
+    refused `stat` read as "absent; SKIPPED", so the gate this run exists to
+    leave green was not run; on 3.12 it was raised out of `apply` after the
+    writes, which only a `Refusal` rolls back. It is `update-unreadable`,
+    a `Refusal`, so `cmd_apply` puts back every byte written before it."""
+    try:
+        there = _is_a(root / script, stat.S_ISREG)
+    except OSError as exc:
+        refusal = unreadable_refusal(root, exc)
+        if refusal is None:
+            raise
+        raise refusal from exc
+    if not there:
         print(f"  {script} is absent; SKIPPED")
         return 0
     sys.stdout.flush()
@@ -3195,6 +3502,12 @@ class Rollback:
         write (review of PR #560), for `_restore`'s reason: unlinking one at
         the path deletes the operator's link (#239 measured that), and
         removing under one deletes at its end. It is listed instead.
+
+        A `stat` REFUSED IS LISTED TOO (#430). What stands at `path` is
+        asked once, `_mode_of`, which raises a refused `stat` into the
+        handler below, where 3.14's `is_dir()` and `exists()` answered False
+        to it, nothing was removed or listed, and the rollback said the
+        tree was exactly as it was.
         """
         name = self._name(path)
         directory = any(path in made.parents for made in self.created)
@@ -3209,7 +3522,8 @@ class Rollback:
                         "what it leads to is yours to judge")
             return
         try:
-            if path.is_dir():
+            mode = _mode_of(path)
+            if mode is not None and stat.S_ISDIR(mode):
                 if not any(path.iterdir()):
                     path.rmdir()
                     done.append(f"removed   {name}/ (made to hold an --add "
@@ -3224,7 +3538,7 @@ class Rollback:
                     done.append(f"kept      {name}/ (made to hold an --add "
                                 "file, and something this run did not "
                                 "write is in it now)")
-            elif path.exists():
+            elif mode is not None:
                 path.unlink()
                 done.append(f"removed   {name} (written by --add)")
         except OSError as exc:
@@ -4880,6 +5194,15 @@ def cmd_apply(args) -> int:
         return 0
     except (Refusal, CommandFailed) as exc:
         return _rolled_back(exc, ledger)
+    except OSError as exc:
+        # A READ REFUSED AFTER `prepare` (#430), the first write included:
+        # this arm is the rollback, and it answers a `Refusal`, so a refused
+        # read is made one, `update-unreadable`, and every byte goes back
+        # under it. Any other `OSError` is raised as it was.
+        refusal = unreadable_refusal(root, exc)
+        if refusal is None:
+            raise
+        return _rolled_back(refusal, ledger)
     finally:
         upstream.close()
 
@@ -5804,6 +6127,14 @@ def main(argv: list[str] | None = None) -> int:
         # Reported where it happened, NEXT line included (#204); the exit
         # code is all that is left to give.
         return 2
+    except OSError as exc:
+        # A PATH THIS USER CANNOT READ (#430): `read_pin` and `prepare`
+        # raise the refused read, for the doctor's sake, and it is refused
+        # here by name, exit 2. Any other `OSError` is raised as it was.
+        refusal = unreadable_refusal(root_of(args), exc)
+        if refusal is None:
+            raise
+        return die(refusal)
 
 
 if __name__ == "__main__":
