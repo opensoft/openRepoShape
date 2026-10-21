@@ -7779,17 +7779,60 @@ def _branch_by_hand(branch: str) -> str:
     `!` (`\\041`), so the line is ASCII whatever the stream it is printed on,
     and never depends on a shell's history expansion. A ref name cannot hold a
     newline, so the substitution's stripped trailing newlines lose nothing."""
-    try:
-        branch.encode("utf-8")
-    except UnicodeEncodeError:
-        pass
-    else:
+    if _is_utf_8(branch):
         return shlex.quote(branch)
-    escapes = "".join(
-        chr(byte) if 0x20 <= byte < 0x7f and chr(byte) not in "'\\%!"
-        else f"\\{byte:03o}"
-        for byte in branch.encode("utf-8", "surrogateescape"))
+    escapes = _printf_escapes(branch.encode("utf-8", "surrogateescape"))
     return f"\"$(printf '{escapes}')\""
+
+
+def _is_utf_8(text: str) -> bool:
+    """Whether `text`, read from git with `surrogateescape`, is UTF-8: it
+    holds no lone surrogate standing for a byte that is not."""
+    try:
+        text.encode("utf-8")
+    except UnicodeEncodeError:
+        return False
+    return True
+
+
+def _printf_escapes(raw: bytes) -> str:
+    """`raw` as the text of a `printf` format in single quotes that writes
+    `raw` back, as `_branch_by_hand` spells it: each printable ASCII byte as
+    itself, and every other byte, and `'`, `\\`, `%` and `!`, as `\\` and
+    three octal digits (#1079)."""
+    return "".join(
+        chr(byte) if 0x20 <= byte < 0x7f and chr(byte) not in "'\\%!"
+        else f"\\{byte:03o}" for byte in raw)
+
+
+def _path_by_hand(path: str) -> str:
+    """`path` as ONE word a person types into a POSIX shell, so the shell
+    hands git the path's exact bytes (#1086): the directory of `git -C`, or
+    a pathspec after `--`.
+
+    A UTF-8 path is `shlex.quote`d, as it always was. A path read from git
+    with `surrogateescape` (a leg's, from its member's `ls-files -z`) that
+    holds a byte which is not UTF-8 is spelled as `_branch_by_hand` spells
+    such a branch, `"$(printf '<escapes>/')"`, for two things a path can
+    hold and a ref name cannot.
+
+    A NEWLINE AT ITS END, which `$(...)` strips: the format ends in a `/`,
+    so the last byte the substitution writes is never a newline, in sh,
+    dash, bash or zsh. Each word this is for names a directory, and git
+    reads `<dir>/` as `<dir>`: `git -C` changes into it, and `git submodule
+    update -- <leg>/` updates the gitlink at `<leg>`, which no index entry
+    can sit under. One word with no variable, so the line stays one command
+    a person pastes as it is.
+
+    A `-` AT ITS START, which the `printf` of sh, dash and bash reads as an
+    option (`Illegal option -c`; zsh's prints it): it is an escape too,
+    `\\055`. The rest of the line is ASCII, as `_branch_by_hand`'s is."""
+    if _is_utf_8(path):
+        return shlex.quote(path)
+    escapes = _printf_escapes(path.encode("utf-8", "surrogateescape"))
+    if escapes.startswith("-"):
+        escapes = "\\055" + escapes[1:]
+    return f"\"$(printf '{escapes}/')\""
 
 
 def _head_by_hand(path: str, at: str, branch: str | None) -> str:
@@ -7797,9 +7840,10 @@ def _head_by_hand(path: str, at: str, branch: str | None) -> str:
     checkout was on, else the commit. FROM THE RECORD, with no git call: it
     is named when a step failed, often with `path` not on disk at all. The
     branch is spelled by `_branch_by_hand`, which keeps the bytes of a name
-    that is not UTF-8 (#1079)."""
+    that is not UTF-8 (#1079), and the path by `_path_by_hand`, which keeps
+    those of a leg's path inside its member (#1086)."""
     target = f"{_branch_by_hand(branch)} --" if branch is not None else at
-    return f"git -C {shlex.quote(path)} checkout -q {target}"
+    return f"git -C {_path_by_hand(path)} checkout -q {target}"
 
 
 def _entries_by_hand(name: str, entries: list[bytes]) -> str:
@@ -8289,9 +8333,11 @@ class PinRollback:
         legs = [] if self.legs_back else [
             leg for leg in self.legs if leg[0] not in self.legs_left]
         if legs:
+            # A leg's path is read with `surrogateescape`, so it is spelled
+            # by `_path_by_hand`, as its `git -C` below is (#1086).
             typed.append(f"git -C {shlex.quote(self.path)} {offline} "
                          "submodule update --init --no-fetch -- " + " ".join(
-                             shlex.quote(leg) for leg, _, _, _ in legs))
+                             _path_by_hand(leg) for leg, _, _, _ in legs))
             typed += [_head_by_hand(f"{self.path}/{leg}", at, branch)
                       for leg, _, at, branch in legs
                       if at is not None and branch is not None]
