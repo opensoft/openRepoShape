@@ -907,6 +907,16 @@ def _pin_findings(plan: "Plan", tree: list,
 # `validate-pins.py` finds a source it reads that cannot answer. `check` and
 # `execute` ask this through `_entry_findings`, the one list.
 #
+# NOR IS SUCH A PIN'S COMMIT ASKED, and the NOTE says so (#912). What `plan`
+# asks of a commit (#651), whether it is one or an annotated tag's id, `check`
+# asks of the clone it recomputes the digest in (`commit_in_clone`). Where
+# that clone is gone or partial, or `gh api` read the digest, it was asked
+# of nothing, and the NOTE said only that the digest was not rechecked, so a
+# tag's id edited into the plan passed `check` and `execute` wrote it under
+# `revision_kind: commit`. The forge's `gh api graphql`, which `plan` asks
+# where it has no clone, is not asked here, for the reason above, and a
+# partial clone's `git` would fetch an id it lacks over the network.
+#
 # A DIRECTORY THAT IS NO CLONE'S TOP LEVEL is asked about FIRST (#800), before
 # a partial clone's NOTE: a folder inside a clone, or a directory that is no
 # clone at all, is `plan-pin-source-not-a-clone`, as `plan` refuses it
@@ -1053,7 +1063,7 @@ def _pin_digest_findings(plan: "Plan") -> tuple[list[str], list[str]]:
     a digest the clone `plan` read it from recomputes otherwise at the
     plan's commit, or cannot recompute there; otherwise one NOTE for `check`
     to print, that the digest recomputes there, or that it was not
-    rechecked here and why."""
+    rechecked here, nor the commit asked what it names (#912), and why."""
     findings: list[str] = []
     notes: list[str] = []
     for said, _, values in _read_pins(plan)[0]:
@@ -1063,9 +1073,12 @@ def _pin_digest_findings(plan: "Plan") -> tuple[list[str], list[str]]:
         if not (found or why):
             found = _recomputed_pin_finding(said, values)
         if why:
-            notes.append(f"NOTE {said}: digest NOT rechecked here: {why}. The "
-                         "root's own `validate-pins.py` recomputes it "
-                         "wherever it can read the product.")
+            notes.append(f"NOTE {said}: digest NOT rechecked here, nor its "
+                         f"`commit:` asked whether it names a commit: {why}. "
+                         "The root's own `validate-pins.py` recomputes the "
+                         "digest wherever it can read the product; `plan` "
+                         "asks what the commit names where it reads the "
+                         "digest.")
         elif found:
             findings.append(found)
         else:
@@ -15637,6 +15650,12 @@ def _neutral_product_pins(pins) -> str:
     from `plan` as well as from a plan edited by hand: `plan` records it
     quoted, and `check` passes it. The list is a block placeholder, so
     `render` writes it as it stands, and nothing else quotes it.
+
+    AND A NAME A STANDARD YAML READER TAKES FOR NO TEXT IS DOUBLE-QUOTED
+    HERE, though `y` writes it bare in the plan (#912): `yes`, `on`, `.5`
+    and `.inf` among them, which the project's reader reads back as typed
+    and YAML 1.1 or 1.2 reads as a bool or a float. The plan is read by
+    this tool alone; the manifest by any tool.
     """
     if not pins:
         return "[]"

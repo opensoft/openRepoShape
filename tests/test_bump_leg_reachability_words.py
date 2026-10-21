@@ -135,6 +135,22 @@ def local_only(commit: str) -> tuple[str, str]:
         "of the world cannot bootstrap.")
 
 
+def only_a_tag_reaches(project: Path, remotes: Path, via: str,
+                       made: str):
+    """The premises of a commit `made` only a tag of the leg's remote
+    reaches, then the root branched: returns `(run, before)`, the runner
+    through `via` and the root's snapshot. `test_bump_leg_fetch_refspecs.py`
+    asks it too (#1068's review, NIT 3)."""
+    assert not contains(bare_of(remotes), made, "refs/heads/"), (
+        "premise: no branch of the leg's remote reaches it")
+    assert contains(bare_of(remotes), made, "refs/tags/"), (
+        "premise: a tag of the leg's remote does")
+    assert not contains(project / "spec", made, "refs/remotes/"), (
+        "premise: no remote-tracking ref of the leg does")
+    branched(project)
+    return runner(project, remotes, via), snapshot(project)
+
+
 def tag_reaches(commit: str) -> tuple[str, str]:
     """`bump-leg-commit-local-only`'s two lines where a tag of the leg's
     remote reaches `commit` and no branch does (#898): no claim that nobody
@@ -166,15 +182,7 @@ def test_a_commit_only_a_tag_of_the_remote_reaches_is_told_so(
     made = made_in_the_leg(project, "RELEASE")
     tag = tagged(leg, "v-release-w898", made)
     pushed(project, "refs/tags/v-release-w898", "refs/tags/v-release-w898")
-    assert not contains(bare_of(remotes), made, "refs/heads/"), (
-        "premise: no branch of the leg's remote reaches it")
-    assert contains(bare_of(remotes), made, "refs/tags/"), (
-        "premise: a tag of the leg's remote does")
-    assert not contains(leg, made, "refs/remotes/"), (
-        "premise: no remote-tracking ref of the leg does")
-    branched(project)
-    run = runner(project, remotes, via)
-    before = snapshot(project)
+    run, before = only_a_tag_reaches(project, remotes, via, made)
 
     stderr = assert_one_refusal(project, run,
                                 made if typed == "commit" else tag,
