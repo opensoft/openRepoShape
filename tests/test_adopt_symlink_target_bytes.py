@@ -1,6 +1,7 @@
 # SPDX-License-Identifier: Apache-2.0
 """A symlink whose target holds a NUL after its first byte, or is longer than
-Linux takes (#908: L1-76, L1-78 and L1-80 of #457).
+Linux takes (#908: L1-76, L1-78 and L1-80 of #457), and the same link at a
+copy under `shape/` or at a pin's file (#979).
 
 ON THE V1.1.1 RELEASE COMMIT (5017830), git 2.43 on Linux, probed with a stub
 `gh`: `check` read a link's target only for a NUL as its FIRST byte (#388)
@@ -27,6 +28,12 @@ Now `plan-bad-symlink-target` names each such link once, before any leg
 exists, and says what git makes of it; `plan-root-symlink` does not say it
 again; one finding names the link at `project.yaml`; and every link's target
 is read in the one `git cat-file --batch` `check` already starts.
+
+#979 lifted the limit #908 pinned: a bad link at `shape/README.md` was also
+`plan-root-blocks-shape-copy`, and one at `contracts/shape-pin.yaml` also
+`plan-root-holds-pin`, with a remedy (send it to a leg, `drop` it) that
+cannot help it. Each leaves out a link the first finding names, as
+`plan-root-blocks-manifest` does.
 
 The links are made in the INDEX with `git update-index --cacheinfo`, so no
 test builds a source on a disk that holds a NUL in a target, and all but the
@@ -549,30 +556,6 @@ def test_a_bad_link_below_a_directory_kept_at_the_manifest_is_not_left_out(
     assert blocked.startswith(f"FINDING {MANIFEST}: ")
 
 
-@pytest.mark.parametrize("files, link, kept, code", [
-    pytest.param({}, "shape/README.md",
-                 {"shape/": ROOT, "README.md": ROOT},
-                 "plan-root-blocks-shape-copy", id="the-shape-copy"),
-    pytest.param({"contracts/x.md": "x\n"}, "contracts/shape-pin.yaml",
-                 {"contracts/": ROOT}, "plan-root-holds-pin",
-                 id="the-shape-pin"),
-])
-def test_only_the_manifest_finding_leaves_a_named_link_out(
-        tmp_path, files, link, kept, code):
-    """A KNOWN LIMIT, pinned so that lifting it is a decision: a link at
-    `shape/README.md` or at `contracts/shape-pin.yaml` is still named by
-    `plan-root-blocks-shape-copy` or `plan-root-holds-pin` after its own
-    finding, with a remedy (`drop` it, send it to a leg) that cannot help a
-    link no clone makes. It is a follow-up of #908, whose `named_links`
-    leaves out `plan-root-blocks-manifest` alone (L1-80)."""
-    _, plan = planned_root(tmp_path, files, {link: LATE_NUL}, kept)
-    result = check_root(plan)
-    assert result.returncode == 1, result.stdout + result.stderr
-    own, blocked = findings_of(result)
-    assert own.startswith(f"FINDING {CODE}: `{link}` is a symlink ")
-    assert blocked.startswith(f"FINDING {code}: ")
-
-
 @pytest.mark.parametrize("target, code", [
     pytest.param(LATE_NUL, CODE, id="late-nul"),
     pytest.param(b"", EMPTY, id="empty-target"),
@@ -642,6 +625,204 @@ def test_a_link_at_the_manifest_with_a_target_git_makes_is_unchanged(
     tree = opened.tree()
     targets = adopter.symlink_targets(opened, tree)
     assert adopter.bad_symlink_targets(tree, targets) == []
+
+
+# --- one finding for a link at a copy or at a pin's file (#979) ------------
+
+COPY = "plan-root-blocks-shape-copy"
+HOLDS_PIN = "plan-root-holds-pin"
+#: What keeps the source's `contracts/` a directory the plan can keep.
+PIN_FILES = {"contracts/x.md": "x\n"}
+#: Where a link sits that a second finding named after its own until #979:
+#: AT the copy under `shape/` of a path the root holds, and AT the shape's
+#: own pin. Each is the source's other files, the link, what the plan keeps
+#: in the root, and the code of that second finding.
+AT_A_COPY_OR_A_PIN = [
+    pytest.param({}, "shape/README.md", {"shape/": ROOT, "README.md": ROOT},
+                 COPY, id="the-readme-copy"),
+    pytest.param({"Makefile": "all:\n"}, "shape/Makefile",
+                 {"shape/": ROOT, "Makefile": ROOT}, COPY,
+                 id="the-makefile-copy"),
+    pytest.param(PIN_FILES, "contracts/shape-pin.yaml", {"contracts/": ROOT},
+                 HOLDS_PIN, id="the-shape-pin"),
+]
+#: The first words of #908's remediation and #303's, alike.
+FACT_OF_THE_SOURCE = "Remediation: a symlink's target is a fact of the source"
+
+
+@pytest.mark.parametrize("target, own, head", AT_THE_MANIFEST)
+@pytest.mark.parametrize("files, link, kept, second", AT_A_COPY_OR_A_PIN)
+def test_a_named_link_at_a_copy_or_a_pin_is_one_finding(
+        tmp_path, files, link, kept, second, target, own, head):
+    """The limit `test_only_the_manifest_finding_leaves_a_named_link_out`
+    pinned, lifted on purpose (#979): a bad link at `shape/README.md` was
+    also `plan-root-blocks-shape-copy`, and one at
+    `contracts/shape-pin.yaml` also `plan-root-holds-pin`, whose remedy
+    (send it to a leg, `drop` it) helps no link a clone does not make. Now
+    its own finding names it alone, says nothing of the manifest, and the
+    remediation that helps is said once after it."""
+    _, plan = planned_root(tmp_path, files, {link: target}, kept)
+    result = check_root(plan)
+    assert result.returncode == 1, result.stdout + result.stderr
+    finding, = findings_of(result)
+    assert finding.startswith(
+        f"FINDING {own}: `{link}` is a symlink whose target {head}")
+    assert f"FINDING {second}" not in result.stderr
+    assert "where the shape writes" not in finding
+    assert result.stderr.count(FACT_OF_THE_SOURCE) == 1
+
+
+@pytest.mark.parametrize("target, own", [
+    pytest.param(LATE_NUL, CODE, id="late-nul"),
+    pytest.param(b"", EMPTY, id="empty-target"),
+])
+@pytest.mark.parametrize("files, link, kept, second", [
+    pytest.param({}, "Shape/README.md", {"Shape/": ROOT, "README.md": ROOT},
+                 COPY, id="the-copy-once-case-is-ignored"),
+    pytest.param(PIN_FILES, "contracts/Shape-pin.yaml", {"contracts/": ROOT},
+                 HOLDS_PIN, id="the-pin-once-case-is-ignored"),
+])
+def test_a_named_link_at_a_case_twin_of_a_copy_or_a_pin_is_one_finding(
+        tmp_path, files, link, kept, second, target, own):
+    """`Shape/README.md` is the copy's place, and `contracts/Shape-pin.yaml`
+    the pin's, only on a disk that ignores case, which each second finding
+    asks as well and said so of the link. Left out there too."""
+    _, plan = planned_root(tmp_path, files, {link: target}, kept)
+    result = check_root(plan)
+    assert result.returncode == 1, result.stdout + result.stderr
+    finding, = findings_of(result)
+    assert finding.startswith(f"FINDING {own}: `{link}` is a symlink ")
+    assert f"FINDING {second}" not in result.stderr
+
+
+@pytest.mark.parametrize("files, link, kept, second", [
+    pytest.param({}, "shape/README.md/x", {"shape/": ROOT, "README.md": ROOT},
+                 COPY, id="below-the-copy"),
+    pytest.param(PIN_FILES, "contracts/shape-pin.yaml/x",
+                 {"contracts/": ROOT}, HOLDS_PIN, id="below-the-shape-pin"),
+])
+def test_a_bad_link_below_a_directory_kept_at_a_copy_or_a_pin_is_not_left_out(
+        tmp_path, files, link, kept, second):
+    """The skip is for a link AT the copy or the pin's file, as at the
+    manifest. A directory the plan keeps there is in the way whatever the
+    link below it holds, so both findings stay."""
+    _, plan = planned_root(tmp_path, files, {link: LATE_NUL}, kept)
+    result = check_root(plan)
+    assert result.returncode == 1, result.stdout + result.stderr
+    own, blocked = findings_of(result)
+    assert own.startswith(f"FINDING {CODE}: `{link}` is a symlink ")
+    assert blocked.startswith(f"FINDING {second}: ")
+
+
+@pytest.mark.parametrize("before, named", [
+    pytest.param(19, True, id="the-twentieth-is-named-one-by-one"),
+    pytest.param(20, False, id="the-twenty-first-is-only-counted"),
+])
+@pytest.mark.parametrize("files, link, kept, second", [
+    AT_A_COPY_OR_A_PIN[0], AT_A_COPY_OR_A_PIN[2]])
+def test_a_link_at_a_copy_or_a_pin_is_left_out_only_if_it_is_named(
+        tmp_path, files, link, kept, second, before, named):
+    """As at the manifest: the links are named in tree order, `a00`, ...
+    then the link, then `z00`. Only counted, the link is named by nothing
+    else if the second finding leaves it out too, so that finding stays."""
+    links = {f"a{n:02d}": LATE_NUL for n in range(before)}
+    links[link] = LATE_NUL
+    links["z00"] = LATE_NUL
+    legs = {path: ROOT for path in links if path != link}
+    _, plan = planned_root(tmp_path, files, links, {**legs, **kept})
+    result = check_root(plan)
+    assert result.returncode == 1, result.stdout + result.stderr
+    found = findings_of(result)
+    own = [f for f in found if f.startswith(f"FINDING {CODE}: `{link}` ")]
+    seconds = [f for f in found if f.startswith(f"FINDING {second}: ")]
+    counted = found[20]
+    if named:
+        assert len(own) == 1 and seconds == []
+        assert counted.startswith(f"FINDING {CODE}: … and 1 more ")
+    else:
+        assert own == []
+        blocked, = seconds
+        assert f"the symlink `{link}`" in blocked
+        assert counted.startswith(f"FINDING {CODE}: … and 2 more ")
+    assert len(found) == 21 + len(seconds)
+
+
+@pytest.mark.parametrize("files, link, kept, second", AT_A_COPY_OR_A_PIN)
+def test_a_link_at_a_copy_or_a_pin_with_a_target_git_makes_is_unchanged(
+        tmp_path, files, link, kept, second):
+    """The control: the second finding, alone, as before #979."""
+    _, plan = planned_root(tmp_path, files, {link: NAMED}, kept)
+    result = check_root(plan)
+    assert result.returncode == 1, result.stdout + result.stderr
+    finding, = findings_of(result)
+    assert finding.startswith(f"FINDING {second}: ")
+    assert f"the symlink `{link}`" in finding
+    assert FACT_OF_THE_SOURCE not in result.stderr
+
+
+@pytest.mark.parametrize("link, declared", [
+    pytest.param("contracts/shape-pin.yaml", [], id="the-shape-pin"),
+    pytest.param("contracts/openglass-pin.yaml", ["openGlass"],
+                 id="a-declared-pin"),
+    pytest.param("contracts/OpenGlass-pin.yaml", ["openGlass"],
+                 id="a-declared-pin-once-case-is-ignored"),
+])
+def test_the_pin_finding_leaves_out_a_named_link_at_any_pin_file(
+        adopter, monkeypatch, link, declared):
+    """`_kept_pin_findings` asks each pin file `execute` writes, a declared
+    pin's as well as the shape's own, and leaves out a link `named_links`
+    holds at any of them, and no other."""
+    monkeypatch.setattr(adopter, "_declared_pins", lambda plan: declared)
+    plan = adopter.Plan(Path("adoption-plan.yaml"), {
+        "kind": "adoption-plan", "mode": "in-place",
+        "legs": {"spec_path": "spec", "code_path": "code"},
+        "paths": [{"path": "contracts/", "leg": ROOT}]})
+    tree = [row(link, 5, NUL_OID)]
+    said = adopter._pin_findings(plan, tree)
+    assert len(said) == 1, said
+    assert said[0].startswith(
+        f"FINDING {HOLDS_PIN}: the plan keeps the symlink `{link}` ")
+    assert adopter._pin_findings(plan, tree, {link}) == []
+    assert adopter._pin_findings(plan, tree, {"contracts/x"}) == said
+
+
+def test_a_named_link_at_the_pin_is_found_there_and_no_case_twin_is_asked(
+        adopter):
+    """The pin's finding asks the disk that ignores case only where the one
+    that keeps case finds nothing at the pin's file (#524). A named link
+    there is something found: the finding leaves it out (#979) and does not
+    go on to name the case twin the plan keeps beside it, which it never
+    named beside a link either, so `_links_at_a_pin` still reads the disk
+    the finding reads. The twin is found once the link is gone."""
+    plan = adopter.Plan(Path("adoption-plan.yaml"), {
+        "kind": "adoption-plan", "mode": "in-place",
+        "legs": {"spec_path": "spec", "code_path": "code"},
+        "paths": [{"path": "contracts/", "leg": ROOT}]})
+    twin = row("contracts/Shape-pin.yaml", 5, NAMED_OID, "100644")
+    link = row(adopter.SHAPE_PIN, 5, NUL_OID)
+    named = {adopter.SHAPE_PIN}
+    said, = adopter._pin_findings(plan, [twin, link])
+    assert f"the symlink `{adopter.SHAPE_PIN}` " in said
+    assert adopter._pin_findings(plan, [twin, link], named) == []
+    alone, = adopter._pin_findings(plan, [twin], named)
+    assert "the file `contracts/Shape-pin.yaml` " in alone
+    assert "once case is ignored" in alone
+
+
+@pytest.mark.parametrize("files, link, kept, second", AT_A_COPY_OR_A_PIN)
+def test_execute_refuses_a_named_link_at_a_copy_or_a_pin_with_one_finding(
+        adopter, no_filter_repo_probe, tmp_path, files, link, kept, second):
+    """`execute` refuses `check`'s own findings before any leg exists
+    (#168), so it names the link once too."""
+    source, plan = planned_root(tmp_path, files, {link: LATE_NUL}, kept)
+    printed, = findings_of(check_root(plan))
+    with pytest.raises(adopter.Refusal) as caught:
+        adopter.cmd_execute(execute_args(tmp_path, plan))
+    assert caught.value.code == CODE
+    assert printed in caught.value.detail
+    assert second not in caught.value.detail
+    assert adopter.BAD_SYMLINK_TARGET_REMEDIATION in caught.value.remediation
+    no_leg_was_created(tmp_path, source)
 
 
 # --- controls: what must not change ------------------------------------------

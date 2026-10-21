@@ -119,7 +119,9 @@ def stub_gh(directory: Path) -> dict:
     bin_dir = directory / "fakebin"
     bin_dir.mkdir()
     gh = bin_dir / "gh"
-    gh.write_text(textwrap.dedent("""\
+    # BYTES, never `write_text` (#916, L1-60): text mode gives each `\n` a
+    # `\r` on Windows, which would end the `#!` line in `python3\r`.
+    gh.write_bytes(textwrap.dedent("""\
         #!/usr/bin/env python3
         import json, os, sys
         with open(os.environ["GH_STUB_LOG"], "a", encoding="utf-8") as log:
@@ -137,7 +139,7 @@ def stub_gh(directory: Path) -> dict:
             sys.exit(0)
         print("HTTP 404: Not Found", file=sys.stderr)
         sys.exit(97)
-        """), encoding=UTF8)
+        """).encode(UTF8))
     gh.chmod(gh.stat().st_mode | stat.S_IEXEC | stat.S_IXGRP | stat.S_IXOTH)
     return {"PATH": f"{bin_dir}{os.pathsep}{os.environ.get('PATH', '')}",
             "GH_STUB_LOG": str(directory / "gh.log")}
@@ -746,6 +748,32 @@ def test_with_no_pin_source_plan_reads_the_digest_from_gh(source_repo,
         f"REFUSED pin-unreadable: `gh api` could not read opensoft/openGlass "
         f"@ {commit}: HTTP 404: Not Found"), unanswered.stderr
     assert not (tmp_path / "unanswered.yaml").exists()
+
+
+def windows_write_text(path: Path, data: str, encoding: str | None = None,
+                       errors: str | None = None,
+                       newline: str | None = None) -> int:
+    """`Path.write_text` as Windows runs it: text mode writes `\\r\\n` for
+    each `\\n`, unless `newline` says otherwise."""
+    if newline is None:
+        data = data.replace("\n", "\r\n")
+    with path.open("wb") as handle:
+        return handle.write(data.encode(encoding or UTF8, errors or "strict"))
+
+
+def test_the_stub_gh_is_written_as_bytes_so_a_crlf_cannot_break_its_shebang(
+        tmp_path, monkeypatch):
+    """#916's L1-60: `stub_gh` wrote its `#!` script with `Path.write_text`,
+    and where text mode writes CRLF (Windows, or an emulation of it) the
+    first line became `#!/usr/bin/env python3\\r`, which `env` cannot find,
+    so `test_with_no_pin_source_plan_reads_the_digest_from_gh` failed. The
+    script is the same bytes where text mode is CRLF as where it is not,
+    asked here on every OS by giving `Path.write_text` Windows' behaviour."""
+    monkeypatch.setattr(Path, "write_text", windows_write_text)
+    stub_gh(tmp_path)
+    script = (tmp_path / "fakebin" / "gh").read_bytes()
+    assert script.startswith(b"#!/usr/bin/env python3\n"), script[:40]
+    assert b"\r" not in script, script
 
 
 def test_pin_owner_resolves_an_unqualified_name(source_repo, tmp_path,

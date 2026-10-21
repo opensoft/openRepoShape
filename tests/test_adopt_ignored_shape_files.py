@@ -290,11 +290,15 @@ def split_commit_of(tmp_path: Path, files: dict, ignore: str = IGNORE_DOTFILES,
     (repo / IGNORE_FILE).write_text(ignore)
     git("add", "-A", "--", ".", cwd=repo)
     for link, target in (links or {}).items():
+        # BYTES on stdin and out, never text (#916, L4-54): a text-mode pipe
+        # encodes with the locale and, on Windows, gives each line break a
+        # `\r`, and a link's target is the blob's bytes exactly.
         blob = subprocess.run(
             ["git", "hash-object", "-w", "--stdin"], cwd=str(repo),
-            input=target, capture_output=True, text=True, check=True)
+            input=target.encode("utf-8"), capture_output=True, check=True)
         git("update-index", "--add", "--cacheinfo",
-            f"{SYMLINK},{blob.stdout.strip()},{link}", cwd=repo)
+            f"{SYMLINK},{blob.stdout.decode('utf-8').strip()},{link}",
+            cwd=repo)
     commit_index(repo, "The split")
     write_files(repo, disk_only)
     return repo, git("rev-parse", "HEAD", cwd=repo).stdout.strip()
@@ -420,6 +424,39 @@ def test_a_pinned_path_is_found_through_the_split_trees_symlinks(
     repo, commit = split_commit_of(tmp_path, files, ignore="build/\n",
                                    links=links)
     assert adopter._shape_file_findings(repo, commit) == []
+
+
+#: A link target no text-mode pipe passes on as it is: a line break (a
+#: Windows pipe writes `\r\n` for it), a bare carriage return, and a character
+#: the locale's encoding may not have. `chr` keeps this source ASCII.
+AWKWARD_TARGET = "up\r\nand\rover/caf" + chr(0xE9) + "/"
+
+
+def test_split_commit_of_gives_git_a_links_target_as_bytes(tmp_path,
+                                                          monkeypatch):
+    """`split_commit_of` feeds `git hash-object --stdin` the link's target as
+    BYTES, the rule this suite keeps for what goes to git's stdin (#511's
+    NIT-6; #916's L4-54). Fed as text, a Windows pipe gave the target a
+    `\\r` for each line break and a non-UTF-8 locale a different encoding of
+    the last character, and the tree held another link than the one asked
+    for. On a POSIX UTF-8 run both reach git alike, so the call is watched:
+    what git is given, and then what the tree holds."""
+    fed = []
+    real_run = subprocess.run
+
+    def watching(argv, *args, **named):
+        if "hash-object" in argv:
+            fed.append(named.get("input"))
+        return real_run(argv, *args, **named)
+
+    monkeypatch.setattr(subprocess, "run", watching)
+    repo, commit = split_commit_of(tmp_path, {MAKEFILE: MAKEFILE_BODY},
+                                   links={"link": AWKWARD_TARGET})
+    target = AWKWARD_TARGET.encode("utf-8")
+    assert fed == [target], fed
+    held = real_run(["git", "cat-file", "blob", f"{commit}:link"],
+                    cwd=str(repo), capture_output=True, check=True)
+    assert held.stdout == target
 
 
 def findings_within(adopter, repo: Path, commit: str,

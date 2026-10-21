@@ -41,6 +41,19 @@ each measured on git 2.43 at the v1.1.1 release commit `5017830`:
   `git remote get-url origin` is asked before the fetch now, and a mount
   with none gets #686's words with no fetch made.
 
+AND ONE STATE #946'S OWN RULE WAS WRONG IN (#1066): A MOUNT WHOSE OWN
+REFSPEC PUTS A BRANCH ON ANOTHER'S NAME, a folder of branches onto the
+branches' names, `+refs/heads/release/*:refs/remotes/origin/*`. #946
+carried a refspec onto `refs/remotes/origin/*` whose source is under
+`refs/heads/`, so where the remote has `x` and `release/x` the fetch exited
+128, "Cannot fetch both refs/heads/x and refs/heads/release/x to
+refs/remotes/origin/x", where `git fetch origin` exits 0, and `bump` said it
+could not fetch the member. Every refspec onto the branches' names is left
+out now, whatever its source, and so is every one that puts a branch under
+a name not its own, one branch onto another's or every branch into a
+folder; one that gives each branch its own name, a branch or a folder of
+them, rides along.
+
 EVERY ROW RUNS `bump --dry-run` AND `bump`, and asks the mount's refs before
 and after each: no ref of the mount moves under either run. To make that a
 statement about `bump`'s fetch alone, each state is built with the mount's
@@ -110,6 +123,22 @@ TAGS_UNDER_ORIGIN = pytest.mark.parametrize("refspec", [
     ids=["tags-onto-branches", "tags-in-a-folder", "mirror-into-origin",
          "mirror-in-a-folder"])
 
+#: Each refspec of a mount's own that puts a branch of `origin` on the name
+#: `BRANCHES` gives another branch (#1066), with the branch it takes and the
+#: branch whose name it puts that one on, and each left out: a folder of
+#: branches onto the branches' names (the issue's), by THE BRANCHES' GLOB;
+#: one branch onto another's, and every branch into a folder, by A BRANCH
+#: UNDER ANOTHER NAME. `bump-leg.py`'s rows for a leg import it
+#: (`test_bump_leg_fetch_refspecs.py`).
+BRANCH_UNDER_ANOTHER_NAME = pytest.mark.parametrize("refspec, taken, shared", [
+    ("+refs/heads/release/*:refs/remotes/origin/*", "release/x-w1066",
+     "x-w1066"),
+    ("+refs/heads/release/x-w1066:refs/remotes/origin/x-w1066",
+     "release/x-w1066", "x-w1066"),
+    ("+refs/heads/*:refs/remotes/origin/all/*", "x-w1066", "all/x-w1066")],
+    ids=["folder-onto-branches", "one-branch-onto-another",
+         "branches-into-a-folder"])
+
 #: `caf<e9>`: Latin-1 e-acute is the one byte 0xE9, which is not UTF-8. It is
 #: the lone surrogate `os.fsdecode` keeps that byte as, so a byte command line
 #: hands git the byte itself; spelled with `chr`, as `os.fsdecode` raises on
@@ -152,6 +181,20 @@ def refspecs_only(mount: Path, env: dict, *refspecs: str) -> None:
     raw(mount, env, "config", "--unset-all", "remote.origin.fetch")
     for refspec in refspecs:
         raw(mount, env, "config", "--add", "remote.origin.fetch", refspec)
+
+
+def clashes(mount: Path, env: dict, refspec: str, branch: str) -> None:
+    """The premise of a clash row: the person's own `git fetch origin`
+    works, and a fetch carrying the mount's `refspec` beside `BRANCHES`
+    exits 128, "Cannot fetch both", over `origin/<branch>`."""
+    assert raw(mount, env, "fetch", "--dry-run", "origin",
+               check=False).returncode == 0, (
+        "premise: the person's own fetch works")
+    clash = raw(mount, env, "fetch", "--dry-run", "origin", BRANCHES, refspec,
+                check=False)
+    assert clash.returncode == 128, "premise: the two refspecs clash"
+    assert "Cannot fetch both " in clash.stderr.decode()
+    assert f" to refs/remotes/origin/{branch}" in clash.stderr.decode()
 
 
 def both_pin(holder: Path, env: dict, made: str) -> None:
@@ -240,14 +283,34 @@ def test_tags_mapped_into_origin_fetch_a_branch_and_a_tag_of_one_name(
         raw(mount, env, "rev-parse", "HEAD").stdout.decode().strip())
     refspecs_only(mount, env, refspec)
     fetched_as_bump(mount, env)
-    assert raw(mount, env, "fetch", "--dry-run", "origin",
-               check=False).returncode == 0, (
-        "premise: the person's own fetch works")
-    clash = raw(mount, env, "fetch", "--dry-run", "origin", BRANCHES, refspec,
-                check=False)
-    assert clash.returncode == 128, "premise: the two refspecs clash"
-    assert "Cannot fetch both " in clash.stderr.decode()
-    assert f" to refs/remotes/origin/{branch}" in clash.stderr.decode()
+    clashes(mount, env, refspec, branch)
+
+    both_pin(holder, env, made)
+
+    offline.assert_left_nothing()
+
+
+@BRANCH_UNDER_ANOTHER_NAME
+def test_a_branch_put_on_another_branchs_name_fails_no_fetch(
+        holder, offline, tmp_path, refspec, taken, shared):
+    """#1066. The mount's only refspec puts a branch of `origin` on the name
+    `bump`'s own refspec gives another: `taken`, at the pin, onto `shared`,
+    a branch holding `--to`. The person's own `git fetch origin` exits 0,
+    and a fetch carrying that refspec beside `bump`'s own exits 128,
+    "Cannot fetch both", so both runs said they could not fetch the member
+    from its origin. Left out, by THE BRANCHES' GLOB or as A BRANCH UNDER
+    ANOTHER NAME (`BRANCH_UNDER_ANOTHER_NAME` says which), both runs fetch,
+    print no note and pin the commit, and no ref of the mount moves."""
+    env = isolated(offline, tmp_path)
+    mount = holder / PATH
+    made = commit_in_mount(
+        holder, env,
+        lambda m: (m / "RENAMED.md").write_bytes(b"a branch, and its name\n"))
+    raw(mount, env, "push", "-q", "origin", f"{made}:refs/heads/{shared}")
+    raw(mount, env, "push", "-q", "origin", f"HEAD:refs/heads/{taken}")
+    refspecs_only(mount, env, refspec)
+    fetched_as_bump(mount, env)
+    clashes(mount, env, refspec, shared)
 
     both_pin(holder, env, made)
 
@@ -453,11 +516,15 @@ def test_an_ordinary_mount_fetches_the_branch_and_moves_nothing_else(
 #: `refs/tags/`, `tag-pattern` a pattern that takes the tags too, and, no
 #: pattern and not under `refs/`, `tag-short-name` a name git completes,
 #: trying a tag before a branch, and `tag-object-id` an exact object id);
-#: THE BRANCHES' GLOB; `carried` where none does. `bump-leg.py`'s fetch of a
-#: leg is asked the same rows (`test_bump_leg_fetch_refspecs.py`).
+#: THE BRANCHES' GLOB, whatever the source (#1066); A BRANCH UNDER ANOTHER
+#: NAME (`another-name`, #1066); `carried` where none does, and `skipped`
+#: for a negative refspec, which no clause is asked of. `bump-leg.py`'s
+#: fetch of a leg is asked the same rows (`test_bump_leg_fetch_refspecs.py`).
 WHICH_CLAUSE = pytest.mark.parametrize("refspec, carried", [
     pytest.param("+refs/heads/*:refs/heads/*", False, id="outside-heads"),
     pytest.param("+refs/*:refs/*", False, id="outside-mirror"),
+    pytest.param("+refs/pull/*/head:refs/remotes/originx/pr/*", False,
+                 id="outside-origin-prefix"),
     pytest.param(TAGS, False, id="tag-source-onto-branches"),
     pytest.param("+refs/tags/*:refs/remotes/origin/tags/*", False,
                  id="tag-source-in-a-folder"),
@@ -480,11 +547,29 @@ WHICH_CLAUSE = pytest.mark.parametrize("refspec, carried", [
                  id="tag-object-id"),
     pytest.param("+refs/pull/*/head:refs/remotes/origin/*", False,
                  id="branches-glob-pull-requests"),
+    pytest.param("+refs/heads/release/*:refs/remotes/origin/*", False,
+                 id="branches-glob-folder-of-branches"),
+    pytest.param("refs/heads/release/*:refs/remotes/origin/*", False,
+                 id="branches-glob-folder-of-branches-unforced"),
+    pytest.param(BRANCHES, False, id="branches-glob-the-first-refspec"),
+    pytest.param("refs/heads/*:refs/remotes/origin/*", False,
+                 id="branches-glob-the-first-refspec-unforced"),
+    pytest.param("+refs/heads/release/x:refs/remotes/origin/x", False,
+                 id="another-name-one-branch-onto-another"),
+    pytest.param("+refs/heads/x:refs/remotes/origin/release/x", False,
+                 id="another-name-one-branch-into-a-folder"),
+    pytest.param("refs/heads/*:refs/remotes/origin/all/*", False,
+                 id="another-name-branches-in-a-folder"),
+    pytest.param("+refs/heads/release/*:refs/remotes/origin/rel/*", False,
+                 id="another-name-folder-into-another"),
+    pytest.param("^refs/heads/x", False, id="skipped-negative"),
     pytest.param(PULLS, True, id="carried-pull-requests-in-a-folder"),
     pytest.param("+refs/heads/main:refs/remotes/origin/main", True,
                  id="carried-one-branch"),
-    pytest.param("refs/heads/*:refs/remotes/origin/all/*", True,
-                 id="carried-branches-in-a-folder"),
+    pytest.param("+refs/heads/release/*:refs/remotes/origin/release/*", True,
+                 id="carried-branches-in-their-own-folder"),
+    pytest.param("refs/heads/feat-*:refs/remotes/origin/feat-*", True,
+                 id="carried-branches-of-a-pattern"),
     pytest.param("+refs/tagsx/*:refs/remotes/origin/tagsx/*", True,
                  id="carried-not-refs-tags"),
 ])
@@ -504,16 +589,22 @@ def test_which_clause_leaves_each_refspec_out(
     refspec, asked of `_origin_fetch_refspecs` in process: `bump`'s fetch
     carries every branch of `origin` and, where no clause leaves it out,
     `refspec`, forced. A row no later clause meets holds its own:
-    `tag-source-one-tag` the source under `refs/tags/` (the pattern
-    `refs/tags/*` is the next way's too), `tag-pattern-mirror-in-a-folder` and
-    `tag-pattern-refs-t` the pattern, the `tag-short-name` rows the short
-    name (`heads/main`, which git completes to the branch first, holds that
-    every short name is left out, as a tag may answer for any of them where
-    the remote lacks the names git tries first), `tag-object-id` the exact
-    object id, and `branches-glob-pull-requests` THE BRANCHES' GLOB, which
-    alone leaves out a source that can name no tag. A `carried` row fails a
-    clause that takes too much: the pull requests in a folder and a branch,
-    which #946 carries, and `refs/tagsx/`, which no tag is under."""
+    `outside-origin-prefix` the `/` that ends OUTSIDE's `origin/`, as its
+    source is no branch's (#1068's review, NIT 1), `tag-source-one-tag` the
+    source under `refs/tags/` (the pattern `refs/tags/*` is the next way's
+    too), `tag-pattern-mirror-in-a-folder` and `tag-pattern-refs-t` the
+    pattern, the `tag-short-name` rows the short name (`heads/main`, which
+    git completes to the branch first, holds that every short name is left
+    out, as a tag may answer for any of them where the remote lacks the
+    names git tries first), `tag-object-id` the exact object id,
+    `branches-glob-pull-requests` THE BRANCHES' GLOB, which alone leaves out
+    a source that can name no tag, and the `another-name` rows A BRANCH
+    UNDER ANOTHER NAME (#1066); the folder of branches onto the branches'
+    names is THE BRANCHES' GLOB's, the first that meets it, and the last
+    clause's too. A `carried` row fails a clause that takes too much: the
+    pull requests in a folder, which #946 carries, `refs/tagsx/`, which no
+    tag is under, and a branch, a folder of them or a pattern of them, each
+    under the name `BRANCHES` gives it."""
     env = isolated(offline, tmp_path)
     for key, value in env.items():
         monkeypatch.setenv(key, value)
