@@ -20,7 +20,9 @@ NEXT now prints `python3 scripts/bootstrap.py` wherever GNU make at the root
 reads a file the source keeps, and its NOTE names that file in the words of
 the Makefile follow-up (`_makefile_follow_up`), and says what it takes for
 `make bootstrap` to run there. A root that keeps none of those files gets
-the block it got before, byte for byte.
+the block it got before, byte for byte. Only the plan's root paths count: a
+`GNUmakefile` the plan sends to the code leg, or drops, is no file at the
+root, so NEXT keeps `make bootstrap` there, and it runs.
 
 The end-to-end rows need `git filter-repo` and `make`, and skip without
 them. No network and no GitHub: the legs are bare repositories on disk, and
@@ -242,6 +244,31 @@ def tree_keeping(kept: tuple) -> dict:
     return tree
 
 
+def executed_and_cloned(tmp_path: Path, kept: tuple, answer=None):
+    """A real `execute` of a source that keeps `kept` in its root, and the
+    clone NEXT's own clone line makes when it is pasted. `answer`, where
+    given, edits the plan `plan` wrote before `execute` reads it. Returns
+    NEXT's lines and the clone."""
+    source = make_source_repo(tmp_path / "src" / "Thing", tree_keeping(kept),
+                              edits=EDITS)
+    plan = tmp_path / "adoption-plan.yaml"
+    written = write_plan(source, plan, project=PROJECT)
+    assert written.returncode == 0, written.stderr + written.stdout
+    if answer is not None:
+        answer(plan)
+    remotes = tmp_path / "src" / "remotes"
+    result = run_script(ADOPT, "execute", "--plan", str(plan), "--yes",
+                        "--local-remote-dir", str(remotes),
+                        "--work-dir", str(tmp_path / "work"))
+    assert result.returncode == 0, result.stderr + result.stdout
+    lines = next_block(result.stdout)
+    assert lines[:2] == local_next(source), result.stdout
+    (tmp_path / "here").mkdir()
+    cloned = pasted(lines[1], tmp_path / "here", remotes)
+    assert cloned.returncode == 0, cloned.stdout + cloned.stderr
+    return lines[2:], tmp_path / "here" / source.name
+
+
 @needs_filter_repo
 @needs_make
 @pytest.mark.parametrize("kept, said, first",
@@ -264,25 +291,9 @@ def test_the_printed_bootstrap_runs_in_the_clone_next_makes(
     that is what the NOTE said before."""
     if not disk_keeps_case(tmp_path):
         pytest.skip("this disk ignores case: it cannot hold the rows apart")
-    source = make_source_repo(tmp_path / "src" / "Thing", tree_keeping(kept),
-                              edits=EDITS)
-    plan = tmp_path / "adoption-plan.yaml"
-    written = write_plan(source, plan, project=PROJECT)
-    assert written.returncode == 0, written.stderr + written.stdout
-    if "S" in kept:
-        kept_scripts(plan)
-    remotes = tmp_path / "src" / "remotes"
-    result = run_script(ADOPT, "execute", "--plan", str(plan), "--yes",
-                        "--local-remote-dir", str(remotes),
-                        "--work-dir", str(tmp_path / "work"))
-    assert result.returncode == 0, result.stderr + result.stdout
-    lines = next_block(result.stdout)
-    assert lines == [*local_next(source), *said], result.stdout
-
-    (tmp_path / "here").mkdir()
-    cloned = pasted(lines[1], tmp_path / "here", remotes)
-    assert cloned.returncode == 0, cloned.stdout + cloned.stderr
-    clone = tmp_path / "here" / source.name
+    lines, clone = executed_and_cloned(
+        tmp_path, kept, kept_scripts if "S" in kept else None)
+    assert lines == said, lines
     which = make(clone, "which")
     assert (which.returncode, which.stdout.strip()) == (0, first), \
         which.stderr
@@ -295,7 +306,7 @@ def test_the_printed_bootstrap_runs_in_the_clone_next_makes(
         (clone / SCRIPT).write_bytes(shapes)
         command = "python3 scripts/bootstrap.py"
     else:
-        command = lines[2].strip()
+        command = lines[0].strip()
     argv = shlex.split(command)
     assert argv[0] == "python3", command
     ran = make_run([sys.executable, *argv[1:]], clone)
@@ -315,3 +326,38 @@ def test_the_printed_bootstrap_runs_in_the_clone_next_makes(
     assert included.stdout.strip().splitlines()[-1] == (
         "python3 scripts/bootstrap.py")
 
+
+def sent_away(plan: Path, leg: str) -> None:
+    """The plan's `GNUmakefile` answered `leg`, LF as `plan` wrote it."""
+    text = plan.read_text(encoding="utf-8")
+    sent = "  - path: GNUmakefile\n    leg: root\n"
+    assert sent in text, text
+    with plan.open("w", encoding="utf-8", newline="\n") as handle:
+        handle.write(text.replace(sent, (
+            f"  - path: GNUmakefile\n    leg: {leg}\n"
+            "    resolution: \"a Makefile that only builds the code\"\n"),
+            1))
+
+
+@needs_filter_repo
+@needs_make
+@pytest.mark.parametrize("leg", ["code", "drop"])
+def test_next_keeps_make_bootstrap_where_the_plan_sends_the_makefile_elsewhere(
+        tmp_path, leg):
+    """Only the root's paths count. The rule `root-project-makefile` sends a
+    kept `GNUmakefile` to the root, and its reason says that moving a
+    Makefile that only builds the implementation to the code leg "is a
+    one-line edit of the plan". Where the plan sends it to the code leg, or
+    drops it, the clone's root has no `GNUmakefile`, so GNU make there reads
+    the shape's `Makefile`: NEXT keeps `make bootstrap`, and `make -n
+    bootstrap` runs the shape's recipe. A NOTE naming a `GNUmakefile` the
+    root does not have, and `python3` for `make`, is what `execute` printed
+    when it was handed the code leg's and the dropped paths as well."""
+    lines, clone = executed_and_cloned(
+        tmp_path, ("GNUmakefile",), lambda plan: sent_away(plan, leg))
+    assert lines == ["    make bootstrap"], lines
+    assert not (clone / "GNUmakefile").exists()
+    ran = make(clone, "-n", "bootstrap")
+    assert ran.returncode == 0, ran.stderr
+    assert ran.stdout.strip().splitlines()[-1] == (
+        "python3 scripts/bootstrap.py")
