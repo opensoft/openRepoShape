@@ -107,7 +107,9 @@ THREE SUBCOMMANDS, BECAUSE THE MIDDLE ONE IS A HUMAN.
            a topic they are. A path of the source commit git refuses as a
            path, `..` or `.Git/x`, is `plan-path-git-refuses`. Its
            questions to git are asked in throwaway repositories in the work
-           directory. Each but #183's symlink probe is made with the
+           directory, the first the split's own `git clone` of the source,
+           and the submodule urls' among them (#1083). Each but #183's
+           symlink probe is made with the
            source's object format and runs no hook of this machine's, and
            one git cannot make or ask there is `adopt-git-unasked`, which
            says why (#910). The symlink probe keeps its plain `git init`
@@ -7653,61 +7655,88 @@ def _default_remote(source: Source) -> tuple[str, str, Path | None]:
     return url, f"its remote {_spelled(name)}", None
 
 
-def _config_value(repository: Path, key: str) -> str | None:
+def _config_value(repository: Path, key: str,
+                  env: dict | None = None) -> str | None:
     """`key` in `repository`'s git config, as git reads it -- the last
     value, when there are several; None when unset. The key as the bytes
     it spells (`_path_argument`): a remote's name in it is one git printed,
     and as text `remote.\\u00dcrsprung.url` raised `UnicodeEncodeError`
-    under `LC_ALL=C PYTHONUTF8=0` (#653)."""
+    under `LC_ALL=C PYTHONUTF8=0` (#653). In `env`, given one, else in this
+    process's environment."""
     got = subprocess.run(["git", GIT_CONFIG, "-z", "--get",
                           _path_argument(key)],
-                         cwd=repository, capture_output=True, check=False)
+                         cwd=repository, env=env, capture_output=True,
+                         check=False)
     return None if got.returncode else _git_path(got.stdout.rstrip(b"\x00"))
 
 
 def _resolved(base: str, urls: list[str],
-              working_tree: Path | None = None) -> list[_Resolution]:
+              working_tree: Path | None = None,
+              source: Source | None = None) -> list[_Resolution]:
     """Each of `urls` as `git submodule init` resolves it in a repository
     whose `origin` is `base`, in a scratch repository made for the purpose
     and removed after it; and, given a `working_tree`, git's relative answer
     joined to it, which is what the clone opens (`_default_remote`). A url
     git cannot resolve is what git said: that is where the clone fails.
 
-    `base` and each url reach git as the bytes they spell (`_run_exact`):
+    `base` and each url reach git as the bytes they spell (`_path_argument`):
     as text, `../\\u00dcnterlagen` raised `UnicodeEncodeError` under
-    `LC_ALL=C PYTHONUTF8=0`, and `check` and `execute` died (#653)."""
-    scratch = Path(tempfile.mkdtemp(prefix="openreposhape-url-"))
+    `LC_ALL=C PYTHONUTF8=0`, and `check` and `execute` died (#653).
+
+    THE SCRATCH REPOSITORY IS ONE OF `check`'S THROWAWAYS (#1083), made as
+    #910 makes the others (`_throwaway_made`): in the work directory `source`
+    was opened in, with its object format, on `THROWAWAY_BRANCH`, from an
+    empty template, under `_inherited_env()`, and with no hook of this
+    machine's, whose `post-index-change` its `update-index` ran. Its plain
+    `git init` in `TMPDIR` stopped `check` with "a git or gh command
+    failed", exit 2, under an `init.defaultBranch` git will not take or a
+    `GIT_DEFAULT_HASH` that names no hash. `_Unasked` where git cannot make
+    or ask it there."""
+    scratch = _throwaway("openreposhape-url-", source)
+    repository = scratch / THROWAWAY_REPOSITORY
+    env = _inherited_env()
     try:
-        run(["git", "init", "-q", str(scratch)])
-        _run_exact(["git", GIT_CONFIG, "remote.origin.url", base], scratch)
-        for index, url in enumerate(urls):
-            for key, value in (("path", f"u{index}"), ("url", url)):
-                _run_exact(["git", GIT_CONFIG, "-f", GITMODULES,
-                            f"submodule.u{index}.{key}", value], scratch)
-        # A gitlink names a commit nobody fetches here; any object id of the
-        # repository's own format will do, and this one is at hand.
-        oid = run(["git", "hash-object", GITMODULES], cwd=scratch)
-        for index in range(len(urls)):
-            run(["git", "update-index", "--add", "--cacheinfo",
-                 f"{GITLINK_MODE},{oid},u{index}"], cwd=scratch)
-        # One `init` per url, because git stops at the first it cannot
-        # resolve and each finding names its own.
-        return [_resolution_of(scratch, f"u{index}", working_tree)
-                for index in range(len(urls))]
+        hooks_off = _throwaway_made(scratch, repository, source, env)
+        with _asked_there(scratch.parent):
+            _throwaway_git(scratch, hooks_off, [
+                GIT_CONFIG, "remote.origin.url", _path_argument(base)], env)
+            for index, url in enumerate(urls):
+                for key, value in (("path", f"u{index}"), ("url", url)):
+                    _throwaway_git(scratch, hooks_off, [
+                        GIT_CONFIG, "-f", GITMODULES,
+                        f"submodule.u{index}.{key}", _path_argument(value)],
+                        env)
+            # A gitlink names a commit nobody fetches here; any object id of
+            # the repository's own format will do, and this one is at hand.
+            oid = _throwaway_git(scratch, hooks_off,
+                                 ["hash-object", GITMODULES], env)
+            for index in range(len(urls)):
+                _throwaway_git(scratch, hooks_off, [
+                    "update-index", "--add", "--cacheinfo",
+                    f"{GITLINK_MODE},{oid},u{index}"], env)
+            # One `init` per url, because git stops at the first it cannot
+            # resolve and each finding names its own.
+            return [_resolution_of(repository, f"u{index}", working_tree,
+                                   hooks_off, env)
+                    for index in range(len(urls))]
     finally:
-        shutil.rmtree(scratch, ignore_errors=True)
+        _throwaway_removed(scratch)
 
 
-def _resolution_of(scratch: Path, name: str,
-                   working_tree: Path | None) -> _Resolution:
+def _resolution_of(scratch: Path, name: str, working_tree: Path | None,
+                   hooks_off: list[str] | tuple = (),
+                   env: dict | None = None) -> _Resolution:
     """`name`'s url, as `git submodule init` copies it into the config, and
-    joined to `working_tree` when there is one."""
-    init = subprocess.run(["git", "submodule", "init", "-q", "--", name],
-                          cwd=scratch, capture_output=True, check=False)
+    joined to `working_tree` when there is one. `hooks_off` and `env` are
+    `_resolved`'s, for its throwaway repository `scratch` (#1083)."""
+    init = subprocess.run(["git", *hooks_off, "submodule", "init", "-q",
+                           "--", name],
+                          cwd=scratch, env=env, capture_output=True,
+                          check=False)
     if init.returncode:
         return _Resolution(None, _one_line(init.stderr.decode(
             errors="replace")))
-    url = _config_value(scratch, f"submodule.{name}.url")
+    url = _config_value(scratch, f"submodule.{name}.url", env)
     if working_tree is None or url is None:
         return _Resolution(url)
     # Not normalised: `..` after a symlink is the disk's to resolve, and
@@ -7750,8 +7779,8 @@ def _relative_url_findings(plan: Plan, source: Source, tree: list,
     urls = [url for _, _, url in kept]
     found, alike, from_the_leg = [], [], {}
     for (path, entry, url), here, there in zip(
-            kept, _resolved(base, urls, working_tree),
-            _resolved(remote, urls)):
+            kept, _resolved(base, urls, working_tree, source),
+            _resolved(remote, urls, None, source)):
         if here.same_as(there):
             alike.append(f"{_spelled(url)} of {_spelled(path)}, {there}")
             from_the_leg[path] = (remote, there.url)
@@ -7854,7 +7883,8 @@ def _on_this_disk(url: str) -> bool:
         os.name == "nt" or DRIVE_RE.match(path) is None)
 
 
-def _answers(urls: list[str]) -> list[tuple[str, str | None]]:
+def _answers(urls: list[str], source: Source | None = None
+             ) -> list[tuple[str, str | None]]:
     """`(expanded, said)` for each of `urls`: the url as git here expands it
     (`git ls-remote --get-url`, which contacts nothing) and, where that is
     on this machine's disk, None when `git ls-remote` reaches a repository
@@ -7865,31 +7895,38 @@ def _answers(urls: list[str]) -> list[tuple[str, str | None]]:
     its questions, so that no repository's own config around this process
     rewrites a url as the assembly's clone would not; and under
     ON_THIS_DISK_ONLY, so that nothing a config could do sends git to a
-    network. Each url as the bytes it spells (`_path_argument`, #653)."""
-    scratch = Path(tempfile.mkdtemp(prefix="openreposhape-ask-"))
-    env = {**os.environ, **ON_THIS_DISK_ONLY}
+    network. Each url as the bytes it spells (`_path_argument`, #653).
+    That repository is one of `check`'s throwaways, made as `_resolved`
+    makes its own (#1083): in the work directory `source` was opened in,
+    with no hook and under `_inherited_env()`, which leaves out a `GIT_DIR`
+    or a `GIT_CONFIG_PARAMETERS` around this process; `_Unasked` where git
+    cannot make it there."""
+    scratch = _throwaway("openreposhape-ask-", source)
+    repository = scratch / THROWAWAY_REPOSITORY
+    env = {**_inherited_env(), **ON_THIS_DISK_ONLY}
     try:
-        run(["git", "init", "-q", str(scratch)])
+        hooks_off = _throwaway_made(scratch, repository, source, env)
         out = []
-        for url in urls:
-            got = subprocess.run(["git", "ls-remote", "--get-url", "--",
-                                  _path_argument(url)],
-                                 cwd=scratch, env=env, capture_output=True,
-                                 check=False)
-            expanded = ("" if got.returncode else
-                        _git_path(got.stdout.rstrip(b"\r\n"))) or url
-            if not _on_this_disk(expanded):
-                out.append((expanded, None))
-                continue
-            listed = subprocess.run(["git", "ls-remote", "--",
-                                     _path_argument(url)],
-                                    cwd=scratch, env=env, capture_output=True,
-                                    check=False)
-            out.append((expanded, None if not listed.returncode
-                        else _first_words(listed)))
+        with _asked_there(scratch.parent):
+            for url in urls:
+                got = subprocess.run(["git", *hooks_off, "ls-remote",
+                                      "--get-url", "--", _path_argument(url)],
+                                     cwd=repository, env=env,
+                                     capture_output=True, check=False)
+                expanded = ("" if got.returncode else
+                            _git_path(got.stdout.rstrip(b"\r\n"))) or url
+                if not _on_this_disk(expanded):
+                    out.append((expanded, None))
+                    continue
+                listed = subprocess.run(["git", *hooks_off, "ls-remote", "--",
+                                         _path_argument(url)],
+                                        cwd=repository, env=env,
+                                        capture_output=True, check=False)
+                out.append((expanded, None if not listed.returncode
+                            else _first_words(listed)))
         return out
     finally:
-        shutil.rmtree(scratch, ignore_errors=True)
+        _throwaway_removed(scratch)
 
 
 def _first_words(failed: subprocess.CompletedProcess) -> str:
@@ -7906,7 +7943,8 @@ def _first_words(failed: subprocess.CompletedProcess) -> str:
 
 def _unanswered_url_findings(plan: Plan, tree: list,
                              registered: Registrations | str,
-                             from_the_leg: dict[str, tuple[str, str]]
+                             from_the_leg: dict[str, tuple[str, str]],
+                             source: Source | None = None
                              ) -> tuple[list[str], list[str]]:
     """`(findings, notes)` for the url of each submodule the plan keeps in
     the leg its `.gitmodules` goes to (`_kept_urls`), as that leg resolves
@@ -7917,7 +7955,9 @@ def _unanswered_url_findings(plan: Plan, tree: list,
     is its own resolution, and a relative one not in it is that function's
     finding and is not asked. The NOTE is the same whichever remotes a
     relative url was resolved from: a url on a network is not asked under
-    `--local-remote-dir` either, and `check` given one names it (#417)."""
+    `--local-remote-dir` either, and `check` given one names it (#417).
+    `source` is the one `check` opened, in whose work directory `_answers`
+    asks (#1083)."""
     leg, kept = _kept_urls(plan.entries, tree, registered)
     candidates = []
     for path, entry, url in kept:
@@ -7927,7 +7967,7 @@ def _unanswered_url_findings(plan: Plan, tree: list,
             candidates.append((path, entry, url, *from_the_leg[path]))
     on_disk = [each for each in candidates if _on_this_disk(each[4])]
     answers = dict(zip([each[0] for each in on_disk],
-                       _answers([each[4] for each in on_disk]))) \
+                       _answers([each[4] for each in on_disk], source))) \
         if on_disk else {}
     found, unasked = [], []
     for path, entry, url, remote, there in candidates:
@@ -7989,9 +8029,11 @@ def _answers_nothing(path: str, entry: str, leg: str, url: str,
 
 
 def _submodule_findings(plan: Plan, source: Source, tree: list,
-                        local_remote_dir: Path | None = None
+                        local_remote_dir: Path | None = None,
+                        unasked: _Unasked | None = None
                         ) -> tuple[tuple[list[str], list[str]],
-                                   tuple[list[str], list[str]], list[str]]:
+                                   tuple[list[str], list[str]], list[str],
+                                   _Unasked | None]:
     """`(findings, remediation)` for `submodule_plan_problems`, one FINDING
     each and SUBMODULE_REMEDIATION when there is one; the same for the urls
     of the submodules a leg keeps, each `_relative_url_findings` one and
@@ -8001,19 +8043,32 @@ def _submodule_findings(plan: Plan, source: Source, tree: list,
     after every finding. The two come back apart because `_entry_findings`
     lists the urls last, after the values #255 finds. `check` is where the
     person is told to fix the plan, so it says how, in the words `execute`'s
-    refusal would use one step later."""
+    refusal would use one step later.
+
+    THE URLS ARE ASKED IN THROWAWAY REPOSITORIES (#1083), as `check`'s other
+    questions to git are (#910), so they are asked as those are: none where
+    `unasked`, `_entry_findings`' `_Unasked`, says one could not be made or
+    asked in the work directory; and where one cannot be, those asked
+    before it, and none after it. The last value is the `_Unasked` that
+    stands for them, `unasked` where there was one already: one cause, one
+    finding."""
     registered = source.registered_submodules(tree)
     found = [f"FINDING {code}: {detail}" for code, detail
              in submodule_plan_problems(plan.entries, tree, registered)]
-    moved, notes, from_the_leg = _relative_url_findings(
-        plan, source, tree, registered, local_remote_dir)
-    unanswered, unasked = _unanswered_url_findings(
-        plan, tree, registered, from_the_leg)
+    moved, notes, unanswered, not_asked = [], [], [], []
+    if unasked is None:
+        try:
+            moved, notes, from_the_leg = _relative_url_findings(
+                plan, source, tree, registered, local_remote_dir)
+            unanswered, not_asked = _unanswered_url_findings(
+                plan, tree, registered, from_the_leg, source)
+        except _Unasked as exc:
+            unasked = exc
     return ((found, [SUBMODULE_REMEDIATION] if found else []),
             (moved + unanswered,
              ([RELATIVE_URL_REMEDIATION] if moved else [])
              + ([URL_ANSWERS_NOTHING_REMEDIATION] if unanswered else [])),
-            notes + unasked)
+            notes + not_asked, unasked)
 
 
 #: The answers that never extract an entry into a leg. A path answered
@@ -9290,6 +9345,10 @@ def _entry_findings(plan: Plan, source: Source,
     asked of git first, in a throwaway repository of its own.
 
     `check`'S THROWAWAY REPOSITORIES (#910) are made in the work directory.
+    The first is the split's own `git clone` of the source (#1083), asked as
+    `execute` makes it, so that one this git will not make is said before
+    any leg exists, and `_resolved` and `_answers` make the submodule urls'
+    own there (#1083).
     Each but #183's symlink probe is made with the source's object format
     and runs no hook of this machine's; where git cannot make or ask one,
     `adopt-git-unasked` says why, once, in the place of the questions asked
@@ -9342,12 +9401,15 @@ def _entry_findings(plan: Plan, source: Source,
     """
     tree = source.tree()
     targets = symlink_targets(source, tree)
-    # Which of the source's paths git holds at all, asked of git first, in a
-    # throwaway repository of its own: one it refuses is a fact of the
-    # source, said with the others (#910). Where that repository cannot be
-    # made or asked, neither can the others `check` makes in the same work
-    # directory, and `_Unasked.said` says why, once, in their place below.
+    # The split's own `git clone` of the source, asked first, in the work
+    # directory, as `execute` makes it after both legs exist (#1083); then
+    # which of the source's paths git holds at all, in a throwaway
+    # repository of its own: one it refuses is a fact of the source, said
+    # with the others (#910). Where either cannot be made or asked, none of
+    # the others `check` makes in the same work directory is asked, and
+    # `_Unasked.said` says why, once, in their place below.
     try:
+        _split_clone_asked(source)
         refused, unasked = _paths_git_refuses(source, tree), None
     except _Unasked as exc:
         refused, unasked = [], exc
@@ -9362,8 +9424,8 @@ def _entry_findings(plan: Plan, source: Source,
     # digest the clone `plan` read it from recomputes otherwise (#449).
     digest_findings, pin_notes = _pin_digest_findings(plan)
     findings += digest_findings
-    (split, split_remediation), (moved, moved_remediation), notes = \
-        _submodule_findings(plan, source, tree, local_remote_dir)
+    (split, split_remediation), (moved, moved_remediation), notes, unasked = \
+        _submodule_findings(plan, source, tree, local_remote_dir, unasked)
     unwritable_findings, unwritable_remediation = _value_findings(plan)
     value_findings, value_remediation = _manifest_findings(plan)
     field_findings, field_remediation = _plan_field_findings(plan)
@@ -10897,8 +10959,23 @@ def _refuse_symlinks_checked_out_as_files(plan: Plan, source: Source,
 #   git will not take there (`a..b`) stops no question. Read, it stopped
 #   them all as `adopt-git-unasked`, which `execute` refused, though the
 #   split's `git clone` of the source does not stop at it on git 2.55,
-#   which CI runs (CI on #1031). On git 2.43 that clone stops at it, a
-#   clone `check` does not make.
+#   which CI runs (CI on #1031). On git 2.43 that clone stops at it.
+# * THE SPLIT'S OWN CLONE (#1083). So `check` makes that clone too, first
+#   (`_split_clone_asked`): what this git's `git clone` of the source makes
+#   of this machine's settings is that clone's to say, and no `git init`'s.
+#   Measured on 2a119f28, with git 2.43 and `init.defaultBranch = a..b`:
+#   `check` said `plan ok`, and `execute` made both legs and stopped
+#   extracting the spec leg, `fatal: invalid branch name`, with nothing
+#   rolled back; `GIT_DEFAULT_HASH=bogus` stops every clone the same way.
+#   Asked here, either is `adopt-git-unasked`, which `execute` refuses
+#   before either leg, and on a git whose clone takes the name, as 2.55's
+#   does, it is no finding, and every question is asked.
+# * THE SUBMODULE URLS' OWN (#1083). `_resolved` and `_answers` ask git how
+#   a kept submodule's url resolves and whether it answers, each in a
+#   repository of its own, made the same way here: their plain `git init`
+#   in `TMPDIR` stopped `check` with "a git or gh command failed" under
+#   either setting, and `_resolved`'s `update-index` ran this machine's
+#   `post-index-change` hook.
 
 #: `check`'s finding, and the code of `execute`'s refusal, for the paths of
 #: the source commit that this machine's git will not hold in an index, and
@@ -10924,6 +11001,9 @@ THROWAWAY_EMPTY = "empty"
 #: The branch each throwaway repository's `git init` names (`-b`), so that it
 #: reads no `init.defaultBranch`, as the split's own `git init`s read none.
 THROWAWAY_BRANCH = "throwaway"
+#: The repository in each throwaway directory of `_resolved`'s, `_answers`'
+#: and `_split_clone_asked`'s, beside `THROWAWAY_EMPTY` (#1083).
+THROWAWAY_REPOSITORY = "repository"
 
 
 class _Unasked(Refusal):
@@ -11041,6 +11121,66 @@ def _throwaway_removed(scratch: Path) -> None:
             _writable_then_removed(remove, target, error)
 
     shutil.rmtree(scratch, **{REMOVAL_HANDLER: removed})
+
+
+def _throwaway_git(scratch: Path, hooks_off: list[str], args: list,
+                   env: dict) -> str:
+    """`git <args>` in the throwaway repository in `scratch`, with
+    `hooks_off` (`_throwaway_made`'s) and in `env`: its stdout, stripped, or,
+    where git fails, the `_Unasked` that says so in git's words, as
+    `git_out` spells them (#1083). A value git spelled is handed to it as
+    the bytes it spells (`_path_argument`)."""
+    repository = scratch / THROWAWAY_REPOSITORY
+    done = subprocess.run(["git", *hooks_off, *args], cwd=str(repository),
+                          env=env, capture_output=True, check=False)
+    if done.returncode:
+        raise _Unasked(scratch.parent, (
+            f"`git {args[0]}` in {shown_path(repository)} exited "
+            f"{done.returncode}: " + spelled_as_git_out(
+                done.stderr.decode("utf-8", "replace").strip())))
+    return done.stdout.decode("utf-8", "replace").strip()
+
+
+def _split_clone_asked(source: Source) -> None:
+    """The split's own `git clone` of the source, made in a throwaway
+    directory in the work directory and removed again (#1083): nothing
+    where git makes it, and the `_Unasked` that says why, in git's words,
+    where it does not.
+
+    `execute`'s first act after it makes both legs is `_extract_leg`'s `git
+    clone` of the source, and no question `check` asked was that clone.
+    git 2.43's reads `init.defaultBranch` and stops at a name it will not
+    take, `a..b`, and every clone stops at a `GIT_DEFAULT_HASH` naming no
+    hash, where each throwaway `git init`, which names its branch and the
+    source's format, makes its repository. So `check` said `plan ok`, and
+    `execute` stopped after both legs existed. Asked as that clone is made,
+    the answer is the split's on every version of git: with `FILE_PROTOCOL`,
+    as `execute` gives each of its clones, and the template this machine's
+    git copies in, as `_extract_leg`'s clone takes it. Left out is only what
+    the other questions ask, or what would run here: `--no-checkout`, as the
+    rehearsal asks what a checkout makes of each file and
+    `_paths_git_refuses` which paths git holds at all; `--shared`, so no
+    object is copied; and, as in every throwaway, any hook of this
+    machine's (`core.hooksPath` an empty directory) and the environment
+    `_inherited_env()` leaves out."""
+    scratch = _throwaway("openreposhape-clone-", source)
+    try:
+        empty = scratch / THROWAWAY_EMPTY
+        with _asked_there(scratch.parent):
+            empty.mkdir()
+            cloned = subprocess.run(
+                ["git", *FILE_PROTOCOL, "-c", f"core.hooksPath={empty}",
+                 "clone", "-q", "--no-checkout", "--shared",
+                 str(source.path), str(scratch / THROWAWAY_REPOSITORY)],
+                cwd=str(scratch), env=_inherited_env(), capture_output=True,
+                check=False)
+        if cloned.returncode:
+            raise _Unasked(scratch.parent, (
+                f"the split's `git clone` of the source exited "
+                f"{cloned.returncode} there: " + spelled_as_git_out(
+                    cloned.stderr.decode("utf-8", "replace").strip())))
+    finally:
+        _throwaway_removed(scratch)
 
 
 def _paths_git_refuses(source: Source, tree: list) -> list[str]:

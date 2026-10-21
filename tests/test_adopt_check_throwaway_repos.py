@@ -29,6 +29,20 @@ plain `git init`, which runs none), a path git refuses is
 `plan-path-git-refuses`, a repository git cannot make or ask there is
 `adopt-git-unasked`, which says why, and the probe's failure stands for its
 finding, with a NOTE.
+
+#1083 followed, measured on 2a119f28 with git 2.43:
+
+* `check` made no clone of the source, and the split's first act after it
+  makes both legs is one. git 2.43's `git clone` stops at an
+  `init.defaultBranch` it will not take (`a..b`), and every one at a
+  `GIT_DEFAULT_HASH` naming no hash, so `check` said `plan ok` and
+  `execute` stopped after the legs existed. `check` now makes the split's
+  own clone first, and one this git will not make is `adopt-git-unasked`.
+* `_resolved` and `_answers`, which ask how a kept submodule's url resolves
+  and whether it answers, made their repositories in `TMPDIR` with a plain
+  `git init`, so either setting stopped `check` with "a git or gh command
+  failed", and `_resolved`'s `update-index` ran this machine's
+  `post-index-change` hook. They are made as the others are now.
 """
 
 from __future__ import annotations
@@ -50,6 +64,9 @@ from conftest import (ADOPT, WINDOWS_SKIP, appended_to_command_scope,
 from test_adopt_nested_attributes import (KEEP_GITHUB, ROOT, ROOT_ATTRIBUTES,
                                           SOURCE, YML_CRLF, adoption_plan,
                                           committed_raw, github)
+from test_adopt_relative_submodule_url import (BOTH_IN_CODE, EXTRA, SIBLING,
+                                               source_with)
+from test_adopt_relative_submodule_url import planned as planned_with_urls
 from test_adopt_root_symlinks import (GITHUB, OUTSIDE_CI, WORKFLOW, climbs,
                                       finding, symlink_findings)
 from test_adopt_root_symlinks import links_as_links  # noqa: F401
@@ -68,9 +85,13 @@ TEXT_EOL_LF = b"* text eol=lf\n"
 #: How `plan-file-reencoded` begins for the one CRLF file the plan keeps.
 KEPT_CRLF = ("the plan keeps 1 file in the assembly root, and this machine's "
              "`git add` would store it as other bytes than its blob")
-#: The prefixes of the throwaway repositories of #530 and #654.
+#: The prefixes of the throwaway repositories of #530 and #654, and of the
+#: split's own clone (#1083).
 THROWAWAY_PREFIXES = ("openreposhape-attributes-",
-                      "openreposhape-reencoded-")
+                      "openreposhape-reencoded-", "openreposhape-clone-")
+#: The prefixes of `_resolved`'s and `_answers`' (#1083).
+URL_PREFIXES = ("openreposhape-url-", "openreposhape-ask-")
+RELATIVE_URL = "plan-submodule-relative-url"
 #: The hooks the counting `core.hooksPath` holds: every one git runs where
 #: an index, a checkout or a ref is written, or a commit made.
 HOOKS = ("post-index-change", "post-checkout", "reference-transaction",
@@ -299,17 +320,9 @@ def test_the_rehearsal_asks_nothing_more_of_a_tree_git_refuses(adopter,
 # L1-92: in the work directory
 # ---------------------------------------------------------------------------
 
-def test_each_throwaway_repository_is_made_in_the_work_directory(
-        adopter, monkeypatch, tmp_path):
-    """The source keeps a nested `.gitattributes` above a pinned copy and
-    its own root one, so all three questions are asked: each throwaway
-    repository is made in the work directory the source was opened in, not
-    in `TMPDIR`, and none is left there."""
-    plan = adopter.Plan.load(adoption_plan(tmp_path, github(YML_CRLF),
-                                           KEEP_GITHUB))
-    work = tmp_path / "work"
-    work.mkdir()
-    opened = plan.open_source(None, work)
+def recording_where_made(adopter, monkeypatch) -> list:
+    """`(prefix, parent)` of each directory `adopt-project.py` makes with
+    `tempfile.mkdtemp` from here on, appended as it is made."""
     made = []
 
     def mkdtemp(suffix=None, prefix=None, dir=None):
@@ -320,11 +333,30 @@ def test_each_throwaway_repository_is_made_in_the_work_directory(
     monkeypatch.setattr(adopter, "tempfile", SimpleNamespace(
         mkdtemp=mkdtemp, gettempdir=tempfile.gettempdir,
         TemporaryDirectory=tempfile.TemporaryDirectory))
+    return made
+
+
+def asked_where(made: list, prefixes: tuple) -> list:
+    return [(prefix, parent) for prefix, parent in made if prefix in prefixes]
+
+
+def test_each_throwaway_repository_is_made_in_the_work_directory(
+        adopter, monkeypatch, tmp_path):
+    """The source keeps a nested `.gitattributes` above a pinned copy and
+    its own root one, so all three questions are asked, after the split's
+    own clone of the source (#1083): each throwaway repository is made in
+    the work directory the source was opened in, not in `TMPDIR`, and none
+    is left there."""
+    plan = adopter.Plan.load(adoption_plan(tmp_path, github(YML_CRLF),
+                                           KEEP_GITHUB))
+    work = tmp_path / "work"
+    work.mkdir()
+    opened = plan.open_source(None, work)
+    made = recording_where_made(adopter, monkeypatch)
     found, _, _ = adopter._entry_findings(plan, opened)
     assert any(line.startswith("FINDING plan-nested-attributes: ")
                for line in found), found
-    asked = [(prefix, parent) for prefix, parent in made
-             if prefix in THROWAWAY_PREFIXES]
+    asked = asked_where(made, THROWAWAY_PREFIXES)
     assert {prefix for prefix, _ in asked} == set(THROWAWAY_PREFIXES)
     assert {parent for _, parent in asked} == {work.resolve()}
     assert list(work.iterdir()) == []
@@ -411,10 +443,12 @@ NO_PROBE_NOTE = "NOTE `check` could not ask git whether it checks a symlink"
 
 def test_a_probe_git_will_not_make_stands_for_its_finding(
         links_as_links, tmp_path):  # noqa: F811
-    """`GIT_DEFAULT_HASH=bogus` makes the probe's `git init` fail, and only
-    it: each throwaway repository names its format. `check` prints the
-    finding the probe stands for, as it does with no such variable, and
-    says why in a NOTE."""
+    """`GIT_DEFAULT_HASH=bogus` makes the probe's `git init` fail, and of
+    the `git init`s only it: each throwaway repository names its format.
+    `check` prints the finding the probe stands for, as it does with no
+    such variable, and says why in a NOTE. (The split's own `git clone`
+    stops at that variable too, on git 2.43, which `adopt-git-unasked`
+    says beside them: the rows of #1083 below.)"""
     result = checked(linked_github_plan(tmp_path),
                      {"GIT_DEFAULT_HASH": "bogus"})
     assert "REFUSED" not in result.stderr, result.stderr
@@ -520,21 +554,70 @@ def test_a_repository_git_cannot_make_is_one_finding_that_says_why(
     assert list(work.iterdir()) == []
 
 
-def test_a_default_branch_git_will_not_take_stops_no_question(tmp_path):
-    """Each throwaway `git init` names its branch, as the split's own `git
-    init -b` does, so `init.defaultBranch = a..b` stops none of `check`'s
-    questions, on any git: the CRLF file the plan keeps is found. Read, it
-    was `adopt-git-unasked`, which `execute` refused, though git 2.55's
-    `git clone`, which CI runs, does not stop at it (CI on #1031)."""
+def this_gits_clone(base: Path, env: dict) -> subprocess.CompletedProcess:
+    """This machine's `git clone` of a repository of its own, under `env`:
+    whether it makes one there is its version's to say (CI on #1031)."""
+    source = base / "clone-asked-of"
+    git("init", "-q", "-b", "main", str(source), cwd=base)
+    return subprocess.run(["git", "clone", "-q", "--no-checkout", "--shared",
+                           str(source), str(base / "clone-asked")],
+                          env={**os.environ, **env}, capture_output=True,
+                          check=False)
+
+
+def unasked_clone(work: Path, code: int, said: str) -> str:
+    """`adopt-git-unasked` for a split's clone git ended with `code` and
+    `said` in `work`."""
+    return (f"FINDING {UNASKED}: "
+            + UNASKED_OPENS.format(os.path.realpath(work))
+            + f"the split's `git clone` of the source exited {code} there: "
+            + said + UNASKED_ENDS)
+
+
+def test_a_default_branch_is_asked_of_the_splits_own_clone(tmp_path):
+    """`init.defaultBranch = a..b`: `check` answers as the split's own `git
+    clone` of the source does on this git (#1083). git 2.43's stops at it,
+    `fatal: invalid branch name`, and `check` says so as one
+    `adopt-git-unasked`, where 2a119f28 said `plan ok` and `execute` then
+    stopped after both legs existed. git 2.55's takes it (CI on #1031), and
+    there no `git init` stops a question: each names its branch, and the
+    CRLF file the plan keeps is found."""
     plan = planned(a_source(tmp_path, files={ROOT_ATTRIBUTES: TEXT_EOL_LF,
                                              NOTES: CRLF}),
                    tmp_path, {NOTES: ROOT})
     work = tmp_path / "work"
-    result = checked(plan, bad_default_branch(tmp_path), "--work-dir",
-                     str(work))
+    env = bad_default_branch(tmp_path)
+    clone = this_gits_clone(tmp_path, env)
+    result = checked(plan, env, "--work-dir", str(work))
     assert "REFUSED" not in result.stderr, result.stderr
     assert result.returncode == 1, result.stderr
-    assert codes(result) == [REENCODED_FILES], result.stderr
+    if clone.returncode == 0:
+        assert codes(result) == [REENCODED_FILES], result.stderr
+    else:
+        assert finding_lines(result) == [unasked_clone(
+            work, clone.returncode, clone.stderr.decode().strip())]
+    assert list(work.iterdir()) == []
+
+
+def test_a_default_branch_git_will_not_take_stops_no_throwaway_init(
+        adopter, monkeypatch, tmp_path):
+    """Each throwaway `git init` names its branch, as the split's own `git
+    init -b` does, so `init.defaultBranch = a..b` stops none of the
+    questions asked in them, on any git: asked of the rehearsal, which
+    clones nothing, the CRLF file the plan keeps is found. Read, it was
+    `adopt-git-unasked`, which `execute` refused, though git 2.55's `git
+    clone`, which CI runs, does not stop at it (CI on #1031)."""
+    plan = adopter.Plan.load(planned(
+        a_source(tmp_path, files={ROOT_ATTRIBUTES: TEXT_EOL_LF, NOTES: CRLF}),
+        tmp_path, {NOTES: ROOT}))
+    work = tmp_path / "work"
+    work.mkdir()
+    opened = plan.open_source(None, work)
+    for name, value in bad_default_branch(tmp_path).items():
+        monkeypatch.setenv(name, value)
+    found = adopter._reencoded_files_findings(plan, opened, opened.tree())
+    assert len(found) == 1, found
+    assert KEPT_CRLF in found[0], found[0]
     assert list(work.iterdir()) == []
 
 
@@ -614,3 +697,341 @@ def test_a_work_directory_nothing_can_be_made_in_says_so_once(
     assert codes(result) == [WORK_DIR_UNWRITABLE], result.stderr
     assert UNMADE_NOTE.format(os.path.realpath(unwritable_work)) in \
         result.stdout.splitlines(), result.stdout
+
+
+# ---------------------------------------------------------------------------
+# #1083 (a): the split's own clone of the source
+# ---------------------------------------------------------------------------
+
+#: What the stub `git` of `refusing_clone` says for every `git clone`.
+REFUSED_CLONE = "fatal: w1083: no clone can be made here"
+
+
+def refusing_clone(base: Path) -> dict:
+    """The environment of a git that clones nothing: a stub first on PATH
+    refuses each `git clone` and hands any other command to the real git.
+    Which setting stops a clone is git's version's to say (CI on #1031), so
+    the rows below do not lean on one."""
+    stubs = base / "clone-stubs"
+    stubs.mkdir()
+    stub = stubs / "git"
+    stub.write_bytes("\n".join([
+        "#!/bin/sh",
+        'for arg in "$@"; do',
+        '  [ "$arg" = clone ] || continue',
+        f'  echo "{REFUSED_CLONE}" >&2',
+        "  exit 128",
+        "done",
+        'exec "$REAL_GIT" "$@"', ""]).encode("ascii"))
+    stub.chmod(0o755)
+    return {"PATH": str(stubs) + os.pathsep + os.environ["PATH"],
+            "REAL_GIT": shutil.which("git")}
+
+
+@WINDOWS_SKIP  # a `#!` stub named `git` first on PATH
+def test_a_clone_git_will_not_make_is_one_finding_that_says_why(tmp_path):
+    """The split's first act after it makes both legs is its `git clone` of
+    the source, and `check` makes that clone first, in the work directory:
+    where git will not make it, that is one `adopt-git-unasked` in git's
+    words, the questions after it are not asked, and nothing is left there.
+    On 2a119f28 `check` cloned nothing, and said `plan ok`."""
+    plan = planned(a_source(tmp_path, files={ROOT_ATTRIBUTES: TEXT_EOL_LF,
+                                             NOTES: CRLF}),
+                   tmp_path, {NOTES: ROOT})
+    work = tmp_path / "work"
+    result = checked(plan, refusing_clone(tmp_path), "--work-dir", str(work))
+    assert "REFUSED" not in result.stderr, result.stderr
+    assert result.returncode == 1, result.stderr
+    assert finding_lines(result) == [unasked_clone(work, 128, REFUSED_CLONE)]
+    assert list(work.iterdir()) == []
+
+
+@WINDOWS_SKIP  # a `#!` stub named `git` first on PATH
+def test_execute_refuses_a_clone_git_will_not_make_before_any_leg(
+        adopter, monkeypatch, tmp_path):
+    """On 2a119f28 `execute` made both legs, and its first clone of the
+    source then stopped it, with nothing rolled back."""
+    plan = planned(a_source(tmp_path), tmp_path, {})
+    for name, value in refusing_clone(tmp_path).items():
+        monkeypatch.setenv(name, value)
+    monkeypatch.setattr(adopter, "_require_filter_repo", lambda: None)
+    remotes = tmp_path / "remotes"
+    with pytest.raises(adopter.Refusal) as caught:
+        adopter.cmd_execute(Namespace(
+            plan=str(plan), source=None, local_remote_dir=remotes,
+            allow_empty_leg=[], yes=True, work_dir=tmp_path / "work"))
+    assert caught.value.code == UNASKED
+    assert REFUSED_CLONE in caught.value.detail
+    assert "no leg repository was created" in caught.value.remediation
+    assert not remotes.exists()
+
+
+def test_the_clone_is_asked_with_the_protocol_setting_execute_gives_it(
+        tmp_path):
+    """`protocol.file.allow = never` in this machine's config refuses a
+    `git clone` of a path, and `execute` gives each of its clones
+    `-c protocol.file.allow=always` (`FILE_PROTOCOL`), so `check` asks the
+    split's clone with it too, and finds nothing: a control, `plan ok` on
+    2a119f28 as here."""
+    plan = planned(a_source(tmp_path), tmp_path, {})
+    work = tmp_path / "work"
+    result = checked(plan, config_with(tmp_path, '[protocol "file"]',
+                                       "\tallow = never"),
+                     "--work-dir", str(work))
+    assert result.returncode == 0, result.stderr
+    assert "plan ok" in result.stdout
+    assert list(work.iterdir()) == []
+
+
+@WINDOWS_SKIP  # a `#!` stub named `git` first on PATH
+def test_no_url_is_asked_once_the_clone_cannot_be_made(tmp_path):
+    """Where the split's clone cannot be made, that is the one finding, and
+    no url question is asked after it, in a repository of the same work
+    directory, as no other is (#910): one cause, one finding. On 2a119f28
+    `check` cloned nothing and named the relative url alone."""
+    work = tmp_path / "work"
+    result = checked(url_plan(tmp_path), refusing_clone(tmp_path),
+                     "--work-dir", str(work))
+    assert "REFUSED" not in result.stderr, result.stderr
+    assert finding_lines(result) == [unasked_clone(work, 128, REFUSED_CLONE)]
+    assert list(work.iterdir()) == []
+
+
+def test_execute_refuses_a_default_branch_its_clone_will_not_take(
+        adopter, monkeypatch, tmp_path):
+    """`init.defaultBranch = a..b`, on a git whose `git clone` stops at it,
+    as 2.43's does: `execute` refuses it before any leg exists, where on
+    2a119f28 it made both and stopped extracting the spec leg (#1083)."""
+    plan = planned(a_source(tmp_path), tmp_path, {})
+    env = bad_default_branch(tmp_path)
+    if this_gits_clone(tmp_path, env).returncode == 0:
+        pytest.skip("this git's `git clone` takes `init.defaultBranch = "
+                    "a..b`, as 2.55's does: the split clones there")
+    for name, value in env.items():
+        monkeypatch.setenv(name, value)
+    monkeypatch.setattr(adopter, "_require_filter_repo", lambda: None)
+    remotes = tmp_path / "remotes"
+    with pytest.raises(adopter.Refusal) as caught:
+        adopter.cmd_execute(Namespace(
+            plan=str(plan), source=None, local_remote_dir=remotes,
+            allow_empty_leg=[], yes=True, work_dir=tmp_path / "work"))
+    assert caught.value.code == UNASKED
+    assert "invalid branch name" in caught.value.detail
+    assert not remotes.exists()
+
+
+# ---------------------------------------------------------------------------
+# #1083 (b): the submodule urls' own throwaway repositories
+# ---------------------------------------------------------------------------
+
+def url_plan(base: Path) -> Path:
+    """A plan that keeps in the code leg a submodule whose url is relative,
+    which `_resolved` resolves from the source and from the leg, and one
+    whose url is an absolute path on this disk, which `_answers` asks."""
+    dependency = base / "dependency"
+    source = source_with(base, SIBLING, second=dependency.as_posix(),
+                         dependency=dependency)
+    return planned_with_urls(source, base,
+                             answers={**BOTH_IN_CODE, EXTRA: "code"})
+
+
+def asked_with_urls(adopter, base: Path):
+    """`(plan, opened, work)`: `url_plan`, opened in a work directory."""
+    plan = adopter.Plan.load(url_plan(base))
+    work = base / "work"
+    work.mkdir()
+    return plan, plan.open_source(None, work), work
+
+
+def the_clone_as_2_55_makes_it(adopter, monkeypatch) -> None:
+    """The split's own clone made, as git 2.55's `git clone` makes it under
+    an `init.defaultBranch` 2.43's stops at (CI on #1031), so that the rows
+    below ask what the urls' own repositories make of the setting on any
+    git. (`raising=False`: 2a119f28 makes no such clone.)"""
+    monkeypatch.setattr(adopter, "_split_clone_asked", lambda _source: None,
+                        raising=False)
+
+
+#: `(what this machine's git is given, how the row is named)`: each stopped
+#: `check` with "a git or gh command failed" at `_resolved`'s `git init -q
+#: <TMPDIR>/openreposhape-url-*` on 2a119f28.
+URL_SETTINGS = [
+    pytest.param(bad_default_branch, id="init-default-branch-a..b"),
+    pytest.param(lambda _base: {"GIT_DEFAULT_HASH": "bogus"},
+                 id="git-default-hash-bogus"),
+]
+
+
+@pytest.mark.parametrize("setting", URL_SETTINGS)
+def test_the_submodule_urls_are_asked_whatever_the_setting(
+        adopter, monkeypatch, tmp_path, setting):
+    """Each of `_resolved`'s and `_answers`' repositories names its branch
+    and the source's format, as every throwaway does: what `check` says of
+    the urls under the setting is what it says without it."""
+    plan, opened, work = asked_with_urls(adopter, tmp_path)
+    wanted = adopter._entry_findings(plan, opened)
+    assert [line.split(" ", 2)[1].rstrip(":") for line in wanted[0]] == [
+        RELATIVE_URL], wanted[0]
+    the_clone_as_2_55_makes_it(adopter, monkeypatch)
+    for name, value in setting(tmp_path).items():
+        monkeypatch.setenv(name, value)
+    assert adopter._entry_findings(plan, opened) == wanted
+    assert list(work.iterdir()) == []
+
+
+def test_the_submodule_urls_are_asked_in_the_work_directory(
+        adopter, monkeypatch, tmp_path):
+    """`_resolved`'s and `_answers`' repositories are made in the work
+    directory the source was opened in, where 2a119f28 made them in
+    `TMPDIR`, and none is left there."""
+    plan, opened, work = asked_with_urls(adopter, tmp_path)
+    made = recording_where_made(adopter, monkeypatch)
+    adopter._entry_findings(plan, opened)
+    asked = asked_where(made, URL_PREFIXES)
+    assert {prefix for prefix, _ in asked} == set(URL_PREFIXES), made
+    assert {parent for _, parent in asked} == {work.resolve()}
+    assert list(work.iterdir()) == []
+
+
+@pytest.mark.parametrize("configured", [
+    pytest.param(in_the_global_config, id="global-config"),
+    pytest.param(in_the_command_scope, id="git-config-count")])
+def test_no_hook_of_this_machines_runs_where_the_urls_are_asked(
+        tmp_path, configured):
+    """On 2a119f28 `_resolved`'s `update-index` ran the counting
+    `post-index-change` hook twice in this `check`, once for each side a
+    relative url is resolved from."""
+    plan = url_plan(tmp_path)
+    hooks, log = counting_hooks(tmp_path)
+    result = checked(plan, configured(tmp_path, hooks))
+    assert "REFUSED" not in result.stderr, result.stderr
+    assert codes(result) == [RELATIVE_URL], result.stderr
+    assert runs(log) == []
+
+
+def test_a_url_question_git_cannot_ask_is_one_finding_after_the_rest(
+        adopter, monkeypatch, tmp_path):
+    """Where `_answers`' repository cannot be made or asked, that is
+    `adopt-git-unasked`, once, as for every throwaway: the relative url
+    `_resolved` answered before it is still said, and no question after it
+    is asked, nor the NOTE of urls `_answers` would not ask. On 2a119f28 it
+    was a `Refusal` out of `check`."""
+    plan, opened, work = asked_with_urls(adopter, tmp_path)
+
+    def unasked(_urls, _source=None):
+        raise adopter._Unasked(work, "w1083: not here")
+
+    monkeypatch.setattr(adopter, "_answers", unasked)
+    asked = []
+    monkeypatch.setattr(adopter, "_asked_in_throwaways",
+                        lambda *args: asked.append(args) or ([], []))
+    try:
+        found, _, notes = adopter._entry_findings(plan, opened)
+    except adopter.Refusal as refusal:
+        pytest.fail(f"REFUSED {refusal.code}: {refusal.detail}")
+    assert [line.split(" ", 2)[1].rstrip(":") for line in found] == [
+        UNASKED, RELATIVE_URL], found
+    assert "w1083: not here" in found[0]
+    assert asked == []
+    assert not any("did not ask whether the url" in note for note in notes)
+
+
+def test_a_step_git_fails_in_a_url_repository_is_unasked_in_its_words(
+        adopter, tmp_path):
+    """A step git fails in `_resolved`'s or `_answers`' repository once it
+    is made is `adopt-git-unasked` in git's words, as one in the rehearsal
+    is, and never "a git or gh command failed" (`_throwaway_git`)."""
+    work = tmp_path / "work"
+    work.mkdir()
+    scratch = work / "scratch"
+    scratch.mkdir()
+    env = adopter._inherited_env()
+    hooks_off = adopter._throwaway_made(
+        scratch, scratch / adopter.THROWAWAY_REPOSITORY, None, env)
+    assert adopter._throwaway_git(scratch, hooks_off,
+                                  ["rev-parse", "--is-inside-work-tree"],
+                                  env) == "true"
+    with pytest.raises(adopter._Unasked) as caught:
+        adopter._throwaway_git(scratch, hooks_off, ["hash-object", "absent"],
+                               env)
+    assert caught.value.code == UNASKED
+    assert caught.value.where == work
+    assert caught.value.why.startswith("`git hash-object` in "), \
+        caught.value.why
+    assert "exited 128: fatal: " in caught.value.why, caught.value.why
+    assert "absent" in caught.value.why, caught.value.why
+
+
+def test_a_work_directory_nothing_can_be_made_in_asks_no_url(
+        tmp_path, unwritable_work):  # noqa: F811
+    """No url question is asked in a work directory nothing can be made in:
+    `adopt-work-dir-unwritable` is the one finding, as for every other
+    throwaway (#524, #910), where 2a119f28 asked the urls in `TMPDIR`, and
+    one `_Unasked` more would have stopped `check`."""
+    plan = url_plan(tmp_path)
+    result = checked(plan, None, "--work-dir", str(unwritable_work))
+    assert "Traceback" not in result.stderr, result.stderr
+    assert "REFUSED" not in result.stderr, result.stderr
+    assert codes(result) == [WORK_DIR_UNWRITABLE], result.stderr
+    assert UNMADE_NOTE.format(os.path.realpath(unwritable_work)) in \
+        result.stdout.splitlines(), result.stdout
+
+
+# ---------------------------------------------------------------------------
+# #1083 (c): a work directory not made yet, and case twins
+# ---------------------------------------------------------------------------
+
+def test_a_work_directory_not_made_yet_is_made_and_asked_in(adopter,
+                                                           tmp_path):
+    """r1031's NIT-R2-2: a `Source` opened outside a command, on a work
+    directory that is not there, is asked as one `check --work-dir` makes
+    (`_throwaway`'s `_made_0755`): the CRLF file is found, there is no NOTE
+    of a directory that could not be made, and the directory is left there,
+    empty. Before #910 its questions were asked in `TMPDIR`."""
+    plan = adopter.Plan.load(planned(
+        a_source(tmp_path, files={ROOT_ATTRIBUTES: TEXT_EOL_LF, NOTES: CRLF}),
+        tmp_path, {NOTES: ROOT}))
+    work = tmp_path / "not-made" / "yet"
+    found, _, notes = adopter._entry_findings(
+        plan, plan.open_source(None, work))
+    assert [line.split(" ", 2)[1].rstrip(":") for line in found] == [
+        REENCODED_FILES], found
+    assert not any(note.startswith(
+        "NOTE `check` could not make a throwaway repository")
+        for note in notes), notes
+    assert list(work.iterdir()) == []
+
+
+#: Two paths one case-insensitive disk holds as one file.
+TWINS = ("Notes.md", "notes.md")
+
+
+def test_case_twins_are_both_held_under_core_ignorecase(adopter, monkeypatch,
+                                                        tmp_path):
+    """`_paths_git_refuses` hands every path of the source commit to `git
+    update-index --index-info`, and names `plan-path-git-refuses` for one
+    the index then lacks. On a case-insensitive disk `git init` sets
+    `core.ignorecase=true`, and `git add` will not hold case twins. That
+    question reads no file of the disk, only the setting, which this row
+    sets on a disk that holds both twins: the control shows git honours it
+    (`git add` holds one twin at most), and `--index-info` still holds
+    both, so neither is named."""
+    source = a_source(tmp_path)
+    with_paths(source, TWINS)
+    plan = adopter.Plan.load(planned(source, tmp_path, {}))
+    work = tmp_path / "work"
+    work.mkdir()
+    opened = plan.open_source(None, work)
+    for name, value in config_with(tmp_path, "[core]",
+                                   "\tignorecase = true").items():
+        monkeypatch.setenv(name, value)
+    control = tmp_path / "control"
+    git("init", "-q", "-b", "main", str(control), cwd=tmp_path)
+    for twin, data in zip(TWINS, (b"a\n", b"b\n")):
+        (control / twin).write_bytes(data)
+    subprocess.run(["git", "add", "--", *TWINS], cwd=str(control),
+                   capture_output=True, check=False)
+    held = git("ls-files", cwd=control).stdout.split()
+    assert len(held) < 2, held
+    assert adopter._paths_git_refuses(opened, opened.tree()) == []
+    assert list(work.iterdir()) == []
