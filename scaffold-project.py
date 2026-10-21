@@ -401,7 +401,19 @@ def main(argv: list[str] | None = None) -> int:
                              "right finishes a run a ruleset refused by "
                              "re-running it with this. A root with commits, "
                              "and a leg with any other, is still refused: "
-                             "that is a live repository, not a slot.")
+                             "that is a live repository, not a slot. A run "
+                             "with it, like every run, turns off git's own "
+                             "terminal prompt and no other, so it can still "
+                             "wait at an ssh passphrase or host-key prompt, "
+                             "at a credential helper that prompts, or at "
+                             "`GIT_ASKPASS`, `SSH_ASKPASS` or "
+                             "`core.askPass`: a key loaded into an ssh "
+                             "agent, a helper that answers without "
+                             "prompting, or "
+                             "`GIT_SSH_COMMAND='ssh -o BatchMode=yes'` (with "
+                             "anything `core.sshCommand` adds) set for the "
+                             "run, which makes ssh fail at once instead, "
+                             "keeps it from waiting.")
     parser.add_argument("--pin", action="append", default=[],
                         metavar="openProduct@COMMIT",
                         help="declare a neutral-product pin, e.g. "
@@ -503,11 +515,21 @@ def seed_tree(role: str, values: dict, tracking: str, scratch: Path) -> str:
 #: read, and a push, a first run's as a re-run's, is refused with how to give
 #: git a login (`_refused_push`).
 #:
-#: ssh, a credential helper and an askpass program are not turned off: they
-#: are how people give git a credential, and each of them still asks under
-#: this rule (#915's probes). Whether the rule must never wait for input,
-#: ssh run with `BatchMode=yes` for one, is #915's open ruling question; it
-#: is decided here, once, for every command above.
+#: THE RULE TURNS OFF GIT'S OWN PROMPT AND NO OTHER (#915, U037). ssh, a
+#: credential helper and an askpass program (`GIT_ASKPASS`, `SSH_ASKPASS`,
+#: `core.askPass`) are the operator's, and are left as they are: they are
+#: how people give git a credential, and turning one off would refuse a read
+#: or a push that works. So every command above, a first run's push as a
+#: re-run's probe and push, can still wait for input: at ssh's passphrase or
+#: host-key prompt, at a credential helper that prompts, or at an askpass
+#: program, each measured waiting until killed. Nor is ssh given
+#: `BatchMode=yes` here: git's `GIT_SSH_COMMAND` overrides a configured
+#: `core.sshCommand`, so setting it would replace the operator's own ssh
+#: command. Brett Heap ruled it on 2026-10-21, "U039 and U037: take your
+#: recommendations": say it where it is true. The `--reuse-empty-repo` help,
+#: `docs/cli.md`, the README, the handbook and each remedy that sends a
+#: person into that re-run on GitHub say a prompt can still come, and how a
+#: person keeps a run from waiting in their own setup (`PROMPTS_STILL_ASK`).
 REMOTE_ENV = {"GIT_TERMINAL_PROMPT": "0"}
 
 #: What `only_commit`'s two commands run with: the prompt rule, and git's
@@ -528,6 +550,26 @@ PROBE_ENV = {**REMOTE_ENV, "LC_ALL": "C"}
 #: a refused push in English, inside a refusal this tool prints in English;
 #: a push that goes through shows nothing of git's.
 PUSH_ENV = {**REMOTE_ENV, "LC_ALL": "C"}
+
+#: What each remedy that sends a person into a `--reuse-empty-repo` re-run
+#: says of the prompt rule, after "That re-run" (#915, U037): the prompts
+#: `REMOTE_ENV` leaves as the operator set them up, and the three ways to keep
+#: a run from waiting at one, each in the person's own setup. ssh under
+#: `BatchMode=yes` refuses the host-key and passphrase prompts and fails at
+#: once (measured: the probe is refused at once, as `scaffold-remote-exists`
+#: with ssh's `Host key verification failed.`). `GIT_SSH_COMMAND` replaces
+#: `core.sshCommand`, so the person carries over what theirs adds. Said by
+#: `_exists_remedy` and `_login_remedy`; not under `--local-remote-dir`,
+#: whose paths on disk git reads with no ssh, helper or askpass at all.
+PROMPTS_STILL_ASK = (
+    "turns off git's own terminal prompt and no other, so it can still wait "
+    "at an ssh passphrase or host-key prompt, at a credential helper that "
+    "prompts, or at `GIT_ASKPASS`, `SSH_ASKPASS` or `core.askPass`: to keep "
+    "it from waiting, load your key into an ssh agent, use a helper that "
+    "answers without prompting, or set "
+    "`GIT_SSH_COMMAND='ssh -o BatchMode=yes'` (with anything your "
+    "`core.sshCommand` adds) in your shell for the run, which makes ssh fail "
+    "at once instead")
 
 
 def only_commit(url: str,
@@ -756,7 +798,7 @@ def _reusable_remotes(names: dict, urls: dict, repositories: dict,
                 + ("" if local else " on GitHub")
                 + ("" if empty else " and has commits"),
                 _exists_remedy(role, empty, reuse_flag, seed is not None,
-                               unread))
+                               unread, local))
     return reused
 
 
@@ -783,7 +825,8 @@ SSH_KEY_CLAUSE = ("where a `url.<base>.insteadOf` rule in your git config "
 
 
 def _exists_remedy(role: str, empty: bool, reuse_flag: bool,
-                   seeded: bool = False, unread: str | None = None) -> str:
+                   seeded: bool = False, unread: str | None = None,
+                   local: bool = False) -> str:
     """The remedy line for a remote that is already there.
 
     Each situation answers to its own exit, and a refusal that named only
@@ -798,7 +841,15 @@ def _exists_remedy(role: str, empty: bool, reuse_flag: bool,
     git logs in with an ssh key, and the command named is still the https
     URL this run gave git. So the ssh key's clause (`SSH_KEY_CLAUSE`) stands
     beside the `setup-git` one, each saying where it applies.
+
+    EACH EXIT THAT IS THE `--reuse-empty-repo` RE-RUN SAYS WHICH PROMPTS IT
+    CAN STILL WAIT AT (#915, U037): its probe and its pushes turn off git's
+    own prompt alone, and leave ssh, a credential helper and an askpass
+    program as the operator set them up (`PROMPTS_STILL_ASK`). Not where
+    `local` (`--local-remote-dir`): there git reads paths on disk, and none
+    of them is asked.
     """
+    still = "" if local else " That re-run " + PROMPTS_STILL_ASK + "."
     if role != "assembly":
         if unread:
             return (f"Remediation: git could not read it ({unread}), so "
@@ -808,7 +859,7 @@ def _exists_remedy(role: str, empty: bool, reuse_flag: bool,
                     + SSH_KEY_CLAUSE + "), then re-run: with "
                     "--reuse-empty-repo a leg whose one commit is that seed "
                     "is reused, and a leg holding anything else is still "
-                    "refused. There is no --force.")
+                    "refused. There is no --force." + still)
         if empty or seeded:
             return ("Remediation: "
                     + ("it has ZERO commits" if empty else
@@ -817,7 +868,7 @@ def _exists_remedy(role: str, empty: bool, reuse_flag: bool,
                     + f", so re-run with --reuse-empty-repo to use it as the "
                     f"{role} leg. A run an organisation's ruleset refused is "
                     "finished that way, by an operator holding the bypass "
-                    "right.")
+                    "right." + still)
         return ("Remediation: it holds commits other than the one seed this "
                 "scaffold would push to it, so it is not a slot this scaffold "
                 "may fill. Delete it, or scaffold under a different "
@@ -828,7 +879,7 @@ def _exists_remedy(role: str, empty: bool, reuse_flag: bool,
     if empty and not reuse_flag:
         return ("Remediation: it has ZERO commits, so it is a reserved name "
                 "rather than a live project — re-run with --reuse-empty-repo "
-                "to use it as the assembly root.")
+                "to use it as the assembly root." + still)
     return ("Remediation: it HAS commits, so it is a live repository and this "
             "is not a scaffold. Use `adopt-project.py plan --source "
             "<org>/<repo> --project <Project>` to convert it in place, which "
@@ -2090,7 +2141,11 @@ def _login_remedy(output: str, repo: str, reused: bool) -> str:
     (`setup-project.py`'s `_credential_helper_configured` reads it so). So
     it replaces a refused login too. Over ssh it changes nothing, so a key
     ssh was refused is told the ssh check alone (`SSH_KEY_CHECK`). A run
-    that was itself the re-run (`reused`) is re-run as it was."""
+    that was itself the re-run (`reused`) is re-run as it was. Last, that
+    re-run's prompts: git's own is off and ssh's, a helper's and an askpass
+    program's are not (`PROMPTS_STILL_ASK`, #915 U037). A login git could not
+    get was refused rather than asked for, and the login a person gives git
+    next, an ssh key above all, can ask on the re-run."""
     if any(words in output for words in NO_LOGIN):
         fix = (f"git could not get a login for {repo}: every push this "
                "scaffold makes runs with git's terminal prompt off, so where "
@@ -2121,7 +2176,8 @@ def _login_remedy(output: str, repo: str, reused: bool) -> str:
              "through setup.sh) and a new --work-dir or none")
     return (f"\nRemediation: {fix}, then re-run {again}: it reuses the "
             "repositories this run left empty, and a leg whose one commit is "
-            "the seed this scaffold pushes.")
+            "the seed this scaffold pushes. That re-run "
+            + PROMPTS_STILL_ASK + ".")
 
 
 def _refused_push(failed: CommandFailed, what: str, repo: str,
