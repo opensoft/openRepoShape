@@ -41,8 +41,10 @@ The caller rows are beside the files they exercise: `test_pin_validator.py`
 (`validate-pins.py`), `test_manifest_validator.py` (`validate-manifest.py`),
 `test_adopt_pins.py` (`adopt-project.py check`) and `test_shape_doctor.py`
 (`update-shape.py`'s `read_pin`, through the doctor). The rows here are the
-patterns, their copy, the holder's gate and the two readers that take a pin's
-`commit:` without a gate of their own in front of them.
+patterns, their copy, the holder's gate, the two callers that had no row
+beside them (the neutral product's pin in `validate-pins.py` and a record
+row's `source_commit:` in `validate-manifest.py`) and the two readers that
+take a pin's `commit:` without a gate of their own in front of them.
 
 No network and no GitHub: the family is the offline one of `test_family.py`.
 """
@@ -58,6 +60,11 @@ import pytest
 from conftest import REPO, load_without_bytecode
 from test_family import family, validate  # noqa: F401
 from test_family_add_refusals import holder  # noqa: F401
+from test_manifest_validator import (  # noqa: F401
+    ANSWER_RECORD, SUBMODULE_RECORD, assert_refused)
+from test_neutral_pin_validator import (
+    edit_pin as edit_neutral_pin, scaffold_with_pin,
+    validate as validate_pins)
 
 sys.path.insert(0, str(REPO / "scripts"))
 import repo_shape  # noqa: E402
@@ -161,7 +168,8 @@ def member_pin(root) -> tuple[str, str]:
     text = holder_text(root)
     commit = re.search(r'^      commit: "([0-9a-f]{40})"', text, re.M)
     digest = re.search(r'^      tree_sha256: "([0-9a-f]{64})"', text, re.M)
-    assert commit and digest, text
+    assert commit, f"fixture drift: no member pin commit in {text}"
+    assert digest, f"fixture drift: no member pin tree_sha256 in {text}"
     return commit.group(1), digest.group(1)
 
 
@@ -170,7 +178,8 @@ def holder_shape(root) -> tuple[str, str]:
     text = holder_text(root)
     commit = re.search(r'^  commit: "([0-9a-f]{40})"', text, re.M)
     digest = re.search(r'^    tree_sha256: "([0-9a-f]{64})"', text, re.M)
-    assert commit and digest, text
+    assert commit, f"fixture drift: no shape commit in {text}"
+    assert digest, f"fixture drift: no shape tree_sha256 in {text}"
     return commit.group(1), digest.group(1)
 
 
@@ -216,6 +225,56 @@ def test_a_family_shape_digest_that_ends_in_a_line_break_is_a_finding(holder):
     gate = validate(holder)
     assert gate.returncode == 1, gate.stderr + gate.stdout
     assert "FINDING family-shape-digest: " in gate.stderr, gate.stderr
+
+
+# --- the two callers with no row beside them --------------------------------
+#
+# Each reads a value with `COMMIT_RE` or `SHA256_RE` and no other gate, so
+# nothing but the pattern refuses a line feed there: a `.rstrip("\n")` before
+# the match would leave every row above green.
+
+
+def test_a_neutral_pin_commit_that_ends_in_a_line_break_is_refused(tmp_path):
+    """`validate-pins.py` reads the neutral product's pin with `COMMIT_RE`
+    and no other gate. On main a commit of 40 hex and a line feed passed
+    it, and the finding was the product's checkout refusing the name
+    (`neutral-pin-source-unreadable`), not that it is not 40 hex."""
+    root, product, commit = scaffold_with_pin(tmp_path)
+    edit_neutral_pin(root, f'commit: "{commit}"', f'commit: "{commit}\\n"')
+    gate = validate_pins(root, "--pin-source", str(product))
+    assert gate.returncode == 2, gate.stderr + gate.stdout
+    assert "REFUSED neutral-pin-tag-only: " in gate.stderr, gate.stderr
+
+
+def test_a_neutral_pin_digest_that_ends_in_a_line_break_is_malformed(tmp_path):
+    """On main the digest passed `SHA256_RE` and was recomputed and compared
+    (`neutral-pin-digest-mismatch`); it is not 64 hex."""
+    root, product, _ = scaffold_with_pin(tmp_path)
+    pin = (root / "contracts" / "openglass-pin.yaml").read_text()
+    recorded = pin.split('tree_sha256: "')[1].split('"')[0]
+    edit_neutral_pin(root, f'tree_sha256: "{recorded}"',
+                     f'tree_sha256: "{recorded}\\n"')
+    gate = validate_pins(root, "--pin-source", str(product))
+    assert gate.returncode == 1, gate.stderr + gate.stdout
+    assert "FINDING neutral-pin-digest-malformed: " in gate.stderr, gate.stderr
+
+
+@pytest.mark.parametrize("record, code", [
+    pytest.param(SUBMODULE_RECORD, "manifest-submodule-commit",
+                 id="submodules"),
+    pytest.param(ANSWER_RECORD, "manifest-answered-commit",
+                 id="answered-paths"),
+])
+def test_a_recorded_source_commit_that_ends_in_a_line_break_is_a_finding(
+        project, record, code):
+    """`validate-manifest.py` reads a record row's `source_commit:` with
+    `COMMIT_RE`, and the two records share the check. On main a commit of 40
+    hex and a line feed was `manifest ok`."""
+    found = re.search(r'source_commit: "([0-9a-f]{40})"', record)
+    assert found, "fixture drift: the record names no source_commit"
+    commit = found.group(1)
+    assert_refused(project, record, f'source_commit: "{commit}"',
+                   f'source_commit: "{commit}\\n"', code)
 
 
 # --- the two readers with no gate in front of them ----------------------------
