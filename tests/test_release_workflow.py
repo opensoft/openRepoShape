@@ -559,9 +559,14 @@ def test_the_install_check_runs_on_three_systems_and_python_3_9(workflow):
     host by the recorded digest."""
     install = workflow["jobs"]["install"]
     legs = install["strategy"]["matrix"]["include"]
-    assert {leg["os"] for leg in legs} == {"ubuntu-latest", "macos-latest",
-                                            "windows-latest"}
-    assert {"os": "ubuntu-latest", "python": "3.9"} in legs
+    assert {leg["os"] for leg in legs} == {"ubuntu-latest", "ubuntu-24.04",
+                                            "macos-latest", "windows-latest"}
+    assert {"os": "ubuntu-24.04", "python": "3.9"} in legs
+    # #1094: `ubuntu-latest` now gives out Ubuntu 26.04, which has no 3.9
+    # build for setup-python, so the 3.9 row stays on 24.04 and every row on
+    # the latest image asks for a Python 26.04 has.
+    assert [leg["python"] for leg in legs if leg["os"] == "ubuntu-latest"] \
+        == ["3.x"]
     assert install["strategy"]["fail-fast"] is False
     assert install["env"]["PIP_INDEX_URL"] == "https://pypi.org/simple/"
     for step in install["steps"]:
@@ -574,6 +579,83 @@ def test_the_install_check_runs_on_three_systems_and_python_3_9(workflow):
     assert verified < names.index(
         "pipx installs the wheel into a fresh environment, its dependency "
         "from PyPI")
+
+
+def test_the_package_job_runs_its_python_3_9_on_ubuntu_24_04():
+    """#1094: `tests.yml`'s `package` job builds and installs on 3.9, the
+    floor of `requires-python`, and the Ubuntu 26.04 that `ubuntu-latest` now
+    gives out has no 3.9 build for setup-python, so a run that landed there
+    failed in setup-python. The job names 24.04 and asks for 3.9 once; the
+    next test holds every job of both workflows on `ubuntu-latest` to what
+    26.04 has."""
+    jobs = load_yaml(WORKFLOWS / "tests.yml")["jobs"]
+    package = jobs["package"]
+    assert package["runs-on"] == "ubuntu-24.04"
+    pythons = [step["with"]["python-version"] for step in package["steps"]
+               if step.get("uses", "").startswith("actions/setup-python@")]
+    assert pythons == ["3.9"]
+
+
+def test_the_tests_job_runs_the_suite_on_ubuntu_24_04():
+    """#1096: `tests.yml`'s `tests` job runs the whole suite, and on the
+    Ubuntu 26.04 that `ubuntu-latest` now gives out it ended `2436 failed,
+    11382 passed, 380 skipped, 5579 errors`, with `[Errno 122] Disk quota
+    exceeded` under pytest's basetemp in `/tmp` and `No space left on
+    device` after it. The job is pinned to 24.04, where it passed, until
+    the suite runs on 26.04; the change that moves it back takes this test
+    with it."""
+    jobs = load_yaml(WORKFLOWS / "tests.yml")["jobs"]
+    assert jobs["tests"]["runs-on"] == "ubuntu-24.04"
+
+
+def setup_python_pairs():
+    """Every (file, job, runner, Python) a setup-python step of `tests.yml`
+    or `release.yml` asks for, as text. A job with an `include` matrix
+    gives one pair for each row, with each `${{ matrix.<key> }}` the row
+    has filled from it; a job with no matrix gives one. A matrix with any
+    other key, the standard `os: [...]` form, is not expanded here, so it
+    fails closed. `str()` makes an unquoted `python-version: 3.9`, which
+    `load_yaml` reads as the float 3.9, the text Actions hands
+    setup-python."""
+    for path in (WORKFLOWS / "tests.yml", WORKFLOWS / "release.yml"):
+        for name, job in load_yaml(path)["jobs"].items():
+            matrix = job.get("strategy", {}).get("matrix", {})
+            assert set(matrix) <= {"include"}, (
+                path.name, name, sorted(matrix))
+            rows = matrix.get("include")
+            steps = [step for step in job.get("steps", [])
+                     if step.get("uses", "").startswith(
+                         "actions/setup-python@")]
+            for step in steps:
+                for row in rows or [{}]:
+                    runner = str(job["runs-on"])
+                    python = str(step["with"]["python-version"])
+                    for key, value in row.items():
+                        ref = "${{ matrix.%s }}" % key
+                        runner = runner.replace(ref, str(value))
+                        python = python.replace(ref, str(value))
+                    yield path.name, name, runner, python
+
+
+def test_no_setup_python_on_ubuntu_latest_asks_for_a_python_26_04_lacks():
+    """#1094: the Ubuntu 26.04 that `ubuntu-latest` gives out has setup-python
+    builds for 3.10 to 3.15 alone, so every job of both workflows that is on
+    `ubuntu-latest` asks for `3.x` or `3.12`, and a 3.9 job is on 24.04. An
+    allow list over the expanded matrix rows, so it holds for an unquoted
+    3.9, for `release.yml`'s `build` job, and for a Python or a runner that
+    an `include` row gives. A matrix of the standard form, with a key of its
+    own, fails the helper's assertion instead of passing unchecked."""
+    pairs = list(setup_python_pairs())
+    for file, job, runner, python in pairs:
+        where = (file, job, runner, python)
+        assert "${{" not in runner + python, where
+        if runner == "ubuntu-latest":
+            assert python in {"3.x", "3.12"}, where
+        if python.split(".")[:2] == ["3", "9"]:
+            assert runner == "ubuntu-24.04", where
+    # The two 3.9 jobs are among the pairs, so the loop is not vacuous.
+    assert ("tests.yml", "package", "ubuntu-24.04", "3.9") in pairs
+    assert ("release.yml", "install", "ubuntu-24.04", "3.9") in pairs
 
 
 def test_the_header_says_how_to_release(workflow):
