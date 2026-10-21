@@ -746,33 +746,55 @@ def _kept_pin_findings(plan: "Plan", tree: list,
     out = []
     for rel, product in _pin_files(plan):
         for disk, aside, walked in disks:
-            reached, link = _pin_file_reached(walked.get(rel), rel)
-            at = disk.at(reached)
-            rows = [row for row in ([at] if at else disk.under(reached))
-                    if row[1] != GITLINK_MODE]
-            if not rows:
-                continue
-            path, mode, entry = rows[0]
-            if at and path in named_links:
+            said = _kept_pin_finding(disk, aside, walked.get(rel), rel,
+                                     product, named_links)
+            if said is not None:
+                out.extend(said)
                 break
-            under = "" if entry == path else f" under the entry {_spelled(entry)}"
-            where = "at" if at else "inside"
-            written = (_declared_pin_held(product) if product
-                       else _shape_pin_held(mode if at else None))
-            through, fix = "", _fix_the_kept_path(entry)
-            if link:
-                through = (f" through the symlink {_spelled(link[0])} to "
-                           f"{_spelled(link[1])}")
-                fix = (f"send {_spelled(link[0])} to a leg or `drop` it, or "
-                       f"rename {_spelled(reached)} in the source and re-run "
-                       "`plan`")
-            out.append(
-                f"FINDING {ROOT_HOLDS_PIN}: the plan keeps {_kind_of(mode)} "
-                f"{_spelled(path)} in the assembly root{under}, {where} "
-                f"`{rel}`{through}{aside}, where `execute` writes {written}: "
-                f"{fix}.")
-            break
     return out
+
+
+def _kept_pin_finding(disk: "_KeptTree", aside: str, walk: "_Walk | None",
+                      rel: str, product: str | None,
+                      named_links: frozenset | set) -> list[str] | None:
+    """`_kept_pin_findings`' FINDING for the pin's file `rel` on `disk`, as
+    the one line of a list: none, `[]`, where what the root keeps there is
+    a symlink `named_links` holds (#979), and None where it keeps nothing
+    there, so the next disk is asked."""
+    reached, link = _pin_file_reached(walk, rel)
+    at = disk.at(reached)
+    rows = [row for row in ([at] if at else disk.under(reached))
+            if row[1] != GITLINK_MODE]
+    if not rows:
+        return None
+    path, mode, entry = rows[0]
+    if at and path in named_links:
+        return []
+    under = "" if entry == path else f" under the entry {_spelled(entry)}"
+    where = "at" if at else "inside"
+    held = mode if at else None
+    written = (_declared_pin_held(product) if product
+               else _shape_pin_held(held))
+    through, fix = _through_the_kept_link(link, reached, entry)
+    return [f"FINDING {ROOT_HOLDS_PIN}: the plan keeps {_kind_of(mode)} "
+            f"{_spelled(path)} in the assembly root{under}, {where} "
+            f"`{rel}`{through}{aside}, where `execute` writes {written}: "
+            f"{fix}."]
+
+
+def _through_the_kept_link(link: tuple[str, str] | None, reached: str,
+                           entry: str) -> tuple[str, str]:
+    """How `plan-root-holds-pin` says the root walk reached the pin's file
+    at `reached` (#904): through `link`, the first symlink the plan keeps
+    above it, and its fix, to send that link to a leg, drop it, or rename
+    the file; and, with no link, no words, and the fix of the kept `entry`
+    (`_fix_the_kept_path`)."""
+    if link is None:
+        return "", _fix_the_kept_path(entry)
+    return (f" through the symlink {_spelled(link[0])} to "
+            f"{_spelled(link[1])}",
+            f"send {_spelled(link[0])} to a leg or `drop` it, or rename "
+            f"{_spelled(reached)} in the source and re-run `plan`")
 
 
 def _pin_walks(plan: "Plan", source: "Source | None", tree: list,
@@ -7205,7 +7227,8 @@ def _blocked_sentence(code: str, rels: list[str], copies: list[str],
     # leg repositories were created and pushed", and neither half held:
     # `execute` refuses the plan before any leg exists, and `place` asks
     # `copy_in_the_way`, which stops at a symlink there, dangling or not, as
-    # at a file, and writes nothing.
+    # at a file, and writes nothing there: the copies `place` writes before
+    # it, in its order, are written.
     consequence = {
         "is": "the materializer writes no copy "
               f"{'through' if mode == SYMLINK_MODE else 'over'} {them}",
@@ -7222,9 +7245,9 @@ def _blocked_sentence(code: str, rels: list[str], copies: list[str],
         f"{_PLURAL_RELATION[relation] if many else relation} "
         f"{_kind_of(mode)} {named}{aside}. The plan keeps {them} in the "
         f"assembly root{under}, and {consequence}: it would stop there "
-        "(`materialize-copy-blocked`), writing nothing, after both leg "
-        "repositories were created and pushed, so `execute` refuses this "
-        f"plan before either exists. {SHAPE_DIR_RESERVED}: {fix}.")
+        "(`materialize-copy-blocked`), writing nothing there, after both "
+        "leg repositories were created and pushed, so `execute` refuses "
+        f"this plan before either exists. {SHAPE_DIR_RESERVED}: {fix}.")
 
 
 def _root_shape_findings(plan: Plan, tree: list,
@@ -10147,9 +10170,13 @@ OBJECT_STORE = (".git/objects",
 REFTABLES = (".git/reftable",
              "where the reftable backend keeps the clone's refs, in tables "
              "git names as it writes them")
-#: And the branches, where the source's HEAD is on no branch.
-GUESSED_BRANCH = ("where `git clone` writes the branch it checks out, which "
-                  "git guesses where the source's HEAD is on no branch")
+#: And the refs of the branch `git clone` checks out, where the source's
+#: HEAD is on no branch: what it writes in each directory of them, and in
+#: `logs/` the reflog of that (`_guessed_refs`). git guesses the branch,
+#: and where it can guess none it checks out none and writes neither.
+GUESSED_BRANCH = "which git guesses where the source's HEAD is on no branch"
+GUESSED_REFS = {"refs/heads": "the branch it checks out",
+                "refs/remotes": "`origin/HEAD` for the branch it checks out"}
 
 
 class _CloneGit:
@@ -10207,7 +10234,7 @@ class _CloneGit:
         for ref in refs:
             git._add(f"{CLONE_GIT_DIR}/{ref}", directory=False)
         for top in guessed:
-            git._unread_in(f"{CLONE_GIT_DIR}/{top}", GUESSED_BRANCH)
+            git._unread_in(f"{CLONE_GIT_DIR}/{top}", _guessed_refs(top))
         return git
 
     def _key(self, path: str) -> str:
@@ -10252,6 +10279,17 @@ class _CloneGit:
         if self._key(path) in self._dirs:
             return True
         return None if self.unread(path) else False
+
+
+def _guessed_refs(top: str) -> str:
+    """What `_CloneGit` says `.git/<top>` holds where the source's HEAD is
+    on no branch (#904): `refs/heads` the branch `git clone` checks out,
+    `refs/remotes` its `origin/HEAD`, and the two in `logs/` their reflogs.
+    """
+    refs = top[len("logs/"):] if top.startswith("logs/") else top
+    what = (GUESSED_REFS[refs] if refs == top
+            else f"the reflog of {GUESSED_REFS[refs]}")
+    return f"where `git clone` writes {what}, {GUESSED_BRANCH}"
 
 
 def _split_branch_of(plan: Plan) -> str | None:

@@ -455,8 +455,27 @@ SPEC_STORE = ("the store of the spec leg, which `git submodule add` makes "
               "check")
 REFTABLES = ("where the reftable backend keeps the clone's refs, in tables "
              "git names as it writes them")
-GUESSED_BRANCH = ("where `git clone` writes the branch it checks out, which "
-                  "git guesses where the source's HEAD is on no branch")
+#: Where the source's HEAD is on no branch: each link into the refs of the
+#: branch `git clone` checks out, which git guesses, and the directory of
+#: them `check` reads nothing in, with what it holds.
+GUESSED = "which git guesses where the source's HEAD is on no branch"
+GUESSED_REFS = {
+    ".git/refs/heads/main": (
+        ".git/refs/heads",
+        f"where `git clone` writes the branch it checks out, {GUESSED}"),
+    ".git/refs/remotes/origin/HEAD": (
+        ".git/refs/remotes",
+        "where `git clone` writes `origin/HEAD` for the branch it checks "
+        f"out, {GUESSED}"),
+    ".git/logs/refs/heads/main": (
+        ".git/logs/refs/heads",
+        "where `git clone` writes the reflog of the branch it checks out, "
+        f"{GUESSED}"),
+    ".git/logs/refs/remotes/origin/HEAD": (
+        ".git/logs/refs/remotes",
+        "where `git clone` writes the reflog of `origin/HEAD` for the branch "
+        f"it checks out, {GUESSED}"),
+}
 
 
 def inside(top: str, holds: str) -> str:
@@ -1989,17 +2008,19 @@ def test_where_git_writes_no_reflogs_a_link_to_one_is_refused(
                                         NO_DIRECTORY_IN_GIT)))
 
 
+@pytest.mark.parametrize("target", GUESSED_REFS)
 def test_where_the_sources_head_is_on_no_branch_its_branch_is_not_named(
-        adopter, no_filter_repo_probe, links_as_links, tmp_path):
+        adopter, no_filter_repo_probe, links_as_links, tmp_path, target):
     """`git clone` checks out the branch the source's HEAD is on. Where HEAD
     is on none, git guesses one, so a link to `refs/heads/main` cannot be
-    told to find something, and is refused saying so."""
-    target = ".git/refs/heads/main"
+    told to find something, and is refused saying so; and so is one to the
+    `origin/HEAD` it writes for that branch, or to the reflog of either,
+    each saying what git writes there (rv1091's NIT 2 on #1091)."""
+    top, holds = GUESSED_REFS[target]
     source, plan = planned(tmp_path, {}, {CLAUDE: target}, {CLAUDE: ROOT})
     git("checkout", "-q", "--detach", cwd=source)
     refused_alike(adopter, tmp_path, plan, finding(
-        CLAUDE, target, CLAUDE,
-        leads(CLAUDE, target, unread(".git/refs/heads", GUESSED_BRANCH))))
+        CLAUDE, target, CLAUDE, leads(CLAUDE, target, unread(top, holds))))
 
 
 #: How `git init` fails where `GIT_DEFAULT_HASH` names no hash, as #910's
@@ -2077,9 +2098,9 @@ def test_the_ref_probe_is_made_once_however_many_walks_ask(adopter, tmp_path,
     loaded = adopter.Plan.load(plan)
     work = tmp_path / WORK
     work.mkdir()
+    source = loaded.open_source(None, work)
     with pytest.raises(adopter.Refusal) as caught:
-        adopter._refuse_what_check_finds(loaded,
-                                         loaded.open_source(None, work))
+        adopter._refuse_what_check_finds(loaded, source)
     assert caught.value.code == ROOT_SYMLINK
     assert len(asked) == 1
 

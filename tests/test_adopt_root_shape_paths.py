@@ -79,9 +79,10 @@ RESERVED = ("`shape/` is reserved for the shape's own copies of files the "
             "root already holds")
 AFTER_THE_LEGS = "after both leg repositories were created and pushed"
 #: What #262's finding says the materializer does at a copy whose place is
-#: taken, and when (#904, L1-K9 of #457): it stops, writes nothing, and
-#: only after both legs exist, so `execute` refuses the plan first.
-STOPS = (f"it would stop there (`{BLOCKED}`), writing nothing, "
+#: taken, and when (#904, L1-K9 of #457): it stops there, writing nothing
+#: there, though the copies before it are written, and only after both
+#: legs exist, so `execute` refuses the plan first.
+STOPS = (f"it would stop there (`{BLOCKED}`), writing nothing there, "
          f"{AFTER_THE_LEGS}, so `execute` refuses this plan before either "
          "exists")
 
@@ -1075,8 +1076,9 @@ def test_the_materializer_stops_at_a_link_at_the_copy(tmp_path):
     target = materialized_beside(tmp_path, {"README.md": "# Thing\n"})
     (target / "shape").mkdir()
     (target / "shape" / "README.md").symlink_to("../nowhere.md")
+    values = template_values()
     with pytest.raises(Refusal) as caught:
-        materialize_assembly_root(REPO, target, template_values(),
+        materialize_assembly_root(REPO, target, values,
                                   collision_dir="shape")
     assert caught.value.code == BLOCKED
     assert "`shape/README.md` is already there" in caught.value.detail
