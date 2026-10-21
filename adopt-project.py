@@ -11529,11 +11529,16 @@ def _throwaway_made(scratch: Path, repository: Path, source: Source | None,
     throwaway repositories (#910): from the empty `THROWAWAY_EMPTY`, with
     the source's object format, and on `THROWAWAY_BRANCH`. Returns the `-c`
     every git command run there takes: `core.hooksPath` that same empty
-    directory. `_Unasked` where it cannot be made."""
+    directory, and `core.fsmonitor=false`, as `_SplitRehearsal.git` and
+    `_stored_as_written` give each of theirs: no fsmonitor program or
+    daemon of this machine's is started for a repository that is about to
+    go. Without it, a counting `core.fsmonitor` program in the global
+    config ran 8 times in `_resolved`'s repositories in one `check`
+    (r1119b's SHOULD-A). `_Unasked` where it cannot be made."""
     formats = ([] if source is None
                else [f"--object-format={source.object_format()}"])
     empty = scratch / THROWAWAY_EMPTY
-    hooks_off = ["-c", f"core.hooksPath={empty}"]
+    hooks_off = ["-c", f"core.hooksPath={empty}", "-c", "core.fsmonitor=false"]
     with _asked_there(scratch.parent):
         empty.mkdir()
         made = subprocess.run(["git", *hooks_off, "init", "-q",
@@ -11645,7 +11650,11 @@ def _split_clone_asked(source: Source) -> None:
     nothing, so that clone is a full copy of the source's objects (r1119's
     NIT-1, measured: 117 MiB for a 115 MiB pack). That is a cost, not a
     fault: each of `execute`'s own clones of such a source is a full copy
-    too."""
+    too. So such a clone also runs the `uploadpack.packObjectsHook` that
+    this machine's protected config names (its system or global config, or
+    a `-c`; git takes none from the source's own) to pack what it copies,
+    as each of `execute`'s clones of that source runs it (r1119b's
+    NIT-C)."""
     env = _split_clone_env()
     scratch = _throwaway("openreposhape-clone-", source)
     try:

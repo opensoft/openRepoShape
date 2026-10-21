@@ -847,15 +847,30 @@ def test_execute_refuses_a_default_branch_its_clone_will_not_take(
 # #1083 (b): the submodule urls' own throwaway repositories
 # ---------------------------------------------------------------------------
 
+def a_url_and_nowhere(base: Path) -> tuple[Path, str, str]:
+    """`(source, url, nowhere)`: a source that keeps a submodule whose url
+    is relative and one whose url is `url`, an absolute path on this disk
+    where a repository answers; and `nowhere`, a directory beside it that
+    holds nothing, for a rewrite of that url to name."""
+    dependency = base / "dependency"
+    source = source_with(base, SIBLING, second=dependency.as_posix(),
+                         dependency=dependency)
+    return source, dependency.as_posix(), (base / "nowhere").as_posix()
+
+
+def kept_in_the_code_leg(source: Path, base: Path) -> Path:
+    """A plan of `a_url_and_nowhere`'s `source` that keeps both submodules
+    in the code leg."""
+    return planned_with_urls(source, base,
+                             answers={**BOTH_IN_CODE, EXTRA: "code"})
+
+
 def url_plan(base: Path) -> Path:
     """A plan that keeps in the code leg a submodule whose url is relative,
     which `_resolved` resolves from the source and from the leg, and one
     whose url is an absolute path on this disk, which `_answers` asks."""
-    dependency = base / "dependency"
-    source = source_with(base, SIBLING, second=dependency.as_posix(),
-                         dependency=dependency)
-    return planned_with_urls(source, base,
-                             answers={**BOTH_IN_CODE, EXTRA: "code"})
+    source, _, _ = a_url_and_nowhere(base)
+    return kept_in_the_code_leg(source, base)
 
 
 def asked_with_urls(adopter, base: Path):
@@ -930,6 +945,60 @@ def test_no_hook_of_this_machines_runs_where_the_urls_are_asked(
     assert "REFUSED" not in result.stderr, result.stderr
     assert codes(result) == [RELATIVE_URL], result.stderr
     assert runs(log) == []
+
+
+def counting_fsmonitor(base: Path) -> tuple[Path, Path]:
+    """`(program, log)`: a `core.fsmonitor` program that adds a line to
+    `log` each time git runs it, and exits 1, which git takes as a monitor
+    that cannot say what changed, and goes on without it."""
+    program = base / "fsmonitor"
+    log = base / "fsmonitor-runs.log"
+    program.write_bytes(f"#!/bin/sh\necho fsmonitor >> '{log.as_posix()}'\n"
+                        "exit 1\n".encode())
+    program.chmod(0o755)
+    return program, log
+
+
+#: Where this machine's `core.fsmonitor` program is configured.
+FSMONITOR_CONFIGURED = [
+    pytest.param(lambda base, program: config_with(
+        base, "[core]", f'\tfsmonitor = "{program.as_posix()}"'),
+        id="global-config"),
+    pytest.param(lambda _base, program: appended_to_command_scope(
+        os.environ, [("core.fsmonitor", program.as_posix())]),
+        id="git-config-count")]
+
+
+@pytest.mark.parametrize("configured", FSMONITOR_CONFIGURED)
+def test_no_fsmonitor_of_this_machines_runs_where_the_urls_are_asked(
+        tmp_path, configured):
+    """`_resolved`'s and `_answers`' repositories are given
+    `core.fsmonitor=false`, as the rehearsal's and #619's are, so no
+    fsmonitor program or daemon of this machine's is started for a
+    repository that is about to go. On 9b998936 the counting program ran
+    8 times in this `check`, in `_resolved`'s two repositories (r1119b's
+    SHOULD-A)."""
+    plan = url_plan(tmp_path)
+    program, log = counting_fsmonitor(tmp_path)
+    result = checked(plan, configured(tmp_path, program))
+    assert "REFUSED" not in result.stderr, result.stderr
+    assert codes(result) == [RELATIVE_URL], result.stderr
+    assert runs(log) == []
+
+
+@pytest.mark.parametrize("configured", FSMONITOR_CONFIGURED)
+def test_the_counting_fsmonitor_runs_where_this_machines_config_reaches(
+        tmp_path, configured):
+    """The control: the same config runs the program for a `git add` in a
+    repository of its own, so the row above counts something that would
+    run."""
+    program, log = counting_fsmonitor(tmp_path)
+    repository = tmp_path / "ordinary"
+    git("init", "-q", str(repository), cwd=tmp_path)
+    (repository / "a").write_bytes(b"a\n")
+    subprocess.run(["git", "add", "a"], cwd=str(repository), check=True,
+                   env={**os.environ, **configured(tmp_path, program)})
+    assert runs(log) != []
 
 
 def test_a_url_question_git_cannot_ask_is_one_finding_after_the_rest(
@@ -1232,7 +1301,10 @@ def test_the_clone_takes_a_parent_gits_settings_and_no_other_repository(
     `GIT_CONFIG_COUNT` but an `attr.tree` in it, and the parent's
     `GIT_CONFIG_PARAMETERS` as it stands; and none of the variables that
     name another repository, its objects, an index or a work tree, nor
-    `GIT_ATTR_SOURCE`. With no parent setting there is none."""
+    `GIT_ATTR_SOURCE`. With no parent setting there is none. The two
+    entries are appended after those the environment holds, as every test
+    gives git a setting (`appended_to_command_scope`, #758), and the last
+    entry `_split_clone_env()` keeps is the second (r1119b's MUST-1)."""
     named = {"GIT_DIR": "git-dir", "GIT_WORK_TREE": "work-tree",
              "GIT_INDEX_FILE": "index", "GIT_COMMON_DIR": "common",
              "GIT_OBJECT_DIRECTORY": "objects", "GIT_ATTR_SOURCE": "HEAD"}
@@ -1241,13 +1313,16 @@ def test_the_clone_takes_a_parent_gits_settings_and_no_other_repository(
     parameters = "'test.parentone'='one' 'core.hooksPath'='/nowhere'"
     monkeypatch.setenv("GIT_CONFIG_PARAMETERS", parameters)
     for name, value in appended_to_command_scope(
-            {}, [("attr.tree", "HEAD"), ("test.heldone", "one")]).items():
+            os.environ,
+            [("attr.tree", "HEAD"), ("test.heldone", "one")]).items():
         monkeypatch.setenv(name, value)
     env = adopter._split_clone_env()
     assert env["GIT_CONFIG_PARAMETERS"] == parameters
     assert [env.get(name) for name in named] == [None] * len(named)
-    assert (env["GIT_CONFIG_COUNT"], env["GIT_CONFIG_KEY_0"],
-            env["GIT_CONFIG_VALUE_0"]) == ("1", "test.heldone", "one")
+    scoped = [(env[f"GIT_CONFIG_KEY_{n}"], env[f"GIT_CONFIG_VALUE_{n}"])
+              for n in range(int(env["GIT_CONFIG_COUNT"]))]
+    assert scoped[-1] == ("test.heldone", "one")
+    assert "attr.tree" not in [key.lower() for key, _ in scoped]
     monkeypatch.delenv("GIT_CONFIG_PARAMETERS")
     assert "GIT_CONFIG_PARAMETERS" not in adopter._split_clone_env()
 
@@ -1280,6 +1355,14 @@ def test_the_clone_writes_nothing_into_an_object_directory_around_it(
     assert list(work.iterdir()) == []
 
 
+def rewritten_in_the_source(source: Path, url: str, nowhere: str) -> None:
+    """The source's own config rewrites `url` to `nowhere`; the control:
+    git there expands it so."""
+    git("config", f"url.{nowhere}.insteadOf", url, cwd=source)
+    assert git("ls-remote", "--get-url", url,
+               cwd=source).stdout.strip() == nowhere
+
+
 def test_a_repository_around_check_rewrites_no_url_it_asks(tmp_path):
     """`_answers` asks each url in a throwaway repository of its own, so
     that no repository's config around this process rewrites a url, as
@@ -1291,22 +1374,59 @@ def test_a_repository_around_check_rewrites_no_url_it_asks(tmp_path):
     and found the url answering nothing (r1119, M14). Nor is the source's
     config written: `_resolved` sets `remote.origin.url` in its own
     repository, which in the whole environment is the source."""
-    dependency = tmp_path / "dependency"
-    source = source_with(tmp_path, SIBLING, second=dependency.as_posix(),
-                         dependency=dependency)
-    nowhere = (tmp_path / "nowhere").as_posix()
-    git("config", f"url.{nowhere}.insteadOf", dependency.as_posix(),
-        cwd=source)
-    assert git("ls-remote", "--get-url", dependency.as_posix(),
-               cwd=source).stdout.strip() == nowhere
-    plan = planned_with_urls(source, tmp_path,
-                             answers={**BOTH_IN_CODE, EXTRA: "code"})
+    source, url, nowhere = a_url_and_nowhere(tmp_path)
+    rewritten_in_the_source(source, url, nowhere)
+    plan = kept_in_the_code_leg(source, tmp_path)
     config = (source / ".git" / "config").read_bytes()
     for env in ({}, {"GIT_DIR": str(source / ".git")}):
         result = checked(plan, env)
         assert "REFUSED" not in result.stderr, result.stderr
         assert codes(result) == [RELATIVE_URL], (env, result.stderr)
         assert (source / ".git" / "config").read_bytes() == config, env
+
+
+def test_a_work_directory_inside_the_source_rewrites_no_url_it_asks(
+        tmp_path):
+    """`--work-dir` inside the source's own work tree, whose config
+    rewrites the on-disk url to a directory that holds nothing: `_answers`
+    asks git in its throwaway repository, which git finds before the
+    source around it, so `check` says what it says with a work directory
+    outside the source, leaves nothing there and writes nothing into the
+    source's config. Asked in the throwaway's own directory, which is no
+    repository, git found the source around it and read its rewrite: a
+    false `plan-submodule-url-answers-nothing` (r1119b's NIT-A, R8)."""
+    source, url, nowhere = a_url_and_nowhere(tmp_path)
+    rewritten_in_the_source(source, url, nowhere)
+    plan = kept_in_the_code_leg(source, tmp_path)
+    config = (source / ".git" / "config").read_bytes()
+    for work in (tmp_path / "work", source / "work"):
+        result = checked(plan, None, "--work-dir", str(work))
+        assert "REFUSED" not in result.stderr, result.stderr
+        assert codes(result) == [RELATIVE_URL], (work, result.stderr)
+        assert list(work.iterdir()) == []
+    assert (source / ".git" / "config").read_bytes() == config
+
+
+def test_a_parent_gits_url_rewrite_is_not_read_where_a_url_is_asked(
+        tmp_path):
+    """A parent git's `-c url.<nowhere>.insteadOf=<url>`: the split's own
+    clone takes the settings a parent hands down (`_split_clone_env`), and
+    the assembly's recursive clone, run later by no such parent, does not,
+    so `_answers` leaves `GIT_CONFIG_PARAMETERS` out, as its docstring
+    says, and `check` says what it says without it. Taking it, `_answers`
+    found the url answering nothing (r1119b's NIT-B, A18). The control:
+    git expands the url so under it."""
+    source, url, nowhere = a_url_and_nowhere(tmp_path)
+    plan = kept_in_the_code_leg(source, tmp_path)
+    handed = appended_to_parameters([(f"url.{nowhere}.insteadOf", url)])
+    expanded = subprocess.run(["git", "ls-remote", "--get-url", url],
+                              cwd=str(tmp_path), capture_output=True,
+                              env={**os.environ, **handed}, check=True)
+    assert expanded.stdout.decode().strip() == nowhere
+    for env in ({}, handed):
+        result = checked(plan, env)
+        assert "REFUSED" not in result.stderr, result.stderr
+        assert codes(result) == [RELATIVE_URL], (env, result.stderr)
 
 
 @pytest.mark.parametrize("asked", [
