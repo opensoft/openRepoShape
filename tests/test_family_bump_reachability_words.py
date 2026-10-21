@@ -471,9 +471,10 @@ def test_a_tag_at_a_descendant_of_the_commit_reaches_it(
     mount and the remote each tag the DESCENDANT `v1`, made apart (the
     reviewer's case J of #988). Both runs refuse the commit
     `member-to-local-only` in the tag words, with nothing moved and the
-    mount's own `v1` as it was. Every row before this one tagged the commit
-    itself, so `--points-at` in place of `--contains`, the mutant M9 of
-    #988's review, survived all 54 of them."""
+    mount's own `v1` as it was. No row before this one tags a descendant of
+    the commit: the tags in them are at the commit itself or below it, so
+    `--points-at` in place of `--contains`, the mutant M9 of #988's review,
+    survived every row of this file."""
     mount_kind, remote_kind = kinds
     env = isolated(offline, tmp_path)
     mount = holder / PATH
