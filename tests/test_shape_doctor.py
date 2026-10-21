@@ -8344,7 +8344,12 @@ def test_both_classes_are_said_apart_in_one_row(standard, project):
     assert by_path["code/.cursor"]["placement"] == "kept"
     assert by_path["code/docs/theme"]["placement"] == "unverifiable"
     assert row["detail"]["counts"]["submodules"] == 2
-    reason = row["reason"]
+    # The leg holds no `.gitmodules`, so #1080's clause names both, after
+    # the two classes.
+    reason, unregistered, both = row["reason"].partition(
+        "; 2 submodule(s) sit in a leg that holds no `.gitmodules`")
+    assert unregistered, row["reason"]
+    assert "(#1080): code/.cursor, code/docs/theme;" in both, row["reason"]
     assert reason.count("submodule(s)") == 2, reason
     kept_clause, apart, unverified_clause = reason.partition(
         "; 1 submodule(s) at a path a rule assigns")
@@ -8726,6 +8731,16 @@ def recorded_note(leg: str) -> str:
             "leg, where it is (#189)")
 
 
+#: What the row says of `.cursor`, staged by `stage_gitlink` in a code leg
+#: that holds no `.gitmodules`, so that nothing registers it (#1080).
+NO_GITMODULES_CURSOR = (
+    "1 submodule(s) sit in a leg that holds no `.gitmodules`, so nothing "
+    "registers them and a recursive clone of the leg leaves each empty "
+    "(#1080): code/.cursor; give each a section with its `path` and `url` "
+    "in a `.gitmodules` added to its leg, or remove its gitlink with `git "
+    "rm --cached <its path in the leg>` in its leg")
+
+
 def audited_legs(row: dict) -> str:
     """The `[...]` the row's reason ends with, from the legs it printed."""
     return "; ".join(
@@ -8763,7 +8778,8 @@ def test_a_submodule_in_the_leg_its_record_names_is_placed(standard,
     assert row["reason"] == (
         "every tracked file classifies as the leg it is in; 1 submodule(s) "
         "in the leg project.yaml's `submodules:` records for them (#189): "
-        f"code/.cursor  [{audited_legs(row)}]"), row["reason"]
+        f"code/.cursor; {NO_GITMODULES_CURSOR}  [{audited_legs(row)}]"), (
+        row["reason"])
     assert row["next"] is None, row
 
     text = doctor(standard, project)
@@ -8779,7 +8795,8 @@ def test_a_submodule_in_the_other_leg_from_its_record_is_misplaced(
     like any other: in `misplaced`, counted in the verdict and the leg, named
     with the leg recorded, and an entry under `paths:` in the plan that the
     adoption's own reader accepts. Nothing else is in the wrong leg here, so
-    the reason is that one clause and no separator hangs after it. The spec
+    the reason is that one clause, then #1080's for the code leg holding no
+    `.gitmodules`, and no separator hangs after them. The spec
     leg holds no `.cursor`, so it has MOVED (#525): the clause says so, and
     the NEXT is the doctor again with the hand edit in its WHY, not a plan
     of the move already made -- though `--placement-plan` still writes one.
@@ -8811,7 +8828,8 @@ def test_a_submodule_in_the_other_leg_from_its_record_is_misplaced(
     assert row["reason"] == (
         "1 submodule(s) moved out of the leg project.yaml's `submodules:` "
         "records for them, which no longer holds them (#525): code/.cursor "
-        f"(recorded in the spec leg)  [{audited_legs(row)}]"), row["reason"]
+        f"(recorded in the spec leg); {NO_GITMODULES_CURSOR}  "
+        f"[{audited_legs(row)}]"), row["reason"]
     assert "--placement-plan" not in row["next"], row
     assert row["why"] == doctor_module(standard).MOVED_BY_HAND, row
 

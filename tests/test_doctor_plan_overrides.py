@@ -402,7 +402,9 @@ def test_a_sectionless_gitmodules_beside_a_submodule_is_said(
         ["code/.gitmodules"] if recorded else None), code
     assert "empty_gitmodules" not in code, code
     assert code["unregistered_submodules"] == ["code/vendor/lib"], code
+    assert "unregistered_beside" not in code, code
     assert UNREGISTERED_CLAUSE in row["reason"], row["reason"]
+    assert row["reason"].count("nothing registers them") == 1, row["reason"]
     assert "the policy asks nothing of" not in row["reason"], row["reason"]
     if unstaged:
         alone = git("rm", "--cached", "--", GITLINK_PATH, cwd=leg,
@@ -427,6 +429,135 @@ def test_a_gitmodules_that_registers_its_submodule_names_none(standard,
     assert [item["path"] for item in row["detail"]["review_required"]] == [
         "code/.gitmodules"], row
     assert "unregistered_submodules" not in leg_entry(row, "code")
+    assert "nothing registers them" not in row["reason"], row["reason"]
+
+
+#: A section registering a path that is not the code leg's submodule.
+OTHER_SECTION = (b'[submodule "other"]\n\tpath = other\n'
+                 b"\turl = https://example.invalid/other.git\n")
+#: What the row says of the code leg's submodule beside a `.gitmodules`
+#: whose sections register other paths (#1080).
+OTHER_SECTIONS_CLAUSE = (
+    "1 submodule(s) sit beside a `.gitmodules` of their leg with no section "
+    "for them, so nothing registers them and a recursive clone of the leg "
+    "leaves each empty (#1080): code/vendor/lib; give each a section with "
+    "its `path` and `url` in that `.gitmodules`, or, once that "
+    "`.gitmodules` is staged (`git add .gitmodules`), remove its gitlink "
+    "with `git rm --cached <its path in the leg>` in its leg")
+#: What the row says of it in a leg that holds no `.gitmodules` (#1080).
+NO_GITMODULES_CLAUSE = (
+    "1 submodule(s) sit in a leg that holds no `.gitmodules`, so nothing "
+    "registers them and a recursive clone of the leg leaves each empty "
+    "(#1080): code/vendor/lib; give each a section with its `path` and "
+    "`url` in a `.gitmodules` added to its leg, or remove its gitlink with "
+    "`git rm --cached <its path in the leg>` in its leg")
+#: Each state's clause, by what the leg's entry says the submodule sits
+#: beside (`unregistered_beside`).
+BESIDE = {"other_sections": OTHER_SECTIONS_CLAUSE,
+          "no_gitmodules": NO_GITMODULES_CLAUSE}
+
+
+def submodule_status(leg: Path):
+    """`git submodule status` of the leg's submodule, as git itself reads
+    the leg's `.gitmodules`: exit 128, `no submodule mapping found`, where
+    no section registers it, as in a recursive clone of the leg."""
+    return git("submodule", "status", "--", GITLINK_PATH, cwd=leg,
+               check=False)
+
+
+@pytest.mark.parametrize("body, recorded, unstaged, beside", [
+    (OTHER_SECTION, False, False, "other_sections"),
+    (b'[submodule "x"]\n', False, False, "other_sections"),
+    (b'[submodule "lib"]\n\tpath = vendor/lib\n\tpath = other\n', False,
+     False, "other_sections"),
+    (b'[submodule "a/../b"]\n\tpath = vendor/lib\n', False, False,
+     "other_sections"),
+    (b'[submodule "lib"]\n\tpath = vendor/lib/\n', False, False,
+     "other_sections"),
+    (OTHER_SECTION, False, True, "other_sections"),
+    (None, False, False, "no_gitmodules"),
+    (None, True, False, "no_gitmodules"),
+    (b'[submodule "lib"]\n\tpath = other\n\tpath = vendor/lib\n', False,
+     False, None),
+], ids=["other-sections", "a-section-with-no-key", "its-path-given-over",
+        "a-name-git-ignores", "its-path-with-a-slash",
+        "other-sections-and-an-unstaged-edit", "no-gitmodules",
+        "no-gitmodules-and-recorded", "its-path-given-last"])
+def test_a_gitlink_no_section_registers_is_said(standard, project, body,
+                                                recorded, unstaged, beside):
+    """#1080: #914 named a submodule beside a `.gitmodules` that holds no
+    section, and two other states were named by no row, though a recursive
+    clone of the leg leaves the submodule empty there too: a `.gitmodules`
+    whose sections register other paths, and none at all. Now each is
+    named under the same `unregistered_submodules`, with what it sits
+    beside, and said with its own way out. Said and never a finding, as
+    #914's clause is: the row is the `note` or `ok` it was.
+
+    REGISTERED AS GIT READS IT: the last `path` a section gives, of a
+    section git does not ignore, matched whole. Each case is held to `git
+    submodule status`, which exits 128 where the doctor names the
+    submodule and 0 where it does not.
+
+    THE REMOVAL TYPED AS PRINTED, in each state: beside sections it stages
+    the edited `.gitmodules` first, as #914's does, and `git rm --cached`
+    alone dies there (rc 128); beside no `.gitmodules` there is nothing to
+    stage, and `git rm --cached` alone exits 0."""
+    leg = project / "code"
+    if body is not None:
+        stage_bytes(leg, GITMODULES, SECTIONED if unstaged else body)
+        if unstaged:
+            (leg / GITMODULES).write_bytes(body)
+    stage_gitlink(leg, GITLINK_PATH)
+    if recorded:
+        record_submodules(project, (GITLINK_PATH, "code"))
+    status = submodule_status(leg)
+    assert status.returncode == (0 if beside is None else 128), status.stderr
+    result, verdict, row = placement(standard, project)
+    assert result.returncode == 0, result.stdout + result.stderr
+    assert verdict == COMPLIANT
+    code = leg_entry(row, "code")
+    questions = [item["path"] for item in row["detail"]["review_required"]]
+    assert questions == ([] if recorded or body is None
+                         else ["code/.gitmodules"]), row
+    assert row["status"] == ("ok" if recorded else "note"), row
+    assert code.get("unregistered_beside") == beside, code
+    if beside is None:
+        assert "unregistered_submodules" not in code, code
+        assert "nothing registers them" not in row["reason"], row["reason"]
+        return
+    assert code["unregistered_submodules"] == ["code/vendor/lib"], code
+    assert BESIDE[beside] in row["reason"], row["reason"]
+    assert row["reason"].count("nothing registers them") == 1, row["reason"]
+    if unstaged:
+        alone = git("rm", "--cached", "--", GITLINK_PATH, cwd=leg,
+                    check=False)
+        assert (alone.returncode, "stage your changes to .gitmodules" in (
+            alone.stderr)) == (128, True), alone.stderr
+    typed_in(leg, BESIDE[beside])
+    assert git("ls-files", "--stage", "--", GITLINK_PATH,
+               cwd=leg).stdout == ""
+
+
+@pytest.mark.parametrize("body", [OTHER_SECTION, None],
+                         ids=["other-sections", "no-gitmodules"])
+def test_a_section_written_for_the_gitlink_registers_it(standard, project,
+                                                        body):
+    """#1080's other way out, typed: a section with the submodule's `path`
+    and `url`, in the leg's `.gitmodules` or in one added to the leg. git
+    then reads a mapping for it (`git submodule status` exits 0), and the
+    row names nothing."""
+    leg = project / "code"
+    if body is not None:
+        stage_bytes(leg, GITMODULES, body)
+    stage_gitlink(leg, GITLINK_PATH)
+    assert submodule_status(leg).returncode == 128
+    stage_bytes(leg, GITMODULES, (body or b"") + SECTIONED)
+    status = submodule_status(leg)
+    assert status.returncode == 0, status.stderr
+    row = placement(standard, project)[2]
+    code = leg_entry(row, "code")
+    assert "unregistered_submodules" not in code, code
+    assert "unregistered_beside" not in code, code
     assert "nothing registers them" not in row["reason"], row["reason"]
 
 

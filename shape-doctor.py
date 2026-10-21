@@ -254,6 +254,10 @@ policy's question of it has no subject. The leg's entry names it under
 question. Beside a submodule of its leg it stays the question it was, since
 no section registers that submodule: the leg's entry names each under
 `unregistered_submodules`, and the row says how to register it or remove it.
+So it does for a submodule beside a `.gitmodules` whose sections register
+other paths, and for one in a leg that holds no `.gitmodules` (#1080), where
+the leg's entry says which under `unregistered_beside`. A recursive clone of
+the leg leaves each empty.
 
 A SUBMODULE MOVED OR REMOVED SINCE THE ADOPTION (#525). Its row is a
 person's to change, by hand, in the pull request that bumps the pins; no
@@ -643,9 +647,19 @@ UNHELD = "unheld"
 #: it (#655, #914); present only on a leg that has one.
 EMPTY_GITMODULES = "empty_gitmodules"
 #: The key of a leg's entry naming each submodule it holds beside a
-#: `.gitmodules` that holds no section, so that nothing registers it (#914);
+#: `.gitmodules` that holds no section, so that nothing registers it (#914),
+#: or beside one whose sections register other paths, or none (#1080);
 #: present only on a leg that has one.
 UNREGISTERED_SUBMODULES = "unregistered_submodules"
+#: The key of a leg's entry saying what its `unregistered_submodules` sit
+#: beside where that is not a `.gitmodules` with no section (#1080): one
+#: of the two values below. Absent beside one with no section, so that the
+#: entry #914 gives stays as it was; present only on a leg that has one.
+UNREGISTERED_BESIDE = "unregistered_beside"
+#: A `.gitmodules` with sections, none of which registers the submodule.
+BESIDE_OTHER_SECTIONS = "other_sections"
+#: No `.gitmodules` in the leg's index.
+BESIDE_NO_GITMODULES = "no_gitmodules"
 #: The key of a leg's entry naming each `answered_paths:` row for that leg
 #: whose path is a directory of it written without its `/` (#655); present
 #: only on a leg that has one.
@@ -8106,6 +8120,8 @@ def held_clauses(detail: dict) -> str:
                answered_clause(legs),
                empty_clause(legs),
                unregistered_clause(legs),
+               other_sections_clause(legs),
+               no_gitmodules_clause(legs),
                answers_clause(detail.get(ANSWERED_PATHS) or []),
                unslashed_clause(legs),
                slashed_clause(legs),
@@ -8182,9 +8198,12 @@ def unregistered_clause(legs: list) -> str:
     says to stage it first; and it names the path as the leg spells it,
     because the row's own `code/vendor/lib` is the project's spelling, which
     the leg does not know.
+
+    ONLY THE LEGS WHOSE ENTRY GIVES NO `unregistered_beside` (#1080): a
+    submodule beside other sections, or beside no `.gitmodules`, has its own
+    clause (`other_sections_clause`, `no_gitmodules_clause`).
     """
-    held = [path for leg in legs
-            for path in leg.get(UNREGISTERED_SUBMODULES) or []]
+    held = unregistered_beside(legs, None)
     if not held:
         return ""
     return (f"{len(held)} submodule(s) sit beside a `.gitmodules` of their "
@@ -8194,6 +8213,60 @@ def unregistered_clause(legs: list) -> str:
             "`url` in that `.gitmodules`, or, once that `.gitmodules` is "
             "staged (`git add .gitmodules`), remove its gitlink with `git rm "
             "--cached <its path in the leg>` in its leg")
+
+
+def unregistered_beside(legs: list, beside: str | None) -> list:
+    """Each submodule a leg's entry names under `unregistered_submodules`,
+    where its `unregistered_beside` is `beside` (None: not given) (#1080).
+    """
+    return [path for leg in legs if leg.get(UNREGISTERED_BESIDE) == beside
+            for path in leg.get(UNREGISTERED_SUBMODULES) or []]
+
+
+def other_sections_clause(legs: list) -> str:
+    """The clause naming each submodule a leg holds beside a `.gitmodules`
+    whose sections register other paths, or "" where there is none (#1080).
+
+    SAID, as `unregistered_clause` is, and with its way out: a recursive
+    clone of the leg exits 0 and leaves the submodule's directory empty,
+    and `git submodule status` exits 128 with `no submodule mapping found
+    in .gitmodules` (measured, git 2.43). The person writes its section in
+    that file, or removes the gitlink. `git rm --cached` dies with `please
+    stage your changes to .gitmodules` where that file has an edit not
+    staged, as beside a file with no section, so the clause says to stage
+    it first; typed in that order each exits 0 (measured).
+    """
+    held = unregistered_beside(legs, BESIDE_OTHER_SECTIONS)
+    if not held:
+        return ""
+    return (f"{len(held)} submodule(s) sit beside a `.gitmodules` of their "
+            "leg with no section for them, so nothing registers them and a "
+            "recursive clone of the leg leaves each empty (#1080): "
+            f"{first_three(held)}; give each a section with its `path` and "
+            "`url` in that `.gitmodules`, or, once that `.gitmodules` is "
+            "staged (`git add .gitmodules`), remove its gitlink with `git rm "
+            "--cached <its path in the leg>` in its leg")
+
+
+def no_gitmodules_clause(legs: list) -> str:
+    """The clause naming each submodule a leg holds where the leg holds no
+    `.gitmodules`, or "" where there is none (#1080).
+
+    SAID, as `unregistered_clause` is: a recursive clone of the leg leaves
+    the submodule empty, and `git submodule status` exits 128 (measured,
+    git 2.43). The section goes in a `.gitmodules` the person adds to the
+    leg, and with none in the index there is nothing to stage before `git
+    rm --cached`, which exits 0 as printed (measured).
+    """
+    held = unregistered_beside(legs, BESIDE_NO_GITMODULES)
+    if not held:
+        return ""
+    return (f"{len(held)} submodule(s) sit in a leg that holds no "
+            "`.gitmodules`, so nothing registers them and a recursive clone "
+            f"of the leg leaves each empty (#1080): {first_three(held)}; give "
+            "each a section with its `path` and `url` in a `.gitmodules` "
+            "added to its leg, or remove its gitlink with `git rm --cached "
+            "<its path in the leg>` in its leg")
 
 
 def slashed_clause(legs: list) -> str:
@@ -8671,6 +8744,70 @@ def holds_no_section(path: Path) -> bool:
     return True
 
 
+def unregistered_gitlinks(adopt, mount: Path, rel: str, tracked: list,
+                          paths: list, held: list) -> tuple:
+    """Each submodule `held` that no section of the leg's `.gitmodules`
+    registers, as its path in the row, and what it sits beside, or `([],
+    None)` (#1080): a `.gitmodules` whose sections register other paths
+    (`BESIDE_OTHER_SECTIONS`), or no `.gitmodules` in the leg's index
+    (`BESIDE_NO_GITMODULES`). `tracked` is every path the leg's index
+    lists, `paths` its files.
+
+    ASKED ONLY WHERE `empty_gitmodules` NAMED NONE: beside a `.gitmodules`
+    that holds no section, #914's clause names each, and the entry #914
+    gives stays as it was.
+
+    IN EACH STATE A RECURSIVE CLONE OF THE LEG exits 0 and leaves the
+    submodule's directory empty, and `git submodule status` there exits 128
+    with `no submodule mapping found in .gitmodules` (measured, git 2.43).
+    A `.gitmodules` the doctor cannot read as git does (`registered_paths`)
+    names nothing, as `holds_no_section` calls no such file empty.
+    """
+    if not held:
+        return [], None
+    if adopt.GITMODULES not in tracked:
+        return [f"{rel}/{path}" for path in held], BESIDE_NO_GITMODULES
+    registered = (registered_paths(mount / adopt.GITMODULES)
+                  if adopt.GITMODULES in paths else None)
+    if registered is None:
+        return [], None
+    named = [f"{rel}/{path}" for path in held if path not in registered]
+    return named, (BESIDE_OTHER_SECTIONS if named else None)
+
+
+def registered_paths(path: Path) -> set | None:
+    """The paths the sections of the `.gitmodules` at `path` register, or
+    None where that is not a regular file on this disk, or git refuses it
+    (#1080). Read on this disk, as `holds_no_section` reads it: the file
+    git's submodule commands read.
+
+    AS GIT READS IT: the last `path` each section gives, of a section git
+    does not ignore, and no value git ignores (`submodule_keys`), matched to
+    a gitlink's path whole. Measured, git 2.43: `git submodule status`
+    exits 128 for `vendor/lib` beside a section that gives `vendor/lib/`,
+    one named `a/../b`, or one that gives `vendor/lib` and then `other`, and
+    0 beside one that gives `other` and then `vendor/lib`.
+
+    The doctor's one reading of a `.gitmodules` (`gitmodules_listing`,
+    #668): `git config --list`, and not `--get-regexp`, whose `.*` matches
+    no byte that is not UTF-8 under a UTF-8 locale.
+    """
+    try:
+        if not stat.S_ISREG(path.lstat().st_mode):
+            return None
+    except OSError:
+        return None
+    listing = gitmodules_listing(path.parent, ["--file", path.name])
+    keys = None if listing is None else submodule_keys(listing)
+    if keys is None:
+        return None
+    given = {}
+    for name, field, value in keys:
+        if field == "path":
+            given[name] = value
+    return set(given.values())
+
+
 def unslashed_rows(answers: dict, role: str, rel: str, files: list) -> list:
     """Each `answered_paths:` row for THIS leg whose path is a directory of
     it written without the `/` a directory's row ends with, as its path in
@@ -8767,7 +8904,9 @@ def audit_leg(adopt, policy, patterns: list, role: str, rel: str,
     Otherwise a real adoption, whose leg always holds the `.gitmodules` that
     registers its submodules, could never read `ok`. One that holds no
     section, in a leg that holds no submodule, asks nothing at all
-    (`empty_gitmodules`, #655, #914).
+    (`empty_gitmodules`, #655, #914). A submodule no section registers is
+    named, beside sections or no `.gitmodules` too (`unregistered_gitlinks`,
+    #1080).
 
     AND `answered_paths:` IS READ FOR THE QUESTIONS AND FOR THE PATHS IN THE
     WRONG LEG ALIKE (#525, #655): `answered_questions` takes from each those
@@ -8837,6 +8976,10 @@ def audit_leg(adopt, policy, patterns: list, role: str, rel: str,
     paths = [path for path, _ in kept]
     review, empty, unregistered = empty_gitmodules(adopt, review, mount, rel,
                                                    paths, held)
+    beside = None
+    if not unregistered:
+        unregistered, beside = unregistered_gitlinks(
+            adopt, mount, rel, [path for path, _ in files], paths, held)
     review, recorded = answered_questions(adopt, review, role, paths, answers)
     misplaced, against = answered_questions(adopt, misplaced, role, paths,
                                             answers)
@@ -8852,6 +8995,7 @@ def audit_leg(adopt, policy, patterns: list, role: str, rel: str,
                   "review_required": len(review)})
     for key, said in ((ANSWERED, settled), (EMPTY_GITMODULES, empty),
                       (UNREGISTERED_SUBMODULES, unregistered),
+                      (UNREGISTERED_BESIDE, beside),
                       (UNSLASHED, unslashed_rows(answers, role, rel, paths)),
                       (SLASHED, slashed_rows(answers, role, rel, paths))):
         if said:
