@@ -596,6 +596,18 @@ def test_the_package_job_runs_its_python_3_9_on_ubuntu_24_04():
     assert pythons == ["3.9"]
 
 
+def test_the_tests_job_runs_the_suite_on_ubuntu_24_04():
+    """#1096: `tests.yml`'s `tests` job runs the whole suite, and on the
+    Ubuntu 26.04 that `ubuntu-latest` now gives out it ended `2436 failed,
+    11382 passed, 380 skipped, 5579 errors`, with `[Errno 122] Disk quota
+    exceeded` under pytest's basetemp in `/tmp` and `No space left on
+    device` after it. The job is pinned to 24.04, where it passed, until
+    the suite runs on 26.04; the change that moves it back takes this test
+    with it."""
+    jobs = load_yaml(WORKFLOWS / "tests.yml")["jobs"]
+    assert jobs["tests"]["runs-on"] == "ubuntu-24.04"
+
+
 def setup_python_pairs():
     """Every (file, job, runner, Python) a setup-python step of `tests.yml`
     or `release.yml` asks for, as text. A job with an `include` matrix
