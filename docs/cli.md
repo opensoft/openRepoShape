@@ -369,7 +369,16 @@ options:
                         right finishes a run a ruleset refused by re-running
                         it with this. A root with commits, and a leg with any
                         other, is still refused: that is a live repository,
-                        not a slot.
+                        not a slot. A run with it on GitHub, like every run
+                        there, turns off git's own terminal prompt and no
+                        other, so it can still wait at an ssh passphrase or
+                        host-key prompt, at a credential helper that prompts,
+                        or at `GIT_ASKPASS`, `SSH_ASKPASS` or `core.askPass`:
+                        a key loaded into an ssh agent, a helper that answers
+                        without prompting, or `GIT_SSH_COMMAND='ssh -o
+                        BatchMode=yes'` (with anything `core.sshCommand` adds)
+                        set for the run, which makes ssh fail at once instead,
+                        keeps it from waiting.
   --pin openProduct@COMMIT
                         declare a neutral-product pin, e.g. --pin
                         openGlass@<40 hex>. It writes
