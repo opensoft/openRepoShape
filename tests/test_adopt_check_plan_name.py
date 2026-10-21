@@ -20,12 +20,13 @@ leg exists:
   that has none (`--source`), checked `plan ok`, and `execute` went on to ask
   GitHub about `acme/Atlsa`. The plan's record holds it now, in both.
 - L4-48: the comments on #499's `org:` read said that a hand edit is caught
-  "whatever `org:` then holds". An `org:` that `checked_value` refuses is
-  `unsafe-value` in `check`, which asks it first, and, in `execute`,
-  `plan-not-the-source` where the plan is held to a repository and
-  `unsafe-value` where it is held to none: caught in both, compared only
-  by one. The last tests here pin that, so the comments say what the
-  commands do.
+  "whatever `org:` then holds". An `org:` that `checked_value` refuses was
+  `unsafe-value` in `check`, which asked it first, and, in `execute`,
+  `plan-not-the-source` where the plan was held to a repository and
+  `unsafe-value` where it was held to none: caught in both, compared only
+  by one. #1020 decided it: such an `org:` names no repository, and both
+  commands refuse it as `unsafe-value` first of the plan's values, held to
+  a repository or not, and never compare it. The last tests here pin that.
 - RV825's MUST-1: v1.0.0 and v1.0.1 read a path `origin` as its last two
   directories (#521), so a plan they wrote can record `repository:
   clones/Atlas` for a source whose `origin` is `<dir>/clones/Atlas.git`.
@@ -407,7 +408,7 @@ def test_a_plan_that_v1_0_x_wrote_for_a_path_origin_is_still_a_correct_plan(
                                   tmp_path / "work")
 
 
-# --- L4-48: what `check` does with an `org:` `checked_value` refuses --------
+# --- L4-48: an `org:` `checked_value` refuses, in `check` and `execute` -----
 
 #: The value `execute` spells, and `check` asks `checked_value` about.
 UNSAFE_ORGS = [("org: acme labs", "'acme labs'"),
@@ -418,22 +419,28 @@ UNSAFE_ORGS = [("org: acme labs", "'acme labs'"),
                ("org: {a: b}", "\"{'a': 'b'}\"")]
 
 
+def unsafe_org(spelled: str) -> str:
+    """How `check` refuses an `org:` `checked_value` refuses, spelled
+    `spelled`, and `execute` in the same words."""
+    return (f"REFUSED unsafe-value: org is {spelled}, which is not a value "
+            "this tool will put on a `git` or `gh` command line")
+
+
 @pytest.mark.parametrize("org, spelled", UNSAFE_ORGS,
                          ids=["space", "list", "empty", "leading-dash",
                               "not-ascii", "mapping"])
-@pytest.mark.parametrize("held, code", [
-    (True, PLAN_NOT_THE_SOURCE),
-    (False, "unsafe-value"),
-], ids=["held-to-a-repository", "held-to-none"])
-def test_an_unsafe_org_is_unsafe_in_check_and_compared_by_execute_if_held(
-        adopter, tmp_path, monkeypatch, org, spelled, held, code):
-    """L4-48: the comments on #499's `org:` read said any `org:` is caught
-    "whatever the file holds". It is caught in both commands, and not by the
-    same one: `check` asks `checked_value` first and ends in `unsafe-value`,
-    exit 2, never comparing it with the repository. `execute` compares it
-    first, so it refuses it as `plan-not-the-source` where the plan is held
-    to a repository, and as `unsafe-value` where it is held to none (a source
-    that recorded no repository), as `check` does in both."""
+@pytest.mark.parametrize("held", [True, False],
+                         ids=["held-to-a-repository", "held-to-none"])
+def test_an_unsafe_org_is_unsafe_in_check_and_in_execute_held_or_not(
+        adopter, tmp_path, monkeypatch, org, spelled, held):
+    """L4-48, as #1020 decided it: the comments on #499's `org:` read said
+    any `org:` is caught "whatever the file holds", and it was, though not
+    by the same refusal: `execute` compared it first, and refused it as
+    `plan-not-the-source` where the plan is held to a repository, where
+    `check` said `unsafe-value`. Such an `org:` names no repository, so
+    neither compares it: both refuse it as `unsafe-value`, in the same
+    words, held to a repository or to none (a source that recorded no
+    repository)."""
     if held:
         planned_from_origin(tmp_path)
     else:
@@ -445,33 +452,34 @@ def test_an_unsafe_org_is_unsafe_in_check_and_compared_by_execute_if_held(
                                         tmp_path / PLAN, tmp_path / "work")
 
     assert checked.returncode == 2, checked.stdout + checked.stderr
-    unsafe = (f"REFUSED unsafe-value: org is {spelled}, which is not a value "
-              "this tool will put on a `git` or `gh` command line")
+    unsafe = unsafe_org(spelled)
     assert unsafe in checked.stderr.splitlines()
     assert PLAN_NOT_THE_SOURCE not in checked.stderr
-    assert refusal.code == code
-    if not held:
-        assert unsafe[len("REFUSED "):] == f"{refusal.code}: {refusal.detail}"
+    assert unsafe[len("REFUSED "):] == f"{refusal.code}: {refusal.detail}"
 
 
-def test_check_compares_an_unsafe_org_where_no_manifest_is_built(
-        tmp_path):
-    """Where `check` reaches the comparison with such an `org:`: where the
-    plan's own names are refused first, `_manifest_values` builds no
-    manifest and never asks `checked_value` (and no kept submodule url is
-    relative: the next test), so `check` finds the plan names another
-    repository, and the name, and exits 1."""
+def test_an_unsafe_org_is_asked_before_the_plans_refused_names(
+        adopter, tmp_path, monkeypatch):
+    """Where the plan's own names are refused, `_manifest_values` builds no
+    manifest and never asked `checked_value`, so `check` compared such an
+    `org:`, finding that the plan names another repository, and the name,
+    exit 1, as `execute` refused it. Both ask it first of the plan's values
+    now (#1020): `unsafe-value`, exit 2, in the same words, and neither
+    compares it."""
     planned_from_origin(tmp_path)
     edited(tmp_path / PLAN, ("org: acme", "org: acme labs"))
     renamed(tmp_path / PLAN, "bad_name", OWN)
 
     checked = check(tmp_path / PLAN)
+    refusal = refused_before_any_remote(adopter, monkeypatch,
+                                        tmp_path / PLAN, tmp_path / "work")
 
-    assert checked.returncode == 1, checked.stdout + checked.stderr
-    assert [line.split(":")[0] for line in findings(checked.stderr)] == [
-        f"FINDING {PLAN_NOT_THE_SOURCE}",
-        "FINDING naming-unclassified"], checked.stderr
-    assert "`org: acme labs`" in findings(checked.stderr)[0]
+    assert checked.returncode == 2, checked.stdout + checked.stderr
+    assert findings(checked.stderr) == [], checked.stderr
+    unsafe = unsafe_org("'acme labs'")
+    assert unsafe in checked.stderr.splitlines()
+    assert PLAN_NOT_THE_SOURCE not in checked.stderr
+    assert unsafe[len("REFUSED "):] == f"{refusal.code}: {refusal.detail}"
 
 
 def test_check_asks_an_unsafe_org_first_where_a_kept_submodule_url_is_relative(
@@ -480,8 +488,8 @@ def test_check_asks_an_unsafe_org_first_where_a_kept_submodule_url_is_relative(
     `org:` earlier than `_manifest_values` does, wherever a kept submodule's
     url is relative. With the plan's names refused and `org: test org`,
     `check` ends in `unsafe-value`, exit 2, and never compares it, as it
-    does with no relative url (the test above); `execute` says
-    `plan-not-the-source`."""
+    does with no relative url (the test above); and `execute`, which said
+    `plan-not-the-source`, says `unsafe-value` too (#1020)."""
     source = source_with_submodule(tmp_path, SIBLING, HTTPS_ORIGIN)
     made = planned_with_submodule(source, tmp_path)
     edited(made, ("org: testorg", "org: test org"))
@@ -492,8 +500,7 @@ def test_check_asks_an_unsafe_org_first_where_a_kept_submodule_url_is_relative(
                                         tmp_path / "work")
 
     assert checked.returncode == 2, checked.stdout + checked.stderr
-    assert checked.stderr.splitlines()[0] == (
-        "REFUSED unsafe-value: org is 'test org', which is not a value this "
-        "tool will put on a `git` or `gh` command line")
+    unsafe = unsafe_org("'test org'")
+    assert checked.stderr.splitlines()[0] == unsafe
     assert PLAN_NOT_THE_SOURCE not in checked.stderr
-    assert refusal.code == PLAN_NOT_THE_SOURCE
+    assert unsafe[len("REFUSED "):] == f"{refusal.code}: {refusal.detail}"

@@ -1237,7 +1237,9 @@ def malformed(glass) -> dict:
         # Said as `_read_as` says what the plan's reader read (#901).
         "not-a-list": ("pins: openGlass\n",
                        "`pins:` is the text 'openGlass', not a list of pins"),
-        "a-number": ("pins:\n  - 7\n", "`pins:` entry 1 is 7, not a pin"),
+        # And an entry the same way (#1020).
+        "a-number": ("pins:\n  - 7\n",
+                     "`pins:` entry 1 is the number 7, not a pin"),
         "short-commit": ("pins:\n" + pin_entry(commit=commit[:12],
                                                digest=digest),
                          f"{entry} `commit: '{commit[:12]}'`, which is not "

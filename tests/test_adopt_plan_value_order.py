@@ -32,6 +32,21 @@ remotes, as the issue measured at 5017830:
   (`_digest_source_written`). It ends "..., and how it was read, and
   nothing else" now, and no finding about another key of a pin says so.
 
+AND BEFORE WHAT `check` LISTS (#1020), on main at 6da757cb, measured the
+same way. `check` refuses a bad `org:` or `id:` outright, exit 2, and lists
+none of its findings, but `execute` asked the two only after refusing a plan
+for another repository, a name the naming policy refuses, an unanswered
+entry or a source that has moved on, each a finding of `check`'s: a bad id
+beside an unanswered entry was `plan-bad-id` to `check` and
+`plan-unresolved` to `execute`, and so on. `check` asked them only where the
+policy took the plan's names, so an unsafe `org:` beside a refused name was
+a finding about the name, or about another repository, to `check`. Both
+commands now ask the two first of the plan's values, right after the three
+repository names (`_checked_org_and_id`). That decides #716's L4-48 as well:
+an unsafe `org:` held to a repository is `unsafe-value` to both, where
+`execute` said `plan-not-the-source`. And a `pins:` ENTRY that is no pin is
+said as `pins:` itself is (`_read_as`): the number 7, not `7`.
+
 Each test runs `check` and then `execute --yes`, both with the same
 `--local-remote-dir`, on one hand-edited plan, as the issue measured, and
 asserts that the directory the legs go in was never made. `execute` stops
@@ -47,7 +62,7 @@ from pathlib import Path
 
 import pytest
 
-from conftest import ADOPT, make_source_repo, planned, run_script
+from conftest import ADOPT, git, make_source_repo, planned, run_script
 from test_adopt_pins import ANSWERS, pin_entry
 
 UTF8 = "utf-8"
@@ -372,3 +387,146 @@ def test_a_finding_about_another_key_does_not_say_how_it_was_read(
     assert "how it was read" not in found[0], found[0]
     assert executed.returncode == 2, executed.stdout + executed.stderr
     assert refused_with(executed, tmp_path / PLAN_FILE, found) == code
+
+
+# --- the organisation and the id before what `check` lists (#1020) ---------
+
+#: The answers `planned` gives, but `examples/`'s: its entry keeps `leg:
+#: null`, an unanswered question.
+UNANSWERED = tuple(answer for answer in ANSWERS if answer[0] != "examples/")
+#: More hand edits: a leg name the naming policy refuses, another
+#: organisation than the source's, and a plan with no `id:` whose assembly
+#: name gives a bad derived id, which the policy refuses too.
+REFUSED_NAME = ("\n  spec: Northwind-spec\n", "\n  spec: bad_name\n")
+ANOTHER_ORG = ("\norg: testorg\n", "\norg: acme\n")
+DERIVED_BAD_ID = (("\nid: northwind\n", "\n"),
+                  ("\n  assembly: Northwind\n", "\n  assembly: north_wind\n"))
+#: The repository the source's `origin` names, which `plan` records and a
+#: plan for it is held to (`_held_repository`).
+HELD = "testorg/Northwind"
+#: What both commands name first about the derived id.
+DERIVED_ID_REFUSED = ("REFUSED plan-bad-id: {plan}: id (not set in the plan, "
+                      "so legs.assembly lowercased) is 'north_wind', which "
+                      "must match ^[a-z0-9][a-z0-9-]*$")
+
+#: `(the edits, what else the plan holds, what both commands refuse first)`,
+#: by test id. What else: `unanswered` leaves `examples/` unanswered,
+#: `moved` commits to the source after `plan`, and `held` gives the source
+#: an `origin` naming `HELD`. On 6da757cb `execute` named first, row by
+#: row: `plan-unresolved`, `plan-stale`, `naming-unclassified`,
+#: `plan-not-the-source`, `naming-unclassified`, `plan-not-the-source`
+#: (L4-48), `plan-unresolved`, `plan-stale`, `naming-unclassified` and
+#: `plan-not-the-source`; in the last two rows `check` named the same, as a
+#: finding, exit 1, and in the others it refused the organisation or the id.
+BESIDE = {
+    "id-and-unanswered": ((BAD_ID,), {"unanswered"}, ID_REFUSED),
+    "id-and-moved-on": ((BAD_ID,), {"moved"}, ID_REFUSED),
+    "id-and-refused-name": ((BAD_ID, REFUSED_NAME), set(), ID_REFUSED),
+    "id-and-another-repository": ((BAD_ID, ANOTHER_ORG), {"held"},
+                                  ID_REFUSED),
+    "derived-id-and-its-refused-name": (DERIVED_BAD_ID, set(),
+                                        DERIVED_ID_REFUSED),
+    "org-held-to-a-repository": ((BAD_ORG,), {"held"}, ORG_REFUSED),
+    "org-and-unanswered": ((BAD_ORG,), {"unanswered"}, ORG_REFUSED),
+    "org-and-moved-on": ((BAD_ORG,), {"moved"}, ORG_REFUSED),
+    "org-and-refused-name": ((BAD_ORG, REFUSED_NAME), set(), ORG_REFUSED),
+    "org-held-and-refused-name": ((BAD_ORG, REFUSED_NAME), {"held"},
+                                  ORG_REFUSED),
+}
+
+
+def planned_with(base: Path, holds: set) -> str:
+    """The text of the plan `plan` writes for a new source at `base`, with
+    what `holds` names (`BESIDE`): each needs a source of its own."""
+    source = make_source_repo(base / "Thing")
+    if "held" in holds:
+        git("remote", "add", "origin", f"https://github.com/{HELD}.git",
+            cwd=source)
+    text = planned(source, base, dict(
+        UNANSWERED if "unanswered" in holds else ANSWERS)).read_text(
+            encoding=UTF8)
+    if "moved" in holds:
+        (source / "later.txt").write_text("later\n", encoding=UTF8)
+        git("add", "later.txt", cwd=source)
+        git("commit", "-q", "-m", "later work", cwd=source)
+    return text
+
+
+@needs_filter_repo
+@pytest.mark.parametrize("case", sorted(BESIDE))
+def test_the_org_or_the_id_is_named_before_what_check_lists(tmp_path,
+                                                            case):
+    """`check` refuses a bad `org:` or `id:` before it lists a finding, so
+    `execute` asks the two before it refuses anything `check` lists: an
+    unanswered entry, a source that has moved on, a name the policy
+    refuses, a plan for another repository. Each such plan is refused for
+    the organisation or the id by both, exit 2, in the same words, and no
+    leg is made."""
+    edits, holds, refused = BESIDE[case]
+    text = edited(planned_with(tmp_path, holds), *edits)
+    checked, executed = both_on(text, tmp_path)
+    assert checked.returncode == 2, checked.stdout + checked.stderr
+    assert executed.returncode == 2, executed.stdout + executed.stderr
+    assert named_first(checked).startswith(
+        refused.format(plan=tmp_path / PLAN_FILE)), checked.stderr
+    assert named_first(executed) == named_first(checked), executed.stderr
+
+
+#: A leg's repository name `checked_value` refuses.
+UNSAFE_LEG_NAME = ("\n  spec: Northwind-spec\n", '\n  spec: "-spec"\n')
+#: What both commands name first about it.
+LEG_NAME_REFUSED = ("REFUSED unsafe-value: legs.spec is '-spec', which is not "
+                    "a value this tool will put on a `git` or `gh` command "
+                    "line")
+
+
+@needs_filter_repo
+@pytest.mark.parametrize("edit", [BAD_ID, BAD_ORG], ids=["id", "org"])
+def test_the_three_repository_names_are_still_asked_first(answered,
+                                                          tmp_path, edit):
+    """A GUARD, which passes on 6da757cb too: the organisation and the id
+    are asked right AFTER the plan's three repository names, by `check` at
+    its head as by `execute` (`plan.names()`), so a leg name
+    `checked_value` refuses beside a bad `id:` or `org:` is that name's
+    `unsafe-value` to both, as it was, and not the other value's."""
+    checked, executed = both_on(edited(answered, UNSAFE_LEG_NAME, edit),
+                                tmp_path)
+    assert checked.returncode == 2, checked.stdout + checked.stderr
+    assert executed.returncode == 2, executed.stdout + executed.stderr
+    assert named_first(checked) == LEG_NAME_REFUSED, checked.stderr
+    assert named_first(executed) == LEG_NAME_REFUSED, executed.stderr
+
+
+# --- a `pins:` entry that is no pin, said as its reader read it -------------
+
+#: `(the plan's `pins:` block, what entry 1 was read as, as `_read_as` says
+#: it)`, by test id. On 6da757cb each was `repr`'s: `7`, `True`, `None`,
+#: `[1, 2]`.
+NOT_A_PIN = {
+    "number": ("pins:\n  - 7\n", "the number 7"),
+    "boolean": ("pins:\n  - true\n", "the boolean true"),
+    "null": ("pins:\n  - ~\n", "null"),
+    "list": ("pins:\n  - [1, 2]\n", "a list of 2 item(s)"),
+}
+
+
+@needs_filter_repo
+@pytest.mark.parametrize("case", sorted(NOT_A_PIN))
+def test_an_entry_that_is_no_pin_is_said_as_its_reader_read_it(
+        answered, tmp_path, case):
+    """An entry of `pins:` that is neither a name nor a mapping was spelled
+    as Python spells it, `True` or `None`, where `pins:` itself is said as
+    `_read_as` says what the plan's reader read (#901): `check` finds it in
+    those words now, and `execute` refuses it in them."""
+    block, read = NOT_A_PIN[case]
+    checked, executed = both_on(
+        edited(answered, ("\npins: []\n", f"\n{block}")), tmp_path)
+    found = findings_of(checked)
+    assert checked.returncode == 1, checked.stdout + checked.stderr
+    assert len(found) == 1, checked.stderr
+    assert found[0].startswith(
+        f"FINDING plan-pin-malformed: `pins:` entry 1 is {read}, not a pin: "
+        "re-run `plan` with `--pin <openProduct>@<40 hex commit>`"), found[0]
+    assert executed.returncode == 2, executed.stdout + executed.stderr
+    assert refused_with(executed, tmp_path / PLAN_FILE,
+                        found) == "plan-pin-malformed"
