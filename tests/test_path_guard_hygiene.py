@@ -30,19 +30,26 @@ WHAT THIS HOLDS, so that no new guard brings the old answer back:
 
   * THE HYGIENE TEST. Every shipped tool is parsed (`ast`), and every call
     of `.is_file()`, `.is_dir()`, `.exists()` or `.is_symlink()`, and of
-    `os.path.isfile`, `isdir`, `exists`, `lexists` or `islink` (however it
-    was imported, and passed as a function too), fails unless it is inside
-    the file's own stat helper or on `BENIGN`, a reasoned allowlist keyed by
-    file, enclosing function and the call's own text, never by line. The
-    failure names the file and line and says what to do.
+    `os.path.isfile`, `isdir`, `exists`, `lexists` or `islink`, fails
+    unless it is on `BENIGN`, a reasoned allowlist keyed by file, enclosing
+    function and the call's own text, never by line, as often as the
+    function makes it. That covers a call wrapped over lines, the module
+    reached as `os.path`, `posixpath` and the like, through `import os as
+    o`, `import os.path as p`, `from os import path` or `p = os.path`, a
+    test imported from it by name, and a guard passed as a function; it
+    does not cover a guard named by a string (`getattr`). One inside a stat
+    helper fails too: the helper asks `stat` and nothing else. The failure
+    names the file and line and says what to do.
   * `BENIGN` holds the sites the plan left out on purpose, each tagged with
     the plan's reason (`TAGS`). `KNOWN_OPEN` holds the real sites this slice
     found and did not fix, each with the follow-up that will. An entry that
     names no guard any more fails too, so neither list outlives its site.
   * THE PARITY TEST. Each helper's absent errnos and Windows errors are read
     out of the AST, through the module constants and the functions it calls,
-    and must be the one set above; and each must re-raise every other
-    `OSError`.
+    and must be the one set above. On that path a helper may catch only
+    `OSError` and `ValueError`, its `except OSError` must hold a bare
+    `raise`, and `errno` and `winerror` may be read only as `in <set>`. A
+    class or an `async def` by a helper's name is refused.
 
 ONE SITE THIS SLICE FIXED: `shape-doctor.py`'s `Context.__init__`, where a
 `project.yaml` that is a link into a folder this user cannot search was a
@@ -127,8 +134,9 @@ TAGS = {
     "ASKED": "asked only after the path, or the folder or repository it is "
              "in, was asked by the stat helper, a `stat`, or git, or inside "
              "a `try` that keeps the `OSError`",
-    "ROOT": "a name directly in the root, asked by `lstat` or of a root the "
-            "tool refuses by name first where it cannot search it",
+    "ROOT": "a name directly in the root, asked by `lstat`, or where a link "
+            "at the name is left out or handled as a link first, in a root "
+            "the tool refuses by name first where it cannot search it",
     "DEST": "the plan's OPEN-DEST, loud: a destination asked before a create "
             "or a clone, which then fails by name",
     "PINNED": "`scripts/repo_shape.py`'s `find_repo_root`, a shape copy, "
@@ -283,7 +291,10 @@ BENIGN = _entries({
     (FA, "_members_file_left_in_head", "os.path.islink(root / MEMBERS_DIR)"):
         ("ROOT", "`members` directly in the holder, by `lstat`"),
     (FA, "_members_on_disk", "top.is_dir()"): (
-        "ROOT", "an entry `os.listdir` of the holder just named"),
+        "ROOT", "an entry `os.listdir` of the holder just named; "
+        "`is_dir()` follows a link there, but `_disk_kind` names a link "
+        "`a symlink` by `lstat`, and `_disk_spellings` moves aside, "
+        "unread, every entry that is no directory"),
     (FA, "_members_spellings", 'os.path.lexists(root / name / ".git")'): (
         "DELIBERATE", SPELLING + "the `-f` of a move back"),
     (FA, "_moved_or_kept", "path.is_dir()"): (
@@ -332,12 +343,6 @@ BENIGN = _entries({
      '(candidate / ".git").exists()'): (
         "PINNED", "the walk up to a `.git`; the plan left it (pinned, "
         "low)"),
-    ("scripts/shape_advisory.py", "_read", '(root / ".git").exists()'): (
-        "ROOT", "the root's `.git`, for the Triad advice, which never "
-        "moves a verdict"),
-    ("scripts/shape_advisory.py", "repository_names",
-     '(root / ".git").exists()'): (
-        "ROOT", "the same, before git is asked for the origin"),
     (SM, "_append_eol_block", "path.is_file()"): (
         "OWN", "the target this materializer writes"),
     (SM, "_append_eol_block", "path.is_symlink()"): (
@@ -414,11 +419,6 @@ BENIGN = _entries({
         "OWN", "the standard's own `adopt-project.py`"),
     (SD, "check_machine", "entry.is_file()"): (
         "OWN", "the standard's own `setup-project.py`"),
-    (SD, "check_the_other_way_in", '(ctx.root / ".git").exists()'): (
-        "ROOT", "the root's `.git`; `main` refuses a root it cannot "
-        "search first (slice C)"),
-    (SD, "check_the_way_in", '(root / ".git").exists()'): (
-        "ROOT", "the same"),
     (SD, "check_what_is_here", "(root / FAMILY_MANIFEST).is_file()"): (
         "ASKED", "a NOT A SHAPE ROOT row: `Context` asked the manifest by "
         "`is_a` first"),
@@ -457,16 +457,12 @@ BENIGN = _entries({
         "ASKED", "only of members whose mount `mount_read` read"),
     (SD, "not_in_the_standard", "(SHAPE_ROOT / marker).exists()"): (
         "OWN", "the doctor's own checkout of the standard"),
-    (SD, "origin_org", '(root / ".git").exists()'): (
-        "ROOT", "the root's `.git`, in a root `main` searched first"),
     (SD, "origin_url", '(path / ".git").exists()'): (
         "ASKED", "the root, or a sibling `sibling_slot` found"),
     (SD, "placement_policy", "policy_path.is_file()"): (
         "OWN", "the standard's own path policy"),
     (SD, "registered_unindexed", "os.path.lexists(disk)"): (
         "ASKED", "a leg git listed the index of first, by `lstat`"),
-    (SD, "repo_local_origin_name", '(root / ".git").exists()'): (
-        "ROOT", "the root's `.git`, in a root `main` searched first"),
     (SD, "same_repository_here", "os.path.exists(path)"): (
         "DELIBERATE", "resolves a remote's local path when it can; a "
         "string compare otherwise"),
@@ -617,6 +613,26 @@ KNOWN_OPEN = _entries({
         "cannot search reads `absent` in the `agent files` note"),
     (SD, "check_what_is_here", "(root / name).exists()"): (
         FOLLOW_UP, "the same for the NOT A SHAPE ROOT row's facts"),
+    # r1111's M1: the root's `.git`, asked by a `stat` that follows a link.
+    (SD, "check_the_way_in", '(root / ".git").exists()'): (
+        FOLLOW_UP, "a `.git` that is a link into a folder this user cannot "
+        "search: the `way-in` row says there is no repository to adopt and "
+        "sends the person to `setup.sh` to scaffold three new ones"),
+    (SD, "check_the_other_way_in", '(ctx.root / ".git").exists()'): (
+        FOLLOW_UP, "the same `.git`: the `way-in-scaffold` row is left out"),
+    (SD, "origin_org", '(root / ".git").exists()'): (
+        FOLLOW_UP, "the same `.git`: None, the answer for a folder that is "
+        "no repository"),
+    (SD, "repo_local_origin_name", '(root / ".git").exists()'): (
+        FOLLOW_UP, "the same `.git`: None, so the `naming` row classifies "
+        "the folder's name alone and drops the origin's"),
+    ("scripts/shape_advisory.py", "_read", '(root / ".git").exists()'): (
+        FOLLOW_UP, "the same `.git`: `not-a-repository`, so the Triad "
+        "advisory row is left out"),
+    ("scripts/shape_advisory.py", "repository_names",
+     '(root / ".git").exists()'): (
+        FOLLOW_UP, "the same `.git`: the origin's name is not read for the "
+        "Triad advice"),
 })
 
 
@@ -654,15 +670,23 @@ def _dotted(node: ast.AST) -> str | None:
 
 
 def _os_path_names(tree: ast.Module) -> tuple[set[str], set[str]]:
-    """`(names bound to the os.path module, names bound to one of its
-    tests)`, by `import os.path as p`, `from os import path` and `from
-    os.path import exists`."""
-    modules: set[str] = set()
+    """`(each expression the os.path module is reached through, each name
+    bound to one of its tests)`. The module: `os.path`, `posixpath`,
+    `ntpath` and `genericpath` as written, `o.path` after `import os as o`,
+    `p` after `import os.path as p`, `from os import path [as p]` or `p =
+    os.path` (to any depth of such names). The tests: `from os.path import
+    exists [as e]`. Not caught, and in no shipped tool today: a guard asked
+    by its name as a string (`getattr`, `operator.methodcaller`), and the
+    other questions of the same kind (`ismount`, `is_fifo`, `os.access`
+    with `F_OK`, a hand-written `stat` whose `OSError` is False)."""
+    modules = set(OS_PATH_MODULES)
     tests: set[str] = set()
     for node in ast.walk(tree):
         if isinstance(node, ast.Import):
             for alias in node.names:
-                if alias.name in OS_PATH_MODULES and alias.asname:
+                if alias.name == "os" and alias.asname:
+                    modules.add(f"{alias.asname}.path")
+                elif alias.name in OS_PATH_MODULES and alias.asname:
                     modules.add(alias.asname)
         elif isinstance(node, ast.ImportFrom) and node.level == 0:
             for alias in node.names:
@@ -671,6 +695,21 @@ def _os_path_names(tree: ast.Module) -> tuple[set[str], set[str]]:
                 elif (node.module in OS_PATH_MODULES
                       and alias.name in OS_PATH_GUARDS):
                     tests.add(alias.asname or alias.name)
+    bound = [(node.targets if isinstance(node, ast.Assign)
+              else [node.target], node.value)
+             for node in ast.walk(tree)
+             if isinstance(node, (ast.Assign, ast.AnnAssign))
+             and node.value is not None]
+    grown = True
+    while grown:
+        grown = False
+        for targets, value in bound:
+            if _dotted(value) not in modules:
+                continue
+            for target in targets:
+                if isinstance(target, ast.Name) and target.id not in modules:
+                    modules.add(target.id)
+                    grown = True
     return modules, tests
 
 
@@ -689,8 +728,7 @@ def guards_in(text: str, file: str) -> list[Site]:
             return False
         if node.attr in GUARD_METHODS:
             return True
-        return node.attr in OS_PATH_GUARDS and (
-            _dotted(node.value) in OS_PATH_MODULES | modules)
+        return node.attr in OS_PATH_GUARDS and _dotted(node.value) in modules
 
     found: list[Site] = []
 
@@ -712,17 +750,19 @@ def guards_in(text: str, file: str) -> list[Site]:
 
 
 def in_a_helper(site: Site) -> bool:
-    """Whether the guard is inside the file's own stat helper, a function
-    of the module whose name is `_is_a` or `is_a`."""
+    """Whether the guard is inside a stat helper, a top-level `_is_a` or
+    `is_a`: NOT an exemption (r1111's S2). A helper must ask `stat` and
+    nothing else, or it answers as Python 3.14 does."""
     return site.scope.split(".")[0] in HELPER_NAMES
 
 
-def unlisted(sites: list[Site], has_helper: bool) -> list[str]:
-    """What the hygiene test says of each guard neither in a helper nor
-    allowed, one message each, naming the file and line."""
-    allowed = {**BENIGN, **KNOWN_OPEN}
-    bare = [site for site in sites if not in_a_helper(site)]
-    counts = Counter(site.key for site in bare)
+def unlisted(sites: list[Site], has_helper: bool,
+             allowed: dict | None = None) -> list[str]:
+    """What the hygiene test says of each guard that `allowed` (BENIGN and
+    KNOWN_OPEN) does not list as often as the function makes it, one
+    message each, naming the file and line."""
+    allowed = {**BENIGN, **KNOWN_OPEN} if allowed is None else allowed
+    counts = Counter(site.key for site in sites)
     how = ("this file's own `_is_a(path, stat.S_ISREG)` (or `S_ISDIR`), "
            "which raises a refused `stat` for the caller to name"
            if has_helper else
@@ -730,9 +770,17 @@ def unlisted(sites: list[Site], has_helper: bool) -> list[str]:
            "none, and a pinned file must not import a newer one from "
            "repo_shape.py (#370, #610)")
     messages = []
-    for site in bare:
+    for site in sites:
         limit = allowed.get(site.key, (None, None, 0))[2]
         if counts[site.key] <= limit:
+            continue
+        if in_a_helper(site):
+            messages.append(
+                f"{site.file}:{site.line}, in `{site.scope}`: `{site.snippet}`"
+                " is a bare guard inside the stat helper itself. The helper "
+                "must ask `stat` and nothing else: a guard there answers as "
+                "Python 3.14 does, False to any OSError, for every caller "
+                "(#430).")
             continue
         over = (f" ({counts[site.key]} such calls in the function, "
                 f"{limit} allowed)" if limit else "")
@@ -744,6 +792,13 @@ def unlisted(sites: list[Site], has_helper: bool) -> list[str]:
             "BENIGN in tests/test_path_guard_hygiene.py, keyed "
             f"{site.key!r}, with a tag from TAGS and a one-line reason.")
     return messages
+
+
+def stale_entries(found: Counter, allowed: dict) -> list[str]:
+    """Each entry of `allowed` that names more calls than `found` holds:
+    a guard that has gone, moved to another function or changed its text."""
+    return [f"{key!r}: {found[key]} found, {count} listed"
+            for key, (_, _, count) in allowed.items() if found[key] < count]
 
 
 @pytest.fixture(scope="module")
@@ -769,8 +824,8 @@ def test_the_scan_reads_every_shipped_tool(scanned):
 
 @pytest.mark.parametrize("path", shipped_tools(), ids=relative)
 def test_no_bare_guard_outside_a_stat_helper_or_the_allowlist(path, scanned):
-    """Each guard is in the file's stat helper, or on BENIGN or KNOWN_OPEN
-    with its reason. A new one fails here, by file and line, with what to
+    """Each guard is on BENIGN or KNOWN_OPEN with its reason, and none is in
+    a stat helper. A new one fails here, by file and line, with what to
     do."""
     text, sites = scanned[relative(path)]
     has_helper = any(isinstance(node, ast.FunctionDef)
@@ -784,10 +839,8 @@ def test_every_allowlist_entry_names_a_guard_that_is_there(scanned):
     """An entry whose call has gone, or moved to another function, or whose
     count no longer matches, fails, so the lists say only what is true."""
     found = Counter(site.key for _, sites in scanned.values()
-                    for site in sites if not in_a_helper(site))
-    stale = [f"{key!r}: {found[key]} found, {count} listed"
-             for key, (_, _, count) in {**BENIGN, **KNOWN_OPEN}.items()
-             if found[key] < count]
+                    for site in sites)
+    stale = stale_entries(found, {**BENIGN, **KNOWN_OPEN})
     assert not stale, (
         "these entries name a guard that is no longer there; take each "
         "out, or put its new function or text in its key:\n"
@@ -797,7 +850,7 @@ def test_every_allowlist_entry_names_a_guard_that_is_there(scanned):
 def test_every_allowlist_entry_is_tagged_and_reasoned():
     """Each BENIGN entry carries one of the plan's reasons (`TAGS`) and a
     line of its own, and each KNOWN_OPEN entry the follow-up that owns it.
-    No site is on both."""
+    No site is on both, and none is in a stat helper."""
     assert not set(BENIGN) & set(KNOWN_OPEN)
     for key, (tag, reason, count) in BENIGN.items():
         assert tag in TAGS, key
@@ -805,15 +858,20 @@ def test_every_allowlist_entry_is_tagged_and_reasoned():
     for key, (owner, reason, count) in KNOWN_OPEN.items():
         assert owner == FOLLOW_UP, key
         assert reason.strip() and count >= 1, key
+    for file, scope, said in {**BENIGN, **KNOWN_OPEN}:
+        assert not in_a_helper(Site(file, 0, scope, said)), (file, scope)
 
 
 #: Each way a guard can be written, and the key the scan gives it.
 SPELLINGS = '''
 import os
+import os as system
 import os.path as osp
 from os import path as ospath
 from os.path import lexists, isdir as is_directory
 from pathlib import Path
+held = os.path
+again = held
 
 def _is_a(path, kind):
     return path.is_file()
@@ -823,9 +881,9 @@ def asks(here: Path):
     os.path.isfile(here); os.path.isdir(here); os.path.exists(here)
     os.path.lexists(here); os.path.islink(here)
     osp.exists(here); ospath.isfile(here); lexists(here)
-    is_directory(here)
+    is_directory(here); system.path.isfile(here); again.islink(here)
     list(filter(os.path.exists, [here])); list(map(Path.is_dir, [here]))
-    os.stat(here); here.stat(); here.lstat()
+    os.stat(here); here.stat(); here.lstat(); system.stat(here)
 
 class Holder:
     def method(self):
@@ -836,8 +894,9 @@ class Holder:
 
 def test_the_scan_finds_every_spelling_and_nothing_else():
     """The scan's own proof, independent of the tree: each spelling of a
-    guard is found, wrapped or not, imported under any name or passed as a
-    function; a `stat` is not; and the one inside `_is_a` is the helper's."""
+    guard it covers is found, wrapped or not, imported or bound under any
+    name or passed as a function; a `stat` is not; and the one inside
+    `_is_a` is refused as a guard in the helper (r1111's X4)."""
     sites = guards_in(SPELLINGS, "spellings.py")
     assert [(site.scope, site.snippet) for site in sites] == [
         ("_is_a", "path.is_file()"),
@@ -847,28 +906,65 @@ def test_the_scan_finds_every_spelling_and_nothing_else():
         ("asks", "os.path.exists(here)"), ("asks", "os.path.lexists(here)"),
         ("asks", "os.path.islink(here)"), ("asks", "osp.exists(here)"),
         ("asks", "ospath.isfile(here)"), ("asks", "lexists(here)"),
-        ("asks", "is_directory(here)"), ("asks", "os.path.exists"),
+        ("asks", "is_directory(here)"), ("asks", "system.path.isfile(here)"),
+        ("asks", "again.islink(here)"), ("asks", "os.path.exists"),
         ("asks", "Path.is_dir"),
         ("Holder.method", '(self.root / "x").exists()'),
     ]
-    assert [in_a_helper(site) for site in sites] == [True] + [False] * 16
     messages = unlisted(sites, has_helper=True)
-    assert len(messages) == 16
-    assert messages[0].startswith("spellings.py:12, in `asks`: "
+    assert len(messages) == len(sites) == 19
+    assert messages[0] == (
+        "spellings.py:12, in `_is_a`: `path.is_file()` is a bare guard "
+        "inside the stat helper itself. The helper must ask `stat` and "
+        "nothing else: a guard there answers as Python 3.14 does, False to "
+        "any OSError, for every caller (#430).")
+    assert messages[1].startswith("spellings.py:15, in `asks`: "
                                   "`here.is_file()` is a bare guard.")
-    assert "this file's own `_is_a(" in messages[0]
+    assert "this file's own `_is_a(" in messages[1]
     assert "a local `_is_a`, copied from validate-pins.py's" in unlisted(
-        sites, has_helper=False)[0]
+        sites, has_helper=False)[1]
+
+
+#: A function that makes one call twice, for the count's own proof.
+COUNTED = '''
+def twice(here):
+    return here.exists() or here.exists()
+'''
+
+
+def test_an_entry_allows_as_many_calls_as_it_counts_and_no_more():
+    """The count's own proof (r1111's T2 and T3): an entry for one call does
+    not cover two, one for two covers both, and one that names more calls
+    than the function makes, or a call it no longer makes, is stale."""
+    sites = guards_in(COUNTED, "counted.py")
+    key = ("counted.py", "twice", "here.exists()")
+    found = Counter(site.key for site in sites)
+    once, twice, thrice = ({key: ("OWN", "a test", count)}
+                           for count in (1, 2, 3))
+    messages = unlisted(sites, True, once)
+    assert len(messages) == 2
+    assert all("(2 such calls in the function, 1 allowed)" in message
+               for message in messages)
+    assert unlisted(sites, True, twice) == []
+    assert stale_entries(found, twice) == []
+    assert stale_entries(found, thrice) == [f"{key!r}: 2 found, 3 listed"]
+    assert stale_entries(Counter(), once) == [f"{key!r}: 0 found, 1 listed"]
 
 
 # --- the parity test --------------------------------------------------------
 
+#: The handlers a helper may hold: `OSError`, which re-raises what is not
+#: absent, and `ValueError`, a name no system can take (a NUL in it).
+HANDLERS = frozenset({"OSError", "ValueError"})
+
+
 class AbsentSets(NamedTuple):
-    """What a helper reads as nothing there, and whether it re-raises the
-    rest: each set as the helper spells it, every one it compares with."""
+    """What a helper reads as nothing there, and what it may not do: each
+    set as the helper spells it, every one it compares with, and each way
+    on the path from its `stat` to its `raise` that would answer otherwise."""
     errnos: list[frozenset]
     winerrors: list[frozenset]
-    reraises: bool
+    refused: list[str]
 
 
 def _constants(tree: ast.Module) -> dict[str, ast.expr]:
@@ -908,21 +1004,51 @@ def _members(expr: ast.expr, constants: dict) -> frozenset:
     return frozenset(members)
 
 
-def _catches_oserror(handler: ast.ExceptHandler) -> bool:
+def _caught(handler: ast.ExceptHandler) -> list[str]:
+    """What an `except` names, `except:` as `BaseException`."""
+    if handler.type is None:
+        return ["BaseException"]
     names = (handler.type.elts if isinstance(handler.type, ast.Tuple)
              else [handler.type])
-    return any(isinstance(name, ast.Name) and name.id == "OSError"
-               for name in names)
+    return [_dotted(name) or ast.dump(name) for name in names]
+
+
+def _asked(node: ast.AST) -> str | None:
+    """`errno` or `winerror` where `node` reads one off an exception:
+    `<exc>.errno`, `<exc>.winerror` or `getattr(<exc>, "winerror", ...)`."""
+    if isinstance(node, ast.Attribute) and node.attr in ("errno",
+                                                         "winerror"):
+        return node.attr
+    if (isinstance(node, ast.Call) and isinstance(node.func, ast.Name)
+            and node.func.id == "getattr" and len(node.args) >= 2
+            and isinstance(node.args[1], ast.Constant)
+            and node.args[1].value in ("errno", "winerror")):
+        return node.args[1].value
+    return None
 
 
 def absent_sets(text: str, helper: str) -> AbsentSets:
     """The helper's sets, read through every function of the module it
     calls (`_absent`, `_mode_of`, `_says_absent`, `refused_read`): each
     `<exc>.errno in <set>` and `getattr(<exc>, "winerror", None) in <set>`.
-    `reraises`: every `except OSError` on the way ends in a bare `raise`,
-    so what is not absent reaches the caller."""
+
+    `refused` names, on that path (r1111's S1): a handler for anything but
+    `OSError` and `ValueError` (`PermissionError`, `Exception`, `except:`),
+    which would answer before the set is asked; an `except OSError` with no
+    bare `raise` in it; and an `errno` or `winerror` read any other way
+    than `in <set>` (`== errno.EACCES`), which would put another errno
+    beside the set."""
     tree = ast.parse(text)
-    functions = {node.name: node for node in tree.body
+    defined = {node.name: node for node in tree.body
+               if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef,
+                                    ast.ClassDef))}
+    if helper not in defined:
+        raise LookupError(f"no function `{helper}` in the module")
+    if not isinstance(defined[helper], ast.FunctionDef):
+        kind = ("a class" if isinstance(defined[helper], ast.ClassDef)
+                else "an async def")
+        raise LookupError(f"`{helper}` is {kind}, not a plain function")
+    functions = {name: node for name, node in defined.items()
                  if isinstance(node, ast.FunctionDef)}
     constants = _constants(tree)
     seen, queue = [], [helper]
@@ -934,30 +1060,35 @@ def absent_sets(text: str, helper: str) -> AbsentSets:
         queue.extend(node.func.id for node in ast.walk(functions[name])
                      if isinstance(node, ast.Call)
                      and isinstance(node.func, ast.Name))
-    if not seen:
-        raise LookupError(f"no function `{helper}` in the module")
-    errnos, winerrors, handlers = [], [], []
+    errnos, winerrors, refused, approved = [], [], [], set()
     for name in seen:
         for node in ast.walk(functions[name]):
-            if isinstance(node, ast.ExceptHandler) and _catches_oserror(node):
-                handlers.append(node)
+            if isinstance(node, ast.ExceptHandler):
+                caught = _caught(node)
+                if not set(caught) <= HANDLERS:
+                    refused.append(f"`{name}` catches "
+                                   f"{', '.join(caught)}, which answers "
+                                   "before the set is asked")
+                elif "OSError" in caught and not any(
+                        isinstance(inner, ast.Raise) and inner.exc is None
+                        for inner in ast.walk(node)):
+                    refused.append(f"`{name}`'s `except OSError` does not "
+                                   "re-raise what is not absent")
             if not (isinstance(node, ast.Compare) and len(node.ops) == 1
                     and isinstance(node.ops[0], ast.In)):
                 continue
-            left, right = node.left, node.comparators[0]
-            if isinstance(left, ast.Attribute) and left.attr == "errno":
-                errnos.append(_members(right, constants))
-            elif (isinstance(left, ast.Call)
-                  and isinstance(left.func, ast.Name)
-                  and left.func.id == "getattr" and len(left.args) >= 2
-                  and isinstance(left.args[1], ast.Constant)
-                  and left.args[1].value == "winerror"):
-                winerrors.append(_members(right, constants))
-    reraises = bool(handlers) and all(
-        any(isinstance(node, ast.Raise) and node.exc is None
-            for node in ast.walk(handler))
-        for handler in handlers)
-    return AbsentSets(errnos, winerrors, reraises)
+            kind = _asked(node.left)
+            if kind is None or _asked(node.comparators[0]) is not None:
+                continue
+            approved.add(id(node.left))
+            (errnos if kind == "errno" else winerrors).append(
+                _members(node.comparators[0], constants))
+        refused += [f"`{name}` reads "
+                    f"`{ast.get_source_segment(text, node)}` other than "
+                    "as `in <set>`"
+                    for node in ast.walk(functions[name])
+                    if _asked(node) and id(node) not in approved]
+    return AbsentSets(errnos, winerrors, refused)
 
 
 def parity_problems(text: str, helper: str) -> list[str]:
@@ -975,17 +1106,17 @@ def parity_problems(text: str, helper: str) -> list[str]:
                  for wrong in found.errnos if wrong != ABSENT_ERRNOS]
     problems += [f"its Windows errors are {sorted(map(str, wrong))}"
                  for wrong in found.winerrors if wrong != ABSENT_WINERRORS]
-    if not found.reraises:
-        problems.append("an `except OSError` on its way does not re-raise "
-                        "what is not absent")
-    return problems
+    return problems + found.refused
 
 
 def _helpers(scanned) -> list[tuple[str, str]]:
-    """`(file, helper)` for every top-level `_is_a` or `is_a` shipped."""
+    """`(file, helper)` for every top-level `_is_a` or `is_a` shipped, a
+    class or an `async def` of that name among them (r1111's N2), which the
+    parity test then refuses."""
     return sorted((file, node.name) for file, (text, _) in scanned.items()
                   for node in ast.parse(text).body
-                  if isinstance(node, ast.FunctionDef)
+                  if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef,
+                                       ast.ClassDef))
                   and node.name in HELPER_NAMES)
 
 
@@ -998,7 +1129,9 @@ def test_each_slices_helper_is_still_there(scanned):
 def test_every_stat_helper_holds_the_one_errno_set(scanned):
     """Every `_is_a` (and the doctor's `is_a`), the twelve and any added
     later, reads ENOENT, ENOTDIR, EBADF and ELOOP, and Windows' 21, 123 and
-    1921, as absent, and re-raises every other `OSError`."""
+    1921, as absent, asks `errno` and `winerror` only as `in` those sets,
+    catches nothing but `OSError` and `ValueError` on the way, and re-raises
+    in its `except OSError`."""
     problems = [f"{file}'s `{helper}`: {problem}"
                 for file, helper in _helpers(scanned)
                 for problem in parity_problems(scanned[file][0], helper)]
@@ -1041,8 +1174,12 @@ def _is_a(path, kind):
         if _absent(exc):
             return False
         raise
+    except ValueError:
+        return False
     return kind(mode)
 '''
+ANSWERS = "    except OSError as exc:\n"
+LAST = "    except ValueError:\n        return False\n"
 
 
 @pytest.mark.parametrize("change, said", [
@@ -1051,16 +1188,35 @@ def _is_a(path, kind):
     ((", errno.EBADF", ""), "its errnos are ['ELOOP', 'ENOENT', 'ENOTDIR']"),
     (("123, 1921", "123"), "its Windows errors are ['123', '21']"),
     (("        raise\n", "        return False\n"),
-     "an `except OSError` on its way does not re-raise what is not absent"),
+     "`_is_a`'s `except OSError` does not re-raise what is not absent"),
     (("in _ABSENT_ERRNOS", "in ABSENT"),
      "its sets cannot be read: `ABSENT` is no constant of the module"),
+    ((ANSWERS, "    except PermissionError:\n        return False\n"
+      + ANSWERS),
+     "`_is_a` catches PermissionError, which answers before the set is "
+     "asked"),
+    ((ANSWERS, "    except Exception:\n        return False\n" + ANSWERS),
+     "`_is_a` catches Exception, which answers before the set is asked"),
+    ((LAST, LAST + "    except:\n        return False\n"),
+     "`_is_a` catches BaseException, which answers before the set is "
+     "asked"),
+    (("in _ABSENT_WINERRORS)",
+      "in _ABSENT_WINERRORS\n            or exc.errno == errno.EACCES)"),
+     "`_absent` reads `exc.errno` other than as `in <set>`"),
+    (("def _is_a(path, kind):", "async def _is_a(path, kind):"),
+     "its sets cannot be read: `_is_a` is an async def, not a plain "
+     "function"),
+    (("def _is_a(path, kind):",
+      "class _is_a:\n    pass\n\ndef _is_b(path, kind):"),
+     "its sets cannot be read: `_is_a` is a class, not a plain function"),
 ])
 def test_the_parity_test_refuses_another_set(change, said):
     """The parity test's own proof: slice A's helper passes, and each
-    one-line change to its set, or to its re-raise, is named."""
+    one-line change to its set, its handlers, its `errno` question or its
+    kind is named (r1111's X5, X6, X15 and X18 among them)."""
     assert parity_problems(HELPER, "_is_a") == []
     old, new = change
-    assert old in HELPER
+    assert HELPER.count(old) == 1
     assert said in parity_problems(HELPER.replace(old, new), "_is_a")
 
 
@@ -1078,18 +1234,24 @@ def doctor_module(monkeypatch):
                                  "doctor_path_guard_hygiene")
 
 
+@pytest.mark.parametrize("code", [errno.EACCES, errno.EIO],
+                         ids=["permission", "io-error"])
 def test_a_manifest_whose_stat_is_refused_is_read_and_named(
-        doctor_module, tmp_path, monkeypatch):
+        doctor_module, tmp_path, monkeypatch, code):
     """`project.yaml`'s `stat` refused, as for a link into a folder this
     user cannot search, with its read refused too, in process, so on every
     Python and as root: the root is the project its filename names, and the
     refusal `load_yaml` gives is kept for the `manifest` row, as for a
     `project.yaml` at mode 000 (#205). Before, `is_file()` answered as 3.14
-    does: no manifest, NOT A SHAPE ROOT."""
+    does: no manifest, NOT A SHAPE ROOT. An I/O error is refused as a
+    permission is (r1111's X12)."""
+    reason = os.strerror(code)
+    error = (PermissionError if code == errno.EACCES else OSError)(
+        code, reason)
     (tmp_path / "project.yaml").write_text(MANIFEST, encoding="utf-8")
     refused_stat(monkeypatch, "project.yaml")
-    refusing(monkeypatch, "read_text", "project.yaml",
-             PermissionError(errno.EACCES, "Permission denied"))
+    refusing(monkeypatch, "stat", "project.yaml", error)
+    refusing(monkeypatch, "read_text", "project.yaml", error)
 
     ctx = doctor_module.Context(tmp_path)
 
@@ -1098,7 +1260,7 @@ def test_a_manifest_whose_stat_is_refused_is_read_and_named(
     assert ctx.manifest is None
     assert ctx.manifest_refusal.code == "yaml-unreadable"
     assert ctx.manifest_refusal.detail.endswith(
-        "project.yaml: cannot be read (Permission denied)")
+        f"project.yaml: cannot be read ({reason})")
 
 
 @pytest.mark.parametrize("make", ["absent", "a-directory"])
