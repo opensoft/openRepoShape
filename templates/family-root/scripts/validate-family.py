@@ -338,9 +338,14 @@ def _git_runs(unread: str) -> Iterator[None]:
     architecture, a script with no shebang), and so does a
     `FileNotFoundError` or a `PermissionError` that names no file, as
     Windows' `CreateProcess` raises one for a missing git, and so does an
-    `OSError` that names none whose `winerror` is 193, Windows' `[WinError
-    193]` for a `git.exe` it cannot execute, which is neither class (#1001).
-    Every other `OSError` passes through as it came.
+    `OSError` that names none whose `winerror` says Windows could not start
+    the program itself, which is neither class: 193, a `git.exe` it cannot
+    execute (#1001), the rest of 193's `ENOEXEC` family, 11 and 188 to 202,
+    216, a `git.exe` built for another architecture, 1260, one AppLocker or
+    a software restriction policy blocks, and 4551, one App Control for
+    Business blocks (#1040). Every other `OSError` passes through as it
+    came, any other `winerror` too, and so does a nameless `[WinError 267]`,
+    a `cwd` that is not a folder.
 
     `validate-pins.py`'s RULE, COPIED, NOT SHARED. This file is a pinned
     copy, and a holder re-copies its pinned files one row at a time, so it
@@ -354,7 +359,8 @@ def _git_runs(unread: str) -> Iterator[None]:
     except OSError as exc:
         nameless = (exc.filename is None
                     and (isinstance(exc, (FileNotFoundError, PermissionError))
-                         or getattr(exc, "winerror", None) == 193))
+                         or getattr(exc, "winerror", None)
+                         in (11, *range(188, 203), 216, 1260, 4551)))
         if exc.filename != "git" and not nameless:
             raise
         raise Refusal(
