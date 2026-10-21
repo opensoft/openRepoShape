@@ -813,16 +813,16 @@ def test_a_named_link_at_the_pin_is_found_there_and_no_case_twin_is_asked(
 #: Where a named link sits beside a SECOND path the shape also writes, kept
 #: in the root, so that `check` makes two findings and not one: the link's
 #: own and the second path's (#1089, SHOULD-2 of r1070). What the skips leave
-#: out is the link and no other path, and each case is a mutant of them that
-#: #1070's whole file let live, because the second finding was the only one
-#: it lost: a link at `shape/README.md` beside a case twin of that copy (M12),
-#: a link at a declared pin's file beside a file at the shape's own pin (M13),
-#: and a link at the README copy beside a file at the Makefile copy (M14). In
-#: each the second path is asked after the link's, on the same disk or the
-#: next. The link's own entry is answered `root` where `plan` proposes
-#: another leg for it (`shape/README.md`: `spec`, by its `.md` extension),
-#: because a link sent to a leg is not kept in the root, and the copy skip
-#: that M14 breaks is never reached for it.
+#: out is the link and no other path, and each case kills a mutant of them
+#: that #1070's whole file let live, because the second finding was the only
+#: one it lost: a link at `shape/README.md` beside a case twin of that copy
+#: (M12), a link at a declared pin's file beside a file at the shape's own
+#: pin (M13), and a link at the README copy beside a file at the Makefile
+#: copy (M14). In each the second path is asked after the link's, on the
+#: same disk or the next. The link's own entry is answered `root` where
+#: `plan` proposes another leg for it (`shape/README.md`: `spec`, by its
+#: `.md` extension), because a link sent to a leg is not kept in the root,
+#: and the copy skip that M14 breaks is never reached for it.
 #:
 #: The source's other files, a declared pin, the link, what the plan keeps in
 #: the root, the code of the second finding and what it says of its path.
