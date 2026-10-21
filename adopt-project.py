@@ -6339,7 +6339,11 @@ def _predict_collisions(entries: list[Entry], *,
 
     Each follow-up is told the WHOLE list: the Makefile's names what runs
     until it is merged, and that depends on whether `scripts/bootstrap.py`
-    went aside too (#493's review, F2).
+    went aside too (#493's review, F2). It is told which file GNU make reads
+    before the shape's `Makefile` as well, where the plan keeps a
+    `GNUmakefile` or a `makefile`, read as `_makefile_follow_up` reads it
+    (`GNU_MAKE_READS`, `_root_keeps`): the merge brings the shape's make
+    targets only where `make` reads the merged file (#1048).
 
     `attributes_link` says the source's root `.gitattributes` is a symlink,
     read from the source tree's mode as `execute` reads it from the index:
@@ -6349,8 +6353,12 @@ def _predict_collisions(entries: list[Entry], *,
     beside = {path: f"{COLLISION_DIR}/{path}"
               for path in sorted(set(assembly_root_paths()))
               if _root_keeps(surviving, path)}
+    reads_first = next((name for name in GNU_MAKE_READS
+                        if name != SHAPE_MAKEFILE
+                        and _root_keeps(surviving, name)), None)
     return [collision_follow_up(path, actual, beside,
-                                attributes_link=attributes_link)
+                                attributes_link=attributes_link,
+                                reads_first=reads_first)
             for path, actual in beside.items()]
 
 
