@@ -3,11 +3,13 @@
 
 `templates/assembly-root/project.yaml` said "For a scaffolded project this is
 all three repositories' visibility". It is not wherever a repository was
-reused: the run records the visibility IT asked for (`--visibility`, which is
-`private` unless the run was given another, or the reused root's own where it
-was given none), and a repository it reuses keeps the visibility it has,
-because no run changes one. `family.yaml` is the same for the holder: a reused
-PUBLIC holder under the default `--visibility private` records `private`, as
+reused: the run records the visibility IT asked for, which is not always what
+a repository is, in an order `_leg_visibility` follows (`--visibility` where
+one was given; where none was, the reused root's own, as GitHub gave it before
+the plan; otherwise `private`), and a repository it reuses keeps the
+visibility it has, because no run changes one. `family.yaml` is the same for
+the holder, with no root to inherit from: a reused PUBLIC holder under the
+default `--visibility private` records `private`, as
 `test_free_plan_hint_reads.py` holds.
 
 Brett Heap ruled on 2026-10-21T10:39:44Z that the WORDS change and no code
@@ -54,11 +56,10 @@ def comment_above_visibility(path) -> str:
 @BOTH
 def test_visibility_is_what_the_run_asked_for(path):
     """The key claim of #913's ruling, in both manifests: what is recorded
-    is what the run was asked for, not a reading of any repository, and a
-    reused repository keeps its own, which no run changes."""
+    is what the run was asked for, and a reused repository keeps its own,
+    which no run changes."""
     comment = comment_above_visibility(path)
-    for phrase in ("ASKED FOR", "not a reading of any repository",
-                   "`--visibility`", "`private`",
+    for phrase in ("ASKED FOR", "`--visibility`", "`private`",
                    "REUSES keeps the visibility it already has",
                    "changes no repository's visibility"):
         assert phrase in comment, (phrase, comment)
@@ -79,12 +80,22 @@ def test_github_is_still_the_source_of_truth(path):
     assert "GitHub is the source of truth" in comment, comment
 
 
-def test_the_scaffold_comment_says_a_reused_root_is_inherited():
-    """The default is `private` only where there is no reused root GitHub
-    gave a visibility for, as `_leg_visibility` has it."""
+def test_the_scaffold_comment_says_what_is_recorded_in_the_order_it_is():
+    """`_leg_visibility`'s order, in the words of the comment: `--visibility`
+    where one was given, which wins over a reused root; where none was, the
+    visibility GitHub gave, before the plan, of an existing assembly root the
+    run reuses; and otherwise `private`. Where the root is the answer the
+    field IS a reading of a repository, so the comment must not say it is
+    never one."""
     comment = comment_above_visibility(ASSEMBLY)
-    assert ("the visibility of an existing assembly root the run reuses, "
-            "as GitHub gave it") in comment, comment
+    order = ("for a scaffold, `--visibility` where one was given; where none "
+             "was, the visibility GitHub gave, before the plan, of an "
+             "existing assembly root the run reuses; and otherwise "
+             "`private`")
+    assert order in comment, comment
+    assert "not a reading of any repository" not in comment, comment
+    assert "which is not always what a repository is" in comment, comment
+    assert "why the legs it created are internal" in comment, comment
 
 
 def test_the_in_place_adoption_sentence_holds():
@@ -92,8 +103,8 @@ def test_the_in_place_adoption_sentence_holds():
     source's root as it is, which is what the sentence says and the ruling
     left standing."""
     comment = comment_above_visibility(ASSEMBLY)
-    for phrase in ("For an in-place adoption it is the value the two NEW "
-                   "legs were created with",
+    for phrase in ("in-place adoption it is the value the two NEW legs were "
+                   "created with",
                    "keeps whatever visibility it already had on GitHub, "
                    "unchanged by this tool"):
         assert phrase in comment, (phrase, comment)
@@ -103,5 +114,6 @@ def test_the_family_comment_says_it_is_the_holders_alone():
     """`family.yaml` records the HOLDER's, as `family.py init` fills it from
     `--visibility`; a member is a project, with a `visibility:` of its own."""
     comment = comment_above_visibility(FAMILY)
+    assert "not a reading of any repository" in comment, comment
     assert "It is the HOLDER's alone" in comment, comment
     assert "a holder the run REUSES keeps" in comment, comment
