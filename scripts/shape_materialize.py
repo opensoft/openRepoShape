@@ -520,12 +520,35 @@ def neutral_pin_path(product: str) -> str:
 #: `Icon\n` bare, over two lines of the plan (#199).
 PLAIN_SCALAR_RE = re.compile(r"^[A-Za-z_.][A-Za-z0-9_./@:+-]*\Z")
 
+#: WHAT A STANDARD YAML READER TAKES FOR NO TEXT (#912): of the plain scalars
+#: `PLAIN_SCALAR_RE` takes, which begin with a letter, `_` or `.`, the ones
+#: YAML 1.1 or YAML 1.2's core schema resolves to a bool, a null or a float.
+#: The bools are YAML 1.1's (yaml.org/type/bool.html): `y`, `n`, `yes`, `no`,
+#: `on` and `off`, which 1.2 dropped, and `true` and `false`, which both
+#: keep, each in its lower, capitalised and upper case. The null is `null`,
+#: in both and in the same three cases. The floats begin with a point:
+#: `.inf` and `.nan` in their three cases, and a point before digits, as
+#: YAML 1.1's pattern is written (`\.[0-9.]*`, so `.` and `..` too), and as
+#: its own example `685.230_15e+03` and its readers read it, with `_` among
+#: the digits (PyYAML takes `.5_` for 0.5, ruamel.yaml `._` for a float), and
+#: YAML 1.2's unsigned exponent, `.5e3`. Nothing else either resolves to no
+#: text is a plain scalar `PLAIN_SCALAR_RE` takes: `~` and the empty null,
+#: YAML 1.1's `<<` and `=`, and an int, a timestamp or a float that begins
+#: with a digit or a sign.
+YAML_NOT_TEXT_RE = re.compile(
+    r"^(?:[yYnN]|yes|Yes|YES|no|No|NO|on|On|ON|off|Off|OFF"
+    r"|true|True|TRUE|false|False|FALSE|null|Null|NULL"
+    r"|\.(?:inf|Inf|INF|nan|NaN|NAN)"
+    r"|\.[0-9.]*(?:[eE][-+][0-9]+)?"
+    r"|\.[0-9_]+(?:[eE][-+]?[0-9]+)?)\Z")
+
 
 def neutral_pin_entry(product: str) -> str:
     """One `neutral_product_pins:` entry, as `scaffold-project.py` and
     `adopt-project.py execute` both write it: `product` bare where it is a
     plain scalar (`PLAIN_SCALAR_RE`) that the project's reader reads back as
-    `product`, and `double_quoted` (#284) where it is not.
+    `product` and that YAML 1.1 and 1.2 read as text (`YAML_NOT_TEXT_RE`),
+    and `double_quoted` (#284) where it is not.
 
     ONE SPELLING, WHICHEVER TOOL MADE THE ROOT (#924). The scaffold wrote a
     product bare wherever the reader read it back, and adopt wrote it as `y`
@@ -536,9 +559,17 @@ def neutral_pin_entry(product: str) -> str:
     scaffold's `0x1F` for 31 and its `1_000` for 1000. Both tools call this
     one function now, and it is adopt's rule: a name that begins with a
     digit or `-` is double-quoted, as `plan` quotes it in `product:`, and
-    `openGlass`, `007` and `yes` are written as both tools wrote them. A
-    bare `yes`, `on`, `.5` or `.inf` stays bare: the project's reader reads
-    it back as typed, though PyYAML does not (#457's L2-14, #912).
+    `openGlass` and `007` are written as both tools wrote them.
+
+    A NAME ONLY A STANDARD READER MISREADS IS DOUBLE-QUOTED TOO (#912,
+    #457's L2-14). `yes`, `no`, `on`, `off`, `.5`, `.inf` and `.nan` were
+    written bare, because the project's reader reads each back as typed,
+    and PyYAML's `safe_load` read them as True, False, 0.5, inf and nan: no
+    gate of the root failed, but any other tool reading the manifest read
+    a pin on a bool or a number. So a name YAML 1.1 or YAML 1.2's core
+    schema resolves to a bool, a null or a float (`YAML_NOT_TEXT_RE`) is
+    double-quoted whatever the project's reader makes of it, and every
+    other name is written as it was: `openGlass` byte for byte.
 
     THE READER IS ASKED, as `family.py` asks it of a member's id (#259),
     rather than a list of the words it takes for something else: in the two
@@ -547,16 +578,17 @@ def neutral_pin_entry(product: str) -> str:
     `  - - a` is a list of its own, where `id: - a` is the text (#715;
     `id: -` is refused since #393). A spelling the reader refuses is read
     back as nothing, so it is double-quoted too. A name it reads back bare,
-    `openGlass` and every other plain name, is the line it always was;
-    `007`, `2026`, `1.5`, `true` and `null` are double-quoted, and a
-    double-quoted name always reads back.
+    `openGlass` and every other plain name a standard reader reads as text
+    too, is the line it always was; `007`, `2026`, `1.5`, `true` and `null`
+    are double-quoted, and a double-quoted name always reads back.
     """
-    if PLAIN_SCALAR_RE.match(product) and all(
-            _reads_back(written, read) for written, read in (
+    if (PLAIN_SCALAR_RE.match(product)
+            and not YAML_NOT_TEXT_RE.match(product)
+            and all(_reads_back(written, read) for written, read in (
                 (f"key: {product}", {"key": product}),
                 (f"- {product}", [product]),
                 (f"neutral_product_pins:\n  - {product}",
-                 {"neutral_product_pins": [product]}))):
+                 {"neutral_product_pins": [product]})))):
         return product
     return double_quoted(product)
 
@@ -3893,7 +3925,15 @@ def commit_in_clone(clone: Path, oid: str) -> tuple[str, str]:
     names no commit, `why` as `not_a_commit` says it. And `(oid, "")` where
     the clone cannot say, no object with that id or no clone there, which
     the digest's reader then names in its own words
-    (`pin-source-unreadable`)."""
+    (`pin-source-unreadable`).
+
+    A TAG WHOSE TARGET THE CLONE LACKS IS ONE IT CANNOT SAY (#912). Its peel
+    cannot be read there (git: "missing object referenced by" the tag), so
+    nothing in the clone says what the tag names, and it is `(oid, "")`:
+    the digest's reader then finds no tree at the id and says to point
+    `--pin-source` at a clone that has the commit, `git fetch --all` first,
+    as it said before #651. It was refused as "an annotated tag that names
+    no commit", which no tag of a commit is."""
     kind = _git_answer(clone, "cat-file", "-t", oid)
     if kind in (None, COMMIT_KIND):
         return oid, ""
@@ -3903,6 +3943,8 @@ def commit_in_clone(clone: Path, oid: str) -> tuple[str, str]:
                               f"{oid}^{{}}") or "").lower()
         names = (_git_answer(clone, "cat-file", "-t", peeled) if peeled
                  else None)
+        if names is None:
+            return oid, ""
         if names == COMMIT_KIND:
             return peeled, ""
     return oid, not_a_commit(kind, names)
