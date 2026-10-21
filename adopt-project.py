@@ -5896,8 +5896,13 @@ def _print_plan_report(args, source: Source, tree: list, entries: list,
     source, so a read that fails here (`symlink_targets`' `git cat-file
     --batch`) still leaves the line that says the plan exists (#799).
     """
+    # The branch is a name the source's author chose, as a path is, so it is
+    # `_shown` as the table and the split commit's message show a path
+    # (#900), and as `check` spells it where it names the branch (#1035):
+    # printed as it is, a bidi control in it reached the terminal raw and
+    # reordered what the line shows after it.
     print(f"source     {_source_named(source)} @ {source.commit[:12]} "
-          f"({source.branch}), {len(tree)} files, "
+          f"({_shown(source.branch)}), {len(tree)} files, "
           f"{source.commit_count()} commits")
     print(f"project    {args.project} ({args.id}) in {args.org}, mode in-place")
     # Each pin as the scaffold's plan prints it: what is pinned, at which
