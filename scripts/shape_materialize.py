@@ -1555,7 +1555,7 @@ def readable_branch(what: str, value) -> str:
 
 
 # ---------------------------------------------------------------------------
-# What a fetch for a branch's answer carries (#686, #898, #1037)
+# What a fetch for a branch's answer carries (#686, #898, #1037, #1066)
 # ---------------------------------------------------------------------------
 #
 # `family.py bump` fetches a member's `origin` (#686), and `bump-leg.py` a
@@ -1580,14 +1580,21 @@ def readable_branch(what: str, value) -> str:
 ORIGIN_BRANCHES = "+refs/heads/*:refs/remotes/origin/*"
 
 #: The names `ORIGIN_BRANCHES` gives the branches (#905): a refspec of the
-#: repository's own that gives another namespace these very names is not
-#: carried (`origin_fetch_refspecs`).
+#: repository's own onto these very names is not carried, whether it gives
+#: them another namespace's refs (#905) or a folder of branches (#1066)
+#: (`origin_fetch_refspecs`).
 ORIGIN_BRANCH_NAMES = ORIGIN_BRANCHES.partition(":")[2]
 
 #: Where a repository keeps its tags: a refspec of the repository's own
 #: whose source can name a ref here is not carried (`can_name_a_tag`,
 #: #1009).
 TAGS_PREFIX = "refs/tags/"
+
+#: Where a repository keeps its branches, the source of `ORIGIN_BRANCHES`:
+#: a refspec of the repository's own whose source is here is carried only
+#: where it gives each branch the name `ORIGIN_BRANCHES` gives it
+#: (`gives_a_branch_another_name`, #1066).
+HEADS_PREFIX = "refs/heads/"
 
 
 def can_name_a_tag(source: str) -> bool:
@@ -1629,6 +1636,44 @@ def can_name_a_tag(source: str) -> bool:
     return not source.startswith("refs/")
 
 
+def gives_a_branch_another_name(source: str, destination: str) -> bool:
+    """Whether a fetch refspec from `source` to `destination` puts a branch
+    of the remote under a name `ORIGIN_BRANCHES` does not give it, so that
+    the fetch does not carry the repository's refspec that has it
+    (`origin_fetch_refspecs`; #1066).
+
+    A SOURCE UNDER `refs/heads/` NAMES BRANCHES, and the first refspec
+    brings every branch already, under `refs/remotes/origin/` and its own
+    name. Such a refspec is carried only where its destination is that very
+    name, `refs/remotes/origin/` and the source's part after `refs/heads/`,
+    a pattern's `*` in the same place: one branch
+    (`+refs/heads/main:refs/remotes/origin/main`) or a folder of them
+    (`+refs/heads/release/*:refs/remotes/origin/release/*`). It maps each
+    branch it takes where the first refspec maps it, so it clashes with
+    nothing, and a branch it names that the remote lacks fails the fetch as
+    it fails the repository's own (`couldn't find remote ref`).
+
+    ANY OTHER PUTS A BRANCH ON THE NAME OF ANOTHER, the name the first
+    refspec gives the branch of that name: a folder onto the branches'
+    names (`+refs/heads/release/*:refs/remotes/origin/*`, `release/x` onto
+    `x`), one branch onto another's
+    (`+refs/heads/release/x:refs/remotes/origin/x`), every branch into a
+    folder (`+refs/heads/*:refs/remotes/origin/all/*`, `x` onto `all/x`),
+    or a folder into another
+    (`+refs/heads/release/*:refs/remotes/origin/rel/*`). Carried, each
+    clashed with the first refspec wherever the remote has both branches:
+    the fetch exited 128 ("Cannot fetch both refs/heads/x and
+    refs/heads/release/x to refs/remotes/origin/x") where the repository's
+    own `git fetch origin`, which has no such first refspec, exits 0
+    (measured, git 2.43, each). A source not under `refs/heads/` names no
+    branch, and is not asked here.
+    """
+    if not source.startswith(HEADS_PREFIX):
+        return False
+    return destination != ORIGIN_BRANCH_NAMES.replace(
+        "*", source[len(HEADS_PREFIX):])
+
+
 def origin_fetch_refspecs(configured: list[str]) -> list[str]:
     """The refspecs a fetch for a branch's answer carries: `ORIGIN_BRANCHES`,
     then each value of the repository's own `remote.origin.fetch` in
@@ -1644,14 +1689,15 @@ def origin_fetch_refspecs(configured: list[str]) -> list[str]:
     remote-tracking ref only mirrors the remote, and a refspec without it
     would fail the fetch on a ref force-pushed.
 
-    THREE CLAUSES LEAVE A REFSPEC OUT, asked in this order, and the first
+    FOUR CLAUSES LEAVE A REFSPEC OUT, asked in this order, and the first
     that matches is the one that leaves it out: a destination OUTSIDE
-    `refs/remotes/origin/`, A SOURCE THAT CAN NAME A TAG, and THE BRANCHES'
-    GLOB.
+    `refs/remotes/origin/`, A SOURCE THAT CAN NAME A TAG, THE BRANCHES'
+    GLOB, and A BRANCH UNDER ANOTHER NAME.
 
     A DESTINATION OUTSIDE `refs/remotes/origin/`, a mirror's `+refs/*:refs/*`
     or `+refs/heads/*:refs/heads/*`, is never carried, so no refspec the
-    fetch names writes outside it.
+    fetch names writes outside it. The `/` is the clause's: a destination
+    in `refs/remotes/originx/` is outside it too.
 
     A SOURCE THAT CAN NAME A TAG IS LEFT OUT, wherever under `origin/` it
     writes (#905, #459's U183, RV946's S1, #1009, #1037): a tag is not a
@@ -1680,20 +1726,53 @@ def origin_fetch_refspecs(configured: list[str]) -> list[str]:
     fetch maps, and the repository's own next `git fetch origin` writes it
     back. A refspec that can name no tag and writes a folder of its own
     under `origin/` (pull requests, `+refs/pull/*/head:
-    refs/remotes/origin/pr/*`) still rides along.
+    refs/remotes/origin/pr/*`) still rides along, unless it puts a branch
+    under another name (below).
 
-    THE BRANCHES' GLOB: ONE THAT GIVES ANOTHER NAMESPACE THE BRANCHES' NAMES
-    IS LEFT OUT (#905, #459's U183), a refspec whose destination is the
-    first refspec's own, `refs/remotes/origin/*`, and whose source is not
-    under `refs/heads/`. The tags onto the branches' names and the mirror
-    into `origin/` meet it too, and the clause before has left them out
-    already; this one alone leaves out a source that can name no tag, such
-    as pull requests onto the branches' names
-    (`+refs/pull/*/head:refs/remotes/origin/*`). Carried, that clashed with
-    the first refspec wherever a pull request and a branch share a name
-    ("Cannot fetch both refs/heads/7 and refs/pull/7/head to
-    refs/remotes/origin/7") where `git fetch origin` exits 0 (measured, git
-    2.43).
+    THE BRANCHES' GLOB: A REFSPEC ONTO IT IS LEFT OUT, WHATEVER ITS SOURCE
+    (#905, #459's U183, #1066): its destination is the first refspec's own,
+    `refs/remotes/origin/*`, so each ref it takes lands on the name the
+    first refspec gives the branch of that name. From another namespace it
+    gives other refs the branches' names: pull requests
+    (`+refs/pull/*/head:refs/remotes/origin/*`) clashed with the first
+    refspec wherever a pull request and a branch share a name ("Cannot
+    fetch both refs/heads/7 and refs/pull/7/head to
+    refs/remotes/origin/7"). From a folder of branches it gives a branch
+    another's name: `+refs/heads/release/*:refs/remotes/origin/*` clashed
+    wherever the remote has `x` and `release/x` ("Cannot fetch both
+    refs/heads/x and refs/heads/release/x to refs/remotes/origin/x"). Each
+    exited 128 where `git fetch origin` exits 0 (measured, git 2.43). #946
+    left out only a source not under `refs/heads/`, so the folder of
+    branches was carried, and failed both tools' fetch, until #1066. The
+    tags onto the branches' names and the mirror into `origin/` meet this
+    clause too, and the clause before has left them out already; the
+    branches' own glob is the first refspec.
+
+    A BRANCH UNDER ANOTHER NAME IS LEFT OUT (#1066): a source under
+    `refs/heads/` whose destination is not the name the first refspec gives
+    each branch it takes, such as one branch onto another's
+    (`+refs/heads/release/x:refs/remotes/origin/x`) or every branch into a
+    folder (`+refs/heads/*:refs/remotes/origin/all/*`, `x` onto `all/x`).
+    `gives_a_branch_another_name` says which, and how each clashed. One
+    that gives each branch its own name, a branch or a folder of them,
+    still rides along.
+
+    LEFT OUT BY EITHER OF THE LAST TWO, NOTHING IS LOST TO THE ANSWER: the
+    first refspec brings every branch under its own name, so a commit a
+    branch of the remote reaches is reached there, and the fetch works.
+    What the repository kept under another name is pruned, or holds the
+    branch of that name, until its own next `git fetch origin` writes it
+    back, as for a tag refspec left out; there a refspec written without
+    its `+` is refused as non-fast-forward where the two commits are not in
+    line, as one of the tags onto the branches' names has been since #905
+    (measured, git 2.43).
+
+    WHAT CAN STILL CLASH is a refspec carried into a folder of its own from
+    another namespace, such as the pull requests in `origin/pr/`, where the
+    remote has a branch whose name falls in that folder (`pr/7` beside pull
+    request 7). The repository's own fetch clashes there too wherever it
+    has the branches' glob, as a clone's default refspec is; left out, what
+    it keeps would be pruned on every run, which is why #686 carries it.
     """
     refspecs = [ORIGIN_BRANCHES]
     for spec in (value.strip() for value in configured):
@@ -1705,9 +1784,10 @@ def origin_fetch_refspecs(configured: list[str]) -> list[str]:
             continue
         if can_name_a_tag(source):
             continue  # a tag is not a branch (RV946's S1, #1009, #1037)
-        if (destination == ORIGIN_BRANCH_NAMES
-                and not source.startswith("refs/heads/")):
-            continue  # it gives other refs the branches' names (U183)
+        if destination == ORIGIN_BRANCH_NAMES:
+            continue  # it lands on the branches' own names (U183, #1066)
+        if gives_a_branch_another_name(source, destination):
+            continue  # the first refspec brings that branch already (#1066)
         if spec not in refspecs:
             refspecs.append(spec)
     return refspecs
