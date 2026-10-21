@@ -104,8 +104,16 @@ THREE SUBCOMMANDS, BECAUSE THE MIDDLE ONE IS A HUMAN.
            `org:` or a topic GitHub will not take, each a finding under
            `execute`'s code; after a name or an `org:` found there, whose
            fix renames both legs, the legs are not asked about, and after
-           a topic they are. It prints what will happen and changes
-           nothing.
+           a topic they are. A path of the source commit git refuses as a
+           path, `..` or `.Git/x`, is `plan-path-git-refuses`. Its
+           questions to git are asked in throwaway repositories in the work
+           directory. Each but #183's symlink probe is made with the
+           source's object format and runs no hook of this machine's, and
+           one git cannot make or ask there is `adopt-git-unasked`, which
+           says why (#910). The symlink probe keeps its plain `git init`
+           and asks only `core.symlinks`; where git cannot make it, a
+           symlink is taken to check out as one, and a NOTE says why. It
+           prints what will happen and changes nothing.
   execute  asks about both legs before it makes either (#798), then
            creates the two legs, extracts them with `git filter-repo`, makes
            the one split commit on a branch of the source, sets the
@@ -684,6 +692,7 @@ def _pin_files(plan: "Plan") -> list[tuple[str, str | None]]:
 
 
 def _kept_pin_findings(plan: "Plan", tree: list,
+                       named_links: frozenset | set = frozenset(),
                        source: "Source | None" = None,
                        probe: "_SymlinkProbe | None" = None) -> list[str]:
     """A FINDING for each pin file a path the plan keeps in the root already
@@ -704,6 +713,16 @@ def _kept_pin_findings(plan: "Plan", tree: list,
     nowhere, which `place` writes the pin through, is named here too, and
     not again by the walk (`_links_at_a_pin`).
 
+    A SYMLINK AT A PIN'S FILE THAT `named_links` HOLDS IS LEFT OUT (#979),
+    as `_root_shape_findings` leaves out one at `project.yaml` (#908, L1-80
+    of #457): `plan-empty-symlink` or `plan-bad-symlink-target` names it,
+    and #908's remediation, said once after the findings, is the one that
+    helps. This finding's (send it to a leg, `drop` it) is not: no answer
+    in the plan makes a link no clone makes. It is still a link found
+    there, so the disk that ignores case is not asked about that file,
+    which keeps `_links_at_a_pin` reading the same disk. One link, one
+    finding.
+
     THROUGH THE SYMLINKS THE PLAN KEEPS ABOVE A PIN'S FILE (#904, L1-K2 of
     #457), as the root walk follows the shape's own paths. With `contracts
     -> governance` and `governance/` kept, a `governance/openglass-pin.yaml`
@@ -714,7 +733,10 @@ def _kept_pin_findings(plan: "Plan", tree: list,
     a link to `README.md`). Where `source` is given, so the links can be
     read, the pin's file is asked where its walk reaches it
     (`_pin_file_reached`). A walk the links stop is the root walk's to
-    name, as `plan-root-symlink`, and is not asked here."""
+    name, as `plan-root-symlink`, and is not asked here: so is one that
+    stops at a link `named_links` holds, whose walk the root walk does not
+    name either (`walk.empty`), and which `plan-empty-symlink` or
+    `plan-bad-symlink-target` names."""
     kept = _kept_in_root(plan.entries, tree)
     if not kept:
         return []
@@ -731,6 +753,8 @@ def _kept_pin_findings(plan: "Plan", tree: list,
             if not rows:
                 continue
             path, mode, entry = rows[0]
+            if at and path in named_links:
+                break
             under = "" if entry == path else f" under the entry {_spelled(entry)}"
             where = "at" if at else "inside"
             written = (_declared_pin_held(product) if product
@@ -807,16 +831,20 @@ def _shape_pin_held(mode: str | None) -> str:
             f"`{COLLISION_DIR}/`{through}")
 
 
-def _pin_findings(plan: "Plan", tree: list, source: "Source | None" = None,
+def _pin_findings(plan: "Plan", tree: list,
+                  named_links: frozenset | set = frozenset(),
+                  source: "Source | None" = None,
                   probe: "_SymlinkProbe | None" = None) -> list[str]:
     """Every FINDING about the plan's pins: each entry `execute` cannot
     write a pin file from, two pins at one file or one at a file the shape
     writes, two whose products one `SHAPE_PIN_SOURCE_<PRODUCT>` names
     (#275), and a path the root keeps where a pin is written, the shape's
-    own among them (#524), through the symlinks it keeps above it where
-    `source` is given (#904)."""
+    own among them (#524), but for a symlink there that `named_links`
+    holds (#979), and through the symlinks it keeps above it where `source`
+    is given (#904)."""
     return (_read_pins(plan)[1]
-            + _kept_pin_findings(plan, tree, source, probe))
+            + _kept_pin_findings(plan, tree, named_links, source=source,
+                                 probe=probe))
 
 
 # ---------------------------------------------------------------------------
@@ -1821,6 +1849,52 @@ def _os_reason(exc: OSError) -> str:
     return exc.strerror or type(exc).__name__
 
 
+def _refused_at(exc: OSError, directory: Path) -> bool:
+    """Whether `exc`, raised by a command run with `cwd=directory`, is the
+    operating system refusing to enter `directory` (#918): `subprocess`
+    names the directory as the exception's `filename` then. A program that
+    could not be started is named by the program instead, and is not this:
+    whether that is a question the caller can answer stays the caller's,
+    as `git_out` leaves it."""
+    return exc.filename == str(directory)
+
+
+def _recorded_spelling(recorded: str) -> tuple[str, str]:
+    """`(spelling, said)`: `recorded`, a path a plan records as text, as the
+    disk is asked for it in this locale, and what a refusal that it names
+    nothing adds, which is "" where it is asked as written (#918, #457's
+    L1-86).
+
+    A PLAN IS UTF-8 TEXT, and `plan` records a path as `os.fsdecode` read
+    it: under a UTF-8 locale or Python's UTF-8 mode each character as
+    itself and a byte that is not UTF-8 as its surrogate, and under the C
+    locale every byte outside ASCII as its surrogate. Either way the path's
+    bytes are the text's UTF-8 with `surrogateescape`, as `_path_argument`
+    spells a path for git. Where this locale's file-name encoding can spell
+    the text, it is asked as written, as before. Where it cannot, as the
+    ASCII of `LC_ALL=C PYTHONUTF8=0` cannot spell `Thing\\u00e9` from a plan
+    written in UTF-8 mode, `Path.exists()` met the `UnicodeEncodeError`
+    inside and answered False, and `check` refused `plan-source-gone`,
+    "names nothing that exists", of a source that is there. It is asked as
+    those UTF-8 bytes instead, which `os.fsdecode` spells in this locale;
+    and where they name nothing, `said` names the spelling asked and this
+    locale's encoding, which cannot spell the text: a plan written under
+    another locale of one byte to a character, Latin-1 say, recorded
+    other bytes. A surrogate no byte is read as cannot be those bytes
+    either, and no name on the disk holds it: it is asked as written."""
+    try:
+        os.fsencode(recorded)
+        return recorded, ""
+    except UnicodeEncodeError:
+        pass
+    try:
+        spelling = os.fsdecode(recorded.encode("utf-8", "surrogateescape"))
+    except UnicodeEncodeError:
+        return recorded, ""
+    return spelling, (f" as UTF-8 spells it (this locale's file names, "
+                      f"{sys.getfilesystemencoding()}, cannot spell it)")
+
+
 # ---------------------------------------------------------------------------
 # What a `--source` names, and where its clone goes (#652)
 # ---------------------------------------------------------------------------
@@ -2071,7 +2145,11 @@ def _source_spec(spec: str) -> tuple[Path | None, str | None]:
     if _source_there(spec, candidate, name):
         if name is not None:
             raise _ambiguous(spec, name)
-        return _top_level(candidate, f"--source {spec!r}"), None
+        return _top_level(
+            candidate, f"--source {spec!r}",
+            lambda exc: _source_unreadable(f"--source {spec!r}", exc,
+                                           "whether a repository is there")
+        ), None
     if name is None:
         raise Refusal(
             SOURCE_UNRESOLVABLE,
@@ -2081,7 +2159,8 @@ def _source_spec(spec: str) -> tuple[Path | None, str | None]:
     return None, name
 
 
-def _top_level(path: Path, named: str) -> Path:
+def _top_level(path: Path, named: str,
+               refused: Callable[[OSError], Refusal]) -> Path:
     """`path`, a local source that exists, resolved, where it is the
     top-level directory of a repository; refused as `source-not-top-level`
     where it is not a directory, or is a directory inside a repository
@@ -2106,13 +2185,26 @@ def _top_level(path: Path, named: str) -> Path:
     a later read refused it on main. On main a directory inside a
     repository was read as the source: `git ls-tree` there lists what is
     under it alone, so `plan` planned that, exit 0, and the plan recorded
-    it."""
+    it.
+
+    A DIRECTORY THIS USER CANNOT ENTER IS `refused(<the OSError>)`, the
+    caller's `source-unreadable`, before git reads anything in it (#918,
+    #457's L1-105): git runs IN the directory, and at mode 000 `subprocess`
+    raised the `PermissionError` of `cwd=` out of `plan`, `check` and
+    `execute`, a traceback. No other `OSError` is: a git that cannot be
+    started is raised, as `git_out` leaves it (`_refused_at`)."""
     resolved = Path(os.path.realpath(path))
     if not resolved.is_dir():
         raise Refusal(SOURCE_NOT_TOP_LEVEL,
                       f"{named} is not a directory, and {TOP_LEVEL_ONLY}",
                       TOP_LEVEL_REMEDY)
-    if git_out(["rev-parse", "--is-inside-git-dir"], cwd=resolved) == "true":
+    try:
+        inside = git_out(["rev-parse", "--is-inside-git-dir"], cwd=resolved)
+    except OSError as exc:
+        if not _refused_at(exc, resolved):
+            raise
+        raise refused(exc) from exc
+    if inside == "true":
         git_dir = os.fsdecode(git_out(["rev-parse", "--absolute-git-dir"],
                                       cwd=resolved, binary=True).rstrip(b"\n"))
         if Path(os.path.realpath(git_dir)) != resolved:
@@ -2480,13 +2572,22 @@ def _not_a_whole_clone(path: Path, commit: str) -> str | None:
     another repository, which git reads as that one; the third a removed
     pack, which a clone holds all its objects in. Only what a cleaner
     leaves is asked: whether every object is whole is `git fsck`'s question,
-    which a large source would pay for on every run."""
+    which a large source would pay for on every run.
+
+    A DIRECTORY THIS USER CANNOT ENTER IS NEITHER (#918, #457's L1-105): the
+    `OSError` of `cwd=` (`_refused_at`) is raised, for the caller to name.
+    It was "git finds no repository there", and the clone, still there, was
+    cloned again or refused as gone."""
     if not path.is_dir():
         return "it is not a directory"
     try:
         top = os.fsdecode(git_out(["rev-parse", "--show-toplevel"],
                                   cwd=path, binary=True).strip())
-    except (Refusal, OSError):
+    except Refusal:
+        return "git finds no repository there"
+    except OSError as exc:
+        if _refused_at(exc, path):
+            raise
         return "git finds no repository there"
     if os.path.realpath(top) != os.path.realpath(path):
         return f"git reads it as part of the repository at {_spelled(top)}"
@@ -2523,6 +2624,18 @@ class Source:
         #: serves every later question about a link's target (#908). A blob
         #: git did not have is kept as None, and not asked for again.
         self.link_targets: dict[str, bytes | None] = {}
+        #: `object_format`'s answer, once read.
+        self._object_format: str | None = None
+
+    def object_format(self) -> str:
+        """The source's object format, `sha1` or `sha256`, as git reads it,
+        once: each throwaway repository `check` makes is given it, since a
+        clone takes its source's whatever `GIT_DEFAULT_HASH` says (#910)."""
+        if self._object_format is None:
+            self._object_format = git_out(
+                ["rev-parse", "--show-object-format"], cwd=self.path,
+                env=_inherited_env())
+        return self._object_format
 
     @classmethod
     def open(cls, spec: str, work_root: Path, unwritable: str | None = None,
@@ -6431,12 +6544,14 @@ class Plan:
         is at the plan's own `source.local_path` (#803, #457's L1-97): it is
         the plan's source again, as the clone `_recorded_source` makes there
         is. On main `check` removed it, and the next run cloned it once
-        more."""
+        more. The record is spelled as `_recorded_source` asks the disk for
+        it (`_recorded_spelling`, #918)."""
         record = self.source.get("local_path")
         if not (made and record):
             return
         try:
-            at = os.path.realpath(os.path.expanduser(str(record)))
+            at = os.path.realpath(os.path.expanduser(
+                _recorded_spelling(str(record))[0]))
         except (OSError, ValueError):
             return
         made[:] = [claim for claim in made
@@ -6505,34 +6620,52 @@ class Plan:
         raised it, a `PermissionError` traceback; on 3.14 it answered False,
         so the path was `plan-source-gone`, "names nothing that exists", or,
         a clone `plan` made, "no longer exists" and was cloned again from
-        GitHub beside the one still there."""
-        path = Path(os.path.expanduser(local_path))
-        try:
-            there = _is_there(path)
-        except OSError as exc:
-            raise _source_unreadable(
-                f"the plan's `source.local_path`, {_spelled(local_path)}", exc,
+        GitHub beside the one still there. So is a directory this user
+        cannot enter (#918): git runs in it, and at mode 000 that was a
+        `PermissionError` traceback where `plan` did not make it, and "no
+        longer whole (git finds no repository there)" where it did.
+
+        A PATH THIS LOCALE CANNOT SPELL IS ASKED AS ITS UTF-8 BYTES
+        (`_recorded_spelling`, #918): a plan written in UTF-8 mode for
+        `Thing\\u00e9` and checked under `LC_ALL=C PYTHONUTF8=0` was
+        `plan-source-gone`, "names nothing that exists", of a source that is
+        there. It is named as the plan records it."""
+        spelling, said = _recorded_spelling(local_path)
+        path = Path(os.path.expanduser(spelling))
+        named = f"the plan's `source.local_path`, {_spelled(local_path)}"
+
+        def unreadable(exc: OSError) -> Refusal:
+            return _source_unreadable(
+                named, exc,
                 ("whether `plan`'s clone is still there, to be read, or gone, "
                  "to be cloned again," if self.source.get("cloned") is True
                  else "whether the source is still there"),
                 "pass the source again with --source, which is held to the "
-                "plan's `commit:`") from exc
+                "plan's `commit:`")
+
+        try:
+            there = _is_there(path)
+        except OSError as exc:
+            raise unreadable(exc) from exc
         if self.source.get("cloned") is not True:
             if there:
-                return Source.in_place(_top_level(
-                    path, f"the plan's `source.local_path`, "
-                          f"{_spelled(local_path)},"), work_root, self.read_at)
-            raise self._gone(local_path, "names nothing that exists",
+                return Source.in_place(_top_level(path, f"{named},",
+                                                  unreadable),
+                                       work_root, self.read_at)
+            raise self._gone(local_path, "names nothing that exists" + said,
                              "the plan does not record it as a clone `plan` "
                              "made (`source.cloned` is not `true`), so "
                              "nothing clones it again")
-        broken = _not_a_whole_clone(path, self.source_commit) if there \
-            else None
+        try:
+            broken = _not_a_whole_clone(path, self.source_commit) if there \
+                else None
+        except OSError as exc:
+            raise unreadable(exc) from exc
         if there and broken is None:
             return Source.in_place(Path(os.path.realpath(path)), work_root,
                                    self.read_at)
         state = (f"is a clone `plan` made that is no longer whole ({broken})"
-                 if there else "no longer exists")
+                 if there else "no longer exists" + said)
         repository = self._recorded_repository()
         if repository is None:
             raise self._gone(local_path, state, "the plan records no "
@@ -6736,8 +6869,11 @@ def _leg_findings(plan: Plan, tree: list | None,
     `named_links` are the symlinks of the source that `plan-empty-symlink`
     and `plan-bad-symlink-target` name one by one (`_named_symlinks`, #908):
     one kept AT `project.yaml` is theirs, and `plan-root-blocks-manifest`
-    leaves it. `source` and `probe` are `_entry_findings`': with them, a
-    pin's file is asked through the symlinks the plan keeps above it (#904).
+    leaves it; so is one kept AT the copy under `shape/` of a path the root
+    holds, which `plan-root-blocks-shape-copy` leaves, and one AT a pin's
+    file, which `plan-root-holds-pin` leaves (#979). `source` and `probe`
+    are `_entry_findings`': with them, a pin's file is asked through the
+    symlinks the plan keeps above it (#904).
 
     The path findings live HERE, and not in `cmd_check`, so that whatever
     reads this function reports a bad path from the one place that knows what
@@ -6796,7 +6932,8 @@ def _leg_findings(plan: Plan, tree: list | None,
         # Each finding about an entry names the `plan` that records the pin
         # whole. A leg mounted over a pin's file is
         # `plan-leg-path-collides`, above, with the shape's own paths.
-        findings += _pin_findings(plan, tree, source, probe)
+        findings += _pin_findings(plan, tree, named_links, source=source,
+                                  probe=probe)
     return findings
 
 
@@ -6870,7 +7007,11 @@ def _leg_findings(plan: Plan, tree: list | None,
 # directory, and `place` stops at it. A symlink AT the copy is found here,
 # because nothing else on main says it, and `place` stops at it too:
 # `copy_in_the_way` counts a link there, dangling or not, as something
-# already there, and writes nothing through it (#904, L1-K9 of #457).
+# already there, and writes nothing through it (#904, L1-K9 of #457). But
+# one whose target `plan-empty-symlink` or `plan-bad-symlink-target` names
+# is those findings' alone, as at the manifest (#979). They do not say
+# where it sits: given a target git makes, and still kept there, it is this
+# finding's again.
 #
 # A SYMLINK AT A SHAPE PATH counts as the root holding it, though
 # `Path.exists()` follows a link and is false of one that leads nowhere. A
@@ -7107,7 +7248,14 @@ def _root_shape_findings(plan: Plan, tree: list,
     L1-80 of #457): `plan-empty-symlink` or `plan-bad-symlink-target` names
     it, says where it sits and ends with the remedy that helps, which is not
     this finding's `drop`: no answer in the plan ends either. One link, one
-    finding."""
+    finding. SO IS ONE AT A COPY (#979): a bad link the plan keeps at
+    `shape/README.md`, where the shape writes its copy of the root's
+    `README.md`, is named by its own finding alone, and #908's remediation
+    is said once after the findings. Its finding does not say where it
+    sits, as the manifest's does: given a target git makes, and still kept
+    there, the link is named here. A link BELOW a directory kept at either
+    place is not left out: the directory is in the way whatever the link
+    holds."""
     kept = _kept_in_root(plan.entries, tree)
     if not kept:
         return []
@@ -7122,8 +7270,7 @@ def _root_shape_findings(plan: Plan, tree: list,
             if (code, rel, group) in seen or (
                     code == ROOT_BLOCKS_COPY and rel == SHAPE_PIN
                     and _holds_a_pin(disk, rel)) or (
-                    code == ROOT_BLOCKS_MANIFEST and group[0] == "at"
-                    and rows[0][0] in named_links):
+                    group[0] == "at" and rows[0][0] in named_links):
                 continue
             seen.add((code, rel, group))
             rels, copies, _, folded = blocked.setdefault(
@@ -7199,13 +7346,26 @@ def _answered_legs(entries: list, paths: list[str]) -> dict:
     yet cannot have been answered inconsistently. `execute` refuses all four
     too: the null one in `_refuse_an_unrunnable_plan`, the other three in
     #168's `_refuse_what_check_finds`.
+
+    EACH PATH LOOKS UP ITS OWN NAMES (#914), as the doctor's
+    `answered_questions` does: the entries `_covering` could find covering
+    it are the names `_covering_names` lists, and one entry covers it where
+    exactly one of those names is a plan entry's, spelled by one entry. So a
+    path costs its depth and not the plan's length, with the answer holding
+    every entry against every path gave.
     """
-    entry_paths = [str(e.get("path")) for e in entries]
-    legs = {str(e.get("path")): str(e.get("leg")) for e in entries}
+    spelled: dict[str, int] = {}
+    legs: dict[str, str] = {}
+    for entry in entries:
+        name = str(entry.get("path"))
+        spelled[name] = spelled.get(name, 0) + 1
+        legs[name] = str(entry.get("leg"))
     out: dict[str, tuple[str, str]] = {}
     for path in paths:
-        covering = _covering(entry_paths, path)
-        if len(covering) == 1 and legs[covering[0]] in LEG_VALUES:
+        covering = [name for name in dict.fromkeys(_covering_names(path))
+                    if name in spelled]
+        if (len(covering) == 1 and spelled[covering[0]] == 1
+                and legs[covering[0]] in LEG_VALUES):
             out[path] = (legs[covering[0]], covering[0])
     return out
 
@@ -8738,11 +8898,12 @@ def _empty_symlink_notes(tree: list, targets: dict[str, bytes]) -> list[str]:
 #     `MAXPATHLEN`, 1024, counting the NUL) and XFS (`XFS_SYMLINK_MAXLEN`,
 #     1024) make a target of at most 1023 bytes.
 #
-# SO THE LIMIT IS 4095 (`SYMLINK_TARGET_MAX`), GIT'S AND LINUX'S. `check`
-# reads the source's tree and never the disk it runs on, as #303 does, so one
-# plan gets one answer on every machine. A finding must never be false
-# anywhere, and a target over 4095 bytes is made on no host: it fails on
-# every Linux filesystem, and on the hosts that take less still.
+# SO THE LIMIT IS 4095 (`SYMLINK_TARGET_MAX`), LINUX'S: git sets no bound of
+# its own. `check` reads the source's tree and never the disk it runs on, as
+# #303 does, so one plan gets one answer on every machine. A finding must
+# never be false anywhere, and a target over 4095 bytes is made on no Linux
+# or macOS host: it fails on every Linux filesystem, and on the hosts that
+# take less still.
 #
 # IT IS NOT THE SMALLEST BOUND A HOST HAS, SO A TARGET UNDER IT CAN STILL
 # FAIL. A target of 4095 bytes is made on ext4-like filesystems; on macOS and
@@ -8750,10 +8911,11 @@ def _empty_symlink_notes(tree: list, targets: dict[str, bytes]) -> list[str]:
 # passes `check` and fails `execute`'s first clone there, after both leg
 # repositories exist: #908's own failure, in a window this rule leaves open
 # for those hosts. That is read from their sources, not measured here, and
-# it is a follow-up of #908. Windows makes no symlink by default
-# (`core.symlinks` false writes the target as a file's contents, which no
-# length bounds); where it is on, NTFS is thought to take far longer targets
-# (not measured here), and either way the rule asks Windows nothing.
+# it is #979, a follow-up of #908 left open for a measurement on macOS and
+# XFS. Windows makes no symlink by default (`core.symlinks` false writes the
+# target as a file's contents, which no length bounds); where it is on, NTFS
+# is thought to take far longer targets (not measured here), and either way
+# the rule asks Windows nothing.
 #
 # A NEW CODE, NOT A WIDENED `plan-empty-symlink`. #388 made a NUL-led target
 # the same finding because it is the same fault: Linux reads it as empty,
@@ -8772,6 +8934,18 @@ def _empty_symlink_notes(tree: list, targets: dict[str, bytes]) -> list[str]:
 # answer in the plan does. This finding is the plan-independent one, so it
 # stays, says where the link sits, and ends with the remedy that does help;
 # `_root_shape_findings` leaves out the other for that link.
+#
+# AND AT A COPY AND A PIN'S FILE (#979). A link the plan keeps AT the copy
+# under `shape/` of a path the root holds (`shape/README.md`, with the
+# source's `README.md` kept) was named twice too, the second time as
+# `plan-root-blocks-shape-copy`, and one AT a pin's file
+# (`contracts/shape-pin.yaml`, with `contracts/` kept) as
+# `plan-root-holds-pin`, each with the same remedy that cannot help it.
+# Each of those leaves the link out now, as `plan-root-blocks-manifest`
+# does (`_root_shape_findings`, `_kept_pin_findings`), and this finding is
+# the one that names it. It does not say where the link sits: a link given a
+# target git makes, and still kept there, is named by that code then, whose
+# remedy helps it.
 
 #: The most `symlink(2)` takes as a target on Linux, in bytes: `PATH_MAX` is
 #: 4096, counting the NUL that ends the string. On ext4-like filesystems 4095
@@ -8965,27 +9139,33 @@ def _named_symlinks(tree: list, targets: dict[str, bytes]) -> set[str]:
     past those is only counted, and is named by nothing else if this leaves
     it out too, so the manifest finding stays its own.
 
-    THE OTHER FINDINGS ABOUT A PATH THE SHAPE WRITES DO NOT LEAVE A NAMED
-    LINK OUT. A bad link at `shape/README.md` is also
+    THE OTHER FINDINGS ABOUT A PATH THE SHAPE WRITES LEAVE A NAMED LINK OUT
+    TOO (#979). A bad link at `shape/README.md` was also
     `plan-root-blocks-shape-copy`, and one at `contracts/shape-pin.yaml`
     also `plan-root-holds-pin`, each with a remedy (`drop` it, send it to a
-    leg) that cannot help a link no clone makes. That is L1-80's defect at
-    those two paths, outside #908's wording, and a follow-up of it."""
+    leg) that cannot help a link no clone makes: L1-80's defect at those two
+    paths, outside #908's wording. `_root_shape_findings` leaves out the
+    first for a named link AT a copy, and `_kept_pin_findings` the second
+    for one AT a pin's file. A counted link keeps those findings, as it
+    keeps the manifest's."""
     return {*empty_symlinks(tree, targets)[:EMPTY_SYMLINKS_NAMED],
             *(path for path, _ in bad_symlink_targets(
                 tree, targets)[:BAD_SYMLINK_TARGETS_NAMED])}
 
 
-def _source_path_findings(plan: Plan, tree: list, targets: dict[str, bytes]
+def _source_path_findings(plan: Plan, tree: list, targets: dict[str, bytes],
+                          refused: list[str] | tuple = ()
                           ) -> tuple[list[str], list[str]]:
     """The findings `_entry_findings` lists first, about the source's own
     paths, and what to print once after every finding for them: each entry
     path `execute` will not extract (#196), then each symlink of the source
     whose target is empty (#303) or begins with a NUL byte (#388), its
     target read from `targets` (`symlink_targets`), and each whose target
-    holds a NUL byte after its first, or is longer than Linux takes (#908).
-    A link the plan keeps in the root AT `project.yaml` says so in its
-    finding, which is then the only one that names it."""
+    holds a NUL byte after its first, or is longer than Linux takes (#908),
+    then the paths of the source commit git refuses, `refused`
+    (`_paths_git_refuses`, #910). A link the plan keeps in the root AT
+    `project.yaml` says so in its finding, which is then the only one that
+    names it."""
     unsafe, unsafe_remediation = _unsafe_path_findings(plan)
     # Asked only where a named link sits at the manifest's own name, which
     # is rare: it reads the plan's answers, which no other finding here does.
@@ -8997,8 +9177,11 @@ def _source_path_findings(plan: Plan, tree: list, targets: dict[str, bytes]
                                                        manifest)
     bad, bad_remediation = _bad_symlink_target_findings(tree, targets,
                                                         manifest)
-    return (unsafe + empty + bad,
-            unsafe_remediation + empty_remediation + bad_remediation)
+    git_refuses, git_refuses_remediation = _path_git_refuses_findings(
+        list(refused))
+    return (unsafe + empty + bad + git_refuses,
+            unsafe_remediation + empty_remediation + bad_remediation
+            + git_refuses_remediation)
 
 
 def _unsafe_path_findings(plan: Plan) -> tuple[list[str], list[str]]:
@@ -9180,7 +9363,21 @@ def _entry_findings(plan: Plan, source: Source,
     same goes for each symlink whose target holds a NUL byte after its
     first, or is longer than Linux takes (#908), as
     `plan-bad-symlink-target`: git makes another link or none, which no
-    answer changes either.
+    answer changes either; and for each path of the source commit git
+    refuses as a path, `..` or `.Git/x` (#910), as `plan-path-git-refuses`,
+    asked of git first, in a throwaway repository of its own.
+
+    `check`'S THROWAWAY REPOSITORIES (#910) are made in the work directory.
+    Each but #183's symlink probe is made with the source's object format
+    and runs no hook of this machine's; where git cannot make or ask one,
+    `adopt-git-unasked` says why, once, in the place of the questions asked
+    in them, which are not asked; never `git-failed`. The symlink probe
+    keeps its plain `git init` and `git config --get core.symlinks`,
+    neither of which runs a hook: where git cannot make it, a symlink is
+    taken to check out as one, and a NOTE says why (`_SymlinkProbe`). Where
+    no directory can be made in the work directory at all,
+    `adopt-work-dir-unwritable` is that cause's one finding (#524), and a
+    NOTE says what went unasked.
 
     A VALUE NO FILE CAN HOLD IS SAID BEFORE THE VALIDATOR'S WORD ON IT (#255
     before #261). A lone surrogate, a line break or a bidi control in
@@ -9223,17 +9420,28 @@ def _entry_findings(plan: Plan, source: Source,
     """
     tree = source.tree()
     targets = symlink_targets(source, tree)
+    # Which of the source's paths git holds at all, asked of git first, in a
+    # throwaway repository of its own: one it refuses is a fact of the
+    # source, said with the others (#910). Where that repository cannot be
+    # made or asked, neither can the others `check` makes in the same work
+    # directory, and `_Unasked.said` says why, once, in their place below.
+    try:
+        refused, unasked = _paths_git_refuses(source, tree), None
+    except _Unasked as exc:
+        refused, unasked = [], exc
     # One answer to whether git checks a symlink out as one, and to how it
     # keeps the clone's refs, for every question whose walks may need it on
-    # any source (#654, #904).
+    # any source (#654, #910): made before `_leg_findings`, whose walks of
+    # the pins' files ask it too (#904).
     probe = _SymlinkProbe(source.work_root)
-    unsafe, unsafe_remediation = _source_path_findings(plan, tree, targets)
+    unsafe, unsafe_remediation = _source_path_findings(plan, tree, targets,
+                                                       refused)
     findings = (unsafe
                 + _coverage_findings([str(e.get("path"))
                                       for e in plan.entries],
                                      [path for path, _, _, _ in tree])
                 + _leg_findings(plan, tree, _named_symlinks(tree, targets),
-                                source, probe))
+                                source=source, probe=probe))
     # Beside the pins' other findings, which `_leg_findings` lists last: a
     # digest the clone `plan` read it from recomputes otherwise (#449).
     digest_findings, pin_notes = _pin_digest_findings(plan)
@@ -9258,11 +9466,11 @@ def _entry_findings(plan: Plan, source: Source,
         plan, () if tracking is None
         or _a_branch_execute_writes(source, TRACKING_KEY, str(tracking))
         else (MANIFEST_FIELDS[TRACKING_KEY],))
-    return (findings + misread + split
-            + _root_symlink_findings(plan, source, tree, probe)
-            + _nested_attributes_findings(plan, source, tree)
-            + _reencoded_attributes_findings(plan, source, tree)
-            + _reencoded_files_findings(plan, source, tree, probe)
+    linked = _root_symlink_findings(plan, source, tree, probe)
+    asked, unasked_notes = (
+        unasked.said() if unasked is not None
+        else _asked_in_throwaways(plan, source, tree, probe, refused))
+    return (findings + misread + split + linked + asked
             + unwritable_findings + value_findings + names
             + tracking_findings + moved + field_findings,
             unsafe_remediation
@@ -9270,7 +9478,7 @@ def _entry_findings(plan: Plan, source: Source,
             + split_remediation + unwritable_remediation + value_remediation
             + names_remediation + tracking_remediation + moved_remediation
             + field_remediation,
-            pin_notes + notes)
+            pin_notes + notes + unasked_notes + probe.notes())
 
 
 # ---------------------------------------------------------------------------
@@ -9864,7 +10072,9 @@ def _print_what_will_happen(plan: Plan, source: Source, names: dict,
 # pin's file is #273's `plan-root-holds-pin`, said once there, and so is one
 # AT the shape's own pin, wherever it leads (#524): where it leads to
 # something, `place` writes the shape's pin beside it and the root's
-# `contracts/shape-pin.yaml` is the source's link, which no walk refuses.
+# `contracts/shape-pin.yaml` is the source's link, which no walk refuses. A
+# link at either whose target `plan-empty-symlink` or
+# `plan-bad-symlink-target` names one by one is that finding alone (#979).
 
 #: The finding for a symlink the plan keeps in the root that the shape cannot
 #: write through.
@@ -10656,7 +10866,9 @@ def _links_at_a_copy(plan: Plan, tree: list) -> set[str]:
     copy written THROUGH it, earlier in `_entry_findings`' one list; and one
     AT `project.yaml`, which #305's `plan-root-blocks-manifest` names. Asked
     as `_leg_findings` asks it, of a plan whose `legs` it can read, on a
-    disk that keeps case and on one that ignores it."""
+    disk that keeps case and on one that ignores it. A link there whose
+    target `plan-empty-symlink` or `plan-bad-symlink-target` names one by
+    one is that finding's instead (#908, #979), and no walk names it."""
     if not isinstance(plan.legs, dict):
         return set()
     kept = _kept_in_root(plan.entries, tree)
@@ -10676,7 +10888,9 @@ def _links_at_a_pin(plan: Plan, tree: list) -> set[str]:
     the link is not said again by them. Asked as `_kept_pin_findings` asks
     it, in `_leg_findings`, of a plan whose `legs` it can read: of each pin
     file, on a disk that keeps case and, where that finds nothing there, on
-    one that ignores it."""
+    one that ignores it. A link there whose target `plan-empty-symlink` or
+    `plan-bad-symlink-target` names one by one is that finding's instead
+    (#979), and no walk names it."""
     if not isinstance(plan.legs, dict):
         return set()
     kept = _kept_in_root(plan.entries, tree)
@@ -10869,18 +11083,27 @@ class _SymlinkProbe:
     def __init__(self, work_root: Path | None) -> None:
         self.work_root = work_root
         self._answer: bool | None = None
+        #: Why git could not be asked, where it refused to make the
+        #: repository (#910), for `notes`.
+        self.unasked: str | None = None
         self._refs: tuple[bool, bool] | None = None
+        #: And why it could not be asked how it keeps refs (#904).
+        self.refs_unasked: str | None = None
 
     def ref_store(self) -> tuple[bool, bool]:
         """`(reftable, reflogs)` of a repository `git` makes there; git's
         defaults where there is no work directory, or no repository can be
-        made in it."""
+        made in it, and where git refused to make one, as `symlinks` takes
+        a disk that holds symlinks there, saying why in a NOTE (`notes`)."""
         if self._refs is None:
             try:
                 self._refs = (GIT_DEFAULT_REFS if self.work_root is None
                               else _clone_ref_store(self.work_root))
             except OSError:
                 self._refs = GIT_DEFAULT_REFS
+            except (CommandFailed, Refusal) as exc:
+                self._refs = GIT_DEFAULT_REFS
+                self.refs_unasked = _init_refused(exc)
         return self._refs
 
     def symlinks(self) -> bool:
@@ -10900,7 +11123,47 @@ class _SymlinkProbe:
                 # would otherwise end in a traceback. `execute` itself
                 # refuses such a directory before it gets here (#524).
                 self._answer = True
+            except (CommandFailed, Refusal) as exc:
+                # `git init` there failed otherwise: `GIT_DEFAULT_HASH`
+                # naming no hash, say, or an `init.defaultBranch` git will
+                # not take. It stopped `check` with "a git or gh command
+                # failed" where main printed the finding (L1-32 of #457):
+                # taken as a disk that holds symlinks, as above, `check`
+                # prints the finding the probe stands for, and says why in a
+                # NOTE (`notes`, #910).
+                self._answer = True
+                self.unasked = _init_refused(exc)
         return self._answer
+
+    def notes(self) -> list[str]:
+        """The NOTE `check` prints where git refused to make the repository
+        it asks (#910), and the one for the repository it asks how git keeps
+        refs (#904): none where it was asked, or never needed."""
+        where = _spelled(str(self.work_root))
+        notes = []
+        if self.unasked is not None:
+            notes.append(
+                f"NOTE `check` could not ask git whether it checks a symlink "
+                f"out as a symlink in {where}, the work directory: "
+                f"{self.unasked}. It took it that git does, as on a disk "
+                "that holds symlinks, so a finding about a symlink above "
+                "says what such a disk makes of it.")
+        if self.refs_unasked is not None:
+            notes.append(
+                f"NOTE `check` could not ask git how it keeps the refs of a "
+                f"repository made in {where}, the work directory: "
+                f"{self.refs_unasked}. It took git's defaults, the files "
+                "backend with reflogs, so a finding about a symlink into the "
+                "clone's own `.git` says what such a clone holds.")
+        return notes
+
+
+def _init_refused(exc: "CommandFailed | Refusal") -> str:
+    """Why `git init` of a probe's throwaway repository failed, in git's
+    words, as a `_SymlinkProbe` NOTE says it (#910)."""
+    return (f"`{' '.join(exc.args_list)}` exited {exc.code}: "
+            f"{_spelled(exc.output)}"
+            if isinstance(exc, CommandFailed) else exc.detail)
 
 
 def _refuse_symlinks_checked_out_as_files(plan: Plan, source: Source,
@@ -10951,6 +11214,265 @@ def _refuse_symlinks_checked_out_as_files(plan: Plan, source: Source,
         "`core.symlinks` true, on a filesystem that can hold one -- or send "
         f"{_spelled(link)} to a leg or `drop` it in the plan and run `check` "
         "again.")
+
+
+# ---------------------------------------------------------------------------
+# `check`'s throwaway repositories (#910)
+# ---------------------------------------------------------------------------
+#
+# `check` asks this machine's git in repositories of its own, which it
+# removes again: which of the source's paths git holds at all
+# (`_paths_git_refuses`), which kept nested `.gitattributes` outrank the
+# root's rule (`_AttributesProbe`, #530), what `git add` stores at the root's
+# own (`_stored_as_written`, #530's D5(a)), and what the split's checkout,
+# `git rm` and `git add` make of every file (`_SplitRehearsal`, #654). Each
+# answers as the split will, or `check` says why it cannot (#910, from lane
+# 3's triage of #457: L1-90, L1-92 and L1-94; L1-32 is `_SymlinkProbe`'s).
+# #183's symlink probe, made in the work directory since #183, is not one of
+# them: it keeps its plain `git init` and `git config --get core.symlinks`,
+# neither of which runs a hook, and asks nothing of the source's objects.
+# Measured with git 2.43 on c7a3ff16:
+#
+# * THE SOURCE'S OBJECT FORMAT (L1-90). `git init` takes `GIT_DEFAULT_HASH`,
+#   and the rehearsal borrows the source's objects, so a SHA-256 source, or
+#   `GIT_DEFAULT_HASH=sha256` over a SHA-1 one, stopped `check` with
+#   `REFUSED git-failed` at its `read-tree`, where the split's clone takes
+#   its source's format whatever the variable says. Each is made with the
+#   source's own (`Source.object_format`).
+# * A PATH GIT REFUSES (L1-90). A tree can hold a path git checks out
+#   nowhere, `..` or `.Git/x` (`git mktree` writes either), and `read-tree`
+#   stopped `check` at it with `REFUSED git-failed`. Before #654 `check`
+#   passed it, and `execute` made both legs and stopped extracting the spec
+#   leg, its first clone of the source saying `error: invalid path '..'`.
+#   Which paths git refuses is git's to say, with this machine's settings
+#   (`core.protectNTFS` refuses `GIT~1/x` and `.git.` too): every path of the
+#   source commit is handed to `update-index --index-info`, which leaves out
+#   each one it refuses and takes the rest, and what the index then lacks is
+#   `plan-path-git-refuses`, a fact of the source, said with the others
+#   (`_source_path_findings`).
+# * IN THE WORK DIRECTORY (L1-92). The three made after #183's probe were
+#   made in the system's temporary directory, so with `TMPDIR` on another
+#   file system than the work directory they asked another disk than the
+#   split's: what `git init` writes there for case and symlinks, and what a
+#   checkout can write. Each is now made where the probe always was, in the
+#   work directory, where `execute` builds the split, and which `check
+#   --work-dir` is to be given as `execute` is; a `Source` no command opened
+#   has none, and uses the system's.
+# * NO HOOK OF THIS MACHINE'S (L1-94). A `core.hooksPath` in this machine's
+#   config ran its `post-index-change` hook in the rehearsal and in
+#   `_stored_as_written`'s repository, 12 times in one `check`. Every git
+#   command there takes `-c core.hooksPath=` an empty directory of its own,
+#   which is its `--template` too: no hook runs and none is copied in, and a
+#   `-c` outranks every config file and `GIT_CONFIG_COUNT`.
+# * ONE GIT CANNOT MAKE OR ASK IS A FINDING (`UNASKED`), never `git-failed`:
+#   a `git init` that fails there, or git failing a step there. It says
+#   where and why, and `execute`, which asks the same in its own work
+#   directory before it makes either leg, refuses it there. A work directory
+#   no directory can be made in at all is `adopt-work-dir-unwritable`'s, as
+#   `check` asks it the same way (#524), and `execute` refuses it before it
+#   asks anything: one cause, one finding, and a NOTE of what went unasked.
+#   The questions after one that cannot be asked are not asked.
+# * NO `init.defaultBranch`. Each `git init` here names its branch
+#   (`THROWAWAY_BRANCH`), as the split's own `git init -b` does, so a name
+#   git will not take there (`a..b`) stops no question. Read, it stopped
+#   them all as `adopt-git-unasked`, which `execute` refused, though the
+#   split's `git clone` of the source does not stop at it on git 2.55,
+#   which CI runs (CI on #1031). On git 2.43 that clone stops at it, a
+#   clone `check` does not make.
+
+#: `check`'s finding, and the code of `execute`'s refusal, for the paths of
+#: the source commit that this machine's git will not hold in an index, and
+#: so checks out nowhere (#910).
+PATH_GIT_REFUSES = "plan-path-git-refuses"
+#: What a plan whose source holds one is told to do. Said by `check`, once
+#: after its findings, and by `execute`'s refusal, after its own remediation.
+PATH_GIT_REFUSES_REMEDIATION = (
+    "Remediation: a path git refuses is a fact of the source, and no answer "
+    "in the plan changes it, `drop` included: `execute` clones the whole "
+    "source before it takes out anything the plan sends elsewhere, and git "
+    "checks out no commit that holds such a path. Rename or remove each one "
+    "in the source, in a commit git can check out, and re-run `plan`: a "
+    "plan is written against one commit of the source, and `check` calls it "
+    "`plan-stale` once the source has moved.")
+#: `check`'s finding, and the code of `execute`'s refusal, where a throwaway
+#: repository cannot be made in the work directory, or git there fails a
+#: step it is asked, so that the question goes unasked (#910).
+UNASKED = "adopt-git-unasked"
+#: The empty directory beside each throwaway repository: its `--template`, so
+#: `git init` copies nothing in, and its `core.hooksPath`, so no hook runs.
+THROWAWAY_EMPTY = "empty"
+#: The branch each throwaway repository's `git init` names (`-b`), so that it
+#: reads no `init.defaultBranch`, as the split's own `git init`s read none.
+THROWAWAY_BRANCH = "throwaway"
+
+
+class _Unasked(Refusal):
+    """A question of `check`'s that could not be asked in a throwaway
+    repository in `where`, and why (#910). A `Refusal` under `UNASKED`, so
+    that one nothing makes a finding of still says why, and never as
+    `git-failed`; `_entry_findings` makes it the finding, or the NOTE
+    `said` gives."""
+
+    def __init__(self, where: Path, why: str, unmade: bool = False) -> None:
+        super().__init__(
+            UNASKED,
+            "`check` asks this machine's git what the split will make of the "
+            f"source in throwaway repositories in {_spelled(str(where))}, the "
+            "work directory, where `execute` builds the split, and it could "
+            f"not: {why}. `execute` asks the same in its own work directory "
+            "before it makes either leg, and refuses while git cannot answer "
+            "there. Fix what that names -- a git setting, the disk or the "
+            "directory -- or pass another --work-dir, and run `check` again.")
+        self.where, self.why = where, why
+        #: No directory could be made in `where` at all: what
+        #: `_unwritable_work_dir` asks of a `--work-dir`, the same way, and
+        #: `adopt-work-dir-unwritable` names, and `execute` refuses before
+        #: it asks anything (#524). One cause, one finding: this one is a
+        #: NOTE of what went unasked.
+        self.unmade = unmade
+
+    def said(self) -> tuple[list[str], list[str]]:
+        """`(findings, notes)`: what `check` prints for it."""
+        if self.unmade:
+            return [], [f"NOTE `check` could not make a throwaway repository "
+                        f"in {_spelled(str(self.where))}, the work directory, "
+                        f"to ask this machine's git what the split will make "
+                        f"of the source: {self.why}. It asked nothing about "
+                        "the source's paths and files there; run `check` "
+                        "again with a --work-dir this user can write in."]
+        return [f"FINDING {self.code}: {self.detail}"], []
+
+
+def _why_unasked(exc: BaseException) -> str:
+    """What `_Unasked` says of `exc`: an `OSError` making or writing in the
+    throwaway repository, or git's refusal of a step there, in git's words
+    as `git_out` spells them."""
+    if isinstance(exc, OSError):
+        return ("a directory or a file could not be made there "
+                f"({exc.strerror or exc})")
+    return exc.detail if isinstance(exc, Refusal) else str(exc)
+
+
+@contextlib.contextmanager
+def _asked_there(where: Path):
+    """What fails in a throwaway repository in `where`, an `OSError` or a
+    git refusal, raised as the `_Unasked` that says why (#910)."""
+    try:
+        yield
+    except _Unasked:
+        raise
+    except (OSError, Refusal) as exc:
+        raise _Unasked(where, _why_unasked(exc)) from None
+
+
+def _throwaway(prefix: str, source: Source | None) -> Path:
+    """A new directory for a throwaway repository of `check`'s, named from
+    `prefix`, in the work directory `source` was opened in (#910), or in the
+    system's temporary directory for a `Source` no command opened; it is
+    `_Unasked` where none can be made there.
+
+    A work directory not made yet is made first, as `_work_root` makes a
+    missing `--work-dir` (`_made_0755`). `_work_root` has made it for every
+    command, but a `Source` opened outside one, as a test opens it with
+    `Plan.open_source`, may name one that is not there: in `TMPDIR` its
+    questions were asked, and it must not lose them to a NOTE."""
+    where = source.work_root if source is not None else None
+    try:
+        if where is not None:
+            _made_0755(where)
+        return Path(tempfile.mkdtemp(prefix=prefix, dir=where))
+    except OSError as exc:
+        raise _Unasked(where or Path(tempfile.gettempdir()),
+                       _why_unasked(exc), unmade=True) from None
+
+
+def _throwaway_made(scratch: Path, repository: Path, source: Source | None,
+                    env: dict) -> list[str]:
+    """`git init` of `repository` in `scratch`, as `check` makes each of its
+    throwaway repositories (#910): from the empty `THROWAWAY_EMPTY`, with
+    the source's object format, and on `THROWAWAY_BRANCH`. Returns the `-c`
+    every git command run there takes: `core.hooksPath` that same empty
+    directory. `_Unasked` where it cannot be made."""
+    formats = ([] if source is None
+               else [f"--object-format={source.object_format()}"])
+    empty = scratch / THROWAWAY_EMPTY
+    hooks_off = ["-c", f"core.hooksPath={empty}"]
+    with _asked_there(scratch.parent):
+        empty.mkdir()
+        made = subprocess.run(["git", *hooks_off, "init", "-q",
+                               f"--template={empty}", *formats,
+                               "-b", THROWAWAY_BRANCH, str(repository)],
+                              cwd=str(scratch), env=env,
+                              capture_output=True, check=False)
+    if made.returncode:
+        raise _Unasked(scratch.parent, (
+            f"`git init` there exited {made.returncode}: "
+            + spelled_as_git_out(made.stderr.decode("utf-8", "replace")
+                                 .strip())))
+    return hooks_off
+
+
+def _throwaway_removed(scratch: Path) -> None:
+    """`scratch` removed with all it holds, what git wrote read-only
+    included, which Windows refuses to unlink (`_writable_then_removed`);
+    what still cannot be removed is left, as `ignore_errors` left it."""
+    def removed(remove, target, error) -> None:
+        with contextlib.suppress(OSError):
+            _writable_then_removed(remove, target, error)
+
+    shutil.rmtree(scratch, **{REMOVAL_HANDLER: removed})
+
+
+def _paths_git_refuses(source: Source, tree: list) -> list[str]:
+    """Each path of `tree` (`Source.tree()`'s rows) that this machine's git
+    will not hold in an index, in the tree's order (#910), asked in a
+    rehearsal of its own (`_SplitRehearsal.refused_paths`)."""
+    with _SplitRehearsal(source) as asked:
+        return asked.refused_paths(tree)
+
+
+def _path_git_refuses_findings(paths: list[str]
+                               ) -> tuple[list[str], list[str]]:
+    """`check`'s finding for the paths of the source commit that git
+    refuses, `_paths_git_refuses`' answer, naming `NAMED_PATHS` of them and
+    counting the rest; and what to print once after every finding. Read from
+    the tree alone: no answer of the plan's changes it."""
+    if not paths:
+        return [], []
+    one = len(paths) == 1
+    them = "it" if one else "them"
+    return ([f"FINDING {PATH_GIT_REFUSES}: the source commit holds "
+             f"{'1 path' if one else f'{len(paths)} paths'} this machine's "
+             f"git refuses as a path, and holds in no index: "
+             f"{_named_and_counted(paths)}. Each clone the split makes of "
+             f"the source would stop at {'it' if one else 'the first'}, "
+             "`unable to checkout working tree`, so `execute` refuses "
+             f"{them} before it makes either leg, whatever the plan answers "
+             f"for {them}."],
+            [PATH_GIT_REFUSES_REMEDIATION])
+
+
+def _asked_in_throwaways(plan: Plan, source: Source, tree: list,
+                         probe: _SymlinkProbe, refused: list[str]
+                         ) -> tuple[list[str], list[str]]:
+    """`(findings, notes)` of `check`'s questions to git in throwaway
+    repositories, in `_entry_findings`' order (#530, #654); `refused` is
+    `_paths_git_refuses`' answer. Where one cannot be asked, those before
+    it, and what `_Unasked.said` says of it; none after it, asked in the
+    same work directory, is asked (#910)."""
+    found: list[str] = []
+    for question in (
+            lambda: _nested_attributes_findings(plan, source, tree, probe),
+            lambda: _reencoded_attributes_findings(plan, source, tree,
+                                                   probe),
+            lambda: _reencoded_files_findings(plan, source, tree, probe,
+                                              refused)):
+        try:
+            found += question()
+        except _Unasked as exc:
+            more, notes = exc.said()
+            return [*found, *more], notes
+    return found, []
 
 
 # ---------------------------------------------------------------------------
@@ -11127,34 +11649,35 @@ def checked_out_as(values: dict) -> str:
 class _AttributesProbe:
     """A throwaway repository to ask `git check-attr` in: each question's
     `.gitattributes` files are written into a work tree of their own, which
-    holds nothing else. Made where `_ask_git_branch` makes its own, in the
-    system's temporary directory, and removed on leaving the `with`."""
+    holds nothing else. Made as `check` makes each of its own (#910): in the
+    work directory `source` was opened in, with its object format and no
+    hook; and removed on leaving the `with`."""
 
-    def __init__(self) -> None:
-        self._scratch = Path(tempfile.mkdtemp(
-            prefix="openreposhape-attributes-"))
+    def __init__(self, source: Source | None = None) -> None:
+        self._source = source
+        self._scratch = _throwaway("openreposhape-attributes-", source)
         self._asked = 0
         #: An empty file, read in place of the person's own global config
         #: and `core.attributesFile`.
         self._nothing = self._scratch / "nothing"
         self._env = _probe_env(self._nothing)
         self._git_dir = self._scratch / "repository" / ".git"
+        #: The `-c` every git command here takes (`_throwaway_made`).
+        self._hooks_off: list[str] = []
 
     def __enter__(self) -> "_AttributesProbe":
         try:
-            empty = self._scratch / "no-template"
-            empty.mkdir()
-            self._nothing.write_bytes(b"")
-            git_out(["init", "-q", f"--template={empty}",
-                     str(self._git_dir.parent)], cwd=self._scratch,
-                    env=self._env)
+            with _asked_there(self._scratch.parent):
+                self._nothing.write_bytes(b"")
+            self._hooks_off = _throwaway_made(
+                self._scratch, self._git_dir.parent, self._source, self._env)
         except BaseException:
             self.__exit__()
             raise
         return self
 
     def __exit__(self, *_exc) -> None:
-        shutil.rmtree(self._scratch, ignore_errors=True)
+        _throwaway_removed(self._scratch)
 
     def ask(self, layout: dict, paths: list[str],
             fold: bool) -> dict[str, dict[str, str]]:
@@ -11163,16 +11686,19 @@ class _AttributesProbe:
         reads them, and git ignoring case where `fold` says so."""
         self._asked += 1
         tree = self._scratch / f"tree-{self._asked}"
-        tree.mkdir()
-        for rel, data in layout.items():
-            target = tree.joinpath(*rel.split("/"))
-            target.parent.mkdir(parents=True, exist_ok=True)
-            target.write_bytes(data)
-        raw = git_out([f"--git-dir={self._git_dir}", f"--work-tree={tree}",
-                       "-c", f"core.ignorecase={str(fold).lower()}",
-                       "-c", f"core.attributesFile={self._nothing}",
-                       "check-attr", "-z", *LINE_ENDING_ATTRIBUTES, "--",
-                       *paths], cwd=tree, binary=True, env=self._env)
+        with _asked_there(self._scratch.parent):
+            tree.mkdir()
+            for rel, data in layout.items():
+                target = tree.joinpath(*rel.split("/"))
+                target.parent.mkdir(parents=True, exist_ok=True)
+                target.write_bytes(data)
+            raw = git_out([*self._hooks_off, f"--git-dir={self._git_dir}",
+                           f"--work-tree={tree}",
+                           "-c", f"core.ignorecase={str(fold).lower()}",
+                           "-c", f"core.attributesFile={self._nothing}",
+                           "check-attr", "-z", *LINE_ENDING_ATTRIBUTES,
+                           "--", *paths], cwd=tree, binary=True,
+                          env=self._env)
         fields = raw.split(b"\0")
         said: dict[str, dict[str, str]] = {}
         for at in range(0, len(fields) - 2, 3):
@@ -11360,17 +11886,20 @@ def _outranking(asked: _AttributesProbe, fold: bool, landed: list[str],
     return found
 
 
-def _nested_attributes_findings(plan: Plan, source: Source,
-                                tree: list) -> list[str]:
+def _nested_attributes_findings(plan: Plan, source: Source, tree: list,
+                                probe: _SymlinkProbe | None = None
+                                ) -> list[str]:
     """A FINDING for each `.gitattributes` the plan keeps below the root
     whose rules outrank the root's line-ending rule for a pinned copy (#530),
     in the tree's order. A source that keeps none above a copy asks git
-    nothing, and adopts as it did."""
+    nothing, and adopts as it did. `probe` is `_entry_findings`' one probe
+    (#910); `_Unasked` where git cannot be asked."""
     nested = _kept_nested_attributes(plan, tree)
     if not nested:
         return []
     kept = _kept_in_root(plan.entries, tree)
-    probe = _SymlinkProbe(source.work_root)
+    if probe is None:
+        probe = _SymlinkProbe(source.work_root)
     questions = []
     for fold in (False, True):
         walks = _PlannedRoot(plan, source, tree, probe=probe,
@@ -11396,7 +11925,7 @@ def _nested_attributes_findings(plan: Plan, source: Source,
     if not questions:
         return []
     found: dict[str, str] = {}
-    with _AttributesProbe() as asked:
+    with _AttributesProbe(source) as asked:
         for fold, landed, root, placed, linked in questions:
             for path, finding in _outranking(asked, fold, landed, root,
                                              placed, linked):
@@ -11450,17 +11979,20 @@ def _nested_attributes_findings(plan: Plan, source: Source,
 REENCODED_ATTRIBUTES = "plan-attributes-reencoded"
 
 
-def _stored_as_written(blob: bytes, mode: str,
-                       written: bytes) -> tuple[str | None, bool]:
+def _stored_as_written(blob: bytes, mode: str, written: bytes,
+                       source: Source | None = None
+                       ) -> tuple[str | None, bool]:
     """`(None, …)` when this machine's `git add` stores `written` at the
     root's `.gitattributes`, over an index that holds `blob` there with
     `mode`, as exactly those bytes; else what it did: git's last line where
     it refused, or "" where it stored other bytes. And whether a
     `working-tree-encoding` rule reaches the file itself, which leaves the
     split's checkout of it a file git reads no rule from (#654's L1-12).
-    Asked in a throwaway repository in the system's temporary directory,
-    removed afterwards."""
-    scratch = Path(tempfile.mkdtemp(prefix="openreposhape-attributes-"))
+    Asked in a throwaway repository made as `check` makes each of its own
+    (#910), in the work directory `source` was opened in, with its object
+    format and no hook, and removed afterwards; `_Unasked` where git cannot
+    be asked there."""
+    scratch = _throwaway("openreposhape-attributes-", source)
     env = _inherited_env()
     # No fsmonitor daemon is started for a repository that is about to go.
     git = ["-c", "core.fsmonitor=false"]
@@ -11473,30 +12005,30 @@ def _stored_as_written(blob: bytes, mode: str,
                         str(scratch / name)], cwd=repository, env=env)
 
     try:
-        empty = scratch / "no-template"
-        empty.mkdir()
-        git_out(["init", "-q", f"--template={empty}", str(repository)],
-                cwd=scratch, env=env)
-        git_out([*git, "update-index", "--add", "--cacheinfo",
-                 f"{mode},{raw_oid(blob, 'held', '-w')},{ATTRIBUTES}"],
-                cwd=repository, env=env)
-        (repository / ATTRIBUTES).write_bytes(written)
-        encoded = git_out([*git, "check-attr", "-z", "working-tree-encoding",
-                           "--", ATTRIBUTES], cwd=repository, env=env,
-                          binary=True).split(b"\0")[2].decode(
-                              "utf-8", "replace") not in NO_RULE
-        added = subprocess.run(["git", *git, "add", "--", ATTRIBUTES],
-                               cwd=str(repository), env=env,
-                               capture_output=True, check=False)
-        if added.returncode:
-            said = added.stderr.decode(errors="replace").strip()
-            return (said.splitlines()[-1] if said else
-                    f"exit {added.returncode}"), encoded
-        staged = git_out([*git, "ls-files", "-s", "--", ATTRIBUTES],
-                         cwd=repository, env=env).split()[1]
-        return (None if staged == raw_oid(written, "wanted") else ""), encoded
+        git += _throwaway_made(scratch, repository, source, env)
+        with _asked_there(scratch.parent):
+            git_out([*git, "update-index", "--add", "--cacheinfo",
+                     f"{mode},{raw_oid(blob, 'held', '-w')},{ATTRIBUTES}"],
+                    cwd=repository, env=env)
+            (repository / ATTRIBUTES).write_bytes(written)
+            encoded = git_out([*git, "check-attr", "-z",
+                               "working-tree-encoding", "--", ATTRIBUTES],
+                              cwd=repository, env=env,
+                              binary=True).split(b"\0")[2].decode(
+                                  "utf-8", "replace") not in NO_RULE
+            added = subprocess.run(["git", *git, "add", "--", ATTRIBUTES],
+                                   cwd=str(repository), env=env,
+                                   capture_output=True, check=False)
+            if added.returncode:
+                said = added.stderr.decode(errors="replace").strip()
+                return (said.splitlines()[-1] if said else
+                        f"exit {added.returncode}"), encoded
+            staged = git_out([*git, "ls-files", "-s", "--", ATTRIBUTES],
+                             cwd=repository, env=env).split()[1]
+            return ((None if staged == raw_oid(written, "wanted") else ""),
+                    encoded)
     finally:
-        shutil.rmtree(scratch, ignore_errors=True)
+        _throwaway_removed(scratch)
 
 
 def _reencoded_attributes_finding(said: str, encoded: bool = False) -> str:
@@ -11541,25 +12073,29 @@ def _reencoded_attributes_finding(said: str, encoded: bool = False) -> str:
 
 
 def _reencoded_attributes_findings(plan: Plan, source: Source,
-                                   tree: list) -> list[str]:
+                                   tree: list,
+                                   probe: _SymlinkProbe | None = None
+                                   ) -> list[str]:
     """A FINDING where the plan keeps the source's own `.gitattributes` in
     the root, which the split appends the block to, and this machine's `git
     add` would not store what the split writes there as those bytes (#530,
     D5(a)). A root that keeps none, or keeps a symlink there, asks git
-    nothing."""
+    nothing. `probe` is `_entry_findings`' one probe (#910); `_Unasked`
+    where git cannot be asked."""
     disk = _KeptTree(_kept_in_root(plan.entries, tree), False)
     row = disk.at(ATTRIBUTES)
     if row is None or row[1] not in FILE_MODES:
         return []
-    walks = _PlannedRoot(plan, source, tree,
-                         probe=_SymlinkProbe(source.work_root)).walks()
+    if probe is None:
+        probe = _SymlinkProbe(source.work_root)
+    walks = _PlannedRoot(plan, source, tree, probe=probe).walks()
     written = _root_attributes(source, walks, disk, tree,
                                [name for name, _ in _pinned_landings(walks)])
     if f"{COLLISION_DIR}/{ATTRIBUTES}" not in written:
         return []
     blobs = {path: oid for path, _, oid, _ in tree}
     said, encoded = _stored_as_written(_blob_bytes(source.path, blobs[row[0]]),
-                                       row[1], written[ATTRIBUTES])
+                                       row[1], written[ATTRIBUTES], source)
     return ([] if said is None
             else [_reencoded_attributes_finding(said, encoded)])
 
@@ -11644,9 +12180,11 @@ NAMED_PATHS = 10
 
 #: The rehearsal's index files: the commit as the source holds it, and as
 #: the split's root will; what the split's checkout writes; what the mount's
-#: `git rm` takes; and what the split's `git add` stores again.
+#: `git rm` takes; and what the split's `git add` stores again. And every
+#: path of the commit git holds at all (`refused_paths`, #910).
 AS_HELD, AS_SPLIT = "index-as-held", "index-as-split"
 CHECKED_OUT, TAKEN, STORED = "index-checked-out", "index-taken", "index-stored"
+PATHS_HELD = "index-paths"
 
 #: How a finding says which files git reads again.
 READ_AGAIN = ("each one git reads again (every file of a small source; of a "
@@ -11698,59 +12236,77 @@ def _nul(path: str) -> bytes:
 class _SplitRehearsal:
     """A throwaway repository that borrows a source's objects, to ask this
     machine's git what the split's checkout, `git rm` and `git add` make of
-    them. Made in the system's temporary directory, as `_stored_as_written`
-    makes its own, and removed on leaving the `with`."""
+    them. Made as `check` makes each of its own (#910): in the work directory
+    the source was opened in, with its object format and no hook; and removed
+    on leaving the `with`. `_Unasked` where git cannot be asked there."""
 
     def __init__(self, source: Source) -> None:
         self._source = source
-        self._scratch = Path(tempfile.mkdtemp(
-            prefix="openreposhape-reencoded-"))
+        self._scratch = _throwaway("openreposhape-reencoded-", source)
         self.work = self._scratch / "repository"
         # git-lfs's smudge is skipped: each LFS file is checked out as its
         # pointer, which git-lfs's clean stores as it is, so no LFS object is
         # read, linked or fetched, and a blob under `filter=lfs` that is not
         # a pointer is still stored otherwise and found.
         self._env = {**_inherited_env(), "GIT_LFS_SKIP_SMUDGE": "1"}
+        #: The `-c` every git command here takes (`_throwaway_made`).
+        self._hooks_off: list[str] = []
 
     def __enter__(self) -> "_SplitRehearsal":
         try:
-            objects = git_out(["rev-parse", "--path-format=absolute",
-                               "--git-path", "objects"],
-                              cwd=self._source.path, binary=True,
-                              env=self._env).strip()
-            empty = self._scratch / "no-template"
-            empty.mkdir()
-            git_out(["init", "-q", f"--template={empty}", str(self.work)],
-                    cwd=self._scratch, env=self._env)
-            info = self.work / ".git" / "objects" / "info"
-            info.mkdir(parents=True, exist_ok=True)
-            (info / "alternates").write_bytes(objects + b"\n")
+            with _asked_there(self._scratch.parent):
+                objects = git_out(["rev-parse", "--path-format=absolute",
+                                   "--git-path", "objects"],
+                                  cwd=self._source.path, binary=True,
+                                  env=self._env).strip()
+            self._hooks_off = _throwaway_made(self._scratch, self.work,
+                                              self._source, self._env)
+            with _asked_there(self._scratch.parent):
+                info = self.work / ".git" / "objects" / "info"
+                info.mkdir(parents=True, exist_ok=True)
+                (info / "alternates").write_bytes(objects + b"\n")
         except BaseException:
             self.__exit__()
             raise
         return self
 
     def __exit__(self, *_exc) -> None:
-        shutil.rmtree(self._scratch, ignore_errors=True)
+        _throwaway_removed(self._scratch)
 
     def git(self, args: list[str], index: str,
             data: bytes = b"") -> subprocess.CompletedProcess:
         """`git <args>` here, over the index file `index`, `data` its stdin.
         No fsmonitor daemon is started for a repository about to go."""
         return subprocess.run(
-            ["git", "-c", "core.fsmonitor=false", *args], cwd=str(self.work),
-            input=data, capture_output=True, check=False,
+            ["git", *self._hooks_off, "-c", "core.fsmonitor=false", *args],
+            cwd=str(self.work), input=data, capture_output=True, check=False,
             env={**self._env,
                  "GIT_INDEX_FILE": str(self.work / ".git" / index)})
 
     def asked(self, args: list[str], index: str, data: bytes = b"") -> bytes:
-        """`git`'s stdout, or the `git-failed` refusal `git_out` raises."""
+        """`git`'s stdout; where git fails, the `_Unasked` that says so in
+        its words, as `git_out` spells them, never `git-failed` (#910)."""
         proc = self.git(args, index, data)
         if proc.returncode:
-            raise Refusal("git-failed", "`git {}` in {} exited {}: {}".format(
-                " ".join(args), self.work, proc.returncode,
-                proc.stderr.decode("utf-8", "replace").strip()))
+            raise _Unasked(self._scratch.parent, "`git {}` in {} exited {}: {}"
+                           .format(" ".join(args), shown_path(self.work),
+                                   proc.returncode, spelled_as_git_out(
+                                       proc.stderr.decode(
+                                           "utf-8", "replace").strip())))
         return proc.stdout
+
+    def refused_paths(self, tree: list) -> list[str]:
+        """Each path of `tree` (`Source.tree()`'s rows) that this machine's
+        git will not hold in an index, in the tree's order (#910):
+        `update-index --index-info` leaves out each path it refuses, saying
+        `Ignoring path`, and takes the rest, and git's own listing of the
+        index is read back. Written here, not by `hold`: nothing is ever
+        checked out of this index."""
+        self.asked(["update-index", "-z", "--index-info"], PATHS_HELD,
+                   b"".join(f"{mode} {oid}\t".encode("ascii") + _nul(path)
+                            for path, mode, oid, _ in tree))
+        held = set(self.listed(["ls-files", "-z"], PATHS_HELD))
+        return [path for path, _, _, _ in tree if path not in held]
 
     def refused(self, args: list[str], index: str,
                 data: bytes = b"") -> str | None:
@@ -12001,7 +12557,8 @@ def _refused_finding(step: tuple[str, str, str], said: str) -> str:
 
 
 def _reencoded_files_findings(plan: Plan, source: Source, tree: list,
-                              probe: _SymlinkProbe | None = None
+                              probe: _SymlinkProbe | None = None,
+                              refused: list[str] | None = None
                               ) -> list[str]:
     """A FINDING for each group of files the plan keeps or moves, and of
     pinned copies, that this machine's git would store as other bytes than
@@ -12010,7 +12567,11 @@ def _reencoded_files_findings(plan: Plan, source: Source, tree: list,
     question, and is not asked again; one kept as a symlink, which the split
     never writes through, is `plan-root-symlink`'s or #471's follow-up's.
     `probe` is `_entry_findings`' one probe, shared with
-    `_root_symlink_findings`."""
+    `_root_symlink_findings`. A source commit holding a path git refuses is
+    asked nothing more, and `_Unasked` is raised where git cannot be asked
+    (#910). `refused` is `_paths_git_refuses`' answer, where `_entry_findings`
+    has it, so the rehearsal asks no path question of its own; given none,
+    it asks."""
     kept_rows = _kept_in_root(plan.entries, tree)
     kept = {path for path, _, _ in kept_rows}
     disk = _KeptTree(kept_rows, False)
@@ -12032,7 +12593,13 @@ def _reencoded_files_findings(plan: Plan, source: Source, tree: list,
     spec, code = _plan_leg_paths(plan)
     makefile = (None if leg_path_problems(spec, code)
                 else adopt_makefile_block(spec[1], code[1]))
+    # A path git refuses stops the split's clone before anything asked here,
+    # and `read-tree` at it: `plan-path-git-refuses` names it.
+    if refused:
+        return []
     with _SplitRehearsal(source) as asked:
+        if refused is None and asked.refused_paths(tree):
+            return []
         reached, at_the_root = _rules_reaching(
             asked, source, tree, kept, written,
             [landed for _, landed in landings])
@@ -15482,6 +16049,12 @@ def _account_for(before: dict, after: dict, drops: list[str]) -> tuple[dict, lis
 
     A path in TWO places is as much a finding as a path in none — the second
     is data loss and the first is two repositories owning one file.
+
+    THE DROP IS ASKED BEFORE THE ROOT IS (#914). A path the plan dropped is
+    gone from the split before the shape writes, so a blob the root holds
+    at it is the shape's, which happens to be the same bytes: the path is
+    counted `drop`, as the plan says, and not `root`. Only the count moves;
+    a dropped path in a leg is counted, or found, as before.
     """
     dropped = {p.rstrip("/") for p in drops}
     counts = {"spec": 0, "code": 0, "root": 0, "drop": 0}
@@ -15489,13 +16062,14 @@ def _account_for(before: dict, after: dict, drops: list[str]) -> tuple[dict, lis
     for path, oid in sorted(before.items()):
         landings = [where for where in after.get(path, [])
                     if where.split(":", 1)[1] == oid]
-        if len(landings) == 1:
+        drop = any(path == d or path.startswith(d + "/") for d in dropped)
+        if drop and landings in ([], [f"root:{oid}"]):
+            counts["drop"] += 1
+        elif len(landings) == 1:
             counts[landings[0].split(":", 1)[0]] += 1
         elif landings:
             findings.append(f"FINDING adopt-duplicated: {_spelled(path)} is "
                             "in " + ", ".join(landings))
-        elif any(path == d or path.startswith(d + "/") for d in dropped):
-            counts["drop"] += 1
         else:
             findings.append(f"FINDING adopt-lost: {_spelled(path)} "
                             f"({oid[:12]}) is in no leg, not in the root "
@@ -16919,8 +17493,9 @@ def main(argv: list[str] | None = None) -> int:
                            "and one that is neither a path that exists nor "
                            "an `org/repo`; `source-unreadable`, a path this "
                            "user cannot reach (under a directory it may not "
-                           "search), which is never read as one that is not "
-                           "there, nor cloned as an `org/repo`.")
+                           "search, or one it may not enter), which is never "
+                           "read as one that is not there, nor cloned as an "
+                           "`org/repo`.")
     plan.add_argument("--project", required=True,
                       help="the assembly-root name; for an in-place adoption "
                            "it is the source repository's own name. "

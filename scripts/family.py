@@ -7699,6 +7699,18 @@ def _member_head(member: Path) -> tuple[str | None, str | None]:
     #365): the rollback would have taken the holder's commit for the
     member's. A `.git` whose `lstat` is refused is raised (`_is_there`,
     #430), not read as no checkout.
+
+    THE BRANCH IS READ AS THE BYTES GIT WROTE, as `_holder_branch` reads the
+    holder's (#918, #457's L1-70): exactly one newline and exactly
+    `refs/heads/` come off the bytes, and the rest is decoded with
+    `surrogateescape`, as #425 decodes a source's default branch. Read
+    strictly, a member checked out on a branch that is not UTF-8
+    (`caf<0xE9>`) raised `UnicodeDecodeError` out of `PinRollback`, so
+    `bump` and `remove` ended in a traceback before they wrote anything.
+    Kept as a lone surrogate, the name is handed back to git as the byte it
+    is (`_head_target`, `_head_back`), so a rollback puts the member back
+    ON that branch. And `strip()` no longer takes a trailing U+00A0 off a
+    branch's name, which named another branch (#765).
     """
     if not _is_there(member / ".git"):
         return None, None
@@ -7708,11 +7720,13 @@ def _member_head(member: Path) -> tuple[str | None, str | None]:
     except Refusal:
         at = None
     try:
-        ref = git_out(["symbolic-ref", "-q", "HEAD"], cwd=member)
+        ref = git_out(["symbolic-ref", "-q", "HEAD"], cwd=member, binary=True)
     except Refusal:
-        ref = ""
-    return at, (ref[len(HEADS_PREFIX):] if ref.startswith(HEADS_PREFIX)
-                else None)
+        ref = b""
+    ref = ref[:-1] if ref.endswith(b"\n") else ref
+    heads = HEADS_PREFIX.encode("ascii")
+    return at, (ref[len(heads):].decode("utf-8", "surrogateescape")
+                if ref.startswith(heads) else None)
 
 
 def _head_target(member: Path, at: str, branch: str | None) -> list[str]:
@@ -7750,11 +7764,41 @@ def _head_back(member: Path, at: str | None, branch: str | None) -> bool:
     return True
 
 
+def _branch_by_hand(branch: str) -> str:
+    """`branch` as ONE word a person types into a POSIX shell, so the shell
+    hands git the branch's exact bytes (#1079).
+
+    A UTF-8 name is `shlex.quote`d, as it always was. A name read from git
+    with `surrogateescape` that holds a byte which is not UTF-8 has no
+    spelling `shlex.quote` can give it: the surrogate is printed as the text
+    `\\udce9`, which typed names a branch that is not there. It is spelled
+    `"$(printf '<escapes>')"`, a form any POSIX shell reads the same way: each
+    byte that is not printable ASCII is a three-digit octal escape (`\\351`),
+    and so are the four ASCII bytes the format, its quotes or an interactive
+    shell's history scanner would read as something else, `'`, `\\`, `%` and
+    `!` (`\\041`), so the line is ASCII whatever the stream it is printed on,
+    and never depends on a shell's history expansion. A ref name cannot hold a
+    newline, so the substitution's stripped trailing newlines lose nothing."""
+    try:
+        branch.encode("utf-8")
+    except UnicodeEncodeError:
+        pass
+    else:
+        return shlex.quote(branch)
+    escapes = "".join(
+        chr(byte) if 0x20 <= byte < 0x7f and chr(byte) not in "'\\%!"
+        else f"\\{byte:03o}"
+        for byte in branch.encode("utf-8", "surrogateescape"))
+    return f"\"$(printf '{escapes}')\""
+
+
 def _head_by_hand(path: str, at: str, branch: str | None) -> str:
     """`_head_back` as the human types it in the holder: the branch the
     checkout was on, else the commit. FROM THE RECORD, with no git call: it
-    is named when a step failed, often with `path` not on disk at all."""
-    target = f"{shlex.quote(branch)} --" if branch is not None else at
+    is named when a step failed, often with `path` not on disk at all. The
+    branch is spelled by `_branch_by_hand`, which keeps the bytes of a name
+    that is not UTF-8 (#1079)."""
+    target = f"{_branch_by_hand(branch)} --" if branch is not None else at
     return f"git -C {shlex.quote(path)} checkout -q {target}"
 
 
@@ -8146,7 +8190,7 @@ class PinRollback:
     def _head_said(self) -> str:
         at = (self.at or "")[:12]
         if self.branch is not None:
-            return f"{self.path} back on {self.branch} at {at}"
+            return f"{self.path} back on {_shown(self.branch)} at {at}"
         return f"{self.path} checked out at {at} again"
 
     def _work_tree_said(self) -> str:
@@ -8155,7 +8199,7 @@ class PinRollback:
         if self.at is None:
             return f"{self.path} checked out again"
         said = (f"{self.path} checked out again at {self.at[:12]}"
-                + (f" on {self.branch}" if self.branch else "")
+                + (f" on {_shown(self.branch)}" if self.branch else "")
                 + " from the object store `git rm` keeps")
         if self.legs:
             said += (", and " + " and ".join(leg for leg, _, _, _ in self.legs)

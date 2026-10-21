@@ -89,7 +89,10 @@ WHAT IS CHECKED
     which HEAD still records, says to commit it, and prints no `git rm`,
     which would fail (#681). One no section of HEAD's `.gitmodules` gives
     a url is said to be checked out nowhere by a recursive clone, and to
-    stop a plain clone's `git submodule update --init` (#762).
+    stop a plain clone's `git submodule update --init` (#762). Where the
+    work tree's `.gitmodules` is gone from disk, the sections are read
+    from the file git reads in its place, the index's, then HEAD's, and
+    the lines that take one out put that file back first (#1036).
   - that every gitlink OUTSIDE `members/`, which no row can name, is at a
     path a section of `.gitmodules` gives, the `gitlink-unnamed` finding
     (#878): a plain clone's `git submodule update --init` stops at one no
@@ -335,9 +338,14 @@ def _git_runs(unread: str) -> Iterator[None]:
     architecture, a script with no shebang), and so does a
     `FileNotFoundError` or a `PermissionError` that names no file, as
     Windows' `CreateProcess` raises one for a missing git, and so does an
-    `OSError` that names none whose `winerror` is 193, Windows' `[WinError
-    193]` for a `git.exe` it cannot execute, which is neither class (#1001).
-    Every other `OSError` passes through as it came.
+    `OSError` that names none whose `winerror` says Windows could not start
+    the program itself, which is neither class: 193, a `git.exe` it cannot
+    execute (#1001), the rest of 193's `ENOEXEC` family, 11 and 188 to 202,
+    216, a `git.exe` built for another architecture, 1260, one AppLocker or
+    a software restriction policy blocks, and 4551, one App Control for
+    Business blocks (#1040). Every other `OSError` passes through as it
+    came, any other `winerror` too, and so does a nameless `[WinError 267]`,
+    a `cwd` that is not a folder.
 
     `validate-pins.py`'s RULE, COPIED, NOT SHARED. This file is a pinned
     copy, and a holder re-copies its pinned files one row at a time, so it
@@ -351,7 +359,8 @@ def _git_runs(unread: str) -> Iterator[None]:
     except OSError as exc:
         nameless = (exc.filename is None
                     and (isinstance(exc, (FileNotFoundError, PermissionError))
-                         or getattr(exc, "winerror", None) == 193))
+                         or getattr(exc, "winerror", None)
+                         in (11, *range(188, 203), 216, 1260, 4551)))
         if exc.filename != "git" and not nameless:
             raise
         raise Refusal(
@@ -2837,12 +2846,29 @@ def _given_as_git_reads(root: Path) -> set[str]:
     """Every path a section of `.gitmodules` gives, as git's submodule
     commands read the file: the work tree's where it is on disk, else the
     one git reads in its place (`_gitmodules_put_back`, the index's, then
-    HEAD's), else none (rv882's SHOULD 2 on #882)."""
+    HEAD's), else none (rv882's SHOULD 2 on #882), read as
+    `_sections_as_git_reads` reads it, so the hand mount's put-back and
+    `gitmodules-path-unnamed` agree on one file (#1036)."""
+    return {keys["path"] for keys in _sections_as_git_reads(
+        root, _gitmodules_sections(root)).values() if "path" in keys}
+
+
+def _sections_as_git_reads(root: Path, worktree: dict[str, dict[str, str]]
+                           ) -> dict[str, dict[str, str]]:
+    """Every `submodule` section of `.gitmodules` as git's submodule
+    commands read the file, `{name: {key: value}}`: `worktree`, the work
+    tree's (`_gitmodules_sections`), where it is on disk, else the one git
+    reads in its place (`_gitmodules_put_back`, the index's, then HEAD's,
+    `_blob_sections`), else none (#1036). What `gitmodules-path-unnamed`
+    reads: from the work tree's alone, a section `git submodule add`
+    staged in the index's file, whose work tree's copy was deleted, was
+    never named, and the commit after the hand mount's lines recorded it.
+    Git 2.43 reads the index's there: `git submodule status <path>` maps
+    the path, which HEAD's file does not give."""
     if os.path.lexists(root / GITMODULES):
-        return {keys["path"] for keys in _gitmodules_sections(root).values()
-                if "path" in keys}
+        return worktree
     spec = _gitmodules_put_back(root)[0]
-    return _blob_paths(root, spec) if spec else set()
+    return _blob_sections(root, spec) if spec else {}
 
 
 #: Why a plain `git rm` of a hand mount's gitlink refuses it where the
@@ -3154,6 +3180,16 @@ def _check_gitmodules_named(root: Path, sections: dict[str, dict[str, str]],
     rest of each remedy is `_section_out`'s, after `_gitlink_out_first`'s
     `git rm` where it prints one, so this stays within S3776's limit
     (rv882's SHOULD 3 on #882).
+
+    WHERE THE WORK TREE'S `.gitmodules` IS GONE FROM DISK, `sections` are
+    the file git reads in its place, the index's, then HEAD's
+    (`_sections_as_git_reads`, #1036), and each finding that prints lines
+    puts that file back before its keys' lines, unless a finding printed
+    before did (`_file_put_back`, recorded in `Report.put_back`): read from
+    the work tree alone, a section `git submodule add` staged, its file
+    then deleted, was never named, the hand mount's `git rm --cached`
+    exited 0, the gate passed, and the commit of what was staged recorded
+    the section (RV1025's SHOULD 1 on #1025).
     """
     holds = {keys["path"] for keys in sections.values() if "path" in keys}
     given = Counter(keys["path"] for keys in sections.values()
@@ -3173,8 +3209,10 @@ def _check_gitmodules_named(root: Path, sections: dict[str, dict[str, str]],
                                said + _variant_advice(kind, path, *variant,
                                                       "section"))
                 continue
+            then, staged = _section_then(root, name)
             said += _variant_said(*variant) + _section_out(
-                name, keys, "Take", f"then commit {GITMODULES}")
+                name, keys, "Take", then, back=_file_put_back(root, report),
+                staged=staged)
         elif (path in gitlinks and path not in removed and given[path] == 1
               and _in_members(path)
               and _hand_cached(root, path, gitlinks[path]) is None):
@@ -3186,7 +3224,8 @@ def _check_gitmodules_named(root: Path, sections: dict[str, dict[str, str]],
             continue
         else:
             said += SECTION_ROW_BACK + _gitlink_out_first(
-                root, name, keys, gitlinks, removed, taken, edited)
+                root, name, keys, gitlinks, removed, taken, edited,
+                _file_put_back(root, report))
         report.finding("gitmodules-path-unnamed", said)
         edited = report.wrote = True
 
@@ -3208,22 +3247,61 @@ def _section_unnamed_said(name: str, keys: dict[str, str]) -> str:
 
 
 def _section_out(name: str, keys: dict[str, str], lead: str, then: str,
-                 line: str = "") -> str:
+                 line: str = "", back: tuple[str, str] = ("", ""),
+                 staged: bool = False) -> str:
     """The end of `gitmodules-path-unnamed`'s text, which takes the section
     `name` out by key (#300), every key it holds (`keys`), after `lead`,
     ending `then`, with `line`, a `git rm` printed first, before those
-    lines."""
+    lines.
+
+    WHERE THE WORK TREE'S `.gitmodules` IS GONE FROM DISK, `back` is the
+    line that puts it back from where git reads it and whose file that is
+    (`_file_put_back`), printed after `line` and before the keys', and
+    said: `git config -f` on no file exits 5 and makes none, measured on
+    git 2.43, so the keys' lines took nothing out (#1036). A `git rm
+    --cached` takes the gitlink out with no file on disk, so `line` stays
+    first.
+
+    `staged`, where HEAD's `.gitmodules` holds no section of `name`
+    (`_section_then`), prints `git add -- .gitmodules` after the keys'
+    lines: the commit records the index's file, which still held the
+    section `git submodule add` staged, so a `git commit` after the lines
+    recorded it, and `git commit -- .gitmodules` had nothing to commit
+    (RV1069's SHOULD 1 on #1069)."""
     removal = "".join(
         f"\n    git config -f {GITMODULES} --unset-all "
         f"{shlex.quote(f'submodule.{name}.{key}')}" for key in keys)
+    if staged:
+        removal += f"\n    {STAGE_LINE}"
+    put_back, whose = back
+    if put_back:
+        then = (f"after the line that puts {GITMODULES}, gone from the work "
+                f"tree, back from {whose}, so that every other section "
+                f"stays, {then}")
+        removal = f"\n    {put_back}{removal}"
     return (f" {lead} the section out by hand, in a POSIX shell, every key "
             "it holds, so a submodule later given its name inherits none of "
             f"them, {then}:{line}{removal}")
 
 
+def _section_then(root: Path, name: str) -> tuple[str, bool]:
+    """How `gitmodules-path-unnamed`'s text for the section `name` ends,
+    and whether its lines end staging `.gitmodules` (`_section_out`): the
+    commit where HEAD's file holds a section of that name, else the file
+    staged, with nothing of it left to commit, as after a `git submodule
+    add` not committed (RV1069's SHOULD 1 on #1069). Every branch asks
+    it, in `members/`, outside it and in another case."""
+    in_head = _head_gitmodules(root)
+    if in_head is not None and name in in_head[1]:
+        return f"then commit {GITMODULES}", False
+    return (f"then stage {GITMODULES}: HEAD's holds no section of that name, "
+            "so nothing of it is left to commit"), True
+
+
 def _gitlink_out_first(root: Path, name: str, keys: dict[str, str],
                        gitlinks: dict[str, str], removed: frozenset[str],
-                       taken: set[str], edited: bool) -> str:
+                       taken: set[str], edited: bool,
+                       back: tuple[str, str] = ("", "")) -> str:
     """The rest of `gitmodules-path-unnamed`'s text for the section `name`,
     no row naming its path in any case, after what it says of the row:
     where that path (`keys["path"]`) is a gitlink outside `members/`
@@ -3256,19 +3334,21 @@ def _gitlink_out_first(root: Path, name: str, keys: dict[str, str],
     whose removal is staged (`removed`), where a `git rm` fails (`pathspec
     ... did not match`), and for one an earlier section's finding took out
     (`taken`): the `git rm` typed again fails there too. A path it prints
-    one for is added to `taken`."""
+    one for is added to `taken`.
+
+    `back` is the line that puts back a `.gitmodules` gone from the work
+    tree, and whose file it puts back (`_file_put_back`), which the
+    section's own lines come after, the `git rm --cached` before it
+    (`_section_out`, #1036)."""
     path = keys["path"]
     if (path not in gitlinks or path in removed or _in_members(path)
             or path in taken):
-        return _section_out(name, keys, "Otherwise take",
-                            f"then commit {GITMODULES}")
+        then, staged = _section_then(root, name)
+        return _section_out(name, keys, "Otherwise take", then, back=back,
+                            staged=staged)
     taken.add(path)
     head = _forced(root, path, gitlinks[path])
-    in_head = _head_gitmodules(root)
-    then = (f"then commit {GITMODULES}"
-            if in_head is not None and name in in_head[1] else
-            f"then stage {GITMODULES}: HEAD's holds no section of that name, "
-            "so nothing of it is left to commit")
+    then, staged = _section_then(root, name)
     stage = _stage_first(root, edited)
     nth = "the second line" if stage else "the first line"
     return (" Otherwise take its gitlink out first, since a gitlink no "
@@ -3280,7 +3360,8 @@ def _gitlink_out_first(root: Path, name: str, keys: dict[str, str],
             + _forced_said(head, nth, _held_if_forced(root, path, head)) + "."
             + _section_out(name, keys, "Then, with the lines after it, take",
                            then, (f"\n    {STAGE_LINE}" if stage else "")
-                           + f"\n    {_cached_removal(path, head)}"))
+                           + f"\n    {_cached_removal(path, head)}", back,
+                           staged))
 
 
 def _section_lines(path: str, repository,
@@ -3715,14 +3796,21 @@ def _blob_paths(root: Path, spec: str) -> set[str]:
     (`:.gitmodules`, the index's, or `HEAD:.gitmodules`), read as
     `_gitmodules_sections` reads the work tree's; none where git cannot
     read it (#879)."""
+    return {keys["path"] for keys in _blob_sections(root, spec).values()
+            if "path" in keys}
+
+
+def _blob_sections(root: Path, spec: str) -> dict[str, dict[str, str]]:
+    """Every `submodule` section of the `.gitmodules` git names `spec`,
+    `{name: {key: value}}`, read as `_blob_paths` reads its paths, and none
+    where git cannot read it (#879, #1036)."""
     with _git_runs(f"{spec} could not be read as git reads it"):
         try:
             listed = git_out(["config", "-z", "--blob", spec, "--list"],
                              cwd=root, binary=True)
         except Refusal:
-            return set()
-    return {keys["path"] for keys in _sections_listed(listed).values()
-            if "path" in keys}
+            return {}
+    return _sections_listed(listed)
 
 
 def _put_back_lines(root: Path, path: str,
@@ -4026,6 +4114,15 @@ def _check_members(root: Path, members: list, no_members: bool,
     names: the finding fails the run, where `member-uninitialized` named
     the update that dies, and `_init_stop_said`, which would name a stop
     git never reaches there, is not asked.
+
+    `gitmodules-path-unnamed` READS THE FILE GIT READS (#1036): where the
+    work tree's `.gitmodules` is gone from disk, the index's, then HEAD's
+    (`_sections_as_git_reads`), not nothing. Not where either file gives a
+    value git dies on: that finding's lines put HEAD's file back, take the
+    key out and stage the file, which drops every section the index's file
+    alone gave, so a section's `--unset-all` after them met a key the file
+    did not hold (exit 5), and it reads what it read before. Every other
+    reader of `sections` is as it was.
     """
     _check_member_names_unique(members, report)
     _check_member_ids_unique(root, members, report)
@@ -4048,7 +4145,9 @@ def _check_members(root: Path, members: list, no_members: bool,
     removed = _staged_removals(root, gitlinks)
     _check_gitlinks_named(root, gitlinks, named, removed, report)
     _check_gitlinks_elsewhere(root, gitlinks, named, removed, report)
-    _check_gitmodules_named(root, sections, gitlinks, named, removed, report)
+    _check_gitmodules_named(root, sections if refused
+                            else _sections_as_git_reads(root, sections),
+                            gitlinks, named, removed, report)
     unregistered = _check_gitlinks_registered(root, members, gitlinks,
                                               report, refused)
     unregistered |= _check_removals_staged(root, members, gitlinks, removed,

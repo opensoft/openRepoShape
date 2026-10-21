@@ -2002,6 +2002,64 @@ def test_where_the_sources_head_is_on_no_branch_its_branch_is_not_named(
         leads(CLAUDE, target, unread(".git/refs/heads", GUESSED_BRANCH))))
 
 
+#: How `git init` fails where `GIT_DEFAULT_HASH` names no hash, as #910's
+#: probe tests raise it, and how the NOTE that says so begins.
+UNKNOWN_HASH = "fatal: unknown hash algorithm 'bogus'"
+NO_REF_PROBE_NOTE = ("NOTE `check` could not ask git how it keeps the refs "
+                     "of a repository made in ")
+
+
+@pytest.mark.parametrize("failure", [
+    pytest.param(lambda adopter: adopter.CommandFailed(
+        ["git", "init", "-q", "probe"], None, 128, UNKNOWN_HASH),
+        id="command-failed"),
+    pytest.param(lambda adopter: adopter.Refusal(
+        "git-failed", f"`git init` exited 128: {UNKNOWN_HASH}"),
+        id="refusal")])
+def test_a_ref_probe_git_will_not_make_takes_gits_defaults_and_says_so(
+        adopter, monkeypatch, tmp_path, failure):
+    """As #910 has the symlink probe do: a `git init` that fails otherwise
+    than with an `OSError` stops nothing; git's defaults are taken, and a
+    NOTE says why, in git's words."""
+    def refused(_work_root):
+        raise failure(adopter)
+
+    monkeypatch.setattr(adopter, REF_PROBE, refused)
+    probe = adopter._SymlinkProbe(tmp_path)
+    assert probe.ref_store() == adopter.GIT_DEFAULT_REFS
+    notes = probe.notes()
+    assert len(notes) == 1, notes
+    assert notes[0].startswith(NO_REF_PROBE_NOTE), notes[0]
+    assert UNKNOWN_HASH in notes[0]
+
+
+def test_a_ref_probe_in_a_work_directory_it_cannot_write_gives_no_note(
+        adopter, monkeypatch, tmp_path):
+    """An `OSError` is `adopt-work-dir-unwritable`'s to say (#524), and the
+    probe adds no NOTE of its own."""
+    def unwritable(_work_root):
+        raise PermissionError(13, "Permission denied")
+
+    monkeypatch.setattr(adopter, REF_PROBE, unwritable)
+    probe = adopter._SymlinkProbe(tmp_path)
+    assert probe.ref_store() == adopter.GIT_DEFAULT_REFS
+    assert probe.notes() == []
+
+
+def test_check_says_where_git_would_not_make_the_ref_probe(
+        links_as_links, tmp_path, monkeypatch):
+    """`GIT_DEFAULT_HASH=bogus` fails the ref probe's `git init`, and not
+    `check`'s throwaway repositories, which name the source's format:
+    `check` passes a link to `.git/HEAD`, as git's defaults hold it, and
+    says why it took them."""
+    _, plan = planned(tmp_path, {}, {CLAUDE: GIT_HEAD}, {CLAUDE: ROOT})
+    monkeypatch.setenv("GIT_DEFAULT_HASH", "bogus")
+    checked = check(plan)
+    assert checked.returncode == 0, checked.stderr + checked.stdout
+    assert NO_REF_PROBE_NOTE in checked.stdout, checked.stdout
+    assert UNKNOWN_HASH in checked.stdout, checked.stdout
+
+
 def test_the_ref_probe_is_made_once_however_many_walks_ask(adopter, tmp_path,
                                                            monkeypatch):
     """Two links into the clone's `.git`, each met by both disks' walks and

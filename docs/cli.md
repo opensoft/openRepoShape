@@ -461,9 +461,9 @@ options:
                         `source-unresolvable` refuses an empty value, and one
                         that is neither a path that exists nor an `org/repo`;
                         `source-unreadable`, a path this user cannot reach
-                        (under a directory it may not search), which is never
-                        read as one that is not there, nor cloned as an
-                        `org/repo`.
+                        (under a directory it may not search, or one it may
+                        not enter), which is never read as one that is not
+                        there, nor cloned as an `org/repo`.
   --project PROJECT     the assembly-root name; for an in-place adoption it is
                         the source repository's own name. `execute` refuses
                         one over 95 characters without --local-remote-dir:
