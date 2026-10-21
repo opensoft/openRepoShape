@@ -24,7 +24,7 @@ on:
 
 jobs:
   validate:
-    runs-on: ubuntu-latest
+    runs-on: ${{ vars.CI_LINUX_RUNNER || 'ubuntu-latest' }}
     # The `secrets` context is NOT allowed in a step-level `if:` expression —
     # GitHub rejects the whole workflow file as unparseable the moment one
     # appears there, and the failure mode is not a red step but a push-event
