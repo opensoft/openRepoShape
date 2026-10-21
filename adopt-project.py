@@ -16669,6 +16669,14 @@ def _unmade_work_dir(work_dir: Path, root: Path,
     `os.path.realpath` stops at a loop on a path the person may never have
     typed.
 
+    A `--work-dir` the system finds no symlink at, which `os.path.realpath`
+    reads as the link in the loop itself, is named as read (#1074):
+    `<A>/nothere/../self`, where `nothere` is missing, is no entry to the
+    system, and `os.path.realpath` takes its `..` as spelled and reads it as
+    `<A>/self`, a link to itself. So the reason says that, read as
+    `<A>/self`, it is a symbolic link that leads round a loop, and not that
+    the way to it does; the way out still names `<A>/self`.
+
     A DANGLING SYMLINK IS NO LOOP: `os.path.realpath` reads it as the path
     it leads to, which `_made_0755` makes, and only where that fails does
     it get here. That failure, and every other, a file at the `--work-dir`
@@ -16679,7 +16687,10 @@ def _unmade_work_dir(work_dir: Path, root: Path,
     looped = (_the_loop_in(root)
               if exc.errno in (errno.EEXIST, errno.ELOOP) else None)
     if looped is not None:
-        if link is None:
+        if link is None and looped == root:
+            why = f"read as {_spelled(str(root))}, {SYMLINK_LOOP}"
+            link = looped
+        elif link is None:
             why = ("the way to it leads round a loop, at the symbolic link "
                    f"{_spelled(str(looped))}")
             link = looped
@@ -16700,21 +16711,42 @@ def _unmade_work_dir(work_dir: Path, root: Path,
             "without one, each run makes a new one.")
 
 
+#: Windows' "cannot resolve" (`ERROR_CANT_RESOLVE_FILENAME`), the last of
+#: `_ABSENT_WINERRORS`: what `os.stat` of a symlink round a loop raises
+#: there, with an errno that is not ELOOP, as the gate's `_what_stands`
+#: reads it (`templates/assembly-root/scripts/validate-pins.py`). Not
+#: measured on Windows (#1074).
+CANNOT_RESOLVE_WINERROR = 1921
+
+
 def _the_loop_in(root: Path) -> Path | None:
     """The symlink in `root`, a `--work-dir` as `os.path.realpath` read it,
     that leads round a loop; None where there is none (#978).
     `os.path.realpath` follows every symlink but one it meets again before
-    it has resolved it, which it leaves in the path as it found it, with
-    the rest of the path unread after it. So the first symlink in `root`,
-    from `/` down, is that one, and the system is asked whether following
-    it loops (ELOOP), so that nothing else is called a loop."""
+    it has resolved it, which it leaves in the path as it found it. So each
+    symlink left in `root` is asked, from `/` down, whether following it
+    loops (ELOOP, or Windows' `CANNOT_RESOLVE_WINERROR`), and the first
+    that does is that one, so that nothing else is called a loop. One that
+    fails otherwise, a dangling link, ends the walk: nothing is below it.
+
+    A SYMLINK THAT DOES NOT LOOP IS PASSED OVER, and does not end the walk
+    (#1074). Up to Python 3.12, `os.path.realpath` leaves the rest of the
+    path unread after the loop, and `abspath` folds a `..` in it, which can
+    take the loop out of the path and leave a link that does not loop
+    before one that does: `w -> loop/../d/self2`, with `loop -> loop`, `d
+    -> realdir` and `realdir/self2 -> self2`, reads as `<A>/d/self2`, and
+    the walk ended at `d`, so `w` was called a link to what is no
+    directory. Python 3.13 and later read on past a loop and give
+    `<A>/realdir/self2`, which holds no other link."""
     for part in (*reversed(root.parents), root):
         if os.path.islink(part):
             try:
                 os.stat(part)
             except OSError as exc:
-                return part if exc.errno == errno.ELOOP else None
-            return None
+                loops = (exc.errno == errno.ELOOP
+                         or getattr(exc, "winerror", None)
+                         == CANNOT_RESOLVE_WINERROR)
+                return part if loops else None
     return None
 
 

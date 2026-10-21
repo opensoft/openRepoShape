@@ -39,13 +39,31 @@ never typed, and a link to a file named the file and not the link. Each
 names the link now, and the way out is to remove it or make it lead to a
 directory. A dangling link is still made where it leads.
 
+And (#1074) what r1065, the review of #1065, found no test held, or got
+wrong. On main at 2a119f28 on Python 3.12, `--work-dir w` with `w ->
+loop/../d/self2` (`loop -> loop`, `d -> realdir`, `realdir/self2 ->
+self2`) was "a symbolic link that leads to `<A>/d/self2`, which is not a
+directory": `_the_loop_in` ended its walk at `d`, a link that does not
+loop. It passes such a link over now, and names `self2`, and Windows'
+"cannot resolve" is a loop too. `--work-dir <A>/nothere/../self` said "the
+way to it leads round a loop, at the symbolic link `<A>/self`", where the
+path the tool reads IS that link; the reason says what is read now. The
+rest are CONTROLS, as on main, each one of r1065's surviving mutants
+fails: a link to a path under a file or in a folder this user cannot write
+in keeps the system's words (R9), a loop spelled through a linked folder
+is named once (R5), a dangling link is no loop (R3), the `--work-dir` is
+named as given, made absolute and not resolved (R19, R20), and a path
+under a link to a file is named as read (R11).
+
 `chmod` keeps neither root nor a Windows user from making a directory, so
-the tests of such a directory skip where it cannot (`unwritable_work`).
-Nothing here reaches `gh`: every refusal comes before any clone.
+the tests of such a directory skip where it cannot (`unwritable_work`,
+`locked_folder`). Nothing here reaches `gh`: every refusal comes before
+any clone.
 """
 
 from __future__ import annotations
 
+import errno
 import os
 from pathlib import Path
 
@@ -55,8 +73,8 @@ from conftest import (ADOPT, git, load_without_bytecode, make_source_repo,
                       rmtree, run_script, write_plan)
 from test_adopt_plan_leg_path_help import HELP_ENV, option_help, option_lines
 from test_adopt_root_symlinks import (  # noqa: F401
-    BASIC, PLAN_FILE, PROJECT, REMOTES, THING, WORK_FLAG, check,
-    no_leg_was_created, planned, ticked, unwritable_work,
+    BASIC, PLAN_FILE, PROJECT, REMOTES, THING, WORK_FLAG, cannot_write_in,
+    check, no_leg_was_created, planned, ticked, unwritable_work,
 )
 from test_adopt_shape_pin_and_work_dir import (
     FIX, WORK_DIR_UNWRITABLE, cannot_write,
@@ -84,21 +102,25 @@ NO_ORG = "adopt-no-org"
 GONE = "NOTE the plan's `source.local_path`, "
 
 
-def run_in(command: str, base: Path, work: Path, *source: str):
+def run_in(command: str, base: Path, work: Path, *source: str,
+           cwd: Path | None = None):
     """`command --work-dir work`, for the source `planned` made under
     `base`: `plan` of that source, which writes `AGAIN`, or `check` or
-    `execute` of its plan. `source` is a `--source` to pass instead."""
+    `execute` of its plan. `source` is a `--source` to pass instead, and
+    `cwd` where the command runs, for a relative `work`."""
     plan = base / PLAN_FILE
     if command == PLAN_VERB:
         given = source or (str(base / THING),)
         return run_script(ADOPT, PLAN_VERB, "--source", *given, *PLANNED,
-                          "--out", str(base / AGAIN), WORK_FLAG, str(work))
+                          "--out", str(base / AGAIN), WORK_FLAG, str(work),
+                          cwd=cwd)
     flags = (("--source", *source) if source else ())
     if command == CHECK:
-        return check(plan, *flags, WORK_FLAG, str(work))
+        return run_script(ADOPT, CHECK, "--plan", str(plan), *flags,
+                          WORK_FLAG, str(work), cwd=cwd)
     return run_script(ADOPT, EXECUTE, "--plan", str(plan), *flags, "--yes",
                       "--local-remote-dir", str(base / REMOTES),
-                      WORK_FLAG, str(work))
+                      WORK_FLAG, str(work), cwd=cwd)
 
 
 def refused(command: str, detail: str, fix: str = FIX) -> str:
