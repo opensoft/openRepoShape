@@ -126,9 +126,9 @@ jobs:
       # 11382 passed, 380 skipped, 5579 errors`, with 28325 lines of `Disk
       # quota exceeded` and then `No space left on device`, all under
       # `/tmp/pytest-of-runner/pytest-0`. With the basetemp below, #1097's
-      # run on 26.04 (job 119180581846) passed, and the `df` lines showed
-      # /tmp unused and the runner's disk at 58G used before the suite and
-      # 83G after.
+      # round 3 (job 119263572144, `ubuntu-latest`, that same image) passed,
+      # and the `df` lines showed /tmp at 38M used before and after, and the
+      # runner's disk at 57G used before the suite and 83G after.
       #
       # So the basetemp is `$RUNNER_TEMP/pytest`, and `TMPDIR` is
       # `runner.temp` for everything this step starts: `tests/conftest.py`
