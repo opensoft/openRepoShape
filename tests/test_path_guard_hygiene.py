@@ -110,10 +110,10 @@ HELPERS = {
     "templates/family-root/scripts/siblings.py": "_is_a",
 }
 
-#: The follow-up issue the sites in `KNOWN_OPEN` are left to. Lane 1 files
-#: it after this slice; it is not in v1.2.0 (Brett Heap, 2026-10-21T10:32Z,
+#: The follow-up issue the sites in `KNOWN_OPEN` are left to, filed by lane 1
+#: after this slice; it is not in v1.2.0 (Brett Heap, 2026-10-21T10:32Z,
 #: "leave the follow-ups out of v1.2.0").
-FOLLOW_UP = "FOLLOW-UP-430Z"
+FOLLOW_UP = "#1110"
 
 #: Why a bare guard may stay: the plan's own reasons for leaving a site out
 #: (lane 1's site table at the v1.1.1 release commit, `5017830`).
