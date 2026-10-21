@@ -24,11 +24,21 @@ leg.
 
 NO NETWORK AND NO GITHUB: the product is a local stand-in, and the forge is
 the stub `gh` of `test_adopt_pins.py`, which answers from a file.
+
+#912 holds two questions this file asks. A tag the `--pin-source` clone
+holds without the commit it names cannot be peeled there, and was refused
+"an annotated tag that names no commit"; the clone cannot say what it
+names, so it is the clone that cannot answer, `pin-source-unreadable`, as
+before #651. And where `check` asks the pin nothing, because the clone
+`plan` read it from is gone or partial or `gh api` read it, its NOTE said
+only that the digest was not rechecked, so a recorded tag's id passed as a
+commit; the NOTE now says its commit was not asked either.
 """
 
 from __future__ import annotations
 
 import shutil
+import subprocess
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -37,12 +47,13 @@ import pytest
 from conftest import (SCAFFOLD, WINDOWS_SKIP, git, planned,
                       refused_before_any_leg, run_script)
 from test_adopt_pins import (  # noqa: F401
-    ENTRY, ORG, PIN_FILE, PLANNED, PROJECT, adopter, asked_what, check_plan,
-    forge_objects, gh_calls, gh_env, make_product, plan_with, read_from,
+    ENTRY, GATE_RECOMPUTES, NOT_RECHECKED, ORG, PIN_FILE, PLANNED, PROJECT,
+    adopter, asked_what, check_plan, forge_objects, gh_calls, gh_env,
+    make_product, pin_entry, pin_notes, plan_with, read_from,
     shape_materialize, tree_listing, with_pins,
 )
 from test_scaffold_pin_and_reuse import assert_pin_digest_recomputed
-from repo_shape import load_yaml, tree_digest
+from repo_shape import double_quoted, load_yaml, tree_digest
 
 NOT_A_COMMIT = "pin-not-a-commit"
 PIN_SOURCE, DRY_RUN = "--pin-source", "--dry-run"
@@ -304,4 +315,162 @@ def test_check_finds_a_recorded_id_that_is_no_commit(
         "--pin` takes it."), lines[0]
     refusal = refused_before_any_leg(adopter, monkeypatch, plan, tmp_path)
     assert refusal.code == PLAN_NOT_A_COMMIT
+    assert gh_calls(gh_env) == ""
+
+
+# --- a tag whose commit the clone lacks (#912) -------------------------------
+#
+# `commit_in_clone` peels an annotated tag with `rev-parse <id>^{}`, and in a
+# clone that holds the tag but not the commit it names, git answers "missing
+# object referenced by" the tag, and the peel nothing. On main 6c861635 the
+# id was then refused "an annotated tag that names no commit", by `plan`, the
+# scaffold and `check` alike, which no tag of a commit is. Nothing in that
+# clone says what the tag names, so it is asked no further: the digest's
+# reader finds no tree at the id and refuses the clone as one that cannot
+# answer, saying to fetch the commit into it, as it did before #651.
+
+#: The refusal of a clone that cannot answer for a pin, and of a plan's.
+UNREADABLE = "pin-source-unreadable"
+PLAN_UNREADABLE = "plan-pin-source-unreadable"
+
+
+@pytest.fixture
+def lacking(tmp_path, tagged) -> Path:
+    """A clone that holds the annotated tag `v1` and the tag of it, and not
+    the commit they name: the two tag objects alone, written into it as
+    `git hash-object` writes an object, from their bytes."""
+    clone = tmp_path / "openGlass-lacking"
+    git("init", "-q", "-b", "main", str(clone), cwd=tmp_path)
+    for oid in (tagged.tag, tagged.tag_of_tag):
+        raw = subprocess.run(["git", "cat-file", "tag", oid],
+                             cwd=tagged.path, capture_output=True,
+                             check=True).stdout
+        made = subprocess.run(["git", "hash-object", "-t", "tag", "-w",
+                               "--stdin"], cwd=clone, input=raw,
+                              capture_output=True, check=True)
+        assert made.stdout.decode().strip() == oid
+    assert git("cat-file", "-e", tagged.commit, cwd=clone,
+               check=False).returncode != 0
+    return clone
+
+
+@pytest.mark.parametrize("kind", PEELED)
+def test_a_clone_lacking_a_tags_commit_cannot_say_what_it_names(
+        tagged, lacking, kind):
+    """`commit_in_clone` answers such a tag as an id the clone cannot say
+    anything of: the id as given, with no reason to refuse it."""
+    named = getattr(tagged, kind)
+    assert shape_materialize.commit_in_clone(lacking, named) == (named, "")
+
+
+@pytest.mark.parametrize("kind", PEELED)
+@pytest.mark.parametrize("tool", ["adopt-plan", "scaffold-dry-run"])
+def test_a_tag_whose_commit_the_clone_lacks_is_unreadable_there(
+        source_repo, tmp_path, tagged, lacking, gh_env, kind, tool):
+    """Both tools refuse it as a clone that cannot answer for the pin, with
+    the remediation that says to fetch the commit into it, and never as an
+    id that names no commit: before `plan` writes a plan or the scaffold
+    makes a remote, and with no `gh`."""
+    named = getattr(tagged, kind)
+    source = (PIN_SOURCE, str(lacking))
+    if tool == "adopt-plan":
+        made = tmp_path / "plan.yaml"
+        result = plan_with(source_repo, made, f"openGlass@{named}",
+                           extra=source, env=gh_env)
+    else:
+        made = tmp_path / "remotes"
+        result = scaffold(tmp_path, named, *source, DRY_RUN, env=gh_env)
+    assert result.returncode == 2, result.stdout + result.stderr
+    assert result.stderr.startswith(
+        f"REFUSED {UNREADABLE}: {lacking.resolve()} could not answer for "
+        f"{REPOSITORY} @ {named}: "), result.stderr
+    assert "a clone of that repository that HAS the pinned commit (`git " \
+           "fetch --all` first)" in result.stderr, result.stderr
+    assert "annotated tag" not in result.stdout + result.stderr
+    assert not made.exists()
+    assert gh_calls(gh_env) == ""
+
+
+def test_check_finds_a_recorded_clone_lacking_a_tags_commit_unreadable(
+        adopter, monkeypatch, source_repo, tmp_path, tagged, lacking,
+        gh_env):
+    """`check` asks the clone `plan` read the digest from the same question,
+    so a plan that records such a tag's id finds that clone unable to
+    answer for it, as for a commit it lacks; `execute` refuses it before
+    any leg."""
+    plan = planned(source_repo, tmp_path, PLANNED)
+    with_pins(plan, read_from(lacking, tagged.tag,
+                              tree_digest(tagged.path, tagged.commit)))
+    checked = check_plan(plan, env=gh_env)
+    assert checked.returncode == 1, checked.stdout + checked.stderr
+    lines = [line for line in checked.stderr.splitlines()
+             if line.startswith("FINDING ")]
+    assert len(lines) == 1, checked.stderr
+    assert lines[0].startswith(
+        f"FINDING {PLAN_UNREADABLE}: {ENTRY} records `commit: {tagged.tag}`, "
+        "and the clone its `digest_source:` names cannot answer for it: "
+        f"{lacking} could not answer for {REPOSITORY} @ {tagged.tag}: "), \
+        lines[0]
+    assert "annotated tag" not in checked.stdout + checked.stderr
+    refusal = refused_before_any_leg(adopter, monkeypatch, plan, tmp_path)
+    assert refusal.code == PLAN_UNREADABLE
+    assert gh_calls(gh_env) == ""
+
+
+# --- a recorded id `check` asks nothing of (#912) ----------------------------
+#
+# #457's L1-82, its second case. `check` asks a recorded `commit:` what it
+# names only of the clone `plan` read the digest from, still at its path and
+# no partial clone. Where it is gone or partial, or `gh api` read the digest,
+# `check` asks the pin nothing, and reads no network to ask it, so on main
+# 6c861635 a tag's id recorded there passed `check`, and `execute` wrote it,
+# with a NOTE that said only that the digest was not rechecked. The NOTE now
+# says the commit was not asked either, and why.
+
+#: Where `check` asks a recorded pin nothing.
+NOT_ASKED = ["gone", "partial", "gh-api"]
+
+
+def not_asked(where: str, base: Path, clone: Path) -> tuple[str, str]:
+    """`(the digest_source: a plan records, why check asks the pin nothing)`
+    for `where`: a clone no longer at its path under `base`, `clone` made a
+    partial clone by its config alone (nothing is fetched), or `gh api`."""
+    if where == "gh-api":
+        return ("gh-api-tree-recursive",
+                "`plan` read it with `gh api`, and `check` reads no network")
+    if where == "gone":
+        gone = base / "openGlass-gone"
+        return (f"local-clone ({gone})",
+                f"the clone `plan` read it from is not at {gone}")
+    for setting in (("core.repositoryformatversion", "1"),
+                    ("extensions.partialClone", "origin"),
+                    ("remote.origin.promisor", "true")):
+        git("config", *setting, cwd=clone)
+    return (f"local-clone ({clone})",
+            f"the clone at {clone} is a partial clone (`git clone "
+            "--filter`), whose `git` fetches what it lacks over the network, "
+            "and `check` reads no network")
+
+
+@pytest.mark.parametrize("where", NOT_ASKED)
+def test_check_says_it_did_not_ask_a_recorded_id_it_cannot_ask(
+        source_repo, tmp_path, tagged, tagged_clone, gh_env, where):
+    """A tag's id recorded as the pin's `commit:`, with its commit's digest,
+    where `check` asks the pin nothing: it still passes and runs no `gh`,
+    and its one NOTE about the pin says that neither the digest nor what
+    the commit names was asked here, and why."""
+    recorded, why = not_asked(where, tmp_path, tagged_clone)
+    plan = planned(source_repo, tmp_path, PLANNED)
+    with_pins(plan, "pins:\n" + pin_entry(
+        commit=tagged.tag, digest=tree_digest(tagged.path, tagged.commit),
+        source=double_quoted(recorded)[1:-1]))
+    checked = check_plan(plan, env=gh_env)
+    assert checked.returncode == 0, checked.stdout + checked.stderr
+    notes = pin_notes(checked)
+    assert notes == [f"{NOT_RECHECKED}{why}. {GATE_RECOMPUTES}"], \
+        checked.stdout
+    assert (f"NOTE {ENTRY}: digest NOT rechecked here, nor its `commit:` "
+            f"asked whether it names a commit: {why}. ") in notes[0], notes
+    assert notes[0].endswith("; `plan` asks what the commit names where it "
+                             "reads the digest."), notes
     assert gh_calls(gh_env) == ""
