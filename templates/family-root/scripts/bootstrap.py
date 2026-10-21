@@ -924,10 +924,14 @@ def ended_on(returncode: int) -> int | None:
       value, exit 139, and exit 128 with a member after it whose pin moved
       past what git could fetch). A member's `git submodule--helper
       clone` that dies of signal N never gives that code: git's update
-      retries it, and where the retry fails too ends in `quickstop`'s 1,
-      before any gitlink at that level is checked out, so the code is 1
-      even with no gitlink after it (read in git 2.43.0's and 2.47.1's
-      submodule--helper.c, not run);
+      retries it where it left no `.git` at the member's path, and where
+      the retry fails too ends in `quickstop`'s 1, before any gitlink at
+      that level is checked out, so the code is 1 even with no gitlink
+      after it; where its own `git clone` lived on and wrote that `.git`,
+      git retries nothing (`BUG: submodule considered for cloning,
+      doesn't need cloning any more?`) and goes on, and exits 0 with every
+      gitlink checked out (measured, git 2.43.0 and 2.47.1, offline, a
+      remote helper that kills the clone, rv1088 on #1088);
     - `-N`, where git itself was killed by signal N, as Python gives it.
     Not 128, git's `die`, which `stopped_below` asks about, nor a code from
     `128 + signal.NSIG` on, which numbers no signal this system has, as
