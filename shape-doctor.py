@@ -262,15 +262,17 @@ leg whose index tracks none, git reads the one on this disk, untracked, or
 else HEAD's copy; beside one this disk lacks, the index's copy; and so does
 the doctor: a submodule that copy registers is not named. Beside one this
 disk lacks, the way out restores it first (`git restore .gitmodules`),
-since `git add .gitmodules` would stage its deletion. A recursive clone of
-the leg leaves each empty. The doctor names nothing, though `git submodule
-status` counts the submodule unregistered (exit 128), in these states: for
-a submodule whose path is not UTF-8 or holds a control character
-(`UNWRITABLE_IN_A_PLAN`); beside a `.gitmodules` that is unmerged, while
-its copy on this disk is the conflict, registers the submodule or is not
-there, since git reads no copy then; and beside a `.gitmodules` git
-refuses, or one on this disk that is not a regular file: a link, which git
-reads through, or a directory.
+since `git add .gitmodules` would stage its deletion; where the index marks
+that file skip-worktree, as a sparse checkout does (family.py's
+`gitmodules-sparse`), the submodule is named but that first step exits 1, a
+limit. A recursive clone of the leg leaves each empty. The doctor names
+nothing, though `git submodule status` counts the submodule unregistered
+(exit 128), in these states: for a submodule whose path is not UTF-8 or
+holds a control character (`UNWRITABLE_IN_A_PLAN`); beside a `.gitmodules`
+that is unmerged, while its copy on this disk is the conflict, registers
+the submodule or is not there, since git reads no copy then; and beside a
+`.gitmodules` git refuses, or one on this disk that is not a regular file:
+a link, which git reads through, or a directory.
 
 A SUBMODULE MOVED OR REMOVED SINCE THE ADOPTION (#525). Its row is a
 person's to change, by hand, in the pull request that bumps the pins; no
@@ -8321,6 +8323,10 @@ def index_copy_clause(legs: list) -> str:
     .gitmodules`, which stages nothing once the file is restored, then
     `git rm --cached` each exit 0, and the gitlink leaves the index while
     the index's copy keeps every section it held (measured, git 2.43).
+    The `git add .gitmodules` step stays because a person may do both:
+    once a section is written for one submodule, `git rm --cached` of
+    another exits 128 with `please stage your changes to .gitmodules`
+    until the file is staged (measured).
 
     ONE STATE TAKES MORE. Where the index's copy holds a line git refuses,
     git reads it only up to that line, and once restored it is a file on
@@ -8328,6 +8334,14 @@ def index_copy_clause(legs: list) -> str:
     with `bad config line` (measured), and the doctor names nothing, as
     beside any file git refuses. The removal still holds as printed; a
     section holds once that line is mended too.
+
+    AND ONE IS A LIMIT: a `.gitmodules` the index marks skip-worktree, as a
+    sparse checkout leaves it (`S` in `git ls-files -t`; family.py's
+    `gitmodules-sparse`). git reads the index's copy there too, and the
+    submodule is named, but `git restore .gitmodules` exits 1 (`pathspec
+    '.gitmodules' did not match any file(s) known to git`), as `git
+    checkout -- .gitmodules` does (measured, git 2.43): the clause's first
+    step is not true until the mark is cleared.
     """
     held = unregistered_beside(legs, BESIDE_INDEX_COPY)
     if not held:
@@ -8849,8 +8863,9 @@ def unregistered_gitlinks(adopt, mount: Path, rel: str, tracked: list,
 
     IN EACH STATE A RECURSIVE CLONE OF THE LEG exits 0 and leaves the
     submodule's directory empty, and `git submodule status` there exits 128
-    with `no submodule mapping found in .gitmodules` (measured, git 2.43).
-    A `.gitmodules` the doctor cannot read as git does (`registered_paths`)
+    with `no submodule mapping found in .gitmodules` (measured, git 2.43),
+    or, where the copy holds a line git refuses, both exit 128 with `bad
+    config line`. A `.gitmodules` the doctor cannot read as git does (`registered_paths`)
     names nothing, as `holds_no_section` calls no such file empty: one that
     is unmerged, while its copy on this disk is the conflict, registers the
     submodule or is not there; one that git refuses; or one that is not a

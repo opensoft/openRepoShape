@@ -524,9 +524,22 @@ def gitmodules_beside_gitlink(root: Path, body, kept: str) -> Path:
       The leg's new HEAD is made its pin (`pinned_at_its_head`), so that
       the verdict is still the placement row's;
     - `deleted`: in the index, then deleted from this disk with the
-      deletion not staged, so that git reads the index's copy (#1093).
+      deletion not staged, so that git reads the index's copy (#1093);
+    - `deleted-over-head`: as `deleted`, over a HEAD whose copy gives the
+      other answer (`SECTIONED` or `OTHER_SECTION`), committed with the
+      gitlink and made its pin, so that only the index's copy, read
+      before HEAD's as git reads it, gives the answer the case expects.
     """
     leg = root / "code"
+    if kept == "deleted-over-head":
+        stage_bytes(leg, GITMODULES,
+                    OTHER_SECTION if body == SECTIONED else SECTIONED)
+        stage_gitlink(leg, GITLINK_PATH)
+        git("commit", "-q", "-m", "a .gitmodules in HEAD", cwd=leg)
+        pinned_at_its_head(root, "code")
+        stage_bytes(leg, GITMODULES, body)
+        (leg / GITMODULES).unlink()
+        return leg
     if kept == "untracked":
         (leg / GITMODULES).write_bytes(body)
     elif body is not None:
@@ -571,6 +584,8 @@ def gitmodules_beside_gitlink(root: Path, body, kept: str) -> Path:
     (OTHER_SECTION + b"!!!\n" + SECTIONED, False, "deleted", "index_copy"),
     (REFUSED, False, "deleted", "index_copy"),
     (DIES, False, "deleted", None),
+    (SECTIONED, False, "deleted-over-head", None),
+    (OTHER_SECTION, False, "deleted-over-head", "index_copy"),
 ], ids=["other-sections", "a-section-with-no-key", "its-path-given-over",
         "a-name-git-ignores", "its-path-with-a-slash",
         "other-sections-and-an-unstaged-edit", "no-gitmodules",
@@ -581,7 +596,8 @@ def gitmodules_beside_gitlink(root: Path, body, kept: str) -> Path:
         "deleted-and-registering", "deleted-with-no-section",
         "deleted-with-other-sections", "deleted-and-recorded",
         "deleted-read-to-its-first-bad-line", "deleted-read-to-a-bare-path",
-        "deleted-and-refused-whole"])
+        "deleted-and-refused-whole", "deleted-over-head-registering",
+        "deleted-over-head-with-other-sections"])
 def test_a_gitlink_no_section_registers_is_said(standard, project, body,
                                                 recorded, kept, beside):
     """#1080: #914 named a submodule beside a `.gitmodules` that holds no
@@ -606,12 +622,13 @@ def test_a_gitlink_no_section_registers_is_said(standard, project, body,
     submodule is named.
 
     AND FROM THE INDEX'S COPY where the leg's index tracks a `.gitmodules`
-    this disk lacks (#1093), which git reads there: where it registers the
-    submodule, nothing is named; where it holds no section, or sections
-    for other paths, the submodule is named beside it, under its own
-    `unregistered_beside`. It is read up to its first bad line, as HEAD's
-    is, so a bare `path` in it ends the reading rather than refusing it,
-    and a copy git refuses whole (`DIES`) names nothing.
+    this disk lacks (#1093), which git reads there, before HEAD's (the
+    `deleted-over-head` rows, where HEAD's gives the other answer): where
+    it registers the submodule, nothing is named; where it holds no
+    section, or sections for other paths, the submodule is named beside
+    it, under its own `unregistered_beside`. It is read up to its first
+    bad line, as HEAD's is, so a bare `path` in it ends the reading rather
+    than refusing it, and a copy git refuses whole (`DIES`) names nothing.
 
     THE REMOVAL TYPED AS PRINTED, in each state: beside sections it stages
     the edited `.gitmodules` first, as #914's does, and `git rm --cached`
@@ -632,7 +649,8 @@ def test_a_gitlink_no_section_registers_is_said(standard, project, body,
     assert verdict == COMPLIANT
     code = leg_entry(row, "code")
     questions = [item["path"] for item in row["detail"]["review_required"]]
-    indexed = body is not None and kept in ("index", "unstaged", "deleted")
+    indexed = body is not None and kept in ("index", "unstaged", "deleted",
+                                            "deleted-over-head")
     assert questions == (["code/.gitmodules"] if indexed and not recorded
                          else []), row
     assert row["status"] == ("ok" if recorded else "note"), row
@@ -653,7 +671,7 @@ def test_a_gitlink_no_section_registers_is_said(standard, project, body,
     typed_in(leg, BESIDE[beside])
     assert git("ls-files", "--stage", "--", GITLINK_PATH,
                cwd=leg).stdout == ""
-    if kept == "deleted":
+    if kept.startswith("deleted"):
         assert copy, copy
         assert (leg / GITMODULES).read_bytes() == body
         assert git("ls-files", "--stage", "--", GITMODULES,
