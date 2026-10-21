@@ -33,6 +33,7 @@ need it, as `tests/test_adopt_e2e.py` does.
 from __future__ import annotations
 
 import importlib.util
+import os
 import re
 import shutil
 import sys
@@ -77,6 +78,13 @@ BLOCKED = "materialize-copy-blocked"
 RESERVED = ("`shape/` is reserved for the shape's own copies of files the "
             "root already holds")
 AFTER_THE_LEGS = "after both leg repositories were created and pushed"
+#: What #262's finding says the materializer does at a copy whose place is
+#: taken, and when (#904, L1-K9 of #457): it stops there, writing nothing
+#: there, though the copies before it are written, and only after both
+#: legs exist, so `execute` refuses the plan first.
+STOPS = (f"it would stop there (`{BLOCKED}`), writing nothing there, "
+         f"{AFTER_THE_LEGS}, so `execute` refuses this plan before either "
+         "exists")
 
 OWN_NOTES = "# Our shape notes\n"
 
@@ -201,9 +209,9 @@ def test_a_file_kept_at_a_path_the_shape_writes_is_not_a_finding(adopter):
         "the shape's copy of `README.md` is written to `shape/README.md`, "
         "because the root already holds `README.md`. That path is the file "
         "`shape/README.md`. The plan keeps it in the assembly root under "
-        "the entry `shape/`, and `execute` would write the copy over it "
-        f"{AFTER_THE_LEGS}. {RESERVED}: send `shape/` to a leg, `drop` it, "
-        "or rename it in the source and re-run `plan`.",
+        "the entry `shape/`, and the materializer writes no copy over it: "
+        f"{STOPS}. {RESERVED}: send `shape/` to a leg, `drop` it, or rename "
+        "it in the source and re-run `plan`.",
         id="a-file-at-the-copy"),
     pytest.param(
         "shape/Makefile", [row("Makefile"), row("shape/Makefile/notes.md"),
@@ -211,25 +219,27 @@ def test_a_file_kept_at_a_path_the_shape_writes_is_not_a_finding(adopter):
         "the shape's copy of `Makefile` is written to `shape/Makefile`, "
         "because the root already holds `Makefile`. That path contains the "
         "file `shape/Makefile/notes.md` and 1 more. The plan keeps them in "
-        "the assembly root under the entry `shape/`, and `execute` cannot "
-        "write a file where a directory is, so it would stop "
-        f"{AFTER_THE_LEGS}. {RESERVED}: send `shape/` to a leg, `drop` it, "
-        "or rename it in the source and re-run `plan`.",
+        "the assembly root under the entry `shape/`, and the materializer "
+        f"cannot write a file where a directory is: {STOPS}. {RESERVED}: "
+        "send `shape/` to a leg, `drop` it, or rename it in the source and "
+        "re-run `plan`.",
         id="a-directory-at-the-copy"),
     pytest.param(
         "shape", [row("README.md"), row("shape")],
         "the shape's copy of `README.md` is written to `shape/README.md`, "
         "because the root already holds `README.md`. That path is inside "
-        "the file `shape`. The plan keeps it in the assembly root, and "
-        "`execute` cannot make a directory where a file is, so it would "
-        f"stop {AFTER_THE_LEGS}. {RESERVED}: send `shape` to a leg, `drop` "
-        "it, or rename it in the source and re-run `plan`.",
+        "the file `shape`. The plan keeps it in the assembly root, and the "
+        "materializer cannot make a directory where a file is: "
+        f"{STOPS}. {RESERVED}: send `shape` to a leg, `drop` it, or rename "
+        "it in the source and re-run `plan`.",
         id="a-file-on-the-way-to-the-copy"),
 ])
 def test_a_kept_path_where_the_shape_writes_a_copy_is_a_finding(
         adopter, kept, tree, said):
-    """#262's three cases, in the words of the finding: the copy would be
-    written over a file, onto a directory, or beneath a file."""
+    """#262's three cases, in the words of the finding: the copy's place is
+    a file, a directory, or beneath a file, and the materializer, which
+    writes no copy over what is there, stops at each and writes nothing
+    (#904, L1-K9 of #457)."""
     entry = kept.split("/")[0] + ("/" if "/" in kept else "")
     assert found(adopter, [(entry, "root"), ("README.md", "root"),
                            ("Makefile", "root")], tree) == [
@@ -328,16 +338,21 @@ def test_a_symlink_or_submodule_is_not_a_file_where_a_directory_is(
 
 
 def test_a_symlink_at_the_copy_itself_is_in_the_way(adopter):
-    """`place` writes the copy THROUGH a link at its path, onto whatever the
-    link leads to: something is AT the path, whatever it is. Nothing on main
-    finds a link there, so it is said here, as a write through it and not
-    over it."""
+    """Something is AT the copy's path, whatever the link leads to, so it is
+    in the way. Nothing on main finds a link there, so it is said here, and
+    in what the materializer does: `place` asks `copy_in_the_way`, which
+    counts a link there, dangling or not, as already there, stops, and
+    writes nothing through it (#904, L1-K9 of #457). The finding said
+    "`execute` would write the copy through it after both leg repositories
+    were created and pushed", and neither half held: `execute` refuses the
+    plan before any leg exists, and the materializer writes no copy through
+    a link (`test_the_materializer_stops_at_a_link_at_the_copy`)."""
     said, = found(adopter, [("shape/", "root"), ("README.md", "root")],
                   [row("README.md"), row("shape/README.md", "120000")])
     assert "That path is the symlink `shape/README.md`." in said
     assert said.startswith(f"FINDING {COPY_IN_THE_WAY}: ")
-    assert "`execute` would write the copy through it " in said
-    assert "over it" not in said
+    assert f"the materializer writes no copy through it: {STOPS}. " in said
+    assert "would write the copy" not in said
 
 
 @pytest.mark.parametrize("rows", [
@@ -564,7 +579,7 @@ def test_the_finding_says_the_root_holds_the_path_only_once_case_is_ignored(
         "written to `shape/README.md`, because the root already holds "
         f"`README.md`{CASE_ASIDE}. That path is the file `shape/README.md`. "
         "The plan keeps it in the assembly root under the entry `shape/`, "
-        f"and `execute` would write the copy over it {AFTER_THE_LEGS}. "
+        f"and the materializer writes no copy over it: {STOPS}. "
         f"{RESERVED}: send `shape/` to a leg, `drop` it, or rename it in the "
         "source and re-run `plan`.")
 
@@ -1050,6 +1065,26 @@ def test_the_materializer_never_writes_a_copy_over_what_is_there(
     assert "plan-root-blocks-shape-copy" in caught.value.remediation
     assert "an empty `--work-dir`" in caught.value.remediation
     assert (target / kept).read_bytes() == before
+
+
+@needs_disk_symlinks
+def test_the_materializer_stops_at_a_link_at_the_copy(tmp_path):
+    """L1-K9 of #457: what `plan-root-blocks-shape-copy` says of a link at
+    the copy, on the disk. A link that leads nowhere, `shape/README.md ->
+    ../nowhere.md`, is in the way as a file is: the materializer refuses,
+    the link is as it was, and nothing is written where it leads."""
+    target = materialized_beside(tmp_path, {"README.md": "# Thing\n"})
+    (target / "shape").mkdir()
+    (target / "shape" / "README.md").symlink_to("../nowhere.md")
+    values = template_values()
+    with pytest.raises(Refusal) as caught:
+        materialize_assembly_root(REPO, target, values,
+                                  collision_dir="shape")
+    assert caught.value.code == BLOCKED
+    assert "`shape/README.md` is already there" in caught.value.detail
+    assert "and nothing was written there" in caught.value.detail
+    assert os.readlink(target / "shape" / "README.md") == "../nowhere.md"
+    assert not (target / "nowhere.md").exists()
 
 
 def test_the_materializer_names_a_bad_link_at_the_copy_by_its_own_finding(
