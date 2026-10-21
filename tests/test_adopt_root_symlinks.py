@@ -1170,6 +1170,36 @@ def test_the_shapes_own_pin_the_root_keeps_through_a_link_is_refused_too(
     no_leg_was_created(tmp_path)
 
 
+def test_a_directory_at_a_pins_file_through_a_link_names_what_it_reaches(
+        adopter, no_filter_repo_probe, links_as_links, tmp_path):
+    """A directory the root keeps where the walk reaches the pin's file,
+    `governance/openglass-pin.yaml/`, is `plan-root-holds-pin` too: the
+    finding names the first file kept in it, inside the pin's file, and
+    its fix renames the directory the walk reaches, not that file
+    (rv1091's NIT 4 on #1091). Before #1091 `check` passed it (measured on
+    main 823624d9)."""
+    files, legs = THROUGH_GOVERNANCE
+    held = f"{GOVERNANCE_PIN}/notes.md"
+    _, plan = planned(tmp_path, {**files, held: "# notes\n"},
+                      {CONTRACTS: GOVERNANCE}, legs)
+    declare(plan, A_PIN)
+    checked = check(plan)
+    assert checked.returncode == 1, checked.stderr + checked.stdout
+    assert symlink_findings(checked) == [], checked.stderr
+    line = (f"FINDING {ROOT_HOLDS_PIN}: the plan keeps the file "
+            f"{ticked(held)} in the assembly root under the entry "
+            f"`governance/`, inside {ticked(PIN_FILE)} through the symlink "
+            f"{ticked(CONTRACTS)} to `governance`, where `execute` writes "
+            f"{DECLARED_HELD}: send {ticked(CONTRACTS)} to a leg or `drop` "
+            f"it, or rename {ticked(GOVERNANCE_PIN)} in the source and "
+            "re-run `plan`.")
+    assert held_pins(checked) == [line], checked.stderr
+    refusal = refused_by(adopter, execute_args(tmp_path, plan))
+    assert refusal.code == ROOT_HOLDS_PIN
+    assert f"  {line}" in refusal.detail.splitlines()
+    no_leg_was_created(tmp_path)
+
+
 def test_a_pins_file_through_a_link_to_where_nothing_is_kept_is_no_finding(
         links_as_links, tmp_path):
     """The control: nothing is kept at `governance/openglass-pin.yaml`, so
