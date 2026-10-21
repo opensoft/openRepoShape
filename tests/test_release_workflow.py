@@ -585,19 +585,59 @@ def test_the_package_job_runs_its_python_3_9_on_ubuntu_24_04():
     """#1094: `tests.yml`'s `package` job builds and installs on 3.9, the
     floor of `requires-python`, and the Ubuntu 26.04 that `ubuntu-latest` now
     gives out has no 3.9 build for setup-python, so a run that landed there
-    failed in setup-python. The job names 24.04, and no job of the file asks
-    for 3.9 on `ubuntu-latest`."""
+    failed in setup-python. The job names 24.04 and asks for 3.9 once; the
+    next test holds every other job of both workflows to what 26.04 has."""
     jobs = load_yaml(WORKFLOWS / "tests.yml")["jobs"]
     package = jobs["package"]
     assert package["runs-on"] == "ubuntu-24.04"
     pythons = [step["with"]["python-version"] for step in package["steps"]
                if step.get("uses", "").startswith("actions/setup-python@")]
     assert pythons == ["3.9"]
-    for name, job in jobs.items():
-        asked = [step["with"]["python-version"] for step in job["steps"]
-                 if step.get("uses", "").startswith("actions/setup-python@")]
-        if "3.9" in asked:
-            assert job["runs-on"] == "ubuntu-24.04", name
+
+
+def setup_python_pairs():
+    """Every (file, job, runner, Python) a setup-python step of `tests.yml`
+    or `release.yml` asks for, as text. A job with a matrix gives one pair
+    for each `include` row, with `${{ matrix.os }}` and `${{ matrix.python }}`
+    filled from it; a job with none gives one. `str()` makes an unquoted
+    `python-version: 3.9`, which `load_yaml` reads as the float 3.9, the text
+    Actions hands setup-python."""
+    for path in (WORKFLOWS / "tests.yml", WORKFLOWS / "release.yml"):
+        for name, job in load_yaml(path)["jobs"].items():
+            rows = job.get("strategy", {}).get("matrix", {}).get("include")
+            steps = [step for step in job.get("steps", [])
+                     if step.get("uses", "").startswith(
+                         "actions/setup-python@")]
+            for step in steps:
+                for row in rows or [{}]:
+                    fill = {"${{ matrix.os }}": str(row.get("os")),
+                            "${{ matrix.python }}": str(row.get("python"))}
+                    runner = str(job["runs-on"])
+                    python = str(step["with"]["python-version"])
+                    for key, value in fill.items():
+                        runner = runner.replace(key, value)
+                        python = python.replace(key, value)
+                    yield path.name, name, runner, python
+
+
+def test_no_setup_python_on_ubuntu_latest_asks_for_a_python_26_04_lacks():
+    """#1094: the Ubuntu 26.04 that `ubuntu-latest` gives out has setup-python
+    builds for 3.10 to 3.15 alone, so every job of both workflows that is on
+    `ubuntu-latest` asks for `3.x` or `3.12`, and a 3.9 job is on 24.04. An
+    allow list over the expanded matrix rows, so it holds for an unquoted
+    3.9, for `release.yml`'s `build` job, and for a Python or a runner that a
+    matrix gives."""
+    pairs = list(setup_python_pairs())
+    for file, job, runner, python in pairs:
+        where = (file, job, runner, python)
+        assert "${{" not in runner + python, where
+        if runner == "ubuntu-latest":
+            assert python in {"3.x", "3.12"}, where
+        if python.split(".")[:2] == ["3", "9"]:
+            assert runner == "ubuntu-24.04", where
+    # The two 3.9 jobs are among the pairs, so the loop is not vacuous.
+    assert ("tests.yml", "package", "ubuntu-24.04", "3.9") in pairs
+    assert ("release.yml", "install", "ubuntu-24.04", "3.9") in pairs
 
 
 def test_the_header_says_how_to_release(workflow):

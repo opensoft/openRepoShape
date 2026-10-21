@@ -274,8 +274,9 @@ jobs:
   # build for setup-python: its manifest lists 3.10 to 3.15 there, and 3.8 to
   # 3.15 for 24.04. A run that landed on a 26.04 runner failed in setup-python
   # with `The version '3.9' with architecture 'x64' was not found for Ubuntu
-  # 26.04.` Every other job asks for `3.x` or `3.12`, which 26.04 has, and
-  # stays on ubuntu-latest.
+  # 26.04.` The other jobs keep their runners: `tests` here asks for `3.x`
+  # and release.yml's `build` for `3.12` on ubuntu-latest, both of which
+  # 26.04 has, and `tests-git-bash` runs on windows-latest.
   package:
     runs-on: ubuntu-24.04
     steps:
