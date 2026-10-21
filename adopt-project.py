@@ -1989,11 +1989,20 @@ def _source_there(spec: str, candidate: Path, name: str | None) -> bool:
     (`acme/Atlas` beside an unsearchable `./acme`) was cloned from GitHub,
     where `source-ambiguous` refuses it once the path can be seen. Which of
     the two it names cannot be told, so neither is read, and the url is
-    offered for the repository, as `source-ambiguous` offers it."""
+    offered for the repository, as `source-ambiguous` offers it.
+
+    A NAME TOO LONG FOR THE DISK (`ENAMETOOLONG`) NAMES NO GITHUB REPOSITORY
+    EITHER (#1003), and is refused as a path is, with no url. A part of it
+    is longer than a file system lets a file name be, which on any this tool
+    runs on is more than GitHub lets an owner (`GITHUB_OWNER_MAX`) or a
+    repository (`GITHUB_NAME_MAX`) be named. `--source <300 a's>/Thing` was
+    "whether it names the path ... here, or only the GitHub repository ...,
+    cannot be told", when neither can be, and was offered
+    `https://github.com/<300 a's>/Thing`, which can never clone."""
     try:
         return _is_there(candidate)
     except OSError as exc:
-        if name is None:
+        if name is None or exc.errno == errno.ENAMETOOLONG:
             raise _source_unreadable(f"--source {spec!r}", exc,
                                      "whether a repository is there") from exc
         here = _spelled("./" + spec.rstrip("/"))

@@ -341,6 +341,107 @@ def test_an_org_repo_beside_an_unsearchable_directory_is_not_sent_to_github(
     assert not (tmp_path / "work" / "source-readonly").exists()
 
 
+# --- an `org/repo` spelling too long for the disk (#1003) --------------------
+
+#: A part of a spelling longer than a file system lets a file name be, and
+#: so longer than GitHub lets an owner or a repository be named
+#: (`GITHUB_OWNER_MAX`, `GITHUB_NAME_MAX`): `stat` is `File name too long`.
+LONG = "a" * 300
+TOO_LONG = f"cannot be read ({os.strerror(errno.ENAMETOOLONG)})"
+needs_a_name_too_long = pytest.mark.skipif(
+    sys.platform == "win32",
+    reason="`File name too long` (ENAMETOOLONG) is a POSIX `stat`'s answer "
+           "to a name over the file system's limit; Windows answers it with "
+           "errors of its own")
+
+
+def too_long_here(path: Path) -> None:
+    """`stat` of `path`, relative to the directory the test runs in, is
+    refused with `File name too long`, asserted so a file system that took
+    the name would not pass a test here for the wrong reason."""
+    with pytest.raises(OSError) as raised:
+        path.stat()
+    assert raised.value.errno == errno.ENAMETOOLONG, raised.value
+
+
+@needs_a_name_too_long
+@pytest.mark.parametrize(("spec", "holder", "name"), [
+    pytest.param(f"{LONG}/{PROJECT}", None, f"{LONG}/{PROJECT}", id="owner"),
+    pytest.param(f"{ORG}/{LONG}", ORG, f"{ORG}/{LONG}", id="repository"),
+    pytest.param(f"github.com/{LONG}/{PROJECT}", "github.com",
+                 f"{LONG}/{PROJECT}", id="bare-github-url"),
+    pytest.param(f"www.github.com/{LONG}/{PROJECT}", "www.github.com",
+                 f"{LONG}/{PROJECT}", id="www-github-url"),
+])
+def test_a_spelling_too_long_for_the_disk_is_offered_no_url(
+        adopter, monkeypatch, tmp_path, spec, holder, name):
+    """`--source <300 a's>/Thing` is `source-unreadable`, `File name too
+    long` (#430's slice H), and was told "whether it names the path ...
+    here, or only the GitHub repository ..., cannot be told", with
+    `https://github.com/<300 a's>/Thing` offered: a url that can never clone,
+    for a name GitHub gives no owner or repository (#1003). It is refused
+    as a path too long is, and offered no url. `holder` is the directory
+    the spelling's first part names here, made so the `stat` reaches the
+    long part; `name` is the GitHub repository the spelling names."""
+    monkeypatch.chdir(tmp_path)
+    if holder is not None:
+        (tmp_path / holder).mkdir()
+    too_long_here(Path(spec))
+
+    with pytest.raises(adopter.Refusal) as raised:
+        adopter._source_spec(spec)
+
+    refusal = raised.value
+    assert refusal.code == "source-unreadable"
+    assert refusal.detail == (f"--source {spec!r}: {TOO_LONG}, so whether a "
+                              "repository is there cannot be told")
+    assert refusal.remediation.endswith(
+        "which no `chmod` puts right: put right what it names. Then run the "
+        "same command again."), refusal.remediation
+    assert "https://" not in refusal.remediation
+
+    # The control: the same spelling, its `stat` refused for another reason
+    # than its length (an I/O error), still leaves both readings open and
+    # offers the url. Only a name too long loses it.
+    def refusing(self, *args, **kwargs):
+        raise OSError(errno.EIO, os.strerror(errno.EIO), str(self))
+
+    monkeypatch.setattr(Path, "stat", refusing)
+    with pytest.raises(adopter.Refusal) as control:
+        adopter._source_spec(spec)
+    assert control.value.code == "source-unreadable"
+    assert (f"or only the GitHub repository `{name}`, cannot be told"
+            in control.value.detail)
+    assert (f"pass `https://github.com/{name}` to clone the repository from "
+            "GitHub") in control.value.remediation
+
+
+@needs_a_name_too_long
+def test_plan_of_a_spelling_too_long_for_the_disk_offers_no_url(tmp_path):
+    """The same, as `plan` is run: `source-unreadable`, exit 2, naming no
+    GitHub repository and offering no url; no plan is written, nothing is
+    made and `gh` is never asked."""
+    here = tmp_path / "here"
+    here.mkdir()
+    spec = f"{LONG}/{PROJECT}"
+    plan = tmp_path / "adoption-plan.yaml"
+    env, log = recording_gh(tmp_path / "gh-bin")
+
+    proc = run_script(ADOPT, "plan", "--source", spec, *PLANNED, "--out",
+                      str(plan), "--work-dir", str(tmp_path / "work"),
+                      cwd=here, env=env)
+
+    assert proc.returncode == 2, said(proc)
+    assert (f"{UNREADABLE}--source {spec!r}: {TOO_LONG}, so whether a "
+            "repository is there cannot be told\n") in proc.stderr
+    assert "GitHub repository" not in said(proc)
+    assert "https://" not in said(proc)
+    assert_no_false_answer(said(proc))
+    assert not plan.exists()
+    assert not (tmp_path / "work").exists()
+    assert log.read_bytes() == b""
+
+
 # --- a recorded source this user cannot reach (:5735) ------------------------
 
 def test_a_recorded_clone_whose_stat_is_refused_is_not_cloned_again(
