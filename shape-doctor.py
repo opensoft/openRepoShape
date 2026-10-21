@@ -262,10 +262,12 @@ the doctor: a submodule that copy registers is not named. A recursive clone
 of the leg leaves each empty. The doctor names nothing, though `git
 submodule status` counts the submodule unregistered (exit 128), in these
 states: beside a `.gitmodules` the index tracks and this disk lacks, where
-git reads the index's copy and neither printed way out is true until the
-file is restored (#1093); for a submodule whose path is not UTF-8
-(`UNWRITABLE_IN_A_PLAN`); and beside a `.gitmodules` git refuses, or a link
-on this disk, which git reads through.
+git reads the index's copy, `git add .gitmodules` would stage the file's
+deletion, and no section can be written in it until it is restored (#1093);
+for a submodule whose path is not UTF-8 or holds a control character
+(`UNWRITABLE_IN_A_PLAN`); beside a `.gitmodules` that is unmerged; and
+beside a `.gitmodules` git refuses, or one on this disk that is not a
+regular file: a link, which git reads through, or a directory.
 
 A SUBMODULE MOVED OR REMOVED SINCE THE ADOPTION (#525). Its row is a
 person's to change, by hand, in the pull request that bumps the pins; no
@@ -8782,9 +8784,8 @@ def unregistered_gitlinks(adopt, mount: Path, rel: str, tracked: list,
     NOT WHERE THE INDEX TRACKS A `.gitmodules` THIS DISK LACKS (#1093). git
     reads the index's copy there, and `git submodule status` exits 128
     beside one with no section for the submodule, but this names nothing:
-    neither printed way out is true until the file is restored, since `git
-    add .gitmodules` stages its deletion and no section can be written in a
-    file that is not there.
+    `git add .gitmodules` would stage the file's deletion, and no section
+    can be written in a file that is not there until it is restored.
 
     ASKED ONLY WHERE `empty_gitmodules` NAMED NONE: beside a `.gitmodules`
     that holds no section, #914's clause names each, and the entry #914
@@ -8794,7 +8795,9 @@ def unregistered_gitlinks(adopt, mount: Path, rel: str, tracked: list,
     submodule's directory empty, and `git submodule status` there exits 128
     with `no submodule mapping found in .gitmodules` (measured, git 2.43).
     A `.gitmodules` the doctor cannot read as git does (`registered_paths`)
-    names nothing, as `holds_no_section` calls no such file empty.
+    names nothing, as `holds_no_section` calls no such file empty: one that
+    is unmerged, that git refuses, or that is not a regular file here (a
+    link, which git reads through, or a directory).
     """
     if not held:
         return [], None

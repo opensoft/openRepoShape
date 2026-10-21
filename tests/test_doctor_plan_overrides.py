@@ -32,7 +32,6 @@ later too.
 
 from __future__ import annotations
 
-import hashlib
 import re
 import shutil
 import sys
@@ -52,7 +51,7 @@ from test_shape_doctor import (  # noqa: F401
 )
 
 sys.path.insert(0, str(REPO / "scripts"))
-from repo_shape import parse_yaml  # noqa: E402
+from repo_shape import parse_yaml, tree_digest  # noqa: E402
 
 #: The path a confident rule (`spec-governance`) puts in the spec leg.
 DOCS = "docs/"
@@ -482,10 +481,7 @@ def pinned_at_its_head(root: Path, role: str) -> None:
     names, so that `validate-pins.py` reads the three as one."""
     leg = root / role
     commit = git("rev-parse", "HEAD", cwd=leg).stdout.strip()
-    records = sorted(record.encode("utf-8") for record in git(
-        "ls-tree", "-r", "-z", commit, cwd=leg).stdout.split("\0") if record)
-    digest = hashlib.sha256(
-        b"".join(record + b"\n" for record in records)).hexdigest()
+    digest = tree_digest(leg, commit)
     pin = root / "contracts" / f"{role}-pin.yaml"
     text = pin.read_text(encoding="utf-8")
     for pattern, value in (
@@ -545,13 +541,14 @@ def gitmodules_beside_gitlink(root: Path, body, kept: str) -> Path:
     (REFUSED, False, "untracked", None),
     (SECTIONED, False, "head", None),
     (OTHER_SECTION, False, "head", "no_gitmodules"),
+    (OTHER_SECTION + b"!!!\n" + SECTIONED, False, "head", "no_gitmodules"),
 ], ids=["other-sections", "a-section-with-no-key", "its-path-given-over",
         "a-name-git-ignores", "its-path-with-a-slash",
         "other-sections-and-an-unstaged-edit", "no-gitmodules",
         "no-gitmodules-and-recorded", "its-path-given-last",
         "untracked-and-registering", "untracked-with-other-sections",
         "untracked-and-refused", "in-head-and-registering",
-        "in-head-with-other-sections"])
+        "in-head-with-other-sections", "in-head-read-to-its-first-bad-line"])
 def test_a_gitlink_no_section_registers_is_said(standard, project, body,
                                                 recorded, kept, beside):
     """#1080: #914 named a submodule beside a `.gitmodules` that holds no
@@ -570,7 +567,10 @@ def test_a_gitlink_no_section_registers_is_said(standard, project, body,
     AND FROM THE COPY GIT READS where the leg's index tracks no
     `.gitmodules`: the one on this disk, untracked, or else HEAD's. Where
     that copy registers the submodule, nothing is named; where it
-    registers other paths, the submodule is named as beside none.
+    registers other paths, the submodule is named as beside none. HEAD's is
+    read up to its first bad line, as git reads it: with the other
+    section, a bad line, and then the submodule's, git exits 128 and the
+    submodule is named.
 
     THE REMOVAL TYPED AS PRINTED, in each state: beside sections it stages
     the edited `.gitmodules` first, as #914's does, and `git rm --cached`
