@@ -1193,6 +1193,9 @@ PLANTED = {
     "method-bound-once": ("from pathlib import Path\nIS_DIR = Path.is_dir\n\n"
                           "def f(x):\n    return IS_DIR(x)\n",
                           [("<module>", "Path.is_dir"), ("f", "IS_DIR(x)")]),
+    "guard-as-attribute": ("import os\n\nclass C:\n    ex = os.path.exists\n\n"
+                           "    def f(self, x):\n        return self.ex(x)\n",
+                           [("C", "os.path.exists"), ("C.f", "self.ex(x)")]),
     "importlib": ("import importlib\nP = importlib.import_module('os.path')\n"
                   "\ndef f(x):\n    return P.isfile(x)\n",
                   [("f", "P.isfile(x)")]),
@@ -1874,8 +1877,15 @@ def test_every_stat_helper_answers_absent_false_and_raises_a_refusal(
 
 
 #: r1111b's NIT 1: routes from a refused `stat` to False that the parity
-#: test does not read, each made in the `HELPER`, and an errno it shows.
+#: test does not read, each made in the `HELPER`, and an error it shows;
+#: and two the parity test does read, which this must name all the same.
 ROUTES = {
+    "winerror-dropped": ([('"winerror", None) in _ABSENT_WINERRORS)',
+                           '"winerror", None) in (21, 123))')],
+                         "EINVAL with winerror 1921"),
+    "flag-branch": ([(IS_A, "def _is_a(path, kind, *, link=False):\n"),
+                     ("        if _absent(exc):",
+                      "        if link or _absent(exc):")], "EACCES"),
     "isinstance": ([("in _ABSENT_WINERRORS)", "in _ABSENT_WINERRORS\n"
                      "            or isinstance(exc, PermissionError))")],
                    "EACCES"),
@@ -1919,11 +1929,23 @@ def test_the_behaviour_test_names_each_route_to_false(route, tmp_path):
     """The behaviour test's own proof: the `HELPER` answers as it should,
     and each route in `ROUTES` is named, by the errno it answers wrongly."""
     assert behaviour_problems(HELPER, "_is_a", tmp_path) == []
-    changes, errno_name = ROUTES[route]
+    changes, said = ROUTES[route]
     problems = behaviour_problems(_changed(HELPER, changes), "_is_a",
                                   tmp_path)
-    assert any(f"where its `stat` raises errno {errno_name}:" in problem
+    assert any(f"where its `stat` raises errno {said}:" in problem
                for problem in problems), problems
+
+
+def test_the_behaviour_test_asks_the_disk_too(tmp_path):
+    """A helper whose `stat` is never refused but whose answer is the wrong
+    way round is named by the disk's own answers."""
+    assert behaviour_problems(_changed(HELPER, [(
+        "    return kind(mode)\n", "    return not kind(mode)\n")]),
+        "_is_a", tmp_path) == [
+        "`_is_a` answers False for a-file, S_ISREG, where the disk says True",
+        f"`_is_a` answers False for {tmp_path.name}, S_ISDIR, where the "
+        "disk says True",
+        "`_is_a` answers True for a-file, S_ISDIR, where the disk says False"]
 
 
 def test_the_behaviour_test_loads_only_what_the_helper_reads(tmp_path):
