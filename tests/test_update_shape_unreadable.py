@@ -220,8 +220,8 @@ def temporaries(update_shape, monkeypatch, tmp_path):
     real = update_shape.open_upstream
     made: list[Path] = []
 
-    def opening(spec):
-        upstream = real(spec)
+    def opening(spec, pin_path=None):
+        upstream = real(spec, pin_path)
         temporary = tmp_path / f"openreposhape-upstream-{len(made)}"
         temporary.mkdir()
         (temporary / "HEAD").write_bytes(b"ref: refs/heads/main\n")

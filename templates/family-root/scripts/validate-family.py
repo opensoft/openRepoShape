@@ -187,8 +187,12 @@ from repo_shape import (  # noqa: E402
     tree_digest,
 )
 
-DATE_RE = re.compile(r"^\d{4}-\d{2}-\d{2}$")
-QUALIFIED_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_.-]*/[A-Za-z0-9][A-Za-z0-9_.-]*$")
+#: BOTH END IN `\Z`, NEVER `$` (#1139): `$` also matches just before a
+#: trailing line feed, so a `created_on:` read as the date and a line feed (a
+#: double-quoted `\n`, or a block scalar) was `family ok`, and a member's
+#: `repository:` so read was `member-repository-name`, of a name "'IRRS\n'".
+DATE_RE = re.compile(r"^\d{4}-\d{2}-\d{2}\Z")
+QUALIFIED_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_.-]*/[A-Za-z0-9][A-Za-z0-9_.-]*\Z")
 MANIFEST = "family.yaml"
 GITMODULES = ".gitmodules"
 DEFAULT_MEMBERS_DIR = "members"
@@ -578,7 +582,12 @@ def _check_schema_kind_and_id(manifest: dict, report: Report) -> None:
                        f"kind is {manifest.get('kind')!r}, expected "
                        "'family-manifest'")
     family_id = manifest.get("id")
-    if not isinstance(family_id, str) or not PROJECT_ID_RE.match(family_id):
+    # `fullmatch`, NOT `match` (#1139): `PROJECT_ID_RE` ends in `$`, which
+    # also matches just before a trailing line feed, so `id: "inkrouter\n"`
+    # was `family ok`. The pattern is the holder's own `repo_shape.py`'s,
+    # whose text the finding prints, so it is asked whole, not respelled.
+    if not isinstance(family_id, str) or not PROJECT_ID_RE.fullmatch(
+            family_id):
         report.finding("family-id",
                        f"id is {family_id!r}; it must match "
                        f"{PROJECT_ID_RE.pattern}")

@@ -160,7 +160,10 @@ LEG_ROOT_RE = re.compile(r"They are in the assembly root `([^`\s]+)`")
 #: left behind. The record's template uses the same spelling as every other
 #: template here, and a value still spelled that way is a field nobody wrote.
 PLACEHOLDER_RE = re.compile(r"\{\{[A-Z_]+\}\}")
-DATE_RE = re.compile(r"^\d{4}-\d{2}-\d{2}$")
+#: `\Z`, NEVER `$` (#1139), as the validators' `DATE_RE` ends: `$` also
+#: matches just before a trailing line feed. `date.fromisoformat` refuses
+#: such a date after it, so the answer was right, but not by this rule.
+DATE_RE = re.compile(r"^\d{4}-\d{2}-\d{2}\Z")
 
 #: A UTF-8 byte-order mark, which an editor on Windows may put at the top of a
 #: file a person wrote by hand. It is not part of the first key: left in, it
