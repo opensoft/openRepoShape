@@ -17174,7 +17174,12 @@ def _the_loop_in(root: Path) -> Path | None:
     -> realdir` and `realdir/self2 -> self2`, reads as `<A>/d/self2`, and
     the walk ended at `d`, so `w` was called a link to what is no
     directory. Python 3.13 and later read on past a loop and give
-    `<A>/realdir/self2`, which holds no other link."""
+    `<A>/realdir/self2`, which holds no other link.
+
+    ELOOP also means more than 40 links on the way (Linux's limit), so where
+    `abspath` folds a loop out of the path and leaves it more than 40 links,
+    the walk can name a link that does not itself loop, the one the limit is
+    reached at; the way out still names the `--work-dir`."""
     for part in (*reversed(root.parents), root):
         if os.path.islink(part):
             try:
