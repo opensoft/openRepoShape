@@ -35,6 +35,13 @@ is read in the one `git cat-file --batch` `check` already starts.
 cannot help it. Each leaves out a link the first finding names, as
 `plan-root-blocks-manifest` does.
 
+#1138 names the case twin beside such a link, and every other twin at a
+place the shape writes: on a disk that ignores case, `shape/readme.md` is at
+`shape/README.md` too, and `check` asked only the first row there, in tree
+order. A twin after a named link at the copy, the manifest or a pin's file
+went unnamed, as did one beside a link git makes at the copy, a file after
+a link or a second file above the copy, and a file after a submodule.
+
 The links are made in the INDEX with `git update-index --cacheinfo`, so no
 test builds a source on a disk that holds a NUL in a target, and all but the
 three that ask git to check a link out (marked `needs_disk_symlinks`) run on
@@ -813,16 +820,26 @@ def test_a_named_link_at_the_pin_is_found_there_and_no_case_twin_is_asked(
 #: Where a named link sits beside a SECOND path the shape also writes, kept
 #: in the root, so that `check` makes two findings and not one: the link's
 #: own and the second path's (#1089, SHOULD-2 of r1070). What the skips leave
-#: out is the link and no other path, and each case kills a mutant of them
-#: that #1070's whole file let live, because the second finding was the only
-#: one it lost: a link at `shape/README.md` beside a case twin of that copy
-#: (M12), a link at a declared pin's file beside a file at the shape's own
-#: pin (M13), and a link at the README copy beside a file at the Makefile
-#: copy (M14). In each the second path is asked after the link's, on the
-#: same disk or the next. The link's own entry is answered `root` where
-#: `plan` proposes another leg for it (`shape/README.md`: `spec`, by its
-#: `.md` extension), because a link sent to a leg is not kept in the root,
-#: and the copy skip that M14 breaks is never reached for it.
+#: out is the link and no other path, and each of two cases kills a mutant
+#: of them that #1070's whole file let live, because the second finding was
+#: the only one it lost: a link at a declared pin's file beside a file at
+#: the shape's own pin (M13), and a link at the README copy beside a file at
+#: the Makefile copy (M14). A third, a link at `shape/README.md` beside a
+#: case twin of that copy (M12), killed M12 until #1138: each case twin at a
+#: place is now a group of its own, `("at", its own path)`, so the copy
+#: skip's marking the link's group seen hides no twin, and M12 survives as
+#: an equivalent mutant. That case is a control now. In each the second path
+#: is asked after the link's, on the same disk or the next. The link's own
+#: entry is answered `root` where `plan` proposes another leg for it
+#: (`shape/README.md`: `spec`, by its `.md` extension), because a link sent
+#: to a leg is not kept in the root, and the copy skip that M14 breaks is
+#: never reached for it.
+#:
+#: A case twin that sorts AFTER the link, `shape/readme.md`, was not named
+#: at all while the link stayed (#1138, NIT-5 of r1118): `_KeptTree` kept
+#: the first row at a place, which there is the link, so the twin was
+#: never asked. The second case holds that, beside the first, and kills
+#: M14 as well.
 #:
 #: The source's other files, a declared pin, the link, what the plan keeps in
 #: the root, the code of the second finding and what it says of its path.
@@ -832,6 +849,11 @@ LINK_BESIDE_A_SECOND_PATH = [
         {"shape/": ROOT, "Shape/": ROOT, "README.md": ROOT}, COPY,
         "That path is the file `Shape/README.md` once case is ignored",
         id="a-case-twin-of-the-readme-copy"),
+    pytest.param(
+        {"shape/readme.md": "the case twin\n"}, False, "shape/README.md",
+        {"shape/": ROOT, "README.md": ROOT}, COPY,
+        "That path is the file `shape/readme.md` once case is ignored",
+        id="a-case-twin-after-the-readme-copys-link"),
     pytest.param(
         {"contracts/shape-pin.yaml": "not the shape's pin\n"}, True,
         "contracts/openglass-pin.yaml", {"contracts/": ROOT}, HOLDS_PIN,
@@ -885,6 +907,250 @@ def test_execute_refuses_a_named_link_at_a_copy_or_a_pin_with_one_finding(
     assert second not in caught.value.detail
     assert adopter.BAD_SYMLINK_TARGET_REMEDIATION in caught.value.remediation
     no_leg_was_created(tmp_path, source)
+
+
+# --- every case twin at a place the shape writes (#1138) --------------------
+
+#: A disk that ignores case holds `shape/README.md` and `shape/readme.md` at
+#: one place, and which of them a clone holds there is git's checkout, not
+#: the plan's: each is in the way, and each is now named by a finding of its
+#: own. `_KeptTree` kept the FIRST row at a place, in tree order, and each
+#: finding about a place the shape writes asked that row alone: the copy's,
+#: a file's above it, the manifest's and a pin file's. On a disk that keeps
+#: case there is one row at a place at most, and nothing changes.
+TWIN = "the case twin\n"
+SHAPE_BLOCKED = "plan-root-blocks-shape"
+#: A link git makes, which `planned_root`'s source leaves dangling.
+NOWHERE = b"nowhere"
+
+
+@pytest.mark.parametrize("twin, kept", [
+    pytest.param("Shape/README.md",
+                 {"shape/": ROOT, "Shape/": ROOT, "README.md": ROOT},
+                 id="a-twin-before-the-link"),
+    pytest.param("shape/readme.md", {"shape/": ROOT, "README.md": ROOT},
+                 id="a-twin-after-the-link"),
+])
+def test_a_case_twin_beside_a_link_git_makes_at_the_copy_is_named_too(
+        tmp_path, twin, kept):
+    """A link at the copy with a target git makes is not left out: the
+    copy's finding names it, on the disk that keeps case. The twin beside
+    it, before the link or after it, was then not named at all: the place
+    was one group, and its finding was already made. Now each is one."""
+    _, plan = planned_root(tmp_path, {twin: TWIN},
+                           {"shape/README.md": NAMED}, kept)
+    result = check_root(plan)
+    assert result.returncode == 1, result.stdout + result.stderr
+    found = findings_of(result)
+    assert len(found) == 2, f"the twin is not named: {found}"
+    link, made = found
+    assert link.startswith(f"FINDING {COPY}: ")
+    assert "That path is the symlink `shape/README.md`. " in link
+    assert made.startswith(f"FINDING {COPY}: ")
+    assert f"That path is the file `{twin}` once case is ignored" in made
+    assert FACT_OF_THE_SOURCE not in result.stderr
+
+
+@pytest.mark.parametrize("files, links, kept, says", [
+    pytest.param({}, {"Shape/README.md": NOWHERE},
+                 {"Shape/": ROOT, "README.md": ROOT},
+                 ["the symlink `Shape/README.md` once case is ignored"],
+                 id="a-link-twin-alone"),
+    pytest.param({"shape/README.md": TWIN}, {"shape/readme.md": NOWHERE},
+                 {"shape/": ROOT, "README.md": ROOT},
+                 ["the file `shape/README.md`. ",
+                  "the symlink `shape/readme.md` once case is ignored"],
+                 id="a-link-twin-after-a-file"),
+    pytest.param({}, {"shape/README.md": NAMED, "shape/readme.md": NOWHERE},
+                 {"shape/": ROOT, "README.md": ROOT},
+                 ["the symlink `shape/README.md`. ",
+                  "the symlink `shape/readme.md` once case is ignored"],
+                 id="a-link-twin-after-a-link"),
+])
+def test_a_link_twin_at_the_copy_is_named_once_by_the_copys_finding(
+        tmp_path, files, links, kept, says):
+    """A link kept AT the copy is the copy finding's to name, and the walk
+    does not name it again as `plan-root-symlink` (`_links_at_a_copy`).
+    Each twin there is a group of its own path, not the copy's, so a link
+    twin spelled otherwise than the copy is still one the copy's finding
+    names; and after another row at the place it is named at all."""
+    _, plan = planned_root(tmp_path, files, links, kept)
+    result = check_root(plan)
+    assert result.returncode == 1, result.stdout + result.stderr
+    found = findings_of(result)
+    assert len(found) == len(says), found
+    for finding, said in zip(found, says):
+        assert finding.startswith(f"FINDING {COPY}: ")
+        assert f"That path is {said}" in finding
+
+
+#: A FILE where the shape needs a directory, beside its case twin: the
+#: source's files and links, what the plan keeps in the root, the finding's
+#: code, the files it names in order and how it says each.
+ABOVE = [
+    pytest.param({"Shape": TWIN}, {"SHAPE": LATE_NUL},
+                 {"SHAPE": ROOT, "Shape": ROOT, "README.md": ROOT}, COPY,
+                 ["Shape"], "That path is inside the file `{}` once case",
+                 id="a-file-after-a-named-link-above-the-copy"),
+    pytest.param({"SHAPE": TWIN, "Shape": TWIN}, {},
+                 {"SHAPE": ROOT, "Shape": ROOT, "README.md": ROOT}, COPY,
+                 ["SHAPE", "Shape"],
+                 "That path is inside the file `{}` once case",
+                 id="two-files-above-the-copy"),
+    pytest.param({"Scripts": TWIN}, {"SCRIPTS": LATE_NUL},
+                 {"SCRIPTS": ROOT, "Scripts": ROOT}, SHAPE_BLOCKED,
+                 ["Scripts"], "which are inside the file `{}` once case",
+                 id="a-file-after-a-named-link-above-the-shapes-scripts"),
+    pytest.param({"SCRIPTS": TWIN, "Scripts": TWIN}, {},
+                 {"SCRIPTS": ROOT, "Scripts": ROOT}, SHAPE_BLOCKED,
+                 ["SCRIPTS", "Scripts"],
+                 "which are inside the file `{}` once case",
+                 id="two-files-above-the-shapes-scripts"),
+]
+
+
+@pytest.mark.parametrize("files, links, kept, code, named, says", ABOVE)
+def test_each_file_twin_above_a_place_the_shape_writes_is_named(
+        tmp_path, files, links, kept, code, named, says):
+    """`mkdir` stops at a FILE where the shape needs a directory, and on a
+    disk that ignores case `SHAPE` and `Shape` are one place. A link there
+    is no such file, and is named by its own finding: the file after it was
+    not named at all (`file_above` asked the first row), and nor was a
+    second file. The link's finding is first, then each file's."""
+    _, plan = planned_root(tmp_path, files, links, kept)
+    result = check_root(plan)
+    assert result.returncode == 1, result.stdout + result.stderr
+    found = findings_of(result)
+    own = [f"FINDING {CODE}: `{link}` is a symlink " for link in links]
+    assert len(found) == len(own) + len(named), found
+    for finding, head in zip(found, own):
+        assert finding.startswith(head)
+    for finding, path in zip(found[len(own):], named):
+        assert finding.startswith(f"FINDING {code}: ")
+        assert says.format(path) in finding
+
+
+def test_a_case_twin_after_a_submodule_at_the_copy_is_named(tmp_path):
+    """A submodule at the copy is `plan-submodule-root`'s, said once there
+    (#166), and the copy's finding leaves it out. The file twin after it is
+    in the way all the same, and was not named while the submodule stood
+    first at the place."""
+    _, plan = planned_root(tmp_path, {"shape/readme.md": TWIN}, {},
+                           {"shape/": ROOT, "README.md": ROOT},
+                           ("shape/README.md",))
+    result = check_root(plan)
+    assert result.returncode == 1, result.stdout + result.stderr
+    found = findings_of(result)
+    assert len(found) == 2, found
+    made, submodule = found
+    assert made.startswith(f"FINDING {COPY}: ")
+    assert ("That path is the file `shape/readme.md` once case is ignored"
+            ) in made
+    assert submodule.startswith(
+        "FINDING plan-submodule-root: `shape/README.md` ")
+
+
+#: The manifest's tail on a named link kept there once case is ignored.
+AT_THE_MANIFEST_ONCE_CASE_IS_IGNORED = (
+    "The plan keeps it in the assembly root, at `project.yaml` once case is "
+    "ignored, as a macOS or Windows disk does, where the shape writes its "
+    "manifest, and no copy stands in for that")
+
+
+@pytest.mark.parametrize("files, links, first, second", [
+    pytest.param({"Project.yaml": TWIN}, {SHAPE_MANIFEST: NAMED},
+                 f"FINDING {MANIFEST}: the plan keeps the symlink "
+                 "`project.yaml` in the assembly root, where the shape",
+                 "the file `Project.yaml` in the assembly root, at "
+                 "`project.yaml` once case is ignored",
+                 id="a-file-twin-after-a-link-git-makes"),
+    pytest.param({"Project.yaml": TWIN}, {"PROJECT.yaml": LATE_NUL},
+                 f"FINDING {CODE}: `PROJECT.yaml` is a symlink ",
+                 "the file `Project.yaml` in the assembly root, at "
+                 "`project.yaml` once case is ignored",
+                 id="a-file-twin-after-a-named-link"),
+    pytest.param({"PROJECT.yaml": TWIN}, {"Project.yaml": LATE_NUL},
+                 f"FINDING {CODE}: `Project.yaml` is a symlink ",
+                 "the file `PROJECT.yaml` in the assembly root, at "
+                 "`project.yaml` once case is ignored",
+                 id="a-named-link-after-a-file-twin"),
+])
+def test_each_case_twin_at_the_manifest_is_named(
+        tmp_path, files, links, first, second):
+    """Each twin at `project.yaml` once case is ignored is the manifest's
+    own place, and is named: a file after a link was not. A named link
+    there is left to its own finding, which says where it sits wherever it
+    sorts (`_links_at_the_manifest`): after a file twin it did not."""
+    _, plan = planned_root(tmp_path, files, links,
+                           {path: ROOT for path in {**files, **links}})
+    result = check_root(plan)
+    assert result.returncode == 1, result.stdout + result.stderr
+    found = findings_of(result)
+    assert len(found) == 2, found
+    link, made = found
+    assert link.startswith(first)
+    if link.startswith(f"FINDING {CODE}: "):
+        assert AT_THE_MANIFEST_ONCE_CASE_IS_IGNORED in link
+    assert made.startswith(f"FINDING {MANIFEST}: the plan keeps {second}")
+
+
+def test_a_case_twin_after_a_named_link_at_a_pin_file_is_named(tmp_path):
+    """The pin finding leaves a named link at the pin's file out (#979);
+    the file twin after it, on the disk that ignores case, was left out
+    with it."""
+    _, plan = planned_root(
+        tmp_path, {**PIN_FILES, "contracts/Shape-pin.yaml": TWIN},
+        {"contracts/SHAPE-pin.yaml": LATE_NUL}, {"contracts/": ROOT})
+    result = check_root(plan)
+    assert result.returncode == 1, result.stdout + result.stderr
+    found = findings_of(result)
+    assert len(found) == 2, found
+    own, made = found
+    assert own.startswith(f"FINDING {CODE}: `contracts/SHAPE-pin.yaml` ")
+    assert made.startswith(
+        f"FINDING {HOLDS_PIN}: the plan keeps the file "
+        "`contracts/Shape-pin.yaml` in the assembly root under the entry "
+        "`contracts/`, at `contracts/shape-pin.yaml` once case is ignored")
+
+
+def kept_at_the_pin(adopter, *paths: str):
+    """A plan that keeps each of `paths`, top-level directories, in the
+    root, with no pin declared."""
+    return adopter.Plan(Path("adoption-plan.yaml"), {
+        "kind": "adoption-plan", "mode": "in-place",
+        "legs": {"spec_path": "spec", "code_path": "code"},
+        "paths": [{"path": path, "leg": ROOT} for path in paths]})
+
+
+def test_each_file_twin_at_a_pin_file_is_named(adopter):
+    """Two files at `contracts/shape-pin.yaml` once case is ignored: the
+    pin finding named the first."""
+    plan = kept_at_the_pin(adopter, "contracts/")
+    twins = ["contracts/SHAPE-pin.yaml", "contracts/Shape-pin.yaml"]
+    tree = [row(path, 5, NAMED_OID, "100644") for path in twins]
+    said = adopter._pin_findings(plan, tree)
+    assert len(said) == 2, said
+    for finding, path in zip(said, twins):
+        assert finding.startswith(
+            f"FINDING {HOLDS_PIN}: the plan keeps the file `{path}` ")
+        assert "at `contracts/shape-pin.yaml` once case is ignored" in finding
+
+
+def test_a_file_twin_after_a_submodule_at_the_pin_holds_the_pin(adopter):
+    """A submodule first at the pin's file, once case is ignored, is
+    `plan-submodule-root`'s; the file twin after it is the root's at the
+    pin all the same. The pin finding names that file, and the copy of the
+    pin the shape would write under `shape/` is that finding's consequence,
+    not asked again (#651), as `_holds_a_pin` says of every twin there."""
+    plan = kept_at_the_pin(adopter, "contracts/", "shape/")
+    tree = [row("contracts/SHAPE-pin.yaml", 0, NAMED_OID,
+                adopter.GITLINK_MODE),
+            row("contracts/Shape-pin.yaml", 5, NAMED_OID, "100644"),
+            row(f"shape/{adopter.SHAPE_PIN}", 5, NAMED_OID, "100644")]
+    said, = adopter._pin_findings(plan, tree)
+    assert said.startswith(f"FINDING {HOLDS_PIN}: the plan keeps the file "
+                           "`contracts/Shape-pin.yaml` ")
+    assert adopter._root_shape_findings(plan, tree) == []
 
 
 # --- controls: what must not change ------------------------------------------
