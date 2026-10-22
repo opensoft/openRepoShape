@@ -441,8 +441,10 @@ def test_the_rows_name_a_refused_root_git_on_every_python(
     assert legs.reason == legs_said(line)
     assert legs.next_command == doctor_again(standard, project)
     assert legs.why == why
-    assert [entry[module.GITLINK_UNREAD] for entry in legs.detail["legs"]] \
-        == [line, line]
+    assert legs.detail["legs"] == [
+        {"role": role, "path": role, "pin": None, "gitlink": None,
+         "populated": None, "head": None, "own_git": None, "unborn": None,
+         module.GITLINK_UNREAD: line} for role in ("spec", "code")]
     assert module.drifted_reasons({"legs": legs}, {}) == []
     placement = module.check_placement(ctx)
     assert placement.status == module.NA
@@ -665,6 +667,47 @@ def test_placement_audits_each_leg_git_reads_beside_a_refused_root_git(
     assert placement.status == module.OK, placement.reason
     assert [entry["state"] for entry in placement.detail["legs"]] \
         == ["audited", "audited"]
+
+
+#: What git answers for a leg in another repository's top level.
+ELSEWHERE = ("it is not a repository of its own -- `git` answers from "
+             "/elsewhere -- so `ls-files` there would report that "
+             "repository's paths, not this leg's")
+
+
+@pytest.mark.parametrize("arrange, spec_said", [
+    pytest.param(lambda root: None, ELSEWHERE,
+                 id="git-answers-from-another-repository"),
+    pytest.param(lambda root: (root / "spec" / ".git").unlink(), None,
+                 id="no-git-of-its-own"),
+])
+def test_only_a_leg_git_names_no_repository_for_is_given_the_roots_line(
+        standard, project, monkeypatch, arrange, spec_said):
+    """git's answers put in by hand, in process, beside a refused root
+    `.git`: the code leg, whose `.git` is there and git names no top level
+    for, is given the root's line. The spec leg keeps git's answer where git
+    answers from another repository's top level, or where it has no `.git`
+    of its own: it is not its own repository whatever the root's `.git`
+    says."""
+    arrange(project)
+    module, ctx = in_process(standard, project)
+    spec_said = spec_said or module.NOT_A_GIT_REPOSITORY
+    answers = {ctx.root / "spec": spec_said,
+               ctx.root / "code": module.NOT_A_GIT_REPOSITORY}
+    monkeypatch.setattr(module, "not_its_own_repository",
+                        lambda mount: answers[mount])
+    as_python_314(monkeypatch, {
+        ctx.root / ".git": PermissionError(errno.EACCES, DENIED)})
+    line = cannot(".git")
+    placement = module.check_placement(ctx)
+    assert placement.status == module.NA
+    assert placement.reason == (
+        f"no leg could be read, so nothing was classified: spec: {spec_said}; "
+        f"code: read through the root's repository, and {line}")
+    assert placement.detail["legs"] == [
+        {"role": "spec", "path": "spec", "state": spec_said},
+        {"role": "code", "path": "code", "state": line,
+         module.GITLINK_UNREAD: line}]
 
 
 def test_a_leg_whose_gitlink_cannot_be_read_is_never_drift(standard,
