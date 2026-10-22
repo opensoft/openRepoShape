@@ -979,9 +979,11 @@ def object_kind(submodule: Path, oid: str) -> str | None:
 def tag_chain_end(submodule: Path, tag: str) -> tuple[str, str]:
     """`(type, object)` from the header of the last tag the leg holds on the
     way from `tag`, a tag it holds (#1103). `("tag", <id>)` where the way
-    leads through a tag the leg lacks, `<id>` being that tag; otherwise the
-    kind and the id of what is at its end, a commit, a tree or a blob, held
-    or not; `("", "")` where a header cannot be read.
+    leads through a tag the leg lacks, `<id>` being that tag, or through a
+    tag whose header misstates what it names (`type tag` over an `<id>` the
+    leg holds as something else, which only a malformed tag has); otherwise
+    the kind and the id of what is at its end, a commit, a tree or a blob,
+    held or not; `("", "")` where a header cannot be read.
 
     READ FROM THE TAGS' OWN HEADERS, `git cat-file tag`'s `type` and `object`
     lines, one tag at a time while the leg holds the next. Where the leg
@@ -996,7 +998,8 @@ def tag_chain_end(submodule: Path, tag: str) -> tuple[str, str]:
             capture_output=True, text=True, encoding="utf-8",
             errors="replace", check=False)
         lines = proc.stdout.split("\n\n", 1)[0].splitlines()
-        header = dict(line.split(" ", 1) for line in lines if " " in line)
+        header = {key: value for key, sep, value in
+                  (line.partition(" ") for line in lines) if sep}
         names = header.get("type", "").strip()
         named = header.get("object", "").strip().lower()
         if names != "tag" or object_kind(submodule, named) != "tag":

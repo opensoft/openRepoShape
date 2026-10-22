@@ -573,9 +573,12 @@ NOT_A_COMMIT_REMEDIATION = (
     "blob's id is part of a commit and never one, and a pin is a commit or "
     "it is nothing.")
 
-#: A tag the leg holds without what it names, and what that is.
-TAGS_OF_NO_COMMIT = {"tag of a tree": "tree", "tag of a blob": "blob",
-                     "tag of a tag of a tree": "tree"}
+#: A tag the leg holds without what it names: what that is, and how many tags
+#: lead to it, every one of them held.
+TAGS_OF_NO_COMMIT = {"tag of a tree": ("tree", 1),
+                     "tag of a blob": ("blob", 1),
+                     "tag of a tag of a tree": ("tree", 2),
+                     "tag of a tag of a tag of a tree": ("tree", 3)}
 
 
 @pytest.mark.parametrize("gone", ["kept", "renamed"],
@@ -584,25 +587,27 @@ TAGS_OF_NO_COMMIT = {"tag of a tree": "tree", "tag of a blob": "blob",
 def test_a_tag_of_a_tree_or_a_blob_the_leg_lacks_is_refused_by_name(
         project, scaffolded, kind, gone):
     """#1131's review, NIT 1 (b). A tag of a tree or of a blob, or a tag of
-    a tag of a tree with both tags held, that the leg holds without the tree
-    or the blob, both pushed nowhere, so no fetch brings them. Its peel
-    cannot be read there, so it went on, as typed, to the reachability
-    verdict: with no `origin` the leg was said to hold it "without the
-    commit it names" and told to "push that commit", and with one that no
-    branch contains it, of a tag that names no commit at all. The tags' own
-    headers say what it names: both runs now refuse it
+    a tag, or of a tag of a tag, of a tree with every tag held, that the leg
+    holds without the tree or the blob, both pushed nowhere, so no fetch
+    brings them. Its peel cannot be read there, so it went on, as typed, to
+    the reachability verdict: with no `origin` the leg was said to hold it
+    "without the commit it names" and told to "push that commit", and with
+    one that no branch contains it, of a tag that names no commit at all.
+    The tags' own headers say what it names: both runs now refuse it
     `bump-leg-target-not-a-commit`, in the words a tag of a tree or a blob
     the leg holds has (`NOT_COMMITS`, `test_bump_leg_dry_run_truth.py`),
-    since no fetch makes either a commit."""
+    since no fetch makes either a commit. The chain of three tags is a kind
+    of its own (rc1131's NIT 2): the walk that reads each header in turn
+    must not stop at the second."""
     remotes = private_remote(project, scaffolded)
     leg = project / "spec"
     work, made = pushed_nowhere(project, remotes)
-    what = TAGS_OF_NO_COMMIT[kind]
+    what, depth = TAGS_OF_NO_COMMIT[kind]
     named = git("rev-parse", f"{made}:HELD.md" if what == "blob"
                 else f"{made}^{{tree}}", cwd=work).stdout.strip()
     tags = [tagged(work, "named-w1131", named)]
-    if kind == "tag of a tag of a tree":
-        tags.insert(0, tagged(work, "outer-w1131", tags[0]))
+    for step in range(depth - 1):
+        tags.insert(0, tagged(work, f"outer{step + 1}-w1131", tags[0]))
     written_into_the_leg(project, work, *tags)
     assert git("cat-file", "-e", named, cwd=leg,
                check=False).returncode != 0, f"premise: no {what} in the leg"
