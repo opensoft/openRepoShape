@@ -49,6 +49,9 @@ CODE = "source-partial-clone"
 REFUSED = f"REFUSED {CODE}:"
 #: The way out the refusal names, for the remote a clone calls `origin`.
 CURE = "`git fetch --refetch --no-filter origin`"
+#: What the refusal says about a fetch run after the cure.
+LATER = ("Later fetches stay filtered while "
+         "`remote.origin.partialclonefilter` is set")
 #: The variable `_lazy_fetch_off` sets.
 VARIABLE = "GIT_NO_LAZY_FETCH"
 #: A name no git reads: `NO_LAZY_FETCH` set to it stands for a git that
@@ -255,7 +258,9 @@ def test_check_refuses_a_partial_clone_that_lacks_objects_and_fetches_none(
         made, variant):
     """Base: `plan ok`, after 26 `upload-pack` runs and `.promisor` files 1
     -> 27 for `nocheckout`, and none for `checkout`, whose 2 lacking history
-    blobs `execute` then failed on. Head: refused, nothing fetched."""
+    blobs `execute` then failed on. Head: refused, nothing fetched, and the
+    refusal says a later fetch stays filtered (the cure leaves
+    `partialclonefilter` set)."""
     source = made(variant)
     assert source.lacking() > 0
     promisor = source.promisor_packs()
@@ -263,6 +268,7 @@ def test_check_refuses_a_partial_clone_that_lacks_objects_and_fetches_none(
     assert result.returncode == 2, result.stderr + result.stdout
     assert REFUSED in result.stderr
     assert CURE in result.stderr
+    assert LATER in result.stderr
     assert "plan ok" not in result.stdout
     source.untouched()
     assert source.promisor_packs() == promisor
@@ -374,6 +380,22 @@ def test_execute_reads_no_commit_a_cloned_plan_names_and_the_source_lacks(
     assert not (source.base / "remotes").exists()
 
 
+def test_the_refusal_names_the_filter_key_of_each_promisor_remote(made):
+    """Two promisor remotes: each is fetched again, and each keeps the key
+    that filters a later fetch."""
+    source = made("nocheckout")
+    git("config", "remote.second.promisor", "true", cwd=source.path)
+    result = source.check()
+    assert result.returncode == 2, result.stderr + result.stdout
+    assert REFUSED in result.stderr
+    assert ("`git fetch --refetch --no-filter origin`, then `git fetch "
+            "--refetch --no-filter second`") in result.stderr
+    assert ("Later fetches stay filtered while "
+            "`remote.origin.partialclonefilter` or "
+            "`remote.second.partialclonefilter` is set") in result.stderr
+    source.untouched()
+
+
 @pytest.mark.parametrize("command", ["check", "execute"])
 def test_a_tag_whose_blob_the_source_lacks_is_refused(made, command):
     """Only a tag reaches what is lacking: a cured partial clone lacks
@@ -414,7 +436,8 @@ def test_a_partial_clone_git_cannot_walk_is_refused_on_any_git(
         adopter, made, monkeypatch, capsys):
     """A walk that fails tells nothing of what is lacking, so it is no
     `0`: a cured partial clone, its walk made to fail (an option no git
-    has), is refused, naming how git exited."""
+    has), is refused, naming how git exited, saying git could not walk the
+    refs (and no object count), and naming `git fsck`."""
     monkeypatch.setattr(adopter, "LACKING_WALK",
                         ("rev-list", "--no-such-option"), raising=False)
     source = made("cured")
@@ -424,6 +447,10 @@ def test_a_partial_clone_git_cannot_walk_is_refused_on_any_git(
     assert code == 2, said.err + said.out
     assert REFUSED in said.err
     assert "`git rev-list --no-such-option`" in said.err
+    assert "branches and tags git could not walk" in said.err
+    assert "lacks at least" not in said.err
+    assert "Remediation: run `git fsck` in " in said.err
+    assert LATER in said.err
     source.untouched()
 
 
