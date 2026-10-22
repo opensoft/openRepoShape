@@ -1042,9 +1042,10 @@ def test_a_leg_by_its_name_is_one_while_git_cannot_give_its_agents_md(
     leg's `AGENTS.md` out of the commit its plan is written against, and
     where git cannot give that blob (a `Refusal` from `cat-file blob`), a
     folder NAMED as a leg is still that leg, as it is where the disk's file
-    is refused (the row `..._by_its_name_is_one_while_its_agents_md_cannot_
-    be_read`), so `plan` and `check` print the leg's note. With no such
-    name, the reading is `not-answered` (the row above)."""
+    is refused (the row
+    `..._by_its_name_is_one_while_its_agents_md_cannot_be_read`), so `plan`
+    and `check` print the leg's note. With no such name, the reading is
+    `not-answered` (the row above)."""
     root = leg_clone_here(tmp_path / "Orbit-spec")
     git("add", "-A", "--", ".", cwd=root)
     git("commit", "-q", "-m", "Initial import", cwd=root)
