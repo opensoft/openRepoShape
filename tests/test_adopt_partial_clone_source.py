@@ -370,6 +370,23 @@ def test_a_branch_whose_commit_the_source_lacks_is_refused(made):
     source.untouched()
 
 
+def test_a_partial_clone_git_cannot_walk_is_refused_on_any_git(
+        adopter, made, monkeypatch, capsys):
+    """A walk that fails tells nothing of what is lacking, so it is no
+    `0`: a cured partial clone, its walk made to fail (an option no git
+    has), is refused, naming how git exited."""
+    monkeypatch.setattr(adopter, "LACKING_WALK",
+                        ("rev-list", "--no-such-option"), raising=False)
+    source = made("cured")
+    code = adopter.main(["check", "--plan", str(source.plan),
+                         "--work-dir", str(source.base / "work")])
+    said = capsys.readouterr()
+    assert code == 2, said.err + said.out
+    assert REFUSED in said.err
+    assert "`git rev-list --no-such-option`" in said.err
+    source.untouched()
+
+
 @pytest.mark.parametrize(("config", "remotes"), [
     ((("remote.origin.promisor", "true"),), ["origin"]),
     ((("remote.origin.promisor", "yes"),), ["origin"]),
