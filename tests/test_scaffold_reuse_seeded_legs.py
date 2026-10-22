@@ -154,6 +154,10 @@ def test_an_empty_leg_without_the_flag_is_refused_naming_the_flag(tmp_path):
     assert "it has ZERO commits" in result.stderr
     assert "re-run with --reuse-empty-repo to use it as the spec leg" in (
         result.stderr)
+    # #915, U037: a re-run under --local-remote-dir reads and pushes paths
+    # on disk, where no ssh, credential helper or askpass is asked, so no
+    # prompt can follow and the remedy does not say one can.
+    assert STILL_ASKS.strip() not in result.stderr, result.stderr
     assert not bare(tmp_path, "code").exists(), "nothing was created"
 
 
@@ -949,12 +953,27 @@ SSH_KEY_CHECK = ("`ssh -T` against the user, host and port your rule names, "
 SSH_KEY = ("where a `url.<base>.insteadOf` rule in your git config sends "
            "`https://github.com/` over ssh, git logs in with an ssh key "
            f"instead, and {SSH_KEY_CHECK}")
+#: What each remedy that sends a person into the `--reuse-empty-repo`
+#: re-run on GitHub ends with (#915, U037; Brett Heap, 2026-10-21, "U039 and
+#: U037: take your recommendations"): that re-run turns off git's own
+#: prompt alone, and ssh, a credential helper and an askpass program, which
+#: are the operator's and stay as they set them up, can still make it wait.
+#: A literal, so the test cannot agree with whatever the code's words become.
+STILL_ASKS = (
+    " That re-run turns off git's own terminal prompt and no other, so it "
+    "can still wait at an ssh passphrase or host-key prompt, at a credential "
+    "helper that prompts, or at `GIT_ASKPASS`, `SSH_ASKPASS` or "
+    "`core.askPass`: to keep it from waiting, load your key into an ssh "
+    "agent, use a helper that answers without prompting, or set "
+    "`GIT_SSH_COMMAND='ssh -o BatchMode=yes'` (with anything your "
+    "`core.sshCommand` adds) in your shell for the run, which makes ssh fail "
+    "at once instead.")
 UNREAD_EXIT = ("so whether its one commit is the seed this scaffold pushes "
                "cannot be asked. Let git read it (on GitHub, `gh auth "
                f"setup-git` gives git the login `gh` has; {SSH_KEY}), then "
                "re-run: with --reuse-empty-repo a leg whose one commit is "
                "that seed is reused, and a leg holding anything else is "
-               "still refused. There is no --force.")
+               "still refused. There is no --force." + STILL_ASKS)
 
 
 @WINDOWS_SKIP
@@ -1090,17 +1109,18 @@ NO_LOGIN_REMEDY = (
     "first (on GitHub, `gh auth setup-git` gives git the login `gh` has, or "
     "store a token for the host in your credential helper; "
     f"{SSH_KEY}), then re-run ")
-#: The re-run it names after a first run: the same command, the flag added.
+#: The re-run it names after a first run: the same command, the flag added,
+#: and the prompts that re-run can still wait at (`STILL_ASKS`, #915 U037).
 RE_RUN_WITH_THE_FLAG = (
     "the same command with --reuse-empty-repo added (after `--` through "
     "setup.sh) and a new --work-dir or none: it reuses the repositories this "
     "run left empty, and a leg whose one commit is the seed this scaffold "
-    "pushes.")
+    "pushes." + STILL_ASKS)
 #: And after a run that was that re-run: the same command again.
 RE_RUN_AS_IT_WAS = (
     "the same command with a new --work-dir or none: it reuses the "
     "repositories this run left empty, and a leg whose one commit is the "
-    "seed this scaffold pushes.")
+    "seed this scaffold pushes." + STILL_ASKS)
 
 
 #: How it names the fix for a push whose login the host refused (#993): git
@@ -1381,6 +1401,37 @@ def test_a_push_ssh_was_refused_the_key_for_names_the_fix(
 @pytest.fixture(scope="module")
 def scaffold_module():
     return load_without_bytecode(SCAFFOLD, "scaffold_for_unread_because")
+
+
+@pytest.mark.parametrize("role,empty,reuse_flag,seeded,unread,re_run", [
+    ("spec", False, True, False,
+     "`git ls-remote x` exited 128: Host key verification failed.", True),
+    ("spec", True, False, False, None, True),
+    ("code", False, False, True, None, True),
+    ("spec", False, True, False, None, False),
+    ("assembly", True, False, False, None, True),
+    ("assembly", False, True, False, None, False),
+], ids=["a-leg-git-cannot-read", "an-empty-leg", "a-leg-holding-the-seed",
+        "a-leg-with-other-commits", "an-empty-root", "a-root-with-commits"])
+def test_each_re_run_remedy_says_the_prompts_it_can_still_wait_at(
+        scaffold_module, role, empty, reuse_flag, seeded, unread, re_run):
+    """#915, U037 (Brett Heap, 2026-10-21, "U039 and U037: take your
+    recommendations"). The prompt rule turns off git's own prompt alone:
+    measured at 2a119f2, a re-run's probe and push waited until killed at
+    ssh's host-key prompt, at a passphrase prompt, at a prompting credential
+    helper, and at `GIT_ASKPASS`, `SSH_ASKPASS` and `core.askPass`. Those
+    are the operator's and stay as they are, so each remedy whose exit is
+    the `--reuse-empty-repo` re-run ends saying so, and how to keep it from
+    waiting (`STILL_ASKS`); one whose exit is no re-run, deleting a leg or
+    adopting a root, does not. Under `--local-remote-dir` git reads paths on
+    disk, where none of them is asked, so no remedy says it there.
+    In-process, so it runs on every platform."""
+    on_github = scaffold_module._exists_remedy(role, empty, reuse_flag,
+                                               seeded, unread)
+    on_disk = scaffold_module._exists_remedy(role, empty, reuse_flag,
+                                             seeded, unread, local=True)
+    assert STILL_ASKS.strip() not in on_disk, on_disk
+    assert on_github == on_disk + (STILL_ASKS if re_run else ""), on_github
 
 
 #: git's advice after its generic `fatal:` line, which no reason keeps.

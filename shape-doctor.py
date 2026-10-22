@@ -1366,7 +1366,7 @@ class Context:
         # Each manifest that is there, read ONCE: what it holds, or why
         # `load_yaml` would not hand it over.
         loaded = {path: self._load(path) for path in (project, family)
-                  if path.is_file()}
+                  if self._to_load(path)}
 
         def declares(path: Path, kind: str) -> bool:
             data = loaded.get(path, (None, None))[0]
@@ -1404,6 +1404,25 @@ class Context:
         if self.manifest_refusal is None and self.manifest_path is not None:
             data = loaded[self.manifest_path][0]
             self.manifest = data if isinstance(data, dict) else None
+
+    @staticmethod
+    def _to_load(path: Path) -> bool:
+        """Whether the root's manifest `path` is read at all: a regular file
+        (`is_a`), or a name whose `stat` the operating system REFUSED, which
+        `_load` then meets as `load_yaml` meets a file it cannot open, so the
+        `manifest` (or `family`) row names it (#430).
+
+        A `project.yaml` that is a link into a folder this user cannot search
+        ended this report in a `PermissionError` traceback on Python 3.12, exit
+        1, and on 3.14, where `is_file()` answers False to any `OSError`, was
+        no manifest at all: NOT A SHAPE ROOT, exit 2, with `adopt-project.py
+        plan` as its NEXT, over a project. A file that is there is not a file
+        that is absent (#205), and one the system will not `stat` is not
+        absent either: it is the same refusal as one at mode 000."""
+        try:
+            return is_a(path, stat.S_ISREG)
+        except OSError:
+            return True
 
     @staticmethod
     def _load(path: Path) -> tuple:

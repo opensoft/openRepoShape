@@ -1,0 +1,11 @@
++7
+2026-10-21
+Seven lines for the prompts a `--reuse-empty-repo` re-run can still wait at
+(#915, U037; Brett Heap, 2026-10-21, "U039 and U037: take your
+recommendations"). The scaffold turns off git's own terminal prompt alone and
+leaves ssh, credential helpers and askpass programs as the operator set them
+up, so the re-run this section sends a person into can stop at an ssh
+passphrase or host-key prompt, a prompting helper or `GIT_ASKPASS`,
+`SSH_ASKPASS` or `core.askPass`, each measured waiting until killed. The lines
+name those prompts and the three ways a person keeps the run from waiting,
+`GIT_SSH_COMMAND='ssh -o BatchMode=yes'` among them, and nothing else.

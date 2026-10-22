@@ -505,6 +505,13 @@ manifest, sets the topic `xf-project-atlas` on all three, clones the root as
 > refused is finished by an operator holding the bypass right re-running it.
 > A leg with other commits is refused, and a root that HAS commits is a live
 > repository, which `adopt-project.py` converts in place instead.
+> That re-run, as every run, turns off git's own terminal prompt and no
+> other: an ssh passphrase or host-key prompt, a credential helper that
+> prompts, or `GIT_ASKPASS`, `SSH_ASKPASS` or `core.askPass` can still make it
+> wait. A key in an ssh agent, a helper that answers without prompting, or
+> `GIT_SSH_COMMAND='ssh -o BatchMode=yes'` (with anything your
+> `core.sshCommand` adds) set in your shell for the run, which makes ssh fail
+> at once instead, keeps it from waiting.
 > `--visibility internal` is the third value every tool here accepts; only a
 > GitHub Enterprise Cloud organisation offers it at all, and one that does not
 > is refused by GitHub rather than by this tool.
