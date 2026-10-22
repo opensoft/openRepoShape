@@ -37,6 +37,10 @@ The `agent files` row of a project says the same line, a `note` for a file
 nothing pins and a FINDING for one the pin names, as for a file that is
 absent. The advisory answers `not-answered`, silent, with the line in `why`.
 
+THE CONTROLS, true on main as well, hold the guard to #430's other answers: a
+`.git` that is a link to itself or past a folder that is not there is no
+repository, and a `.git` that is a gitdir file is one.
+
 TWO KINDS OF CASE, as `tests/test_doctor_unreadable_paths.py` has them. The
 MODE cases make a real link into a real folder at 000 and run the doctor as a
 person does; they skip on Windows and as root (`CANNOT_RUN_AS_ROOT`), and put
@@ -95,10 +99,17 @@ ORIGIN_UNREAD = ("; origin's name is not read while .git cannot be read "
 ADVISORY_WHY = (f"{GIT_LINE}, so whether this is a repository is not known "
                 "here, and the advisory says nothing")
 #: The words no row may say of a name that IS there, and the lines that send
-#: a person to adopt or scaffold (the `machine` row's `--preflight` is neither).
+#: a person to adopt or scaffold (`machine`'s `--preflight` is neither).
 SAYS_NOTHING_THERE = ("absent", "no repository", "an ordinary directory",
                       "SCAFFOLDED")
 OFFERS_A_WAY_IN = (" --org ", "adopt-project.py")
+#: A `.git` that leads nowhere, for #430's rule that a link to itself (ELOOP)
+#: and a link past a folder that is not there (ENOENT) are nothing there.
+GIT_LINKS = {"loop": Path(".git"), "dangling": Path("..", "nowhere", ".git")}
+#: A folder name the naming policy does not classify (exit 1), and what a
+#: naming script that refuses for another reason than the policy says (exit 2).
+UNCLASSIFIED = "my-service"
+SCRIPT_REFUSES = "REFUSED naming-no-target: no names given."
 
 
 def symlink(at: Path, to: Path) -> None:
@@ -116,6 +127,44 @@ def repository_here(root: Path) -> Path:
     git("init", "-q", "-b", "main", ".", cwd=root)
     git("remote", "add", "origin", ORIGIN, cwd=root)
     return root
+
+
+def repository_apart(root: Path, kept: Path) -> Path:
+    """`root`, a repository whose git directory is KEPT at `kept`, so that
+    its `.git` is a gitdir FILE, as `--separate-git-dir`, a linked worktree or
+    a submodule's checkout writes it; its `origin` is `ORIGIN`."""
+    root.mkdir()
+    git("init", "-q", "-b", "main", f"--separate-git-dir={kept}", ".",
+        cwd=root)
+    git("remote", "add", "origin", ORIGIN, cwd=root)
+    assert (root / ".git").is_file()
+    return root
+
+
+def git_link(tmp_path: Path, kind: str) -> Path:
+    """`<tmp>/Atlas`, whose `.git` is a link that leads nowhere: to itself
+    (`loop`) or past a folder that is not there (`dangling`)."""
+    root = tmp_path / "Atlas"
+    root.mkdir()
+    symlink(root / ".git", GIT_LINKS[kind])
+    (root / "README.md").write_text("# Atlas\n", encoding="utf-8")
+    return root
+
+
+def refusing_standard(tmp_path: Path, said: str) -> Path:
+    """A stand-in for the standard: this checkout's naming policy and a
+    naming script that says `said` on stderr and exits 2, as
+    `tests/test_doctor_validator_verdicts.py` makes one in a copy of the whole
+    standard, here without the copy."""
+    here = tmp_path / "standard"
+    (here / "contracts").mkdir(parents=True)
+    (here / "scripts").mkdir()
+    (here / "contracts" / "repository-naming.yaml").write_bytes(
+        (REPO / "contracts" / "repository-naming.yaml").read_bytes())
+    (here / "scripts" / "validate-repository-naming.py").write_text(
+        f"import sys\nprint({said!r}, file=sys.stderr)\nsys.exit(2)\n",
+        encoding="utf-8")
+    return here
 
 
 def linked_repository(tmp_path: Path) -> Path:
@@ -290,12 +339,7 @@ def test_the_git_questions_raise_a_refused_stat(standard, tmp_path,
     # The controls: a `.git` that is a gitdir FILE, as `--separate-git-dir`,
     # a linked worktree or a submodule's checkout writes it, is a repository;
     # no `.git`, or a name under a file, is none.
-    separate = tmp_path / "Separate"
-    separate.mkdir()
-    git("init", "-q", "-b", "main", f"--separate-git-dir={tmp_path / 'kept'}",
-        ".", cwd=separate)
-    git("remote", "add", "origin", ORIGIN, cwd=separate)
-    assert (separate / ".git").is_file()
+    separate = repository_apart(tmp_path / "Separate", tmp_path / "kept")
     assert question(separate) == answered[ask]
     plain = tmp_path / "Plain"
     plain.mkdir()
@@ -305,6 +349,53 @@ def test_the_git_questions_raise_a_refused_stat(standard, tmp_path,
     refused_stat(monkeypatch, ".git")
     with pytest.raises(PermissionError):
         question(root)
+
+
+@pytest.mark.parametrize("kind", sorted(GIT_LINKS))
+def test_a_git_link_that_leads_nowhere_is_still_no_repository(
+        standard, tmp_path, kind):
+    """CONTROLS, true on main `038dafba` and on this change: a `.git` that is
+    a link to itself (ELOOP) or past a folder that is not there (ENOENT) is
+    nothing there, as `exists()` has always said. `the way in` is the
+    scaffold and `what is here` an ordinary directory, with no cure and no
+    `cannot be read`; no `origin` is asked. They hold the guard that reads a
+    `stat` the system REFUSED as `cannot be read` to #430's other answers."""
+    module = doctor_module(standard)
+    root = git_link(tmp_path, kind)
+    ctx = module.Context(root.resolve())
+    rows = not_a_root_rows(module, ctx)
+    assert set(rows) == {"naming", "contents", "way-in"}, rows
+    for row in rows.values():
+        assert "cannot be read" not in row["reason"], row
+        assert "cannot_be_read" not in row["detail"], row
+        assert not row["why"] or PERMISSION_WHY not in row["why"], row
+    assert rows["naming"]["reason"] == ("Atlas: classifies under the "
+                                        "naming policy")
+    assert rows["naming"]["detail"]["names"] == ["Atlas"]
+    assert "an ordinary directory" in rows["contents"]["reason"], rows
+    way_in = rows["way-in"]
+    assert way_in["detail"]["git_repository"] is False, way_in
+    assert "SCAFFOLDED" in way_in["reason"], way_in
+    assert "setup.sh" in way_in["next"], way_in
+    assert "--project Atlas" in way_in["next"], way_in
+    assert "adopt-project.py" not in way_in["next"], way_in
+    assert module.origin_org(root) is None
+    assert module.repo_local_origin_name(root) is None
+    quiet = tmp_path / "agent-protocol"
+    quiet.mkdir()
+    env = {"AGENT_PROTOCOL_ROOT": str(quiet)}
+    assert shape_advisory.repository_names(root) == ["Atlas"]
+    assert (shape_advisory.read(root, env=env).state
+            == shape_advisory.NOT_A_REPOSITORY)
+
+
+@pytest.mark.parametrize("kind", sorted(GIT_LINKS))
+def test_carries_git_says_no_to_a_link_that_leads_nowhere(
+        standard, tmp_path, kind):
+    """`carries_git`, asked of the same two links: False, not a repository
+    and not a refusal. A new helper, so this fails on main by its absence."""
+    module = doctor_module(standard)
+    assert module.carries_git(git_link(tmp_path, kind)) is False
 
 
 @pytest.mark.parametrize("error, line, why", [
@@ -344,6 +435,35 @@ def test_a_git_this_user_cannot_reach_is_named_once_on_every_python(
     no_way_in_over_it(rows)
 
 
+@pytest.mark.parametrize("name, code, status", [
+    pytest.param("Atlas", 0, "ok", id="classifies"),
+    pytest.param(UNCLASSIFIED, 1, "FINDING", id="does-not-classify"),
+    pytest.param("Atlas", 2, "FINDING", id="script-refuses"),
+])
+def test_naming_says_origin_was_not_read_whatever_the_name_comes_to(
+        standard, tmp_path, monkeypatch, name, code, status):
+    """The `naming` row with the `.git`'s `stat` refused, for each exit the
+    script gives: the folder's own name classified or not, and the same
+    clause that `origin`'s name was not read, on every branch. The status is
+    the policy's own, `ok` for a name that classifies: an unread `origin` is
+    said, and is no finding. A name the policy refuses is a FINDING beside
+    it, the clause still there, which `Atlas` alone never reaches."""
+    module = doctor_module(standard)
+    root = repository_here(tmp_path / name)
+    ctx = module.Context(root.resolve())
+    if code == 2:
+        ctx.shape = refusing_standard(tmp_path, SCRIPT_REFUSES)
+    refused_stat(monkeypatch, ".git")
+    row = module.check_not_a_root_naming(ctx)
+    assert row.status == status, row
+    assert row.detail["exit"] == code, row.detail
+    assert row.detail["names"] == [name], row.detail
+    assert row.reason.startswith(f"{name}: "), row
+    assert row.reason.endswith(ORIGIN_UNREAD), row
+    assert row.detail["cannot_be_read"] == GIT_LINE, row.detail
+    assert (row.next_command is None) == (code == 0), row
+
+
 def test_beside_what_it_can_read_the_row_names_what_it_cannot_first(
         standard, tmp_path, monkeypatch):
     """`what is here` with a `Makefile` it can read and a `.git` it cannot:
@@ -377,6 +497,11 @@ def test_the_advisory_names_a_git_it_cannot_reach_and_says_nothing(
     env = {"AGENT_PROTOCOL_ROOT": str(quiet)}
     assert shape_advisory.repository_names(root) == ["Atlas", "Orbit"]
     assert shape_advisory.read(root, env=env).state == shape_advisory.ADVISE
+    # The control: a `.git` that is a gitdir FILE is a repository to both
+    # questions, its `origin`'s name kept and the advice given.
+    apart = repository_apart(tmp_path / "Apart", tmp_path / "kept")
+    assert shape_advisory.repository_names(apart) == ["Apart", "Orbit"]
+    assert shape_advisory.read(apart, env=env).state == shape_advisory.ADVISE
     if isinstance(error, PermissionError):
         refused_stat(monkeypatch, ".git")
     else:
@@ -450,3 +575,25 @@ def test_beside_an_absent_agent_file_its_command_stays_the_next(
     assert row.status == alone.status == module.NOTE
     assert row.detail["files"] == {"AGENTS-shape.md": True, "AGENTS.md": True,
                                    "CLAUDE.md": False}
+
+
+def test_an_unreadable_pinned_agent_file_beside_an_absent_one_is_a_finding(
+        standard, project, monkeypatch):
+    """`CLAUDE.md` gone, which nothing pins, and the PINNED `AGENTS-shape.md`
+    out of reach: a FINDING, as for a pinned file that is absent, with the
+    absent file's command still the NEXT, and the verdict names `agent-files`.
+    The status must not follow the absent file alone (a `note`): the project's
+    own `validate-pins.py` refuses the unreadable copy by name."""
+    module, ctx = in_process(standard, project)
+    (project / "CLAUDE.md").unlink()
+    alone = module.check_agent_files(ctx)
+    assert alone.status == module.NOTE
+    assert alone.detail["pinned"] == []
+    refused_stat(monkeypatch, "AGENTS-shape.md")
+    row = module.check_agent_files(ctx)
+    assert row.reason == f"absent: CLAUDE.md; {cannot('AGENTS-shape.md')}"
+    assert row.status == module.FINDING
+    assert row.next_command == alone.next_command
+    assert row.why == f"{alone.why}. {PERMISSION_WHY}"
+    assert row.detail["pinned"] == []
+    assert module.verdict_for(ctx, [row]) == ("INVALID (agent-files)", 1)
