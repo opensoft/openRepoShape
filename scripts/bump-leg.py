@@ -1102,8 +1102,14 @@ def _leg_fetch_refspecs(submodule: Path) -> list[str]:
     prunes it, as the remote has no ref of that very name, and the fetch
     after it writes it back, so a dry run pinned the commit and the real
     run after it refused it (measured, git 2.43). Left out, such a ref
-    under `origin/` is pruned, and the leg's own next `git fetch origin`
-    writes it back.
+    under `origin/` is pruned, or holds the branch of that name, and the
+    leg's own next `git fetch origin` writes it back. NOT WHERE THE LEG
+    WROTE THAT REFSPEC WITHOUT ITS `+` and the tag's commit does not
+    descend from the branch's, as `refs/tags/*:refs/remotes/origin/*` with
+    a branch and a tag `x`: that fetch is refused as non-fast-forward, exit
+    1, "! [rejected] x -> origin/x (non-fast-forward)", and so is every one
+    after it, until `git fetch --force origin`, as the next paragraph says
+    of a branch (measured, git 2.43 and 2.47.1).
 
     A REFSPEC THAT PUTS A BRANCH UNDER ANOTHER NAME IS LEFT OUT (#1066),
     and so is every one onto the branches' names, whatever its source: a
@@ -1121,17 +1127,30 @@ def _leg_fetch_refspecs(submodule: Path) -> list[str]:
     0, so both runs gave the failed-fetch note and answered from stale
     refs, through `origin` and through `--local-remote-dir` (measured, git
     2.43). Left out, the first refspec still brings each such branch under
-    its own name, so the answer loses nothing; what the leg kept under the
-    other name holds the branch of that name, or is pruned, until the
-    leg's own next `git fetch origin` writes it back. NOT WHERE THE LEG'S REFSPEC WAS WRITTEN WITHOUT ITS `+`
-    (#1100) and the commit it keeps there does not descend from the
-    branch's: that fetch is refused as non-fast-forward, exit 1,
-    "! [rejected] release/x -> origin/x (non-fast-forward)", and so is
-    every one after it. The way back is `git fetch --force origin`, which
-    exits 0 and writes the ref back; a plain fetch exits 0 after it, until
-    this fetch runs again (measured, git 2.43 and 2.47.1). No commit is
-    lost, and `origin_fetch_refspecs`' docstring says why the cost is
-    accepted.
+    its own name, so no branch is lost to the answer; what the leg kept
+    under the other name holds the branch of that name, or is pruned,
+    until the leg's own next `git fetch origin` writes it back. NOT WHERE
+    THE LEG'S REFSPEC WAS WRITTEN WITHOUT ITS `+` (#1100) and the commit it
+    keeps there does not descend from the branch's: that fetch is refused
+    as non-fast-forward, exit 1, "! [rejected] release/x -> origin/x
+    (non-fast-forward)", and so is every one after it. The way back is
+    `git fetch --force origin`, which exits 0 and writes the ref back; a
+    plain fetch exits 0 after it, until this fetch runs again (measured,
+    git 2.43 and 2.47.1). No commit is lost, and `origin_fetch_refspecs`'
+    docstring says why the cost is accepted.
+
+    A COMMIT ONLY A REF OF ANOTHER NAMESPACE THE PATTERN TAKES REACHES IS
+    REFUSED NOW (#1100), as one only a tag reaches is: git matches the
+    pattern against every ref's whole name, so
+    `+refs/heads*:refs/remotes/origin/h*` takes `refs/heads-archive/old`
+    too, onto `origin/h-archive/old`. Carried, it answered for a branch
+    there, and both runs pinned a commit only that ref reaches. Left out,
+    the fetch prunes it until the leg's own next `git fetch origin` writes
+    it back, and both runs refuse the commit `bump-leg-commit-local-only`,
+    through `origin` and through `--local-remote-dir`. A refspec of that
+    namespace itself,
+    `+refs/heads-archive/*:refs/remotes/origin/h-archive/*`, is carried,
+    and the commit is pinned through it (measured, git 2.43 and 2.47.1).
 
     A NEGATIVE REFSPEC (`^refs/heads/wip`) IS SKIPPED. A narrowing refspec
     never decides reachability: a positive one that leaves a branch out is

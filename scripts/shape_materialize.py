@@ -1705,14 +1705,22 @@ def gives_a_branch_another_name(source: str, destination: str) -> bool:
     every branch, its `*` standing for the `/` and the branch's name. As
     the `*` takes what the pattern leaves of `refs/heads/` too, no
     destination under `refs/remotes/origin/` gives a branch the name the
-    first refspec gives it, so each such refspec puts a branch under
-    another name: `+refs/heads*:refs/remotes/origin/h*` put `x` on `h/x`,
-    and clashed wherever the remote has `x` and `h/x`, 128 where the
-    repository's own fetch exits 0, until #1100 (measured, git 2.43 and
-    2.47.1). A shorter start, such as `refs/*` or `*`, can name a tag, and
-    that clause has left it out first. ANY OTHER SOURCE NAMES NO BRANCH,
-    though a refspec from one can still put a ref on a branch's name:
-    `origin_fetch_refspecs` says where (WHAT CAN STILL CLASH).
+    first refspec gives it. So such a refspec puts a branch under another
+    name: `+refs/heads*:refs/remotes/origin/h*` put `x` on `h/x`, and
+    clashed wherever the remote has `x` and `h/x`, 128 where the
+    repository's own fetch exits 0, until #1100. Or, where the part before
+    the `*` is all of `refs/heads` and the destination's `*` comes right
+    after a `/` (`+refs/heads*:refs/remotes/origin/h/*`), git refuses the
+    name it gives each branch, `h//x` ("Ignoring funny ref", exit 0), and
+    writes no branch at all (each measured, git 2.43 and 2.47.1). Either
+    way it brings no branch the first refspec does not bring, but its
+    pattern also takes the refs of another namespace it matches, such as
+    `refs/heads-archive/old` for `refs/heads*`, and `origin_fetch_refspecs`
+    says what leaving those out costs (BUT A COMMIT ONLY A REF THAT IS NO
+    BRANCH REACHES). A shorter start, such as `refs/*` or `*`, can name a
+    tag, and that clause has left it out first. ANY OTHER SOURCE NAMES NO
+    BRANCH, though a refspec from one can still put a ref on a branch's
+    name: `origin_fetch_refspecs` says where (WHAT CAN STILL CLASH).
     """
     fixed, star, _ = source.partition("*")
     if not source.startswith(HEADS_PREFIX):
@@ -1733,7 +1741,10 @@ def _left_out(source: str, destination: str) -> bool:
         return True  # a tag is not a branch (RV946's S1, #1009, #1037)
     if destination == ORIGIN_BRANCH_NAMES:
         return True  # it lands on the branches' own names (U183, #1066)
-    # the first refspec brings that branch already (#1066, #1100)
+    # the first refspec brings each branch it takes, under its own name
+    # (#1066); a ref that is no branch, which a pattern takes too, no
+    # longer answers for one, so a commit only it reaches is refused, as
+    # one only a tag reaches is (#1100)
     return gives_a_branch_another_name(source, destination)
 
 
@@ -1821,12 +1832,30 @@ def origin_fetch_refspecs(configured: list[str]) -> list[str]:
     that gives each branch its own name, a branch or a folder of them,
     still rides along.
 
-    LEFT OUT BY EITHER OF THE LAST TWO, NOTHING IS LOST TO THE ANSWER: the
-    first refspec brings every branch under its own name, so a commit a
+    LEFT OUT BY EITHER OF THE LAST TWO, NO BRANCH IS LOST TO THE ANSWER:
+    the first refspec brings every branch under its own name, so a commit a
     branch of the remote reaches is reached there, and the fetch works.
     What the repository kept under another name is pruned, or holds the
     branch of that name, until its own next `git fetch origin` writes it
     back, as for a tag refspec left out.
+
+    BUT A COMMIT ONLY A REF THAT IS NO BRANCH REACHES IS REFUSED where the
+    refspec left out is the one that took that ref, as a commit only a tag
+    reaches is: the pull requests onto the branches' names
+    (`+refs/pull/*/head:refs/remotes/origin/*`, #946), and, since #1100, a
+    ref of another namespace that a pattern by a start of `refs/heads/`
+    takes beside the branches, git matching it against every ref's whole
+    name: `refs/heads-archive/old` by `+refs/heads*:refs/remotes/origin/h*`
+    (onto `origin/h-archive/old`), and `refs/hidden/1` by
+    `+refs/h*:refs/remotes/origin/hh/*`. Carried, such a pattern kept that
+    ref under `origin/`, where it answered for a branch, so both tools
+    pinned the commit until #1100. Left out, the prune drops the ref, the
+    repository's own next `git fetch origin` writes it back, and every run
+    of either tool refuses the commit alike, the dry run and the real run.
+    A refspec whose source is that namespace itself
+    (`+refs/heads-archive/*:refs/remotes/origin/h-archive/*`) is no such
+    pattern: it is carried, and the commit is pinned through it (each
+    measured, git 2.43 and 2.47.1).
 
     THE COST, ACCEPTED (#1100): where that refspec was written without its
     `+`, and the commit it keeps under a branch's name does not descend

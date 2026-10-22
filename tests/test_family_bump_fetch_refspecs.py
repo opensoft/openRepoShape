@@ -142,6 +142,18 @@ BRANCH_UNDER_ANOTHER_NAME = pytest.mark.parametrize("refspec, taken, shared", [
     ids=["folder-onto-branches", "one-branch-onto-another",
          "branches-into-a-folder", "heads-pattern-into-a-folder"])
 
+#: Each refspec of a mount's own that A BRANCH UNDER ANOTHER NAME leaves out
+#: as a pattern by a start of `refs/heads/` (#1100), with a ref of `origin`
+#: that is no branch and that the pattern takes beside the branches, as git
+#: matches a pattern against every ref's whole name: `refs/heads*` takes
+#: `refs/heads-archive/...`, onto `origin/h-archive/...`, and `refs/h*`
+#: takes `refs/hidden/...`, onto `origin/hh/idden/...` (RV1157's finding
+#: 2). `bump-leg.py`'s rows for a leg import it.
+NO_BRANCH_A_PATTERN_TAKES = pytest.mark.parametrize("refspec, ref", [
+    ("+refs/heads*:refs/remotes/origin/h*", "refs/heads-archive/old-w1100"),
+    ("+refs/h*:refs/remotes/origin/hh/*", "refs/hidden/old-w1100")],
+    ids=["heads-pattern", "refs-h-pattern"])
+
 #: `caf<e9>`: Latin-1 e-acute is the one byte 0xE9, which is not UTF-8. It is
 #: the lone surrogate `os.fsdecode` keeps that byte as, so a byte command line
 #: hands git the byte itself; spelled with `chr`, as `os.fsdecode` raises on
@@ -358,6 +370,48 @@ def test_a_tag_a_mount_maps_into_origin_does_not_answer_for_a_branch(
     offline.assert_left_nothing()
 
 
+def reached_by_that_ref_alone(remote: Path, mount: Path, env: dict,
+                              made: str, ref: str) -> None:
+    """The premises of a refusal row: `ref` of the member's remote, which
+    is no branch, reaches `made`, no branch of that remote does, and no
+    remote-tracking ref of the mount does."""
+    assert contains(remote, env, made, ref), f"premise: {ref} reaches it"
+    assert not contains(remote, env, made, "refs/heads/"), (
+        "premise: no branch of the member's remote does")
+    assert not contains(mount, env, made, "refs/remotes/"), (
+        "premise: nor does a remote-tracking ref of the mount")
+
+
+@NO_BRANCH_A_PATTERN_TAKES
+def test_a_ref_a_heads_pattern_takes_answers_for_no_branch(
+        holder, offline, tmp_path, refspec, ref):
+    """#1100, what leaving the pattern out costs (RV1157's finding 2). A
+    commit no branch of the member's remote reaches, which `ref` of that
+    remote, no branch, holds, in a mount whose only refspec is a pattern
+    by a start of `refs/heads/` that takes `ref` too
+    (`NO_BRANCH_A_PATTERN_TAKES`). Carried until #1100, the refspec put
+    `ref` under `origin/`, where `bump` reads branches, and both runs
+    pinned the commit. Left out as A BRANCH UNDER ANOTHER NAME, it puts
+    nothing there, and both runs refuse the commit in #613's words, as one
+    only a tag of the remote reaches is refused, with nothing in the holder
+    moved, and no ref of the mount moves."""
+    env = isolated(offline, tmp_path)
+    mount = holder / PATH
+    made = made_in_the_mount(holder, env, "PATTERN.md")
+    remote = private_origin(holder, env)
+    raw(mount, env, "push", "-q", "origin", f"{made}:{ref}")
+    refspecs_only(mount, env, refspec)
+    fetched_as_bump(mount, env)
+    reached_by_that_ref_alone(remote, mount, env, made, ref)
+    before = refs(mount, env)
+
+    stderr = both_runs(holder, env, made)
+
+    assert refusal(stderr) == local_only(made)
+    assert refs(mount, env) == before, "no ref of the mount moved"
+    offline.assert_left_nothing()
+
+
 def test_a_config_value_holding_a_refspec_line_is_not_read_as_one(
         holder, offline, tmp_path):
     """U184. An alias whose value holds, on its second line, a line that
@@ -521,7 +575,8 @@ def test_an_ordinary_mount_fetches_the_branch_and_moves_nothing_else(
 #: trying a tag before a branch, and `tag-object-id` an exact object id);
 #: THE BRANCHES' GLOB, whatever the source (#1066); A BRANCH UNDER ANOTHER
 #: NAME (`another-name`, #1066), a pattern that takes the branches by a
-#: start of `refs/heads/` among them (`another-name-heads-pattern`, #1100);
+#: start of `refs/heads/` among them (the `another-name-heads-pattern`
+#: rows, #1100, from `refs/heads*` to `refs/h*`, and one with a suffix);
 #: `carried` where none does, and `skipped` for a negative refspec, which
 #: no clause is asked of. `bump-leg.py`'s fetch of a leg is asked the same
 #: rows (`test_bump_leg_fetch_refspecs.py`).
@@ -573,6 +628,10 @@ WHICH_CLAUSE = pytest.mark.parametrize("refspec, carried", [
                  id="another-name-heads-pattern"),
     pytest.param("refs/he*:refs/remotes/origin/he*", False,
                  id="another-name-heads-pattern-shorter"),
+    pytest.param("+refs/h*:refs/remotes/origin/hh/*", False,
+                 id="another-name-heads-pattern-refs-h"),
+    pytest.param("+refs/heads*x:refs/remotes/origin/h*x", False,
+                 id="another-name-heads-pattern-suffix"),
     pytest.param("^refs/heads/x", False, id="skipped-negative"),
     pytest.param(PULLS, True, id="carried-pull-requests-in-a-folder"),
     pytest.param("+refs/heads/main:refs/remotes/origin/main", True,
@@ -617,11 +676,14 @@ def test_which_clause_leaves_each_refspec_out(
     clause's too. `another-name-suffix` holds that clause's whole
     destination, the part after the `*` too (#1100, RV1087's NIT 2), and
     the `another-name-heads-pattern` rows its pattern by a start of
-    `refs/heads/` (#1100), which it carried before. A `carried` row fails a
-    clause that takes too much: the pull requests in a folder, which #946
-    carries, `refs/tagsx/`, which no tag is under, `refs/headsx/`, which no
-    branch is under, and a branch, a folder of them or a pattern of them,
-    each under the name `BRANCHES` gives it."""
+    `refs/heads/` (#1100), which it carried before: from the whole of
+    `refs/heads` down to the shortest start no earlier clause meets,
+    `refs/h` (`-refs-h`), and with text after the `*` (`-suffix`), which
+    git accepts and maps, `x` onto `h/x` (RV1157's finding 1). A `carried`
+    row fails a clause that takes too much: the pull requests in a folder,
+    which #946 carries, `refs/tagsx/`, which no tag is under,
+    `refs/headsx/`, which no branch is under, and a branch, a folder of
+    them or a pattern of them, each under the name `BRANCHES` gives it."""
     env = isolated(offline, tmp_path)
     for key, value in env.items():
         monkeypatch.setenv(key, value)
