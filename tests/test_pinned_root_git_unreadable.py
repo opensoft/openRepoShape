@@ -435,6 +435,24 @@ def test_the_walk_stops_at_a_git_that_is_a_gitfile(roots, tools,
 
 
 @pytest.mark.parametrize("tool", GIT_READERS)
+def test_the_walk_stops_at_a_gitfile_that_names_no_directory(
+        roots, tools, monkeypatch, tool):
+    """The root's `.git` a gitfile that does not start with `gitdir: `, and
+    a `.git` above the root refused: `find_repo_root` stops at that gitfile,
+    the first `.git` that is there, and git answers for it, so the question
+    stops there too and the refusal above it is never asked. A tool that
+    went on to the parent would refuse a root over a `.git` that
+    `find_repo_root` never reaches."""
+    root = roots[tool]
+    shutil.move(str(root / ".git"), str(root.parent / "kept"))
+    (root / ".git").write_bytes(b"no gitdir\n")
+    as_python_314(monkeypatch, {
+        root.resolve().parent / ".git": PermissionError(errno.EACCES,
+                                                        DENIED)})
+    assert tools[tool]._refuse_an_unreadable_root(root) is None
+
+
+@pytest.mark.parametrize("tool", GIT_READERS)
 @pytest.mark.parametrize("arrange, name, method, named", [
     pytest.param(lambda root: None, "HEAD", "stat", lambda root: ".git",
                  id="git-directory-head"),
