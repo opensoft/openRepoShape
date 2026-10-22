@@ -64,7 +64,8 @@ WHAT IS CHECKED
     clone fetches that path from only one of them, so the other is a url
     the next edit can make the one. It reads that file alone, as git
     reads it: the work tree's, or where that is gone from disk the index's,
-    then HEAD's (#1077), so `--no-members` asks it too.
+    then HEAD's (#1077), and none while a merge leaves it unmerged in the
+    index (#1150), so `--no-members` asks it too.
   - that no section of `.gitmodules` gives a value git dies on as it reads
     the file, before `git submodule update` checks out any member, the
     `gitmodules-value-refused` finding (#768): a `path`, `url`, `update`,
@@ -72,8 +73,12 @@ WHAT IS CHECKED
     `checkout`, `rebase` or `merge`, a `shallow` that is no boolean, or a
     `fetchRecurseSubmodules` that is neither a boolean nor `on-demand`. It
     reads the file git reads, the work tree's, or where that is gone from
-    disk the index's, then HEAD's (#1077), and HEAD's, which a clone reads,
-    so `--no-members` asks it too,
+    disk the index's, then HEAD's (#1077), and none while a merge leaves
+    it unmerged in the index; HEAD's, which a clone reads; and, where the
+    work tree's is on disk, the index's, which a plain `git commit`
+    records, each line set that says to stage the file ending with `git
+    add -- .gitmodules` (#1150). An index's file git cannot parse is
+    `gitmodules-unreadable`, as HEAD's is. So `--no-members` asks it too,
     and where it is found no member that is not checked out is refused as
     uninitialized: git checked none out.
   - the REVERSE of every member check (#361): that each gitlink this
@@ -1977,10 +1982,27 @@ def _head_listed(root: Path) -> tuple[bool, bytes] | None:
 #: Where `gitmodules-value-refused` says a value is, by whether the file
 #: git reads here and HEAD's give it (#768); `{here}` names the file git
 #: reads here (`READ_HERE`), the work tree's, or where that is gone from
-#: disk the index's (#1077).
+#: disk the index's (#1077). Neither does where the index's file alone
+#: gives it, with the work tree's on disk (#1150, RV1124's N1 on #1124).
 GIVEN_WHERE = {(True, True): "here and in HEAD, which a clone reads",
                (True, False): "in {here}, not in HEAD",
-               (False, True): "in HEAD, which a clone reads, not in {here}"}
+               (False, True): "in HEAD, which a clone reads, not in {here}",
+               (False, False): "in the index's file alone, which a plain "
+                               "`git commit` records, not in {here} or in "
+                               "HEAD"}
+
+#: How git dies on a value, by where it is given (`GIVEN_WHERE`): here,
+#: in a clone where HEAD's alone gives it, and in a clone of the commit
+#: that records the index's where that file alone gives it (#1150).
+VALUE_DIES = {
+    (True, True): "before `git submodule update` checks out any member, so "
+                  "neither that nor make bootstrap checks one out",
+    (False, True): "so in a clone neither `git submodule update` nor make "
+                   "bootstrap checks out any member",
+    (False, False): "so in a clone of the commit that records it neither "
+                    "`git submodule update` nor make bootstrap checks out "
+                    "any member"}
+VALUE_DIES[(True, False)] = VALUE_DIES[(True, True)]
 
 #: How `GIVEN_WHERE` names the file git reads here, by git's name for the
 #: one it reads in place of the work tree's (`_listed_as_git_reads`): none
@@ -1988,6 +2010,18 @@ GIVEN_WHERE = {(True, True): "here and in HEAD, which a clone reads",
 READ_HERE = {"": "the work tree",
              f":{GITMODULES}": "the index's file, which git reads here",
              f"HEAD:{GITMODULES}": "HEAD's file, which git reads here"}
+
+#: How `GIVEN_WHERE` names the file git reads here while a merge leaves
+#: `.gitmodules` unmerged in the index (`_gitmodules_unmerged`): none
+#: (#1150, RV1124's N6 on #1124).
+UNMERGED_HERE = ("the file git reads here, which is none while a merge "
+                 f"leaves {GITMODULES} unmerged")
+
+#: What the index's file adds to `gitmodules-value-refused` where the work
+#: tree's, on disk, gives the value and HEAD's does not: a plain `git
+#: commit` records the index's (#1150, RV1124's N1 on #1124).
+INDEX_TOO = ("The index's file, which a plain `git commit` records, gives it "
+             "too.")
 
 #: What git takes for a `submodule.<name>.<key>` whose value it dies on as
 #: it reads `.gitmodules` (#768), as `gitmodules-value-refused` says it.
@@ -2042,62 +2076,112 @@ def _check_gitmodules_values(root: Path, members: list,
     and ends staging it: the index's file is what the commit records.
     Every one of these is recorded as a write (`Report.wrote`): a staged
     removal's finding after it then puts no file back over the fix (lane
-    1's SHOULD 1)."""
+    1's SHOULD 1).
+
+    THE INDEX'S FILE TOO, where the work tree's is on disk (#1150,
+    RV1124's N1 on #1124): git reads the work tree's here, but a plain
+    `git commit` records the index's. Read from the work tree's and HEAD's
+    alone, an `update = !true` given in the work tree's file and staged
+    was taken out of the work tree's file by a line that staged nothing,
+    so a plain `git commit` after it recorded the value in HEAD, and one
+    given in the index's file alone, the work tree's clean, was `family
+    ok`, exit 0. Every remedy that says to stage the file now ends with
+    the line that stages it, `git add -- .gitmodules` (`STAGE_LINE`).
+
+    NO FILE WHILE A MERGE LEAVES `.gitmodules` UNMERGED (#1150, RV1124's
+    N6 on #1124): git's submodule commands read none then, the work
+    tree's, the index's or HEAD's (`_gitmodules_unmerged`), so none is
+    read here, and HEAD's, which a clone reads, is said to be resolved:
+    read as the work tree's, or HEAD's where that was gone, a value HEAD's
+    gave was "here", and its line put HEAD's back "as the index holds
+    none"."""
     present = os.path.lexists(root / GITMODULES)
     # The work tree's file, then HEAD's, then the one git reads in place of
     # the work tree's: with no git to run, `git-not-runnable` names the
     # first of them it meets, as before #1077.
     on_disk = _gitmodules_listed(root)
     head = _head_listed(root)
-    listed, spec = (on_disk, "") if present else _listed_as_git_reads(root)
+    unmerged = _gitmodules_unmerged(root)
+    listed, spec = ((b"", "") if unmerged else (on_disk, "") if present
+                    else _listed_as_git_reads(root))
     here = _submodule_entries(listed)
     there = _submodule_entries(head[1]) if head else []
     in_work = _values_refused(root, here)
     in_head = _values_refused(root, there)
+    in_index = (_values_refused(root, _submodule_entries(_index_listed(root)))
+                if present else {})
     rows = {f"{DEFAULT_MEMBERS_DIR}/{row['project']}": row.get("repository")
             for row in members if isinstance(row, dict)
             and isinstance(row.get("project"), str) and row["project"]}
-    for name, key in dict.fromkeys([*in_work, *in_head]):
+    for name, key in dict.fromkeys([*in_work, *in_head, *in_index]):
         report.wrote = True
-        said = _value_said(name, key, in_work, in_head, READ_HERE[spec])
+        said = _value_said(name, key, (in_work, in_head, in_index),
+                           UNMERGED_HERE if unmerged else READ_HERE[spec])
         if (name, key) not in in_work:
-            report.finding("gitmodules-value-refused", f"{said} " + (
-                f"Stage and commit the work tree's {GITMODULES}, which does "
-                "not give it." if present else
-                f"Commit the index's {GITMODULES}, which git reads here and "
-                "does not give it."))
+            report.finding("gitmodules-value-refused", f"{said} "
+                           + _value_not_here(present, unmerged,
+                                             (name, key) in in_head))
             continue
         back = _written_back(name, key, here, rows)
         report.finding("gitmodules-value-refused", _value_taken_out(
             said, f"submodule.{name}.{key}", back,
             _file_put_back(root, report), committed=(name, key) in in_head,
-            staged=not present))
+            staged=not present or (name, key) in in_index))
     return bool(in_work), bool(in_work or in_head)
 
 
+def _value_not_here(present: bool, unmerged: bool, committed: bool) -> str:
+    """`gitmodules-value-refused`'s remedy where the file git reads here
+    does not give the value, HEAD's or the index's does (#768, #1077,
+    #1150): the merge resolved without it where a merge leaves
+    `.gitmodules` unmerged (`unmerged`), or else the work tree's file,
+    which does not give it, staged, and committed where HEAD's gives it
+    (`committed`), or, where that file is gone from disk (`present`
+    False), the index's, which git reads here, committed as it stands,
+    with no line. Each that says to stage ends with the line that does
+    (`STAGE_LINE`)."""
+    if unmerged:
+        return (f"Resolve the merge in {GITMODULES} by hand, leaving that "
+                f"key out, then stage and commit {GITMODULES}:"
+                f"\n    {STAGE_LINE}")
+    if not present:
+        return (f"Commit the index's {GITMODULES}, which git reads here and "
+                "does not give it.")
+    return (("Stage and commit" if committed else "Stage")
+            + f" the work tree's {GITMODULES}, which does not give it:"
+            f"\n    {STAGE_LINE}")
+
+
 def _value_said(name: str, key: str,
-                in_work: dict[tuple[str, str], list[str | None]],
-                in_head: dict[tuple[str, str], list[str | None]],
+                given: tuple[dict[tuple[str, str], list[str | None]],
+                             dict[tuple[str, str], list[str | None]],
+                             dict[tuple[str, str], list[str | None]]],
                 here: str = READ_HERE[""]) -> str:
     """`gitmodules-value-refused` up to its remedy, for the key `key` of
     the section `name` (#768): each value the file git reads here (`here`,
     `READ_HERE`, #1077) and HEAD's give it, where, and what git takes.
-    Where HEAD's alone gives one, the file git reads here may not, so it
-    says git dies on it in a clone, which reads HEAD's."""
+    `given` holds what the file git reads here, HEAD's and the index's
+    give, in that order: where the work tree's is on disk, git reads that
+    one here, not the index's, but a plain `git commit` records the
+    index's (#1150). Where HEAD's alone gives one, the file git reads here
+    may not, so it says git dies on it in a clone, which reads HEAD's;
+    where the index's alone does, in a clone of the commit that records it
+    (`VALUE_DIES`); and where the work tree's gives it, not HEAD's, it says
+    that the index's gives it too where it does (`INDEX_TOO`), which is
+    why its lines stage it."""
+    in_work, in_head, in_index = given
     full = f"submodule.{name}.{key}"
-    values = dict.fromkeys([*in_work.get((name, key), []),
-                            *in_head.get((name, key), [])])
     where = (name, key) in in_work, (name, key) in in_head
-    dies = ("so in a clone neither `git submodule update` nor make "
-            "bootstrap checks out any member" if where == (False, True)
-            else "before `git submodule update` checks out any member, so "
-            "neither that nor make bootstrap checks one out")
+    values = dict.fromkeys([*in_work.get((name, key), []),
+                            *in_head.get((name, key), [])]
+                           or in_index.get((name, key), []))
+    staged_too = (f" {INDEX_TOO}" if where == (True, False)
+                  and (name, key) in in_index else "")
     return (f"{GITMODULES} gives `{spelled(full)}` " + " and ".join(
         "no value" if value is None else f"the value `{spelled(value)}`"
         for value in values) + f" {GIVEN_WHERE[where].format(here=here)}, "
-        "and git dies "
-        f"reading a file that does, {dies}. Git takes {GIT_TAKES[key]} for "
-        "that key.")
+        f"and git dies reading a file that does, {VALUE_DIES[where]}. Git "
+        f"takes {GIT_TAKES[key]} for that key.{staged_too}")
 
 
 def _value_taken_out(said: str, full: str, back: str | None,
@@ -2109,8 +2193,12 @@ def _value_taken_out(said: str, full: str, back: str | None,
     before put it back (`put_back`, the line and whose file it puts back,
     `_file_put_back`, #1077), the key `full` taken out, and `back` written
     in, where it is given, then the commit where HEAD's gives the value
-    (`committed`), or, where the work tree's was gone and the index's
-    alone gave it (`staged`), the file staged, which the commit records."""
+    (`committed`), or, where the index's gives it, or the work tree's was
+    gone (`staged`), the file staged, which the commit records. EITHER
+    ENDS WITH THE LINE THAT STAGES IT, `git add -- .gitmodules`
+    (`STAGE_LINE`, #1150, RV1124's N1 on #1124): said in words alone, a
+    plain `git commit` after the lines typed recorded the index's file,
+    the value and all."""
     key = full.rpartition(".")[2]
     line, whose = put_back
     lines = [line] if line else []
@@ -2119,6 +2207,8 @@ def _value_taken_out(said: str, full: str, back: str | None,
     if back is not None:
         lines.append(f"git config -f {GITMODULES} {shlex.quote(full)} "
                      f"{back}")
+    if committed or staged:
+        lines.append(STAGE_LINE)
     return (f"{said} "
             + (f"The work tree holds no {GITMODULES}, so the first line "
                f"below puts back {whose}. " if line else "")
@@ -2910,11 +3000,41 @@ def _sections_as_git_reads(root: Path, worktree: dict[str, dict[str, str]]
     staged in the index's file, whose work tree's copy was deleted, was
     never named, and the commit after the hand mount's lines recorded it.
     Git 2.43 reads the index's there: `git submodule status <path>` maps
-    the path, which HEAD's file does not give."""
+    the path, which HEAD's file does not give.
+
+    NONE WHILE A MERGE LEAVES `.gitmodules` UNMERGED in the index
+    (`_gitmodules_unmerged`, #1150, RV1124's N6 on #1124), on disk or not:
+    git reads no file then, and `git submodule status` dies at the first
+    gitlink (`no submodule mapping found`, exit 128). The work tree's, or
+    HEAD's where that was gone, was read in its place."""
+    if _gitmodules_unmerged(root):
+        return {}
     if os.path.lexists(root / GITMODULES):
         return worktree
     spec = _gitmodules_put_back(root)[0]
     return _blob_sections(root, spec) if spec else {}
+
+
+def _gitmodules_unmerged(root: Path) -> bool:
+    """Whether the index holds `.gitmodules` only at a merge's conflict
+    stages, 1 to 3, as `git ls-files -s` lists it, and not at stage 0
+    (#1150, RV1124's N6 on #1124). Git's submodule commands then read no
+    `.gitmodules` at all, the work tree's, the index's or HEAD's
+    (`repo_read_gitmodules` asks `is_gitmodules_unmerged` first), and
+    `git submodule status` dies at the first gitlink (`no submodule
+    mapping found`, exit 128, git 2.43), as bootstrap's
+    `gitmodules_source` reads it. An index git cannot list holds none."""
+    with _git_runs(f"whether a merge left {GITMODULES} unmerged could not "
+                   "be read"):
+        try:
+            listed = git_out(["ls-files", "-s", "-z", "--", GITMODULES],
+                             cwd=root, binary=True)
+        except Refusal:
+            return False
+    stages = {meta.split()[2] for meta, _, name in (
+        record.partition(b"\t") for record in listed.split(b"\0"))
+        if name == GITMODULES.encode() and len(meta.split()) == 3}
+    return bool(stages) and b"0" not in stages
 
 
 #: Why a plain `git rm` of a hand mount's gitlink refuses it where the
@@ -3856,14 +3976,56 @@ def _blob_sections(root: Path, spec: str) -> dict[str, dict[str, str]]:
 
 def _blob_listed(root: Path, spec: str) -> bytes:
     """What `git config -z --blob <spec> --list` prints of the
-    `.gitmodules` git names `spec`, or nothing where git cannot read it
-    (`_blob_sections`, `_listed_as_git_reads`, #1077)."""
+    `.gitmodules` git names `spec`, one git resolves, or nothing for no
+    `spec` (`_blob_sections`, `_listed_as_git_reads`, #1077).
+
+    ONE GIT CANNOT PARSE IS `gitmodules-unreadable` (#1150, RV1124's N2 on
+    #1124), as HEAD's is (`_head_listed`), which `_check_gitmodules_values`
+    asks before any blob is read here, so the blob refused here is the
+    index's. `git config --blob` prints the entries before a line it
+    cannot parse, then exits 128, and nothing was read: an `update =
+    !true` before the line was no finding, `family ok` in every mode, while
+    git's own `submodule status` read it and died on it (exit 128), and a
+    section before it was never named. Git's submodule commands read such
+    a blob up to the line where the work tree holds no `.gitmodules`, and
+    a clone of a commit that records it checks the file out, which git
+    dies reading."""
+    if not spec:
+        return b""
     with _git_runs(f"{spec} could not be read as git reads it"):
         try:
             return git_out(["config", "-z", "--blob", spec, "--list"],
                            cwd=root, binary=True)
+        except Refusal as exc:
+            raise Refusal(
+                "gitmodules-unreadable",
+                f"the index's {GITMODULES} could not be read as git reads "
+                f"it: {exc.detail}",
+                "Remediation: git reads it only up to that line where the "
+                f"work tree holds no {GITMODULES}, and a clone of a commit "
+                "that records it dies reading it, before it checks out any "
+                f"member. Mend {GITMODULES} in the work tree by hand (`git "
+                f"config -f {GITMODULES} --list` says where it breaks; where "
+                f"the work tree holds none, `git checkout -- {GITMODULES}` "
+                f"puts the index's back first), stage it with `{STAGE_LINE}`, "
+                "then run this again.") from exc
+
+
+def _index_listed(root: Path) -> bytes:
+    """What `git config -z --list` prints of the index's `.gitmodules`,
+    the one at stage 0, which a plain `git commit` records, read as
+    `_blob_listed` reads a blob, or nothing where the index holds none
+    there (#1150, RV1124's N1 on #1124): what `gitmodules-value-refused`
+    reads beside the work tree's file where that is on disk, and git reads
+    it here, not the index's."""
+    with _git_runs(f"the index's {GITMODULES} could not be read as git "
+                   "reads it"):
+        try:
+            git_out(["rev-parse", "--verify", "--quiet", f":{GITMODULES}"],
+                    cwd=root)
         except Refusal:
             return b""
+    return _blob_listed(root, f":{GITMODULES}")
 
 
 def _listed_as_git_reads(root: Path) -> tuple[bytes, str]:
