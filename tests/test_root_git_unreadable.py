@@ -40,8 +40,12 @@ THE RULE NOW is #430's. `.git` is `stat`ed: ENOENT, ENOTDIR, EBADF and ELOOP
   * The doctor's `legs` row says the gate's line ONCE, a FINDING with this
     doctor again as its NEXT and the gate's advice as its `why`, and keeps it
     in each leg's `gitlink_cannot_be_read`, which `drifted_reasons` does not
-    count. `placement` says it too, `n/a`. The verdict is the validators'
-    INVALID, never DRIFTED.
+    count. The verdict is never DRIFTED.
+  * `placement` gives that line to each leg git cannot read because of it,
+    a leg whose `.git` leads under the root's, and says it once, `n/a`,
+    where that is every leg. It still audits a leg whose own repository git
+    reads (r1147's S2): a path in the wrong leg there is still MISPLACED,
+    the verdict the ladder puts over the validators' INVALID.
 
 A `.git` that answers absent (a link that leads nowhere or to itself, nothing
 there) is left as it was, and so is one the user can read: those rows are the
@@ -87,7 +91,7 @@ from test_doctor_unreadable_pin import (
 )
 #: The doctor's fixtures, from the module that owns them.
 from test_shape_doctor import (  # noqa: F401
-    project, scaffolded_here, standard,
+    project, scaffolded_here, stage, standard,
 )
 #: The gate's own advice, word for word, from the file that owns it.
 from test_validate_pins_named_and_spelled import AGAIN, OTHER, PERMISSION
@@ -116,6 +120,12 @@ CRASHED = "crashed"
 #: A symlink a test makes, which a Windows account may not.
 POSIX_LINKS = pytest.mark.skipif(
     os.name == "nt", reason="makes a symlink, which Windows may refuse")
+#: A folder name holding an ESC, which a line names as `repr` spells it.
+UNPRINTABLE = ".git\x1bdir"
+#: A name with a control character in it, which Windows refuses.
+POSIX_NAMES = pytest.mark.skipif(
+    os.name == "nt", reason="a control character in a name, which Windows "
+                            "refuses")
 
 
 def legs_said(line: str) -> str:
@@ -170,19 +180,26 @@ def assert_nothing_unasked_said(rows: dict) -> None:
 def assert_legs_name(rows: dict, line: str, standard: Path,
                      root: Path) -> None:
     """The `legs` row says `line` once, as a person's to mend, and keeps it
-    in each leg; `placement` says it, `n/a`."""
+    in each leg, whose entry has every key a leg's has (r1147's N7);
+    `placement` says it, `n/a`, and keeps it in each leg it could not read
+    (N2)."""
     legs = rows["legs"]
     assert legs["status"] == "FINDING", legs
     assert legs["reason"] == legs_said(line)
     assert legs["next"] == doctor_again(standard, root)
     assert legs["why"] == PERMISSION_WHY
     assert legs["detail"]["legs"] == [
-        {"role": role, "path": role, "gitlink": None,
+        {"role": role, "path": role, "pin": None, "gitlink": None,
+         "populated": None, "head": None, "own_git": None, "unborn": None,
          "gitlink_cannot_be_read": line} for role in ("spec", "code")]
     placement = rows["placement"]
     assert placement["status"] == "n/a", placement
     assert placement["reason"] == placement_said(line)
     assert placement["next"] is None
+    assert placement["detail"]["legs"] == [
+        {"role": role, "path": role, "state": line,
+         "gitlink_cannot_be_read": line} for role in ("spec", "code")]
+    assert placement["detail"]["counts"]["unread_legs"] == 2
 
 
 @pytest.fixture(scope="module")
@@ -320,6 +337,74 @@ def test_a_gitfile_into_a_locked_folder_is_named_by_its_git_directory(
     assert_nothing_unasked_said(rows)
 
 
+def own_repository(root: Path, leg: str = "spec") -> None:
+    """The leg's repository moved out of the root's `.git/modules/` into a
+    `.git` directory of its own, without the `core.worktree` its old place
+    needed: a leg git reads without the root's `.git`."""
+    mount = root / leg
+    (mount / ".git").unlink()
+    shutil.move(str(root / ".git" / "modules" / leg), str(mount / ".git"))
+    config = mount / ".git" / "config"
+    config.write_text("".join(
+        line for line in config.read_text(encoding="utf-8").splitlines(True)
+        if not line.strip().startswith("worktree =")), encoding="utf-8")
+
+
+@CANNOT_RUN_AS_ROOT
+def test_placement_still_audits_a_leg_whose_own_repository_it_can_read(
+        standard, project):
+    """r1147's S2. `.git` at 000, and the spec leg's repository in a `.git`
+    directory of its own, holding a path the policy puts in the root. The
+    base said this path in a FINDING beside a DRIFTED verdict. A `placement`
+    that declined every leg once the root's `.git` could not be read hid it,
+    and the verdict was `INVALID (pins)`. It audits the leg git reads and
+    names the path, the code leg it could not read is given the root's
+    line, and the verdict is MISPLACED, which the ladder puts over the
+    validators' INVALID, beside the `legs` and `pins` rows naming `.git`."""
+    own_repository(project)
+    stage(project / "spec", ".specify/memory.md", "misplaced\n")
+    line = cannot(".git", os.strerror(errno.EACCES))
+    with mode_of(project, ".git", 0):
+        rows, verdict = doctored(standard, project)
+    assert verdict == "MISPLACED (1 path)"
+    assert rows["legs"]["status"] == "FINDING", rows["legs"]
+    assert rows["legs"]["reason"] == legs_said(line)
+    assert rows["pins"]["reason"] == gate_said("validate-pins.py", line)
+    placement = rows["placement"]
+    assert placement["status"] == "FINDING", placement
+    assert placement["reason"].startswith(
+        "1 path(s) sit in a leg the policy puts elsewhere: spec/.specify/: "
+        "root by rule root-spec-kit"), placement["reason"]
+    assert placement["reason"].endswith(
+        f"; code: read through the root's repository, and {line}]")
+    assert [entry["path"] for entry in placement["detail"]["misplaced"]] \
+        == ["spec/.specify/"]
+    spec, code = placement["detail"]["legs"]
+    assert spec["state"] == "audited", spec
+    assert code == {"role": "code", "path": "code", "state": line,
+                    "gitlink_cannot_be_read": line}
+    assert_nothing_unasked_said(rows)
+
+
+@CANNOT_RUN_AS_ROOT
+def test_a_leg_with_no_git_of_its_own_keeps_gits_answer(standard, project):
+    """`.git` at 000, and the spec leg left with no `.git` of its own: it is
+    not its own repository whatever the root's `.git` says, so it keeps
+    git's answer, and only the code leg, read through the root's
+    repository, is given the root's line."""
+    (project / "spec" / ".git").unlink()
+    line = cannot(".git", os.strerror(errno.EACCES))
+    with mode_of(project, ".git", 0):
+        rows, verdict = doctored(standard, project)
+    assert verdict == "INVALID (pins)"
+    placement = rows["placement"]
+    assert placement["status"] == "n/a", placement
+    assert placement["reason"] == (
+        "no leg could be read, so nothing was classified: spec: it is not a "
+        "git repository, so it has no tracked paths of its own to read; "
+        f"code: read through the root's repository, and {line}")
+
+
 def test_a_root_whose_git_can_be_read_is_unchanged(standard, project):
     """The control, which the base passed too: the scaffold's own clone is
     COMPLIANT, and both gates pass, run as the project runs them."""
@@ -343,9 +428,11 @@ def test_a_root_whose_git_can_be_read_is_unchanged(standard, project):
 ])
 def test_the_rows_name_a_refused_root_git_on_every_python(
         standard, project, monkeypatch, refuse, reason, why):
-    """`.git`'s `stat` refused, as Python 3.14's `exists()` answers it: the
-    `legs` row says the line once with the advice for the cause, no leg is
-    drift, and `placement` says it could not ask."""
+    """Every `.git`'s `stat` refused, the root's and each leg's, as Python
+    3.14's `exists()` answers it: the `legs` row says the root's line once
+    with the advice for the cause, and no leg is drift. `placement` asks
+    each leg's own `.git` before any git runs, and names it: that, not the
+    root's, is what kept the leg from being read."""
     module, ctx = in_process(standard, project)
     refuse(monkeypatch)
     line = cannot(".git", reason)
@@ -359,7 +446,9 @@ def test_the_rows_name_a_refused_root_git_on_every_python(
     assert module.drifted_reasons({"legs": legs}, {}) == []
     placement = module.check_placement(ctx)
     assert placement.status == module.NA
-    assert placement.reason == placement_said(line)
+    assert placement.reason == (
+        "no leg could be read, so nothing was classified: "
+        f"{cannot('spec/.git', reason)}; {cannot('code/.git', reason)}")
 
 
 def moved_out(root: Path) -> None:
@@ -368,11 +457,12 @@ def moved_out(root: Path) -> None:
     gitfile_into(root, "elsewhere")
 
 
-def moved_in(root: Path) -> None:
-    """The root's `.git` renamed `.gitdir`, a folder inside the root, and a
-    gitfile naming it in its place."""
-    (root / ".git").rename(root / ".gitdir")
-    (root / ".git").write_bytes(b"gitdir: .gitdir\n")
+def moved_in(root: Path, folder: str = ".gitdir",
+             ending: bytes = b"\n") -> None:
+    """The root's `.git` renamed `folder`, a folder inside the root, and a
+    gitfile naming it in its place, its line ending in `ending`."""
+    (root / ".git").rename(root / folder)
+    (root / ".git").write_bytes(b"gitdir: " + os.fsencode(folder) + ending)
 
 
 @pytest.mark.parametrize("arrange, name, method, named", [
@@ -386,6 +476,13 @@ def moved_in(root: Path) -> None:
                  id="gitfile-names-a-directory-outside"),
     pytest.param(moved_in, "HEAD", "stat", lambda root: ".gitdir",
                  id="gitfile-names-a-directory-inside"),
+    pytest.param(lambda root: moved_in(root, ending=b"\r\n"), "HEAD", "stat",
+                 lambda root: ".gitdir",
+                 id="gitfile-ending-in-cr-lf-names-a-directory-inside"),
+    pytest.param(lambda root: moved_in(root, UNPRINTABLE), "HEAD", "stat",
+                 lambda root: repr(UNPRINTABLE),
+                 id="gitfile-names-an-unprintable-directory",
+                 marks=POSIX_NAMES),
 ])
 def test_the_doctor_and_the_gate_name_one_git_directory(
         standard, project, gates, monkeypatch, capsys, arrange, name,
@@ -393,7 +490,9 @@ def test_the_doctor_and_the_gate_name_one_git_directory(
     """What `.git` is or names, refused: a git directory whose `HEAD` cannot
     be reached, or a gitfile that cannot be opened. The doctor's line and
     `validate-pins.py`'s refusal are one sentence, naming the git directory
-    relative to the root where it is inside it and whole where it is not."""
+    relative to the root where it is inside it and whole where it is not,
+    from a gitfile whose line ends in CR LF as from one ending in LF, and
+    as `repr` spells a name that is not printable (r1147's N1)."""
     arrange(project)
     module, ctx = in_process(standard, project)
     refusing(monkeypatch, method, name,
@@ -497,6 +596,75 @@ def test_a_git_above_the_root_is_never_asked(project, gates, monkeypatch,
         module_root.parent / ".git": PermissionError(errno.EACCES, DENIED)})
     assert gates[gate].main(["--root", str(project)]) == 0, \
         capsys.readouterr().err
+
+
+@GATES
+def test_a_relative_root_is_walked_from_where_it_resolves(
+        project, gates, monkeypatch, capsys, gate):
+    """r1147's S1 (a). Run from `<root>/contracts` with `--root .`, and the
+    root's `.git` refused: the walk starts where `.` resolves, as
+    `find_repo_root`'s does, reaches the root's `.git` and names it whole.
+    `Path(".")` has no parents, so a walk from it unresolved asks `.git` in
+    `contracts/` alone and leaves the root's to `find_repo_root`, whose
+    `exists()` raised on 3.12 and answers False from 3.14."""
+    dotgit = project.resolve() / ".git"
+    as_python_314(monkeypatch, {dotgit: PermissionError(errno.EACCES,
+                                                        DENIED)})
+    monkeypatch.chdir(project / "contracts")
+    assert gates[gate].main(["--root", "."]) == 2
+    assert capsys.readouterr().err == refused(gate,
+                                              cannot(str(dotgit), DENIED))
+
+
+@GATES
+def test_the_walk_stops_at_a_git_that_is_a_gitfile(project, gates,
+                                                   monkeypatch, capsys, gate):
+    """r1147's S1 (b). The root's `.git` a readable gitfile, and a `.git`
+    above the root refused: `find_repo_root` stops at the gitfile, the
+    first `.git` that is there whatever it is, and so does the question.
+    Each gate passes. Each leg's gitfile follows its repository to
+    `.gitdir/modules/`, so git still reads the legs `validate-pins.py`
+    asks about."""
+    moved_in(project)
+    for leg in ("spec", "code"):
+        (project / leg / ".git").write_bytes(
+            f"gitdir: ../.gitdir/modules/{leg}\n".encode())
+    as_python_314(monkeypatch, {
+        project.resolve().parent / ".git": PermissionError(errno.EACCES,
+                                                           DENIED)})
+    assert gates[gate].main(["--root", str(project)]) == 0, \
+        capsys.readouterr().err
+
+
+def test_the_git_directory_above_the_folder_given_is_named_whole(
+        project, gates, monkeypatch, capsys):
+    """r1147's N3. `--root` a folder inside the root, and the root's `.git`
+    a directory whose `HEAD` cannot be reached: `validate-pins.py`'s
+    git-directory step names it whole, as its `stat` step does, since it
+    is not under the folder given."""
+    refusing(monkeypatch, "stat", "HEAD",
+             PermissionError(errno.EACCES, DENIED))
+    assert gates["validate-pins.py"].main(
+        ["--root", str(project / "contracts")]) == 2
+    assert capsys.readouterr().err == refused(
+        "validate-pins.py", cannot(str(project.resolve() / ".git"), DENIED))
+
+
+def test_placement_audits_each_leg_git_reads_beside_a_refused_root_git(
+        standard, project, monkeypatch):
+    """r1147's S2, on every platform and as root. Only the root's own `.git`
+    refused, in process, and git, which no stand-in reaches, reads each
+    leg's repository: a stand-in for a leg git reads without the root's
+    `.git`, as the mode case above has one. The `legs` row names the root's
+    `.git`, and `placement` still audits both legs."""
+    module, ctx = in_process(standard, project)
+    as_python_314(monkeypatch, {
+        ctx.root / ".git": PermissionError(errno.EACCES, DENIED)})
+    assert module.check_legs(ctx).reason == legs_said(cannot(".git"))
+    placement = module.check_placement(ctx)
+    assert placement.status == module.OK, placement.reason
+    assert [entry["state"] for entry in placement.detail["legs"]] \
+        == ["audited", "audited"]
 
 
 def test_a_leg_whose_gitlink_cannot_be_read_is_never_drift(standard,

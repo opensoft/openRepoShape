@@ -7365,12 +7365,16 @@ def root_git_unread_row(ctx: Context, legs: list, line: str,
     the NEXT and the gate's advice for the cause as the `why`, because a
     person mends a mode or an owner and no git line reaches it, as for a
     mount (#430). Each leg's entry has no gitlink and carries `line` in
-    `gitlink_cannot_be_read`, so `drifted_reasons` counts none of them."""
+    `gitlink_cannot_be_read`, so `drifted_reasons` counts none of them. It
+    has every key a leg's entry has, each null that this row did not ask, so
+    a reader of `--json` finds `pin` or `head` on every entry."""
     entries = []
     for leg in legs:
         role = str(leg.get("role") or "?")
         entries.append({"role": role, "path": str(leg.get("path") or role),
-                        "gitlink": None, GITLINK_UNREAD: line})
+                        "pin": None, "gitlink": None, "populated": None,
+                        "head": None, "own_git": None, "unborn": None,
+                        GITLINK_UNREAD: line})
     return Row("legs", "legs", FINDING,
                f"{line}, so no gitlink is read and no leg is compared with "
                "its pin", doctor_line(ctx), {"legs": entries},
@@ -8090,6 +8094,12 @@ def outside_the_root(root: Path, mount: Path) -> str | None:
     return None
 
 
+#: What `not_its_own_repository` says where git names no top level at all,
+#: which `audit_leg` tells from git answering from another one (#1146).
+NOT_A_GIT_REPOSITORY = ("it is not a git repository, so it has no tracked "
+                        "paths of its own to read")
+
+
 def not_its_own_repository(mount: Path) -> str | None:
     """Why `git ls-files` here would answer about somebody else's index.
 
@@ -8102,8 +8112,7 @@ def not_its_own_repository(mount: Path) -> str | None:
     try:
         top = Path(git_out(["rev-parse", "--show-toplevel"], cwd=mount))
     except (Refusal, OSError):
-        return ("it is not a git repository, so it has no tracked paths of "
-                "its own to read")
+        return NOT_A_GIT_REPOSITORY
     try:
         if top.resolve() == mount.resolve():
             return None
@@ -9027,7 +9036,8 @@ def slashed_rows(answers: dict, role: str, rel: str, files: list) -> list:
 
 
 def audit_leg(adopt, policy, patterns: list, role: str, rel: str,
-              root: Path, record: dict, answers: dict) -> tuple:
+              root: Path, record: dict, answers: dict,
+              root_line: str | None = None) -> tuple:
     """ONE leg: its summary, the paths in the wrong leg, the questions, and
     the submodules it keeps.
 
@@ -9096,6 +9106,17 @@ def audit_leg(adopt, policy, patterns: list, role: str, rel: str,
     the general question. It is called here over the leg's INDEX, which is
     what this row lists, so a file edited or deleted on disk and a link are
     read as `plan` reads them.
+
+    AND A LEG GIT CANNOT READ BECAUSE THE ROOT'S `.git` CANNOT BE READ IS
+    GIVEN THE ROOT'S LINE (#1146). `root_line` is `root_git_read`'s, where
+    the root's own `.git` cannot be read. A leg whose `.git` is there and
+    leads to a repository git names no top level for -- a gitfile naming
+    `.git/modules/<leg>` under a root's `.git` this user cannot search --
+    keeps it in `gitlink_cannot_be_read` and as its `state`, where git had
+    said `it is not a git repository`, a claim about the leg. A leg with a
+    repository of its own that git reads is audited as before, and a leg
+    with no `.git` of its own is not its own repository whatever the root's
+    `.git` says, so it keeps git's answer.
     """
     entry = {"role": role, "path": rel}
     mount = root / rel
@@ -9103,7 +9124,7 @@ def audit_leg(adopt, policy, patterns: list, role: str, rel: str,
     if escaped:
         entry["state"] = escaped
         return entry, [], [], [], []
-    populated, _own_git, unread = mount_read(root, rel)
+    populated, own_git, unread = mount_read(root, rel)
     if unread is not None:
         # A leg this user cannot reach, in the gate's words, as the `legs`
         # row says it (#430): a READ that is missing, never a clean leg, and
@@ -9121,6 +9142,11 @@ def audit_leg(adopt, policy, patterns: list, role: str, rel: str,
                           "classifies")
         return entry, [], [], [], []
     borrowed = not_its_own_repository(mount)
+    if (borrowed == NOT_A_GIT_REPOSITORY and own_git
+            and root_line is not None):
+        # The root's line, not git's (#1146): see the docstring.
+        entry["state"] = entry[GITLINK_UNREAD] = root_line
+        return entry, [], [], [], []
     if borrowed:
         entry["state"] = borrowed
         return entry, [], [], [], []
@@ -9238,6 +9264,11 @@ def leg_audit_summary(entry: dict) -> str:
     if MOUNT_UNREAD in entry:
         # The gate's line already starts with the leg's path (#430).
         return entry[MOUNT_UNREAD]
+    if GITLINK_UNREAD in entry:
+        # The gate's line is about the ROOT's `.git` (#1146), so the leg it
+        # kept from being read is named before it.
+        return (f"{entry['path']}: read through the root's repository, and "
+                f"{entry[GITLINK_UNREAD]}")
     if entry.get("state") != "audited":
         return f"{entry['path']}: {entry.get('state')}"
     counted = (f"{entry['paths']} path(s) over {entry['classified']} of "
@@ -9462,22 +9493,13 @@ def check_placement(ctx: Context) -> Row:
             NA,
             "project.yaml declares no non-assembly leg, so there is no leg "
             "for a path to be in the wrong one of")
+    # THE ROOT'S OWN `.git` MAY NOT BE READ (#1146). A leg's repository is
+    # read through it, under `.git/modules/`, and git said `it is not a git
+    # repository` of each such leg, a claim about the leg: `audit_leg` gives
+    # those legs the root's line, and audits every leg whose repository git
+    # reads without it, as it always did.
     root_unread = root_git_read(ctx.root)
-    if root_unread is not None:
-        # THE ROOT'S OWN `.git` CANNOT BE READ (#1146), and a leg's
-        # repository is read through it, under `.git/modules/`: git said
-        # `it is not a git repository` of each leg, a claim about the leg.
-        # Said once, as the `legs` row says it, and `n/a`, as for a row with
-        # no leg it could read.
-        line = root_unread[0]
-        return placement_row(
-            NA, f"{line}, so no leg's tracked paths are read and nothing was "
-            "classified", None,
-            {"legs": [{"role": str(leg.get("role") or "?"),
-                       "path": str(leg.get("path") or leg.get("role") or "?"),
-                       "state": line, GITLINK_UNREAD: line} for leg in legs],
-             "counts": {"misplaced": 0, "review_required": 0,
-                        "unread_legs": len(legs)}})
+    root_line = root_unread[0] if root_unread is not None else None
     policy_path = ctx.shape / "contracts" / "path-classification.yaml"
     adopt, policy, refusal = placement_policy(ctx, policy_path)
     if refusal is not None:
@@ -9496,7 +9518,8 @@ def check_placement(ctx: Context) -> Row:
         role = str(leg.get("role") or "?")
         rel = str(leg.get("path") or role)
         entry, wrong, unsure, held, recorded = audit_leg(
-            adopt, policy, patterns, role, rel, ctx.root, record, answers)
+            adopt, policy, patterns, role, rel, ctx.root, record, answers,
+            root_line)
         per_leg.append(entry)
         misplaced.extend(wrong)
         review.extend(unsure)
@@ -9523,6 +9546,13 @@ def check_placement(ctx: Context) -> Row:
             # Only when there is one, as `submodules` is (#525).
             detail[key] = found
             detail["counts"][key] = len(found)
+    if root_line is not None and all(GITLINK_UNREAD in entry
+                                     for entry in per_leg):
+        # NO LEG WAS READ, FOR THE ONE REASON (#1146): said once, as the
+        # `legs` row says it, and `n/a`, as for a row with no leg it read.
+        return placement_row(
+            NA, f"{root_line}, so no leg's tracked paths are read and "
+            "nothing was classified", None, detail)
     audited = "; ".join(leg_audit_summary(entry) for entry in per_leg)
     if moved_alone(adopt, detail):
         # No command makes either way out of a move already made (#525):
