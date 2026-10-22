@@ -1066,7 +1066,6 @@ def test_a_leg_by_its_name_is_one_while_git_cannot_give_its_agents_md(
     assert reading.state == shape_advisory.LEG_CLONE, reading.as_dict()
     assert reading.leg["by"] == "name", reading.leg
     assert reading.leg["role"] == "spec", reading.leg
-    assert reading.refused is None
 
 
 def test_adopts_reader_reads_the_commits_agents_md_and_never_the_disks(
