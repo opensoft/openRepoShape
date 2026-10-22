@@ -1174,13 +1174,17 @@ def test_a_directory_at_a_pins_file_through_a_link_names_what_it_reaches(
         adopter, no_filter_repo_probe, links_as_links, tmp_path):
     """A directory the root keeps where the walk reaches the pin's file,
     `governance/openglass-pin.yaml/`, is `plan-root-holds-pin` too: the
-    finding names the first file kept in it, inside the pin's file, and
-    its fix renames the directory the walk reaches, not that file
-    (rv1091's NIT 4 on #1091). Before #1091 `check` passed it (measured on
-    main 823624d9)."""
+    finding names the first file kept in it (`README.md`, which sorts
+    before `notes.md`), inside the pin's file, and its fix renames the
+    directory the walk reaches, not that file (rv1091's NIT 4 on #1091).
+    Before #1091 `check` passed it (measured on main 823624d9). The
+    directory holds two files, so that the first is not the last
+    (rv1140's NIT 1)."""
     files, legs = THROUGH_GOVERNANCE
-    held = f"{GOVERNANCE_PIN}/notes.md"
-    _, plan = planned(tmp_path, {**files, held: "# notes\n"},
+    held = f"{GOVERNANCE_PIN}/{README}"
+    later = f"{GOVERNANCE_PIN}/notes.md"
+    _, plan = planned(tmp_path, {**files, later: "# notes\n",
+                                 held: "# readme\n"},
                       {CONTRACTS: GOVERNANCE}, legs)
     declare(plan, A_PIN)
     checked = check(plan)
