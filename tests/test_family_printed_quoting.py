@@ -105,6 +105,17 @@ def host_words(line: str) -> list[str]:
             else shlex.split(line))
 
 
+def family_lead(cwd: Path | None = None) -> str:
+    """How a line of `family.py`'s own begins where the tool prints one from
+    `cwd` (this process's where None): the interpreter, then the path that
+    reaches the file from there as one word, each followed by a space. It is
+    how `init`'s NEXT STEPS print their `add` (#488), and how every remedy
+    that names a verb prints its line (#1127)."""
+    here = Path.cwd() if cwd is None else Path(cwd)
+    script = os.path.relpath(FAMILY.resolve(), here.resolve())
+    return f"{PYTHON} {shell_quoted(script)} "
+
+
 # --- the quoter ---------------------------------------------------------------
 
 #: What must survive UNQUOTED, on both platforms: a line whose whole job is

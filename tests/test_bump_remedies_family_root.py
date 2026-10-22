@@ -48,7 +48,7 @@ from test_bump_leg import BUMP, branched, bump
 from test_family import FAMILY, family, manifest  # noqa: F401
 from test_family_add_member_id import PINNED, RENAMED, renamed_copy
 from test_family_add_refusals import offline  # noqa: F401
-from test_family_printed_quoting import copied_holder, host_words
+from test_family_printed_quoting import copied_holder, family_lead, host_words
 
 #: A commit id to put where a line says `<commit>` or `<sha>` when nothing is
 #: run with it. It is NOT a fixture's `advanced`: that one pushes a branch to
@@ -108,12 +108,14 @@ def refused_as(code, family, holder, offline, tmp_path):
     return result.stderr
 
 
-def the_bump_line(stderr: str, lead: str = "") -> str:
-    """The one `family.py bump ...` a remedy prints, from `bump` to the
-    closing backtick, with `lead` before `family.py` (a path, for
-    `bump-leg.py`'s)."""
-    found = re.findall(re.escape(f"`{lead}family.py ") + r"(bump [^`]*)`",
-                       stderr)
+def the_bump_line(stderr: str, lead: str | None = None) -> str:
+    """The one `<lead>bump ...` a remedy prints, from `bump` to the closing
+    backtick. `lead` is what comes before `bump`: `bump-leg.py`'s
+    `scripts/family.py `, or by default `family.py`'s own, the interpreter
+    and the path to the file from where the run stood (`family_lead`,
+    #1127)."""
+    lead = family_lead() if lead is None else lead
+    found = re.findall(re.escape(f"`{lead}") + r"(bump [^`]*)`", stderr)
     assert len(found) == 1, stderr
     return found[0]
 
@@ -218,7 +220,7 @@ def test_a_bump_leg_remedy_that_names_family_bump_names_the_holder(
     result = BUMP_LEG_CASES[code](project, scaffolded, tmp_path)
     assert result.returncode == 2, result.stdout + result.stderr
     assert f"REFUSED {code}: " in result.stderr
-    line = the_bump_line(result.stderr, "scripts/")
+    line = the_bump_line(result.stderr, "scripts/family.py ")
     assert line == "bump --family-root <holder> --member <Project> --to <sha>"
     # The holder as a shell is handed it: quoted, so that a basetemp whose
     # path holds a space (`--basetemp="my work/bt"`) is still one word.
