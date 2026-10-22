@@ -37,12 +37,14 @@ from __future__ import annotations
 import errno
 import os
 import stat
+import subprocess
 import sys
 from pathlib import Path
 
 import pytest
 
-from conftest import REPO, load_without_bytecode, run_script
+from conftest import (IDENTITY_EMAIL, IDENTITY_NAME, REPO, git,
+                      load_without_bytecode, run_script)
 #: The skip for a mode root reads through, and the stand-in for a refused
 #: `stat`, from the file that owns them (#383), as the doctor's and
 #: `validate-pins.py`'s #430 tests take them.
@@ -55,6 +57,9 @@ from test_validate_pins_unreadable_workflows_dir import mode_of
 from test_update_shape import (  # noqa: F401
     CHANGED, root, update_shape, upstream_and_project,
 )
+#: Everything a rollback must put back, and the comparison that says what
+#: it did not, from the file that owns them.
+from test_update_shape_add_ignored import assert_same_tree, snapshot
 
 sys.path.insert(0, str(REPO / "scripts"))
 from repo_shape import Refusal, load_yaml  # noqa: E402
@@ -639,6 +644,129 @@ def test_any_read_refused_after_the_writes_rolls_them_back(
     assert apply_b(update_shape, root, upstream_and_project) == 2
     out, err = capsys.readouterr()
     assert_rolled_back(out + err, root, upstream_and_project, changed)
+
+
+# --- any other `OSError` after the first write (#1173) -----------------------
+
+#: The `OSError`s after the first write that no refusal can name, each made
+#: of the root the run is in: a file gone between its `stat` and its read,
+#: and two that name no path, a flush into a pipe nobody reads any more and
+#: an `EIO`. `unreadable_refusal` answers None to all three.
+UNNAMED = [
+    pytest.param(lambda where: FileNotFoundError(
+        errno.ENOENT, "No such file or directory",
+        str(where / "scripts" / "validate-pins.py")), id="a-file-gone"),
+    pytest.param(lambda _where: BrokenPipeError(errno.EPIPE, "Broken pipe"),
+                 id="a-broken-pipe"),
+    pytest.param(lambda _where: OSError(errno.EIO, "Input/output error"),
+                 id="EIO-naming-no-path"),
+]
+
+#: What stderr says first when every byte `apply --at B` wrote went back:
+#: the copy, then the pin and the manifest, in the order they were written.
+ROLLED_BACK = (
+    "ROLLED BACK: every byte this command wrote has been put back, and the "
+    "tree is exactly as it was:\n"
+    + "".join(f"    restored  {path}\n"
+              for path in (CHANGED, PIN, "project.yaml")))
+
+
+@pytest.mark.parametrize("error", UNNAMED)
+def test_any_oserror_after_the_writes_rolls_them_back_and_is_raised(
+        update_shape, root, upstream_and_project, capsys, monkeypatch, error):
+    """MID-RUN, an `OSError` no refusal can name (#1173): it was raised as
+    it was, with the copy, the pin and the manifest left written behind the
+    traceback. Every byte goes back, stderr says which, and the SAME error
+    is raised: the traceback is the answer to an error the tool cannot
+    name, over a tree as it was."""
+    before = snapshot(root, {})
+    raised: list[OSError] = []
+
+    def failing(where, _kind):
+        raised.append(error(where))
+        raise raised[0]
+
+    monkeypatch.setattr(update_shape, "_refuse_red_validators", failing)
+    with pytest.raises(OSError) as escaped:
+        apply_b(update_shape, root, upstream_and_project)
+    assert escaped.value is raised[0]
+    out, err = capsys.readouterr()
+    assert f"  copied   {CHANGED}" in out, out
+    assert err == ROLLED_BACK, err
+    assert_same_tree(before, snapshot(root, {}))
+
+
+def test_a_stdout_nobody_reads_is_rolled_back_under_its_broken_pipe(
+        root, upstream_and_project):
+    """THE TOOL AS A PERSON RUNS IT, no stand-in (#1173): its stdout a pipe
+    whose reader is gone, as `apply --yes | head -1` leaves it once `head`
+    has its line. The flush before the root's validators raised over the
+    written tree. It still raises, over a tree as it was, and what went
+    back reaches stderr, above the traceback, though stdout will not take
+    the flush that comes first."""
+    before = snapshot(root, {})
+    reader, writer = os.pipe()
+    os.close(reader)
+    try:
+        proc = subprocess.run(
+            [sys.executable, str(UPDATE), "apply", "--root", str(root),
+             "--yes", "--upstream", str(upstream_and_project["upstream"]),
+             "--at", upstream_and_project["b"]],
+            stdin=subprocess.DEVNULL, stdout=writer, stderr=subprocess.PIPE,
+            text=True, check=False, env={**os.environ, "LANES_LANE": ""})
+    finally:
+        os.close(writer)
+    assert proc.returncode != 0, proc.stderr
+    assert proc.stderr.startswith(
+        ROLLED_BACK + "Traceback (most recent call last):\n"), proc.stderr
+    assert_same_tree(before, snapshot(root, {}))
+
+
+def test_an_oserror_before_the_first_write_is_raised_and_says_nothing(
+        update_shape, root, upstream_and_project, capsys, monkeypatch):
+    """The other side: before the first write there is nothing to put
+    back, so the error is raised as it always was, and stderr says
+    nothing at all."""
+    before = snapshot(root, {})
+    error = OSError(errno.EIO, "Input/output error")
+
+    def failing(*_args):
+        raise error
+
+    monkeypatch.setattr(update_shape, "_read_readme", failing)
+    with pytest.raises(OSError) as escaped:
+        apply_b(update_shape, root, upstream_and_project)
+    assert escaped.value is error
+    assert capsys.readouterr().err == ""
+    assert_same_tree(before, snapshot(root, {}))
+
+
+def test_an_oserror_after_the_commit_puts_nothing_back(
+        update_shape, root, upstream_and_project, capsys, monkeypatch):
+    """And after the commit, which IS the result (`Rollback.land`): the
+    error is raised as it always was, nothing is said, and the commit and
+    its tree stand."""
+    for role in ("AUTHOR", "COMMITTER"):
+        monkeypatch.setenv(f"GIT_{role}_NAME", IDENTITY_NAME)
+        monkeypatch.setenv(f"GIT_{role}_EMAIL", IDENTITY_EMAIL)
+    error = OSError(errno.EIO, "Input/output error")
+
+    def failing(*_args, **_kwargs):
+        raise error
+
+    monkeypatch.setattr(update_shape, "next_line", failing)
+    with pytest.raises(OSError) as escaped:
+        update_shape.main(["apply", "--root", str(root), "--yes",
+                           "--upstream", str(upstream_and_project["upstream"]),
+                           "--at", upstream_and_project["b"],
+                           "--branch", "shape-at-b"])
+    assert escaped.value is error
+    out, err = capsys.readouterr()
+    assert "  committed on shape-at-b: " in out, out
+    assert err == ""
+    assert load_yaml(root / PIN)["commit"].lower() == \
+        upstream_and_project["b"]
+    assert git("status", "--porcelain", cwd=root).stdout == ""
 
 
 def test_a_rollback_that_cannot_stat_what_it_made_says_so(update_shape,
