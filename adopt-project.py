@@ -6241,11 +6241,11 @@ def _write_the_plan(args, out: Path, text: str) -> None:
 #   is read from the pinned commit's trees, and a `--filter=blob:none`
 #   clone that holds the commit holds them: measured, it records the digest
 #   a full clone does and runs no `upload-pack`, checked out or not. Where
-#   git stops at an object such a clone lacks, the reader's own
-#   `pin-source-unreadable` says that the clone is a partial one and how to
-#   make it whole (`_pins_read_unfetched`): the `git fetch --all` it
-#   offered keeps the filter, and a `tree:0` clone stays short of its
-#   trees.
+#   git stops at an object such a clone lacks, the refusal keeps the
+#   reader's own `pin-source-unreadable` and says that the clone is a
+#   partial one and how to make it whole (`_pins_read_unfetched`): the
+#   reader's remediation, a clone that HAS the pinned commit, named no
+#   cause for a `tree:0` clone that holds the commit and lacks its trees.
 
 #: The variable git reads to leave out the fetch a partial clone makes for an
 #: object it lacks: `shape-doctor.py`'s `NO_LAZY_FETCH` (#787, #1145).
