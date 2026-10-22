@@ -10919,6 +10919,38 @@ def members_verdict(ctx: Context, detail: dict, members_dir: str,
                detail)
 
 
+def members_git_unread_row(ctx: Context, members: list, members_dir: str,
+                           line: str, exc: OSError) -> Row:
+    """The `members` row of a holder whose own `.git` this user cannot read
+    (#1148), as the `legs` row of such an assembly root (`root_git_unread_row`,
+    #1146): the gate's `line` ONCE, since it is one fact about the holder and
+    not one per member, and what it leaves unasked. A FINDING, because the
+    holder's `validate-family.py` refuses the same path by name; this doctor
+    again as the NEXT and the gate's advice for the cause as the `why`,
+    because a person mends a mode or an owner and no git line reaches it.
+
+    Each member's entry carries `line` in `gitlink_cannot_be_read`, so
+    `drifted_reasons` counts none of them, and has every key a member's
+    entry has, each null that this row did not ask: what stands beside the
+    holder is the workstation's, said once the holder can be read."""
+    entries = []
+    for row in members:
+        project = str(row.get("project") or "?")
+        entries.append({
+            "project": project,
+            "path": str(row.get("path") or f"{members_dir}/{project}"),
+            "pin": None, "populated": None, "head": None, "own_git": None,
+            "unborn": None, "detached": None, "mounted_from": None,
+            "sibling": None, "working_clone": None, "other_origin": None,
+            GITLINK_UNREAD: line})
+    return Row("members", "members", FINDING,
+               f"{line}, so no gitlink is read and no member is compared "
+               "with its pin", doctor_line(ctx),
+               {"members": entries, "without_working_clone": [],
+                "on_a_branch": []},
+               why=cannot_read_why([exc]))
+
+
 def check_members(ctx: Context) -> Row:
     """Each member pinned under `members/`, and the working clone beside it.
 
@@ -10933,6 +10965,15 @@ def check_members(ctx: Context) -> Row:
     AND THE WORDING IS `members_verdict`'s, so that this loop reads as the
     one sentence it is: every member is looked at, and each is either a fault
     or a state worth saying.
+
+    A HOLDER WHOSE OWN `.git` THIS USER CANNOT READ IS NAMED ONCE, AND IS NO
+    DRIFT (#1148), as an assembly root's is in the `legs` row (#1146). A
+    member's repository lives under the holder's `.git/modules/`, so with a
+    `.git` linked into a folder this user cannot search, or a `.git`
+    directory at mode 000, each member read `checked out at ?` and the
+    verdict `DRIFTED (a member is not at its pin)`; on Python 3.12 the link
+    raised out of the row instead. `root_git_read` asks it as the gate does,
+    and the row says the gate's line once (`members_git_unread_row`).
     """
     # NOT "no members yet", which is an `ok` about an empty family: a holder
     # whose `family.yaml` does not load has members nobody can name (#205),
@@ -10950,6 +10991,10 @@ def check_members(ctx: Context) -> Row:
         return Row("members", "members", OK,
                    "no members yet: a family with none is empty, not wrong",
                    None, {"members": []})
+    root_unread = root_git_read(ctx.root)
+    if root_unread is not None:
+        return members_git_unread_row(ctx, members, members_dir,
+                                      *root_unread)
     rows: list[dict] = []
     problems: list[str] = []
     siblings_absent: list[str] = []
@@ -12178,10 +12223,13 @@ def drifted_reasons(by_id: dict, detail: dict) -> list:
     be read (`gitlink_cannot_be_read`, #1146): its `legs` row said `no
     gitlink recorded` of each leg, and the verdict was DRIFTED. The
     `members` row is drift only where a member this user CAN reach has a
-    problem. Such a row goes on down the ladder, to the gate that refuses
-    the path (`invalid_verdict`) or to the catch-all, which names it: INVALID,
-    never DRIFTED, and never CANNOT ANSWER, because a path in the root this
-    user cannot reach is a statement about the repository.
+    problem: not one whose mount cannot be read, nor one of a holder whose
+    own `.git` cannot be (`gitlink_cannot_be_read`, #1148), which read
+    `checked out at ?` and DRIFTED. Such a row goes on down the ladder, to
+    the gate that refuses the path (`invalid_verdict`) or to the catch-all,
+    which names it: INVALID, never DRIFTED, and never CANNOT ANSWER, because
+    a path in the root this user cannot reach is a statement about the
+    repository.
 
     Split out of `verdict_for` for #134.
     """
@@ -12199,7 +12247,8 @@ def drifted_reasons(by_id: dict, detail: dict) -> list:
             reasons.append(f"{len(off) or 1} leg(s) not at the pin")
     members = by_id.get("members")
     if members is not None and members.status == FINDING and any(
-            MOUNT_UNREAD not in entry and member_problem(entry)
+            MOUNT_UNREAD not in entry and GITLINK_UNREAD not in entry
+            and member_problem(entry)
             for entry in members.detail.get("members") or []):
         reasons.append("a member is not at its pin")
     return reasons

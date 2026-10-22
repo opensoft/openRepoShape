@@ -114,7 +114,10 @@ WHAT IT DOES, in order:
       A `project.yaml` this user cannot read is refused by name, exit 2,
       before step (a), and a validator it cannot read before step (b) runs
       any (#430): read as absent, the first was a project that elected
-      nothing and the second a validator SKIPPED, each `bootstrap ok`. A
+      nothing and the second a validator SKIPPED, each `bootstrap ok`. So
+      is the root's own `.git`, or the git directory it names, before
+      either, `git-repo-unreadable` (#1148): it was a traceback, or a root
+      with no `.git`, or legs with no gitlink recorded. A
       leg's `.git`, an operation's marker in its git dir or a register that
       it cannot read is named in its own step, which goes on: the leg is
       left as it is, and nothing is claimed from the register.
@@ -458,6 +461,62 @@ def _unreadable(code: str, root: Path, path: Path, exc: OSError,
     `_unreadable_file` says it."""
     return Refusal(code, _cannot_read(root, path, exc),
                    f"Remediation: {why} {_cure(exc)}")
+
+
+#: The refusal of a root whose own `.git` this user cannot read (#1148): the
+#: code the root's `validate-pins.py` and `validate-manifest.py` refuse it by
+#: (#1146), and why this command reads that repository.
+ROOT_UNREADABLE = "git-repo-unreadable"
+ROOT_READ = (
+    "this command reads the root's own repository, where it finds the root, "
+    "each leg's gitlink and each leg's own repository, and one it cannot "
+    "read is not one that records no gitlink, which would place no leg.")
+
+
+def _refuse_an_unreadable_root(start: Path) -> None:
+    """`git-repo-unreadable`, by name, exit 2, where this user cannot read
+    the `.git` that `find_repo_root` stops at, at `start` or above it, before
+    step (a) (#1148).
+
+    `find_repo_root` ASKS `exists()`, AND IS A SHAPE COPY THIS FILE MAY NOT
+    RELY ON BEING NEWER THAN ITSELF (#370, #610), so each `.git` it would ask
+    is asked here first, with `_is_a`, in the same order. A root whose `.git`
+    is a link into a folder this user cannot search ended `make bootstrap`
+    in a `PermissionError` traceback on Python 3.12, exit 1, which is
+    `bootstrap FAILED`'s code; from 3.14 `exists()` answers False, and the
+    run refused `not-a-git-repo` (`no .git found`) about a root that has one.
+    A `.git` that answers absent (nothing there, a link that leads nowhere
+    or to itself) is passed over, as `exists()` passes it.
+
+    THE FIRST `.git` THAT IS THERE IS ASKED WHAT `validate-pins.py` ASKS IT
+    (#1146), since step (a) reads each leg's gitlink through it and each
+    leg's repository under it: a gitfile it cannot open, or a git directory
+    whose `HEAD` it cannot reach. A `.git` directory at mode 000 passed the
+    `stat`, and step (a) said `no gitlink recorded; leaving as is` of every
+    leg before the pins validator refused the root. Each is named as
+    `validate-pins.py` names it: relative to where the walk starts, or whole
+    where it is not under it. A gitfile that names no directory, and a git
+    directory with no `HEAD`, are left to git, as they always were."""
+    path = Path(start).resolve()
+    for candidate in [path, *path.parents]:
+        dotgit = candidate / ".git"
+        named = dotgit
+        try:
+            if not _is_a(dotgit, lambda _mode: True):
+                continue
+            gitdir = dotgit
+            if _is_a(dotgit, stat.S_ISREG):
+                data = dotgit.read_bytes()
+                if not data.startswith(b"gitdir: "):
+                    return
+                gitdir = dotgit.parent / os.fsdecode(
+                    data[len(b"gitdir: "):].rstrip(b"\r\n"))
+                named = Path(os.path.normpath(gitdir))
+            _is_a(gitdir / "HEAD", lambda _mode: True)
+        except OSError as exc:
+            raise _unreadable(ROOT_UNREADABLE, path, named, exc,
+                              ROOT_READ) from exc
+        return
 
 
 def _is_file(root: Path, path: Path, code: str, why: str) -> bool:
@@ -2030,9 +2089,14 @@ def _load_root_and_manifest(args) -> tuple[Path, dict | None]:
 
     A `project.yaml` this user cannot reach or open is `yaml-unreadable`,
     naming it (#430), never a project with no manifest: read as absent, no
-    leg was placed, no validator ran, and the run said `bootstrap ok`.
+    leg was placed, no validator ran, and the run said `bootstrap ok`. A
+    root whose own `.git` it cannot read is `git-repo-unreadable` before
+    either (`_refuse_an_unreadable_root`, #1148).
     """
-    root = find_repo_root(args.root or Path(__file__).resolve().parents[1])
+    start = args.root or Path(__file__).resolve().parents[1]
+    # A `.git` this user cannot read is refused by name first (#1148).
+    _refuse_an_unreadable_root(start)
+    root = find_repo_root(start)
     manifest_path = root / "project.yaml"
     manifest: dict | None = None
     if _is_file(root, manifest_path, "yaml-unreadable", MANIFEST_READ):
