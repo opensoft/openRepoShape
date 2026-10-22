@@ -433,18 +433,17 @@ def env_steering(tmp_path: Path, steer: dict) -> subprocess.CompletedProcess:
 
 
 @pytest.mark.parametrize("steer", [
-    pytest.param(lambda: {"GIT_ATTR_SOURCE": "HEAD"},
-                 id="git-attr-source-head"),
-    pytest.param(lambda: {"GIT_ATTR_SOURCE": EMPTY_TREE},
-                 id="git-attr-source-the-empty-tree"),
     pytest.param(lambda: command_scope("attr.tree", EMPTY_TREE),
                  id="attr-tree-in-the-command-scope")])
 def test_no_tree_this_machine_names_steers_the_question(tmp_path, steer):
     """The throwaway repository has no commit for `HEAD` to name, and the
-    empty tree would make git read no rule: neither is inherited. `steer`
-    is built here, at the test: `command_scope` appends to the entries the
-    environment holds WHEN IT IS CALLED, and at collection those are not the
-    session's (#835)."""
+    empty tree would make git read no rule: `attr.tree` is not inherited.
+    `GIT_ATTR_SOURCE` is refused by name before any question (#1136):
+    `test_adopt_check_throwaway_repos.py`'s
+    `test_git_attr_source_is_one_finding_that_names_it` holds `HEAD` and
+    the empty tree. `steer` is built here, at the test: `command_scope`
+    appends to the entries the environment holds WHEN IT IS CALLED, and at
+    collection those are not the session's (#835)."""
     result = env_steering(tmp_path, steer())
     assert "REFUSED" not in result.stderr, result.stderr
     assert f"FINDING {REENCODED_FILES}: {KEPT_GROUP}" in result.stderr, \

@@ -421,10 +421,6 @@ def global_attr_tree(tmp_path: Path) -> dict:
 
 
 @pytest.mark.parametrize("where", [
-    pytest.param(lambda _: {"GIT_ATTR_SOURCE": "HEAD"},
-                 id="git-attr-source-head"),
-    pytest.param(lambda _: {"GIT_ATTR_SOURCE": EMPTY_TREE},
-                 id="git-attr-source-the-empty-tree"),
     pytest.param(global_attr_tree, id="attr-tree-in-the-global-config"),
     pytest.param(lambda _: command_scope("attr.tree", EMPTY_TREE),
                  id="attr-tree-in-the-command-scope")])
@@ -434,7 +430,11 @@ def test_no_tree_this_machine_names_steers_the_question(tmp_path, where):
     checklist item 2). With git 2.43, `GIT_ATTR_SOURCE=HEAD` failed there,
     an empty repository, so `check` printed `REFUSED git-failed`; and the
     empty tree, named by either, made git read no rule at all, which
-    silenced the finding. None of them is read, and the finding stands."""
+    silenced the finding. `attr.tree` is not read, and the finding stands.
+    `GIT_ATTR_SOURCE` is refused by name before any question (#1136):
+    `test_adopt_check_throwaway_repos.py`'s
+    `test_git_attr_source_is_one_finding_that_names_it` holds `HEAD` and
+    the empty tree."""
     checked = checked_with(tmp_path, where(tmp_path))
     assert "REFUSED" not in checked.stderr, checked.stderr
     assert f"FINDING {NESTED}: " in checked.stderr, checked.stderr
@@ -634,17 +634,17 @@ def test_this_machines_own_attributes_are_read_for_the_split(tmp_path):
 
 
 @pytest.mark.parametrize("where", [
-    pytest.param(lambda: {"GIT_ATTR_SOURCE": "HEAD"},
-                 id="git-attr-source-head"),
-    pytest.param(lambda: {"GIT_ATTR_SOURCE": EMPTY_TREE},
-                 id="git-attr-source-the-empty-tree"),
     pytest.param(lambda: command_scope("attr.tree", EMPTY_TREE),
                  id="attr-tree-in-the-command-scope")])
 def test_no_tree_this_machine_names_steers_the_split_question(tmp_path,
                                                               where):
     """The question's throwaway repository has no commit for `HEAD` to name,
-    and the empty tree would make git read no rule at all: neither is
-    inherited, so git neither fails nor goes quiet."""
+    and the empty tree would make git read no rule at all: `attr.tree` is
+    not inherited, so git does not go quiet. `GIT_ATTR_SOURCE` is refused
+    by name before any question (#1136):
+    `test_adopt_check_throwaway_repos.py`'s
+    `test_git_attr_source_is_one_finding_that_names_it` holds `HEAD` and
+    the empty tree."""
     checked = checked_root_with(tmp_path, where())
     assert "REFUSED" not in checked.stderr, checked.stderr
     assert STORES_OTHER_BYTES in reencoded(checked)
