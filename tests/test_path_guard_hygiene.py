@@ -1335,7 +1335,9 @@ def _members(expr: ast.expr, constants: dict, errnos: frozenset) -> frozenset:
     literal, bare or in `frozenset(...)` or `set(...)`, each element
     `errno.<NAME>` (by name, through any of `errnos`, the names the file
     binds the module to) or a number. Anything else is refused, rather
-    than guessed at."""
+    than guessed at, and named as the source writes it (`ast.unparse`):
+    `ast.dump` leaves out `ctx=Load()` and the other defaults from Python
+    3.13, so a message built from it reads differently on each Python."""
     if isinstance(expr, ast.Name):
         if expr.id not in constants:
             raise LookupError(f"`{expr.id}` is no constant of the module")
@@ -1345,7 +1347,7 @@ def _members(expr: ast.expr, constants: dict, errnos: frozenset) -> frozenset:
             and len(expr.args) == 1 and not expr.keywords):
         expr = expr.args[0]
     if not isinstance(expr, (ast.Tuple, ast.List, ast.Set)):
-        raise ValueError(f"`{ast.dump(expr)}` is no literal set")
+        raise ValueError(f"`{ast.unparse(expr)}` is no literal set")
     members = set()
     for element in expr.elts:
         if (isinstance(element, ast.Attribute)
@@ -1355,7 +1357,7 @@ def _members(expr: ast.expr, constants: dict, errnos: frozenset) -> frozenset:
         elif isinstance(element, ast.Constant) and type(element.value) is int:
             members.add(element.value)
         else:
-            raise ValueError(f"`{ast.dump(element)}` is neither "
+            raise ValueError(f"`{ast.unparse(element)}` is neither "
                              "`errno.<NAME>` nor a number")
     return frozenset(members)
 
@@ -1366,7 +1368,7 @@ def _caught(handler: ast.ExceptHandler) -> list[str]:
         return ["BaseException"]
     names = (handler.type.elts if isinstance(handler.type, ast.Tuple)
              else [handler.type])
-    return [_dotted(name) or ast.dump(name) for name in names]
+    return [_dotted(name) or ast.unparse(name) for name in names]
 
 
 def _asked(node: ast.AST) -> str | None:
@@ -1603,11 +1605,13 @@ def test_members_unwrap_a_frozenset_or_a_set_and_no_other_call(spelled,
                                                                wanted):
     """r1149's V15: `_members` takes a literal bare or in `frozenset(...)`
     or `set(...)`, as the parity test's twin table has it, and refuses a
-    literal in any other call, which could change it (`sorted`, `tuple`)."""
+    literal in any other call, which could change it (`sorted`, `tuple`),
+    naming it as the source writes it."""
     expr = ast.parse(spelled, mode="eval").body
     if wanted is ValueError:
-        with pytest.raises(ValueError, match="is no literal set"):
+        with pytest.raises(ValueError) as refused:
             _members(expr, {}, frozenset({"errno"}))
+        assert str(refused.value) == f"`{spelled}` is no literal set"
     else:
         assert _members(expr, {}, frozenset({"errno"})) == wanted
 
@@ -1670,13 +1674,24 @@ LAST = "    except ValueError:\n        return False\n"
      "its sets cannot be read: `_is_a` is a class, not a plain function"),
     # r1111b's R13: an element it cannot read is refused, never skipped.
     (("errno.ELOOP)", "errno.ELOOP, EACCES)"),
-     "its sets cannot be read: `Name(id='EACCES', ctx=Load())` is neither "
-     "`errno.<NAME>` nor a number"),
+     "its sets cannot be read: `EACCES` is neither `errno.<NAME>` nor a "
+     "number"),
+    # The row above once said `Name(id='EACCES', ctx=Load())`, which is what
+    # `ast.dump` prints up to 3.12; from 3.13 it leaves `ctx=Load()` out, and
+    # CI's first run of this file, on 3.14, failed on it. Each message that
+    # names a piece of the helper writes it as the source does now, and these
+    # two rows pin the other two ways it is built (`_members`, `_caught`).
+    (("in _ABSENT_ERRNOS", "in sorted(_ABSENT_ERRNOS)"),
+     "its sets cannot be read: `sorted(_ABSENT_ERRNOS)` is no literal set"),
+    ((ANSWERS, "    except errors():\n        return False\n" + ANSWERS),
+     "`_is_a` catches errors(), which answers before the set is asked"),
 ])
 def test_the_parity_test_refuses_another_set(change, said):
     """The parity test's own proof: the `HELPER` passes, and each one-line
     change to its set, its handlers, its `errno` question or its kind is
-    named (r1111's X5, X6, X15 and X18 among them, and r1111b's R13)."""
+    named (r1111's X5, X6, X15 and X18 among them, and r1111b's R13). A
+    message that names a piece of the helper names it as the source writes
+    it (`ast.unparse`), the same on every Python."""
     assert parity_problems(HELPER, "_is_a") == []
     old, new = change
     assert HELPER.count(old) == 1
@@ -1722,13 +1737,13 @@ IS_A = "def _is_a(path, kind):\n"
      "`_is_a`'s `except OSError` does not re-raise what is not absent"),
     ([(SET, f"frozenset({{{SET[1:-1]}}})")],
      [(SET, f"frozenset({{{SET[1:-1]}}}) | {{errno.EACCES}}")],
-     "is no literal set"),
+     f"`frozenset({{{SET[1:-1]}}}) | {{errno.EACCES}}` is no literal set"),
     ([("import errno\n", "import errno as E\n"),
       (SET, SET.replace("errno.", "E."))],
      [("import errno\n", "import errno\n\nclass E:\n"
        "    ENOENT = ENOTDIR = EBADF = ELOOP = errno.EACCES\n"),
       (SET, SET.replace("errno.", "E."))],
-     "is neither `errno.<NAME>` nor a number"),
+     "`E.ENOENT` is neither `errno.<NAME>` nor a number"),
     ([(ANSWERS, "    except (FileNotFoundError, NotADirectoryError):\n"
        "        return False\n" + ANSWERS)],
      [(ANSWERS, "    except (FileNotFoundError, PermissionError):\n"
