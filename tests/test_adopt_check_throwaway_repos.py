@@ -332,8 +332,9 @@ CASE_TWINS = [
     pytest.param((".GIT/x", ".Git/x"), (".GIT/x", ".Git/x"),
                  id="twins-git-refuses"),
 ]
-#: Every twin above in one source commit; the ones git refuses, in the
-#: tree's order; and the plan's answers for them all.
+#: The twins of `file-twins`, `folder-twins` and `a-folder-and-a-file`, and
+#: the two refused sets above, in one source commit; the ones git refuses,
+#: in the tree's order; and the plan's answers for them all.
 ALL_TWINS = ("A", "a", "D/x", "d/x", "F/x", "f", ".Git/A", ".Git/a",
              ".GIT/x", ".Git/x")
 TWINS_REFUSED = (".GIT/x", ".Git/A", ".Git/a", ".Git/x")
@@ -393,7 +394,7 @@ def test_each_case_twin_is_held_with_its_own_blob_or_named(
     """`refused_paths` writes its index with `update-index -z --index-info`.
     Measured with git 2.43 and `core.ignorecase` true in the rehearsal's
     own config:
-    - git holds both twins of a path it takes, each under its own name with
+    - git holds each twin of a path it takes, each under its own name with
       its own blob, at a file, a folder, or a folder beside a file;
     - git leaves out both twins of a path it refuses, and `refused_paths`
       names each one.
@@ -444,15 +445,17 @@ def test_on_a_disk_that_ignores_case_each_twin_is_held_or_named(adopter,
 
 
 def test_check_names_each_twin_git_refuses_and_no_twin_it_holds(tmp_path):
-    """`check` over a source holding every twin above, with
-    `core.ignorecase` true in the global config. On a disk that keeps case,
-    `git init` writes no `core.ignorecase` into a throwaway repository, so
-    the global setting is the one each throwaway reads. `plan` asks about
-    each twin as a path of its own (`planned` answers each by name). Under a
-    global `core.ignorecase=true` the #654 rehearsal's `git add` refuses the
-    folder twins `D/x` and `d/x` as `plan-file-reencoded`; this row does not
-    see it, because the rehearsal asks nothing of a source that holds a path
-    git refuses (`_reencoded_files_findings`, `if refused: return []`).
+    """`check` over a source holding the twins of `file-twins`,
+    `folder-twins` and `a-folder-and-a-file`, and the two refused sets
+    above, with `core.ignorecase` true in the global config. On a disk that
+    keeps case, `git init` writes no `core.ignorecase` into a throwaway
+    repository, so the global setting is the one each throwaway reads.
+    `plan` asks about each twin as a path of its own (`planned` answers
+    each by name). Under a global `core.ignorecase=true` the #654
+    rehearsal's `git add` refuses the folder twins `D/x` and `d/x` as
+    `plan-file-reencoded`; this row does not see it, because the rehearsal
+    asks nothing of a source that holds a path git refuses
+    (`_reencoded_files_findings`, `if refused: return []`).
     `refused_paths` meets every twin, and `plan-path-git-refuses` names, in
     the tree's order, the four git refuses and none of the six it holds."""
     source = a_source(tmp_path)
