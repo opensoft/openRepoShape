@@ -67,6 +67,8 @@ VARIANTS = {"nocheckout": ("--filter=blob:none", "--no-checkout"),
             "full": ()}
 #: A commit on a branch the source never clones.
 SIDE = "side"
+#: An annotated tag on a commit no branch reaches, which changes a spec file.
+TAG = "tagged"
 
 needs_filter_repo = pytest.mark.skipif(
     shutil.which("git-filter-repo") is None,
@@ -93,7 +95,8 @@ def no_ambient_variable(monkeypatch):
 def planned_once(tmp_path_factory) -> dict:
     """`origin`, which lets a clone filter, a plan written from a full clone
     of its `main`, every entry answered, and a commit on a branch `side` no
-    clone below takes; made once, since every row reads it alone."""
+    clone below takes, and an annotated tag `TAG` on a commit no branch
+    reaches; made once, since every row reads it alone."""
     base = tmp_path_factory.mktemp("planned")
     origin = make_source_repo(base / "origin")
     git("config", "uploadpack.allowFilter", "true", cwd=origin)
@@ -110,6 +113,12 @@ def planned_once(tmp_path_factory) -> dict:
     git("switch", "-q", "-c", SIDE, cwd=origin)
     git("commit", "-q", "--allow-empty", "-m", "Elsewhere", cwd=origin)
     side = git("rev-parse", "HEAD", cwd=origin).stdout.strip()
+    git("switch", "-q", "main", cwd=origin)
+    git("switch", "-q", "--detach", cwd=origin)
+    (origin / "specs" / "001-feature" / "spec.md").write_text(
+        "# The feature, as the tag has it\n", encoding="utf-8")
+    git("commit", "-q", "-a", "-m", "Only a tag reaches this", cwd=origin)
+    git("tag", "-a", "-m", "A tag", TAG, cwd=origin)
     git("switch", "-q", "main", cwd=origin)
     return {"origin": origin, "text": plan.read_text(encoding="utf-8"),
             "at": full, "commit": commit, "side": side}
@@ -173,10 +182,20 @@ class Source:
         return len(list((self.path / ".git" / "objects" / "pack")
                         .glob("*.promisor")))
 
-    def lacking(self) -> int:
-        listed = git("rev-list", "--objects", "--missing=print", "--all",
+    def lacking(self, refs: str = "--all") -> int:
+        """How many objects `refs` (`--all`, `--branches` or `--tags`)
+        reach that the source lacks."""
+        listed = git("rev-list", "--objects", "--missing=print", refs,
                      cwd=self.path).stdout
         return sum(line.startswith("?") for line in listed.splitlines())
+
+    def fetch_the_tag(self) -> None:
+        """Fetch `TAG` with the filter this clone keeps, so that its commit's
+        changed blob is lacking; what that fetch ran is not counted."""
+        git(*FILE_PROTOCOL, "fetch", "-q", "origin",
+            f"refs/tags/{TAG}:refs/tags/{TAG}", cwd=self.path)
+        self.log.write_text("", encoding="utf-8")
+        self.before = self.store()
 
     def untouched(self) -> None:
         """No `upload-pack` ran, and `objects/` is as it was."""
@@ -355,6 +374,27 @@ def test_execute_reads_no_commit_a_cloned_plan_names_and_the_source_lacks(
     assert not (source.base / "remotes").exists()
 
 
+@pytest.mark.parametrize("command", ["check", "execute"])
+def test_a_tag_whose_blob_the_source_lacks_is_refused(made, command):
+    """Only a tag reaches what is lacking: a cured partial clone lacks
+    nothing, then fetches `TAG` with the filter it keeps, and that tag's
+    commit changes a spec file, whose blob is not fetched. Its branches lack
+    0 objects and its tags lack some. Refused through `check` and through
+    `execute`, no leg made, nothing fetched. With `--tags` out of the walk,
+    `check` said `plan ok`, and `execute` made both legs and then died in
+    `git filter-repo`, `Blob not found`."""
+    source = made("cured")
+    source.fetch_the_tag()
+    assert source.lacking("--branches") == 0
+    assert source.lacking("--tags") > 0
+    result = getattr(source, command)()
+    assert result.returncode == 2, result.stderr + result.stdout
+    assert REFUSED in result.stderr
+    assert "plan ok" not in result.stdout
+    assert not (source.base / "remotes").exists()
+    source.untouched()
+
+
 def test_a_branch_whose_commit_the_source_lacks_is_refused(made):
     """A branch git cannot walk, written by hand at a commit the source
     lacks: before git 2.45 `rev-list --missing=print` exits 128 on it, and
@@ -397,14 +437,17 @@ def test_a_partial_clone_git_cannot_walk_is_refused_on_any_git(
       ("remote.second.promisor", "true"),
       ("remote.first.partialclonefilter", "blob:none")),
      ["second", "first"]),
+    ((("extensions.partialclone", "o"),
+      ("remote.o.promisor", "true"),
+      ("remote.p.promisor", "true")), ["p", "o"]),
     ((), []),
 ], ids=["promisor", "promisor-yes", "filter", "extension", "promisor-false",
-        "extension-last", "none"])
+        "extension-last", "extension-also-promisor", "none"])
 def test_promisor_remotes_reads_git_s_rule(adopter, tmp_path, config,
                                            remotes):
     """Each key git's `promisor-remote.c` reads, the remote
-    `extensions.partialclone` names last; `promisor = false` alone is
-    none."""
+    `extensions.partialclone` names last, one that is also a promisor
+    included; `promisor = false` alone is none."""
     git("init", "-q", str(tmp_path / "repo"), cwd=tmp_path)
     for key, value in config:
         git("config", key, value, cwd=tmp_path / "repo")
