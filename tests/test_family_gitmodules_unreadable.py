@@ -93,6 +93,11 @@ OTHER_CAUSE = "Where the operating system gave another reason"
 UPDATE = ("`git -c protocol.allow=never submodule update --init --no-fetch "
           f"-- {PATH}`")
 ONLY_REMOTE = "comes back only from its remote"
+#: The cure the rollback's sentence gives a `.gitmodules` it cannot read
+#: when it asks for the checkout's store, which prints no remediation of its
+#: own (r1164's NIT-1); not "inside the holder", as a link can lead out.
+READ_CURE = ("`chmod u+r` on it, and `chmod u+rx` on every directory above "
+             "it, lets git read it")
 READERS = pytest.mark.parametrize("reader", ["_gitmodules_names",
                                              "_sections_giving"])
 #: What each reader answers where the holder has no `.gitmodules`.
@@ -422,10 +427,10 @@ def test_a_rollback_meeting_a_refused_gitmodules_types_the_restore(
 def test_a_rollback_that_cannot_open_gitmodules_makes_the_mount_again(
         holder, offline, tmp_path, monkeypatch, capsys):
     """`.gitmodules` is put back, then cannot be opened when the checkout
-    is asked for (`os.access`): the step is named, the mount is made again,
-    empty, as for a store this user cannot read, and the update is typed;
-    typed as printed, with the read given back, the commands put the
-    member back on its branch."""
+    is asked for (`os.access`): the step is named with its cure, the mount
+    is made again, empty, as for a store this user cannot read, and the
+    update is typed; typed as printed, with the read given back, the
+    commands put the member back on its branch."""
     module = family_module()
     at = git("rev-parse", "HEAD", cwd=holder / PATH).stdout.strip()
     failing_commit(module, holder, monkeypatch,
@@ -437,8 +442,8 @@ def test_a_rollback_that_cannot_open_gitmodules_makes_the_mount_again(
     err = capsys.readouterr().err
     assert code == 2, err
     sentence = err.splitlines()[-1]
-    assert (f"from the object store `git rm` keeps: {NO_READ}, and {PATH} "
-            "was made again, empty") in sentence
+    assert (f"from the object store `git rm` keeps: {NO_READ}: "
+            f"{READ_CURE}, and {PATH} was made again, empty") in sentence
     assert UPDATE in sentence
     assert ONLY_REMOTE not in sentence
     assert "`mkdir " not in sentence

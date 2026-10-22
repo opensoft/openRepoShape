@@ -8160,6 +8160,15 @@ class PinRollback:
         try:
             why = self._storeless()
         except Refusal as exc:
+            if exc.code == GITMODULES_UNREAD:
+                # With its cure, as a store's detail carries its own: the
+                # sentence prints no remediation (r1164's NIT-1). Not
+                # "inside the holder": a link can lead out of it.
+                exc.detail += ": " + (
+                    "`chmod u+r` on it, and `chmod u+rx` on every directory "
+                    "above it, lets git read it"
+                    if isinstance(exc.__cause__, PermissionError)
+                    else OTHER_CURE)
             if exc.code in READABLE_ONCE_CURED and \
                     self._made_again_if_can():
                 exc.detail += f", and {self.path} was made again, empty"
