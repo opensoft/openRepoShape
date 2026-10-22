@@ -69,6 +69,8 @@ from __future__ import annotations
 import errno
 import os
 import shutil
+import stat
+import sys
 from pathlib import Path
 
 import pytest
@@ -185,33 +187,41 @@ def assert_legs_name(rows: dict, line: str, standard: Path,
 
 @pytest.fixture(scope="module")
 def gates():
-    """The standard's two assembly-root validators, loaded by path."""
-    return {name: load_without_bytecode(TEMPLATES / name, f"root_git_{index}")
-            for index, name in enumerate(sorted(READS))}
+    """The standard's two assembly-root validators, loaded by path, and
+    `sys.path` put back after: each puts its own `scripts/` on it."""
+    with pytest.MonkeyPatch.context() as patch:
+        patch.setattr(sys, "path", list(sys.path))
+        return {name: load_without_bytecode(TEMPLATES / name,
+                                            f"root_git_{index}")
+                for index, name in enumerate(sorted(READS))}
 
 
-def as_python_314(monkeypatch, refused: dict) -> None:
-    """`Path.stat` raising `refused[path]` for each of those exact paths, and
-    `exists()` answering as Python 3.14's does, False to ANY `OSError`: a
-    `.git` this user cannot reach at ONE place in a walk, where
-    `refused_stat` refuses every `.git` by name."""
+def as_python_314(monkeypatch, failures: dict) -> None:
+    """`Path.stat` raising `failures[path]` for each of those exact paths,
+    and `is_file()`, `is_dir()` and `exists()` answering as Python 3.14's
+    do, False to ANY `OSError`: a `.git` this user cannot reach at ONE place,
+    where `refused_stat` refuses every `.git` by name, the root's own among
+    them."""
     real = Path.stat
 
     def stat_(self, *args, **kwargs):
-        error = refused.get(self)
+        error = failures.get(self)
         if error is not None:
             raise type(error)(error.errno, error.strerror, str(self))
         return real(self, *args, **kwargs)
 
-    def exists(self, *args, **kwargs):
-        try:
-            self.stat(*args, **kwargs)
-        except (OSError, ValueError):
-            return False
-        return True
+    def answering(kind):
+        def answer(self, *args, **kwargs):
+            try:
+                return kind(self.stat(*args, **kwargs).st_mode)
+            except (OSError, ValueError):
+                return False
+        return answer
 
     monkeypatch.setattr(Path, "stat", stat_)
-    monkeypatch.setattr(Path, "exists", exists)
+    monkeypatch.setattr(Path, "is_file", answering(stat.S_ISREG))
+    monkeypatch.setattr(Path, "is_dir", answering(stat.S_ISDIR))
+    monkeypatch.setattr(Path, "exists", answering(lambda _mode: True))
 
 
 # --- the mode cases: a real mode, each tool run as a person runs it ----------
