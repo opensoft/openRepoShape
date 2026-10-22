@@ -1554,11 +1554,11 @@ UNREAD_ASKED = UNREAD_EXIT[:UNREAD_EXIT.index("Let git read it")]
 UNREAD_RE_RUN = UNREAD_EXIT[UNREAD_EXIT.index(", then re-run: "):]
 #: How `_exists_remedy` names the fix for a re-run's read whose host key ssh
 #: refused (#1137): the push's (`UNKNOWN_HOST_KEY_REMEDY`), in a read's
-#: words. A read is `git ls-remote`, which only an `insteadOf` rule sends
-#: over ssh, and nothing was pushed. Literals, so the test cannot agree with
-#: whatever the code's words become.
+#: words. A read is `git ls-remote`, or `only_commit`'s `git fetch` after it,
+#: which only an `insteadOf` rule sends over ssh, and nothing was pushed.
+#: Literals, so the test cannot agree with whatever the code's words become.
 UNREAD_UNKNOWN_HOST_KEY = (
-    "ssh could not verify the key of the host that `git ls-remote` reached: "
+    "ssh could not verify the key of the host git reached for that read: "
     "a `url.<base>.insteadOf` rule in your git config sends it over ssh, "
     "that key is in none of your known_hosts files, and ssh refused it "
     "without asking, as under `BatchMode=yes`, or was answered no, so a "
@@ -1571,15 +1571,15 @@ UNREAD_UNKNOWN_HOST_KEY = (
 #: server, in a terminal: both printed, the key refused, nothing asked), and
 #: nothing is kept before that fingerprint is checked against GitHub's.
 UNREAD_CHANGED_HOST_KEY = (
-    "The host that `git ls-remote` reached sent ssh a key other than the one "
+    "The host git reached for that read sent ssh a key other than the one "
     "your known_hosts holds for it: a `url.<base>.insteadOf` rule in your "
     "git config sends it over ssh, and ssh refuses a changed key, so a "
     "re-run is refused the same way. A machine in the middle of the "
     "connection shows this as well as a key GitHub replaced, so accept no "
     "key from that host, and push nothing to it, until you have checked "
-    "that the fingerprint ssh prints when you run that `git ls-remote` again "
-    f"is one GitHub publishes ({PUBLISHED}); only then remove the old key "
-    "(the `ssh-keygen -R` line ssh prints with it) and keep the new one "
+    "that the fingerprint ssh prints when you run `git ls-remote` of that URL "
+    f"again is one GitHub publishes ({PUBLISHED}); only then remove the old "
+    "key (the `ssh-keygen -R` line ssh prints with it) and keep the new one "
     f"({SEE_THE_KEY}), answering yes only to a fingerprint GitHub "
     "publishes, which can be another of its keys than the one you checked")
 
@@ -1899,17 +1899,25 @@ def test_what_a_refused_push_prints(scaffold_module, capsys, output, reused,
     (RULESET_SAYING_HOST_KEY, None),
     (f"{REFUSED_KEY}\n{GENERIC}{ADVICE}", None),
     (NO_PROMPT, None),
+    ("fatal: remote error: see the log\n@    WARNING: REMOTE HOST "
+     "IDENTIFICATION HAS CHANGED!  @\nHost key verification failed.",
+     None),
+    ("fatal: remote error: Host key verification failed.", None),
 ], ids=["an-unknown-host-key", "an-unknown-host-key-checked-strictly",
         "a-changed-host-key", "an-unknown-host-key-among-remote-lines",
         "remote-lines-alone-say-the-host-key-failed", "ssh-refused-the-key",
-        "no-username"])
+        "no-username", "a-server-error-packet-on-lines-of-its-own",
+        "a-server-error-packet-on-one-line"])
 def test_what_a_leg_git_could_not_read_is_told(scaffold_module, output, fix):
     """`_exists_remedy` for a leg git could not read (#542, #915, #1137):
     git's one line, then, where ssh's own lines say it refused the host's
     key, that key's fix (`_read_host_key_fix`), unknown or changed as for a
     push, and otherwise the login's ("Let git read it"), then the same
     re-run. Only ssh's own lines are read: `remote:` lines carrying ssh's
-    words are the server's (`_without_remote_lines`). In-process, so it runs
+    words are the server's (`_without_remote_lines`), and so is all from
+    `fatal: remote error:` on, where git died on the server's error
+    packet, whose lines carry no prefix (RV1156's S1, measured with git
+    2.43 against a fake ssh that sends the packet). In-process, so it runs
     on every platform."""
     failed = scaffold_module.CommandFailed(["git", "ls-remote", "u"], None,
                                            128, output)

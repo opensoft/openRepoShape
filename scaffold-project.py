@@ -2174,10 +2174,20 @@ KEY_REFUSED = ("Permission denied (publickey",)
 #: was asked. Such a push was told `RULESET_HINT` alone, whose re-run fails
 #: the same way (RV1101's S1; measured on main at 823624d, a first run's
 #: push and a re-run's: exit 2 in under 2 s). OpenSSH's own words, which it
-#: does not translate. Only ssh's own lines are read: git prefixes each line
-#: the server sent with `remote:`, so words a ruleset's message or a hook
-#: carries cannot turn a ruleset refusal into this remedy
-#: (`_without_remote_lines`). Where ssh's `LogLevel` hides what it says, each
+#: does not translate. Only ssh's own lines are read, so far as git lets them
+#: be told apart. git prefixes each line the server sent with `remote:`
+#: (measured, git 2.43), so words a ruleset's message or a hook carries
+#: cannot turn a ruleset refusal into this remedy (`_without_remote_lines`).
+#: Where the far side answers with an error packet, git dies on `fatal:
+#: remote error: <its message>`, the message's newlines kept and none of its
+#: lines prefixed (measured, git 2.43, over a fake ssh that sends the
+#: packet), so all from that line on is the server's and is cut
+#: (`_host_key_refused`). Stderr the far side writes through ssh's channel
+#: reaches git with no prefix either, and cannot be told from ssh's own
+#: lines (NOT measured: it follows from how OpenSSH relays a remote
+#: command's stderr). Only a host ssh has already verified can write it, and
+#: it leads only to a fix that keeps no key before its fingerprint is
+#: checked against GitHub's. Where ssh's `LogLevel` hides what it says, each
 #: case is safe (measured on OpenSSH 9.6, the last one read from the ssh
 #: binary): `LogLevel=QUIET` prints neither this line nor
 #: `HOST_KEY_CHANGED`'s, so the push gets the ruleset hint, as at main;
@@ -2362,9 +2372,19 @@ def _host_key_refused(output: str) -> str:
     for a push or a read (#1108, #1137): `"changed"` where it says the key
     changed (`HOST_KEY_CHANGED`) and then that it failed, `"unknown"` where
     it says only that it failed (`HOST_KEY_FAILED`), and `""` where it
-    refused none. A line the server sent is no evidence of what ssh did
-    (`_without_remote_lines`)."""
-    said = _without_remote_lines(output)
+    refused none. A line the server sent is no evidence of what ssh did:
+    not a `remote:` line (`_without_remote_lines`), and nothing from
+    `fatal: remote error:` on, where git died on the server's error
+    packet, whose message keeps its newlines and has no prefix on them
+    (measured, git 2.43). Where ssh itself refused the key, no server
+    answered, so the cut hides none of ssh's lines. Stderr the far side
+    writes through ssh's channel is not cut: it reaches git with no
+    prefix and cannot be told from ssh's own lines (NOT measured: it
+    follows from how OpenSSH relays a remote command's stderr). Only a
+    host ssh has already verified can write it, and it leads only to a
+    fix that keeps no key before its fingerprint is checked against
+    GitHub's."""
+    said = _without_remote_lines(output).split("fatal: remote error:", 1)[0]
     if not any(words in said for words in HOST_KEY_FAILED):
         return ""
     if any(words in said for words in HOST_KEY_CHANGED):
@@ -2379,19 +2399,20 @@ def _read_host_key_fix(output: str) -> str:
     place of a login, which nobody was asked for, and its re-run follows.
 
     THE PUSH'S TWO FIXES (`_host_key_remedy`, #1108), IN A READ'S WORDS.
-    The read is `git ls-remote`, which the reason before this fix names,
-    and only a `url.<base>.insteadOf` rule sends a read over ssh. Nothing of
-    ssh's is printed but that reason's one line, `Host key verification
-    failed.` for an unknown key and a changed one alike (measured, OpenSSH
-    9.6 against a fake server), so a changed key's fingerprint and its
-    `ssh-keygen -R` line are what ssh prints when that `git ls-remote` is
-    run again, not "above". Each fix is as safe as the push's: a changed key
+    The read is `git ls-remote`, or `only_commit`'s `git fetch` after it,
+    which the reason before this fix names, and only a `url.<base>.insteadOf`
+    rule sends a read over ssh. Nothing of ssh's is printed but that
+    reason's one line, `Host key verification failed.` for an unknown key
+    and a changed one alike (measured, OpenSSH 9.6 against a fake server),
+    so a changed key's fingerprint and its `ssh-keygen -R` line are what
+    ssh prints when `git ls-remote` of that URL is run again, not
+    "above". Each fix is as safe as the push's: a changed key
     is never kept before its fingerprint is checked against GitHub's
     (`GITHUB_FINGERPRINTS`), and each `ssh -T` (`HOST_KEY_CHECK`) is answered
     yes only to a fingerprint GitHub publishes."""
     refused = _host_key_refused(output)
     if refused == "changed":
-        return ("The host that `git ls-remote` reached sent ssh a key other "
+        return ("The host git reached for that read sent ssh a key other "
                 "than the one your known_hosts holds for it: a "
                 "`url.<base>.insteadOf` rule in your git config sends it "
                 "over ssh, and ssh refuses a changed key, so a re-run is "
@@ -2399,15 +2420,16 @@ def _read_host_key_fix(output: str) -> str:
                 "connection shows this as well as a key GitHub replaced, so "
                 "accept no key from that host, and push nothing to it, until "
                 "you have checked that the fingerprint ssh prints when you "
-                "run that `git ls-remote` again is one GitHub publishes ("
+                "run `git ls-remote` of that URL again is one GitHub "
+                "publishes ("
                 + GITHUB_FINGERPRINTS + "); only then remove the old key "
                 "(the `ssh-keygen -R` line ssh prints with it) and keep the "
                 "new one (" + HOST_KEY_CHECK + "), answering yes only to a "
                 "fingerprint GitHub publishes, which can be another of its "
                 "keys than the one you checked")
     if refused == "unknown":
-        return ("ssh could not verify the key of the host that `git "
-                "ls-remote` reached: a `url.<base>.insteadOf` rule in your "
+        return ("ssh could not verify the key of the host git reached for "
+                "that read: a `url.<base>.insteadOf` rule in your "
                 "git config sends it over ssh, that key is in none of your "
                 "known_hosts files, and ssh refused it without asking, as "
                 "under `BatchMode=yes`, or was answered no, so a re-run is "
