@@ -11156,6 +11156,24 @@ def check_not_a_root_naming(ctx: Context) -> Row:
                None if code == 0 else command, detail)
 
 
+def read_through(path: Path) -> None:
+    """Read `path` to its end where it is a regular file, raising the
+    `OSError` of a `stat` or a read the operating system REFUSED (#1110).
+
+    The read `shape_advisory` makes of a leg's `AGENTS.md` (`Tree.text`), so
+    `what is here` names a file the advisory cannot read: one at mode 000,
+    whose `stat` succeeds, as well as a link into a folder this user cannot
+    search. Nothing there, no regular file, or a read that finds nothing
+    there (`ABSENT_ERRNOS`, as the advisory reads it) raises nothing."""
+    if not is_a(path, stat.S_ISREG):
+        return
+    try:
+        path.read_bytes()
+    except OSError as exc:
+        if refused_read(exc) is not None:
+            raise
+
+
 def check_what_is_here(ctx: Context) -> Row:
     """What IS in this directory, said plainly, so the reader can place it.
 
@@ -11175,6 +11193,14 @@ def check_what_is_here(ctx: Context) -> Row:
     Still `n/a`: nothing asserts a name in a directory that is no shape root,
     and its verdict reads no row. The name's entry in `detail` is `true`,
     since it is there, and `cannot_be_read` lists the lines.
+
+    `AGENTS.md` IS READ THROUGH, NOT ONLY ASKED (#1110), because it is the
+    one name here whose CONTENT a reader of this directory reads: the Triad
+    advisory reads it to tell a leg, and `the way in` offers no way in while
+    it cannot, pointing here. A file this user may not open, at mode 000,
+    has a `stat` that succeeds, so asking alone would leave that pointer
+    with nothing here to point at; `read_through` reads it as the advisory
+    does and raises the refusal, which this row names in the same line.
     """
     root = ctx.root
     facts: list[str] = []
@@ -11196,6 +11222,8 @@ def check_what_is_here(ctx: Context) -> Row:
                         f"a {shape_advisory.RECORD_FILE}")):
         try:
             there = is_a(root / name, lambda _mode: True)
+            if there and name == AGENTS_MD:
+                read_through(root / name)
         except OSError as exc:
             detail[name] = True
             unread.append(cannot_be_read(name, exc))
@@ -11523,12 +11551,23 @@ def leg_clone(ctx: Context) -> bool:
     way in` and the `Triad` row cannot disagree about one directory. False
     when the advisory cannot answer at all -- `the way in` then says what it
     always said.
+
+    A READ THE ADVISORY WAS REFUSED RAISES, for the caller to name (#1110).
+    A leg's own `AGENTS.md` this user cannot read leaves whether this is a
+    leg unknown, and was read as no leg's file: `the way in` offered to adopt
+    the leg, and `the other way in` to scaffold three new repositories over
+    it. The reading carries the `OSError` (`refused`, as for a `.git` it
+    cannot reach), and this raises it, as `carries_git` raises a `.git`'s:
+    both callers ask `carries_git` first, then this, and offer no way in
+    over either. A leg known by its NAME is still one (`shape_advisory`).
     """
     try:
-        return shape_advisory.read(ctx.root, ctx.shape).state \
-            == shape_advisory.LEG_CLONE
+        reading = shape_advisory.read(ctx.root, ctx.shape)
     except Exception:  # noqa: BLE001 - the advisory never fails the report
         return False
+    if reading.refused is not None:
+        raise reading.refused
+    return reading.state == shape_advisory.LEG_CLONE
 
 
 def check_the_way_in(ctx: Context) -> Row:
@@ -11596,22 +11635,32 @@ def check_the_way_in(ctx: Context) -> Row:
     read, so this row offers neither command and asks nothing of `origin`
     (`carries_git`, asked first). It is `n/a`, as every answer here is, and
     points at `what is here`, which names the `.git` with the cure once.
+
+    NOR DOES A LEG'S `AGENTS.md` THIS USER CANNOT READ (#1110). In a
+    repository `leg_clone` is asked next, and it raises the refused read of
+    the file that says whether this is a leg: an `AGENTS.md` linked into a
+    folder this user cannot search, or one at mode 000. It was read as no
+    leg's file on every Python, and this row offered to adopt the leg as a
+    project of its own. A leg is neither adopted nor scaffolded, and whether
+    this is one is not known until the file can be read, so the row offers
+    neither command and points at `what is here`, as for the `.git`
+    (`way_in_unread_row`). A leg known by its name is still the leg's row.
     """
     root = ctx.root
     try:
         is_repo = carries_git(root)
     except OSError as exc:
-        line = cannot_be_read(".git", exc)
-        return Row("way-in", "the way in", NA,
-                   "its .git cannot be read, so it is not known whether this "
-                   "is a git repository to adopt, and neither way in is "
-                   "offered until it can be: `what is here` says how", None,
-                   {"git_repository": None, "suggested_project": None,
-                    "origin_org": None, "cannot_be_read": line,
-                    "path": ".git"})
+        return way_in_unread_row(".git", exc, None, None,
+                                 "this is a git repository to adopt")
+    try:
+        leg = is_repo and leg_clone(ctx)
+    except OSError as exc:
+        return way_in_unread_row(AGENTS_MD, exc, True, origin_org(root),
+                                 "this is a clone of a Triad's leg, which is "
+                                 "not adopted or scaffolded on its own")
     project, refusal = way_in_project(ctx)
     org = origin_org(root)
-    if is_repo and leg_clone(ctx):
+    if leg:
         # A LEG IS NOT ADOPTED. Splitting a spec or code leg into two more
         # legs is the one adoption nobody wants, and offering it two rows
         # above a `Triad` row that says "work from its assembly root" would
@@ -11649,6 +11698,28 @@ def check_the_way_in(ctx: Context) -> Row:
                {"git_repository": is_repo, "suggested_project": project,
                 "origin_org": org},
                why=why)
+
+
+def way_in_unread_row(named: str, exc: OSError, is_repo: bool | None,
+                      org: str | None, unknown: str) -> Row:
+    """`the way in` while `named` cannot be read, so that `unknown` is not
+    known (#1110): `n/a` with no NEXT, since neither way in is offered, and a
+    pointer at `what is here`, which names the file with the cure, once.
+    `detail` keeps the row's keys. `git_repository` is `is_repo` and
+    `origin_org` is `org`, each what was read: both None for a `.git` that
+    cannot be read, whose `origin` is not read either, and for an `AGENTS.md`
+    the repository and its `origin`'s organisation, kept as the leg's row
+    and the policy row keep `origin_org` with no command. `suggested_project`
+    is None, since no `--project` is offered, and `cannot_be_read` and `path`
+    name the file."""
+    return Row("way-in", "the way in", NA,
+               f"its {named} cannot be read, so it is not known whether "
+               f"{unknown}, and neither way in is offered until it can be: "
+               "`what is here` says how", None,
+               {"git_repository": is_repo, "suggested_project": None,
+                "origin_org": org,
+                "cannot_be_read": cannot_be_read(named, exc),
+                "path": named})
 
 
 def way_in_project(ctx: Context) -> tuple:
@@ -11736,12 +11807,16 @@ def check_the_other_way_in(ctx: Context) -> Row | None:
     row offers no second one. On Python 3.14 `exists()` answered that `.git`
     False, and the row was left out as for a folder with no repository; up
     to 3.13 it raised, and `run_checks` named the `.git` here a fourth time.
+    And silent where a leg's `AGENTS.md` cannot be read (`leg_clone` raises
+    it, #1110): whether this is a leg is not known, and a leg is offered no
+    scaffold. This row offered it over a leg's file read as no leg's.
     """
     try:
         repository = carries_git(ctx.root)
+        leg = repository and leg_clone(ctx)
     except OSError:
         return None
-    if not repository or leg_clone(ctx):
+    if not repository or leg:
         return None
     project, refusal = way_in_project(ctx)
     if refusal is not None:
