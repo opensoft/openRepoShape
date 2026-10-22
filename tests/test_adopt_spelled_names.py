@@ -28,6 +28,12 @@ Measured on c7a3ff16, each by the rows below that ask it:
   right of their headings.
 
 Every row here fails on c7a3ff16's `adopt-project.py`.
+
+And measured on 961640c6 (#1034): `_print_entries` padded each name by the
+code points it holds, not the columns a terminal gives it. On a UTF-8
+stdout `\\u540d\\u524d.md` took 7 columns and was padded as 5, so its
+row's leg stood 2 columns right of `leg`, and `e\\u0301.md` took 4 and
+stood 1 column left. The rows after `_columns`'s fail on 961640c6's.
 """
 
 from __future__ import annotations
@@ -526,3 +532,97 @@ def test_plan_under_the_c_locale_keeps_each_column_under_its_heading(
     heading, rows = table_of(written.stdout.decode("ascii", "replace"))
     assert "caf\\xe9.md" in [row.split()[0] for row in rows], rows
     assert_each_column_under_its_heading(heading, rows)
+
+
+# --- plan's table: a name padded by the columns it takes (#1034) ----------
+
+#: Each name and the columns a terminal gives it, counted by hand: two for a
+#: wide or fullwidth character, none for a non-spacing or enclosing mark or
+#: a format character, and one for any other, a halfwidth or an ambiguous
+#: one among them.
+COLUMNS = {
+    "README.md": 9,
+    "\u540d\u524d.md": 7,
+    "\uff21\uff22.md": 7,
+    "\uff76.md": 4,
+    "\u00e9.md": 4,
+    "e\u0301.md": 4,
+    "\u0e17\u0e35.md": 4,
+    "\u304b\u3099.md": 5,
+    "a\u20ddb": 2,
+    "a\u200bb": 2,
+    "caf\\xe9.md": 10,
+}
+
+
+@pytest.mark.parametrize("name", list(COLUMNS),
+                         ids=["ascii", "wide", "fullwidth", "halfwidth",
+                              "ambiguous", "combining-acute",
+                              "thai-mark-of-class-0", "wide-voiced-mark",
+                              "enclosing-mark", "zero-width-space",
+                              "as-an-ascii-stdout-escapes-it"])
+def test_a_name_takes_the_columns_a_terminal_gives_it(adopter, name):
+    """`_columns`, which `plan`'s table pads a name by. The Thai vowel sign
+    U+0E35 is a mark whose combining class is 0, and the voiced sound mark
+    U+3099 a mark East Asian width calls wide: each takes no column."""
+    assert adopter._columns(name) == COLUMNS[name]
+
+
+def leg_columns(rows: list[str]) -> list[int]:
+    """The column each row's leg begins at on a terminal: the columns its
+    name takes, as `COLUMNS` counts them or one to each character of an
+    ASCII name, then the spaces after it. No name here holds a space."""
+    columns = []
+    for row in rows:
+        name, _, rest = row.partition(" ")
+        if name in COLUMNS:
+            width = COLUMNS[name]
+        else:
+            assert name.isascii(), (name, rows)
+            width = len(name)
+        columns.append(width + 1 + len(rest) - len(rest.lstrip(" ")))
+    return columns
+
+
+def test_the_table_pads_a_wide_and_a_combining_name_by_their_columns(
+        adopter, monkeypatch):
+    """`_print_entries` on a UTF-8 stdout, which prints each name as it is:
+    every row's leg begins at column 35, under `leg`. On 961640c6 the two
+    wide names' legs stood 2 columns right of it and `e\\u0301.md`'s 1
+    left."""
+    names = ["README.md", "\u540d\u524d.md", "\uff21\uff22.md",
+             "e\u0301.md", "\u304b\u3099.md"]
+    stream = io.TextIOWrapper(io.BytesIO(), encoding=UTF8, newline="\n")
+    monkeypatch.setattr(sys, "stdout", stream)
+    adopter._print_entries([
+        adopter.Entry(name, adopter.Verdict("spec", "extension-majority",
+                                            "Why.", "high"), 1, 1)
+        for name in names])
+    stream.flush()
+    heading, rows = table_of(stream.buffer.getvalue().decode(UTF8) + "\n")
+    assert heading.index("leg") == 35, heading
+    assert [row.split()[0] for row in rows] == names
+    assert leg_columns(rows) == [35] * len(names), rows
+
+
+def test_plan_on_a_utf_8_stdout_keeps_each_column_under_its_heading(
+        tmp_path):
+    """THE ISSUE'S TABLE: `plan` with a UTF-8 stdout over a source holding
+    `\\u540d\\u524d.md`, `\\uff21\\uff22.md` and `e\\u0301.md`. On 961640c6
+    the first two rows' legs stood 2 columns right of `leg`, and the last
+    one's 1 left."""
+    env = blank_unnamed_pin_sources(
+        {**os.environ, "LANES_LANE": "", "PYTHONIOENCODING": UTF8}, {})
+    source = make_source_repo(tmp_path / "Thing",
+                              {"README.md": "# Thing\n",
+                               "\u540d\u524d.md": "x\n",
+                               "\uff21\uff22.md": "x\n",
+                               "e\u0301.md": "x\n",
+                               "src/app.py": "VALUE = 1\n"}, edits=())
+    written = planned(source, tmp_path / "adoption-plan.yaml", env=env)
+    assert written.returncode == 0, written.stderr + written.stdout
+    heading, rows = table_of(written.stdout.decode(UTF8))
+    assert heading.index("leg") == 35, heading
+    assert {"\u540d\u524d.md", "\uff21\uff22.md"} <= {
+        row.split()[0] for row in rows}, rows
+    assert leg_columns(rows) == [35] * len(rows), rows
