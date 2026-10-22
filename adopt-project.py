@@ -762,9 +762,18 @@ def _kept_pin_finding(disk: "_KeptTree", aside: str, walk: "_Walk | None",
     """`_kept_pin_findings`' FINDINGS for the pin's file `rel` on `disk`: a
     line for each row the root keeps AT it, or one for a directory there;
     none, `[]`, where each row there is a symlink `named_links` holds
-    (#979); and None where it keeps nothing there, so the next disk is
-    asked. On a disk that ignores case each twin at the file is a row there,
-    and a named link among them is left out and no twin with it (#1138)."""
+    (#979); and None where it keeps nothing there but a submodule, so the
+    next disk is asked. On a disk that ignores case each twin at the file is
+    a row there, and a named link among them is left out and no twin with it
+    (#1138).
+
+    THAT DISK IS ASKED ONLY WHERE THE ONE THAT KEEPS CASE FOUND NOTHING
+    (#524), so a pin's file with any row at its exact spelling leaves the
+    twins at other spellings unasked, whatever the row is: a file, a link
+    `named_links` holds or one it does not, or the rows of a directory
+    there. A submodule there is no row (`plan-submodule-root` names it), so
+    the twins are asked. #1138 changed which twins that disk names, not
+    when it is asked."""
     reached, link = _pin_file_reached(walk, rel)
     at = disk.every(reached)
     rows = [row for row in (at or disk.under(reached))
