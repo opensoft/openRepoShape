@@ -636,13 +636,14 @@ def only_commit(url: str,
 
 
 def _held_seed(role: str, url: str, values: dict, tracking: str,
-               scratch: Path) -> tuple[str | None, str | None,
+               scratch: Path) -> tuple[str | None, CommandFailed | None,
                                        tuple[str, ...]]:
     """`(commit, None, found_on)` when a leg that is not empty holds ONE
     commit and its tree is the one this run would seed the leg with (#462);
-    `(None, None, ())` when it holds anything else; `(None, why, ())` when
-    git cannot read it (#542). `found_on` is each branch the commit was
-    found on, or `()` when `tracking` is one of them (`_seed_branches`, #921).
+    `(None, None, ())` when it holds anything else; `(None, failed, ())`
+    when git cannot read it (#542), `failed` being git's refused read.
+    `found_on` is each branch the commit was found on, or `()` when
+    `tracking` is one of them (`_seed_branches`, #921).
 
     That is a leg a run of this scaffold pushed before a later push was
     refused, by an organisation's ruleset or anything else, or one an
@@ -656,16 +657,20 @@ def _held_seed(role: str, url: str, values: dict, tracking: str,
     cannot read when `gh` is logged in and git has no credential for the
     host. `only_commit`'s `CommandFailed` reached `main` as the generic
     `a git or gh command failed`, which named neither the leg nor a way on.
-    It is answered here instead, `why` being the command git refused and
+    It is answered here instead, `failed` being the command git refused and
     what git said, and `_reusable_remotes` refuses the leg as
     `scaffold-remote-exists`, as it refuses any leg with commits, saying that
-    git could not read it. Only `only_commit` is answered so: `seed_tree`
-    reads nothing remote, and a failure there is still `CommandFailed`.
+    git could not read it and why (`_exists_remedy`). All of what git said
+    is handed on, not its one line (`_unread_because`): where ssh refused
+    the host's key, that line is `Host key verification failed.` whether
+    the key is unknown or changed, and only the lines before it tell them
+    apart (#1137). Only `only_commit` is answered so: `seed_tree` reads
+    nothing remote, and a failure there is still `CommandFailed`.
     """
     try:
         held = only_commit(url, scratch)
     except CommandFailed as exc:
-        return None, _unread_because(exc), ()
+        return None, exc, ()
     if held is None:
         return None, None, ()
     commit, tree, refs = held
@@ -848,15 +853,17 @@ SSH_KEY_CLAUSE = ("where a `url.<base>.insteadOf` rule in your git config "
 
 
 def _exists_remedy(role: str, empty: bool, reuse_flag: bool,
-                   seeded: bool = False, unread: str | None = None,
+                   seeded: bool = False,
+                   unread: CommandFailed | None = None,
                    local: bool = False) -> str:
     """The remedy line for a remote that is already there.
 
     Each situation answers to its own exit, and a refusal that named only
     one of them would send a human to the wrong one. `seeded` is a leg whose
-    one commit is this scaffold's seed (#462), and `unread` says why git
-    could not read a leg that exists with commits, so whether it holds that
-    seed is not known (#542): its exit is git's access, then the same re-run.
+    one commit is this scaffold's seed (#462), and `unread` is git's refused
+    read of a leg that exists with commits, named by its one line
+    (`_unread_because`), so whether it holds that seed is not known (#542):
+    its exit is git's access, then the same re-run.
 
     GIT'S ACCESS IS NAMED FOR BOTH WAYS GIT REACHES GITHUB (#915). `gh auth
     setup-git` gives git's https the login `gh` has, and does nothing for an
@@ -864,6 +871,14 @@ def _exists_remedy(role: str, empty: bool, reuse_flag: bool,
     git logs in with an ssh key, and the command named is still the https
     URL this run gave git. So the ssh key's clause (`SSH_KEY_CLAUSE`) stands
     beside the `setup-git` one, each saying where it applies.
+
+    A HOST KEY SSH REFUSED IS NOT A LOGIN (#1137). Where ssh refused the key
+    of the host git reached, no login was asked, and the login's clauses
+    sent a person to an `ssh -T` that asks about that key, or refuses a
+    changed one again, with no word on checking it against GitHub's. The
+    read is named the fix a push refused so is named (`_read_host_key_fix`,
+    #1108's `_host_key_remedy` in a read's words) in their place, and the
+    same re-run follows.
 
     EACH EXIT THAT IS THE `--reuse-empty-repo` RE-RUN SAYS WHICH PROMPTS IT
     CAN STILL WAIT AT (#915, U037): its probe and its pushes turn off git's
@@ -874,12 +889,14 @@ def _exists_remedy(role: str, empty: bool, reuse_flag: bool,
     """
     still = "" if local else " That re-run " + PROMPTS_STILL_ASK + "."
     if role != "assembly":
-        if unread:
-            return (f"Remediation: git could not read it ({unread}), so "
-                    "whether its one commit is the seed this scaffold pushes "
-                    "cannot be asked. Let git read it (on GitHub, `gh auth "
-                    "setup-git` gives git the login `gh` has; "
-                    + SSH_KEY_CLAUSE + "), then re-run: with "
+        if unread is not None:
+            fix = _read_host_key_fix(unread.output) or (
+                "Let git read it (on GitHub, `gh auth setup-git` gives git "
+                "the login `gh` has; " + SSH_KEY_CLAUSE + ")")
+            return ("Remediation: git could not read it ("
+                    + _unread_because(unread) + "), so whether its one commit "
+                    "is the seed this scaffold pushes cannot be asked. "
+                    + fix + ", then re-run: with "
                     "--reuse-empty-repo a leg whose one commit is that seed "
                     "is reused, and a leg holding anything else is still "
                     "refused. There is no --force." + still)
@@ -2145,10 +2162,12 @@ LOGIN_REFUSED = ("Authentication failed for ",)
 KEY_REFUSED = ("Permission denied (publickey",)
 
 #: What ssh says when it could not verify the key of the host a push reached
-#: (#1108): `Host key verification failed.`, before git's generic line
+#: (#1108), or a re-run's read of a leg (#1137, `_read_host_key_fix`):
+#: `Host key verification failed.`, before git's generic line
 #: (`GENERIC_FATAL`), where a `url.<base>.insteadOf` or
-#: `url.<base>.pushInsteadOf` rule sends a push over ssh. ssh says it of a
-#: key no known_hosts file holds when it refuses without asking, as under
+#: `url.<base>.pushInsteadOf` rule sends a push over ssh, or an `insteadOf`
+#: rule a read. ssh says it of a key no known_hosts file holds when it
+#: refuses without asking, as under
 #: `BatchMode=yes`, which `PROMPTS_STILL_ASK` advises, or with no terminal
 #: to ask in, or is answered no; and of a key other than the one held
 #: (`HOST_KEY_CHANGED`). It fails before git sends anything, so no ruleset
@@ -2306,10 +2325,10 @@ def _host_key_remedy(output: str, repo: str, reused: bool) -> str:
     `ssh -T` asks first for ssh's default, ED25519, and it can be sent
     another key than the push's. A key ssh does not know is checked the
     same way, before it is kept."""
-    said = _without_remote_lines(output)
-    if not any(words in said for words in HOST_KEY_FAILED):
+    refused = _host_key_refused(output)
+    if not refused:
         return ""
-    if any(words in said for words in HOST_KEY_CHANGED):
+    if refused == "changed":
         fix = (f"the host the push to {repo} reached sent ssh a key other "
                "than the one your known_hosts holds for it: a "
                "`url.<base>.insteadOf` or `url.<base>.pushInsteadOf` rule in "
@@ -2336,6 +2355,67 @@ def _host_key_remedy(output: str, repo: str, reused: bool) -> str:
                "answer yes only to a fingerprint GitHub publishes ("
                + GITHUB_FINGERPRINTS + ")")
     return _then_re_run(fix, reused)
+
+
+def _host_key_refused(output: str) -> str:
+    """Which host key ssh refused, by ssh's own lines in `output`, git's
+    for a push or a read (#1108, #1137): `"changed"` where it says the key
+    changed (`HOST_KEY_CHANGED`) and then that it failed, `"unknown"` where
+    it says only that it failed (`HOST_KEY_FAILED`), and `""` where it
+    refused none. A line the server sent is no evidence of what ssh did
+    (`_without_remote_lines`)."""
+    said = _without_remote_lines(output)
+    if not any(words in said for words in HOST_KEY_FAILED):
+        return ""
+    if any(words in said for words in HOST_KEY_CHANGED):
+        return "changed"
+    return "unknown"
+
+
+def _read_host_key_fix(output: str) -> str:
+    """How to give ssh the key of the host a re-run's read of a leg
+    reached (#1137), or "" where `output`, git's for that read, shows no host
+    key ssh refused (`_host_key_refused`). `_exists_remedy` names it in
+    place of a login, which nobody was asked for, and its re-run follows.
+
+    THE PUSH'S TWO FIXES (`_host_key_remedy`, #1108), IN A READ'S WORDS.
+    The read is `git ls-remote`, which the reason before this fix names,
+    and only a `url.<base>.insteadOf` rule sends a read over ssh. Nothing of
+    ssh's is printed but that reason's one line, `Host key verification
+    failed.` for an unknown key and a changed one alike (measured, OpenSSH
+    9.6 against a fake server), so a changed key's fingerprint and its
+    `ssh-keygen -R` line are what ssh prints when that `git ls-remote` is
+    run again, not "above". Each fix is as safe as the push's: a changed key
+    is never kept before its fingerprint is checked against GitHub's
+    (`GITHUB_FINGERPRINTS`), and each `ssh -T` (`HOST_KEY_CHECK`) is answered
+    yes only to a fingerprint GitHub publishes."""
+    refused = _host_key_refused(output)
+    if refused == "changed":
+        return ("The host that `git ls-remote` reached sent ssh a key other "
+                "than the one your known_hosts holds for it: a "
+                "`url.<base>.insteadOf` rule in your git config sends it "
+                "over ssh, and ssh refuses a changed key, so a re-run is "
+                "refused the same way. A machine in the middle of the "
+                "connection shows this as well as a key GitHub replaced, so "
+                "accept no key from that host, and push nothing to it, until "
+                "you have checked that the fingerprint ssh prints when you "
+                "run that `git ls-remote` again is one GitHub publishes ("
+                + GITHUB_FINGERPRINTS + "); only then remove the old key "
+                "(the `ssh-keygen -R` line ssh prints with it) and keep the "
+                "new one (" + HOST_KEY_CHECK + "), answering yes only to a "
+                "fingerprint GitHub publishes, which can be another of its "
+                "keys than the one you checked")
+    if refused == "unknown":
+        return ("ssh could not verify the key of the host that `git "
+                "ls-remote` reached: a `url.<base>.insteadOf` rule in your "
+                "git config sends it over ssh, that key is in none of your "
+                "known_hosts files, and ssh refused it without asking, as "
+                "under `BatchMode=yes`, or was answered no, so a re-run is "
+                "refused the same way until ssh holds the key. Keep it "
+                "first, once you know it is GitHub's: " + HOST_KEY_CHECK
+                + ", so answer yes only to a fingerprint GitHub publishes ("
+                + GITHUB_FINGERPRINTS + ")")
+    return ""
 
 
 def _refused_push(failed: CommandFailed, what: str, repo: str,
