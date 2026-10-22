@@ -4227,9 +4227,10 @@ def _refuse_kept_copies_missing_names(root: Path, rows: list[Row],
 
     WHAT IS ASKED, AND OF WHAT: a copy this run WRITES, read from the bytes
     it is about to write (each `upstream-changed` row and each `--add`
-    file), against the module it imports from; and a KEPT copy, a `both`
-    or `locally-modified` row `--accept-local` named, read from its bytes
-    on disk, against a module this run writes.
+    file), against the module it imports from; and a KEPT copy, read from
+    its bytes on disk, against a module this run writes: a `both` or
+    `locally-modified` row `--accept-local` named, or an `unchanged` row
+    an earlier run kept (#1082).
 
       * A WRITTEN IMPORTER (#536, #1082, `_written_copies_lacking`): each
         written `.py` copy's imports, against what its module defines AS
@@ -4245,29 +4246,33 @@ def _refuse_kept_copies_missing_names(root: Path, rows: list[Row],
         and with no `--accept-local` at all, the `siblings.py` that takes
         `member_make_environment` from it: `copied`, validators green, a
         commit, and an `ImportError` from the first `siblings.py --help`.
-      * A KEPT IMPORTER AND A WRITTEN MODULE (#604,
+      * A KEPT IMPORTER AND A WRITTEN MODULE (#604, #1082,
         `_kept_copies_importing_dropped`): each kept `.py` copy's imports,
-        against what the module's written bytes define. Upstream does drop
-        public names: cac6bb20 took `link_manifest_path` and
-        `declared_neutral_pins` out of `scripts/repo_shape.py`. A project
-        whose kept `bootstrap.py` imported a name dropped like that got
-        `pins ok`, `manifest ok`, and an `ImportError` from its next
-        `bootstrap.py --help`. Only what THIS RUN takes away is refused: a
-        name the module's bytes on disk define now and its written bytes do
-        not. A name the bytes on disk lack too already stops the kept copy
-        today, and a module with no file yet, an `--add` file, defines
-        nothing to take away.
+        whoever kept it, against what the module's written bytes define.
+        Upstream does drop public names: cac6bb20 took `link_manifest_path`
+        and `declared_neutral_pins` out of `scripts/repo_shape.py`. A
+        project whose kept `bootstrap.py` imported a name dropped like that
+        got `pins ok`, `manifest ok`, and an `ImportError` from its next
+        `bootstrap.py --help`. A copy an earlier run kept met it from a run
+        with no `--accept-local` at all: a holder whose `apply
+        --accept-local scripts/siblings.py` had kept its own `siblings.py`,
+        edited to take a name from `bootstrap.py`, was written, by its next
+        apply, a `bootstrap.py` that no longer defined it (#1082). Only
+        what THIS RUN takes away is refused: a name the module's bytes on
+        disk define now and its written bytes do not. A name the bytes on
+        disk lack too already stops the kept copy today, and a module with
+        no file yet, an `--add` file, defines nothing to take away.
 
-    AN IMPORTER THIS RUN DOES NOT WRITE IS NOT ASKED, but for a kept one
-    against a module this run writes (#604): an edit that already broke an
-    untouched importer is the project's doing, not this run's. So a copy
-    an earlier run kept is asked as a MODULE and never as an importer: one
-    that imports a name the module this run writes beside it no longer
-    defines is not refused, where #604 refuses that of a copy this run's
-    `--accept-local` keeps. A module is resolved the way every shipped
-    importer resolves it, its own directory first on `sys.path`: `from M
-    import ...` in `<dir>/<file>.py` is the copy at `<dir>/M.py`, a dotted
-    `M` naming that path's subdirectories. So the same code covers
+    AN IMPORTER THIS RUN DOES NOT WRITE IS ASKED ONLY WHERE IT HOLDS THE
+    PROJECT'S OWN BYTES: a copy this run's `--accept-local` keeps (#604),
+    or one an earlier run kept (#1082), and only against a module this run
+    writes. An `unchanged` copy that holds the upstream's own bytes is not
+    asked as an importer: that pair is two of the target's own copies, and
+    no shipped copy disagrees with the module beside it, as the last
+    paragraph says. A module is resolved the way every shipped importer
+    resolves it, its own directory first on `sys.path`: `from M import
+    ...` in `<dir>/<file>.py` is the copy at `<dir>/M.py`, a dotted `M`
+    naming that path's subdirectories. So the same code covers
     `repo_shape.py` today, and any helper kept or written beside its
     importer later, a holder's `bootstrap.py` under its `siblings.py`
     among them. A module that resolves to no pinned copy this run leaves
@@ -4304,15 +4309,19 @@ def _refuse_kept_copies_missing_names(root: Path, rows: list[Row],
     deleted (`NAME = 1`, then `del NAME`) reads as defined, so that copy's
     `ImportError` is still its first run's to meet. No shipped copy takes
     a name the readers miss from the module beside it (the reader rows of
-    `tests/test_update_shape_kept_helper.py`), so a run that keeps nothing
-    meets this only where the target's own copies disagree.
+    `tests/test_update_shape_kept_helper.py`), so a root that holds none
+    of its own bytes meets this only where the target's own copies
+    disagree.
     """
     kept = {row.path: row for row in rows
             if row.state in (BOTH, LOCALLY_MODIFIED) and row.path in accepted}
     written = _written_copies(rows, taking)
     left = _copies_as_left(rows, written, kept)
+    earlier = {row.path: row for row in rows
+               if left.get(row.path) == EARLIER_MODULE}
     pairs = sorted(_written_copies_lacking(root, written, left)
-                   + _kept_copies_importing_dropped(root, written, kept))
+                   + _kept_copies_importing_dropped(root, written, kept,
+                                                    earlier))
     if pairs:
         raise _missing_name_refusal(
             pairs, {row.path: row for row in rows}, target,
@@ -4324,11 +4333,18 @@ def _refuse_kept_copies_missing_names(root: Path, rows: list[Row],
 #: the bytes a copy kept by this run's `--accept-local` (#536), or by an
 #: earlier run's (#1082), lack a name a written copy imports; the
 #: upstream's own bytes at the target do (#1082); or the bytes this run
-#: writes drop one a kept copy imports (#604).
+#: writes drop one a copy imports that this run's `--accept-local` keeps
+#: (#604), or that an earlier run kept (#1082).
 KEPT_MODULE = "kept"
 EARLIER_MODULE = "kept by an earlier run"
 UPSTREAM_MODULE = "the upstream's"
 WRITTEN_MODULE = "written"
+WRITTEN_UNDER_EARLIER = "written under a copy an earlier run kept"
+#: The word a `(written) no longer defines` line gives its importer, by
+#: the line's side: the kept copy's, `(kept)` or `(kept by an earlier
+#: run)`.
+KEPT_IMPORTERS = {WRITTEN_MODULE: KEPT_MODULE,
+                  WRITTEN_UNDER_EARLIER: EARLIER_MODULE}
 
 
 class Disagreement(NamedTuple):
@@ -4337,7 +4353,8 @@ class Disagreement(NamedTuple):
     the module holds as this run leaves it: a copy this run keeps
     (`KEPT_MODULE`), one an earlier run kept (`EARLIER_MODULE`), the
     upstream's own (`UPSTREAM_MODULE`), or the bytes this run writes there
-    under a kept importer (`WRITTEN_MODULE`)."""
+    under an importer this run's `--accept-local` keeps (`WRITTEN_MODULE`)
+    or one an earlier run kept (`WRITTEN_UNDER_EARLIER`)."""
     module: str
     importer: str
     names: list
@@ -4420,17 +4437,22 @@ def _names_as_left(root: Path, path: str, written: dict) -> set[str] | None:
     return _names_defined_in(data) if data is not None else None
 
 
-def _kept_copies_importing_dropped(root: Path, written: dict,
-                                   kept: dict) -> list:
-    """`(written module, kept copy, [the names this run drops],
-    WRITTEN_MODULE)` for each kept `.py` copy that imports from a module
-    this run writes (#604): the reverse of `_written_copies_lacking`,
-    which `_refuse_kept_copies_missing_names` says the why of. Each
-    written module is read once, however many kept copies import from it.
+def _kept_copies_importing_dropped(root: Path, written: dict, kept: dict,
+                                   earlier: dict) -> list:
+    """`(written module, kept copy, [the names this run drops], side)` for
+    each kept `.py` copy that imports from a module this run writes
+    (#604): the reverse of `_written_copies_lacking`, which
+    `_refuse_kept_copies_missing_names` says the why of. A copy in `kept`,
+    which this run's `--accept-local` keeps, is `WRITTEN_MODULE`'s
+    importer; one in `earlier`, which an earlier run kept, is
+    `WRITTEN_UNDER_EARLIER`'s (#1082). Each written module is read once,
+    however many kept copies import from it.
     """
+    importers = {**dict.fromkeys(earlier, WRITTEN_UNDER_EARLIER),
+                 **dict.fromkeys(kept, WRITTEN_MODULE)}
     dropped: dict[str, set[str]] = {}
     pairs = []
-    for path in sorted(kept):
+    for path, side in sorted(importers.items()):
         for module, names in sorted(_imports_on_disk(root, path).items()):
             beside = _module_beside(path, module)
             if beside not in written:
@@ -4440,8 +4462,7 @@ def _kept_copies_importing_dropped(root: Path, written: dict,
                                                  written[beside])
             missing = sorted(names & dropped[beside])
             if missing:
-                pairs.append(Disagreement(beside, path, missing,
-                                          WRITTEN_MODULE))
+                pairs.append(Disagreement(beside, path, missing, side))
     return pairs
 
 
@@ -4520,9 +4541,9 @@ KEPT_LEAD = ("--accept-local keeps this project's own bytes of a copy that "
              "disagrees with a copy this run writes beside it: one of the "
              "two imports a name from the other that the other's bytes do "
              "not define")
-LEFT_LEAD = ("a copy this run writes or keeps imports a name from a copy "
-             "beside it whose bytes, as this run leaves them, do not define "
-             "it")
+LEFT_LEAD = ("a copy imports a name from a copy beside it whose bytes, as "
+             "this run leaves them, do not define it, and this run writes "
+             "one of the two")
 
 
 def _missing_name_refusal(pairs: list, copies: dict, target: str,
@@ -4553,12 +4574,14 @@ def _missing_name_line(module: str, importer: str, names: list[str],
     """One pair's line: whose bytes the module holds, which copy imports
     from it, and the names. A side's own constant is its word: `(kept)`,
     `(kept by an earlier run)` or `(the upstream's)` for a written
-    importer's module, and `(written)` under a kept importer (#604).
+    importer's module, and `(written)` under a kept importer (#604), whose
+    own word, `(kept)` or `(kept by an earlier run)` (#1082), says who
+    kept it (`KEPT_IMPORTERS`).
     """
     said = ", ".join(names)
-    if side == WRITTEN_MODULE:
+    if side in KEPT_IMPORTERS:
         return (f"    {module} (written) no longer defines {said}, which "
-                f"{importer} (kept) imports from it")
+                f"{importer} ({KEPT_IMPORTERS[side]}) imports from it")
     return (f"    {module} ({side}) lacks {said}, which {importer} "
             "imports from it")
 
@@ -4586,14 +4609,15 @@ def _keep_or_drop(pairs: list, copies: dict, target: str, sides: set) -> str:
     #604, #1082). Keeping the edit is the human's decision: change the
     kept copy so it agrees, as the side it is on asks, commit each change,
     and run again with the same `--accept-local`, and with it on a copy an
-    earlier run kept, whose merged row then reads `locally-modified`; or
+    earlier run kept, whose changed row then reads `locally-modified`; or
     drop the edit, so the upstream's copy is taken. Each change names the
-    lines it settles, so none is read as settling another's.
+    lines it settles, so none is read as settling another's, and the kept
+    copy a `(written) no longer defines` line names is its importer.
     `--accept-local` is named in prose, and no NEXT line passes it. The
     upstream's bytes are named by `upstream_show`, quoted, since #604 made
     a kept copy any `.py` path.
     """
-    named = sorted({pair.importer if pair.side == WRITTEN_MODULE
+    named = sorted({pair.importer if pair.side in KEPT_IMPORTERS
                     else pair.module
                     for pair in pairs if pair.side != UPSTREAM_MODULE})
     upstreams = "; ".join(f"`{upstream_show(target, copies[path].source)}` "
@@ -4614,13 +4638,19 @@ def _keep_or_drop(pairs: list, copies: dict, target: str, sides: set) -> str:
                        "written beside it no longer defines, so it no "
                        "longer takes any name its `(written) no longer "
                        "defines` line names")
+    if WRITTEN_UNDER_EARLIER in sides:
+        changes.append("change a copy an earlier run kept that imports a "
+                       "name the module written beside it no longer "
+                       "defines, so it no longer takes any name its "
+                       "`(written) no longer defines` line names")
+    earlier = sides & {EARLIER_MODULE, WRITTEN_UNDER_EARLIER}
     again = "with the same --accept-local"
-    if EARLIER_MODULE in sides:
-        merged = ("--accept-local on each copy an earlier run kept that you "
-                  "merged, whose row then reads `locally-modified`")
-        again = (f"{again}, and with {merged}"
+    if earlier:
+        changed = ("--accept-local on each copy an earlier run kept that you "
+                   "changed, whose row then reads `locally-modified`")
+        again = (f"{again}, and with {changed}"
                  if sides & {KEPT_MODULE, WRITTEN_MODULE} else
-                 f"with {merged}")
+                 f"with {changed}")
     return (
         "whether the project keeps its edit is the human's decision, and a "
         "kept copy must still agree with the copies written beside it on "
@@ -4628,7 +4658,7 @@ def _keep_or_drop(pairs: list, copies: dict, target: str, sides: set) -> str:
         + ("An earlier run kept each `(kept by an earlier run)` copy: the "
            "pin records the project's own bytes for it, and the upstream "
            "has not changed it since, so `check` reads its row "
-           "`unchanged`. " if EARLIER_MODULE in sides else "")
+           "`unchanged`. " if earlier else "")
         + "Either " + ", and ".join(changes) + f", commit each, and run "
         f"this again {again}; or drop the edit, so the upstream's copy is "
         "taken: write the upstream's bytes over it, commit that, and run "
@@ -4636,7 +4666,7 @@ def _keep_or_drop(pairs: list, copies: dict, target: str, sides: set) -> str:
         f"the upstream's bytes are {upstreams}"
         + (", and for a kept copy that imports a name they show what the "
            "upstream's own copy of that file imports instead"
-           if WRITTEN_MODULE in sides else "")
+           if sides & set(KEPT_IMPORTERS) else "")
         + "."
         + (f" {', '.join(both)} changed upstream too, so dropping the edit "
            "there is `update-conflict`'s merge by hand again, settled on the "
