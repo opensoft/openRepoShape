@@ -721,7 +721,9 @@ def _kept_pin_findings(plan: "Plan", tree: list,
     in the plan makes a link no clone makes. It is still a link found
     there, so the disk that ignores case is not asked about that file,
     which keeps `_links_at_a_pin` reading the same disk. One link, one
-    finding.
+    finding. On the disk that ignores case, where it is asked, each twin
+    at the file is a row there (#1138): a named link among them is left
+    out, and each other twin is named, before the link or after it.
 
     THROUGH THE SYMLINKS THE PLAN KEEPS ABOVE A PIN'S FILE (#904, L1-K2 of
     #457), as the root walk follows the shape's own paths. With `contracts
@@ -757,29 +759,34 @@ def _kept_pin_findings(plan: "Plan", tree: list,
 def _kept_pin_finding(disk: "_KeptTree", aside: str, walk: "_Walk | None",
                       rel: str, product: str | None,
                       named_links: frozenset | set) -> list[str] | None:
-    """`_kept_pin_findings`' FINDING for the pin's file `rel` on `disk`, as
-    the one line of a list: none, `[]`, where what the root keeps there is
-    a symlink `named_links` holds (#979), and None where it keeps nothing
-    there, so the next disk is asked."""
+    """`_kept_pin_findings`' FINDINGS for the pin's file `rel` on `disk`: a
+    line for each row the root keeps AT it, or one for a directory there;
+    none, `[]`, where each row there is a symlink `named_links` holds
+    (#979); and None where it keeps nothing there, so the next disk is
+    asked. On a disk that ignores case each twin at the file is a row there,
+    and a named link among them is left out and no twin with it (#1138)."""
     reached, link = _pin_file_reached(walk, rel)
-    at = disk.at(reached)
-    rows = [row for row in ([at] if at else disk.under(reached))
+    at = disk.every(reached)
+    rows = [row for row in (at or disk.under(reached))
             if row[1] != GITLINK_MODE]
     if not rows:
         return None
-    path, mode, entry = rows[0]
-    if at and path in named_links:
-        return []
-    under = "" if entry == path else f" under the entry {_spelled(entry)}"
+    if at:
+        rows = [row for row in rows if row[0] not in named_links]
+    else:
+        rows = rows[:1]
     where = "at" if at else "inside"
-    held = mode if at else None
-    written = (_declared_pin_held(product) if product
-               else _shape_pin_held(held))
-    through, fix = _through_the_kept_link(link, reached, entry)
-    return [f"FINDING {ROOT_HOLDS_PIN}: the plan keeps {_kind_of(mode)} "
-            f"{_spelled(path)} in the assembly root{under}, {where} "
-            f"`{rel}`{through}{aside}, where `execute` writes {written}: "
-            f"{fix}."]
+    said = []
+    for path, mode, entry in rows:
+        under = "" if entry == path else f" under the entry {_spelled(entry)}"
+        written = (_declared_pin_held(product) if product
+                   else _shape_pin_held(mode if at else None))
+        through, fix = _through_the_kept_link(link, reached, entry)
+        said.append(f"FINDING {ROOT_HOLDS_PIN}: the plan keeps "
+                    f"{_kind_of(mode)} {_spelled(path)} in the assembly "
+                    f"root{under}, {where} `{rel}`{through}{aside}, where "
+                    f"`execute` writes {written}: {fix}.")
+    return said
 
 
 def _through_the_kept_link(link: tuple[str, str] | None, reached: str,
@@ -7065,6 +7072,15 @@ def _leg_findings(plan: Plan, tree: list | None,
 # those disks, so a kept `readme.md` is `README.md` there, the copy goes to
 # `shape/README.md`, and what the source keeps at that path is in the way.
 # A finding that holds on the second disk alone says so.
+#
+# EVERY CASE TWIN AT A PLACE IS IN THE WAY (#1138). On a disk that ignores
+# case, `shape/README.md` and `shape/readme.md` are one place, and which of
+# them a clone holds there is git's checkout, not the plan's: each is named,
+# by a finding of its own, as each kept path in the way is. A place was one
+# group, its first row in tree order standing for it, so a twin beside a
+# link there went unnamed while the link stayed: after a bad link, which
+# #979 leaves out, and before or after a good one, whose finding the first
+# disk had made for the place.
 
 #: `check`'s finding for a kept FILE where the shape writes into a directory
 #: (#263), and for a kept path where the shape writes its copy of a file the
@@ -7086,25 +7102,40 @@ class _KeptTree:
     `kept` is `_kept_in_root`'s `(path, mode, entry)` rows.
 
     A DIRECTORY is a prefix of a kept path: git records files, so a directory
-    the plan keeps holds at least one of them."""
+    the plan keeps holds at least one of them.
+
+    EVERY ROW AT A PATH IS KEPT (#1138): on a disk that ignores case, the
+    case twins there, in tree order. A disk that keeps case has one row at
+    a path at most, so it answers as it did."""
 
     def __init__(self, kept: list, fold: bool) -> None:
         self.rows = kept
         self._fold = fold
-        self._at: dict[str, tuple[str, str, str]] = {}
+        self._at: dict[str, list[tuple[str, str, str]]] = {}
         self._dirs: set[str] = set()
         for row in kept:
             parts = row[0].split("/")
-            self._at.setdefault(self._key(row[0]), row)
+            self._at.setdefault(self._key(row[0]), []).append(row)
             self._dirs.update(self._key("/".join(parts[:end]))
                               for end in range(1, len(parts)))
 
     def _key(self, path: str) -> str:
         return path.casefold() if self._fold else path
 
+    def every(self, path: str) -> list[tuple[str, str, str]]:
+        """Every kept row AT `path`, a file, symlink or submodule: each case
+        twin there on a disk that ignores case, any of which its clone may
+        hold. What names what is in the way asks this (#1138)."""
+        return self._at.get(self._key(path), [])
+
     def at(self, path: str) -> tuple[str, str, str] | None:
-        """The kept row AT `path`, a file, symlink or submodule."""
-        return self._at.get(self._key(path))
+        """The FIRST kept row AT `path`, in tree order, or None: on a disk
+        that keeps case, the only one. For a reader of ONE row there: the
+        root's own `.gitattributes`, whose bytes are one file's, and the
+        link at a pin's file that `_links_at_a_pin` keeps from the walks,
+        which meet one twin there."""
+        rows = self.every(path)
+        return rows[0] if rows else None
 
     def holds(self, path: str) -> bool:
         """Whether something is at `path`, as `Path.exists()` says: a kept
@@ -7112,16 +7143,19 @@ class _KeptTree:
         followed (see the comment above): the row holds no target."""
         return self._key(path) in self._at or self._key(path) in self._dirs
 
-    def file_above(self, path: str) -> tuple[str, str, str] | None:
-        """The kept FILE a directory on the way to `path` would have to be,
-        the topmost: `mkdir` stops there. A symlink or a submodule is not
+    def files_above(self, path: str) -> list[tuple[str, str, str]]:
+        """The kept FILES a directory on the way to `path` would have to be,
+        at the topmost place that holds one: `mkdir` stops there. Each case
+        twin there that is a file, on a disk that ignores case (#1138), and
+        one at most on a disk that keeps it. A symlink or a submodule is not
         one; see the comment above."""
         parts = path.split("/")
         for end in range(1, len(parts)):
-            row = self.at("/".join(parts[:end]))
-            if row and row[1] in FILE_MODES:
-                return row
-        return None
+            files = [row for row in self.every("/".join(parts[:end]))
+                     if row[1] in FILE_MODES]
+            if files:
+                return files
+        return []
 
     def under(self, path: str) -> list[tuple[str, str, str]]:
         """Every kept row below the directory `path`."""
@@ -7130,15 +7164,20 @@ class _KeptTree:
                 if self._key(row[0]).startswith(prefix)]
 
 
-def _kept_there(disk: _KeptTree, path: str) -> tuple[tuple, list]:
-    """What the plan keeps at `path` on `disk`: the group `("at", path)` and
-    the row AT it, or `("dir", path)` and the rows below a kept directory
-    there. A submodule is never one of them: it is `plan-submodule-root`'s
-    (#166), and said once there."""
-    at = disk.at(path)
-    rows = [row for row in ([at] if at else disk.under(path))
-            if row[1] != GITLINK_MODE]
-    return ("at" if at else "dir", path), rows
+def _kept_there(disk: _KeptTree, path: str) -> list[tuple[tuple, list]]:
+    """What the plan keeps at `path` on `disk`, as `(group, rows)` pairs:
+    for EACH row AT it, the group `("at", that row's path)` and the row, or,
+    with none there, `("dir", path)` and the rows below a kept directory
+    there. Each case twin at `path` is one thing in the way on a disk that
+    ignores case, whichever of them its clone holds (#1138). A submodule is
+    never one of them: it is `plan-submodule-root`'s (#166), and said once
+    there."""
+    at = disk.every(path)
+    if at:
+        return [(("at", row[0]), [row]) for row in at
+                if row[1] != GITLINK_MODE]
+    rows = [row for row in disk.under(path) if row[1] != GITLINK_MODE]
+    return [(("dir", path), rows)] if rows else []
 
 
 def _shape_blocks(disk: _KeptTree) -> list[tuple]:
@@ -7149,30 +7188,29 @@ def _shape_blocks(disk: _KeptTree) -> list[tuple]:
     whether the root already holds a path, so whether its copy is written at
     all, and whether the place is free: a disk that ignores case holds
     `README.md` for a kept `readme.md`. `group` names the one thing in the
-    way, so that what one kept path blocks is one finding."""
+    way, so that what one kept path blocks is one finding: each case twin at
+    a place is one, so a place may give a block for each (#1138)."""
     out = []
     for rel in assembly_root_paths():
-        above = disk.file_above(rel)
+        above = disk.files_above(rel)
         if above:
-            out.append((ROOT_BLOCKS_SHAPE, rel, rel, ("file", above[0]),
-                        [above]))
+            out += [(ROOT_BLOCKS_SHAPE, rel, rel, ("file", row[0]), [row])
+                    for row in above]
             continue
         if not disk.holds(rel):
             continue
         if rel == SHAPE_MANIFEST:
-            group, rows = _kept_there(disk, rel)
-            if rows:
-                out.append((ROOT_BLOCKS_MANIFEST, rel, rel, group, rows))
+            out += [(ROOT_BLOCKS_MANIFEST, rel, rel, group, rows)
+                    for group, rows in _kept_there(disk, rel)]
             continue
         copy = f"{COLLISION_DIR}/{rel}"
-        above = disk.file_above(copy)
+        above = disk.files_above(copy)
         if above:
-            out.append((ROOT_BLOCKS_COPY, rel, copy, ("file", above[0]),
-                        [above]))
+            out += [(ROOT_BLOCKS_COPY, rel, copy, ("file", row[0]), [row])
+                    for row in above]
             continue
-        group, rows = _kept_there(disk, copy)
-        if rows:
-            out.append((ROOT_BLOCKS_COPY, rel, copy, group, rows))
+        out += [(ROOT_BLOCKS_COPY, rel, copy, group, rows)
+                for group, rows in _kept_there(disk, copy)]
     return out
 
 
@@ -7291,7 +7329,16 @@ def _root_shape_findings(plan: Plan, tree: list,
     sits, as the manifest's does: given a target git makes, and still kept
     there, the link is named here. A link BELOW a directory kept at either
     place is not left out: the directory is in the way whatever the link
-    holds."""
+    holds.
+
+    WHAT IS LEFT OUT IS THE LINK, AND NO CASE TWIN BESIDE IT (#1138). On
+    the disk that ignores case, `shape/readme.md` is at `shape/README.md`
+    too, and each twin at a place is a group of its own (`_kept_there`), so
+    the twin is named, once case is ignored, whether it sorts before the
+    link or after it, and whether the link is left out or named here. The
+    place was one group, its first row standing for it: a twin after a
+    named link went unnamed, and so did any twin beside a link with a
+    target git makes, the place's finding already made on the first disk."""
     kept = _kept_in_root(plan.entries, tree)
     if not kept:
         return []
@@ -9156,8 +9203,9 @@ def _bad_symlink_target_notes(tree: list, targets: dict[str, bytes]
 def _links_at_the_manifest(plan: Plan, tree: list) -> set[str]:
     """Each symlink the plan keeps in the root AT `project.yaml`, which
     #305's `plan-root-blocks-manifest` names (`_shape_blocks`), on a disk
-    that keeps case and on one that ignores it. Asked, as `_leg_findings`
-    asks it, of a plan whose `legs` it can read."""
+    that keeps case and on one that ignores it, each case twin there
+    (#1138). Asked, as `_leg_findings` asks it, of a plan whose `legs` it
+    can read."""
     if not isinstance(plan.legs, dict):
         return set()
     kept = _kept_in_root(plan.entries, tree)
@@ -10917,7 +10965,8 @@ def _links_at_a_copy(plan: Plan, tree: list) -> set[str]:
     copy written THROUGH it, earlier in `_entry_findings`' one list; and one
     AT `project.yaml`, which #305's `plan-root-blocks-manifest` names. Asked
     as `_leg_findings` asks it, of a plan whose `legs` it can read, on a
-    disk that keeps case and on one that ignores it. A link there whose
+    disk that keeps case and on one that ignores it, where each case twin
+    there is a group `("at", its own path)` (#1138). A link there whose
     target `plan-empty-symlink` or `plan-bad-symlink-target` names one by
     one is that finding's instead (#908, #979), and no walk names it."""
     if not isinstance(plan.legs, dict):
@@ -10925,8 +10974,8 @@ def _links_at_a_copy(plan: Plan, tree: list) -> set[str]:
     kept = _kept_in_root(plan.entries, tree)
     named: set[str] = set()
     for fold in (False, True):
-        for _, _, copy, group, rows in _shape_blocks(_KeptTree(kept, fold)):
-            if group == ("at", copy) and rows[0][1] == SYMLINK_MODE:
+        for _, _, _, group, rows in _shape_blocks(_KeptTree(kept, fold)):
+            if group[0] == "at" and rows[0][1] == SYMLINK_MODE:
                 named.add(rows[0][0])
     return named
 
@@ -10948,7 +10997,10 @@ def _links_at_a_pin(plan: Plan, tree: list) -> set[str]:
     disks = (_KeptTree(kept, fold=False), _KeptTree(kept, fold=True))
     named: set[str] = set()
     for rel, _ in _pin_files(plan):
-        # The disk `_kept_pin_findings` names its row from.
+        # The disk `_kept_pin_findings` names its rows from, and there the
+        # first row: a walk meets one row at the pin's file, the one spelled
+        # as the pin where the root keeps it, and else the first twin, so a
+        # later twin is never a walk's to name again (#1138).
         disk = next((one for one in disks if _holds_a_pin(one, rel)), None)
         at = disk.at(rel) if disk else None
         if at and at[1] == SYMLINK_MODE:
@@ -10958,10 +11010,10 @@ def _links_at_a_pin(plan: Plan, tree: list) -> set[str]:
 
 def _holds_a_pin(disk: _KeptTree, rel: str) -> bool:
     """Whether `_kept_pin_findings` finds, on `disk`, something the plan
-    keeps at the pin's file `rel` or under it, but a submodule."""
-    at = disk.at(rel)
+    keeps at the pin's file `rel` or under it, but a submodule: any case
+    twin at it, as that finding asks each (#1138)."""
     return any(row[1] != GITLINK_MODE
-               for row in ([at] if at else disk.under(rel)))
+               for row in (disk.every(rel) or disk.under(rel)))
 
 
 def _root_symlink_findings(plan: Plan, source: Source, tree: list,
