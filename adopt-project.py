@@ -1929,7 +1929,26 @@ def _github_name(written: str) -> str | None:
     `source-unclonable`, with a remedy about `gh auth status`. GitHub reads
     a repository's name without regard to case, and so does a disk that
     ignores case, where `source-readonly/.GIT` is `source-readonly/.git`;
-    so the trailing `.git` is dropped in any case too."""
+    so the trailing `.git` is dropped in any case too.
+
+    NOR IS EITHER PART LONGER THAN GITHUB LETS IT BE (#1129): an owner of
+    more than `GITHUB_OWNER_MAX` characters, the longest name GitHub gives
+    a user or an organisation, or a repository of more than
+    `GITHUB_NAME_MAX`, counted once the `.git` is dropped. Such a spelling
+    names nothing GitHub holds, and every reader of this answer now says
+    so alike. On main `plan --source <50 b's>/Thing`, with nothing there,
+    was handed to `gh repo clone`; with `--org testorg` it was refused
+    `adopt-not-the-source` and told to pass `--org <50 b's>`, which
+    `execute` refuses; and a plan that recorded it as `source.repository`
+    was cloned from it again by `check` and `execute`, or held to it with
+    the same `--org` for a remedy. Now it is a path, read in place where it
+    is one, as any other spelling that names no `owner/repo` is
+    (`_source_spec`), and refused where it is not; a url of it names no
+    `owner/repo` on GitHub (`_repository_in_url`); a plan's record of it
+    names no repository (`_recorded_repository`, `_held_repository`); and
+    beside a directory this user cannot search it is offered no url
+    (`_source_there`, #1003). Asked of the name and not of the disk, it
+    holds on Windows as well, where no error is `File name too long`."""
     segments = [part for part in written.split("/") if part]
     if len(segments) != 2:
         return None
@@ -1939,6 +1958,8 @@ def _github_name(written: str) -> str | None:
     if owner.startswith(("-", ".")) or repo.lower() == ".git" or not all(
             GITHUB_SEGMENT_RE.fullmatch(part) and part not in (".", "..")
             for part in (owner, repo)):
+        return None
+    if len(owner) > GITHUB_OWNER_MAX or len(repo) > GITHUB_NAME_MAX:
         return None
     return f"{owner}/{repo}"
 
@@ -1993,22 +2014,24 @@ def _source_there(spec: str, candidate: Path, name: str | None) -> bool:
 
     A NAME GITHUB CANNOT HOLD NAMES NO GITHUB REPOSITORY EITHER (#1003): an
     owner over `GITHUB_OWNER_MAX` characters, or a repository over
-    `GITHUB_NAME_MAX`. It is refused as a path is, with no url, whatever
-    reason the operating system gave. `--source <300 a's>/Thing`, `File
-    name too long`, was "whether it names the path ... here, or only the
-    GitHub repository ..., cannot be told", and was offered
-    `https://github.com/<300 a's>/Thing`, which can never clone; and so was
-    `testorg/<300 a's>` beside a `./testorg` this user cannot search, whose
-    `stat` stops at `Permission denied` before it reaches the long part. The
-    name decides, never the reason: `testorg/Thing`, with `./testorg` a
-    symlink to a name too long, is `File name too long` as well, and names
-    a repository GitHub can hold, so its url is offered."""
+    `GITHUB_NAME_MAX`. `_github_name` gives no `name` for it (#1129), the
+    one question every reader of a name asks, so here it is refused as a
+    path is, with no url, whatever reason the operating system gave; and a
+    `github.com/` spelling of it never reaches here, since
+    `_repository_in_url` refuses it first, as naming no `owner/repo`.
+    `--source <300 a's>/Thing`, `File name too long`, was "whether it names
+    the path ... here, or only the GitHub repository ..., cannot be told",
+    and was offered `https://github.com/<300 a's>/Thing`, which can never
+    clone; and so was `testorg/<300 a's>` beside a `./testorg` this user
+    cannot search, whose `stat` stops at `Permission denied` before it
+    reaches the long part. The name decides, never the reason:
+    `testorg/Thing`, with `./testorg` a symlink to a name too long, is `File
+    name too long` as well, and names a repository GitHub can hold, so its
+    url is offered."""
     try:
         return _is_there(candidate)
     except OSError as exc:
-        owner, _, repo = (name or "").partition("/")
-        if (name is None or len(owner) > GITHUB_OWNER_MAX
-                or len(repo) > GITHUB_NAME_MAX):
+        if name is None:
             raise _source_unreadable(f"--source {spec!r}", exc,
                                      "whether a repository is there") from exc
         here = _spelled("./" + spec.rstrip("/"))
