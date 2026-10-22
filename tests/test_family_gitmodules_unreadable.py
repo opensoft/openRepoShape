@@ -351,6 +351,36 @@ def test_a_rollback_that_cannot_open_gitmodules_makes_the_mount_again(
     assert_back_on_main(holder, at)
 
 
+#: The checkout from the index `remove`'s rollback types for a `.gitmodules`
+#: it could not read, before the update: the copy left on disk is the one
+#: `git rm` wrote, without the member's section (r1164's MUST-1).
+FROM_INDEX = f"`git checkout -- {GITMODULES}`"
+
+
+def cured_and_typed(holder: Path, sentence: str, at: str) -> None:
+    """With the mode given back (the cure), the hook gone, each command the
+    rollback's sentence lists typed as printed puts the member back on
+    `main` at `at` and leaves the holder clean."""
+    git("config", "--local", "--unset", "core.hooksPath", cwd=holder)
+    typed_by_hand(holder, sentence)
+    assert_back_on_main(holder, at)
+
+
+def rollback_said(result) -> str:
+    """The sentence a `remove` whose commit a hook refused ends with, its
+    `.gitmodules` step named with the cure and the checkout's update typed
+    after the index's copy, never "only from its remote"."""
+    assert result.returncode == 2, result.stdout + result.stderr
+    assert "Traceback" not in result.stderr
+    sentence = result.stderr.splitlines()[-1]
+    assert (f"NOT {GITMODULES} restored byte for byte: {GITMODULES}: "
+            f"Permission denied; {STEP_CURE}") in sentence
+    assert UPDATE in sentence
+    assert sentence.index(FROM_INDEX) < sentence.index(UPDATE)
+    assert ONLY_REMOTE not in sentence
+    return sentence
+
+
 @needs_a_mode
 def test_a_rollback_meeting_a_gitmodules_linked_into_a_locked_folder(
         holder, offline, tmp_path):
@@ -358,8 +388,12 @@ def test_a_rollback_meeting_a_gitmodules_linked_into_a_locked_folder(
     000 and refuses. 3.12 ended the rollback in a traceback with the
     member's directory gone; 3.14 said the checkout came back only from its
     remote. Now the step is named with the cure, the update is typed, and
-    the object store is where it was."""
+    the object store is where it was; and with the mode given back the
+    commands, typed as printed, put the member back on its branch. Without
+    the index's copy first they did not: the linked file is the one `git
+    rm` wrote, so the update said `No url found` (r1164's MUST-1)."""
     env = isolated(offline, tmp_path)
+    at = git("rev-parse", "HEAD", cwd=holder / PATH).stdout.strip()
     locked = tmp_path / "locked"
     moved = f"{locked.as_posix()}/{GITMODULES}"
     hook(holder, tmp_path, "pre-commit",
@@ -373,14 +407,33 @@ def test_a_rollback_meeting_a_gitmodules_linked_into_a_locked_folder(
         if locked.is_dir():
             locked.chmod(0o755)
 
-    assert result.returncode == 2, result.stdout + result.stderr
-    assert "Traceback" not in result.stderr
-    sentence = result.stderr.splitlines()[-1]
-    assert (f"NOT {GITMODULES} restored byte for byte: {GITMODULES}: "
-            f"Permission denied; {STEP_CURE}") in sentence
-    assert UPDATE in sentence
-    assert ONLY_REMOTE not in sentence
+    sentence = rollback_said(result)
     assert (holder / ".git" / "modules" / PATH / "HEAD").is_file()
+    assert f"path = {PATH}" not in Path(moved).read_text(encoding="utf-8")
+    cured_and_typed(holder, sentence, at)
+    assert not (holder / GITMODULES).is_symlink()
+
+
+@needs_a_mode
+def test_a_rollback_meeting_a_gitmodules_at_000_types_the_index_copy(
+        holder, offline, tmp_path):
+    """A `pre-commit` hook that only takes the mode off `.gitmodules` and
+    refuses. On 3.12 this said the checkout came back only from its remote
+    and typed `mkdir`, since git could not read the file either; at
+    `4352ac2fd` it typed the update over the copy `git rm` wrote, which
+    said `No url found`. Now the index's copy comes first, and the
+    commands, typed as printed once the mode is given back, put the member
+    back on its branch."""
+    env = isolated(offline, tmp_path)
+    at = git("rev-parse", "HEAD", cwd=holder / PATH).stdout.strip()
+    hook(holder, tmp_path, "pre-commit", f"chmod 000 {GITMODULES}\nexit 1\n")
+    try:
+        result = remove(holder, env)
+    finally:
+        (holder / GITMODULES).chmod(0o644)
+
+    sentence = rollback_said(result)
+    cured_and_typed(holder, sentence, at)
 
 
 # --- siblings.py: `submodule_urls` ---------------------------------------------

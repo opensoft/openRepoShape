@@ -8227,15 +8227,23 @@ class PinRollback:
         """The commands that put `name` back: its index entries, then its
         bytes from them where they are what the index held. Bytes git does
         not have — an edit nobody had staged — have no command, and the
-        sentence's `git status` shows them."""
+        sentence's `git status` shows them.
+
+        BYTES THIS USER MAY NOT READ ARE NOT TAKEN FOR THE RECORDED ONES
+        (#1110). A `pre-commit` hook that made `.gitmodules` unreadable (a
+        link into a folder at mode 000, or the file at 000) and refused left
+        the copy `git rm` wrote, the member's section gone, so the update
+        typed after the cure said `No url found for submodule path`. Typed
+        after the cure, the checkout from the index writes the recorded
+        bytes back, and where they were there already it writes the same.
+        """
         data, entries = self.files[name]
         typed = [_entries_by_hand(name, entries)]
         try:
             same = self._bytes(name) == data
         except OSError:
-            # Named by the step that met it (#430); the index entry is still
-            # this command's to type, and the bytes are `git status`'s.
-            return typed
+            # Named by the step that met it, with its cure (#430).
+            same = False
         if same:
             return typed
         if data is None:
