@@ -43,6 +43,22 @@ finding, with a NOTE.
   `git init`, so either setting stopped `check` with "a git or gh command
   failed", and `_resolved`'s `update-index` ran this machine's
   `post-index-change` hook. They are made as the others are now.
+
+#1136 followed, measured on bba168bd with git 2.43. In each case `check`
+said `plan ok`, and `execute` made both legs and stopped extracting the
+spec leg:
+
+* under a parent git's `-c core.protectHFS=true`, over a source path `.g` +
+  U+200C + `it/x` (`unable to checkout working tree`);
+* under a parent's failing required clean filter, named by the root's own
+  `.gitattributes` for itself;
+* under `GIT_ATTR_SOURCE=bogus` (`bad --attr-source or GIT_ATTR_SOURCE`).
+
+The rehearsal and `_stored_as_written` left out `GIT_CONFIG_PARAMETERS`,
+and every throwaway left out `GIT_ATTR_SOURCE`. Now the two take a parent's
+settings, less any `attr.tree` among them. A `GIT_ATTR_SOURCE` is
+`adopt-git-unasked`, by name, before any question. And three of the
+throwaways read their environment before they are made.
 """
 
 from __future__ import annotations
@@ -59,8 +75,8 @@ from types import SimpleNamespace
 import pytest
 
 from conftest import (ADOPT, WINDOWS_SKIP, appended_to_command_scope,
-                      findings, git, planned, refused_before_any_leg,
-                      run_script)
+                      command_line_entries, findings, git, planned,
+                      refused_before_any_leg, run_script)
 from test_adopt_nested_attributes import (KEEP_GITHUB, ROOT, ROOT_ATTRIBUTES,
                                           SOURCE, YML_CRLF, adoption_plan,
                                           committed_raw, github)
@@ -1453,12 +1469,20 @@ def test_a_parent_gits_url_rewrite_is_not_read_where_a_url_is_asked(
     pytest.param(lambda adopter, source: adopter._answers(["/x"], source),
                  id="answers"),
     pytest.param(lambda adopter, source: adopter._split_clone_asked(source),
-                 id="split-clone")])
+                 id="split-clone"),
+    pytest.param(lambda adopter, source: adopter._AttributesProbe(source),
+                 id="attributes-probe"),
+    pytest.param(lambda adopter, source: adopter._stored_as_written(
+        b"x\n", "100644", b"x\n", source), id="stored-as-written"),
+    pytest.param(lambda adopter, source: adopter._SplitRehearsal(source),
+                 id="split-rehearsal")])
 def test_an_environment_read_that_raises_leaves_no_throwaway(
         adopter, monkeypatch, tmp_path, asked):
     """r1119's NIT-3: each reads its environment before it makes its
     throwaway, so that a raise there leaves none in the work directory.
-    On bdcf9952 `_resolved` and `_answers` made it first. (By reading, a
+    On bdcf9952 `_resolved` and `_answers` made it first, and on bba168bd
+    `_AttributesProbe`, `_stored_as_written` and the rehearsal did (#1136):
+    each left its throwaway behind. (By reading, a
     `GIT_CONFIG_COUNT` of a superscript two raised in `_inherited_env()`,
     whose `isdigit()` is true and whose `int()` raises; measured, git
     refuses that count itself, `bogus count in GIT_CONFIG_COUNT`, at
@@ -1476,3 +1500,430 @@ def test_an_environment_read_that_raises_leaves_no_throwaway(
     with pytest.raises(RuntimeError, match="f1119: no environment"):
         asked(adopter, opened)
     assert list(work.iterdir()) == []
+
+
+# ---------------------------------------------------------------------------
+# #1136: a parent git's settings, and `GIT_ATTR_SOURCE`, in the throwaways
+# ---------------------------------------------------------------------------
+
+PARAMETERS = "GIT_CONFIG_PARAMETERS"
+REENCODED_ATTRIBUTES = "plan-attributes-reencoded"
+#: A path git takes on Linux and refuses under `core.protectHFS=true`: `.git`
+#: with a zero-width non-joiner in it, which HFS+ ignores in a name.
+HFS_PATH = ".g\u200cit/x"
+#: Its entry in the plan, and its name in `check`'s finding, as `_spelled`
+#: writes them.
+HFS_ENTRY = '".g\\u200cit/"'
+HFS_SAID = ".g\\u200cit/x"
+PROTECT_HFS = [("core.protectHFS", "true")]
+
+
+def the_index_holds(base: Path, path: str, env: dict) -> bool:
+    """Whether this machine's git, under `env` laid over this process's
+    environment, holds `path` in an index. `update-index --index-info` says
+    `Ignoring path` of one it refuses and still exits 0, so the index is
+    read back."""
+    repository = base / "index-asked"
+    git("init", "-q", str(repository), cwd=base)
+    laid = {**os.environ, **env}
+    blob = subprocess.run(["git", "hash-object", "-w", "--stdin"],
+                          cwd=str(repository), input=b"x\n",
+                          capture_output=True, check=True)
+    subprocess.run(["git", "update-index", "--add", "--index-info"],
+                   cwd=str(repository), env=laid, capture_output=True,
+                   input=f"100644 {blob.stdout.decode().strip()}\t{path}\n"
+                   .encode(), check=False)
+    held = subprocess.run(["git", "ls-files", "-z"], cwd=str(repository),
+                          env=laid, capture_output=True, check=True)
+    return path.encode() in held.stdout.split(b"\0")
+
+
+def hfs_plan(base: Path) -> Path:
+    """The plan for a source whose tree holds `HFS_PATH`, kept in the root."""
+    source = a_source(base)
+    with_paths(source, (HFS_PATH,))
+    return planned(source, base, {HFS_ENTRY: ROOT})
+
+
+def protect_hfs_handed(base: Path, handed) -> dict:
+    """`PROTECT_HFS` in the form `handed` gives it, or a skip where this
+    git still holds `HFS_PATH` under it."""
+    env = handed(base, PROTECT_HFS)
+    if the_index_holds(base, HFS_PATH, env):
+        pytest.skip("this git holds `.g` + U+200C + `it/x` in an index "
+                    "under `core.protectHFS=true`")
+    return env
+
+
+@pytest.mark.parametrize("handed", FROM_A_PARENT)
+def test_a_parent_gits_protect_hfs_is_asked_in_the_rehearsal(tmp_path,
+                                                             handed):
+    """`core.protectHFS=true`, handed down by a parent git, over a source
+    path `.g` + U+200C + `it/x`: the rehearsal takes the setting, as the
+    split's checkout does, and says the path is one git refuses. Measured
+    on bba168bd with git 2.43: under `git-config-parameters`, `check` said
+    `plan ok`, and `execute` made both legs and stopped extracting the spec
+    leg, `unable to checkout working tree`. Under `git-config-count` it was
+    this finding already."""
+    env = protect_hfs_handed(tmp_path, handed)
+    result = checked(hfs_plan(tmp_path), env)
+    assert "REFUSED" not in result.stderr, result.stderr
+    assert result.returncode == 1, result.stderr
+    assert finding_lines(result) == [
+        f"FINDING {PATH_GIT_REFUSES}: {one_refused(HFS_SAID)}"]
+
+
+def test_with_no_setting_git_takes_that_path(tmp_path):
+    """The control: with no `core.protectHFS`, git on Linux holds the path,
+    and `check` finds nothing in it."""
+    if not the_index_holds(tmp_path, HFS_PATH, {}):
+        pytest.skip("this git refuses `.g` + U+200C + `it/x` with no "
+                    "setting, as macOS's does by default")
+    assert findings(hfs_plan(tmp_path)) == []
+
+
+@pytest.mark.parametrize("handed", FROM_A_PARENT)
+def test_execute_refuses_a_path_a_parent_gits_setting_refuses_before_any_leg(
+        adopter, monkeypatch, tmp_path, handed):
+    env = protect_hfs_handed(tmp_path, handed)
+    plan = hfs_plan(tmp_path)
+    for name, value in env.items():
+        monkeypatch.setenv(name, value)
+    refusal = refused_before_any_leg(adopter, monkeypatch, plan, tmp_path)
+    assert refusal.code == PATH_GIT_REFUSES
+
+
+#: A filter git must run, whose clean step fails, and the root's own
+#: `.gitattributes`, which names it for itself.
+FAILING = "w1136"
+FAILING_FILTER = [(f"filter.{FAILING}.clean", "false"),
+                  (f"filter.{FAILING}.smudge", "cat"),
+                  (f"filter.{FAILING}.required", "true")]
+FILTERED_ROOT = f"/.gitattributes filter={FAILING}\n".encode()
+
+
+def filtered_root_plan(base: Path) -> Path:
+    return planned(a_source(base, files={ROOT_ATTRIBUTES: FILTERED_ROOT}),
+                   base, {})
+
+
+@pytest.mark.parametrize("handed", FROM_A_PARENT)
+def test_a_parent_gits_filter_is_asked_where_the_root_is_stored(tmp_path,
+                                                                handed):
+    """A failing clean filter, handed down by a parent git, that the root's
+    `.gitattributes` names for itself: `_stored_as_written` takes the
+    setting, as the split's `git add` does, and says the root is stored
+    otherwise. Measured on bba168bd with git 2.43: under
+    `git-config-parameters`, `check` said `plan ok`, and `execute` made
+    both legs and stopped extracting the spec leg, `clean filter 'w1136'
+    failed`. Under `git-config-count` it was this finding already."""
+    result = checked(filtered_root_plan(tmp_path),
+                     handed(tmp_path, FAILING_FILTER))
+    assert "REFUSED" not in result.stderr, result.stderr
+    assert result.returncode == 1, result.stderr
+    assert codes(result) == [REENCODED_ATTRIBUTES], result.stderr
+
+
+@pytest.mark.parametrize("handed", FROM_A_PARENT)
+def test_execute_refuses_a_parent_gits_filter_before_any_leg(
+        adopter, monkeypatch, tmp_path, handed):
+    plan = filtered_root_plan(tmp_path)
+    for name, value in handed(tmp_path, FAILING_FILTER).items():
+        monkeypatch.setenv(name, value)
+    refusal = refused_before_any_leg(adopter, monkeypatch, plan, tmp_path)
+    assert refusal.code == REENCODED_ATTRIBUTES
+
+
+def no_setting(_base: Path, _entries) -> dict:
+    return {}
+
+
+#: Where a parent's `attr.tree` naming the empty tree comes from: nowhere
+#: (the control), and the two forms a parent git hands it in.
+ATTR_TREE_HANDED = [pytest.param(no_setting, id="no-setting"),
+                    *FROM_A_PARENT]
+
+
+@pytest.mark.parametrize("handed", ATTR_TREE_HANDED)
+def test_a_parent_gits_attr_tree_is_not_read_in_the_rehearsal(tmp_path,
+                                                              handed):
+    """`attr.tree` naming the empty tree makes git read no rule, which in
+    the rehearsal would silence what it finds. The rehearsal takes a
+    parent's settings without it (`_parent_settings`), as
+    `_inherited_env()` takes `GIT_CONFIG_COUNT` without it, so the CRLF
+    file the plan keeps under `* text eol=lf` is found in each form, as
+    with no setting. The control: in the source, the setting makes git
+    read no `eol` for that file; where this git reads no `attr.tree`,
+    the forms are skipped."""
+    source = a_source(tmp_path, files={ROOT_ATTRIBUTES: TEXT_EOL_LF,
+                                       NOTES: CRLF})
+    plan = planned(source, tmp_path, {NOTES: ROOT})
+    env = handed(tmp_path, [("attr.tree", mktree(source, []))])
+    read = subprocess.run(["git", "check-attr", "eol", "--", NOTES],
+                          cwd=str(source), env={**os.environ, **env},
+                          capture_output=True, text=True, check=True)
+    if env and read.stdout.strip() == f"{NOTES}: eol: lf":
+        pytest.skip("this git reads no `attr.tree`")
+    assert read.stdout.strip() == f"{NOTES}: eol: " + (
+        "unspecified" if env else "lf")
+    result = checked(plan, env)
+    assert "REFUSED" not in result.stderr, result.stderr
+    assert result.returncode == 1, result.stderr
+    assert codes(result) == [REENCODED_FILES], result.stderr
+    assert KEPT_CRLF in finding_lines(result)[0]
+
+
+#: The forms `core.hooksPath` and `core.fsmonitor` reach `check` in.
+COUNTERS_HANDED = [pytest.param(with_global_config, id="global-config"),
+                   *FROM_A_PARENT]
+
+
+@pytest.mark.parametrize("handed", COUNTERS_HANDED)
+def test_no_hook_or_fsmonitor_runs_where_the_rehearsal_asks(tmp_path,
+                                                            handed):
+    """The rehearsal and `_stored_as_written` take a parent git's settings
+    now, and their own `-c core.hooksPath` and `core.fsmonitor=false` come
+    after them: git takes a key's last value, so neither the counting
+    hooks nor the counting fsmonitor run. The source keeps its own root
+    `.gitattributes`, so both are asked. The control: the same settings
+    run both for a `git add` in a repository of their own."""
+    plan = planned(a_source(tmp_path, files={ROOT_ATTRIBUTES: b"*.md text\n"}),
+                   tmp_path, {})
+    hooks, hook_log = counting_hooks(tmp_path)
+    program, fsmonitor_log = counting_fsmonitor(tmp_path)
+    env = handed(tmp_path, [("core.hooksPath", hooks.as_posix()),
+                            ("core.fsmonitor", program.as_posix())])
+    result = checked(plan, env)
+    assert result.returncode == 0, result.stderr
+    assert (runs(hook_log), runs(fsmonitor_log)) == ([], [])
+    repository = tmp_path / "ordinary"
+    git("init", "-q", str(repository), cwd=tmp_path)
+    (repository / "a").write_bytes(b"a\n")
+    subprocess.run(["git", "add", "a"], cwd=str(repository), check=True,
+                   env={**os.environ, **env})
+    assert runs(hook_log) == ["post-index-change"]
+    assert runs(fsmonitor_log) != []
+
+
+def a_source_with_no_code(base: Path) -> Path:
+    """A source holding a spec and no code, whose code leg `execute` seeds
+    with no commit under `--allow-empty-leg code`."""
+    path = base / "Thing"
+    path.mkdir(parents=True)
+    git("init", "-q", "-b", "main", ".", cwd=path)
+    for name in ("README.md", "specs/001-feature/spec.md"):
+        (path / name).parent.mkdir(parents=True, exist_ok=True)
+        (path / name).write_bytes(b"# Thing\n")
+    git("add", "-A", cwd=path)
+    git("commit", "-qm", "Initial import", cwd=path)
+    return path
+
+
+def tree_of(source: Path, *flags: str) -> str:
+    return git("rev-parse", *flags, "HEAD^{tree}", cwd=source).stdout.strip()
+
+
+#: What `adopt-git-unasked` says of a `GIT_ATTR_SOURCE`, after its value.
+ATTR_SOURCE_WHY = (
+    ", and every git command the split runs would read attributes from the "
+    "tree it names in place of the files it writes, in each repository it "
+    "makes, and stop in any of them where it names no tree; the legs `git "
+    "filter-repo` rewrites and a leg seeded with no commit are not made "
+    "yet, so no throwaway repository can answer for them. Unset "
+    "`GIT_ATTR_SOURCE`, which a `git --attr-source` running this tool also "
+    "sets")
+
+
+def unasked_attr_source(work: Path, value: str) -> str:
+    """`adopt-git-unasked` for `GIT_ATTR_SOURCE` set to `value` in `work`."""
+    return (f"FINDING {UNASKED}: "
+            + UNASKED_OPENS.format(os.path.realpath(work))
+            + "`GIT_ATTR_SOURCE` is set in its environment, "
+            + (f"to `{value}`" if value else "empty") + ATTR_SOURCE_WHY
+            + UNASKED_ENDS)
+
+
+#: `(what GIT_ATTR_SOURCE names, from the source; whether the source holds
+#: no code, its code leg seeded empty)`. Measured on bba168bd with git
+#: 2.43, `check` said `plan ok` under each. `execute` made both legs and
+#: stopped under the first four: at extracting the spec leg, at seeding the
+#: code leg, and at pushing the spec leg. It took the next two to `adoption
+#: verified`, and refusing them too is #1136's known limit. The last two
+#: were rows of `test_no_tree_this_machine_names_steers_the_question` and
+#: `..._steers_the_split_question`, which found the file the throwaway was
+#: asked about while every throwaway left the variable out.
+ATTR_SOURCES = [
+    pytest.param(lambda _source: "bogus", False, id="bogus"),
+    pytest.param(lambda _source: "", False, id="empty"),
+    pytest.param(lambda _source: "HEAD", True,
+                 id="head-over-a-code-leg-seeded-empty"),
+    pytest.param(lambda source: tree_of(source, "--short=12"), True,
+                 id="the-tree-abbreviated-over-a-code-leg-seeded-empty"),
+    pytest.param(lambda _source: "HEAD", False, id="head"),
+    pytest.param(tree_of, False, id="the-tree"),
+    pytest.param(lambda source: mktree(source, []), False,
+                 id="the-empty-tree"),
+]
+
+
+def attr_source_plan(base: Path, named, no_code: bool) -> tuple[Path, str]:
+    """The plan, and the value `named` gives `GIT_ATTR_SOURCE`."""
+    source = a_source_with_no_code(base) if no_code else a_source(base)
+    return planned(source, base, {}), named(source)
+
+
+@pytest.mark.parametrize(("named", "no_code"), ATTR_SOURCES)
+def test_git_attr_source_is_one_finding_that_names_it(tmp_path, named,
+                                                      no_code):
+    """Whatever it names, `GIT_ATTR_SOURCE` is one `adopt-git-unasked` that
+    names it, before any question, so nothing is made in the work
+    directory."""
+    plan, value = attr_source_plan(tmp_path, named, no_code)
+    work = tmp_path / "work"
+    result = checked(plan, {"GIT_ATTR_SOURCE": value}, "--work-dir",
+                     str(work))
+    assert "REFUSED" not in result.stderr, result.stderr
+    assert result.returncode == 1, result.stderr
+    assert finding_lines(result) == [unasked_attr_source(work, value)]
+    assert list(work.iterdir()) == []
+
+
+@pytest.mark.parametrize(("named", "no_code"), ATTR_SOURCES[:3])
+def test_execute_refuses_git_attr_source_before_any_leg(
+        adopter, monkeypatch, tmp_path, named, no_code):
+    """On bba168bd each made both legs first (`ATTR_SOURCES`)."""
+    plan, value = attr_source_plan(tmp_path, named, no_code)
+    monkeypatch.setenv("GIT_ATTR_SOURCE", value)
+    monkeypatch.setattr(adopter, "_require_filter_repo", lambda: None)
+    remotes = tmp_path / "remotes"
+    with pytest.raises(adopter.Refusal) as caught:
+        adopter.cmd_execute(Namespace(
+            plan=str(plan), source=None, local_remote_dir=remotes,
+            allow_empty_leg=["code"] if no_code else [], yes=True,
+            work_dir=tmp_path / "work"))
+    assert caught.value.code == UNASKED
+    assert "`GIT_ATTR_SOURCE` is set in its environment" in \
+        caught.value.detail
+    assert "no leg repository was created" in caught.value.remediation
+    assert not remotes.exists()
+
+
+def handed_by_a_parent(cwd: Path, *settings: str) -> str:
+    """`GIT_CONFIG_PARAMETERS` as a parent `git -c <setting>` hands it to an
+    alias it runs, read back by the alias: git's own writing of each
+    setting, after the entries the environment holds."""
+    args = ["git"]
+    for setting in settings:
+        args += ["-c", setting]
+    args += ["-c", 'alias.w1136params=!printf %s "$GIT_CONFIG_PARAMETERS"',
+             "w1136params"]
+    return subprocess.run(args, cwd=str(cwd), capture_output=True,
+                          check=True).stdout.decode("utf-8")
+
+
+def appended_by_hand(entries: str) -> str:
+    """`entries`, as an older git wrote them or as git cannot read them,
+    after the entries `GIT_CONFIG_PARAMETERS` holds."""
+    return f"{os.environ.get(PARAMETERS, '')} {entries}".strip()
+
+
+def listed(cwd: Path, parameters: str | None) -> subprocess.CompletedProcess:
+    """`git config --show-origin --list` in `cwd`, under `parameters` as
+    `GIT_CONFIG_PARAMETERS`, or with none where it is None."""
+    env = {name: value for name, value in os.environ.items()
+           if name != PARAMETERS}
+    if parameters is not None:
+        env[PARAMETERS] = parameters
+    return subprocess.run(["git", "config", "--show-origin", "--list"],
+                          cwd=str(cwd), env=env, capture_output=True,
+                          text=True, encoding="utf-8", errors="replace",
+                          check=False)
+
+
+#: `GIT_CONFIG_PARAMETERS` values, each built at the test from what the
+#: environment holds: as git writes them, from `git -c` (new-style
+#: `'<key>'='<value>'` since git 2.31), and as git before 2.31 wrote them
+#: (`'<key>=<value>'`), by hand.
+READABLE = [
+    pytest.param(lambda cwd: handed_by_a_parent(cwd, "core.protectHFS=true"),
+                 id="one-setting"),
+    pytest.param(lambda cwd: handed_by_a_parent(cwd, "attr.tree=HEAD"),
+                 id="attr-tree-alone"),
+    pytest.param(lambda cwd: handed_by_a_parent(
+        cwd, "core.protectHFS=true", "attr.tree=HEAD", "filter.x.clean=false"),
+        id="attr-tree-among-others"),
+    pytest.param(lambda cwd: handed_by_a_parent(
+        cwd, "ATTR.TREE=HEAD", "a.b=it's here!", "q.w", "sub.Se c.k=v=w",
+        "Attr.Tree=x", "z.y="),
+        id="cases-quotes-bools-subsections-and-empties"),
+    pytest.param(lambda cwd: handed_by_a_parent(
+        cwd, "x.y=a'b", "attr.treex=1", "attr.x.tree=2"),
+        id="keys-that-are-not-attr-tree"),
+    pytest.param(lambda _cwd: appended_by_hand("'core.protecthfs=true'"),
+                 id="old-style"),
+    pytest.param(lambda _cwd: appended_by_hand(
+        "'attr.tree=HEAD' 'core.protecthfs=true'"),
+        id="old-style-attr-tree"),
+    pytest.param(lambda _cwd: appended_by_hand("'q.w'"),
+                 id="old-style-bool"),
+    pytest.param(lambda _cwd: appended_by_hand("' attr.tree =x' 'a.b=1'"),
+                 id="old-style-attr-tree-spaced"),
+]
+
+
+@pytest.mark.parametrize("parameters", READABLE)
+def test_a_parent_gits_settings_are_handed_on_but_attr_tree(
+        adopter, monkeypatch, tmp_path, parameters):
+    """`_parent_settings()` reads `GIT_CONFIG_PARAMETERS` as git does: git
+    lists the same command-line entries under its answer as under the
+    whole value, less each `attr.tree`. Where the value holds one, the
+    answer is another value; where it holds nothing else, the answer is
+    None."""
+    whole = parameters(tmp_path)
+    monkeypatch.setenv(PARAMETERS, whole)
+    kept = adopter._parent_settings()
+    everything = listed(tmp_path, whole)
+    assert everything.returncode == 0, everything.stderr
+    entries = command_line_entries(everything.stdout)
+    wanted = [entry for entry in entries
+              if entry.split("=", 1)[0] != "attr.tree"]
+    answered = listed(tmp_path, kept)
+    assert answered.returncode == 0, answered.stderr
+    assert command_line_entries(answered.stdout) == wanted
+    assert (kept != whole) == (wanted != entries), (whole, kept)
+    if not command_line_entries(listed(tmp_path, None).stdout) and \
+            not wanted:
+        assert kept is None
+
+
+#: Values git reads none of (`bogus format in GIT_CONFIG_PARAMETERS`).
+UNREADABLE = ["core.x=1", "'a.b'='c'x", "'a.b", "'a.b'\\x"]
+
+
+@pytest.mark.parametrize("unreadable", UNREADABLE)
+def test_settings_git_cannot_read_are_handed_on_as_they_stand(
+        adopter, monkeypatch, tmp_path, unreadable):
+    """So that git refuses them in the throwaway, as it does everywhere
+    else. The control: git refuses them."""
+    whole = appended_by_hand(unreadable)
+    monkeypatch.setenv(PARAMETERS, whole)
+    assert adopter._parent_settings() == whole
+    assert listed(tmp_path, whole).returncode != 0
+
+
+def test_the_checkout_questions_take_the_settings_and_no_attr_source(
+        adopter, monkeypatch):
+    """`_split_checkout_env()`: `_inherited_env()`, which leaves out
+    `GIT_ATTR_SOURCE` and every `GIT_CONFIG_PARAMETERS`, and the parent's
+    settings as `_parent_settings()` gives them; with none, none."""
+    monkeypatch.setenv("GIT_ATTR_SOURCE", "HEAD")
+    monkeypatch.setenv(PARAMETERS, appended_by_hand(
+        "'attr.tree'='HEAD' 'core.protectHFS'='true'"))
+    env = adopter._split_checkout_env()
+    assert PARAMETERS not in adopter._inherited_env()
+    assert env[PARAMETERS] == adopter._parent_settings()
+    assert "'core.protectHFS'='true'" in env[PARAMETERS]
+    assert "attr.tree" not in env[PARAMETERS]
+    assert "GIT_ATTR_SOURCE" not in env
+    monkeypatch.delenv(PARAMETERS)
+    assert PARAMETERS not in adopter._split_checkout_env()
