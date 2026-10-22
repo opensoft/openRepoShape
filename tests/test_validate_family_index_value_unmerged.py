@@ -22,7 +22,10 @@ things, each older than #1124, and each measured again on #1124's head
   no file at all, and the checks read the work tree's, or HEAD's where
   that was gone: a value HEAD's gave was "here and in HEAD", its line put
   HEAD's back "as the index holds none", and a section HEAD's gave was
-  named with that same line, which resolves the merge to HEAD's side.
+  named with that same line, which resolves the merge to HEAD's side. A
+  value the work tree's file alone gives, on disk, while the merge is
+  unresolved, is no finding now, as git reads no file; once the merge is
+  resolved and staged, it is named as N1's is.
 
 Every row types only the printed `git` lines, in order, and does by hand
 only what the text says in words, then commits what is staged with a
@@ -61,6 +64,14 @@ NOT_RUN = b"\tupdate = !true\n"
 #: HEAD's, and the index's does too.
 INDEX_TOO = ("The index's file, which a plain `git commit` records, gives "
              "it too.")
+
+#: What the value's finding says where the work tree's file and the
+#: index's give it, not HEAD's: the key taken out, then the file staged.
+INDEX_TOO_TAKEN_OUT = (
+    VALUE_SAID.format(where="in the work tree, not in HEAD", dies=DIES_HERE)
+    + INDEX_TOO + " Take the key out by hand, in a POSIX shell, then stage "
+    ".gitmodules:\n    git config -f .gitmodules --unset-all "
+    f"submodule.{ROW}.update\n    {STAGE}")
 
 #: How git dies on a value the index's file alone gives.
 DIES_IN_THE_COMMIT = ("so in a clone of the commit that records it neither "
@@ -106,12 +117,7 @@ def test_a_value_the_work_tree_s_file_and_the_index_s_give_ends_staging_it(
 
     found = found_alike(holder, *MODES)
 
-    assert found == [
-        VALUE_SAID.format(where="in the work tree, not in HEAD",
-                          dies=DIES_HERE)
-        + INDEX_TOO + " Take the key out by hand, in a POSIX shell, then "
-        "stage .gitmodules:\n    git config -f .gitmodules --unset-all "
-        f"submodule.{ROW}.update\n    {STAGE}"]
+    assert found == [INDEX_TOO_TAKEN_OUT]
     typed_in_order(holder, env, validate(holder, "--no-members"))
     committed_as_staged(holder, env)
     assert head_bytes(holder, env) == data
@@ -301,6 +307,39 @@ def test_a_value_head_gives_while_a_merge_leaves_the_file_unmerged(
     (holder / GITMODULES).write_bytes(data)
     for line in commands(found[0]):
         type_line(holder, env, line)
+    committed_as_staged(holder, env)
+    assert head_bytes(holder, env) == data
+    assert raw(holder, env, "status", "--porcelain").stdout == b""
+    ends_well(holder, env, family, tmp_path)
+
+
+def test_a_value_the_work_tree_alone_gives_while_unmerged_waits_for_git(
+        family, holder, offline, tmp_path):
+    """RV1124's P6b, the one change of finding this makes: `.gitmodules`
+    at a merge's conflict stages, the other side giving `update = !true`
+    in MEMBER's section, and the work tree's file on disk giving it, as a
+    merge resolved by hand to that side and not yet staged leaves it;
+    HEAD's does not give it. Git reads no file here, and its `submodule
+    status` dies at the first gitlink, not on the value. The gate read the
+    work tree's file and named the value "in the work tree, not in HEAD";
+    it reads none while the merge is unresolved now, and every mode
+    passes, since no file git reads gives the value. Once the merge is
+    resolved with a plain `git add`, git reads the work tree's file, and
+    the gate names the value as N1's: its lines typed, then a plain `git
+    commit`, HEAD is as it was, and the gate and a plain clone pass."""
+    env = cloning(offline, tmp_path, family)
+    data = head_bytes(holder, env)
+    given = valued(data, ROW, NOT_RUN)
+    unmerged(holder, env, data, data, given)
+    (holder / GITMODULES).write_bytes(given)
+    git_reads_none(holder, env)
+
+    for extra in MODES:
+        gate = validate(holder, *extra)
+        assert gate.returncode == 0, (extra, gate.stdout + gate.stderr)
+    raw(holder, env, "add", "--", GITMODULES)
+    assert found_alike(holder, *MODES) == [INDEX_TOO_TAKEN_OUT]
+    typed_in_order(holder, env, validate(holder, "--no-members"))
     committed_as_staged(holder, env)
     assert head_bytes(holder, env) == data
     assert raw(holder, env, "status", "--porcelain").stdout == b""
