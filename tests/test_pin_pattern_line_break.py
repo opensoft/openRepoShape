@@ -23,8 +23,12 @@ the double-quoted escape `"<hex>\\n"` and a block scalar (`commit: |`) as the
 hex and a line feed. Through that, on main:
 
 - `validate-manifest.py` passed a `shape.commit` and a
-  `shape.digests.tree_sha256` that ended in one (`manifest ok`, exit 0), and
-  `validate-family.py` the same two in `family.yaml`;
+  `shape.digests.tree_sha256` that ended in one (`manifest ok`, exit 0);
+- `validate-family.py` passed the digest in `family.yaml` (`family ok`, exit
+  0) and took the commit for 40 hex too, so no `family-shape-commit` was
+  raised, but it gave `shape-pin-manifest-disagree` over it, since
+  `contracts/shape-pin.yaml` holds the commit without the line feed (the same
+  hex is printed on both sides);
 - `validate-pins.py` took a leg pin's `commit:` for 40 hex and refused it as
   `pin-commit-unresolvable`, naming the commit as one the leg's object store
   lacks, and a digest as `pin-digest-mismatch`, a recomputation that differs;
