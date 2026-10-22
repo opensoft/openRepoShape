@@ -48,8 +48,8 @@ EXIT CODES
        an unresolvable commit, an unreadable pin, manifest, workflow file or
        pinned shape copy (one that is not UTF-8, or that this user cannot
        open or reach, #712), or a `.github/workflows/` directory this user
-       cannot list or search (#434). An unanswerable pin question is never an
-       implicit pass.
+       cannot list or search (#434), or the root's own `.git` (#1146). An
+       unanswerable pin question is never an implicit pass.
        No git to run is one too (`git-not-runnable`, #412), a git that is
        missing, will not run or cannot be executed: the gitlinks and the
        digests are read through git.
@@ -440,10 +440,14 @@ def _leg_git_dir(dotgit: Path) -> Path | None:
     return dotgit.parent / os.fsdecode(data[len(b"gitdir: "):].rstrip(b"\r\n"))
 
 
-def _refuse_an_unreadable_git_dir(root: Path, dotgit: Path) -> None:
+def _refuse_an_unreadable_git_dir(root: Path, dotgit: Path,
+                                  code: str = "pin-submodule-unreadable",
+                                  reads: str = CHECKOUT_READ) -> None:
     """`pin-submodule-unreadable`, by name, for a leg whose git directory
     this user cannot search (#968), asked as `_is_there` asks: the `stat`
-    of its `HEAD`, which a git directory at mode 000 or r-- refuses.
+    of its `HEAD`, which a git directory at mode 000 or r-- refuses. `code`
+    and `reads` are the refusal's, for the root's own repository
+    (`_refuse_an_unreadable_root`, #1146).
 
     TWO STATES REACHED GIT, AND GIT SAID THE WRONG THING. A `.git` that is a
     directory at mode 000 is passed over by git, which walks up to the
@@ -462,8 +466,51 @@ def _refuse_an_unreadable_git_dir(root: Path, dotgit: Path) -> None:
             named = Path(os.path.normpath(gitdir))
             _is_there(gitdir / "HEAD")
     except OSError as exc:
-        raise _unreadable_file("pin-submodule-unreadable", _named(root, named),
-                               exc, CHECKOUT_READ) from exc
+        raise _unreadable_file(code, _named(root, named), exc, reads) from exc
+
+
+#: The refusal of a root whose own repository this user cannot read (#1146),
+#: and what that repository is read for, as `_unreadable_file`'s remedy
+#: names it. `validate-manifest.py` refuses its `.git` by the same code.
+ROOT_UNREADABLE = "git-repo-unreadable"
+ROOT_READ = ("the root's own repository, where it finds the root and each "
+             "leg's gitlink")
+
+
+def _refuse_an_unreadable_root(start: Path) -> None:
+    """`git-repo-unreadable`, by name, where this user cannot read the
+    `.git` that `find_repo_root` stops at, at `start` or above it (#1146).
+
+    `find_repo_root` ASKS `exists()`, AND IS A SHAPE COPY THIS FILE MAY NOT
+    RELY ON BEING NEWER THAN ITSELF (#370, #610), so each `.git` it would ask
+    is asked here first, as `_is_there` asks a path. A root whose `.git` is a
+    link into a folder this user cannot search ended in a `PermissionError`
+    traceback on Python 3.12, exit 1, which the doctor read as a validator
+    that crashed; from 3.14 `exists()` answers False, and the run refused
+    `not-a-git-repo` (`no .git found`) under the submodule remedy, about a
+    root that has one. A `.git` that answers absent (nothing there, a link
+    that leads nowhere or to itself) is passed over, as `exists()` passes it.
+
+    THE FIRST `.git` THAT IS THERE IS ASKED WHAT A LEG'S IS (#968), because
+    this validator reads every gitlink from it: a gitfile it cannot open, or
+    a git directory whose `HEAD` it cannot reach -- `.git` itself at mode
+    000, or the directory a gitfile names inside a folder this user cannot
+    search. git said of each that the root records no gitlink, and the run
+    refused `pin-gitlink-absent` under the lockstep remedy. Each is named, in
+    the gate's words, with the advice for the cause. Where nothing is
+    refused, `find_repo_root` answers as it always did."""
+    path = Path(start).resolve()
+    for candidate in [path, *path.parents]:
+        dotgit = candidate / ".git"
+        try:
+            there = _is_there(dotgit)
+        except OSError as exc:
+            raise _unreadable_file(ROOT_UNREADABLE, _named(path, dotgit), exc,
+                                   ROOT_READ) from exc
+        if there:
+            _refuse_an_unreadable_git_dir(path, dotgit, ROOT_UNREADABLE,
+                                          ROOT_READ)
+            return
 
 
 #: What a `stat` mode names (#919, #968), as the line about the file or the
@@ -2191,7 +2238,10 @@ def main(argv: list[str] | None = None) -> int:
 
     report = Report()
     try:
-        root = find_repo_root(args.root or Path(__file__).resolve().parents[1])
+        start = args.root or Path(__file__).resolve().parents[1]
+        # A `.git` this user cannot read is refused by name first (#1146).
+        _refuse_an_unreadable_root(start)
+        root = find_repo_root(start)
         _run_all_checks(root, report, args.pin_source)
     except Refusal as exc:
         # THE LOCKSTEP REMEDY IS THIS VALIDATOR'S (#370). `repo_shape` gives a

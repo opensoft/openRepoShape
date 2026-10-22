@@ -460,7 +460,8 @@ try:
         COMMIT_RE, NamingPolicy, POWERSHELL_SINGLE_QUOTES, PYTHON,
         Refusal, accepts_role, git_out, host_shell_dialect,
         load_yaml, recorded_gitlink, redacted, remote_local_path,
-        resolved_remote, same_repository, spelled, url_repository,
+        resolved_remote, same_repository, shown_path, spelled,
+        url_repository,
     )
 except ImportError as exc:  # pragma: no cover - exercised as a subprocess
     sys.exit(not_in_the_standard(f"scripts/repo_shape.py ({exc})"))
@@ -3453,6 +3454,52 @@ def cannot_be_listed(named: str, exc: OSError) -> str:
 #: for a mount this user cannot reach (#430), beside a leg's `cannot_be_read`,
 #: which is its PIN's (#847).
 MOUNT_UNREAD = "mount_cannot_be_read"
+#: The key of a leg's `--json` entry that holds the gate's line for the ROOT's
+#: own `.git` where this user cannot read it (#1146): the leg's gitlink is
+#: then not known, which is not "no gitlink recorded".
+GITLINK_UNREAD = "gitlink_cannot_be_read"
+
+
+def root_git_read(root: Path) -> tuple | None:
+    """`(the gate's line, the OSError)` where this user cannot read the
+    root's own repository, else None (#1146): the `stat` of its `.git`, the
+    open of a `.git` that is a gitfile, and the `stat` of the `HEAD` in the
+    git directory that `.git` is or names -- what `validate-pins.py` asks
+    before it reads a gitlink (`_refuse_an_unreadable_root`), in its words:
+    `.git: cannot be read (<reason>)`, or the git directory a gitfile names,
+    relative to the root where it is inside it and whole where it is not.
+
+    GIT SAID NOTHING IS RECORDED. `recorded_gitlink` reads the index through
+    git and takes a listing git refused for no gitlink, so a `.git` linked
+    into a folder this user cannot search made the `legs` row say `no
+    gitlink recorded` of every leg, and the verdict `DRIFTED (2 leg(s) not
+    at the pin)`, about gitlinks nobody read. A `.git` that answers absent
+    (nothing there, a link that leads nowhere or to itself), a gitfile that
+    names no directory, and a git directory with no `HEAD` are None, left to
+    git as they always were."""
+    dotgit = root / ".git"
+    named = Path(".git")
+    try:
+        if not is_a(dotgit, lambda _mode: True):
+            return None
+        gitdir = dotgit
+        if is_a(dotgit, stat.S_ISREG):
+            data = dotgit.read_bytes()
+            if not data.startswith(b"gitdir: "):
+                return None
+            gitdir = dotgit.parent / os.fsdecode(
+                data[len(b"gitdir: "):].rstrip(b"\r\n"))
+            named = Path(os.path.normpath(gitdir))
+        is_a(gitdir / "HEAD", lambda _mode: True)
+    except OSError as exc:
+        if refused_read(exc) is None:
+            return None
+        try:
+            shown = named.relative_to(root).as_posix()
+        except ValueError:
+            shown = str(named)
+        return cannot_be_read(shown_path(shown), exc), exc
+    return None
 
 
 def mount_read(root: Path, rel: str) -> tuple:
@@ -7309,6 +7356,27 @@ def submodule_update_next(root: Path, paths: list[str], off_pin: list[Path],
     return line, why
 
 
+def root_git_unread_row(ctx: Context, legs: list, line: str,
+                        exc: OSError) -> Row:
+    """The `legs` row of a root whose own `.git` this user cannot read
+    (#1146): the gate's `line` ONCE, since it is one fact about the root and
+    not one per leg, and what it leaves unasked. A FINDING, because
+    `validate-pins.py` refuses the same path by name; this doctor again as
+    the NEXT and the gate's advice for the cause as the `why`, because a
+    person mends a mode or an owner and no git line reaches it, as for a
+    mount (#430). Each leg's entry has no gitlink and carries `line` in
+    `gitlink_cannot_be_read`, so `drifted_reasons` counts none of them."""
+    entries = []
+    for leg in legs:
+        role = str(leg.get("role") or "?")
+        entries.append({"role": role, "path": str(leg.get("path") or role),
+                        "gitlink": None, GITLINK_UNREAD: line})
+    return Row("legs", "legs", FINDING,
+               f"{line}, so no gitlink is read and no leg is compared with "
+               "its pin", doctor_line(ctx), {"legs": entries},
+               why=cannot_read_why([exc]))
+
+
 def check_legs(ctx: Context) -> Row:
     """Each leg mounted, and its checked-out commit against the pin.
 
@@ -7421,6 +7489,17 @@ def check_legs(ctx: Context) -> Row:
     mode or an owner, so where nothing else has a line the NEXT is this
     doctor again, and the advice is the `why`, or follows it, as for a pin.
     Only a missing gitlink is said before it, as the lockstep fact it is.
+
+    A ROOT WHOSE OWN `.git` THIS USER CANNOT READ IS NAMED ONCE, AND IS NO
+    DRIFT EITHER (#1146). Every gitlink is read from it, through git, and
+    `recorded_gitlink` takes a listing git refused for none, so a `.git`
+    linked into a folder this user cannot search was `no gitlink recorded`
+    for each leg and the verdict DRIFTED, about gitlinks nobody read.
+    `root_git_read` asks it as `validate-pins.py` does, and the row says the
+    gate's line once, for the root: no gitlink is known, so no leg is
+    compared with its pin. Each leg keeps the line in
+    `gitlink_cannot_be_read`, which `drifted_reasons` reads, and the NEXT and
+    the `why` are a person's, as for a mount (`root_git_unread_row`).
     """
     needs = ("the legs it declares are not known and none is checked against "
              "its pin")
@@ -7434,6 +7513,9 @@ def check_legs(ctx: Context) -> Row:
                    "project.yaml declares no non-assembly leg; a "
                    "one-repository project has none and is not less governed "
                    "for it", None, {"legs": []})
+    root_unread = root_git_read(ctx.root)
+    if root_unread is not None:
+        return root_git_unread_row(ctx, legs, *root_unread)
     rows: list[dict] = []
     problems: list[str] = []
     checkout: list[str] = []
@@ -9380,6 +9462,22 @@ def check_placement(ctx: Context) -> Row:
             NA,
             "project.yaml declares no non-assembly leg, so there is no leg "
             "for a path to be in the wrong one of")
+    root_unread = root_git_read(ctx.root)
+    if root_unread is not None:
+        # THE ROOT'S OWN `.git` CANNOT BE READ (#1146), and a leg's
+        # repository is read through it, under `.git/modules/`: git said
+        # `it is not a git repository` of each leg, a claim about the leg.
+        # Said once, as the `legs` row says it, and `n/a`, as for a row with
+        # no leg it could read.
+        line = root_unread[0]
+        return placement_row(
+            NA, f"{line}, so no leg's tracked paths are read and nothing was "
+            "classified", None,
+            {"legs": [{"role": str(leg.get("role") or "?"),
+                       "path": str(leg.get("path") or leg.get("role") or "?"),
+                       "state": line, GITLINK_UNREAD: line} for leg in legs],
+             "counts": {"misplaced": 0, "review_required": 0,
+                        "unread_legs": len(legs)}})
     policy_path = ctx.shape / "contracts" / "path-classification.yaml"
     adopt, policy, refusal = placement_policy(ctx, policy_path)
     if refusal is not None:
@@ -12045,7 +12143,10 @@ def drifted_reasons(by_id: dict, detail: dict) -> list:
     it names -- has no leg to be off its pin: with a leg mount at mode 000
     the verdict said `DRIFTED (1 leg(s) not at the pin)` beside the very
     rows that said they could not be run. A leg whose MOUNT cannot be read
-    (`mount_cannot_be_read`) is as uncounted as one whose pin cannot be. The
+    (`mount_cannot_be_read`) is as uncounted as one whose pin cannot be, and
+    so is one whose GITLINK cannot be, because the root's own `.git` cannot
+    be read (`gitlink_cannot_be_read`, #1146): its `legs` row said `no
+    gitlink recorded` of each leg, and the verdict was DRIFTED. The
     `members` row is drift only where a member this user CAN reach has a
     problem. Such a row goes on down the ladder, to the gate that refuses
     the path (`invalid_verdict`) or to the catch-all, which names it: INVALID,
@@ -12061,7 +12162,8 @@ def drifted_reasons(by_id: dict, detail: dict) -> list:
     if legs is not None and legs.status == FINDING:
         entries = legs.detail.get("legs") or []
         read = [leg for leg in entries
-                if "cannot_be_read" not in leg and MOUNT_UNREAD not in leg]
+                if "cannot_be_read" not in leg and MOUNT_UNREAD not in leg
+                and GITLINK_UNREAD not in leg]
         off = [leg for leg in read if leg.get("head") != leg.get("pin")]
         if entries and (off or len(read) == len(entries)):
             reasons.append(f"{len(off) or 1} leg(s) not at the pin")

@@ -89,7 +89,8 @@ WHAT IS CHECKED
 
 EXIT CODES: 0 valid · 1 findings · 2 refusal (the file is missing or unreadable)
             -- and a declared referent's pin file this user cannot reach is
-            a refusal too, never a finding that it is missing (#430)
+            a refusal too, never a finding that it is missing (#430), and
+            so is a root whose `.git` this user cannot reach (#1146)
 """
 
 from __future__ import annotations
@@ -163,10 +164,18 @@ def _is_a(path: Path, kind: Callable[[int], bool]) -> bool:
     return kind(mode)
 
 
-def _unreadable_file(root: Path, path: Path, exc: OSError) -> Refusal:
+#: What this validator reads, as `_unreadable_file`'s remedy says it.
+FILES_READ = ("project.yaml, the naming policy and the pin file each "
+              "declared referent needs")
+
+
+def _unreadable_file(root: Path, path: Path, exc: OSError,
+                     code: str = "yaml-unreadable",
+                     reads: str = FILES_READ) -> Refusal:
     """`yaml-unreadable` for a file this validator must read or find and the
     operating system will not let it (#430): its `stat` refused, or its
-    open. `validate-pins.py`'s `_unreadable_file`, in its words.
+    open. `validate-pins.py`'s `_unreadable_file`, in its words. `code` and
+    `reads` are the refusal's, for the root's `.git` (#1146).
 
     NAMED ONCE, RELATIVE TO THE ROOT, POSIX on every platform, or whole
     where it is not under the root (a `--policy` given elsewhere), and
@@ -185,12 +194,46 @@ def _unreadable_file(root: Path, path: Path, exc: OSError) -> Refusal:
         "it inside the root), or fix who owns it. "
         if isinstance(exc, PermissionError) else OTHER_REASON)
     return Refusal(
-        "yaml-unreadable",
+        code,
         f"{named}: cannot be read ({exc.strerror or type(exc).__name__})",
-        "Remediation: this validator reads project.yaml, the naming policy "
-        "and the pin file each declared referent needs, and one it cannot "
-        "read is a question it cannot answer, never a pass. " + advice
+        f"Remediation: this validator reads {reads}, and one it cannot read "
+        "is a question it cannot answer, never a pass. " + advice
         + "Then run the same command again.")
+
+
+#: The refusal of a root whose `.git` this user cannot read (#1146), and what
+#: the `.git` is read for. `validate-pins.py` refuses it by the same code.
+ROOT_UNREADABLE = "git-repo-unreadable"
+ROOT_READ = "the root's `.git`, which is how it finds the root"
+
+
+def _refuse_an_unreadable_root(start: Path) -> None:
+    """`git-repo-unreadable`, by name, where this user cannot `stat` a
+    `.git` that `find_repo_root` would ask, at `start` or above it, before
+    the first that is there (#1146).
+
+    `find_repo_root` ASKS `exists()`, AND IS A SHAPE COPY THIS FILE MAY NOT
+    RELY ON BEING NEWER THAN ITSELF (#370, #610), so each `.git` it would ask
+    is asked here first, with `_is_a`. A root whose `.git` is a link into a
+    folder this user cannot search ended in a `PermissionError` traceback on
+    Python 3.12, exit 1, which the doctor read as a validator that crashed;
+    from 3.14 `exists()` answers False, and the run refused `not-a-git-repo`
+    (`no .git found`) about a root that has one. A `.git` that answers
+    absent (nothing there, a link that leads nowhere or to itself) is passed
+    over, as `exists()` passes it.
+
+    ONLY THE `stat` THAT `exists()` ASKS. This validator runs no git: a
+    `.git` that is there tells it where the root is, and what git could read
+    inside it is `validate-pins.py`'s question, which asks it."""
+    path = Path(start).resolve()
+    for candidate in [path, *path.parents]:
+        dotgit = candidate / ".git"
+        try:
+            if _is_a(dotgit, lambda _mode: True):
+                return
+        except OSError as exc:
+            raise _unreadable_file(path, dotgit, exc, ROOT_UNREADABLE,
+                                   ROOT_READ) from exc
 
 
 def _is_file(root: Path, path: Path) -> bool:
@@ -1366,7 +1409,10 @@ def main(argv: list[str] | None = None) -> int:
     args = parser.parse_args(argv)
 
     try:
-        root = find_repo_root(args.root or Path(__file__).resolve().parents[1])
+        start = args.root or Path(__file__).resolve().parents[1]
+        # A `.git` this user cannot read is refused by name first (#1146).
+        _refuse_an_unreadable_root(start)
+        root = find_repo_root(start)
         manifest_path = root / "project.yaml"
         # A `project.yaml` this user cannot reach or open is refused by name,
         # `yaml-unreadable`, never `manifest-missing` (#430).
