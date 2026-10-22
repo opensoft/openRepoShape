@@ -610,16 +610,6 @@ BENIGN = _entries({
 #: read is still taken for one that is not there. Each is the follow-up's.
 #: `(file, function, call)`: `(follow-up, what happens)`.
 KNOWN_OPEN = _entries({
-    (FA, "_gitmodules_names", "(root / GITMODULES).is_file()"): (
-        FOLLOW_UP, "a `.gitmodules` that is a link into a folder this user "
-        "cannot search: 3.12 raises out of `remove`; 3.14 reads no "
-        "section, and `remove --dry-run` says none is removed (slice G "
-        "left it for this slice to flag)"),
-    (FA, "_sections_giving", "(root / GITMODULES).is_file()"): (
-        FOLLOW_UP, "the same file, read as giving the path to no section"),
-    (f"{FR}/siblings.py", "submodule_urls", "path.is_file()"): (
-        FOLLOW_UP, "the same, in the pinned `siblings.py`: no url read, "
-        "so a member is cloned from its row's default"),
     (SD, "check_agent_files", "(ctx.root / name).is_file()"): (
         FOLLOW_UP, "an agent file that is a link into a folder this user "
         "cannot search reads `absent` in the `agent files` note"),

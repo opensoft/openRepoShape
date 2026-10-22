@@ -7642,9 +7642,23 @@ def _store_git_uses(root: Path, path: str) -> tuple[str, Path] | None:
 #: `PinRollback._work_tree_by_hand` (which types the store's update for it,
 #: and calls no store-less checkout) route on this code; the only refusal
 #: either can meet with it is `_unrestorable`'s, since `_storeless` reads
-#: nothing else of the disk. `tests/test_family_py_unreadable.py` pins the
-#: two to one value.
+#: nothing else of the disk but the `.gitmodules` that names the store,
+#: whose own code is `GITMODULES_UNREAD`. `tests/test_family_py_unreadable.py`
+#: pins the two to one value.
 STORE_UNREADABLE = "member-unreadable"
+#: The code `_gitmodules_on_disk` raises for a work tree's `.gitmodules`
+#: this user may not read (#1110): the code `add` already gives the same
+#: file where git cannot read it (`_submodule_paths`), so one file has one
+#: name, and the cure follows the cause.
+GITMODULES_UNREAD = "gitmodules-unreadable"
+#: What the rollback's restore may meet where a path it must read cannot be
+#: read (#430, #1110): the store `git submodule update` checks the member
+#: out of, or the `.gitmodules` that tells git which store that is. Neither
+#: is a store that is gone. Once the cure is given, the checkout comes back
+#: from that store with no network, so `PinRollback` makes the mount again,
+#: empty, and types the update after the cure; it never says the checkout
+#: comes back only from its remote.
+READABLE_ONCE_CURED = (STORE_UNREADABLE, GITMODULES_UNREAD)
 
 
 def _unrestorable(root: Path, path: str, commit: str | None) -> str | None:
@@ -8140,11 +8154,14 @@ class PinRollback:
         # without it: it would clone (#365). One this user may not read is
         # raised from here, named, and the commands typed by hand bring the
         # checkout back from it once it can be read (#430); the directory is
-        # made again first, as for a store that is gone.
+        # made again first, as for a store that is gone. So is a
+        # `.gitmodules` this user may not read, which names that store
+        # (#1110): it is no section gone.
         try:
             why = self._storeless()
         except Refusal as exc:
-            if exc.code == STORE_UNREADABLE and self._made_again_if_can():
+            if exc.code in READABLE_ONCE_CURED and \
+                    self._made_again_if_can():
                 exc.detail += f", and {self.path} was made again, empty"
             raise
         if why is not None:
@@ -8272,7 +8289,9 @@ class PinRollback:
         except Refusal as exc:
             # A store this user may not read is one the checkout comes back
             # from once it can (#430): its update is typed, after the cure.
-            storeless = exc.code != STORE_UNREADABLE
+            # So is one named by a `.gitmodules` this user may not read
+            # (#1110), which said "no section, so only from its remote".
+            storeless = exc.code not in READABLE_ONCE_CURED
         except CommandFailed:
             storeless = True
         if storeless:
@@ -9453,6 +9472,45 @@ def _suspicious_name(name: str) -> bool:
     return not name or ".." in re.split(r"[/\\]", name)
 
 
+def _gitmodules_on_disk(root: Path) -> bool:
+    """Whether the work tree of `root` has a `.gitmodules` that is a file,
+    asked as `_is_a` asks for the two readers of it below, so one this user
+    may not read is `gitmodules-unreadable` (#1110), never one that is not
+    there.
+
+    A `.gitmodules` THAT IS A LINK INTO A FOLDER THIS USER CANNOT SEARCH was
+    asked with `Path.is_file()`, which raised `PermissionError` on Python
+    3.12 and from 3.14 answers False. Measured: a `pre-commit` hook that
+    made it such a link and refused the commit ended `remove`'s rollback in
+    that traceback on 3.12, with the member's directory gone; on 3.14 the
+    rollback read no section, said the checkout came back only from its
+    remote, and typed no command for the object store it had. And with its
+    `stat` refused in a work tree whose copy git still reads as the index's
+    (in process), `remove --dry-run` said no section is removed, exit 0.
+
+    Nothing at the name is no file, as it always was. A `stat` the
+    operating system refuses, and a file whose `stat` it answers but that
+    this user may not open (`os.access`, as `_checked_mount_readable` asks a
+    store's `HEAD`: git could not read it either), are refused by name,
+    with the cure for the cause. The directories above it are not said to
+    be inside the holder: a link can lead out of it.
+    """
+    path = root / GITMODULES
+    try:
+        there = _is_a(path, stat.S_ISREG)
+        if there and not os.access(path, os.R_OK):
+            raise PermissionError(errno.EACCES, os.strerror(errno.EACCES),
+                                  str(path))
+    except OSError as exc:
+        raise _unreadable(
+            GITMODULES_UNREAD, GITMODULES, exc,
+            f"`remove` reads the work tree's {GITMODULES} before it writes "
+            "anything, for the section `git rm` takes out and the object "
+            "store the member would come back from, and its rollback reads "
+            "it again to bring the member back.", where="") from exc
+    return there
+
+
 def _gitmodules_names(root: Path, path: str) -> tuple[str | None, list[str]]:
     """`(the name whose sections `git rm` drops for the gitlink at `path`,
     or None, every other name with a `path = <path>` line)` (#326).
@@ -9476,9 +9534,11 @@ def _gitmodules_names(root: Path, path: str) -> tuple[str | None, list[str]]:
     The file is read by `git config --list`, never by a parser of this
     tool's, as `add`'s `_submodule_paths` reads it; the rules are git's, as
     git 2.43 applies them and as the tests check them against a real
-    `remove` on every runner.
+    `remove` on every runner. A file this user may not read is refused,
+    `gitmodules-unreadable` (`_gitmodules_on_disk`, #1110), never read as
+    giving no section.
     """
-    if not (root / GITMODULES).is_file():
+    if not _gitmodules_on_disk(root):
         return None, []
     listed = _git_bytes(["config", "-z", "--file", GITMODULES, "--list"],
                         root)
@@ -9530,9 +9590,11 @@ def _sections_giving(root: Path, path: str
     the path and then moves on took the path out of git's lookup altogether,
     so `git rm` took out nothing and the member's own section stayed. Read
     where `git rm` reads, the work tree's file, by `git config --list`, as
-    `_gitmodules_names` reads it.
+    `_gitmodules_names` reads it, and refused where this user may not read
+    it (`_gitmodules_on_disk`, #1110), never read as giving the path to no
+    section.
     """
-    if not (root / GITMODULES).is_file():
+    if not _gitmodules_on_disk(root):
         return []
     listed = _git_bytes(["config", "-z", "--file", GITMODULES, "--list"],
                         root)
