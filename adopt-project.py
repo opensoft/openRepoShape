@@ -9464,7 +9464,8 @@ def _entry_findings(plan: Plan, source: Source,
     The first is the split's own `git clone` of the source (#1083), asked as
     `execute` makes it, so that one this git will not make is said before
     any leg exists, and `_resolved` and `_answers` make the submodule urls'
-    own there (#1083).
+    own there (#1083). Before any of them, a `GIT_ATTR_SOURCE` in the
+    environment is `adopt-git-unasked`, by name (#1136).
     Each but #183's symlink probe is made with the source's object format
     and runs no hook of this machine's; where git cannot make or ask one,
     `adopt-git-unasked` says why, once, in the place of the questions asked
@@ -9517,14 +9518,16 @@ def _entry_findings(plan: Plan, source: Source,
     """
     tree = source.tree()
     targets = symlink_targets(source, tree)
-    # The split's own `git clone` of the source, asked first, in the work
-    # directory, as `execute` makes it after both legs exist (#1083); then
-    # which of the source's paths git holds at all, in a throwaway
-    # repository of its own: one it refuses is a fact of the source, said
-    # with the others (#910). Where either cannot be made or asked, none of
-    # the others `check` makes in the same work directory is asked, and
-    # `_Unasked.said` says why, once, in their place below.
+    # A `GIT_ATTR_SOURCE` in the environment first, which no throwaway can
+    # answer for (#1136); then the split's own `git clone` of the source, in
+    # the work directory, as `execute` makes it after both legs exist
+    # (#1083); then which of the source's paths git holds at all, in a
+    # throwaway repository of its own: one it refuses is a fact of the
+    # source, said with the others (#910). Where any cannot be made or
+    # asked, none of the others `check` makes in the same work directory is
+    # asked, and `_Unasked.said` says why, once, in their place below.
     try:
+        _attr_source_unasked(source)
         _split_clone_asked(source)
         refused, unasked = _paths_git_refuses(source, tree), None
     except _Unasked as exc:
@@ -11412,6 +11415,17 @@ def _refuse_symlinks_checked_out_as_files(plan: Plan, source: Source,
 #   in `TMPDIR` stopped `check` with "a git or gh command failed" under
 #   either setting, and `_resolved`'s `update-index` ran this machine's
 #   `post-index-change` hook.
+# * A PARENT GIT'S SETTINGS, AND `GIT_ATTR_SOURCE` (#1136). Measured with git
+#   2.43 on bba168bd: `check` said `plan ok`, and `execute` stopped after
+#   both legs existed, under a parent's `-c core.protectHFS=true` over a
+#   source path `.g` + U+200C + `it/x`, which `GIT_CONFIG_COUNT` gave as
+#   `plan-path-git-refuses`, and under `GIT_ATTR_SOURCE=bogus`, which
+#   `_inherited_env()` leaves out. The rehearsal and `_stored_as_written`
+#   now take a parent's `-c` settings but an `attr.tree`
+#   (`_split_checkout_env`), and a `GIT_ATTR_SOURCE` is refused by name
+#   before any question (`_attr_source_unasked`). Each throwaway reads its
+#   environment before it is made, so that nothing raised reading it
+#   leaves one behind, as `_resolved` and `_answers` read theirs.
 
 #: `check`'s finding, and the code of `execute`'s refusal, for the paths of
 #: the source commit that this machine's git will not hold in an index, and
@@ -11429,7 +11443,8 @@ PATH_GIT_REFUSES_REMEDIATION = (
     "`plan-stale` once the source has moved.")
 #: `check`'s finding, and the code of `execute`'s refusal, where a throwaway
 #: repository cannot be made in the work directory, or git there fails a
-#: step it is asked, so that the question goes unasked (#910).
+#: step it is asked, so that the question goes unasked (#910); and where
+#: `GIT_ATTR_SOURCE` names a tree no throwaway can answer for (#1136).
 UNASKED = "adopt-git-unasked"
 #: The empty directory beside each throwaway repository: its `--template`, so
 #: `git init` copies nothing in, and its `core.hooksPath`, so no hook runs.
@@ -11585,8 +11600,10 @@ def _throwaway_git(scratch: Path, hooks_off: list[str], args: list,
 
 #: The `-c` settings a parent git hands each command it runs, in git's own
 #: quoted form: `git -c <key>=<value>` running an alias, or a hook, that
-#: runs `adopt-project.py`. `_inherited_env()` leaves it out, and only the
-#: split's own clone takes it back (`_split_clone_env`).
+#: runs `adopt-project.py`. `_inherited_env()` leaves it out. The split's
+#: own clone takes it back as it stands (`_split_clone_env`), and the
+#: questions a checkout, `git rm` or `git add` answers take it back but for
+#: an `attr.tree` among them (`_split_checkout_env`, #1136).
 CONFIG_PARAMETERS = "GIT_CONFIG_PARAMETERS"
 
 
@@ -11605,9 +11622,9 @@ def _split_clone_env() -> dict:
     config file or in `GIT_CONFIG_COUNT` was `adopt-git-unasked` already. A
     parent's `-c core.hooksPath` runs no hook in the clone: git reads the
     command's own `-c` after the parent's, and takes a key's last value.
-    An `attr.tree` among them, which is why `_inherited_env()` leaves them
-    out of the questions a checkout answers, changes nothing in a clone
-    that checks nothing out (`attr.tree=bogus` measured: it clones).
+    An `attr.tree` among them, which the questions a checkout answers leave
+    out (`_split_checkout_env`), changes nothing in a clone that checks
+    nothing out (`attr.tree=bogus` measured: it clones).
 
     NOTHING ELSE `_inherited_env()` LEAVES OUT. Each of those names another
     repository, its objects, an index or a work tree, and the clone would
@@ -11619,6 +11636,177 @@ def _split_clone_env() -> dict:
     if parameters is not None:
         env[CONFIG_PARAMETERS] = parameters
     return env
+
+
+#: The characters git's own `isspace` takes between the entries of
+#: `CONFIG_PARAMETERS` (`sane_ctype`'s `GIT_SPACE`).
+_PARAMETER_SPACE = " \t\n\r"
+
+
+def _single_quoted(text: str, at: int) -> tuple[str, int] | None:
+    """The word git's `sq_dequote_step` reads at `at` of `text`, and where
+    it stops: a `'...'`, in which `'\\''` and `'\\!'` stand for a quote and
+    an exclamation mark, as `sq_quote_buf` writes them; None where there is
+    no such word there."""
+    if not text.startswith("'", at):
+        return None
+    word, at = [], at + 1
+    while True:
+        end = text.find("'", at)
+        if end < 0:
+            return None
+        word.append(text[at:end])
+        at = end + 1
+        if (text[at:at + 1] == "\\" and text[at + 1:at + 2] in ("'", "!")
+                and text[at + 2:at + 3] == "'"):
+            word.append(text[at + 1])
+            at += 3
+            continue
+        return "".join(word), at
+
+
+def _parameter_entries(parameters: str) -> list[tuple[str, str]] | None:
+    """`(key, entry)` for each setting `parameters` holds, a value of
+    `CONFIG_PARAMETERS`, in its order: the key as git reads it, and the
+    entry as it is written there. None where git reads none of it, and
+    says `bogus format in GIT_CONFIG_PARAMETERS`.
+
+    Read as git's `parse_config_env_list` reads it: `'<key>'='<value>'`
+    and `'<key>'=` (a key with no value, which is true), as git 2.31 and
+    later write them, or the older `'<key>=<value>'` and `'<key>'`, whose
+    key is cut at the first `=` and trimmed, each apart from the next by
+    spaces. The key is compared by the caller in lower case, as git reads
+    a key with no subsection."""
+    entries: list[tuple[str, str]] = []
+    at = 0
+    while at < len(parameters):
+        start = at
+        read = _single_quoted(parameters, at)
+        if read is None:
+            return None
+        key, at = read
+        ended = at == len(parameters) or parameters[at] in _PARAMETER_SPACE
+        if ended:
+            key = key.split("=", 1)[0].strip(_PARAMETER_SPACE)
+        elif parameters[at] == "=":
+            at += 1
+            value = _single_quoted(parameters, at)
+            if value is not None:
+                at = value[1]
+            elif parameters.startswith("'", at):
+                return None
+            if at < len(parameters) and parameters[at] not in _PARAMETER_SPACE:
+                return None
+        else:
+            return None
+        entries.append((key, parameters[start:at]))
+        while at < len(parameters) and parameters[at] in _PARAMETER_SPACE:
+            at += 1
+    return entries
+
+
+def _parent_settings() -> str | None:
+    """The `-c` settings a parent git hands this process
+    (`CONFIG_PARAMETERS`), as the questions a checkout, `git rm` or `git
+    add` answers take them (#1136): as they stand, but for each entry whose
+    key is `attr.tree`, which `_inherited_env()` leaves out of
+    `GIT_CONFIG_COUNT` too; None where none is handed, or every one is an
+    `attr.tree`. A value git cannot read is handed as it stands, so that
+    git refuses it in the throwaway as it does everywhere else.
+
+    `attr.tree` IS LEFT OUT. Measured with git 2.43: one that names no tree
+    is ignored, and the work tree's rules are read; one that names the
+    empty tree makes every rule go unread. The throwaway holds no ref and
+    no commit, so a name such as `HEAD`, which the split's clones resolve to
+    the source's rules, would be read there as nothing or as no rule at
+    all, whichever this git does with it; left out, the throwaway reads the
+    rules the source's files hold, as it does under `GIT_CONFIG_COUNT`."""
+    held = os.environ.get(CONFIG_PARAMETERS)
+    if not held:
+        return None
+    entries = _parameter_entries(held)
+    if entries is None:
+        return held
+    kept = [entry for key, entry in entries if key.lower() != ATTR_TREE]
+    if len(kept) == len(entries):
+        return held
+    return " ".join(kept) or None
+
+
+def _split_checkout_env() -> dict:
+    """The environment the questions a checkout, `git rm` or `git add`
+    answers are asked in, by the rehearsal (`_SplitRehearsal`) and
+    `_stored_as_written` (#1136): `_inherited_env()`, and the `-c` settings
+    a parent git hands this process but an `attr.tree` among them
+    (`_parent_settings`), as `execute`'s checkout, `git rm` and `git add`
+    take them in the whole environment.
+
+    THOSE SETTINGS, SO THAT A THROWAWAY ANSWERS AS THE SPLIT DOES. Measured
+    with git 2.43 on bba168bd, where they were left out: under a parent's
+    `-c core.protectHFS=true` and a source path `.g` + U+200C + `it/x`,
+    `check` said `plan ok`, and `execute` made both legs and stopped
+    extracting the spec leg, `unable to checkout working tree`; under a
+    parent's `filter.<name>.clean=false` and `filter.<name>.required=true`,
+    over a root `.gitattributes` that names that filter for itself, it
+    stopped there too, `clean filter '<name>' failed`. The same settings in
+    `GIT_CONFIG_COUNT` were `plan-path-git-refuses` and
+    `plan-attributes-reencoded`. A throwaway's own `-c` still wins: git
+    reads a command's own `-c` after the parent's, and takes a key's last
+    value, so a parent's `core.hooksPath` or `core.fsmonitor` runs nothing
+    there.
+
+    NOT `GIT_ATTR_SOURCE`: it is refused before any question is asked
+    (`_attr_source_unasked`)."""
+    env = _inherited_env()
+    settings = _parent_settings()
+    if settings is not None:
+        env[CONFIG_PARAMETERS] = settings
+    return env
+
+
+#: The variable that names a tree for git to read attributes from, in place
+#: of the work tree, in every repository a command runs in. A `git
+#: --attr-source=<tree>` sets it for each command it runs, an alias's too.
+ATTR_SOURCE = "GIT_ATTR_SOURCE"
+
+
+def _attr_source_unasked(source: Source) -> None:
+    """The `_Unasked` that refuses a `GIT_ATTR_SOURCE` in this process's
+    environment, whatever it names, before any throwaway is made (#1136);
+    nothing where there is none.
+
+    `execute`'s git reads it in every repository the split makes: the
+    source's clones, the legs `git filter-repo` rewrites, a leg seeded with
+    no commit. git stops in any of them where it names no tree, and those
+    are not made yet when `check` asks. Measured with git 2.43 on
+    bba168bd, which left it out of every throwaway, each `check` said `plan
+    ok`, and `execute` stopped after both legs existed, `fatal: bad
+    --attr-source or GIT_ATTR_SOURCE`: under `bogus`, and the empty value,
+    extracting the spec leg; under `HEAD`, seeding the code leg of a source
+    with no code; under the source tree's object id, abbreviated, pushing
+    the spec leg, which `git filter-repo` had rewritten.
+
+    NO THROWAWAY ANSWERS FOR THOSE. Handed the variable, one that borrows
+    the source's objects, as the rehearsal does, takes that abbreviated id
+    (measured: `check-attr` exits 0), and one that does not refuses it. So
+    it is refused by name, before every question of `check`'s, and
+    `execute` refuses it before either leg. `HEAD` with both legs
+    extracted, and the full object id, each took `execute` to `adoption
+    verified` there: those runs are refused too, for a variable the split
+    has no use for, and the way out is to run without it."""
+    value = os.environ.get(ATTR_SOURCE)
+    if value is None:
+        return
+    raise _Unasked(source.work_root or Path(tempfile.gettempdir()), (
+        f"`{ATTR_SOURCE}` is set in its environment, "
+        + (f"to {_spelled(value)}" if value else "empty")
+        + ", and every git command the split runs would read attributes "
+        "from the tree it names in place of the files it writes, in each "
+        "repository it makes, and stop in any of them where it names no "
+        "tree; the legs `git filter-repo` rewrites and a leg seeded with no "
+        "commit are not made yet, so no throwaway repository can answer for "
+        f"them. Unset `{ATTR_SOURCE}`, which a `git --attr-source` running "
+        "this tool also sets"))
 
 
 def _split_clone_asked(source: Source) -> None:
@@ -11833,8 +12021,10 @@ CRLF_BY_CONFIG = "by config"
 #: What a question to `git check-attr` must not inherit: a repository, an
 #: index or a work tree named for another one; a tree to read attributes
 #: from instead of the work tree (`GIT_ATTR_SOURCE`); and a parent git's
-#: `-c` settings, whose quoted form is not read here and none of which the
-#: question needs (`GIT_CONFIG_PARAMETERS`).
+#: `-c` settings, none of which the question needs (`GIT_CONFIG_PARAMETERS`).
+#: The rehearsal and `_stored_as_written` take those settings back, but an
+#: `attr.tree` among them (`_split_checkout_env`, #1136), and a
+#: `GIT_ATTR_SOURCE` is refused before any question (`_attr_source_unasked`).
 _NOT_INHERITED = ("GIT_DIR", "GIT_WORK_TREE", "GIT_INDEX_FILE",
                   "GIT_COMMON_DIR", "GIT_OBJECT_DIRECTORY", "GIT_ATTR_SOURCE",
                   "GIT_CONFIG_PARAMETERS")
@@ -11867,15 +12057,14 @@ def _inherited_env() -> dict:
     return env
 
 
-def _probe_env(nothing: Path) -> dict:
-    """The environment `git check-attr` is asked in: `_inherited_env()`,
-    with no system config and the empty file `nothing` as the global
-    config. Each could steer the answer here and holds nothing on another
-    machine, as `attr.tree` from either did."""
-    env = _inherited_env()
-    env.update(GIT_ATTR_NOSYSTEM="1", GIT_CONFIG_NOSYSTEM="1",
-               GIT_CONFIG_GLOBAL=str(nothing))
-    return env
+def _probe_env(nothing: Path, inherited: dict) -> dict:
+    """The environment `git check-attr` is asked in: `inherited`, which is
+    `_inherited_env()` read before the throwaway was made (#1136), with no
+    system config and the empty file `nothing` as the global config. Each
+    could steer the answer here and holds nothing on another machine, as
+    `attr.tree` from either did."""
+    return {**inherited, "GIT_ATTR_NOSYSTEM": "1", "GIT_CONFIG_NOSYSTEM": "1",
+            "GIT_CONFIG_GLOBAL": str(nothing)}
 
 
 def checked_out_as(values: dict) -> str:
@@ -11903,16 +12092,21 @@ class _AttributesProbe:
     `.gitattributes` files are written into a work tree of their own, which
     holds nothing else. Made as `check` makes each of its own (#910): in the
     work directory `source` was opened in, with its object format and no
-    hook; and removed on leaving the `with`."""
+    hook; and removed on leaving the `with`. Its environment is read before
+    the throwaway is made, so that nothing raised reading it leaves one
+    behind (#1136), as `_resolved` reads its own. A parent git's `-c`
+    settings are not taken: the question is what a clone on another
+    machine reads, and that clone has none of them."""
 
     def __init__(self, source: Source | None = None) -> None:
         self._source = source
+        inherited = _inherited_env()
         self._scratch = _throwaway("openreposhape-attributes-", source)
         self._asked = 0
         #: An empty file, read in place of the person's own global config
         #: and `core.attributesFile`.
         self._nothing = self._scratch / "nothing"
-        self._env = _probe_env(self._nothing)
+        self._env = _probe_env(self._nothing, inherited)
         self._git_dir = self._scratch / "repository" / ".git"
         #: The `-c` every git command here takes (`_throwaway_made`).
         self._hooks_off: list[str] = []
@@ -12210,12 +12404,14 @@ def _nested_attributes_findings(plan: Plan, source: Source, tree: list,
 # so the blob's own bytes get the same answer. UNLIKE THE NESTED QUESTION,
 # THIS MACHINE'S SETTINGS ARE READ: the split's `git add` runs here, with
 # this machine's config and attributes (`core.autocrlf`, `core.safecrlf`, a
-# `filter` driver, `core.attributesFile`), so only `_inherited_env` is taken
-# from them: no other repository, and no tree to read attributes from
-# (`GIT_ATTR_SOURCE`, `attr.tree`), of which the throwaway repository has
-# none. What `git add` refuses there -- `core.safecrlf=true` over such a
-# CRLF, or a `working-tree-encoding` the bytes are not in -- would stop the
-# split committing after both legs exist, and is found too, in git's words.
+# `filter` driver, `core.attributesFile`), a parent git's `-c` settings
+# among them (#1136), so only `_split_checkout_env` is taken from them: no
+# other repository, and no tree to read attributes from (`attr.tree`, of
+# which the throwaway repository has none; a `GIT_ATTR_SOURCE` is refused
+# before any question). What `git add` refuses there --
+# `core.safecrlf=true` over such a CRLF, or a `working-tree-encoding` the
+# bytes are not in -- would stop the split committing after both legs
+# exist, and is found too, in git's words.
 #
 # A FINDING, as the nested one is: the fix is the source's, a commit of the
 # file as git stores it, and `execute` refuses it before any leg exists. A
@@ -12243,9 +12439,12 @@ def _stored_as_written(blob: bytes, mode: str, written: bytes,
     Asked in a throwaway repository made as `check` makes each of its own
     (#910), in the work directory `source` was opened in, with its object
     format and no hook, and removed afterwards; `_Unasked` where git cannot
-    be asked there."""
+    be asked there. Its environment is `_split_checkout_env()`, a parent
+    git's `-c` settings among it, as the split's `git add` takes them, read
+    before the throwaway is made, so that nothing raised reading it leaves
+    one behind (#1136)."""
+    env = _split_checkout_env()
     scratch = _throwaway("openreposhape-attributes-", source)
-    env = _inherited_env()
     # No fsmonitor daemon is started for a repository that is about to go.
     git = ["-c", "core.fsmonitor=false"]
     repository = scratch / "repository"
@@ -12490,17 +12689,21 @@ class _SplitRehearsal:
     machine's git what the split's checkout, `git rm` and `git add` make of
     them. Made as `check` makes each of its own (#910): in the work directory
     the source was opened in, with its object format and no hook; and removed
-    on leaving the `with`. `_Unasked` where git cannot be asked there."""
+    on leaving the `with`. `_Unasked` where git cannot be asked there. Its
+    environment is `_split_checkout_env()`, a parent git's `-c` settings
+    among it, as the split's own commands take them, read before the
+    throwaway is made, so that nothing raised reading it leaves one behind
+    (#1136)."""
 
     def __init__(self, source: Source) -> None:
         self._source = source
-        self._scratch = _throwaway("openreposhape-reencoded-", source)
-        self.work = self._scratch / "repository"
         # git-lfs's smudge is skipped: each LFS file is checked out as its
         # pointer, which git-lfs's clean stores as it is, so no LFS object is
         # read, linked or fetched, and a blob under `filter=lfs` that is not
         # a pointer is still stored otherwise and found.
-        self._env = {**_inherited_env(), "GIT_LFS_SKIP_SMUDGE": "1"}
+        self._env = {**_split_checkout_env(), "GIT_LFS_SKIP_SMUDGE": "1"}
+        self._scratch = _throwaway("openreposhape-reencoded-", source)
+        self.work = self._scratch / "repository"
         #: The `-c` every git command here takes (`_throwaway_made`).
         self._hooks_off: list[str] = []
 
