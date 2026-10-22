@@ -57,8 +57,10 @@ under a link to a file is named as read (R11).
 
 `chmod` keeps neither root nor a Windows user from making a directory, so
 the tests of such a directory skip where it cannot (`unwritable_work`,
-`locked_folder`). Nothing here reaches `gh`: every refusal comes before
-any clone.
+`locked_folder`). The rows of a `--work-dir` read as the loop's own link skip
+on Windows, which folds a `..` out of a path before the file system is asked
+(`POSIX_ONLY`). Nothing here reaches `gh`: every refusal comes before any
+clone.
 """
 
 from __future__ import annotations
@@ -84,6 +86,16 @@ from test_adopt_shape_pin_and_work_dir import (
 NOTHING_PUSHED = "no leg repository was created and nothing was pushed. "
 PLAN_VERB, CHECK, EXECUTE = "plan", "check", "execute"
 COMMANDS = (PLAN_VERB, CHECK, EXECUTE)
+#: Win32 folds a `..` out of a path before the file system is asked, so
+#: `<A>\nothere\..\self` IS `<A>\self` there: a link as typed, and not one
+#: `os.path.realpath` reads past a missing folder (#1074's N5). A shared
+#: `skipif` object, as `conftest.WINDOWS_SKIP` is; that one's reason is
+#: about `setup.sh` and no other, so this file has its own.
+POSIX_ONLY = pytest.mark.skipif(
+    os.name == "nt",
+    reason="Win32 folds a `..` out of a path before the file system sees "
+           "it, so `<A>\\nothere\\..\\self` is the link itself and is not "
+           "'read as' it: the words of #1074's N5 are POSIX's")
 #: What `plan` is told, after `--source <it>`.
 PLANNED = ("--project", PROJECT, "--org", "testorg", "--elected-by",
            "Test Human", "--elected-on", "2026-09-02")
@@ -348,6 +360,7 @@ def test_a_link_that_does_not_loop_is_passed_over_to_the_one_that_does(
         work)
 
 
+@POSIX_ONLY
 @pytest.mark.parametrize("command", COMMANDS)
 def test_a_work_dir_read_as_the_link_in_the_loop_is_named_as_read(
         tmp_path, command):
@@ -357,7 +370,9 @@ def test_a_work_dir_read_as_the_link_in_the_loop_is_named_as_read(
     reads `<A>/self`, the link in the loop itself. On main at 6da757cb the
     reason said "the way to it leads round a loop, at the symbolic link
     `<A>/self`", which is not the way to it but it; it says what is read
-    now. The way out, to remove or mend `<A>/self`, is as it was."""
+    now. The way out, to remove or mend `<A>/self`, is as it was. POSIX
+    only: Win32 folds the `..` first, so there the path is the link
+    (`POSIX_ONLY`)."""
     planned(tmp_path, {}, {}, {})
     linked(tmp_path / "self", "self")
     loop = real(tmp_path, "self")
@@ -407,8 +422,23 @@ def test_a_work_dir_is_named_as_given_made_absolute_and_not_resolved(
 
 @pytest.fixture(scope="module")
 def adopter():
-    """`adopt-project.py` loaded as a module, for `_the_loop_in`."""
+    """`adopt-project.py` loaded as a module, for `_the_loop_in` and
+    `_unmade_work_dir`."""
     return load_without_bytecode(ADOPT, "adopt_work_dir_refusal")
+
+
+def stat_fails_at(monkeypatch, link: Path, error: OSError) -> None:
+    """`os.stat` of `link` raises `error`; of any other path it answers as
+    the system does. Where only Windows raises the error, it is built by
+    hand."""
+    system_stat = os.stat
+
+    def stat(path, *args, **kwargs):
+        if path == link:
+            raise error
+        return system_stat(path, *args, **kwargs)
+
+    monkeypatch.setattr(os, "stat", stat)
 
 
 def test_only_a_symlink_that_loops_is_called_a_loop(adopter, tmp_path):
@@ -468,15 +498,35 @@ def test_windows_cannot_resolve_is_a_loop_too(adopter, monkeypatch,
     error = OSError(code, os.strerror(code), str(link))
     if winerror is not None:
         error.winerror = winerror
-    system_stat = os.stat
-
-    def stat(path, *args, **kwargs):
-        if path == link:
-            raise error
-        return system_stat(path, *args, **kwargs)
-
-    monkeypatch.setattr(os, "stat", stat)
+    stat_fails_at(monkeypatch, link, error)
     assert adopter._the_loop_in(link) == (link if loops else None)
+
+
+def test_a_link_windows_cannot_resolve_is_named_as_a_loop_by_the_refusal(
+        adopter, monkeypatch, tmp_path):
+    """`_unmade_work_dir`, asked why a `--work-dir` that is a link to itself
+    could not be made, where `os.mkdir` failed with EEXIST and `os.stat` of
+    the link raises winerror 1921 with errno EINVAL, as Windows does
+    (#1074's N6, r1143's NIT-4). The test above asks `_the_loop_in` alone;
+    this is the one path N6 is live on: Windows' `mkdir` of a name that
+    exists fails with winerror 183, which Python gives errno EEXIST, so the
+    errno gate passes and `_the_loop_in` is asked. The reason says the link
+    leads round a loop and the way out names it. With winerror 1921 not
+    taken for a loop, or taken as another number, the reason is that the
+    link "leads to `<A>/self`, which is not a directory". Built by hand: no
+    Windows host ran it."""
+    work = tmp_path / "self"
+    linked(work, work.name)
+    root = real(tmp_path, work.name)
+    cannot_resolve = OSError(errno.EINVAL, os.strerror(errno.EINVAL),
+                             str(root))
+    cannot_resolve.winerror = 1921
+    stat_fails_at(monkeypatch, root, cannot_resolve)
+    exists = FileExistsError(errno.EEXIST, os.strerror(errno.EEXIST),
+                             str(root))
+    assert adopter._unmade_work_dir(work, root, exists) == (
+        f"--work-dir {ticked(str(work))} cannot be made: {LOOPS}",
+        link_fix(work))
 
 
 @pytest.mark.parametrize("command", COMMANDS)
