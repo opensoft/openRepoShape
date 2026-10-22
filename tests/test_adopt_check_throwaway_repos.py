@@ -541,10 +541,10 @@ TWINS_KEPT = [
                  [twins_kept("1 set", ROOT_TWINS, "2 paths",
                              "`E` and `e/x`")],
                  id="a-file-and-a-folder"),
-    pytest.param(("AB", "Ab", "ab"), {"AB": ROOT, "Ab": ROOT, "ab": ROOT},
+    pytest.param(("AB", "Ab", "aB"), {"AB": ROOT, "Ab": ROOT, "aB": ROOT},
                  [twins_kept("1 set", ROOT_TWINS, "3 paths",
-                             "`AB`, `Ab` and `ab`")],
-                 id="three-twins"),
+                             "`AB`, `Ab` and `aB`")],
+                 id="three-twins-none-in-lower-case"),
     pytest.param(("specs/A", "specs/a"), {},
                  [twins_kept("1 set", SPEC_TWINS, "2 paths",
                              "`specs/A` and `specs/a`")],
@@ -628,6 +628,7 @@ def test_a_twin_still_unanswered_is_named_by_plan_unresolved_alone(
     result = checked(planned(source, tmp_path, {"A": ROOT}))
     assert result.returncode == 1, result.stderr
     assert codes(result) == ["plan-unresolved"], result.stderr
+    assert TWINS_REMEDY not in result.stderr, result.stderr
 
 
 def test_execute_refuses_case_twins_before_any_leg(adopter, monkeypatch,
