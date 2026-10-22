@@ -6423,14 +6423,24 @@ def _printed(text: str) -> str:
 ZERO_COLUMN_CATEGORIES = frozenset(("Mn", "Me", "Cf"))
 #: The East Asian widths a terminal gives two columns: wide and fullwidth.
 TWO_COLUMN_WIDTHS = frozenset(("W", "F"))
+#: The Hangul medial vowels and final consonants, which a terminal gives no
+#: column of their own, as glibc's `wcwidth` gives them none (#1034): U+1160
+#: to U+11FF in the block Hangul Jamo, and U+D7B0 to U+D7FF in Hangul Jamo
+#: Extended-B. Their category is Lo and their East Asian width N, so neither
+#: set above names them, but a terminal draws each inside the syllable its
+#: leading consonant begins: U+1112 U+1161 U+11AB, one syllable spelled in
+#: its three jamo, takes the 2 columns of U+1112.
+MEDIAL_AND_FINAL_JAMO = frozenset(map(chr, range(0x1160, 0x1200)))
+MEDIAL_AND_FINAL_JAMO_EXTENDED_B = frozenset(map(chr, range(0xD7B0, 0xD800)))
 
 
 def _columns(text: str) -> int:
     """How many columns `text` takes on a terminal (#1034): none for a
-    character of `ZERO_COLUMN_CATEGORIES`, two for one
-    `unicodedata.east_asian_width` calls wide or fullwidth, and one for
-    any other, an ambiguous one among them, as a terminal outside an East
-    Asian locale draws it.
+    character of `ZERO_COLUMN_CATEGORIES` or a Hangul medial vowel or final
+    consonant (`MEDIAL_AND_FINAL_JAMO`, `MEDIAL_AND_FINAL_JAMO_EXTENDED_B`),
+    two for one `unicodedata.east_asian_width` calls wide or fullwidth, and
+    one for any other, an ambiguous one among them, as a terminal outside
+    an East Asian locale draws it.
 
     THE CATEGORY IS ASKED FIRST: the voiced sound mark U+3099, which a
     decomposed `\\u304c` ends in, is wide, and is drawn over the kana
@@ -6439,7 +6449,9 @@ def _columns(text: str) -> int:
     character before them all the same: the Thai vowel sign U+0E35 and
     the variation selector U+FE0F among them."""
     return sum(
-        0 if unicodedata.category(char) in ZERO_COLUMN_CATEGORIES
+        0 if (unicodedata.category(char) in ZERO_COLUMN_CATEGORIES
+              or char in MEDIAL_AND_FINAL_JAMO
+              or char in MEDIAL_AND_FINAL_JAMO_EXTENDED_B)
         else 2 if unicodedata.east_asian_width(char) in TWO_COLUMN_WIDTHS
         else 1
         for char in text)

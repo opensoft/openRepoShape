@@ -33,7 +33,9 @@ And measured on 961640c6 (#1034): `_print_entries` padded each name by the
 code points it holds, not the columns a terminal gives it. On a UTF-8
 stdout `\\u540d\\u524d.md` took 7 columns and was padded as 5, so its
 row's leg stood 2 columns right of `leg`, and `e\\u0301.md` took 4 and
-stood 1 column left. The rows after `_columns`'s fail on 961640c6's.
+stood 1 column left. `\\u1112\\u1161\\u11ab.md`, one syllable spelled in
+its three jamo, took 5 and was padded as 6: 1 column left too. The rows
+after `_columns`'s fail on 961640c6's.
 """
 
 from __future__ import annotations
@@ -537,9 +539,9 @@ def test_plan_under_the_c_locale_keeps_each_column_under_its_heading(
 # --- plan's table: a name padded by the columns it takes (#1034) ----------
 
 #: Each name and the columns a terminal gives it, counted by hand: two for a
-#: wide or fullwidth character, none for a non-spacing or enclosing mark or
-#: a format character, and one for any other, a halfwidth or an ambiguous
-#: one among them.
+#: wide or fullwidth character, none for a non-spacing or enclosing mark, a
+#: format character or a Hangul medial vowel or final consonant, and one for
+#: any other, a halfwidth, an ambiguous one or a spacing mark among them.
 COLUMNS = {
     "README.md": 9,
     "\u540d\u524d.md": 7,
@@ -548,7 +550,10 @@ COLUMNS = {
     "\u00e9.md": 4,
     "e\u0301.md": 4,
     "\u0e17\u0e35.md": 4,
+    "\u0915\u093f.md": 5,
     "\u304b\u3099.md": 5,
+    "\u1112\u1161\u11ab.md": 5,
+    "\u1100\ud7b0\ud7cb.md": 5,
     "a\u20ddb": 2,
     "a\u200bb": 2,
     "caf\\xe9.md": 10,
@@ -558,14 +563,33 @@ COLUMNS = {
 @pytest.mark.parametrize("name", list(COLUMNS),
                          ids=["ascii", "wide", "fullwidth", "halfwidth",
                               "ambiguous", "combining-acute",
-                              "thai-mark-of-class-0", "wide-voiced-mark",
+                              "thai-mark-of-class-0", "spacing-mark",
+                              "wide-voiced-mark", "conjoining-jamo",
+                              "conjoining-jamo-extended-b",
                               "enclosing-mark", "zero-width-space",
                               "as-an-ascii-stdout-escapes-it"])
 def test_a_name_takes_the_columns_a_terminal_gives_it(adopter, name):
     """`_columns`, which `plan`'s table pads a name by. The Thai vowel sign
     U+0E35 is a mark whose combining class is 0, and the voiced sound mark
-    U+3099 a mark East Asian width calls wide: each takes no column."""
+    U+3099 a mark East Asian width calls wide: each takes no column. The
+    Devanagari vowel sign U+093F is a spacing mark (Mc), which takes one.
+    U+1161 and U+11AB, the vowel and final consonant of a syllable spelled
+    in its jamo, and U+D7B0 and U+D7CB of Hangul Jamo Extended-B, are
+    letters (Lo) East Asian width calls neutral, which a terminal draws
+    inside the syllable: each takes no column, as glibc's `wcwidth` gives
+    it."""
     assert adopter._columns(name) == COLUMNS[name]
+
+
+def test_a_name_wider_than_its_column_is_padded_by_no_space(adopter):
+    """`_padded` adds no space to a name wider than the columns it pads
+    to, as `:<34` adds none to a name of more than 34 code points: ten of
+    `\\u540d\\u524d` and `.md` take 43 columns, past the 34 of `plan`'s
+    table. A pad of at least one space, or of the 9 columns it runs over,
+    would push that row's leg further right."""
+    name = "\u540d\u524d" * 10 + ".md"
+    assert adopter._columns(name) == 43
+    assert adopter._padded(name, 34) == name
 
 
 def leg_columns(rows: list[str]) -> list[int]:
@@ -608,9 +632,10 @@ def test_the_table_pads_a_wide_and_a_combining_name_by_their_columns(
 def test_plan_on_a_utf_8_stdout_keeps_each_column_under_its_heading(
         tmp_path):
     """THE ISSUE'S TABLE: `plan` with a UTF-8 stdout over a source holding
-    `\\u540d\\u524d.md`, `\\uff21\\uff22.md` and `e\\u0301.md`. On 961640c6
-    the first two rows' legs stood 2 columns right of `leg`, and the last
-    one's 1 left."""
+    `\\u540d\\u524d.md`, `\\uff21\\uff22.md`, `e\\u0301.md` and
+    `\\u1112\\u1161\\u11ab.md`, one syllable spelled in its three jamo. On
+    961640c6 the first two rows' legs stood 2 columns right of `leg`, and
+    the last two 1 left."""
     env = blank_unnamed_pin_sources(
         {**os.environ, "LANES_LANE": "", "PYTHONIOENCODING": UTF8}, {})
     source = make_source_repo(tmp_path / "Thing",
@@ -618,11 +643,13 @@ def test_plan_on_a_utf_8_stdout_keeps_each_column_under_its_heading(
                                "\u540d\u524d.md": "x\n",
                                "\uff21\uff22.md": "x\n",
                                "e\u0301.md": "x\n",
+                               "\u1112\u1161\u11ab.md": "x\n",
                                "src/app.py": "VALUE = 1\n"}, edits=())
     written = planned(source, tmp_path / "adoption-plan.yaml", env=env)
     assert written.returncode == 0, written.stderr + written.stdout
     heading, rows = table_of(written.stdout.decode(UTF8))
     assert heading.index("leg") == 35, heading
-    assert {"\u540d\u524d.md", "\uff21\uff22.md"} <= {
+    assert {"\u540d\u524d.md", "\uff21\uff22.md", "e\u0301.md",
+            "\u1112\u1161\u11ab.md"} <= {
         row.split()[0] for row in rows}, rows
     assert leg_columns(rows) == [35] * len(rows), rows
