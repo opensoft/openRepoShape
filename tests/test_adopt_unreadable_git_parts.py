@@ -412,7 +412,7 @@ def test_a_repository_git_can_read_is_read_as_before(tmp_path, layout,
     assert log.read_bytes() == b""
 
 
-# --- in-process, as root and on Windows too -----------------------------------
+# --- in-process, as root and on Windows too ----------------------------------
 
 def git_finds_none(adopter, monkeypatch, source: Path, failure: str) -> None:
     """`git_out` in `source` failing, as git fails in a repository with a part
