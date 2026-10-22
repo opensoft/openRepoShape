@@ -161,6 +161,28 @@ def test_a_holder_with_no_gitmodules_still_gives_no_section(reader, holder,
     assert getattr(module, reader)(holder, PATH) == NOTHING[reader]
 
 
+def a_directory_at_gitmodules(root: Path, tmp_path: Path) -> None:
+    """`root`'s `.gitmodules` moved aside and a directory made at its name."""
+    (root / GITMODULES).rename(tmp_path / "aside")
+    (root / GITMODULES).mkdir()
+
+
+@READERS
+def test_a_gitmodules_that_is_a_directory_still_gives_no_section(
+        reader, holder, tmp_path, monkeypatch):
+    """The control: a directory at the name is no file, as `is_file()`
+    always answered, so it gives the path to no section and its read is
+    never asked, even where this user may not read it (r1164's SHOULD-1:
+    nothing held the regular-file test, `S_ISREG`)."""
+    module = family_module()
+    a_directory_at_gitmodules(holder, tmp_path)
+
+    assert getattr(module, reader)(holder, PATH) == NOTHING[reader]
+
+    access_refused(monkeypatch, GITMODULES)
+    assert getattr(module, reader)(holder, PATH) == NOTHING[reader]
+
+
 def test_a_gitmodules_linked_into_a_readable_folder_is_read(holder,
                                                             tmp_path):
     """The control: a link this user can follow is read through, as git
@@ -443,6 +465,19 @@ def test_a_holder_with_no_gitmodules_still_has_no_urls(placement, holder,
     """The control, `ENOENT`: no urls, so each member's row is its url."""
     (holder / GITMODULES).rename(tmp_path / "aside")
 
+    assert placement.submodule_urls(holder) == {}
+
+
+def test_a_gitmodules_that_is_a_directory_still_has_no_urls(
+        placement, holder, tmp_path, monkeypatch):
+    """The control: a directory at the name is no file, as `is_file()`
+    always answered, so there are no urls and its read is never asked,
+    even where this user may not read it (r1164's SHOULD-1)."""
+    a_directory_at_gitmodules(holder, tmp_path)
+
+    assert placement.submodule_urls(holder) == {}
+
+    access_refused(monkeypatch, GITMODULES)
     assert placement.submodule_urls(holder) == {}
 
 
