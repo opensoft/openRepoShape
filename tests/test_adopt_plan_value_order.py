@@ -299,7 +299,8 @@ SOURCE_FINDINGS = {
                        "nothing else"),
     "absent": (NO_SOURCE, "records no `digest_source:`"),
     "not-text": (NO_SOURCE + "    digest_source: 7\n",
-                 "records `digest_source: 7`, which is not text"),
+                 "records `digest_source:` as the number 7, which is not "
+                 "text"),
 }
 
 
