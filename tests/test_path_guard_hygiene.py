@@ -1030,14 +1030,22 @@ def test_every_allowlist_entry_names_a_guard_that_is_there(scanned):
         + "\n".join(stale))
 
 
-def entry_problems(benign: dict, known_open: dict) -> list[str]:
-    """What is wrong with the allowlists' own entries: a `benign` tag that
-    is not in `TAGS`, a `known_open` owner that is not `FOLLOW_UP`, a
-    reason left empty, a count under one, a site on both lists, or one in
-    a stat helper."""
-    problems = [f"{key!r} is on both lists"
-                for key in sorted(set(benign) & set(known_open))]
-    for table, owners in ((benign, TAGS), (known_open, {FOLLOW_UP})):
+def entry_problems(benign: dict, known_open: dict, follow_up: str = FOLLOW_UP,
+                   doc: str = __doc__) -> list[str]:
+    """What is wrong with the allowlists' own entries: a `follow_up` that
+    is no issue number, or that the module docstring `doc` does not name
+    as the follow-up; a `benign` tag that is not in `TAGS`, a `known_open`
+    owner that is not `follow_up`, a reason left empty, a count under one,
+    a site on both lists, or one in a stat helper."""
+    problems = []
+    if not re.fullmatch(r"#\d+", follow_up):
+        problems.append(f"FOLLOW_UP {follow_up!r} is no issue number")
+    if f"the follow-up, {follow_up}," not in " ".join(doc.split()):
+        problems.append(f"the module docstring does not name {follow_up} "
+                        "as the follow-up")
+    problems += [f"{key!r} is on both lists"
+                 for key in sorted(set(benign) & set(known_open))]
+    for table, owners in ((benign, TAGS), (known_open, {follow_up})):
         for key, (owner, reason, count) in table.items():
             if owner not in owners:
                 problems.append(f"{key!r}: {owner!r} is none of "
@@ -1054,15 +1062,15 @@ def test_every_allowlist_entry_is_tagged_and_reasoned():
     each KNOWN_OPEN entry the follow-up that owns it, an issue the module
     docstring names too (r1111b's NIT 5). No site is on both, and none is
     in a stat helper."""
-    assert re.fullmatch(r"#\d+", FOLLOW_UP), FOLLOW_UP
-    assert f"the follow-up, {FOLLOW_UP}," in " ".join(__doc__.split())
     assert entry_problems(BENIGN, KNOWN_OPEN) == []
 
 
 def test_each_wrong_allowlist_entry_is_named():
-    """The entries' own proof (r1111b's NIT 5 and T6): a tag that is not in
-    `TAGS`, an owner that is not `FOLLOW_UP`, an empty reason, a count of
-    none, a site on both lists or one in a stat helper is each named."""
+    """The entries' own proof (r1111b's NIT 5, T6 and Z11): a tag that is
+    not in `TAGS`, an owner that is not `FOLLOW_UP`, an empty reason, a
+    count of none, a site on both lists or one in a stat helper is each
+    named, and so is a `FOLLOW_UP` that is no issue number or that the
+    module docstring does not name."""
     good = ("a.py", "f", "p.exists()")
     benign = {good: ("OWN", "a reason", 1),
               ("a.py", "g", "p.exists()"): ("MINE", "a reason", 1),
@@ -1081,6 +1089,11 @@ def test_each_wrong_allowlist_entry_is_named():
         f"['{FOLLOW_UP}']",
         f"{('a.py', 'm', 'p.exists()')!r}: no reason, or a count under one",
     ]
+    # r1111b's Z11: a typo in `FOLLOW_UP`, or a value that is no issue.
+    assert entry_problems({}, {}, "#1101") == [
+        "the module docstring does not name #1101 as the follow-up"]
+    assert entry_problems({}, {}, "1110", "the follow-up, 1110, ...") == [
+        "FOLLOW_UP '1110' is no issue number"]
 
 
 #: Each way a guard can be written, and the key the scan gives it.
