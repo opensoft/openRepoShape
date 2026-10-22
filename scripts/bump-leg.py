@@ -1109,18 +1109,29 @@ def _leg_fetch_refspecs(submodule: Path) -> list[str]:
     and so is every one onto the branches' names, whatever its source: a
     folder of branches onto them
     (`+refs/heads/release/*:refs/remotes/origin/*`), one branch onto
-    another's (`+refs/heads/release/x:refs/remotes/origin/x`), and every
+    another's (`+refs/heads/release/x:refs/remotes/origin/x`), every
     branch into a folder (`+refs/heads/*:refs/remotes/origin/all/*`, `x`
-    onto `all/x`). #946's rule carried each, and this fetch with it since
-    #1037: where the remote had both branches, `x` and `release/x`, the
-    fetch exited 128 ("Cannot fetch both refs/heads/x and
-    refs/heads/release/x to refs/remotes/origin/x"), where the leg's own
-    `git fetch origin` exits 0, so both runs gave the failed-fetch note and
-    answered from stale refs, through `origin` and through
-    `--local-remote-dir` (measured, git 2.43). Left out, the first refspec
-    still brings each such branch under its own name, so the answer loses
-    nothing; what the leg kept under the other name holds the branch of
-    that name, or is pruned, until the leg's own next `git fetch origin`.
+    onto `all/x`), and a pattern that takes the branches by a start of
+    `refs/heads/` (`+refs/heads*:refs/remotes/origin/h*`, `x` onto `h/x`).
+    #946's rule carried each, and this fetch with it since #1037, the
+    pattern until #1100: where the remote had both branches, `x` and
+    `release/x` (`h/x` for the pattern), the fetch exited 128 ("Cannot
+    fetch both refs/heads/x and refs/heads/release/x to
+    refs/remotes/origin/x"), where the leg's own `git fetch origin` exits
+    0, so both runs gave the failed-fetch note and answered from stale
+    refs, through `origin` and through `--local-remote-dir` (measured, git
+    2.43). Left out, the first refspec still brings each such branch under
+    its own name, so the answer loses nothing; what the leg kept under the
+    other name holds the branch of that name, or is pruned, until the
+    leg's own next `git fetch origin` writes it back. NOT WHERE THE LEG'S REFSPEC WAS WRITTEN WITHOUT ITS `+`
+    (#1100) and the commit it keeps there does not descend from the
+    branch's: that fetch is refused as non-fast-forward, exit 1,
+    "! [rejected] release/x -> origin/x (non-fast-forward)", and so is
+    every one after it. The way back is `git fetch --force origin`, which
+    exits 0 and writes the ref back; a plain fetch exits 0 after it, until
+    this fetch runs again (measured, git 2.43 and 2.47.1). No commit is
+    lost, and `origin_fetch_refspecs`' docstring says why the cost is
+    accepted.
 
     A NEGATIVE REFSPEC (`^refs/heads/wip`) IS SKIPPED. A narrowing refspec
     never decides reachability: a positive one that leaves a branch out is
@@ -1132,15 +1143,18 @@ def _leg_fetch_refspecs(submodule: Path) -> list[str]:
     FETCH FAILS, where the fetch of every branch alone worked. Two ways
     remain: one naming a ref the remote no longer has (`couldn't find
     remote ref`, as the person's own `git fetch origin` fails), and one
-    carried into a folder of its own, such as pull requests in
-    `origin/pr/`, where a branch's name falls in that folder (`pr/7` beside
-    pull request 7: "Cannot fetch both refs/heads/pr/7 and
-    refs/pull/7/head"), which the leg's own fetch fails too wherever it has
-    the branches' glob, and which a leg with no such refspec of its own
-    fails here alone. That exits 128, so the note follows, the stale-refs
-    sentence after it where the refusal has one, and nothing is pruned
-    (measured, git 2.43). A branch put under another name was a third way
-    until #1066, and is left out now.
+    whose source names no branch, onto a name a branch of the remote has
+    (#1100). That is one carried into a folder of its own, such as pull
+    requests in `origin/pr/`, where a branch's name falls in that folder
+    (`pr/7` beside pull request 7: "Cannot fetch both refs/heads/pr/7 and
+    refs/pull/7/head"), or one onto a single name, such as
+    `+refs/pull/7/head:refs/remotes/origin/main` beside a branch `main`.
+    The leg's own fetch fails there too wherever it has the branches'
+    glob; where it has not, this fetch fails alone. That exits 128, so the
+    note follows, the stale-refs sentence after it where the refusal has
+    one, and nothing is pruned (measured, git 2.43 and 2.47.1). A branch
+    put under another name was a third way until #1066, and a pattern of
+    branches such as `refs/heads*` until #1100, and each is left out now.
 
     READ BY A LISTING, `git config --list`, which exits 0 whether or not the
     leg has a refspec (an `origin` with a URL and nothing else has none, and

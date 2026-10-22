@@ -128,16 +128,19 @@ TAGS_UNDER_ORIGIN = pytest.mark.parametrize("refspec", [
 #: branch whose name it puts that one on, and each left out: a folder of
 #: branches onto the branches' names (the issue's), by THE BRANCHES' GLOB;
 #: one branch onto another's, and every branch into a folder, by A BRANCH
-#: UNDER ANOTHER NAME. `bump-leg.py`'s rows for a leg import it
-#: (`test_bump_leg_fetch_refspecs.py`).
+#: UNDER ANOTHER NAME; and, by the same clause since #1100, a pattern that
+#: takes every branch by a start of `refs/heads/`, `refs/heads*` onto
+#: `origin/h*` (`x` onto `h/x`), which was carried. `bump-leg.py`'s rows for
+#: a leg import it (`test_bump_leg_fetch_refspecs.py`).
 BRANCH_UNDER_ANOTHER_NAME = pytest.mark.parametrize("refspec, taken, shared", [
     ("+refs/heads/release/*:refs/remotes/origin/*", "release/x-w1066",
      "x-w1066"),
     ("+refs/heads/release/x-w1066:refs/remotes/origin/x-w1066",
      "release/x-w1066", "x-w1066"),
-    ("+refs/heads/*:refs/remotes/origin/all/*", "x-w1066", "all/x-w1066")],
+    ("+refs/heads/*:refs/remotes/origin/all/*", "x-w1066", "all/x-w1066"),
+    ("+refs/heads*:refs/remotes/origin/h*", "x-w1066", "h/x-w1066")],
     ids=["folder-onto-branches", "one-branch-onto-another",
-         "branches-into-a-folder"])
+         "branches-into-a-folder", "heads-pattern-into-a-folder"])
 
 #: `caf<e9>`: Latin-1 e-acute is the one byte 0xE9, which is not UTF-8. It is
 #: the lone surrogate `os.fsdecode` keeps that byte as, so a byte command line
@@ -517,9 +520,11 @@ def test_an_ordinary_mount_fetches_the_branch_and_moves_nothing_else(
 #: pattern and not under `refs/`, `tag-short-name` a name git completes,
 #: trying a tag before a branch, and `tag-object-id` an exact object id);
 #: THE BRANCHES' GLOB, whatever the source (#1066); A BRANCH UNDER ANOTHER
-#: NAME (`another-name`, #1066); `carried` where none does, and `skipped`
-#: for a negative refspec, which no clause is asked of. `bump-leg.py`'s
-#: fetch of a leg is asked the same rows (`test_bump_leg_fetch_refspecs.py`).
+#: NAME (`another-name`, #1066), a pattern that takes the branches by a
+#: start of `refs/heads/` among them (`another-name-heads-pattern`, #1100);
+#: `carried` where none does, and `skipped` for a negative refspec, which
+#: no clause is asked of. `bump-leg.py`'s fetch of a leg is asked the same
+#: rows (`test_bump_leg_fetch_refspecs.py`).
 WHICH_CLAUSE = pytest.mark.parametrize("refspec, carried", [
     pytest.param("+refs/heads/*:refs/heads/*", False, id="outside-heads"),
     pytest.param("+refs/*:refs/*", False, id="outside-mirror"),
@@ -562,6 +567,12 @@ WHICH_CLAUSE = pytest.mark.parametrize("refspec, carried", [
                  id="another-name-branches-in-a-folder"),
     pytest.param("+refs/heads/release/*:refs/remotes/origin/rel/*", False,
                  id="another-name-folder-into-another"),
+    pytest.param("+refs/heads/*:refs/remotes/origin/*-old", False,
+                 id="another-name-suffix"),
+    pytest.param("+refs/heads*:refs/remotes/origin/h*", False,
+                 id="another-name-heads-pattern"),
+    pytest.param("refs/he*:refs/remotes/origin/he*", False,
+                 id="another-name-heads-pattern-shorter"),
     pytest.param("^refs/heads/x", False, id="skipped-negative"),
     pytest.param(PULLS, True, id="carried-pull-requests-in-a-folder"),
     pytest.param("+refs/heads/main:refs/remotes/origin/main", True,
@@ -572,6 +583,8 @@ WHICH_CLAUSE = pytest.mark.parametrize("refspec, carried", [
                  id="carried-branches-of-a-pattern"),
     pytest.param("+refs/tagsx/*:refs/remotes/origin/tagsx/*", True,
                  id="carried-not-refs-tags"),
+    pytest.param("+refs/headsx/*:refs/remotes/origin/headsx/*", True,
+                 id="carried-not-refs-heads"),
 ])
 
 
@@ -601,10 +614,14 @@ def test_which_clause_leaves_each_refspec_out(
     a source that can name no tag, and the `another-name` rows A BRANCH
     UNDER ANOTHER NAME (#1066); the folder of branches onto the branches'
     names is THE BRANCHES' GLOB's, the first that meets it, and the last
-    clause's too. A `carried` row fails a clause that takes too much: the
-    pull requests in a folder, which #946 carries, `refs/tagsx/`, which no
-    tag is under, and a branch, a folder of them or a pattern of them, each
-    under the name `BRANCHES` gives it."""
+    clause's too. `another-name-suffix` holds that clause's whole
+    destination, the part after the `*` too (#1100, RV1087's NIT 2), and
+    the `another-name-heads-pattern` rows its pattern by a start of
+    `refs/heads/` (#1100), which it carried before. A `carried` row fails a
+    clause that takes too much: the pull requests in a folder, which #946
+    carries, `refs/tagsx/`, which no tag is under, `refs/headsx/`, which no
+    branch is under, and a branch, a folder of them or a pattern of them,
+    each under the name `BRANCHES` gives it."""
     env = isolated(offline, tmp_path)
     for key, value in env.items():
         monkeypatch.setenv(key, value)

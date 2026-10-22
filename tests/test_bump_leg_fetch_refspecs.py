@@ -266,7 +266,8 @@ def test_which_clause_leaves_each_refspec_out_of_the_legs_fetch(
     holds), so a clause either tool gains is asked of both; at #1037's base
     every row the member leaves out by a tag or the branches' glob was
     carried here, and until #1066 both tools carried the folder of branches
-    onto the branches' names and every `another-name` row."""
+    onto the branches' names and every `another-name` row, the
+    `another-name-heads-pattern` rows until #1100."""
     leg = tmp_path / "leg"
     git("init", "-q", str(leg), cwd=tmp_path)
     git("remote", "add", "origin", str(tmp_path / "origin.git"), cwd=leg)
