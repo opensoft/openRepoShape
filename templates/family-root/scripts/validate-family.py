@@ -2315,8 +2315,8 @@ def _check_gitmodules_paths(root: Path,
                              if "url" in sections[name] else "no url") + ")"
             for name in names)
         put_back, whose = _file_put_back(root, report)
-        first = (f", put {GITMODULES}, gone from the work tree, back from "
-                 f"{whose} first, `{put_back}`, so that every other section "
+        first = (f", put {GITMODULES}, gone from the work tree, back first "
+                 f"from {whose}, `{put_back}`, so that every other section "
                  "stays, and " if put_back else " and ")
         report.finding(
             "gitmodules-path-twice",
@@ -3366,10 +3366,11 @@ def _gitlink_out_first(root: Path, name: str, keys: dict[str, str],
     submodule update --init` stops (`No url found for submodule path`,
     exit 128) before it checks out any member, and `git submodule status`
     exits 128 (`no submodule mapping found`). It ends as the section's
-    finding does, `then commit .gitmodules`, but where HEAD's `.gitmodules`
-    holds no section of its name, as after a `git submodule add` not
-    committed: staged, the file is HEAD's again, and nothing of it is
-    left to commit.
+    finding does (`_section_then`): `then stage and commit .gitmodules`
+    where HEAD's `.gitmodules` holds a section of its name, and `then stage
+    .gitmodules` where it holds none, as after a `git submodule add` not
+    committed: staged, the file is HEAD's again, and nothing of it is left
+    to commit (RV1124's N5).
 
     `git add -- .gitmodules` COMES FIRST where `edited`, where lines
     printed before it may leave the file with changes not staged (a
@@ -3868,13 +3869,12 @@ def _blob_listed(root: Path, spec: str) -> bytes:
 def _listed_as_git_reads(root: Path) -> tuple[bytes, str]:
     """`(what git config -z --list prints of .gitmodules as git reads it,
     git's name for the file it reads in place of the work tree's)`: the
-    work tree's where it is on disk (`_gitmodules_listed`) and no name,
-    else the index's, then HEAD's (`_gitmodules_put_back`,
-    `_blob_listed`), and nothing where no file is there (#1077). What
-    `gitmodules-value-refused` reads here, as `_sections_as_git_reads`
+    index's, then HEAD's (`_gitmodules_put_back`, `_blob_listed`), and
+    nothing where no file is there (#1077). The caller asks it only where
+    the work tree's file is gone, which `_gitmodules_put_back` asks again,
+    so it asks no guard of its own (RV1124's S1: #1111's hygiene test).
+    What `gitmodules-value-refused` reads here, as `_sections_as_git_reads`
     reads the sections."""
-    if os.path.lexists(root / GITMODULES):
-        return _gitmodules_listed(root), ""
     spec = _gitmodules_put_back(root)[0]
     return (_blob_listed(root, spec) if spec else b""), spec
 

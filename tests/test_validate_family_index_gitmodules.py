@@ -97,8 +97,8 @@ SECOND = (f'[submodule "second"]\n\tpath = {ROW}\n'
 
 #: What `gitmodules-path-twice` says where the work tree's file is gone,
 #: before what it says to take out.
-TWICE_PUT_BACK = (", put .gitmodules, gone from the work tree, back from the "
-                  "index's first, `git checkout -- .gitmodules`, so that "
+TWICE_PUT_BACK = (", put .gitmodules, gone from the work tree, back first "
+                  "from the index's, `git checkout -- .gitmodules`, so that "
                   "every other section stays, and take each other out by "
                   "hand")
 
@@ -133,6 +133,54 @@ def test_1077_a_second_section_the_index_alone_gives_is_path_twice(
     raw(holder, env, "add", "--", GITMODULES)
     committed_as_staged(holder, env)
     assert b"second" not in head_bytes(holder, env)
+    assert raw(holder, env, "status", "--porcelain").stdout == b""
+    ends_well(holder, env, family, tmp_path)
+
+
+#: A section for a path no row names, in HEAD's file as the work tree's was
+#: committed: `gitmodules-path-unnamed`'s, after path-twice's.
+STALE = (b'[submodule "members/Old"]\n\tpath = members/Old\n'
+         b"\turl = /nowhere/old.git\n")
+
+
+@pytest.mark.parametrize("how", GONE)
+def test_1077_path_twice_records_its_put_back_for_the_next_finding(
+        family, holder, offline, tmp_path, how):
+    """RV1124's N3(b): HEAD's file holds `second`, a second section for
+    `members/IRRS`, and a stale `members/Old`, and `.gitmodules` is gone
+    from the work tree. Path-twice names the put-back first; it is
+    recorded (`_file_put_back`), so `gitmodules-path-unnamed` after it
+    puts nothing back. Unrecorded, that finding printed the put-back
+    again, and typed in order it put the file back over the hand edit:
+    the commit then kept `second` and `members/Old` in HEAD. Typed in
+    order as printed, then a plain `git commit`: HEAD loses both, and the
+    gate passes in every mode."""
+    env = cloning(offline, tmp_path, family)
+    committed_gitmodules(holder, env,
+                         head_bytes(holder, env) + SECOND + STALE)
+    gone(holder, env, how)
+
+    found = found_alike(holder, *MODES)
+
+    assert codes_of(found) == ["gitmodules-path-twice",
+                               "gitmodules-path-unnamed"], found
+    twice, unnamed = found
+    put_back = GONE[how][1]
+    assert f"`{put_back}`" in twice, twice
+    assert put_back not in unnamed, unnamed
+    type_line(holder, env, put_back)
+    for key in ("path", "url"):
+        type_line(holder, env, shlex.join(
+            ["git", "config", "-f", GITMODULES, "--unset-all",
+             f"submodule.second.{key}"]))
+    raw(holder, env, "add", "--", GITMODULES)
+    for command in commands(unnamed):
+        if command.startswith("git "):
+            type_line(holder, env, command)
+    committed_as_staged(holder, env)
+    kept = head_bytes(holder, env)
+    assert b"second" not in kept and b"members/Old" not in kept
+    assert head_paths(holder, env) == {ROW, OTHER_ROW}
     assert raw(holder, env, "status", "--porcelain").stdout == b""
     ends_well(holder, env, family, tmp_path)
 
@@ -256,6 +304,42 @@ def test_1077_where_head_alone_gives_a_value_a_section_puts_the_file_back(
     assert head_paths(holder, env) == {ROW, OTHER_ROW}
     assert raw(holder, env, "status", "--porcelain").stdout == b""
     ends_well(holder, env, family, tmp_path)
+
+
+def test_1077_a_url_git_dies_on_is_written_back_as_the_file_git_reads_gave_it(
+        family, holder, offline, tmp_path):
+    """RV1124's N3(a): the index's file, the work tree's deleted, gives
+    MEMBER's section a `url` that is not HEAD's, then a `url` with no
+    value, which git dies on. The line that writes the url back, as it
+    last gave one, takes it from the file git reads (the index's), not
+    HEAD's: from HEAD's it undid what was staged. Typed in order, then
+    staged and committed: HEAD gives the staged url, and the gate passes
+    in `--no-members`."""
+    env = cloning(offline, tmp_path, family)
+    data = head_bytes(holder, env)
+    url = "https://github.com/InkRouter/Staged.git"
+    edited, count = re.subn(
+        rb"(\tpath = " + re.escape(ROW.encode()) + rb"\n)\turl = [^\n]*\n",
+        rb"\1\turl = " + url.encode() + rb"\n\turl\n", data)
+    assert count == 1, data
+    assert url.encode() not in data
+    staged_only(holder, env, edited)
+    assert raw(holder, env, "submodule", "status",
+               check=False).returncode == 128, "premise: git dies reading it"
+
+    found = found_alike(holder, *MODES)
+
+    assert codes_of(found) == ["gitmodules-value-refused"], found
+    lines = commands(found[0])
+    assert lines[0] == "git checkout -- .gitmodules", lines
+    assert lines[-1] == (f"git config -f .gitmodules submodule.{ROW}.url "
+                         f"{url}"), lines
+    typed_in_order(holder, env, validate(holder, "--no-members"))
+    raw(holder, env, "add", "--", GITMODULES)
+    committed_as_staged(holder, env)
+    assert url.encode() in head_bytes(holder, env)
+    assert raw(holder, env, "status", "--porcelain").stdout == b""
+    assert validate(holder, "--no-members").returncode == 0
 
 
 # --- NIT 3: where HEAD's file holds the section ------------------------------
