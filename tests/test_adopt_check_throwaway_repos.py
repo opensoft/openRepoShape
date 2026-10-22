@@ -140,11 +140,12 @@ def blob_of(repo: Path, data: bytes) -> str:
 
 
 def with_paths(repo: Path, paths: tuple[str, ...],
-               own_blobs: bool = False) -> None:
+               own_blobs: bool = False, links: tuple[str, ...] = ()) -> None:
     """A commit on `main` whose tree gains each of `paths`, whether git
     takes it as a path or not: `git mktree` writes what it is given, and no
     index is asked. With `own_blobs`, each path's blob holds its own name,
-    so an index that holds one path's blob under another's name is seen."""
+    so an index that holds one path's blob under another's name is seen.
+    Each of `links` is written as a symlink (mode 120000), not a file."""
     shared = blob_of(repo, b"x\n")
     nested: dict = {}
     for path in paths:
@@ -152,11 +153,13 @@ def with_paths(repo: Path, paths: tuple[str, ...],
         here = nested
         for directory in directories:
             here = here.setdefault(directory, {})
-        here[name] = (blob_of(repo, f"{path}\n".encode("utf-8"))
+        here[name] = ("120000" if path in links else "100644",
+                      blob_of(repo, f"{path}\n".encode("utf-8"))
                       if own_blobs else shared)
 
     def rows(names: dict) -> list[str]:
-        return [f"100644 blob {below}\t{name}" if isinstance(below, str)
+        return [f"{below[0]} blob {below[1]}\t{name}"
+                if isinstance(below, tuple)
                 else f"040000 tree {mktree(repo, rows(below))}\t{name}"
                 for name, below in names.items()]
 
@@ -321,6 +324,9 @@ CASE_TWINS = [
     pytest.param(("A", "a"), (), id="file-twins"),
     pytest.param(("D/x", "d/x"), (), id="folder-twins"),
     pytest.param(("F/x", "f"), (), id="a-folder-and-a-file"),
+    pytest.param(("E", "e/x"), (), id="a-file-and-a-folder"),
+    pytest.param(("AB", "Ab", "ab"), (), id="three-twins"),
+    pytest.param(("\u00c9", "\u00e9"), (), id="non-ascii-twins"),
     pytest.param((".Git/A", ".Git/a"), (".Git/A", ".Git/a"),
                  id="twins-under-a-path-git-refuses"),
     pytest.param((".GIT/x", ".Git/x"), (".GIT/x", ".Git/x"),
@@ -335,11 +341,12 @@ TWIN_ANSWERS = {"A": ROOT, "a": ROOT, "D/": ROOT, "d/": ROOT, "F/": ROOT,
                 "f": ROOT, ".GIT/": ROOT, ".Git/": ROOT}
 
 
-def with_twins(adopter, base: Path, twins: tuple[str, ...]):
+def with_twins(adopter, base: Path, twins: tuple[str, ...],
+               links: tuple[str, ...] = ()):
     """`a_source` whose commit gains `twins`, each with a blob of its own,
     opened as `check` opens it, with `base/work` its work directory."""
     path = a_source(base)
-    with_paths(path, twins, own_blobs=True)
+    with_paths(path, twins, own_blobs=True, links=links)
     work = base / "work"
     work.mkdir()
     return adopter.Source(path, None, "main",
@@ -399,6 +406,22 @@ def test_each_case_twin_is_held_with_its_own_blob_or_named(
     assert fates == as_measured(twins, refused)
 
 
+@pytest.mark.parametrize("ignorecase", ["true", "false"])
+def test_a_twin_git_refuses_by_its_mode_is_named_beside_the_one_it_holds(
+        adopter, tmp_path, ignorecase):
+    """Git refuses a path by its mode too: a symlink named `.GITMODULES`, in
+    any case, and holds the file `.gitmodules`. Measured with git 2.43,
+    `core.ignorecase` unset, false and true: so git can refuse one twin and
+    hold the other, and an answer that folds the index's paths into one case
+    would take the refused twin for a held one."""
+    twins = (".GITMODULES", ".gitmodules")
+    source = with_twins(adopter, tmp_path, twins, links=(".GITMODULES",))
+    written, named, fates = twins_asked(adopter, source, twins, ignorecase)
+    assert written == ignorecase
+    assert named == [".GITMODULES"]
+    assert fates == {".GITMODULES": "named", ".gitmodules": "held"}
+
+
 def test_on_a_disk_that_ignores_case_each_twin_is_held_or_named(adopter,
                                                                 tmp_path):
     """Where the work directory's disk ignores case, as on macOS and
@@ -413,9 +436,9 @@ def test_on_a_disk_that_ignores_case_each_twin_is_held_or_named(adopter,
     written, named, fates = twins_asked(adopter, source, ALL_TWINS, None)
     if written != "true":
         pytest.skip("needs a disk that ignores case: `git init` wrote no "
-                    f"`core.ignorecase=true` under {tmp_path / 'work'}, so "
-                    "that disk keeps case; the rows above write the setting "
-                    "into the throwaway repository by hand instead")
+                    "`core.ignorecase=true` in the work directory, so that "
+                    "disk keeps case; the rows above write the setting into "
+                    "the throwaway repository by hand instead")
     assert named == list(TWINS_REFUSED)
     assert fates == as_measured(ALL_TWINS, TWINS_REFUSED)
 
@@ -425,12 +448,13 @@ def test_check_names_each_twin_git_refuses_and_no_twin_it_holds(tmp_path):
     `core.ignorecase` true in the global config. On a disk that keeps case,
     `git init` writes no `core.ignorecase` into a throwaway repository, so
     the global setting is the one each throwaway reads. `plan` asks about
-    each twin as a path of its own (`planned` answers each by name). No
-    finding refuses twins of each other: `check` refuses only a twin of a
-    path the shape writes, or of a leg's mount (`plan-root-blocks-shape`,
-    `plan-leg-path-collides`). So `refused_paths` meets every twin, and
-    `plan-path-git-refuses` names, in the tree's order, the four git
-    refuses and none of the six it holds."""
+    each twin as a path of its own (`planned` answers each by name). Under a
+    global `core.ignorecase=true` the #654 rehearsal's `git add` refuses the
+    folder twins `D/x` and `d/x` as `plan-file-reencoded`; this row does not
+    see it, because the rehearsal asks nothing of a source that holds a path
+    git refuses (`_reencoded_files_findings`, `if refused: return []`).
+    `refused_paths` meets every twin, and `plan-path-git-refuses` names, in
+    the tree's order, the four git refuses and none of the six it holds."""
     source = a_source(tmp_path)
     with_paths(source, ALL_TWINS, own_blobs=True)
     result = checked(planned(source, tmp_path, TWIN_ANSWERS),
