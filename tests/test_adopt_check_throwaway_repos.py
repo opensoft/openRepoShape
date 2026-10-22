@@ -37,6 +37,15 @@ case. Measured with git 2.43, it holds both twins of a path git takes, each
 with its own blob, and `plan-path-git-refuses` names both twins of a path git
 refuses. This bench has no usable disk that ignores case, so the row that
 needs one skips here.
+
+#1161: so `check` passed twins wherever the plan kept them, though a disk
+that ignores case holds each set as one name. Measured with git 2.43 on
+4c7b8acd, the work directory and every repository on such a disk: `execute`
+lost `F/x` beside `f` after both legs were pushed (`adopt-lost`), and was
+refused at the folder twins `D/x` and `d/x` as `plan-file-reencoded` in 2
+of 4 fresh sources. Now `plan-case-twins` names each set the plan keeps in
+one repository, the root or a leg, on every disk, and `execute` refuses it
+before any leg exists.
 """
 
 from __future__ import annotations
@@ -143,9 +152,11 @@ def with_paths(repo: Path, paths: tuple[str, ...],
                own_blobs: bool = False, links: tuple[str, ...] = ()) -> None:
     """A commit on `main` whose tree gains each of `paths`, whether git
     takes it as a path or not: `git mktree` writes what it is given, and no
-    index is asked. With `own_blobs`, each path's blob holds its own name,
-    so an index that holds one path's blob under another's name is seen.
-    Each of `links` is written as a symlink (mode 120000), not a file."""
+    index is asked. A folder HEAD already holds, `src/` say, gains them
+    beside what it holds, and is not written twice. With `own_blobs`, each
+    path's blob holds its own name, so an index that holds one path's blob
+    under another's name is seen. Each of `links` is written as a symlink
+    (mode 120000), not a file."""
     shared = blob_of(repo, b"x\n")
     nested: dict = {}
     for path in paths:
@@ -157,14 +168,19 @@ def with_paths(repo: Path, paths: tuple[str, ...],
                       blob_of(repo, f"{path}\n".encode("utf-8"))
                       if own_blobs else shared)
 
-    def rows(names: dict) -> list[str]:
-        return [f"{below[0]} blob {below[1]}\t{name}"
-                if isinstance(below, tuple)
-                else f"040000 tree {mktree(repo, rows(below))}\t{name}"
-                for name, below in names.items()]
+    def rows(names: dict, folder: str) -> list[str]:
+        held = {line.split("\t", 1)[1]: line for line in git(
+            "ls-tree", f"HEAD:{folder}", cwd=repo,
+            check=False).stdout.splitlines()}
+        for name, below in names.items():
+            inner = f"{folder}/{name}" if folder else name
+            held[name] = (f"{below[0]} blob {below[1]}\t{name}"
+                          if isinstance(below, tuple) else
+                          f"040000 tree {mktree(repo, rows(below, inner))}"
+                          f"\t{name}")
+        return list(held.values())
 
-    held = git("ls-tree", "HEAD", cwd=repo).stdout.splitlines()
-    tree = mktree(repo, held + rows(nested))
+    tree = mktree(repo, rows(nested, ""))
     commit = git("commit-tree", tree, "-p", "HEAD", "-m", "Add paths",
                  cwd=repo).stdout.strip()
     git("update-ref", "refs/heads/main", commit, cwd=repo)
@@ -444,7 +460,7 @@ def test_on_a_disk_that_ignores_case_each_twin_is_held_or_named(adopter,
     assert fates == as_measured(ALL_TWINS, TWINS_REFUSED)
 
 
-def test_check_names_each_twin_git_refuses_and_no_twin_it_holds(tmp_path):
+def test_check_names_each_twin_git_refuses_and_each_set_it_holds(tmp_path):
     """`check` over a source holding the twins of `file-twins`,
     `folder-twins` and `a-folder-and-a-file`, and the two refused sets
     above, with `core.ignorecase` true in the global config. On a disk that
@@ -456,8 +472,10 @@ def test_check_names_each_twin_git_refuses_and_no_twin_it_holds(tmp_path):
     `plan-file-reencoded`; this row does not see it, because the rehearsal
     asks nothing of a source that holds a path git refuses
     (`_reencoded_files_findings`, `if refused: return []`).
-    `refused_paths` meets every twin, and `plan-path-git-refuses` names, in
-    the tree's order, the four git refuses and none of the six it holds."""
+    `refused_paths` meets every twin: `plan-path-git-refuses` names, in the
+    tree's order, the four git refuses, and `plan-case-twins` (#1161) names
+    the six it holds, set by set, because the plan keeps them all in the
+    root, and none of the four, which are the first finding's alone."""
     source = a_source(tmp_path)
     with_paths(source, ALL_TWINS, own_blobs=True)
     result = checked(planned(source, tmp_path, TWIN_ANSWERS),
@@ -470,8 +488,179 @@ def test_check_names_each_twin_git_refuses_and_no_twin_it_holds(tmp_path):
         "`.Git/A`, `.Git/a` and `.Git/x`. Each clone the split makes of the "
         "source would stop at the first, `unable to checkout working tree`, "
         "so `execute` refuses them before it makes either leg, whatever the "
-        "plan answers for them."]
+        "plan answers for them.",
+        twins_kept("3 sets", ROOT_TWINS, "6 paths",
+                   "`A`, `a`, `D/x`, `d/x`, `F/x` and `f`")]
     assert result.stderr.count(PATH_REMEDY) == 1, result.stderr
+    assert result.stderr.count(TWINS_REMEDY) == 1, result.stderr
+
+
+# ---------------------------------------------------------------------------
+# #1161: the case twins the plan keeps in one repository
+# ---------------------------------------------------------------------------
+
+#: The finding #1161 adds, the code of `execute`'s refusal, and how its
+#: remediation begins.
+PLAN_CASE_TWINS = "plan-case-twins"
+TWINS_REMEDY = "Remediation: rename paths in the source until no two"
+#: Where `plan-case-twins` says the plan keeps a set.
+ROOT_TWINS, SPEC_TWINS, CODE_TWINS = ("the assembly root", "the spec leg",
+                                      "the code leg")
+
+
+def twins_kept(sets: str, where: str, paths: str, named: str) -> str:
+    """`plan-case-twins` as `check` prints it for `sets` sets of twins in
+    `where`, `paths` paths, named as `named`."""
+    return (f"FINDING {PLAN_CASE_TWINS}: the plan keeps {sets} of case twins "
+            f"in {where}, {paths}, the paths of a set differing only in "
+            "case, or one naming in another case a folder above another: "
+            f"{named}. A disk that ignores case, as a macOS or Windows disk "
+            "does by default, holds each set as one name: a clone made there "
+            "checks out only one path of each set, and `execute` run there "
+            "can stop before any leg exists, at git's `will not add file "
+            "alias`, or after both legs are pushed, as `adopt-lost`.")
+
+
+#: `(the paths a source commit gains, each with a blob of its own, the
+#: plan's answers, what `check` finds)`. An answer left out is the one
+#: `plan` wrote: `specs/` goes to the spec leg and `src/` to the code leg.
+#: On 4c7b8acd, #1158's head, `check` printed `plan ok` for every one.
+TWINS_KEPT = [
+    pytest.param(("A", "a"), {"A": ROOT, "a": ROOT},
+                 [twins_kept("1 set", ROOT_TWINS, "2 paths", "`A` and `a`")],
+                 id="file-twins"),
+    pytest.param(("D/x", "d/x"), {"D/": ROOT, "d/": ROOT},
+                 [twins_kept("1 set", ROOT_TWINS, "2 paths",
+                             "`D/x` and `d/x`")],
+                 id="folder-twins"),
+    pytest.param(("F/x", "f"), {"F/": ROOT, "f": ROOT},
+                 [twins_kept("1 set", ROOT_TWINS, "2 paths",
+                             "`F/x` and `f`")],
+                 id="a-folder-and-a-file"),
+    pytest.param(("E", "e/x"), {"E": ROOT, "e/": ROOT},
+                 [twins_kept("1 set", ROOT_TWINS, "2 paths",
+                             "`E` and `e/x`")],
+                 id="a-file-and-a-folder"),
+    pytest.param(("AB", "Ab", "ab"), {"AB": ROOT, "Ab": ROOT, "ab": ROOT},
+                 [twins_kept("1 set", ROOT_TWINS, "3 paths",
+                             "`AB`, `Ab` and `ab`")],
+                 id="three-twins"),
+    pytest.param(("specs/A", "specs/a"), {},
+                 [twins_kept("1 set", SPEC_TWINS, "2 paths",
+                             "`specs/A` and `specs/a`")],
+                 id="twins-in-the-spec-leg"),
+    pytest.param(("src/É", "src/é"), {},
+                 [twins_kept("1 set", CODE_TWINS, "2 paths",
+                             "`src/É` and `src/é`")],
+                 id="non-ascii-twins-in-the-code-leg"),
+    pytest.param(("src/A", "src/D/x", "src/a", "src/d/x"), {},
+                 [twins_kept("2 sets", CODE_TWINS, "4 paths",
+                             "`src/A`, `src/a`, `src/D/x` and `src/d/x`")],
+                 id="two-sets-in-the-code-leg-set-by-set"),
+    pytest.param(("A", "a", "specs/A", "specs/a", "src/A", "src/a"),
+                 {"A": ROOT, "a": ROOT},
+                 [twins_kept("1 set", ROOT_TWINS, "2 paths", "`A` and `a`"),
+                  twins_kept("1 set", SPEC_TWINS, "2 paths",
+                             "`specs/A` and `specs/a`"),
+                  twins_kept("1 set", CODE_TWINS, "2 paths",
+                             "`src/A` and `src/a`")],
+                 id="a-set-in-each-repository"),
+    pytest.param(tuple("AaBbCcDdEeFf"), dict.fromkeys("AaBbCcDdEeFf", ROOT),
+                 [twins_kept("6 sets", ROOT_TWINS, "12 paths",
+                             "`A`, `a`, `B`, `b`, `C`, `c`, `D`, `d`, `E`, "
+                             "`e` and 2 more")],
+                 id="ten-named-and-the-rest-counted"),
+]
+
+
+@pytest.mark.parametrize(("paths", "answers", "found"), TWINS_KEPT)
+def test_check_names_the_case_twins_the_plan_keeps_in_one_repository(
+        tmp_path, paths, answers, found):
+    """A disk that ignores case holds each set as one name. Measured for
+    #1161 with git 2.43 on 4c7b8acd, the work directory and every
+    repository on such a disk: `check` printed `plan ok` for each set, and
+    `execute` lost `F/x` after both legs were pushed (`adopt-lost`), or was
+    refused at folder twins as `plan-file-reencoded`, git saying `will not
+    add file alias`. Now `check` names each set on every disk, one finding
+    for each repository that holds one, root, spec leg, code leg, and says
+    its remediation once."""
+    source = a_source(tmp_path)
+    with_paths(source, paths, own_blobs=True)
+    result = checked(planned(source, tmp_path, answers))
+    assert "REFUSED" not in result.stderr, result.stderr
+    assert result.returncode == 1, result.stderr
+    assert finding_lines(result) == found
+    assert result.stderr.count(TWINS_REMEDY) == 1, result.stderr
+
+
+#: `(the paths, the answers)` of sources no repository the split makes holds
+#: twins of, and `check` finds nothing in, on 4c7b8acd and now.
+NO_TWINS_KEPT = [
+    pytest.param(("A", "a", "D/x", "d/x"),
+                 {"A": ROOT, "a": "code", "D/": ROOT, "d/": "code"},
+                 id="twins-in-different-repositories"),
+    pytest.param(("A", "a"), {"A": ROOT, "a": "drop"}, id="a-twin-dropped"),
+    pytest.param(("D/x", "d/y"), {"D/": ROOT, "d/": ROOT},
+                 id="folders-in-another-case-holding-other-names"),
+    pytest.param(("A", "b", "D/x", "e/x"),
+                 {"A": ROOT, "b": ROOT, "D/": ROOT, "e/": ROOT},
+                 id="no-twins"),
+]
+
+
+@pytest.mark.parametrize(("paths", "answers"), NO_TWINS_KEPT)
+def test_paths_no_one_repository_holds_as_one_name_are_no_finding(
+        tmp_path, paths, answers):
+    """Twins the plan sends to different repositories are held apart, one
+    a drop takes out is in none, and folders in another case merge into one
+    whose names differ."""
+    source = a_source(tmp_path)
+    with_paths(source, paths, own_blobs=True)
+    assert findings(planned(source, tmp_path, answers)) == []
+
+
+def test_a_twin_still_unanswered_is_named_by_plan_unresolved_alone(
+        tmp_path):
+    """`a` still has `leg: null`: `plan-unresolved` names it, and no set is
+    named while one of its twins goes nowhere yet."""
+    source = a_source(tmp_path)
+    with_paths(source, ("A", "a"), own_blobs=True)
+    result = checked(planned(source, tmp_path, {"A": ROOT}))
+    assert result.returncode == 1, result.stderr
+    assert codes(result) == ["plan-unresolved"], result.stderr
+
+
+def test_execute_refuses_case_twins_before_any_leg(adopter, monkeypatch,
+                                                   tmp_path):
+    """The set measured to stop `execute` after both legs were pushed."""
+    source = a_source(tmp_path)
+    with_paths(source, ("F/x", "f"), own_blobs=True)
+    refusal = refused_before_any_leg(
+        adopter, monkeypatch,
+        planned(source, tmp_path, {"F/": ROOT, "f": ROOT}), tmp_path)
+    assert refusal.code == PLAN_CASE_TWINS
+    assert TWINS_REMEDY in refusal.remediation
+
+
+def test_on_a_disk_that_ignores_case_check_names_the_twins_too(tmp_path):
+    """The rows above ask nothing of the disk, and `plan-case-twins` asks
+    nothing of it either. This row runs `check` with its work directory on
+    the disk `git init` is asked about, and is skipped where that disk keeps
+    case, as every CI disk does (CI is Linux only since #597)."""
+    work = tmp_path / "work"
+    git("init", "-q", str(work / "probe"), cwd=tmp_path)
+    if git("config", "--local", "--get", "core.ignorecase",
+           cwd=work / "probe", check=False).stdout.strip() != "true":
+        pytest.skip("needs a disk that ignores case: `git init` wrote no "
+                    "`core.ignorecase=true` in the work directory, so that "
+                    "disk keeps case; the rows above find the twins on "
+                    "every disk")
+    source = a_source(tmp_path)
+    with_paths(source, ("A", "a"), own_blobs=True)
+    result = checked(planned(source, tmp_path, {"A": ROOT, "a": ROOT}), None,
+                     "--work-dir", str(work / "check"))
+    assert finding_lines(result) == [
+        twins_kept("1 set", ROOT_TWINS, "2 paths", "`A` and `a`")]
 
 
 # ---------------------------------------------------------------------------
