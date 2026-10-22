@@ -325,7 +325,7 @@ def no_leg_way_in(rows: dict, line: str, again: str, why: str) -> None:
     assert way_in["next"] is None, way_in
     assert way_in["detail"] == {
         "git_repository": True, "suggested_project": None,
-        "origin_org": None, "cannot_be_read": line, "path": "AGENTS.md"}
+        "origin_org": "acme", "cannot_be_read": line, "path": "AGENTS.md"}
     told_once(rows, line)
     no_way_in_over_it(rows)
 

@@ -11650,12 +11650,12 @@ def check_the_way_in(ctx: Context) -> Row:
     try:
         is_repo = carries_git(root)
     except OSError as exc:
-        return way_in_unread_row(".git", exc, None,
+        return way_in_unread_row(".git", exc, None, None,
                                  "this is a git repository to adopt")
     try:
         leg = is_repo and leg_clone(ctx)
     except OSError as exc:
-        return way_in_unread_row(AGENTS_MD, exc, True,
+        return way_in_unread_row(AGENTS_MD, exc, True, origin_org(root),
                                  "this is a clone of a Triad's leg, which is "
                                  "not adopted or scaffolded on its own")
     project, refusal = way_in_project(ctx)
@@ -11701,20 +11701,23 @@ def check_the_way_in(ctx: Context) -> Row:
 
 
 def way_in_unread_row(named: str, exc: OSError, is_repo: bool | None,
-                      unknown: str) -> Row:
+                      org: str | None, unknown: str) -> Row:
     """`the way in` while `named` cannot be read, so that `unknown` is not
     known (#1110): `n/a` with no NEXT, since neither way in is offered, and a
     pointer at `what is here`, which names the file with the cure, once.
-    `detail` keeps the row's keys: `git_repository` is `is_repo` (None for a
-    `.git` that cannot be read), `suggested_project` and `origin_org` are
-    None because no command is offered with them, and `cannot_be_read` and
-    `path` name the file."""
+    `detail` keeps the row's keys. `git_repository` is `is_repo` and
+    `origin_org` is `org`, each what was read: both None for a `.git` that
+    cannot be read, whose `origin` is not read either, and for an `AGENTS.md`
+    the repository and its `origin`'s organisation, kept as the leg's row
+    and the policy row keep `origin_org` with no command. `suggested_project`
+    is None, since no `--project` is offered, and `cannot_be_read` and `path`
+    name the file."""
     return Row("way-in", "the way in", NA,
                f"its {named} cannot be read, so it is not known whether "
                f"{unknown}, and neither way in is offered until it can be: "
                "`what is here` says how", None,
                {"git_repository": is_repo, "suggested_project": None,
-                "origin_org": None,
+                "origin_org": org,
                 "cannot_be_read": cannot_be_read(named, exc),
                 "path": named})
 
