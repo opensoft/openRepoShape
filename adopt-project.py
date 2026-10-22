@@ -5333,7 +5333,7 @@ def _checked_plan_inputs(args, source: Source,
             [(_flag_named(ELECTED_BY_KEY, flags_given), args.elected_by,
               ROOT_MANIFEST_AND_README)])
     names = _names(args.project)
-    pins = _as_planned(declared_pin_values(args), args.pin_source)
+    pins = _as_planned(_pins_read_unfetched(args), args.pin_source)
     _check_names(naming, names, set(pins), source)
     # LAST here, over every value as the plan will record it: `execute`
     # writes them into the project's own YAML. The project's own validator
@@ -6218,6 +6218,115 @@ def _write_the_plan(args, out: Path, text: str) -> None:
         ) from None
 
 
+# ---------------------------------------------------------------------------
+# `plan` never fetches into a partial clone either (#1162)
+# ---------------------------------------------------------------------------
+#
+# `plan` reads its `--source` with git, as `check` does, and each pin's
+# digest in its `--pin-source` with `git ls-tree -r`
+# (`pin_digest_from_source`). In a partial clone (`git clone --filter`)
+# either read fetched what the clone lacked from its promisor remote, as
+# #1145 found `check` and `execute` did. Measured with git 2.43 on #1145's
+# head 2c8082a2: a `--filter=blob:none --no-checkout` `--source` ran its
+# promisor's `upload-pack` 26 times and took its `.promisor` files from 1
+# to 27; a `--filter=tree:0` `--pin-source`, and a `--filter=blob:none` one
+# that lacked the pinned commit, each ran it once and gained a promisor
+# pack before the digest was read. So `plan` runs under `_lazy_fetch_off`,
+# as `check` and `execute` do, and:
+#
+# - its `--source` is refused by `_refuse_a_partial_clone_short` as soon
+#   as it is opened, as theirs is: the partial clone `check` would refuse,
+#   before git reads an object of it, on every git;
+# - its `--pin-source` is NOT refused for being a partial clone. A digest
+#   is read from the pinned commit's trees, and a `--filter=blob:none`
+#   clone that holds the commit holds them: measured, it records the digest
+#   a full clone does and runs no `upload-pack`, checked out or not. Where
+#   git stops at an object such a clone lacks, the reader's own
+#   `pin-source-unreadable` says that the clone is a partial one and how to
+#   make it whole (`_pins_read_unfetched`): the `git fetch --all` it
+#   offered keeps the filter, and a `tree:0` clone stays short of its
+#   trees.
+
+#: The variable git reads to leave out the fetch a partial clone makes for an
+#: object it lacks: `shape-doctor.py`'s `NO_LAZY_FETCH` (#787, #1145).
+NO_LAZY_FETCH = "GIT_NO_LAZY_FETCH"
+#: The refusal `pin_digest_from_source` gives a `--pin-source` that cannot
+#: answer for a pin (#339): `plan`'s own, not `check`'s
+#: `PIN_SOURCE_UNREADABLE` finding.
+PIN_SOURCE_REFUSED = "pin-source-unreadable"
+
+
+@contextlib.contextmanager
+def _lazy_fetch_off():
+    """This process's environment with `GIT_NO_LAZY_FETCH=1` for as long as
+    it runs, and as it was afterwards: the doctor's `lazy_fetch_off` (#787),
+    over `check` and `execute` (#1145), and over `plan` (#1162).
+
+    EVERY GIT THE COMMAND STARTS inherits it, and every git those start:
+    each read of the source, `plan`'s of its `--pin-source`, the throwaway
+    repositories `check` makes, the clones and `git filter-repo` of
+    `execute`. A read of an object a partial clone lacks then fails, as one
+    fails where the clone's remote is out of reach (measured with git 2.43:
+    exit 128, and no `upload-pack` ran), and each reader here already
+    answers a read that failed. Nothing printed for a person's own shell
+    carries it.
+
+    WHICH GIT HONOURS IT: git 2.45.0 and later, and the security releases of
+    2024-05-14 back to 2.39.4, whose fix for CVE-2024-32465 made
+    `promisor-remote.c` read it, as distributions' own builds of those do
+    (Ubuntu's 2.43.0-1ubuntu7.1 and later). An older git ignores it, and
+    there `_refuse_a_partial_clone_short` is what keeps the source whole; a
+    partial `--pin-source` short of the pinned commit or its trees is
+    fetched into there, as before #1162."""
+    before = os.environ.get(NO_LAZY_FETCH)
+    os.environ[NO_LAZY_FETCH] = "1"
+    try:
+        yield
+    finally:
+        if before is None:
+            os.environ.pop(NO_LAZY_FETCH, None)
+        else:
+            os.environ[NO_LAZY_FETCH] = before
+
+
+def _pins_read_unfetched(args) -> dict[str, dict[str, str]]:
+    """`declared_pin_values(args)`, read under `plan`'s `_lazy_fetch_off`
+    (#1162). A `--pin-source` that is a partial clone (`_promisor_remotes`)
+    and cannot answer for a pin without fetching keeps the reader's own
+    `pin-source-unreadable` and its words, and the refusal says that the
+    clone is a partial one, which `plan` never fetches into, and how to
+    make it whole.
+
+    ONLY A READ THAT FAILED IS ASKED ABOUT. A partial clone that holds the
+    pinned commit and its trees answers as any clone does, and a clone that
+    is no partial one keeps the reader's refusal as it was. Whether it is
+    one is read from its config alone, which reads no object."""
+    try:
+        return declared_pin_values(args)
+    except Refusal as exc:
+        clone = args.pin_source
+        remotes = ([] if exc.code != PIN_SOURCE_REFUSED or clone is None
+                   else _promisor_remotes(clone))
+        if not remotes:
+            raise
+        raise Refusal(
+            exc.code,
+            f"{exc.detail}. That clone is a partial clone (`git clone "
+            "--filter`), whose git fetches an object it lacks from its "
+            f"promisor remote ({', '.join(map(_spelled, remotes))}) on any "
+            "read that needs it, and `plan` never fetches into a "
+            "--pin-source",
+            f"Remediation: {PLAN_NOT_WRITTEN} Make that clone whole, then "
+            f"run `plan` again: in {shown_path(clone)}, run "
+            f"{', then '.join(map(_refetch, remotes))}, which fetches every "
+            "object again with no filter (git 2.36 or later) where a branch "
+            "it fetches holds the pinned commit. Or point --pin-source at a "
+            "full clone (`git clone` with no `--filter`) that has the "
+            "pinned commit, or drop --pin-source and let `gh api` read the "
+            "forge.") from exc
+
+
+@_lazy_fetch_off()
 def cmd_plan(args) -> int:
     # A `--pin-source` that names no path, `''`, which as a `Path` is the
     # directory this runs in, one no `--pin` will read, and one `plan` cannot
@@ -6284,6 +6393,10 @@ def cmd_plan(args) -> int:
     source = Source.of(named, work_root, unwritable,
                        getattr(args, "clones", None),
                        instead=args.tracking_branch)
+    # As soon as it is opened, as `check` and `execute` ask it (#1162): the
+    # partial clone they would refuse is refused before git reads an object
+    # of it, which would fetch what it lacks, and before the plan exists.
+    _refuse_a_partial_clone_short(source)
     policy = PathPolicy.load(args.path_policy or PATH_POLICY)
 
     # The project's own validator is asked inside, before #181's question.
@@ -12925,7 +13038,8 @@ def _grouped_findings(stored: list[str], taken: list[str], copies: list[str],
 # command. So there are two layers, as the doctor has them (#683, #754,
 # #787):
 #
-# - `_lazy_fetch_off`, over the whole of both commands: with
+# - `_lazy_fetch_off`, over the whole of both commands, and of `plan`
+#   since #1162, which defines it: with
 #   `GIT_NO_LAZY_FETCH=1`, a read of an object the source lacks fails where
 #   it fetched, whatever reads it and whichever commit it reads, a commit
 #   the plan names included;
@@ -12938,12 +13052,9 @@ def _grouped_findings(stored: list[str], taken: list[str], copies: list[str],
 # `protocol.file.allow=always` outranks it, and the lazy fetch ran. NOR AN
 # EMPTY `GIT_ALLOW_PROTOCOL` over the whole command, which stops that fetch
 # too: `check` and `execute` need their transports, for the clone of the
-# source, `ls-remote` and the pushes. And `plan`, which reads its source
-# the same way, is not changed here.
+# source, `ls-remote` and the pushes. `plan`, which reads its source the
+# same way, is under both layers since #1162.
 
-#: The variable git reads to leave out the fetch a partial clone makes for an
-#: object it lacks: `shape-doctor.py`'s `NO_LAZY_FETCH` (#787, #1145).
-NO_LAZY_FETCH = "GIT_NO_LAZY_FETCH"
 #: Refused: a source that is a partial clone and lacks an object its branches
 #: or tags reach (#1145).
 SOURCE_PARTIAL_CLONE = "source-partial-clone"
@@ -12957,36 +13068,6 @@ PROMISOR_KEYS = (r"^(remote\..*\.(promisor|partialclonefilter)"
 #: `GIT_NO_LAZY_FETCH` unset: no `upload-pack` ran).
 LACKING_WALK = ("rev-list", "--objects", "--missing=print", "--branches",
                 "--tags")
-
-
-@contextlib.contextmanager
-def _lazy_fetch_off():
-    """This process's environment with `GIT_NO_LAZY_FETCH=1` for as long as
-    it runs, and as it was afterwards: the doctor's `lazy_fetch_off` (#787),
-    over `check` and `execute` (#1145).
-
-    EVERY GIT THE COMMAND STARTS inherits it, and every git those start:
-    each read of the source, the throwaway repositories `check` makes, the
-    clones and `git filter-repo` of `execute`. A read of an object a partial
-    clone lacks then fails, as one fails where the clone's remote is out of
-    reach (measured with git 2.43: exit 128, and no `upload-pack` ran), and
-    each reader here already answers a read that failed. Nothing printed for
-    a person's own shell carries it.
-
-    WHICH GIT HONOURS IT: git 2.45.0 and later, and the security releases of
-    2024-05-14 back to 2.39.4, whose fix for CVE-2024-32465 made
-    `promisor-remote.c` read it, as distributions' own builds of those do
-    (Ubuntu's 2.43.0-1ubuntu7.1 and later). An older git ignores it, and
-    there `_refuse_a_partial_clone_short` is what keeps the source whole."""
-    before = os.environ.get(NO_LAZY_FETCH)
-    os.environ[NO_LAZY_FETCH] = "1"
-    try:
-        yield
-    finally:
-        if before is None:
-            os.environ.pop(NO_LAZY_FETCH, None)
-        else:
-            os.environ[NO_LAZY_FETCH] = before
 
 
 def _config_listed(path: Path, *args: str) -> bytes:
@@ -13068,7 +13149,7 @@ def _refuse_a_partial_clone_short(source: Source) -> None:
     (`_promisor_remotes`) and lacks an object its branches or tags reach
     (`_objects_lacking`), or whose branches and tags git cannot walk; asked
     by `check` and `execute` as soon as the source is opened, before
-    anything else reads it (#1145).
+    anything else reads it (#1145), and by `plan` (#1162).
 
     ONLY WHAT IS LACKING IS REFUSED. A partial clone given every object
     again (`git fetch --refetch --no-filter`) keeps its promisor config, and
@@ -13106,10 +13187,10 @@ def _refuse_a_partial_clone_short(source: Source) -> None:
         f"the source {where} is a partial clone (`git clone --filter`) that "
         f"{short}. Git fetches an object a partial clone lacks from its "
         f"promisor remote ({', '.join(map(_spelled, remotes))}) on any read "
-        "that needs it, and `check` and `execute` never fetch into the "
-        "source: `execute`'s `git filter-repo` reads every branch and tag, "
-        "and a partial clone short of one of their blobs failed it after "
-        "both leg repositories were made",
+        "that needs it, and `plan`, `check` and `execute` never fetch into "
+        "the source: `execute`'s `git filter-repo` reads every branch and "
+        "tag, and a partial clone short of one of their blobs failed it "
+        "after both leg repositories were made",
         f"Remediation: make the source whole, then run this command again: "
         f"in {where}, run "
         f"{', then '.join(map(_refetch, remotes))}, which fetches every "
@@ -17976,7 +18057,14 @@ def main(argv: list[str] | None = None) -> int:
                            "user cannot reach (under a directory it may not "
                            "search, or one it may not enter), which is never "
                            "read as one that is not there, nor cloned as an "
-                           "`org/repo`.")
+                           "`org/repo`. A partial clone (`git clone "
+                           "--filter`) short of an object its branches or "
+                           "tags reach is refused as "
+                           "`source-partial-clone`, as `check` refuses it, "
+                           "before anything reads it: git would fetch that "
+                           "object into it, and `plan` never fetches into "
+                           "the source. Run `git fetch --refetch "
+                           "--no-filter <remote>` in it to make it whole.")
     plan.add_argument("--project", required=True,
                       help="the assembly-root name; for an in-place adoption "
                            "it is the source repository's own name. "
@@ -18067,7 +18155,11 @@ def main(argv: list[str] | None = None) -> int:
                            "means this directory. `pin-source-not-a-clone` "
                            "refuses any other path than a clone's top level, "
                            "or a bare clone's, where a --pin's digest is "
-                           "read.")
+                           "read. A partial clone (`git clone --filter`) is "
+                           "read where it holds the pinned commit and its "
+                           "trees; one git could read only by fetching what "
+                           "it lacks is refused as `pin-source-unreadable`, "
+                           "since `plan` never fetches into it.")
     plan.add_argument("--allow-empty-leg", action="append", default=[],
                       choices=EXTRACTED_LEGS,
                       help="record in the plan that this leg having NO path "

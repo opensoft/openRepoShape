@@ -472,7 +472,13 @@ options:
                         `source-unreadable`, a path this user cannot reach
                         (under a directory it may not search, or one it may
                         not enter), which is never read as one that is not
-                        there, nor cloned as an `org/repo`.
+                        there, nor cloned as an `org/repo`. A partial clone
+                        (`git clone --filter`) short of an object its branches
+                        or tags reach is refused as `source-partial-clone`, as
+                        `check` refuses it, before anything reads it: git
+                        would fetch that object into it, and `plan` never
+                        fetches into the source. Run `git fetch --refetch
+                        --no-filter <remote>` in it to make it whole.
   --project PROJECT     the assembly-root name; for an in-place adoption it is
                         the source repository's own name. `execute` refuses
                         one over 95 characters without --local-remote-dir:
@@ -579,7 +585,11 @@ options:
                         `pin-source-no-path`, and `.` means this directory.
                         `pin-source-not-a-clone` refuses any other path than a
                         clone's top level, or a bare clone's, where a --pin's
-                        digest is read.
+                        digest is read. A partial clone (`git clone --filter`)
+                        is read where it holds the pinned commit and its
+                        trees; one git could read only by fetching what it
+                        lacks is refused as `pin-source-unreadable`, since
+                        `plan` never fetches into it.
   --allow-empty-leg {spec,code}
                         record in the plan that this leg having NO path is
                         intended, so it may be SEEDED from the shape's
