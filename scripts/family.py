@@ -7643,14 +7643,15 @@ def _store_git_uses(root: Path, path: str) -> tuple[str, Path] | None:
 #: and calls no store-less checkout) route on this code; the only refusal
 #: either can meet with it is `_unrestorable`'s, since `_storeless` reads
 #: nothing else of the disk but the `.gitmodules` that names the store,
-#: whose own code is `GITMODULES_UNREAD`. `tests/test_family_py_unreadable.py`
-#: pins the two to one value.
+#: whose own code is `GITMODULES_UNREAD_CODE`.
+#: `tests/test_family_py_unreadable.py` pins the two to one value.
 STORE_UNREADABLE = "member-unreadable"
 #: The code `_gitmodules_on_disk` raises for a work tree's `.gitmodules`
 #: this user may not read (#1110): the code `add` already gives the same
 #: file where git cannot read it (`_submodule_paths`), so one file has one
-#: name, and the cure follows the cause.
-GITMODULES_UNREAD = "gitmodules-unreadable"
+#: name, and the cure follows the cause. A CODE, NOT `GITMODULES_UNREADABLE`,
+#: which is the remediation `_submodule_paths` gives a file git cannot parse.
+GITMODULES_UNREAD_CODE = "gitmodules-unreadable"
 #: What the rollback's restore may meet where a path it must read cannot be
 #: read (#430, #1110): the store `git submodule update` checks the member
 #: out of, or the `.gitmodules` that tells git which store that is. Neither
@@ -7658,7 +7659,7 @@ GITMODULES_UNREAD = "gitmodules-unreadable"
 #: from that store with no network, so `PinRollback` makes the mount again,
 #: empty, and types the update after the cure; it never says the checkout
 #: comes back only from its remote.
-READABLE_ONCE_CURED = (STORE_UNREADABLE, GITMODULES_UNREAD)
+READABLE_ONCE_CURED = (STORE_UNREADABLE, GITMODULES_UNREAD_CODE)
 
 
 def _unrestorable(root: Path, path: str, commit: str | None) -> str | None:
@@ -8160,7 +8161,7 @@ class PinRollback:
         try:
             why = self._storeless()
         except Refusal as exc:
-            if exc.code == GITMODULES_UNREAD:
+            if exc.code == GITMODULES_UNREAD_CODE:
                 # With its cure, as a store's detail carries its own: the
                 # sentence prints no remediation (r1164's NIT-1). Not
                 # "inside the holder": a link can lead out of it.
@@ -9535,7 +9536,7 @@ def _gitmodules_on_disk(root: Path, verb: str = "remove") -> bool:
             raise PermissionError(errno.EACCES, os.strerror(errno.EACCES),
                                   str(path))
     except OSError as exc:
-        raise _unreadable(GITMODULES_UNREAD, GITMODULES, exc,
+        raise _unreadable(GITMODULES_UNREAD_CODE, GITMODULES, exc,
                           GITMODULES_READ_FOR[verb], where="") from exc
     return there
 

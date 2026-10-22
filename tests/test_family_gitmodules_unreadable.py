@@ -211,7 +211,7 @@ def test_a_gitmodules_whose_stat_is_refused_is_refused_not_absent(
 
     refusal = read_refused(module, reader, holder)
 
-    assert refusal.code == CODE == module.GITMODULES_UNREAD
+    assert refusal.code == CODE == module.GITMODULES_UNREAD_CODE
     assert refusal.detail == DENIED
     assert CHMOD in refusal.remediation
     assert "inside the holder" not in refusal.remediation
