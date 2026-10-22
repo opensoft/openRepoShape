@@ -41,6 +41,22 @@ THE CONTROLS, true on main as well, hold the guard to #430's other answers: a
 `.git` that is a link to itself or past a folder that is not there is no
 repository, and a `.git` that is a gitdir file is one.
 
+#1110'S TWELFTH SITE, `shape_advisory._leg_by_agents_md` (`except Exception:
+return None`, "an unreadable file says nothing"). A leg's own `AGENTS.md`
+that this user cannot read -- linked into a folder at 000, or itself at 000
+-- was read as no leg's file on every Python. Measured on #1144's head
+`89486f69`, over a clone of `acme/Orbit` whose `AGENTS.md` is the spec or
+the code leg's: `the way in` offered `adopt-project.py plan ... --project
+Orbit`, `the other way in` `setup.sh`, and the Triad row called it a single
+repository, where the readable file is the leg, with no command at all. Now
+`read()` answers `not-answered` with the line and the `OSError` it carries,
+`leg_clone` raises it, `the way in` offers neither command and points at
+`what is here`, which names the file with the cure (and reads it through, for
+a file at 000), and `the other way in` and the Triad row are silent. A leg
+known by its NAME is still one; a file that is not there, or is read and is
+not UTF-8, is still no leg's file (controls); and `adopt-project.py`, which
+reads the commit it plans, never reads the disk's file at all.
+
 TWO KINDS OF CASE, as `tests/test_doctor_unreadable_paths.py` has them. The
 MODE cases make a real link into a real folder at 000 and run the doctor as a
 person does; they skip on Windows and as root (`CANNOT_RUN_AS_ROOT`), and put
@@ -71,6 +87,9 @@ from test_doctor_unreadable_pin import (
     DENIED, IO_ERROR, OTHER_WHY, PERMISSION_WHY, cannot, doctored, in_process,
     refusing,
 )
+#: A leg's `AGENTS.md`, rendered from its template as the scaffold renders
+#: it, from the file that owns it.
+from test_shape_advisory import rendered_leg_agents
 #: The doctor's fixtures, from the module that owns them.
 from test_shape_doctor import (  # noqa: F401
     doctor, doctor_module, project, rows_of, scaffolded_here, standard,
@@ -110,6 +129,31 @@ GIT_LINKS = {"loop": Path(".git"), "dangling": Path("..", "nowhere", ".git")}
 #: naming script that refuses for another reason than the policy says (exit 2).
 UNCLASSIFIED = "my-service"
 SCRIPT_REFUSES = "REFUSED naming-no-target: no names given."
+#: What `the way in` says while a leg's `AGENTS.md` cannot be read.
+NO_LEG_WAY_IN = ("its AGENTS.md cannot be read, so it is not known whether "
+                 "this is a clone of a Triad's leg, which is not adopted or "
+                 "scaffolded on its own, and neither way in is offered until "
+                 "it can be: `what is here` says how")
+#: An `AGENTS.md` that leads nowhere, as `GIT_LINKS` above.
+AGENTS_LINKS = {"loop": Path("AGENTS.md"),
+                "dangling": Path("..", "nowhere", "AGENTS.md")}
+#: The reads of a leg's `AGENTS.md` this user may be refused, in process:
+#: its `stat`, as for a link into a folder this user cannot search, and its
+#: read, as for a file at mode 000, whose `stat` succeeds; for a permission
+#: and for an I/O error. `(refuse, the system's reason, the error's type)`.
+AGENTS_REFUSALS = [
+    pytest.param(lambda patch: refused_stat(patch, "AGENTS.md"), DENIED,
+                 PermissionError, id="stat-permission"),
+    pytest.param(lambda patch: refusing(patch, "stat", "AGENTS.md",
+                                        OSError(errno.EIO, IO_ERROR)),
+                 IO_ERROR, OSError, id="stat-io-error"),
+    pytest.param(lambda patch: refusing(patch, "read_bytes", "AGENTS.md",
+                                        PermissionError(errno.EACCES, DENIED)),
+                 DENIED, PermissionError, id="read-permission"),
+    pytest.param(lambda patch: refusing(patch, "read_bytes", "AGENTS.md",
+                                        OSError(errno.EIO, IO_ERROR)),
+                 IO_ERROR, OSError, id="read-io-error"),
+]
 
 
 def symlink(at: Path, to: Path) -> None:
@@ -220,6 +264,78 @@ def not_a_root_rows(module, ctx) -> dict:
                   module.check_triad_advisory(ctx)])
 
 
+def no_workspace(tmp_path: Path) -> dict:
+    """An environment whose `AGENT_PROTOCOL_ROOT` holds no `workspace.yaml`,
+    so no person's own configuration can change an answer."""
+    quiet = tmp_path / "agent-protocol"
+    quiet.mkdir()
+    return {"AGENT_PROTOCOL_ROOT": str(quiet)}
+
+
+def leg_clone_here(root: Path, role: str = "spec") -> Path:
+    """`root`, a repository of its own whose `origin` is `ORIGIN` and whose
+    `AGENTS.md` is the `role` leg's, as its template renders it: a leg
+    cloned into a folder called something else."""
+    repository_here(root)
+    (root / "AGENTS.md").write_text(rendered_leg_agents(role),
+                                    encoding="utf-8")
+    return root
+
+
+def leg_agents_why(reason: str = DENIED) -> str:
+    """The advisory's `why` for a leg's `AGENTS.md` it cannot read."""
+    return (f"{cannot('AGENTS.md', reason)}, so whether this is a leg clone "
+            "is not known here, and the advisory says nothing")
+
+
+def is_the_leg(rows: dict, role: str) -> None:
+    """A clone of the `role` leg whose `AGENTS.md` this user can read: `the
+    way in` is the leg's row, with no command, no scaffold is offered, and
+    the Triad row sends it to its assembly root."""
+    assert "AS A LEG" in rows["way-in"]["reason"], rows["way-in"]
+    assert rows["way-in"]["next"] is None, rows["way-in"]
+    assert "way-in-scaffold" not in rows, sorted(rows)
+    assert (f"this is a clone of the {role} leg"
+            in rows["triad-advisory"]["reason"]), rows["triad-advisory"]
+
+
+def no_leg_way_in(rows: dict, line: str, again: str, why: str) -> None:
+    """The same clone, its `AGENTS.md` refused (`line`): `what is here` names
+    it with this doctor `again` and the advice for the cause, `the way in`
+    offers neither command and points there, and `the other way in` and the
+    Triad row are silent. `machine` is about the workstation."""
+    assert set(rows) - {"machine"} == {"naming", "contents", "way-in"}, rows
+    contents, way_in = rows["contents"], rows["way-in"]
+    assert contents["status"] == "n/a", contents
+    assert contents["reason"] == f"{line}; a git repository"
+    assert contents["next"] == again
+    assert contents["why"] == why
+    assert contents["detail"]["AGENTS.md"] is True
+    assert contents["detail"]["cannot_be_read"] == [line]
+    assert way_in["status"] == "n/a", way_in
+    assert way_in["reason"] == NO_LEG_WAY_IN
+    assert way_in["next"] is None, way_in
+    assert way_in["detail"] == {
+        "git_repository": True, "suggested_project": None,
+        "origin_org": None, "cannot_be_read": line, "path": "AGENTS.md"}
+    told_once(rows, line)
+    no_way_in_over_it(rows)
+
+
+def offered_both_ways_in(module, ctx) -> None:
+    """A clone the advisory reads as no leg, with nothing it cannot read:
+    advised, offered the adoption as `Orbit` and the scaffold, and no row
+    says `cannot be read`."""
+    rows = not_a_root_rows(module, ctx)
+    assert set(rows) == {"naming", "contents", "way-in", "way-in-scaffold",
+                         "triad-advisory"}, rows
+    for row in rows.values():
+        assert "cannot be read" not in row["reason"], row
+    assert "adopt-project.py" in rows["way-in"]["next"], rows["way-in"]
+    assert "--project Orbit" in rows["way-in"]["next"], rows["way-in"]
+    assert rows["triad-advisory"]["status"] == module.ADVISORY
+
+
 # --- the mode cases: a real link, the doctor run as a person runs it --------
 
 @CANNOT_RUN_AS_ROOT
@@ -318,6 +434,54 @@ def test_a_projects_agent_file_linked_out_of_reach_is_a_note(
     assert files["detail"]["cannot_be_read"] == [line]
     assert verdict == readable
     told_once(rows, line)
+
+
+@CANNOT_RUN_AS_ROOT
+@pytest.mark.parametrize("role", ["spec", "code"])
+def test_a_leg_agents_md_linked_into_a_folder_nobody_may_search_offers_no_way_in(
+        standard, tmp_path, role):
+    """#1110's twelfth site, the case r1144 measured. Readable, a clone of
+    `acme/Orbit` whose `AGENTS.md` is a leg's is that leg: no command, and
+    the Triad row sends it to its root. Linked into a folder at 000 it was
+    no leg's file on every Python: `the way in` offered the adoption as
+    `Orbit`, `the other way in` the scaffold, and the Triad row called it a
+    single repository. Now `what is here` names it once with the cure, `the
+    way in` offers neither command and points there, `the other way in` and
+    the Triad row are silent, and the verdict and exit are unchanged."""
+    locked = tmp_path / "locked"
+    locked.mkdir()
+    (locked / "AGENTS.md").write_text(rendered_leg_agents(role),
+                                      encoding="utf-8")
+    root = repository_here(tmp_path / "Atlas")
+    symlink(root / "AGENTS.md", Path("..", "locked", "AGENTS.md"))
+    readable, _verdict = doctored(standard, root)
+    is_the_leg(readable, role)
+    with mode_of(tmp_path, "locked", 0):
+        result = doctor(standard, root, "--json")
+    assert "Traceback" not in result.stderr, result.stderr
+    assert result.returncode == 2, result.stdout + result.stderr
+    assert json.loads(result.stdout)["verdict"] == "NOT A SHAPE ROOT"
+    no_leg_way_in(rows_of(result),
+                  cannot("AGENTS.md", os.strerror(errno.EACCES)),
+                  doctor_again(standard, root), PERMISSION_WHY)
+
+
+@CANNOT_RUN_AS_ROOT
+def test_a_leg_agents_md_this_user_may_not_open_offers_no_way_in(
+        standard, tmp_path):
+    """The same leg's `AGENTS.md` as a regular file at mode 000: its `stat`
+    succeeds and its read is refused. `what is here` said `an AGENTS.md`,
+    and the rest as for the link. `what is here` reads it through now, so it
+    names the file the advisory cannot read, and `the way in`'s pointer has
+    a line to point at."""
+    root = leg_clone_here(tmp_path / "Atlas", "code")
+    readable, _verdict = doctored(standard, root)
+    is_the_leg(readable, "code")
+    with mode_of(root, "AGENTS.md", 0):
+        rows, verdict = doctored(standard, root)
+    assert verdict == "NOT A SHAPE ROOT"
+    no_leg_way_in(rows, cannot("AGENTS.md", os.strerror(errno.EACCES)),
+                  doctor_again(standard, root), PERMISSION_WHY)
 
 
 # --- the stand-in cases: in process, on every platform and as root ----------
@@ -512,19 +676,26 @@ def test_the_advisory_names_a_git_it_cannot_reach_and_says_nothing(
     assert reading.state == shape_advisory.NOT_ANSWERED
     assert reading.why == why
     assert reading.advise is False
+    assert type(reading.refused) is type(error)
 
 
 def test_the_doctor_reads_the_advisory_as_silent(standard, tmp_path,
                                                  monkeypatch):
     """The doctor's two readers of the advisory over that `.git`: no Triad
-    row, and not a leg clone."""
+    row, and `leg_clone` raises the refused `stat` the reading carries
+    (`refused`), as it raises a leg's `AGENTS.md` it cannot read (#1110's
+    twelfth site), for its caller to name. `the way in` and `the other way
+    in` ask `carries_git` first, so neither meets it here."""
     module = doctor_module(standard)
     root = repository_here(tmp_path / "Atlas")
     ctx = module.Context(root.resolve())
     refused_stat(monkeypatch, ".git")
-    assert module.shape_advisory.read(ctx.root, ctx.shape).why == ADVISORY_WHY
+    reading = module.shape_advisory.read(ctx.root, ctx.shape)
+    assert reading.why == ADVISORY_WHY
+    assert type(reading.refused) is PermissionError
     assert module.check_triad_advisory(ctx) is None
-    assert module.leg_clone(ctx) is False
+    with pytest.raises(PermissionError):
+        module.leg_clone(ctx)
 
 
 @pytest.mark.parametrize("refuse, status, line, why", [
@@ -598,3 +769,196 @@ def test_an_unreadable_pinned_agent_file_beside_an_absent_one_is_a_finding(
     assert row.why == f"{alone.why}. {PERMISSION_WHY}"
     assert row.detail["pinned"] == []
     assert module.verdict_for(ctx, [row]) == ("INVALID (agent-files)", 1)
+
+
+# --- #1110's twelfth site: a leg's `AGENTS.md` this user cannot read --------
+
+@pytest.mark.parametrize("refuse, reason, error", AGENTS_REFUSALS)
+def test_the_advisory_says_nothing_of_a_leg_agents_md_it_cannot_read(
+        tmp_path, monkeypatch, refuse, reason, error):
+    """`shape_advisory`: `_leg_by_agents_md` read ANY exception as "no leg's
+    file", so a leg's `AGENTS.md` this user cannot read was no leg, and
+    `read()` advised a single repository. It raises the refused `stat` or
+    read now, and `read()` answers `not-answered`, silent, with the line in
+    `why` and the `OSError` in `refused`, for the doctor to name."""
+    root = leg_clone_here(tmp_path / "Atlas")
+    env = no_workspace(tmp_path)
+    assert shape_advisory.read(root, env=env).state == shape_advisory.LEG_CLONE
+    refuse(monkeypatch)
+    with pytest.raises(error):
+        shape_advisory._leg_by_agents_md(shape_advisory.Tree(root))
+    reading = shape_advisory.read(root, env=env)
+    assert reading.state == shape_advisory.NOT_ANSWERED
+    assert reading.why == leg_agents_why(reason)
+    assert reading.advise is False
+    assert reading.leg is None
+    assert type(reading.refused) is error
+
+
+@pytest.mark.parametrize("refuse, reason, error", AGENTS_REFUSALS)
+def test_the_doctor_offers_no_way_in_over_a_leg_agents_md_it_cannot_read(
+        standard, tmp_path, monkeypatch, refuse, reason, error):
+    """The rows of a directory with no manifest, in process, over a clone of
+    a leg whose `AGENTS.md` this user cannot read: `what is here` names it
+    with the advice for the cause, `the way in` offers neither command and
+    points there, `the other way in` and the Triad row are silent, and
+    `leg_clone` raises the refusal. On #1144's head the same rows offered
+    the adoption and the scaffold, and gave the advice. The read cases are
+    a file at mode 000, which `what is here` names by reading it through."""
+    module = doctor_module(standard)
+    root = leg_clone_here(tmp_path / "Atlas")
+    ctx = module.Context(root.resolve())
+    is_the_leg(not_a_root_rows(module, ctx), "spec")
+    refuse(monkeypatch)
+    no_leg_way_in(not_a_root_rows(module, ctx), cannot("AGENTS.md", reason),
+                  module.doctor_line(ctx),
+                  PERMISSION_WHY if error is PermissionError else OTHER_WHY)
+    with pytest.raises(error):
+        module.leg_clone(ctx)
+
+
+def test_an_agents_md_nobody_may_open_is_named_where_there_is_no_git(
+        standard, tmp_path, monkeypatch):
+    """`what is here` reads `AGENTS.md` through wherever it lists it, so a
+    file at mode 000 in a directory that is no repository is named with the
+    cure, as #1144 names one linked into a folder at 000 there
+    (`test_an_agents_md_linked_into_a_folder_nobody_may_search_is_there`).
+    Nothing reads it to choose a way in there, so the way in is still the
+    scaffold, and no Triad row is given."""
+    module = doctor_module(standard)
+    root = tmp_path / "Atlas"
+    root.mkdir()
+    (root / "AGENTS.md").write_text(rendered_leg_agents("spec"),
+                                    encoding="utf-8")
+    ctx = module.Context(root.resolve())
+    refusing(monkeypatch, "read_bytes", "AGENTS.md",
+             PermissionError(errno.EACCES, DENIED))
+    rows = not_a_root_rows(module, ctx)
+    assert set(rows) == {"naming", "contents", "way-in"}, rows
+    assert rows["contents"]["reason"] == AGENTS_LINE
+    assert rows["contents"]["why"] == PERMISSION_WHY
+    assert rows["way-in"]["detail"]["git_repository"] is False
+    assert "setup.sh" in rows["way-in"]["next"], rows["way-in"]
+    told_once(rows, AGENTS_LINE)
+
+
+def test_a_leg_by_its_name_is_one_while_its_agents_md_cannot_be_read(
+        standard, tmp_path, monkeypatch):
+    """CONTROL, true on #1144's head `89486f69` as here: a folder named
+    `Orbit-spec` is a leg by its NAME, a declared fact that needs no
+    `AGENTS.md`, so a leg's `AGENTS.md` this user cannot read leaves it the
+    leg its name says -- `named as`, the hedge for a name -- and `the way in`
+    is the leg's row, with no command and no scaffold. `what is here` still
+    names the file with the cure. It holds `_read`'s turn to the name when
+    the file is refused, rather than `not-answered`."""
+    module = doctor_module(standard)
+    root = leg_clone_here(tmp_path / "Orbit-spec")
+    ctx = module.Context(root.resolve())
+    refused_stat(monkeypatch, "AGENTS.md")
+    reading = shape_advisory.read(root, env=no_workspace(tmp_path))
+    assert reading.state == shape_advisory.LEG_CLONE, reading.as_dict()
+    assert reading.leg["by"] == "name", reading.leg
+    rows = not_a_root_rows(module, ctx)
+    assert set(rows) == {"naming", "contents", "way-in", "triad-advisory"}, \
+        rows
+    assert "AS A LEG" in rows["way-in"]["reason"], rows["way-in"]
+    assert rows["way-in"]["next"] is None, rows["way-in"]
+    assert ("`Orbit-spec` is named as the spec leg of `Orbit`"
+            in rows["triad-advisory"]["reason"]), rows["triad-advisory"]
+    assert module.leg_clone(ctx) is True
+    told_once(rows, AGENTS_LINE)
+
+
+@pytest.mark.parametrize("kind", ["dangling", "gone-before-it-is-read",
+                                  "loop"])
+def test_an_agents_md_that_is_not_there_is_no_legs_file(
+        standard, tmp_path, monkeypatch, kind):
+    """CONTROLS, true on #1144's head as here, holding the reader that now
+    raises a refused read to #430's other answers: an `AGENTS.md` that is a
+    link past a folder that is not there (ENOENT) or to itself (ELOOP), or a
+    file whose read finds nothing there (ENOENT, gone after its `stat`), is
+    nothing there. No leg's file and no `cannot be read` anywhere: the clone
+    is advised and offered both ways in, as one with no `AGENTS.md` is."""
+    module = doctor_module(standard)
+    root = repository_here(tmp_path / "Atlas")
+    if kind in AGENTS_LINKS:
+        symlink(root / "AGENTS.md", AGENTS_LINKS[kind])
+    else:
+        (root / "AGENTS.md").write_text(rendered_leg_agents("spec"),
+                                        encoding="utf-8")
+        refusing(monkeypatch, "read_bytes", "AGENTS.md",
+                 FileNotFoundError(errno.ENOENT, os.strerror(errno.ENOENT)))
+    assert shape_advisory._leg_by_agents_md(shape_advisory.Tree(root)) is None
+    reading = shape_advisory.read(root, env=no_workspace(tmp_path))
+    assert reading.state == shape_advisory.ADVISE, reading.as_dict()
+    offered_both_ways_in(module, module.Context(root.resolve()))
+
+
+@pytest.mark.parametrize("encode", [
+    pytest.param(lambda text: text.encode("utf-8") + b"caf" + bytes([0xE9])
+                 + b"\n", id="a-legacy-byte-after-the-opening"),
+    pytest.param(lambda text: text.encode("utf-16"), id="utf-16"),
+])
+def test_a_leg_agents_md_that_is_not_utf8_declares_no_leg(standard, tmp_path,
+                                                          encode):
+    """THE DECISION FOR A FILE THAT IS READ AND IS NOT UTF-8, true on #1144's
+    head as here: no leg's file. A leg's `AGENTS.md` is its template rendered
+    as UTF-8, and bytes that do not decode are not that text; none of them is
+    salvaged, as no part of an origin URL that is not UTF-8 is (#385). It is
+    not #1110's case: nothing was refused, `what is here` reads the file, and
+    the clone is advised and offered both ways in. A leg's opening kept intact
+    ahead of a byte in a legacy code page is read so too: the PR's known
+    limit."""
+    module = doctor_module(standard)
+    root = repository_here(tmp_path / "Atlas")
+    (root / "AGENTS.md").write_bytes(encode(rendered_leg_agents("spec")))
+    assert shape_advisory._leg_by_agents_md(shape_advisory.Tree(root)) is None
+    reading = shape_advisory.read(root, env=no_workspace(tmp_path))
+    assert reading.state == shape_advisory.ADVISE, reading.as_dict()
+    offered_both_ways_in(module, module.Context(root.resolve()))
+
+
+def test_a_failure_the_leg_reader_does_not_expect_is_silence_not_advice(
+        tmp_path, monkeypatch):
+    """Anything `Tree.text` raises that is neither an `OSError` nor bytes
+    that are not UTF-8 -- a git that cannot give the commit's blob, which
+    `adopt-project.py`'s reading of a commit can meet -- is not expected by
+    `_leg_by_agents_md`, and ends in `read()`'s net: `not-answered`, silent,
+    with the exception's name. On #1144's head it was "no leg's file", and
+    the advice. No `OSError` was refused, so `refused` is None."""
+    root = leg_clone_here(tmp_path / "Atlas")
+    real = shape_advisory.Tree.text
+
+    def text(self, rel):
+        if rel == "AGENTS.md":
+            raise shape_advisory.Refusal("git-failed",
+                                         "git could not give the blob")
+        return real(self, rel)
+
+    monkeypatch.setattr(shape_advisory.Tree, "text", text)
+    reading = shape_advisory.read(root, env=no_workspace(tmp_path))
+    assert reading.state == shape_advisory.NOT_ANSWERED, reading.as_dict()
+    assert reading.why == ("the advisory could not be read here (Refusal), "
+                           "so it says nothing")
+    assert reading.refused is None
+
+
+def test_adopts_reader_reads_the_commits_agents_md_and_never_the_disks(
+        tmp_path, monkeypatch):
+    """`adopt-project.py` asks the advisory of the commit its plan is written
+    against (`commit=`), and reads a leg's `AGENTS.md` out of that commit's
+    objects: refused on the disk, the committed file is still the leg's, so
+    `plan` and `check` print the leg's NOTE and offer nothing over the
+    disk's file, on #1144's head as here. The disk, which the doctor reads,
+    is `not-answered`."""
+    root = leg_clone_here(tmp_path / "Atlas")
+    git("add", "-A", "--", ".", cwd=root)
+    git("commit", "-q", "-m", "Initial import", cwd=root)
+    commit = git("rev-parse", "HEAD", cwd=root).stdout.strip()
+    env = no_workspace(tmp_path)
+    refused_stat(monkeypatch, "AGENTS.md")
+    reading = shape_advisory.read(root, env=env, commit=commit)
+    assert reading.state == shape_advisory.LEG_CLONE, reading.as_dict()
+    assert reading.leg["by"] == "agents", reading.leg
+    assert (shape_advisory.read(root, env=env).state
+            == shape_advisory.NOT_ANSWERED)

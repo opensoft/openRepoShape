@@ -137,13 +137,16 @@ NOT_A_REPOSITORY = "not-a-repository"
 #: construction is the one thing in a run that must never be the reason it
 #: crashed. So whatever `read()` meets that it did not expect (a record nested
 #: past the interpreter's recursion limit, a NUL in a configured path) ends
-#: here: silent, with the exception's NAME in `why` for `--json`. So does a
-#: `.git` this user cannot reach, the one such case `_read` asks for itself
-#: (#1110), with its line in `validate-pins.py`'s words, `.git: cannot be read
-#: (<reason>)`, in `why`. It is no new state: whether this is a repository is
-#: not known, which is "could not be read here", and every reader already
-#: answers this one with silence -- the doctor's `Triad` row and `leg_clone`,
-#: and `adopt-project.py`'s `triad` lines.
+#: here: silent, with the exception's NAME in `why` for `--json`. So do the
+#: two reads `_read` asks for itself that this user may be refused (#1110): a
+#: `.git` it cannot reach, and a leg's own `AGENTS.md` it cannot read where no
+#: leg's name answers instead, each with its line in `validate-pins.py`'s
+#: words, `<name>: cannot be read (<reason>)`, in `why`, and the `OSError` in
+#: `Reading.refused`. It is no new state: whether this is a repository, or a
+#: leg, is not known, which is "could not be read here", and every reader
+#: answers it with silence -- the doctor's `Triad` row, and `adopt-project.py`'s
+#: `triad` lines -- or, where silence is not enough, by naming `refused`: the
+#: doctor's `leg_clone` raises it, so `the way in` offers no way in over it.
 NOT_ANSWERED = "not-answered"
 STATES = (ADVISE, TRIAD_ROOT, FAMILY_HOLDER, LEG_CLONE, WORKSPACE,
           RECORDED_SINGLE, NOT_A_REPOSITORY, NOT_ANSWERED)
@@ -310,16 +313,24 @@ class Reading:
     `single-repository.yaml` silences nothing, reported beside the advisory;
     `field_problems` are what a record that DOES silence leaves out. `leg` is
     set for a leg clone and says which leg and how it was known.
+
+    `refused` is the `OSError` of a read the operating system REFUSED that
+    left the question unanswered -- a `.git` or a leg's `AGENTS.md` this
+    user cannot reach (#1110) -- set with `NOT_ANSWERED` and nowhere else,
+    for a caller that must name it rather than only stay silent. It is not
+    in `as_dict`: an exception is no JSON value, and its line is in `why`.
     """
 
     def __init__(self, state: str, why: str, record_problems=(),
-                 field_problems=(), leg: dict | None = None):
+                 field_problems=(), leg: dict | None = None,
+                 refused: OSError | None = None):
         assert state in STATES, state
         self.state = state
         self.why = why
         self.record_problems = tuple(record_problems)
         self.field_problems = tuple(field_problems)
         self.leg = leg
+        self.refused = refused
 
     @property
     def advise(self) -> bool:
@@ -346,6 +357,21 @@ _ABSENT_ERRNOS = (errno.ENOENT, errno.ENOTDIR, errno.EBADF, errno.ELOOP)
 _ABSENT_WINERRORS = (21, 123, 1921)
 
 
+def _nothing_there(exc: OSError) -> bool:
+    """Whether `exc`, raised by a `stat` or a read, says NOTHING IS THERE
+    (`_ABSENT_ERRNOS`, `_ABSENT_WINERRORS`), where any other `OSError` is
+    one the operating system refused (#430's rule)."""
+    return (exc.errno in _ABSENT_ERRNOS
+            or getattr(exc, "winerror", None) in _ABSENT_WINERRORS)
+
+
+def _cannot_be_read(named: str, exc: OSError) -> str:
+    """`<named>: cannot be read (<the operating system's reason>)`, the line
+    `validate-pins.py` refuses a file it cannot reach or open with, and
+    `shape-doctor.py`'s `cannot_be_read` (#1110)."""
+    return f"{named}: cannot be read ({exc.strerror or type(exc).__name__})"
+
+
 def _is_a(path: Path, kind) -> bool:
     """Whether `path` is there and of `kind` (`stat.S_ISREG`, or any mode),
     raising the `OSError` of a `stat` the operating system REFUSED, as
@@ -360,8 +386,7 @@ def _is_a(path: Path, kind) -> bool:
     try:
         mode = path.stat().st_mode
     except OSError as exc:
-        if (exc.errno in _ABSENT_ERRNOS
-                or getattr(exc, "winerror", None) in _ABSENT_WINERRORS):
+        if _nothing_there(exc):
             return False
         raise
     except ValueError:
@@ -386,8 +411,10 @@ class Tree:
     `UnicodeDecodeError`, because "it is there and could not be read" is a
     different answer from "it is not there", and the record reports the
     first. So does a file whose `stat` the operating system REFUSES: `kind()`
-    raises it (`_is_a`, #430), and every reader's net reads the file as there
-    and unreadable, on every Python.
+    raises it (`_is_a`, #430), and so does `text()` a read it refuses, and
+    every reader takes the file as there and unreadable, on every Python: the
+    record's as a reason it silences nothing, a leg's `AGENTS.md`'s as a
+    question this directory cannot answer (`_leg_by_agents_md`, #1110).
     """
 
     def __init__(self, root: Path, commit: str | None = None):
@@ -559,11 +586,36 @@ def _leg_by_agents_md(tree: Tree) -> dict | None:
     leg `templates/spec-root/` and `templates/code-root/` seeds carries an
     `AGENTS.md` that opens by saying which leg it is and names the assembly
     root it belongs to.
+
+    A FILE THIS USER CANNOT READ RAISES (#1110). `Tree.text` asks the `stat`
+    (`_is_a`) and then reads the bytes, and #430's rule reads only ENOENT,
+    ENOTDIR, EBADF and ELOOP (and Windows' 21, 123 and 1921) from either as
+    nothing there, None as before. Any other `OSError` is raised for `_read`
+    to answer: whether this is a leg is not known while its own `AGENTS.md`
+    cannot be read. This was `except Exception: return None`, "an unreadable
+    file says nothing", and it said "no leg": a leg's `AGENTS.md` linked into
+    a folder this user cannot search, or at mode 000, was read as no leg's
+    file, so the doctor offered to adopt the leg as a project of its own and
+    to scaffold three new repositories over it, and the Triad row called it
+    a single repository.
+
+    A FILE THAT IS READ AND IS NOT UTF-8 DECLARES NO LEG, as before. A leg's
+    `AGENTS.md` is its template rendered as UTF-8 text, and bytes that do not
+    decode are not that text: none of them is salvaged, the rule
+    `repository_names` keeps for an origin URL (#385) and `_read_mapping` for
+    a manifest. Nothing was refused, so nothing is unknown, and a person's
+    `AGENTS.md` in another encoding is not made a reason to offer no way in.
+    Anything else (a git that cannot give the commit's blob) is not expected
+    here, and ends in `read()`'s net: `NOT_ANSWERED`, silent.
     """
     try:
         text = tree.text(AGENTS_MD)
-    except Exception:  # noqa: BLE001 - an unreadable file says nothing
+    except UnicodeDecodeError:
         return None
+    except OSError as exc:
+        if _nothing_there(exc):
+            return None
+        raise
     if text is None:
         return None
     text = text.lstrip(BOM)
@@ -795,11 +847,10 @@ def _read(root: Path, shape: Path, env, commit: str | None) -> Reading:
         # A `.git` THIS USER CANNOT REACH (#1110): not `NOT_A_REPOSITORY`,
         # which is what 3.14's `exists()` made of it, and no new state
         # either -- see `NOT_ANSWERED`.
-        return Reading(NOT_ANSWERED, f".git: cannot be read "
-                                     f"({exc.strerror or type(exc).__name__}),"
-                                     " so whether this is a repository is not "
+        return Reading(NOT_ANSWERED, f"{_cannot_be_read('.git', exc)}, so "
+                                     "whether this is a repository is not "
                                      "known here, and the advisory says "
-                                     "nothing")
+                                     "nothing", refused=exc)
     if not repository:
         return Reading(NOT_A_REPOSITORY, "there is no repository here to "
                                          "advise about")
@@ -807,7 +858,22 @@ def _read(root: Path, shape: Path, env, commit: str | None) -> Reading:
     names = repository_names(root)
     # THE LEG'S OWN `AGENTS.md` FIRST: it is the route design D4 of the
     # ratified change names, and the one that can name the assembly root.
-    leg = _leg_by_agents_md(tree) or _leg_by_name(names, policy)
+    try:
+        leg = _leg_by_agents_md(tree)
+    except OSError as exc:
+        # ITS OWN `AGENTS.md` THIS USER CANNOT READ (#1110). A leg's NAME is a
+        # declared fact without it, so a name that is one still answers, as
+        # it did before; with none, whether this is a leg is not known --
+        # neither the advice nor the leg's instruction -- so `NOT_ANSWERED`,
+        # as for the `.git` above.
+        leg = _leg_by_name(names, policy)
+        if leg is None:
+            return Reading(NOT_ANSWERED, f"{_cannot_be_read(AGENTS_MD, exc)}, "
+                                         "so whether this is a leg clone is "
+                                         "not known here, and the advisory "
+                                         "says nothing", refused=exc)
+    else:
+        leg = leg or _leg_by_name(names, policy)
     if leg is not None:
         return Reading(LEG_CLONE, leg["how"], leg=leg)
     workspace = _workspace(root, names, policy, env)
