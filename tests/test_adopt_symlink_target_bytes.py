@@ -824,6 +824,11 @@ def test_a_named_link_at_the_pin_is_found_there_and_no_case_twin_is_asked(
 #: `.md` extension), because a link sent to a leg is not kept in the root,
 #: and the copy skip that M14 breaks is never reached for it.
 #:
+#: A case twin that sorts AFTER the link, `shape/readme.md`, was not named
+#: at all while the link stayed (#1138, NIT-5 of r1118): `_KeptTree` kept
+#: the first row at a place, which there is the link, so the twin was
+#: never asked. The second case holds that, beside the first.
+#:
 #: The source's other files, a declared pin, the link, what the plan keeps in
 #: the root, the code of the second finding and what it says of its path.
 LINK_BESIDE_A_SECOND_PATH = [
@@ -832,6 +837,11 @@ LINK_BESIDE_A_SECOND_PATH = [
         {"shape/": ROOT, "Shape/": ROOT, "README.md": ROOT}, COPY,
         "That path is the file `Shape/README.md` once case is ignored",
         id="a-case-twin-of-the-readme-copy"),
+    pytest.param(
+        {"shape/readme.md": "the case twin\n"}, False, "shape/README.md",
+        {"shape/": ROOT, "README.md": ROOT}, COPY,
+        "That path is the file `shape/readme.md` once case is ignored",
+        id="a-case-twin-after-the-readme-copys-link"),
     pytest.param(
         {"contracts/shape-pin.yaml": "not the shape's pin\n"}, True,
         "contracts/openglass-pin.yaml", {"contracts/": ROOT}, HOLDS_PIN,
