@@ -9480,11 +9480,27 @@ def _suspicious_name(name: str) -> bool:
     return not name or ".." in re.split(r"[/\\]", name)
 
 
-def _gitmodules_on_disk(root: Path) -> bool:
+#: What `gitmodules-unreadable` says each verb reads the work tree's
+#: `.gitmodules` for, where `_gitmodules_on_disk` refuses it (#1110): `remove`
+#: through its two readers and `_stages_as`, `add` through `_stages_as`.
+GITMODULES_READ_FOR = {
+    "remove": (f"`remove` reads the work tree's {GITMODULES} before it writes "
+               "anything, for the section `git rm` takes out and the object "
+               "store the member would come back from, and its rollback "
+               "reads it again to bring the member back."),
+    "add": (f"`add` reads the work tree's {GITMODULES} before it writes "
+            "anything, to find out whether it is the copy the index holds: "
+            "`git submodule add` writes the member's section into it and "
+            "the commit takes all of it."),
+}
+
+
+def _gitmodules_on_disk(root: Path, verb: str = "remove") -> bool:
     """Whether the work tree of `root` has a `.gitmodules` that is a file,
-    asked as `_is_a` asks for the two readers of it below, so one this user
-    may not read is `gitmodules-unreadable` (#1110), never one that is not
-    there.
+    asked as `_is_a` asks for the two readers of it below and for
+    `_stages_as`, so one this user may not read is `gitmodules-unreadable`
+    (#1110), never one that is not there; its remedy says what `verb`
+    reads it for (`GITMODULES_READ_FOR`).
 
     A `.gitmodules` THAT IS A LINK INTO A FOLDER THIS USER CANNOT SEARCH was
     asked with `Path.is_file()`, which raised `PermissionError` on Python
@@ -9510,12 +9526,8 @@ def _gitmodules_on_disk(root: Path) -> bool:
             raise PermissionError(errno.EACCES, os.strerror(errno.EACCES),
                                   str(path))
     except OSError as exc:
-        raise _unreadable(
-            GITMODULES_UNREAD, GITMODULES, exc,
-            f"`remove` reads the work tree's {GITMODULES} before it writes "
-            "anything, for the section `git rm` takes out and the object "
-            "store the member would come back from, and its rollback reads "
-            "it again to bring the member back.", where="") from exc
+        raise _unreadable(GITMODULES_UNREAD, GITMODULES, exc,
+                          GITMODULES_READ_FOR[verb], where="") from exc
     return there
 
 
@@ -9640,12 +9652,22 @@ def _gitmodules_in_index(root: Path) -> list[tuple[str, str, int]]:
     return found
 
 
-def _stages_as(root: Path, blob: str) -> bool:
+def _stages_as(root: Path, blob: str, verb: str) -> bool:
     """Whether git would stage the work tree's `.gitmodules` as `blob`: a
     regular file, not a link, whose bytes `git hash-object` reads as that
     blob through the file's own attributes, which is how `git add` reads
-    them. Without `-w` it writes nothing."""
-    if not stat.S_ISREG(os.lstat(root / GITMODULES).st_mode):
+    them. Without `-w` it writes nothing.
+
+    A FILE THIS USER MAY NOT READ IS `gitmodules-unreadable` HERE TOO
+    (`_gitmodules_on_disk`, #1110), before `git hash-object` is asked. A
+    `.gitmodules` at mode 000 was refused by `remove` one of two ways, by
+    git's stat cache (r1164's SHOULD-2): where `git ls-files -m` had to read
+    the file, could not and listed it as modified, the refusal was `a git or
+    gh command failed`, quoting `git hash-object`; where git's cache spared
+    the read, `_gitmodules_names` named it `gitmodules-unreadable`. A link
+    is not regular, so it is `gitmodules-unstaged`'s first, as before."""
+    if not stat.S_ISREG(os.lstat(root / GITMODULES).st_mode) or \
+            not _gitmodules_on_disk(root, verb):
         return False
     hashed = _git_bytes(["hash-object", f"--path={GITMODULES}", "--",
                          GITMODULES], root)
@@ -9799,7 +9821,7 @@ def _checked_gitmodules_as_staged(root: Path, verb: str) -> None:
     # `add` cannot stage a skip-worktree `.gitmodules` at all; `remove`
     # commits a clean one on disk rightly, as it did before #407.
     if tag.upper() == "S" and (verb == "add" or not on_disk
-                               or not _stages_as(root, blob)):
+                               or not _stages_as(root, blob, verb)):
         raise Refusal(
             "gitmodules-sparse",
             f"the index marks {GITMODULES} skip-worktree, as a sparse "
@@ -9839,10 +9861,10 @@ def _checked_gitmodules_as_staged(root: Path, verb: str) -> None:
                 "holds: git lists it as modified, a change nobody has staged"
                 + (", though `git add` would stage the index's own content "
                    "from it: the difference may be its line endings alone"
-                   if _stages_as(root, blob) else ""))
+                   if _stages_as(root, blob, verb) else ""))
         remedy = keep_or_drop.format(
             stage=f"stage it first, `git add {GITMODULES}`")
-    elif tag.islower() and not _stages_as(root, blob):
+    elif tag.islower() and not _stages_as(root, blob, verb):
         said = (f"the work tree's {GITMODULES} is not the copy the index "
                 "holds, a change nobody has staged, and git does not list it "
                 "as modified: the index marks it assume-unchanged, so git "

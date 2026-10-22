@@ -60,9 +60,11 @@ import pytest
 from conftest import git, refusal_detail, run_script
 from test_bump_leg_unopenable import needs_a_mode, refusal_of, refused_stat
 from test_family import (  # noqa: F401
-    FAMILY, MEMBERS, NAME, estate, family, family_module, siblings,
+    FAMILY, MEMBERS, NAME, SPARE, estate, family, family_module, siblings,
 )
-from test_family_add_refusals import holder, offline  # noqa: F401
+from test_family_add_refusals import (  # noqa: F401
+    add_in_process, holder, offline,
+)
 from test_family_bump_remove_rollback import (
     facts, in_process, remove, typed_by_hand,
 )
@@ -307,6 +309,78 @@ def test_a_persons_remove_over_a_linked_gitmodules_is_refused_first(
     assert "Traceback" not in result.stderr
     assert result.stderr.startswith("REFUSED gitmodules-unstaged: ")
     assert facts(holder, env) == before
+
+
+#: A modification time well before any index a test writes (2001-09-09), so
+#: git's stat cache for a file set to it is never racily clean.
+LONG_AGO = 1_000_000_000
+
+
+def stat_cache(holder: Path, stale: bool) -> None:
+    """git's stat cache for `.gitmodules` made current or stale ON PURPOSE.
+    Its mtime is set long ago and the index refreshed, with
+    `core.trustctime` off, so the `chmod` that follows, which moves only
+    the ctime, leaves the cache current and `git ls-files -m` does not read
+    the file. Where `stale`, the mtime moves once more: git must read the
+    file to compare it, cannot, and lists it as modified."""
+    path = holder / GITMODULES
+    git("config", "--local", "core.trustctime", "false", cwd=holder)
+    os.utime(path, (LONG_AGO, LONG_AGO))
+    git("update-index", "-q", "--refresh", cwd=holder)
+    if stale:
+        os.utime(path, (LONG_AGO + 60, LONG_AGO + 60))
+
+
+@needs_a_mode
+@pytest.mark.parametrize("stale", [True, False],
+                         ids=["git-lists-it", "git-does-not-list-it"])
+def test_a_persons_remove_names_a_gitmodules_at_000_one_way(
+        stale, holder, offline, tmp_path):
+    """A `.gitmodules` that is a file at mode 000, run as a person runs
+    `remove`, dry run and real, with git's stat cache stale or current.
+    Where git listed it as modified, `_stages_as` asked `git hash-object`,
+    and the refusal was `a git or gh command failed`; where git did not,
+    it was `gitmodules-unreadable` (r1164's SHOULD-2). Now both are
+    `gitmodules-unreadable`, with the cure, and nothing is written."""
+    env = isolated(offline, tmp_path)
+    stat_cache(holder, stale)
+    before = facts(holder, env)
+
+    with at_000(holder / GITMODULES):
+        listed = git("ls-files", "-m", "-z", cwd=holder).stdout.split("\0")
+        results = [remove(holder, env, "--dry-run"), remove(holder, env)]
+
+    assert (GITMODULES in listed) is stale
+    for result in results:
+        assert result.returncode == 2, result.stdout + result.stderr
+        assert "Traceback" not in result.stderr
+        assert refusal_detail(result.stderr, CODE) == [
+            f"REFUSED {CODE}: {DENIED}"]
+        assert CHMOD in remedy(result.stderr)
+    assert facts(holder, env) == before
+
+
+def test_add_names_a_gitmodules_it_may_not_open_for_its_own_reading(
+        family, holder, offline, monkeypatch, capsys):
+    """`add` asks `_stages_as` too, of a `.gitmodules` the index marks
+    assume-unchanged, which git does not compare. One this user may not
+    open (`os.access`, in process) is `gitmodules-unreadable` there, before
+    `git hash-object`, and its remedy says what `add` reads it for, not
+    what `remove` does."""
+    git("update-index", "--assume-unchanged", "--", GITMODULES, cwd=holder)
+    access_refused(monkeypatch, GITMODULES)
+
+    code = add_in_process(family_module(), monkeypatch, offline, holder,
+                          SPARE, family["remotes"])
+
+    said = capsys.readouterr()
+    assert code == 2, said.out + said.err
+    assert refusal_detail(said.err, CODE) == [f"REFUSED {CODE}: {NO_READ}"]
+    assert remedy(said.err).startswith(
+        f"Remediation: `add` reads the work tree's {GITMODULES} before it "
+        "writes anything")
+    assert "`remove`" not in remedy(said.err)
+    assert CHMOD in remedy(said.err)
 
 
 def failing_commit(module, holder: Path, monkeypatch, then) -> None:
