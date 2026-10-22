@@ -976,6 +976,34 @@ def object_kind(submodule: Path, oid: str) -> str | None:
     return proc.stdout.strip() or None
 
 
+def tag_chain_end(submodule: Path, tag: str) -> tuple[str, str]:
+    """`(type, object)` from the header of the last tag the leg holds on the
+    way from `tag`, a tag it holds (#1103). `("tag", <id>)` where the way
+    leads through a tag the leg lacks, `<id>` being that tag; otherwise the
+    kind and the id of what is at its end, a commit, a tree or a blob, held
+    or not; `("", "")` where a header cannot be read.
+
+    READ FROM THE TAGS' OWN HEADERS, `git cat-file tag`'s `type` and `object`
+    lines, one tag at a time while the leg holds the next. Where the leg
+    lacks an object the way leads to, the peel (`<id>^{}`) cannot be read
+    (git: "missing object referenced by" the tag) and says nothing of what
+    the tag names; each header the leg holds still says it. Both honour
+    `refs/replace/`, so this ends wherever the peel's failure ends, and a
+    cycle of replaced tags, which the peel never leaves, never reaches it."""
+    while True:
+        proc = subprocess.run(
+            ["git", "cat-file", "tag", tag], cwd=str(submodule),
+            capture_output=True, text=True, encoding="utf-8",
+            errors="replace", check=False)
+        lines = proc.stdout.split("\n\n", 1)[0].splitlines()
+        header = dict(line.split(" ", 1) for line in lines if " " in line)
+        names = header.get("type", "").strip()
+        named = header.get("object", "").strip().lower()
+        if names != "tag" or object_kind(submodule, named) != "tag":
+            return names, named
+        tag = named
+
+
 def peeled_target(submodule: Path, repository: str, target: str) -> str:
     """The COMMIT `--to` names in the leg's own objects (#534): `target`
     itself for a commit, the commit an annotated tag names, or the refusal
@@ -1009,12 +1037,22 @@ def peeled_target(submodule: Path, repository: str, target: str) -> str:
     the reachability check. An id the leg does not hold at all is not asked
     here: it is the reachability verdict's, `bump-leg-commit-not-on-remote`.
 
-    NOR IS A TAG THE LEG HOLDS WITHOUT WHAT IT NAMES (#912): its peel cannot
-    be read there (git: "missing object referenced by" the tag), so the leg
-    cannot say what the tag names, and its id goes on, as typed, to the
-    same verdict as an id the leg does not hold. It was refused as "an
-    annotated tag that names no commit", which no tag of a commit is, and
-    which sent the person looking at a tag that was never wrong.
+    NOR IS A TAG THE LEG HOLDS WITHOUT THE COMMIT IT NAMES (#912): its peel
+    cannot be read there (git: "missing object referenced by" the tag), so
+    the leg cannot say which commit the tag names, and its id goes on, as
+    typed, to the same verdict as an id the leg does not hold. It was
+    refused as "an annotated tag that names no commit", which no tag of a
+    commit is, and which sent the person looking at a tag that was never
+    wrong. Nor is a tag that leads through a tag the leg lacks (#1103): what
+    that tag names cannot be read there either.
+
+    A TAG OF A TREE OR A BLOB IS NAMED AS ONE where the leg lacks the tree or
+    the blob too (#1103). Where the peel cannot be read, `tag_chain_end`
+    reads the tags' own headers, and a way that ends at `type tree` or `type
+    blob` is refused in the words a tag of a held tree or blob has, since no
+    fetch makes either a commit. It went on, as typed, to the reachability
+    verdict, which with no `origin` told the person to push a commit the
+    tag never named.
     """
     kind = object_kind(submodule, target)
     if kind is None or kind == "commit":
@@ -1028,13 +1066,15 @@ def peeled_target(submodule: Path, repository: str, target: str) -> str:
             encoding="utf-8", errors="replace", check=False)
         peeled = proc.stdout.strip().lower() if proc.returncode == 0 else ""
         names = object_kind(submodule, peeled) if peeled else None
-        if names is None:
-            return target
         if names == "commit":
             return peeled
-    # A tag that names a commit, or whose peel cannot be read, has returned,
-    # and `^{}` peels through every tag: what is left names a tree or a
-    # blob, or is a tag of one (#1103).
+        names = names or tag_chain_end(submodule, target)[0]
+        if names not in ("tree", "blob"):
+            return target
+    # A tag that names a commit, or that leads to a tag or a commit the leg
+    # lacks, has returned, and `^{}`, or `tag_chain_end` where the peel
+    # cannot be read, reads through every tag: what is left names a tree or
+    # a blob, or is a tag of one (#1103).
     what = (f"is an annotated tag of a {names}" if kind == "tag"
             else f"names a {kind}")
     raise Refusal(
@@ -1255,6 +1295,14 @@ def _unreachable_refusal(submodule: Path, repository: str, commit: str,
     told it "is not in the leg's own object store", which the tag is: it
     is told the leg holds the tag and not the commit it names (#1103).
     With an `origin`, "no branch containing" it is true as it stands.
+
+    SO DOES A TAG THAT LEADS THROUGH A TAG THE LEG LACKS, the commit at the
+    end held or not. With no `origin` it is told which tag the leg lacks,
+    from the headers `tag_chain_end` reads, and that what that tag names is
+    not known there: "without the commit it names" was untrue where the leg
+    holds that commit. A tag of a tree or a blob, held without it, never
+    reaches here: `peeled_target` refuses it by name from those headers.
+    Every other tag the leg holds keeps the words above.
     """
     stale = ("" if fetched else
              " The fetch above FAILED, so this was answered from stale "
@@ -1289,7 +1337,23 @@ def _unreachable_refusal(submodule: Path, repository: str, commit: str,
             "commonest such commit was made inside the leg's mount and never "
             "pushed. A pin the rest of the world cannot fetch is a root the "
             "rest of the world cannot bootstrap." + stale)
-    if not has_origin and object_kind(submodule, commit) == "tag":
+    held_tag = not has_origin and object_kind(submodule, commit) == "tag"
+    names, named = (tag_chain_end(submodule, commit) if held_tag
+                    else ("", ""))
+    if names == "tag":
+        return Refusal(
+            "bump-leg-commit-not-on-remote",
+            f"{commit} is an annotated tag the leg's own object store holds "
+            f"without a tag it leads through, {named}, and the leg's mount, "
+            f"{mount}, has no remote named `origin` to fetch that tag from, "
+            "so what that tag names, and whether a branch of "
+            f"{repository} reaches it, are not known",
+            "Remediation: check the tag — the tags it leads through, and "
+            "what they name, belong to the LEG, not to the assembly root — "
+            "and push them to the leg first if they are not pushed yet, and "
+            "any commit they name to a branch of it; "
+            f"{_origin_back(submodule, repository)}.")
+    if held_tag:
         return Refusal(
             "bump-leg-commit-not-on-remote",
             f"{commit} is an annotated tag the leg's own object store holds "
