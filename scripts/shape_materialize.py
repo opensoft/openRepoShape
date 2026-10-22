@@ -1137,11 +1137,22 @@ def copy_in_the_way(target: Path, actual: str) -> str | None:
 
 
 def adopt_makefile_block(spec_path: str, code_path: str) -> str:
-    """What `adopt-project.py` appends to the assembly root's Makefile, and
-    nothing else does. A scaffolded project's legs are empty, so nothing reads
+    """What `adopt-project.py` appends to the shape's `Makefile`, and nothing
+    else does. A scaffolded project's legs are empty, so nothing reads
     across them yet; an ADOPTED project's code leg holds tooling that used to
     read `contracts/` from beside it and now reads it from the other leg
     through the root.
+
+    IT LANDS WHERE `place` WRITES THE SHAPE'S `Makefile`, WHICH IS NOT ALWAYS
+    THE ROOT'S (#906, #977, #1061). `execute` passes it as
+    `append={"Makefile": ...}`, and `_materialize` adds it to the template's
+    text before `place` writes that text: at the root's `Makefile`, or, where
+    the source keeps a `Makefile` of its own, at `shape/Makefile` (`place`
+    writes a copy to `collision_dir` when its name is taken, and a disk that
+    ignores case takes a kept `makefile` for it). The root's own `Makefile`
+    is then the source's, untouched, and the block waits in `shape/Makefile`
+    until a person merges the two. This said "the assembly root's Makefile"
+    and named only the first (#1135).
 
     RENDERED WITH THE PLAN'S MOUNT PATHS (#522). It was one constant naming
     `spec/contracts`, so a project adopted with `--spec-path legs/spec`
