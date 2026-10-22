@@ -17941,7 +17941,12 @@ SOURCE_OVERRIDE_HELP = (
     "`local_path` that is gone is refused as `plan-source-gone`; one that "
     "is a file, or a directory inside a repository, as "
     "`source-not-top-level`; and one this user cannot reach, a clone "
-    "`plan` made included, as `source-unreadable`, never cloned again.")
+    "`plan` made included, as `source-unreadable`, never cloned again. "
+    "Either source, where it is a partial clone (`git clone --filter`) "
+    "that lacks an object its branches or tags reach, is refused as "
+    "`source-partial-clone` before anything reads it: git would fetch that "
+    "object into it, and neither command fetches into the source. `git "
+    "fetch --refetch --no-filter <remote>`, run in it, makes it whole.")
 
 
 def main(argv: list[str] | None = None) -> int:
