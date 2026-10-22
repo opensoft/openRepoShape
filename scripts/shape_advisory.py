@@ -605,8 +605,10 @@ def _leg_by_agents_md(tree: Tree) -> dict | None:
     `repository_names` keeps for an origin URL (#385) and `_read_mapping` for
     a manifest. Nothing was refused, so nothing is unknown, and a person's
     `AGENTS.md` in another encoding is not made a reason to offer no way in.
-    Anything else (a git that cannot give the commit's blob) is not expected
-    here, and ends in `read()`'s net: `NOT_ANSWERED`, silent.
+    Anything else is raised too. A git that cannot give the commit's blob (a
+    `Refusal`) is answered by `_read` as a refused file is: by the folder's
+    name where it is a leg's, as before, and otherwise in `read()`'s net,
+    `NOT_ANSWERED`, silent.
     """
     try:
         text = tree.text(AGENTS_MD)
@@ -860,6 +862,14 @@ def _read(root: Path, shape: Path, env, commit: str | None) -> Reading:
     # ratified change names, and the one that can name the assembly root.
     try:
         leg = _leg_by_agents_md(tree)
+    except Refusal:
+        # A COMMIT'S `AGENTS.md` GIT COULD NOT GIVE (`cat-file blob`, in
+        # `adopt-project.py`'s reading of a commit). The NAME still answers,
+        # as it did before; with none, `read()`'s net: `NOT_ANSWERED`, with
+        # the exception's name in `why`.
+        leg = _leg_by_name(names, policy)
+        if leg is None:
+            raise
     except OSError as exc:
         # ITS OWN `AGENTS.md` THIS USER CANNOT READ (#1110). A leg's NAME is a
         # declared fact without it, so a name that is one still answers, as

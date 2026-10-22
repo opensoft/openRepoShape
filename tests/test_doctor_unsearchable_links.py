@@ -1016,8 +1016,9 @@ def test_a_failure_the_leg_reader_does_not_expect_is_silence_not_advice(
     that are not UTF-8 -- a git that cannot give the commit's blob, which
     `adopt-project.py`'s reading of a commit can meet -- is not expected by
     `_leg_by_agents_md`, and ends in `read()`'s net: `not-answered`, silent,
-    with the exception's name. On #1144's head it was "no leg's file", and
-    the advice. No `OSError` was refused, so `refused` is None."""
+    with the exception's name, where no name says it is a leg (the row
+    after). On #1144's head it was "no leg's file", and the advice. No
+    `OSError` was refused, so `refused` is None."""
     root = leg_clone_here(tmp_path / "Atlas")
     real = shape_advisory.Tree.text
 
@@ -1032,6 +1033,39 @@ def test_a_failure_the_leg_reader_does_not_expect_is_silence_not_advice(
     assert reading.state == shape_advisory.NOT_ANSWERED, reading.as_dict()
     assert reading.why == ("the advisory could not be read here (Refusal), "
                            "so it says nothing")
+    assert reading.refused is None
+
+
+def test_a_leg_by_its_name_is_one_while_git_cannot_give_its_agents_md(
+        tmp_path, monkeypatch):
+    """CONTROL, true on #1144's head as here: `adopt-project.py` reads a
+    leg's `AGENTS.md` out of the commit its plan is written against, and
+    where git cannot give that blob (a `Refusal` from `cat-file blob`), a
+    folder NAMED as a leg is still that leg, as it is where the disk's file
+    is refused (the row `..._by_its_name_is_one_while_its_agents_md_cannot_
+    be_read`), so `plan` and `check` print the leg's note. With no such
+    name, the reading is `not-answered` (the row above)."""
+    root = leg_clone_here(tmp_path / "Orbit-spec")
+    git("add", "-A", "--", ".", cwd=root)
+    git("commit", "-q", "-m", "Initial import", cwd=root)
+    commit = git("rev-parse", "HEAD", cwd=root).stdout.strip()
+    env = no_workspace(tmp_path)
+    committed = shape_advisory.read(root, env=env, commit=commit)
+    assert committed.leg["by"] == "agents", committed.as_dict()
+    real = shape_advisory.git_out
+
+    def git_out(args, *rest, **kwargs):
+        if args[:2] == ["cat-file", "blob"] and args[-1].endswith(
+                ":AGENTS.md"):
+            raise shape_advisory.Refusal("git-failed",
+                                         "git could not give the blob")
+        return real(args, *rest, **kwargs)
+
+    monkeypatch.setattr(shape_advisory, "git_out", git_out)
+    reading = shape_advisory.read(root, env=env, commit=commit)
+    assert reading.state == shape_advisory.LEG_CLONE, reading.as_dict()
+    assert reading.leg["by"] == "name", reading.leg
+    assert reading.leg["role"] == "spec", reading.leg
     assert reading.refused is None
 
 
