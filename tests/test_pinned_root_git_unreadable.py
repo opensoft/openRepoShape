@@ -367,6 +367,29 @@ def test_a_root_git_above_the_folder_given_is_asked_and_named_whole(
                                               cannot(str(dotgit), DENIED))
 
 
+@POSIX_NAMES
+@TOOLS
+def test_a_root_git_named_whole_is_spelled(tools, tmp_path, monkeypatch,
+                                           capsys, tool):
+    """The same walk, from a folder inside a root that sits in a folder
+    whose name holds an ESC, and the root's own `.git` refused: it is named
+    whole, since it is not under the folder given, and the WHOLE path is
+    spelled (`spelled`, #391), so the ESC reaches the terminal written as
+    its escape, never as the control. The base's 3.14 walked past it, to
+    `not-a-git-repo`. Each tool spells it: `siblings.py` by its own call,
+    the three that read the root's repository through their helpers."""
+    root = tmp_path / UNPRINTABLE / "root"
+    (root / ".git").mkdir(parents=True)
+    (root / "contracts").mkdir()
+    dotgit = root.resolve() / ".git"
+    as_python_314(monkeypatch, {dotgit: PermissionError(errno.EACCES,
+                                                        DENIED)})
+    assert tools[tool].main(["--root", str(root / "contracts")]) == 2
+    named = spelled(str(dotgit))
+    assert UNPRINTABLE not in named
+    assert capsys.readouterr().err == refused(tool, cannot(named, DENIED))
+
+
 @TOOLS
 def test_a_relative_root_is_walked_from_where_it_resolves(
         roots, tools, monkeypatch, capsys, tool):
