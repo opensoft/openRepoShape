@@ -1434,10 +1434,12 @@ def test_both_directions_in_one_run_are_one_refusal(dropping_standard,
     """`both-ways` drops the name the holder's kept `bootstrap.py` imports,
     AND has `siblings.py` import a name only the upstream's `bootstrap.py`
     defines: the kept copy is the module of one line and the importer of
-    the other. One refusal names both, sorted by module, says the
-    validators pass (none of the importers is `validate-family.py`), gives
-    each exit in the words of the lines it settles, with "commit each", and
-    sends the `both` row to `update-conflict`'s merge."""
+    the other. One refusal names both, sorted by module, opens as a refusal
+    of this run's own `--accept-local` always has (`KEPT_LEAD`, since both
+    lines are ones it makes), says the validators pass (none of the
+    importers is `validate-family.py`), gives each exit in the words of the
+    lines it settles, with "commit each", and sends the `both` row to
+    `update-conflict`'s merge."""
     checked = run_script(UPDATE, "check", "--root", str(importing_holder),
                          "--upstream", str(dropping_standard["upstream"]),
                          "--at", dropping_standard["both-ways"])
@@ -1447,6 +1449,7 @@ def test_both_directions_in_one_run_are_one_refusal(dropping_standard,
                    "--accept-local", BOOTSTRAP)
     assert_refused_writing_nothing(result, importing_holder, before,
                                    dropped_line(BOOTSTRAP))
+    assert result.stderr.startswith(KEPT_LEAD), result.stderr
     assert result.stderr.count("REFUSED") == 1, result.stderr
     assert detail_lines(result.stderr) == [
         f"    {BOOTSTRAP} (kept) lacks {BOOT_NAME}, which {SIBLINGS} "
