@@ -368,7 +368,7 @@ def test_a_git_link_that_leads_nowhere_is_still_no_repository(
     for row in rows.values():
         assert "cannot be read" not in row["reason"], row
         assert "cannot_be_read" not in row["detail"], row
-        assert not row["why"] or PERMISSION_WHY not in row["why"], row
+        assert PERMISSION_WHY not in (row["why"] or ""), row
     assert rows["naming"]["reason"] == ("Atlas: classifies under the "
                                         "naming policy")
     assert rows["naming"]["detail"]["names"] == ["Atlas"]
@@ -546,7 +546,8 @@ def test_an_agent_file_this_user_cannot_reach_is_named_on_every_python(
     names, which the project's own gate refuses by name."""
     module, ctx = in_process(standard, project)
     pinned = module.pinned_paths(ctx.root)
-    assert "AGENTS-shape.md" in pinned and "AGENTS.md" not in pinned, pinned
+    assert "AGENTS-shape.md" in pinned, pinned
+    assert "AGENTS.md" not in pinned, pinned
     refuse(monkeypatch)
     row = module.check_agent_files(ctx)
     assert row.status == status
