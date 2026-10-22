@@ -55,7 +55,10 @@ repository, where the readable file is the leg, with no command at all. Now
 a file at 000), and `the other way in` and the Triad row are silent. A leg
 known by its NAME is still one; a file that is not there, or is read and is
 not UTF-8, is still no leg's file (controls); and `adopt-project.py`, which
-reads the commit it plans, never reads the disk's file at all.
+reads the commit it plans, never reads the disk's file at all. `what is here`
+reads through `AGENTS.md` alone, and only a regular one: a directory or a
+named pipe of that name is listed and not read, and the pipe's row runs the
+doctor under a timeout, since opening it would block for ever (controls).
 
 TWO KINDS OF CASE, as `tests/test_doctor_unreadable_paths.py` has them. The
 MODE cases make a real link into a real folder at 000 and run the doctor as a
@@ -70,6 +73,7 @@ from __future__ import annotations
 import errno
 import json
 import os
+import subprocess
 import sys
 from pathlib import Path
 
@@ -134,6 +138,10 @@ NO_LEG_WAY_IN = ("its AGENTS.md cannot be read, so it is not known whether "
                  "this is a clone of a Triad's leg, which is not adopted or "
                  "scaffolded on its own, and neither way in is offered until "
                  "it can be: `what is here` says how")
+#: How long one run of the doctor may take where an `AGENTS.md` it opened
+#: would block it for ever (a named pipe nobody writes to): a run that takes
+#: longer FAILS its row, rather than hanging the suite.
+DOCTOR_SECONDS = 120
 #: An `AGENTS.md` that leads nowhere, as `GIT_LINKS` above.
 AGENTS_LINKS = {"loop": Path("AGENTS.md"),
                 "dangling": Path("..", "nowhere", "AGENTS.md")}
@@ -323,10 +331,16 @@ def no_leg_way_in(rows: dict, line: str, again: str, why: str) -> None:
 
 
 def offered_both_ways_in(module, ctx) -> None:
+    """`offers_both_ways_in`, of the rows made in process."""
+    offers_both_ways_in(module, not_a_root_rows(module, ctx))
+
+
+def offers_both_ways_in(module, rows: dict) -> None:
     """A clone the advisory reads as no leg, with nothing it cannot read:
     advised, offered the adoption as `Orbit` and the scaffold, and no row
-    says `cannot be read`."""
-    rows = not_a_root_rows(module, ctx)
+    says `cannot be read`. `machine`, which only a whole run gives, is about
+    the workstation."""
+    rows = {key: row for key, row in rows.items() if key != "machine"}
     assert set(rows) == {"naming", "contents", "way-in", "way-in-scaffold",
                          "triad-advisory"}, rows
     for row in rows.values():
@@ -334,6 +348,32 @@ def offered_both_ways_in(module, ctx) -> None:
     assert "adopt-project.py" in rows["way-in"]["next"], rows["way-in"]
     assert "--project Orbit" in rows["way-in"]["next"], rows["way-in"]
     assert rows["triad-advisory"]["status"] == module.ADVISORY
+
+
+def doctor_within(standard: Path, root: Path) -> dict:
+    """`{id: row}` from `doctor(standard, root, "--json")`, the run a person
+    makes, given `DOCTOR_SECONDS` to end: `subprocess.run` is handed the
+    timeout for this one call, so the environment is `run_script`'s own. A
+    run that would block for ever on an `AGENTS.md` it opened fails the row
+    by name, and the doctor is killed. It printed no traceback, and its exit
+    is NOT A SHAPE ROOT's."""
+    real = subprocess.run
+
+    def bounded(*args, **kwargs):
+        return real(*args, timeout=DOCTOR_SECONDS, **kwargs)
+
+    with pytest.MonkeyPatch.context() as patch:
+        patch.setattr(subprocess, "run", bounded)
+        try:
+            result = doctor(standard, root, "--json")
+        except subprocess.TimeoutExpired:
+            pytest.fail(f"the doctor did not end within {DOCTOR_SECONDS} "
+                        f"seconds over {root}: something opened its "
+                        "AGENTS.md")
+    assert "Traceback" not in result.stderr, result.stderr
+    assert result.returncode == 2, result.stdout + result.stderr
+    assert json.loads(result.stdout)["verdict"] == "NOT A SHAPE ROOT"
+    return rows_of(result)
 
 
 # --- the mode cases: a real link, the doctor run as a person runs it --------
@@ -892,6 +932,58 @@ def test_an_agents_md_that_is_not_there_is_no_legs_file(
     reading = shape_advisory.read(root, env=no_workspace(tmp_path))
     assert reading.state == shape_advisory.ADVISE, reading.as_dict()
     offered_both_ways_in(module, module.Context(root.resolve()))
+
+
+@pytest.mark.parametrize("kind", ["directory", "named-pipe"])
+def test_an_agents_md_that_is_no_regular_file_is_listed_and_not_read(
+        standard, tmp_path, kind):
+    """CONTROLS, true on #1144's head as here, for `read_through`'s one
+    guard: it reads a REGULAR file. An `AGENTS.md` that is a directory or a
+    named pipe is there and is no file, so `what is here` lists it and reads
+    nothing of it, and the advisory, whose `Tree.text` reads a file alone,
+    finds no leg's file: the clone is advised and offered both ways in. A
+    read of the directory is refused (`Is a directory`), which the row
+    would name as a file this user cannot read, and the open of a pipe
+    nobody writes to blocks for ever, so the doctor runs as a person runs
+    it, and a run past `DOCTOR_SECONDS` fails the row. Nothing here opens
+    the pipe in this process."""
+    module = doctor_module(standard)
+    root = repository_here(tmp_path / "Atlas")
+    if kind == "directory":
+        (root / "AGENTS.md").mkdir()
+    elif hasattr(os, "mkfifo"):
+        os.mkfifo(root / "AGENTS.md")
+    else:
+        pytest.skip("this platform makes no named pipe")
+    rows = doctor_within(standard, root)
+    contents = rows["contents"]
+    assert contents["reason"] == "a git repository, an AGENTS.md", contents
+    assert contents["detail"]["AGENTS.md"] is True
+    assert "cannot_be_read" not in contents["detail"], contents
+    offers_both_ways_in(module, rows)
+
+
+def test_what_is_here_reads_through_agents_md_alone(standard, tmp_path,
+                                                    monkeypatch):
+    """CONTROL, true on #1144's head as here: `AGENTS.md` is the one name
+    here whose CONTENT a reader of this directory reads, so it is the one
+    `what is here` reads through. Every other name is asked, as it always
+    was: in a leg's clone, a `Makefile` whose read is refused is listed like
+    any other name, and no row says it cannot be read."""
+    module = doctor_module(standard)
+    root = leg_clone_here(tmp_path / "Atlas")
+    (root / "Makefile").write_text("all:\n", encoding="utf-8")
+    ctx = module.Context(root.resolve())
+    refusing(monkeypatch, "read_bytes", "Makefile",
+             PermissionError(errno.EACCES, DENIED))
+    rows = not_a_root_rows(module, ctx)
+    contents = rows["contents"]
+    assert contents["reason"] == ("a git repository, an AGENTS.md, "
+                                  "a Makefile"), contents
+    assert contents["detail"]["Makefile"] is True
+    for row in rows.values():
+        assert "cannot be read" not in row["reason"], row
+    is_the_leg(rows, "spec")
 
 
 @pytest.mark.parametrize("encode", [
