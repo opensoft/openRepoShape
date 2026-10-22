@@ -12302,6 +12302,16 @@ def cmd_check(args) -> int:
             print(line, file=sys.stderr)
         print(f"\n{len(mistyped)} finding(s) in {plan.path}", file=sys.stderr)
         return 1
+    # THE PLAN'S THREE REPOSITORY NAMES, THEN ITS `org:` AND `id:`, right
+    # after the plan's keys and before anything else is read, made or opened,
+    # as `execute` asks them (#1020): either is refused outright, exit 2, and
+    # `execute` asked them after refusing an unwritable `--work-dir`, a plan
+    # for another repository, a name the policy refuses, an unanswered entry
+    # or a source that has moved on, each a finding here, so the two named
+    # different problems first. `_manifest_values` asked them only where the
+    # policy took the names. They read only the plan.
+    plan.names()
+    _checked_org_and_id(plan)
     work_root = _work_root(args)
     # Asked before the source is opened, as `execute` asks it (#524). An
     # `org/repo` source is cloned into the work directory, so where that
@@ -12327,15 +12337,6 @@ def cmd_check(args) -> int:
     # findings below and never moves this command's exit code.
     _print_triad_advisory(source.path,
                           plan.source_commit or source.commit)
-    # THE PLAN'S THREE REPOSITORY NAMES, THEN ITS `org:` AND `id:`, as
-    # `execute` asks them, before any finding below (#1020): either is
-    # refused outright, exit 2, and `execute` asked them after refusing a
-    # plan for another repository, a name the policy refuses, an unanswered
-    # entry or a source that has moved on, each a finding here, so the two
-    # named different problems first. `_manifest_values` asked them only
-    # where the policy took the names.
-    plan.names()
-    _checked_org_and_id(plan)
 
     if plan.source_commit and source.commit != plan.source_commit:
         # `commit:` is a plan value people and AIs edit: sliced first, so the
@@ -13824,26 +13825,29 @@ def _mount_the_legs(assembly: Path, work_root: Path, names: dict, urls: dict,
 
 def _checked_org_and_id(plan: Plan) -> str:
     """The plan's `org:` as `checked_value` hands it back, once its `id:`
-    is asked too. Both commands ask the two FIRST OF THE PLAN'S VALUES, right
-    after its three repository names (`plan.names()`): before the plan is
-    compared with the source (`plan-not-the-source`), before the policy is
-    asked about its names, before its unanswered entries and a source that
-    has moved on, and before its leg paths and branch names. `check` asks
-    them at its head (`cmd_check`), and `execute` right after the names
-    (`cmd_execute`). `checked_value` refuses an `org:` this tool will not
-    put on a `git` or `gh` command line as `unsafe-value`, and
-    `Plan.project_id` an `id:` that is no project id as `plan-bad-id`.
+    is asked too. Both commands ask the two FIRST OF WHAT THEY READ OF THE
+    PLAN, right after the plan's keys (`_plan_type_findings`) and its three
+    repository names (`plan.names()`), and before `_work_root` makes the work
+    directory or the source is opened: so before an unwritable `--work-dir`,
+    before the plan is compared with the source (`plan-not-the-source`),
+    before the policy is asked about its names, before its unanswered
+    entries and a source that has moved on, and before its leg paths and
+    branch names. Both ask them at their head (`cmd_check`, `cmd_execute`).
+    `checked_value` refuses an `org:` this tool will not put on a `git` or
+    `gh` command line as `unsafe-value`, and `Plan.project_id` an `id:` that
+    is no project id as `plan-bad-id`. Both read only the plan.
 
     A REFUSAL OF `check`'S IS ASKED BEFORE WHAT IT LISTS (#1020). `check`
     refuses either value outright, exit 2, and so lists none of its
     findings, and `execute` refuses at the first of them. So the two name
     one problem first only where `execute` asks the two before anything
     `check` lists. #901 asked them in `_checked_plan_values`, after
-    `execute` had refused the plan for another repository, a name the
-    policy refuses, an unanswered entry and a source that has moved on, each
-    a finding of `check`'s: a bad id beside an unanswered entry was
-    `plan-bad-id` to `check` and `plan-unresolved` to `execute`, and so on
-    for `plan-stale`, `naming-unclassified` and `plan-not-the-source`. And
+    `execute` had refused an unwritable `--work-dir`, the plan for another
+    repository, a name the policy refuses, an unanswered entry and a source
+    that has moved on, each a finding of `check`'s: a bad id beside an
+    unanswered entry was `plan-bad-id` to `check` and `plan-unresolved` to
+    `execute`, and so on for `plan-stale`, `naming-unclassified`,
+    `plan-not-the-source` and `adopt-work-dir-unwritable`. And
     `check` asked them only where the naming policy took the plan's names
     (`_manifest_values`), so an unsafe `org:` beside a name the policy
     refuses was `naming-unclassified` or `plan-not-the-source` to `check`,
@@ -13882,8 +13886,9 @@ def _checked_plan_values(plan: Plan) -> tuple[str, str, str, str]:
     """The four plan values that reach a `git` command line as arguments, in
     the order `check` asks them: `(spec_path, code_path, branch, tracking)`.
     `cmd_execute` has asked the plan's `org:` and `id:` before them
-    (`_checked_org_and_id`), right after its three repository names, as
-    `check` asks them at its head (#901, #1020).
+    (`_checked_org_and_id`), at its head, right after the plan's keys and
+    its three repository names and before `_work_root`, as `check` asks
+    them (#901, #1020).
 
     Split out of `cmd_execute` for #138, in the order the refusals came in
     there, the leg paths first; #901 asked the organisation and the id
@@ -14958,6 +14963,15 @@ def _commit_the_split(plan: Plan, source: Source, assembly: Path,
 def cmd_execute(args) -> int:
     plan = Plan.load(Path(args.plan))
     _refuse_a_mistyped_plan(plan)
+    # THE PLAN'S THREE REPOSITORY NAMES, THEN ITS `org:` AND `id:`, right
+    # after the plan's keys and before anything else is read, made or opened,
+    # as `check` asks them (#1020): `check` refuses either outright, exit 2,
+    # before it lists any finding, among them an unwritable `--work-dir`, a
+    # plan for another repository, a name the policy refuses, an unanswered
+    # entry and a source that has moved on, so `execute` asks the two before
+    # it refuses any of them. They read only the plan.
+    names = plan.names()
+    _checked_org_and_id(plan)
     work_root = _work_root(args, NO_LEG_YET)
     # Before the source is opened, so before any leg exists (#524).
     _refuse_an_unwritable_work_dir(args, work_root)
@@ -14965,11 +14979,7 @@ def cmd_execute(args) -> int:
     naming = NamingPolicy.load(NAMING_POLICY)
     _require_filter_repo()
 
-    names = plan.names()
     pins = set(plan.pins)
-    # The organisation and the id next, as `check` asks them, before
-    # anything `check` lists as a finding is refused (#1020).
-    _checked_org_and_id(plan)
     _refuse_a_plan_for_another_repository(plan, source, names, naming, pins)
     _check_names(naming, names, pins, source)
     _refuse_an_unrunnable_plan(plan, source)

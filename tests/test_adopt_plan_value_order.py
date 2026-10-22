@@ -41,11 +41,14 @@ beside an unanswered entry was `plan-bad-id` to `check` and
 `plan-unresolved` to `execute`, and so on. `check` asked them only where the
 policy took the plan's names, so an unsafe `org:` beside a refused name was
 a finding about the name, or about another repository, to `check`. Both
-commands now ask the two first of the plan's values, right after the three
-repository names (`_checked_org_and_id`). That decides #716's L4-48 as well:
-an unsafe `org:` held to a repository is `unsafe-value` to both, where
-`execute` said `plan-not-the-source`. And a `pins:` ENTRY that is no pin is
-said as `pins:` itself is (`_read_as`): the number 7, not `7`.
+commands now ask the two first of what they read of the plan, right after
+its keys and its three repository names and before `_work_root`
+(`_checked_org_and_id`): before an unwritable `--work-dir` too, which `check`
+lists as a finding and `execute` refused before it opened the source
+(RV1125's SHOULD-1). That decides #716's L4-48 as well: an unsafe `org:` held
+to a repository is `unsafe-value` to both, where `execute` said
+`plan-not-the-source`. And a `pins:` ENTRY that is no pin is said as `pins:`
+itself is (`_read_as`): the number 7, not `7`.
 
 Each test runs `check` and then `execute --yes`, both with the same
 `--local-remote-dir`, on one hand-edited plan, as the issue measured, and
@@ -64,6 +67,7 @@ import pytest
 
 from conftest import ADOPT, git, make_source_repo, planned, run_script
 from test_adopt_pins import ANSWERS, pin_entry
+from test_adopt_root_symlinks import unwritable_work  # noqa: F401 - a fixture
 
 UTF8 = "utf-8"
 PLAN_FILE = "adoption-plan.yaml"
@@ -108,18 +112,21 @@ def edited(text: str, *edits: tuple[str, str]) -> str:
     return text
 
 
-def both_on(text: str, base: Path):
+def both_on(text: str, base: Path, work: Path | None = None):
     """`check` and then `execute --yes` on the plan `text`, written at
     `base`, each given the same `--local-remote-dir`: `(check's run,
-    execute's run)`. Neither makes the directory the legs go in."""
+    execute's run)`. Neither makes the directory the legs go in. A `work`
+    is the `--work-dir` of both; without one, `execute` is given `base /
+    "work"` and `check` none."""
     plan = base / PLAN_FILE
     plan.write_bytes(text.encode(UTF8))
     remotes = base / "remotes"
     checked = run_script(ADOPT, "check", "--plan", str(plan),
-                         "--local-remote-dir", str(remotes))
+                         "--local-remote-dir", str(remotes),
+                         *(("--work-dir", str(work)) if work else ()))
     executed = run_script(ADOPT, "execute", "--plan", str(plan), "--yes",
                           "--local-remote-dir", str(remotes),
-                          "--work-dir", str(base / "work"))
+                          "--work-dir", str(work or base / "work"))
     assert not remotes.exists(), executed.stdout + executed.stderr
     return checked, executed
 
@@ -495,6 +502,57 @@ def test_the_three_repository_names_are_still_asked_first(answered,
     assert executed.returncode == 2, executed.stdout + executed.stderr
     assert named_first(checked) == LEG_NAME_REFUSED, checked.stderr
     assert named_first(executed) == LEG_NAME_REFUSED, executed.stderr
+
+
+@needs_filter_repo
+@pytest.mark.parametrize(("edit", "refused"),
+                         [(BAD_ID, ID_REFUSED), (BAD_ORG, ORG_REFUSED)],
+                         ids=["id", "org"])
+def test_the_org_or_the_id_is_named_before_an_unwritable_work_dir(
+        answered, tmp_path, unwritable_work, edit, refused):
+    """RV1125's SHOULD-1: `check` lists a `--work-dir` this user cannot write
+    in as a finding (#524), and `execute` refuses it before it opens the
+    source, so both asked the plan's `org:` and `id:` after it, and a bad
+    `id:` or `org:` beside one was `plan-bad-id` or `unsafe-value` to
+    `check` and `adopt-work-dir-unwritable` to `execute`. Both ask the two
+    right after the plan's keys and its three repository names, before
+    `_work_root`, so each is refused for the organisation or the id, exit 2,
+    in the same words, and neither says a word of the directory. The tests
+    skip where `chmod` cannot keep this user from writing a directory."""
+    checked, executed = both_on(edited(answered, edit), tmp_path,
+                                unwritable_work)
+    assert checked.returncode == 2, checked.stdout + checked.stderr
+    assert executed.returncode == 2, executed.stdout + executed.stderr
+    assert named_first(checked).startswith(refused), checked.stderr
+    assert named_first(executed) == named_first(checked), executed.stderr
+    for run in (checked, executed):
+        assert "adopt-work-dir-unwritable" not in run.stderr, run.stderr
+
+
+@pytest.mark.parametrize(("edit", "refused"),
+                         [(BAD_ID, ID_REFUSED), (BAD_ORG, ORG_REFUSED)],
+                         ids=["id", "org"])
+def test_check_asks_the_org_and_the_id_before_it_says_anything_else(
+        answered, tmp_path, edit, refused):
+    """RV1125's NIT-2: `check` prints its findings only at its end, so none
+    of them tells a refusal asked at its head from one asked later, and the
+    first row of this section could not. What it does print is the Triad
+    advisory, on stdout, once it has made the work directory and opened the
+    source, so a refusal asked after that comes after the advisory. Asked at
+    its head, a bad `id:` or `org:` is refused before anything is read, made
+    or said: nothing is on stdout, and stderr starts with the refusal. The plan
+    unedited is the control: it says the advisory first."""
+    plan = tmp_path / PLAN_FILE
+    remotes = ("--local-remote-dir", str(tmp_path / "remotes"))
+    plan.write_bytes(answered.encode(UTF8))
+    said = run_script(ADOPT, "check", "--plan", str(plan), *remotes)
+    assert said.returncode == 0, said.stdout + said.stderr
+    assert said.stdout.startswith("triad "), said.stdout
+    plan.write_bytes(edited(answered, edit).encode(UTF8))
+    checked = run_script(ADOPT, "check", "--plan", str(plan), *remotes)
+    assert checked.returncode == 2, checked.stdout + checked.stderr
+    assert checked.stdout == "", checked.stdout
+    assert named_first(checked).startswith(refused), checked.stderr
 
 
 # --- a `pins:` entry that is no pin, said as its reader read it -------------

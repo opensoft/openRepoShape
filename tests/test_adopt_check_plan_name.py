@@ -484,12 +484,16 @@ def test_an_unsafe_org_is_asked_before_the_plans_refused_names(
 
 def test_check_asks_an_unsafe_org_first_where_a_kept_submodule_url_is_relative(
         adopter, tmp_path, monkeypatch):
-    """RV825's SHOULD-1(b): `_submodule_findings` asks `checked_value` of
-    `org:` earlier than `_manifest_values` does, wherever a kept submodule's
-    url is relative. With the plan's names refused and `org: test org`,
-    `check` ends in `unsafe-value`, exit 2, and never compares it, as it
-    does with no relative url (the test above); and `execute`, which said
-    `plan-not-the-source`, says `unsafe-value` too (#1020)."""
+    """A REGRESSION ROW, kept from RV825's SHOULD-1(b), where
+    `_submodule_findings` asked `checked_value` of `org:` earlier than
+    `_manifest_values` did, wherever a kept submodule's url is relative, so
+    that `check` ended in `unsafe-value` where it asked no earlier. Since
+    #1020 `check` asks `org:` at its head, before either, whatever the
+    submodule urls are, so the relative url decides nothing and this row
+    says what the one above it says. With the plan's names refused and `org:
+    test org`, `check` ends in `unsafe-value`, exit 2, and never compares
+    it; and `execute`, which said `plan-not-the-source`, says `unsafe-value`
+    too."""
     source = source_with_submodule(tmp_path, SIBLING, HTTPS_ORIGIN)
     made = planned_with_submodule(source, tmp_path)
     edited(made, ("org: testorg", "org: test org"))
