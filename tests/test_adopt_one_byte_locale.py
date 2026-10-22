@@ -345,3 +345,34 @@ def test_a_clone_made_again_beside_the_spelling_as_written_is_not_kept(
     assert len(log.read_bytes().splitlines()) == 2, log.read_bytes()
     assert not os.path.lexists(tmp_path / ACCENTED / "source-readonly"
                                / PROJECT)
+
+
+def test_a_clone_made_again_at_the_spelling_asked_first_is_kept(
+        latin1, monkeypatch, tmp_path):
+    """The reverse of the test above (#1153's review, N1): the plan's UTF-8
+    bytes hold a file where the clone was, so they are the record
+    `_recorded_path` reads, no longer whole, and `--work-dir` names the
+    spelling as written, the byte 0xE9, which is free. On 590ab96e the clone
+    made again there was compared with the UTF-8 bytes alone: it was removed
+    when `check` ended, and the next `check` cloned it once more, `gh` asked
+    each run. `_recorded_path` asks the spelling as written first, so now
+    the first `check` keeps it, and the second reads it there, `plan ok`,
+    with no NOTE and no `gh`."""
+    plan, log, env = a_taken_clone(monkeypatch, tmp_path)
+    (tmp_path / ACCENTED / "source-readonly" / PROJECT).write_bytes(
+        b"not a clone\n")
+    one_byte = ACCENTED.encode(LATIN1)
+
+    first, second = [checked(plan, tmp_path, os.fsdecode(one_byte),
+                             {**env, **latin1})
+                     for _ in range(2)]
+
+    assert first.returncode == 0, said(first)
+    assert NOT_A_CLONE in first.stdout
+    assert second.returncode == 0, said(second)
+    assert "plan ok" in second.stdout
+    assert "cloned again" not in said(second)
+    assert len(log.read_bytes().splitlines()) == 1, log.read_bytes()
+    assert os.path.isdir(os.path.join(os.fsencode(tmp_path), one_byte,
+                                      b"source-readonly", PROJECT.encode(),
+                                      b".git"))

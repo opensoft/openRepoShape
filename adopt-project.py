@@ -1851,9 +1851,9 @@ def _recorded_paths(recorded: str) -> list[Path]:
     as text, in the order it asks them, `~` expanded: the spelling
     `_recorded_spelling` gives, then, where this locale spells the text
     otherwise than its UTF-8, the plan's UTF-8 bytes (#1078). One path under
-    a UTF-8 locale, and for text that is all ASCII. `Plan._recorded_source`
-    asks each of them whether a clone it makes again is at the record
-    (#1112)."""
+    a UTF-8 locale, and for text that is all ASCII. `_at_the_record` asks
+    them whether a clone `Plan._recorded_source` makes again is at the
+    record (#1112)."""
     spelling = _recorded_spelling(recorded)[0]
     paths = [Path(os.path.expanduser(spelling))]
     utf8 = _utf8_spelling(recorded)
@@ -1886,6 +1886,30 @@ def _recorded_path(recorded: str) -> tuple[Path, bool, str]:
         if _is_there(path):
             return path, True, said
     return paths[0], False, said
+
+
+def _at_the_record(target: Path, path: Path, there: bool,
+                   recorded: str) -> bool:
+    """Whether `target`, where `Plan._recorded_source` clones the plan's
+    source again, is at `recorded`, the plan's `source.local_path`, whose
+    `(path, there)` `_recorded_path` gave: whether its real path is that of
+    a path `_recorded_path` asked (#1112). Where nothing is there, it asked
+    each path `_recorded_paths` gives; where something is, each up to
+    `path`, the one there.
+
+    A SPELLING ASKED BEFORE THE ONE THERE IS THE RECORD TOO: it names
+    nothing, and `_recorded_path` asks it first next time. Under Latin-1,
+    say, where the plan's UTF-8 bytes held a clone no longer whole and
+    `--work-dir` named the spelling as written, the byte 0xE9, which was
+    free, the clone made there was compared with the UTF-8 bytes alone: it
+    was removed when `check` ended, and every run cloned it once more. A
+    spelling asked AFTER the one there is not the record: a clone kept
+    there, the next run would read the one there first, and be refused
+    `adopt-work-dir-occupied` at the clone it kept."""
+    at = os.path.realpath(target)
+    paths = _recorded_paths(recorded)
+    asked = paths[:paths.index(path) + 1] if there else paths
+    return any(os.path.realpath(record) == at for record in asked)
 
 
 # ---------------------------------------------------------------------------
@@ -6599,14 +6623,15 @@ class Plan:
 
         WHERE NEITHER SPELLING NAMES ANYTHING, THE CLONE IS AT THE RECORD AT
         EITHER (#1112): its target's real path is compared with each path
-        `_recorded_path` asked (`_recorded_paths`). Under a locale of one
+        `_recorded_path` asked (`_at_the_record`). Under a locale of one
         byte to a character, Latin-1 say, a plan written in UTF-8 whose
         clone was in a work directory outside ASCII, `Thing\\u00e9`, was
         cloned again at the plan's UTF-8 bytes, which `--work-dir` names,
         and that clone was compared with the spelling as written alone: it
         went on `made`, was removed when `check` ended, and every run cloned
         it once more, #803's bug again. Where a spelling is there, the
-        clone is at the record only at that one, as before.
+        clone is at the record at that one, as before, and at a spelling
+        asked before it, which names nothing, but not at one asked after.
 
         A PATH THE PERSON GAVE IS HELD TO BEING A REPOSITORY'S TOP LEVEL, as
         `--source` is (`_top_level`, #796), and refused by its key: a file
@@ -6674,11 +6699,9 @@ class Plan:
         if repository is None:
             raise self._gone(local_path, state, "the plan records no "
                              "`source.repository` to clone again")
-        at = os.path.realpath(
-            work_root / SOURCE_READONLY / repository.split("/")[1])
-        at_the_record = any(
-            os.path.realpath(record) == at
-            for record in ([path] if there else _recorded_paths(local_path)))
+        at_the_record = _at_the_record(
+            work_root / SOURCE_READONLY / repository.split("/")[1], path,
+            there, local_path)
         return Source.clone(
             repository, work_root, unwritable,
             None if at_the_record else made,
