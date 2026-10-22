@@ -1846,6 +1846,22 @@ def _utf8_spelling(recorded: str) -> str | None:
         return None
 
 
+def _recorded_paths(recorded: str) -> list[Path]:
+    """Every path `_recorded_path` asks for `recorded`, a path a plan records
+    as text, in the order it asks them, `~` expanded: the spelling
+    `_recorded_spelling` gives, then, where this locale spells the text
+    otherwise than its UTF-8, the plan's UTF-8 bytes (#1078). One path under
+    a UTF-8 locale, and for text that is all ASCII. `Plan._recorded_source`
+    asks each of them whether a clone it makes again is at the record
+    (#1112)."""
+    spelling = _recorded_spelling(recorded)[0]
+    paths = [Path(os.path.expanduser(spelling))]
+    utf8 = _utf8_spelling(recorded)
+    if utf8 is not None and utf8 != spelling:
+        paths.append(Path(os.path.expanduser(utf8)))
+    return paths
+
+
 def _recorded_path(recorded: str) -> tuple[Path, bool, str]:
     """`(path, there, said)`: `recorded`, a path a plan records as text, as
     `_recorded_spelling` spells it, `~` expanded; whether anything is there,
@@ -1863,17 +1879,13 @@ def _recorded_path(recorded: str) -> tuple[Path, bool, str]:
     it, reads as it did. Where neither names anything, the path is the
     spelling as written, and every word of a refusal is as before. Under a
     UTF-8 locale, and for text that is all ASCII, the two are one name,
-    asked once."""
-    spelling, said = _recorded_spelling(recorded)
-    path = Path(os.path.expanduser(spelling))
-    if _is_there(path):
-        return path, True, said
-    utf8 = _utf8_spelling(recorded)
-    if utf8 is not None and utf8 != spelling:
-        other = Path(os.path.expanduser(utf8))
-        if _is_there(other):
-            return other, True, said
-    return path, False, said
+    asked once (`_recorded_paths`)."""
+    said = _recorded_spelling(recorded)[1]
+    paths = _recorded_paths(recorded)
+    for path in paths:
+        if _is_there(path):
+            return path, True, said
+    return paths[0], False, said
 
 
 # ---------------------------------------------------------------------------
@@ -6585,6 +6597,17 @@ class Plan:
         removed; where that path is free, the clone made there is the one
         the plan records, and is not on `made`.
 
+        WHERE NEITHER SPELLING NAMES ANYTHING, THE CLONE IS AT THE RECORD AT
+        EITHER (#1112): its target's real path is compared with each path
+        `_recorded_path` asked (`_recorded_paths`). Under a locale of one
+        byte to a character, Latin-1 say, a plan written in UTF-8 whose
+        clone was in a work directory outside ASCII, `Thing\\u00e9`, was
+        cloned again at the plan's UTF-8 bytes, which `--work-dir` names,
+        and that clone was compared with the spelling as written alone: it
+        went on `made`, was removed when `check` ended, and every run cloned
+        it once more, #803's bug again. Where a spelling is there, the
+        clone is at the record only at that one, as before.
+
         A PATH THE PERSON GAVE IS HELD TO BEING A REPOSITORY'S TOP LEVEL, as
         `--source` is (`_top_level`, #796), and refused by its key: a file
         ended `check` and `execute` in a traceback, and a directory inside a
@@ -6651,8 +6674,11 @@ class Plan:
         if repository is None:
             raise self._gone(local_path, state, "the plan records no "
                              "`source.repository` to clone again")
-        at_the_record = os.path.realpath(path) == os.path.realpath(
+        at = os.path.realpath(
             work_root / SOURCE_READONLY / repository.split("/")[1])
+        at_the_record = any(
+            os.path.realpath(record) == at
+            for record in ([path] if there else _recorded_paths(local_path)))
         return Source.clone(
             repository, work_root, unwritable,
             None if at_the_record else made,
