@@ -9293,15 +9293,19 @@ def _unsafe_path_findings(plan: Plan) -> tuple[list[str], list[str]]:
 # only two paths whose names differ only in their last part, `A` and `a`,
 # the shape `execute` verified there in every run measured: 2 of files,
 # and for the second review 1 of symlinks to one target and 1 of
-# executables. Other sets of one blob in the root met git's `will not add
-# file alias` there, which the #654 rehearsal reports as
-# `plan-file-reencoded`, in 1 run each for the second review: folder twins
-# (`D/x`, `d/x`), alone and beside folders that only merge, in `check`;
-# three paths (`AB`, `Ab`, `ab`) in `execute` alone, before any leg, after
-# `check` had said `plan ok`. So in the root they stay this finding, and
-# its remediation, a rename. A file against a folder is always the
-# finding: such a disk cannot hold a file and a folder under one name,
-# whatever their bytes.
+# executables; and with the rule above, in 2 runs each, files `A` and `a`
+# and files `D/A` and `D/a` in one folder: `check` printed the NOTE and
+# `plan ok`, and `execute` verified. Other sets of one blob in the root met
+# git's `will not add file alias` there, which the #654 rehearsal reports
+# as `plan-file-reencoded`, in 1 run each for the second review: folder
+# twins (`D/x`, `d/x`), alone and beside folders that only merge, in
+# `check`; three paths (`AB`, `Ab`, `ab`) in `execute` alone, before any
+# leg, after `check` had said `plan ok`. With the rule above, in 2 runs
+# each, `check` met it for both, beside `plan-case-twins`, and `execute`
+# refused both as `plan-case-twins` before any leg. So in the root they
+# stay this finding, and its remediation, a rename. A file against a
+# folder is always the finding: such a disk cannot hold a file and a folder
+# under one name, whatever their bytes.
 
 #: `check`'s finding, and the code of `execute`'s refusal, for paths the
 #: plan keeps in one repository that a disk ignoring case holds as one.
