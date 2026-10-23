@@ -36,10 +36,12 @@ from __future__ import annotations
 
 import argparse
 import codecs
+import contextlib
 import datetime as _dt
 import json
 import os
 import re
+import shlex
 import shutil
 import stat
 import subprocess
@@ -4092,6 +4094,177 @@ def _pinned_commit(args, raw: str, repository: str, typed: str) -> str:
         print(f"--pin {repository} @ {typed[:12]} is an annotated tag; it "
               f"names commit {commit[:12]}, which is what the pin records")
     return commit
+
+
+# ---------------------------------------------------------------------------
+# A partial-clone `--pin-source` is read, and never fetched into (#1182)
+# ---------------------------------------------------------------------------
+#
+# `declared_pin_values` reads a pin in its `--pin-source` with git: `git
+# cat-file -t` of the commit (`commit_in_clone`), then `git ls-tree -r` of
+# it (`tree_digest`). In a partial clone (`git clone --filter`) git fetches
+# an object the clone lacks from its promisor remote on any read that needs
+# it. Measured through `scaffold-project.py` on 961640c6 with git 2.43, the
+# real run and `--dry-run` alike: a `--filter=tree:0` clone, which holds the
+# pinned commit and lacks its trees, and a `--filter=blob:none` clone that
+# lacks the pinned commit, each ran the clone's `upload-pack` once and
+# gained a promisor pack (`.promisor` 1 -> 2) before the digest was read,
+# and the run went on to exit 0. A `blob:none` clone that holds the commit
+# holds its trees, which is all a digest reads, and ran none.
+#
+# `pin_values_unfetched` is that read under `lazy_fetch_off`: a read of an
+# object the clone lacks fails where it fetched, and the reader's own
+# `pin-source-unreadable` then says that the clone is a partial one, and
+# what makes it whole. The scaffold reads its pins through it.
+# `adopt-project.py plan` reads the same pins through `declared_pin_values`,
+# and is not changed here (#1162).
+
+#: The variable git reads to leave out the fetch a partial clone makes for an
+#: object it lacks: `shape-doctor.py`'s `NO_LAZY_FETCH` (#787). Read when
+#: `lazy_fetch_off` is entered.
+NO_LAZY_FETCH = "GIT_NO_LAZY_FETCH"
+#: The refusal `pin_digest_from_source` gives a `--pin-source` that cannot
+#: answer for a pin (#339).
+PIN_SOURCE_UNREADABLE = "pin-source-unreadable"
+#: The config keys `promisor_remotes` reads: git's, in `promisor-remote.c`,
+#: as the doctor's `PROMISOR_KEYS` (#683).
+PROMISOR_KEYS = (r"^(remote\..*\.(promisor|partialclonefilter)"
+                 r"|extensions\.partialclone)$")
+
+
+@contextlib.contextmanager
+def lazy_fetch_off():
+    """This process's environment with `GIT_NO_LAZY_FETCH=1` for as long as
+    it runs, and as it was afterwards: the doctor's `lazy_fetch_off` (#787),
+    around a pin's read (#1182).
+
+    EVERY GIT STARTED INSIDE IT inherits it, and every git those start. A
+    read of an object a partial clone lacks then fails where it fetched
+    (measured with git 2.43: `warning: lazy fetching disabled`, exit 128,
+    and no `upload-pack` ran), and the readers here already answer a read
+    that failed. The variable is put back on the way out, a value it had
+    restored and one it did not have removed, for a caller that goes on in
+    this process.
+
+    WHICH GIT HONOURS IT: git 2.45.0 and later, and the security releases of
+    2024-05-14 back to 2.39.4, whose fix for CVE-2024-32465 made
+    `promisor-remote.c` read it, as distributions' own builds of those do
+    (Ubuntu's 2.43.0-1ubuntu7.1 and later). An older git ignores it, and
+    fetches what the clone lacks, as before #1182."""
+    name = NO_LAZY_FETCH
+    before = os.environ.get(name)
+    os.environ[name] = "1"
+    try:
+        yield
+    finally:
+        if before is None:
+            os.environ.pop(name, None)
+        else:
+            os.environ[name] = before
+
+
+def _config_listed(clone: Path, *asked: str) -> bytes:
+    """What `git config -z <asked>` lists in `clone`, as bytes; nothing
+    where it lists nothing (exit 1) or cannot run. Config only: no object
+    is read, so nothing is fetched."""
+    try:
+        listed = subprocess.run(["git", "config", "-z", *asked],
+                                cwd=str(clone), capture_output=True,
+                                check=False)
+    except OSError:
+        return b""
+    return listed.stdout if listed.returncode == 0 else b""
+
+
+def promisor_remotes(clone: Path) -> list[str]:
+    """The remotes git fetches an object the clone at `clone` lacks from, by
+    the rule git 2.43's `promisor-remote.c` reads its config with, the
+    doctor's `promisor_remotes` (#683): a remote whose `promisor` is true,
+    a remote with a `partialclonefilter`, and the remote
+    `extensions.partialclone` names, that one last, as git asks them; each
+    name once, in the config's order. `promisor = false` alone is not one.
+    A name is decoded as `sys.argv` holds one (`os.fsdecode`)."""
+    true = _config_listed(clone, "--type=bool", "--get-regexp",
+                          r"^remote\..*\.promisor$")
+    promised = {key for key, _newline, value in (
+        record.partition(b"\n") for record in true.split(b"\0"))
+        if value == b"true"}
+    names: list[str] = []
+    named = None
+    for record in _config_listed(clone, "--get-regexp",
+                                 PROMISOR_KEYS).split(b"\0"):
+        key, _newline, value = record.partition(b"\n")
+        if key == b"extensions.partialclone":
+            named = value
+        elif key.endswith(b".partialclonefilter") or key in promised:
+            names.append(os.fsdecode(key[len(b"remote."):key.rindex(b".")]))
+    last = [] if named is None else [os.fsdecode(named)]
+    return [name for name in dict.fromkeys(names) if name not in last] + last
+
+
+def _remote_named(remote: str) -> str:
+    """A remote's name as a refusal names it: between backticks where it is
+    printable and holds none, and otherwise as Python's `repr` spells it."""
+    if remote.isprintable() and "`" not in remote:
+        return f"`{remote}`"
+    return repr(remote)
+
+
+def refetch_command(remote: str) -> str:
+    """The command that fetches every object again from `remote`, with no
+    filter, as a person pastes it: the name quoted, where it is printable,
+    holds no backtick and is no option; otherwise the step in words."""
+    if (remote.isprintable() and "`" not in remote
+            and not remote.startswith("-")):
+        return f"`git fetch --refetch --no-filter {shlex.quote(remote)}`"
+    return ("a `git fetch --refetch --no-filter` from the remote named "
+            f"{_remote_named(remote)}")
+
+
+def pin_values_unfetched(args, *, reader: str,
+                         nothing_made: str) -> dict[str, dict[str, str]]:
+    """`declared_pin_values(args)`, read under `lazy_fetch_off` (#1182). A
+    `--pin-source` that is a partial clone (`promisor_remotes`) and cannot
+    answer for a pin without fetching keeps the reader's own
+    `pin-source-unreadable` and its words, and the refusal says that the
+    clone is a partial one, which `reader` never fetches into, and how to
+    make it whole. `reader` names the tool, and `nothing_made` begins the
+    remediation in its own words, as for `refuse_an_unread_pin_source`.
+
+    ONLY A READ THAT FAILED IS ASKED ABOUT. A partial clone that holds the
+    pinned commit and its trees answers as any clone does, and a clone that
+    is no partial one keeps the reader's refusal as it was. Whether it is
+    one is read from its config alone, which reads no object.
+
+    THE CURE IS `git fetch --refetch --no-filter`, and not the reader's
+    `git fetch --all`. That one keeps the clone's filter: it fetches a
+    commit the clone lacks, where a branch it fetches holds it, but names no
+    cause for a `tree:0` clone that holds the commit and lacks its trees."""
+    try:
+        with lazy_fetch_off():
+            return declared_pin_values(args)
+    except Refusal as exc:
+        clone = (None if exc.code != PIN_SOURCE_UNREADABLE
+                 or args.pin_source is None
+                 else _resolved_pin_source(args.pin_source))
+        remotes = [] if clone is None else promisor_remotes(clone)
+        if not remotes:
+            raise
+        raise Refusal(
+            exc.code,
+            f"{exc.detail}. That clone is a partial clone (`git clone "
+            "--filter`), whose git fetches an object it lacks from its "
+            f"promisor remote ({', '.join(map(_remote_named, remotes))}) on "
+            f"any read that needs it, and {reader} never fetches into a "
+            "--pin-source",
+            f"Remediation: {nothing_made} Make that clone whole, then run "
+            f"{reader} again: in {shown_source(clone)}, run "
+            f"{', then '.join(map(refetch_command, remotes))}, which "
+            "fetches every object again with no filter (git 2.36 or later) "
+            "where a branch it fetches holds the pinned commit. Or point "
+            "--pin-source at a full clone (`git clone` with no `--filter`) "
+            "that has the pinned commit, or drop --pin-source and let `gh "
+            "api` read the forge.") from exc
 
 
 def declared_pin_products(args) -> dict[str, None]:

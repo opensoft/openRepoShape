@@ -408,7 +408,11 @@ options:
                         refused as `pin-source-no-path`, and `.` means this
                         directory. A --pin's digest is read only at a clone's
                         top level, or a bare clone's: any other path is
-                        refused as `pin-source-not-a-clone`.
+                        refused as `pin-source-not-a-clone`. A partial clone
+                        (`git clone --filter`) is read where it holds the
+                        pinned commit and its trees. One git could read only
+                        by fetching what it lacks is `pin-source-unreadable`:
+                        the scaffold never fetches into it.
   --work-dir WORK_DIR   where the working trees are built (default: a
                         temporary directory). An empty value is refused as
                         `work-dir-no-path`, and `.` means the directory the
