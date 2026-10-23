@@ -636,18 +636,28 @@ def test_this_machines_own_attributes_are_read_for_the_split(tmp_path):
 @pytest.mark.parametrize("where", [
     pytest.param(lambda: command_scope("attr.tree", EMPTY_TREE),
                  id="attr-tree-in-the-command-scope")])
-def test_no_tree_this_machine_names_steers_the_split_question(tmp_path,
-                                                              where):
-    """The question's throwaway repository has no commit for `HEAD` to name,
-    and the empty tree would make git read no rule at all: `attr.tree` is
-    not inherited, so git does not go quiet. `GIT_ATTR_SOURCE` is refused
-    by name before any question (#1136):
+def test_a_tree_this_machine_names_steers_the_split_question_as_the_split(
+        tmp_path, where):
+    """`attr.tree` naming the empty tree makes git read no rule, in the
+    split's own `git add` of the root too, which takes the whole
+    environment: it stores the root's bytes followed by the block, and
+    `execute` verifies (measured with git 2.43 on the head of r1169's fix
+    round). The question takes the setting now, and finds nothing either;
+    with no setting it finds the root stored otherwise (the control). Until
+    r1169's SHOULD-1 `attr.tree` was not inherited, and the root was found
+    where the split stores it as written. `GIT_ATTR_SOURCE` is refused by
+    name before any question (#1136):
     `test_adopt_check_throwaway_repos.py`'s
     `test_git_attr_source_is_one_finding_that_names_it` holds `HEAD` and
     the empty tree."""
-    checked = checked_root_with(tmp_path, where())
+    unset, steered = tmp_path / "unset", tmp_path / "steered"
+    unset.mkdir()
+    steered.mkdir()
+    assert STORES_OTHER_BYTES in reencoded(checked_root_with(unset, {}))
+    checked = checked_root_with(steered, where())
     assert "REFUSED" not in checked.stderr, checked.stderr
-    assert STORES_OTHER_BYTES in reencoded(checked)
+    assert checked.returncode == 0, checked.stderr
+    assert "plan ok" in checked.stdout
 
 
 def _never_asked(*_args, **_kwargs):

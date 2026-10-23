@@ -435,19 +435,30 @@ def env_steering(tmp_path: Path, steer: dict) -> subprocess.CompletedProcess:
 @pytest.mark.parametrize("steer", [
     pytest.param(lambda: command_scope("attr.tree", EMPTY_TREE),
                  id="attr-tree-in-the-command-scope")])
-def test_no_tree_this_machine_names_steers_the_question(tmp_path, steer):
-    """The throwaway repository has no commit for `HEAD` to name, and the
-    empty tree would make git read no rule: `attr.tree` is not inherited.
-    `GIT_ATTR_SOURCE` is refused by name before any question (#1136):
+def test_a_tree_this_machine_names_steers_the_question_as_it_steers_the_split(
+        tmp_path, steer):
+    """`attr.tree` naming the empty tree makes git read no rule, in the
+    split's checkout and `git add` too, which take the whole environment:
+    they store the CRLF file the plan keeps as its blob, and `execute`
+    verifies. The rehearsal takes the setting now, so it finds nothing
+    either; with no setting it finds the file (the control). Until r1169's SHOULD-1 `attr.tree` was not inherited,
+    and the file was found where the split stores it as its blob:
     `test_adopt_check_throwaway_repos.py`'s
-    `test_git_attr_source_is_one_finding_that_names_it` holds `HEAD` and
-    the empty tree. `steer` is built here, at the test: `command_scope`
-    appends to the entries the environment holds WHEN IT IS CALLED, and at
-    collection those are not the session's (#835)."""
-    result = env_steering(tmp_path, steer())
+    `test_execute_reads_a_parent_gits_attr_tree_as_check_does` runs that
+    `execute`. `GIT_ATTR_SOURCE` is refused by name before any question
+    (#1136): `test_git_attr_source_is_one_finding_that_names_it` there
+    holds `HEAD` and the empty tree. `steer` is built here, at the test:
+    `command_scope` appends to the entries the environment holds WHEN IT IS
+    CALLED, and at collection those are not the session's (#835)."""
+    unset, steered = tmp_path / "unset", tmp_path / "steered"
+    unset.mkdir()
+    steered.mkdir()
+    assert f"FINDING {REENCODED_FILES}: {KEPT_GROUP}" in env_steering(
+        unset, {}).stderr
+    result = env_steering(steered, steer())
     assert "REFUSED" not in result.stderr, result.stderr
-    assert f"FINDING {REENCODED_FILES}: {KEPT_GROUP}" in result.stderr, \
-        result.stderr
+    assert result.returncode == 0, result.stderr
+    assert "plan ok" in result.stdout
 
 
 @pytest.mark.parametrize(("old", "new"), [
