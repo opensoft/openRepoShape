@@ -277,15 +277,20 @@ def test_check_refuses_a_partial_clone_that_lacks_objects_and_fetches_none(
     """Base: `plan ok`, after 26 `upload-pack` runs and `.promisor` files 1
     -> 27 for `nocheckout`, and none for `checkout`, whose 2 lacking history
     blobs `execute` then failed on. Head: refused, nothing fetched, the
-    refusal gives the count it lacks at least and the cure, and says a later
-    fetch stays filtered (the cure leaves `partialclonefilter` set)."""
+    refusal gives as the count it lacks at least the `?` lines of its own
+    walk (more than 1, so a count held at 1 is told), and the cure, and says
+    a later fetch stays filtered (the cure leaves `partialclonefilter`
+    set)."""
     source = made(variant)
-    assert source.lacking() > 0
+    listed = git("rev-list", "--objects", "--missing=print", "--branches",
+                 "--tags", "HEAD", "--", cwd=source.path).stdout
+    lacks = sum(line.startswith("?") for line in listed.splitlines())
+    assert lacks > 1
     promisor = source.promisor_packs()
     result = source.check()
     assert result.returncode == 2, result.stderr + result.stdout
     assert REFUSED in result.stderr
-    assert "that lacks at least " in result.stderr
+    assert f"that lacks at least {lacks} object(s) " in result.stderr
     assert "Remediation: make the source whole" in result.stderr
     assert CURE in result.stderr
     assert LATER in result.stderr
@@ -458,10 +463,12 @@ def test_a_partial_clone_git_cannot_walk_is_refused_on_any_git(
     """A walk that fails tells nothing of what is lacking, so it is no
     `0`: a cured partial clone, its walk made to fail (an option no git
     has), is refused, naming the walk as run (`HEAD` where HEAD names a
-    commit, then `--` last) and how git exited, saying git could not walk
-    the refs (and no object count), naming `git fsck` in the source, as what
-    names a ref whose object is lacking and no object a promisor holds, and
-    the cure."""
+    commit, then `--` last), how git exited and git's own words after it,
+    saying git could not walk the refs (and no object count), naming `git
+    fsck` in the source, as what names a ref whose object is lacking and no
+    object a promisor holds, and the cure. Git's words are asked of this
+    git, running the same walk: git 2.43 prints its usage, exit 129, which
+    does not name the option."""
     monkeypatch.setattr(adopter, "LACKING_WALK",
                         ("rev-list", "--no-such-option"), raising=False)
     source = made("cured")
@@ -472,10 +479,18 @@ def test_a_partial_clone_git_cannot_walk_is_refused_on_any_git(
     said = capsys.readouterr()
     walk = "`git rev-list --no-such-option" + (
         " HEAD --`" if head == "born" else " --`")
+    ran = ["git", "rev-list", "--no-such-option", *(
+        [git("rev-parse", "HEAD", cwd=source.path).stdout.strip()]
+        if head == "born" else []), "--"]
+    asked = subprocess.run(ran, cwd=str(source.path), capture_output=True,
+                           check=False)
+    words = adopter.spelled_as_git_out(
+        asked.stderr.decode("utf-8", "replace").strip())
+    assert asked.returncode != 0 and words
     assert code == 2, said.err + said.out
     assert REFUSED in said.err
     assert (f"{walk}, which lists what a clone lacks without fetching it, "
-            "exited ") in said.err
+            f"exited {asked.returncode}: {words}") in said.err
     assert "branches, tags and HEAD git could not walk" in said.err
     assert "lacks at least" not in said.err
     assert (f"Remediation: run `git fsck` in "
@@ -536,8 +551,8 @@ def test_a_head_at_a_commit_the_source_lacks_is_refused_and_not_fetched(
 def test_an_unborn_head_is_read_as_before(made, command):
     """HEAD on a branch that does not exist (`git switch --orphan`) names no
     commit, and a cured partial clone lacks nothing: read as a full clone is,
-    nothing fetched. A plain `HEAD` in the walk exits 128 on it, `ambiguous
-    argument 'HEAD'`, and would refuse it."""
+    nothing fetched. A plain `HEAD` in the walk, which ends with `--`, exits
+    128 on it, `bad revision 'HEAD'`, and would refuse it."""
     source = made("cured")
     source.unborn_head()
     assert source.lacking("--branches") == 0
@@ -554,10 +569,10 @@ def test_an_unborn_head_is_read_as_before(made, command):
 
 
 def test_a_file_named_head_in_the_source_is_no_path_of_the_walk(made):
-    """HEAD is walked by its id: with `HEAD` in the walk, a file of the
-    source's work tree named `HEAD` made git exit 128, `ambiguous argument
-    'HEAD': both revision and filename`, and refused a source that lacks
-    nothing."""
+    """HEAD is walked by its id, and the walk ends with `--`: with `HEAD` in
+    the walk and no `--`, a file of the source's work tree named `HEAD` made
+    git exit 128, `ambiguous argument 'HEAD': both revision and filename`,
+    and refused a source that lacks nothing."""
     source = made("cured")
     (source.path / "HEAD").write_text("not a revision\n", encoding="utf-8")
     result = source.check()
