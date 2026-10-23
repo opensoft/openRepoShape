@@ -35,8 +35,9 @@ written, exit 0, where it is refused as `0 commit line(s)`, as it was before
 #1050. The rows below hold the answer the cut as it is gives, so a cut that
 is wider, narrower or somewhere else fails one:
 
-- a space or a tab in front of the key, before a mark or after one, and a
-  file indented two spaces on every line: refused, in each tool's words;
+- a space or a tab in front of the key, with no mark, behind a mark and in
+  front of one, and a file indented two spaces on every line: refused, in
+  each tool's words;
 - another zero-width or format (`Cf`) character as the SECOND character, in
   front of the key: it is not a mark, so it stays, the key is not found and
   the file is refused, unchanged;
@@ -105,6 +106,13 @@ OTHER_KEY = "other: 1\n"
 #: A comment the second character of which is a mark: text, to the reader
 #: and to the tools.
 COMMENT_WITH_A_MARK = "#" + MARK_TEXT + " saved by hand\n"
+#: Where a space or a tab sits among the marks, as the text in front of it and
+#: the text behind it: with no mark, behind one and in front of one.
+LEAD_PLACES = {
+    "no-mark": ("", ""),
+    "after-a-mark": (MARK_TEXT, ""),
+    "before-a-mark": ("", MARK_TEXT),
+}
 
 
 def format_character(name: str) -> str:
@@ -243,19 +251,22 @@ def test_a_format_character_after_the_marks_stays_where_it_was_written(
                        + after(finder))
 
 
-@pytest.mark.parametrize("marks", [0, 1], ids=["no-mark", "mark"])
+@pytest.mark.parametrize("place", list(LEAD_PLACES))
 @pytest.mark.parametrize("lead", [" ", "\t"], ids=["space", "tab"])
 @pytest.mark.parametrize("finder", list(FINDERS))
 def test_a_space_or_a_tab_in_front_of_the_key_is_not_cut(
-        tools, tmp_path, finder, lead, marks):  # noqa: F811
+        tools, tmp_path, finder, lead, place):  # noqa: F811
     """THE ISSUE'S SECOND ROW. An `lstrip` that also cuts spaces and line
     feeds wrote a leg pin or a shape pin whose line 1 is ` commit: ...`,
     exit 0, where it is refused as `0 commit line(s)`, as it was before
-    #1050, and the reader refuses it too. Before a mark or after one makes
-    no difference, because the cut stops at the first character that is not
-    a mark."""
-    before = MARK_TEXT * marks + lead + the_file(finder, OLD_COMMIT,
-                                                 OLD_TREE, OLD_ROWS)
+    #1050, and the reader refuses it too. The space or tab is with no mark,
+    behind one (the cut takes the mark and meets it) or in front of one (the
+    cut meets it at once and takes nothing): in each the file is refused
+    unchanged, because the cut takes U+FEFF only, and takes it only while it
+    is the first character."""
+    ahead, behind = LEAD_PLACES[place]
+    before = ahead + lead + behind + the_file(finder, OLD_COMMIT, OLD_TREE,
+                                              OLD_ROWS)
     with pytest.raises(ValueError):
         read(finder, before)
 
@@ -442,8 +453,9 @@ def test_update_shape_apply_refuses_a_pin_indented_on_every_line_unchanged(
 
     assert result.returncode == 2, result.stdout + result.stderr
     assert "update-pin-unrecognised" in result.stderr
-    assert "has 0 `commit` line(s)" in result.stderr
-    assert (pin.read_bytes(), manifest.read_bytes()) == before
+    assert FINDERS["shape-pin-commit"].refused in result.stderr
+    now = pin.read_bytes(), manifest.read_bytes()
+    assert now == before
 
 
 def test_bump_leg_refuses_a_pin_indented_on_every_line_unchanged(
@@ -459,6 +471,6 @@ def test_bump_leg_refuses_a_pin_indented_on_every_line_unchanged(
 
     assert result.returncode == 2, result.stdout + result.stderr
     assert "bump-leg-pin-unrecognised" in result.stderr
-    assert "has 0 `commit` line(s)" in result.stderr
+    assert FINDERS["leg-pin-commit"].refused in result.stderr
     assert pin.read_bytes() == before
     assert git("status", "--porcelain", cwd=project).stdout == ""
