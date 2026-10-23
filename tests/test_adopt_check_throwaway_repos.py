@@ -1854,9 +1854,14 @@ ATTR_SOURCE_WHY = (
     "tree it names in place of the files it writes, in each repository it "
     "makes, and stop in any of them where it names no tree; the legs `git "
     "filter-repo` rewrites and a leg seeded with no commit are not made "
-    "yet, so no throwaway repository can answer for them. Unset "
-    "`GIT_ATTR_SOURCE`, which a `git --attr-source` running this tool also "
-    "sets")
+    "yet, so no throwaway repository can answer for them")
+#: How it ends, in place of the words every other cause of
+#: `adopt-git-unasked` ends with (`UNASKED_ENDS`), which send the person to
+#: another `--work-dir` that cannot help (r1169's NIT-3).
+ATTR_SOURCE_ENDS = (
+    ". `execute` refuses it too, whatever it names, before it makes either "
+    "leg. Unset `GIT_ATTR_SOURCE`, which a `git --attr-source` running this "
+    "tool also sets, and run `check` again.")
 
 
 def unasked_attr_source(work: Path, value: str) -> str:
@@ -1865,7 +1870,7 @@ def unasked_attr_source(work: Path, value: str) -> str:
             + UNASKED_OPENS.format(os.path.realpath(work))
             + "`GIT_ATTR_SOURCE` is set in its environment, "
             + (f"to `{value}`" if value else "empty") + ATTR_SOURCE_WHY
-            + UNASKED_ENDS)
+            + ATTR_SOURCE_ENDS)
 
 
 #: `(what GIT_ATTR_SOURCE names, from the source; whether the source holds
@@ -1929,7 +1934,32 @@ def test_execute_refuses_git_attr_source_before_any_leg(
     assert caught.value.code == UNASKED
     assert "`GIT_ATTR_SOURCE` is set in its environment" in \
         caught.value.detail
+    assert caught.value.detail.endswith(ATTR_SOURCE_ENDS[2:])
     assert "no leg repository was created" in caught.value.remediation
+    assert not remotes.exists()
+
+
+def test_git_attr_source_is_refused_before_the_splits_own_clone_is_asked(
+        adopter, monkeypatch, tmp_path):
+    """r1169's NIT-1: under `GIT_ATTR_SOURCE`, `execute` refuses with
+    `adopt-git-unasked` before `check`'s first question, the split's own
+    clone, is asked, and nothing is made in the work directory. Asked
+    first, that clone would answer and remove itself, as it takes no
+    `GIT_ATTR_SOURCE` (`_inherited_env()`), so the finding alone does not
+    say which came first."""
+    plan = planned(a_source(tmp_path), tmp_path, {})
+    asked = []
+    monkeypatch.setattr(adopter, "_split_clone_asked", asked.append)
+    monkeypatch.setenv("GIT_ATTR_SOURCE", "HEAD")
+    monkeypatch.setattr(adopter, "_require_filter_repo", lambda: None)
+    work, remotes = tmp_path / "work", tmp_path / "remotes"
+    with pytest.raises(adopter.Refusal) as caught:
+        adopter.cmd_execute(Namespace(
+            plan=str(plan), source=None, local_remote_dir=remotes,
+            allow_empty_leg=[], yes=True, work_dir=work))
+    assert caught.value.code == UNASKED
+    assert asked == []
+    assert list(work.iterdir()) == []
     assert not remotes.exists()
 
 
