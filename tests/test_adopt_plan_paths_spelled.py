@@ -317,7 +317,8 @@ def test_a_work_dir_that_is_not_utf8_is_spelled_and_no_raw_byte_is_written(
     work = tmp_path / f"wd{NOT_UTF_8_PROBE}k"
     code, stdout, stderr = plan_of_a_repository_on_github_as_bytes(
         tmp_path, work)
-    assert code == 2 and b"Traceback" not in stderr, stdout + stderr
+    assert code == 2, stdout + stderr
+    assert b"Traceback" not in stderr, stdout + stderr
     assert UNCLONABLE.encode() in stderr, stdout + stderr
     clone = f"{os.path.realpath(tmp_path)}/wd\\udcffk/{SOURCE_READONLY}"
     assert [line for line in stdout.split(b"\n")
