@@ -66,16 +66,30 @@ NAMED = {
     "scripts/family.py": {
         "_print_next": 1,          # the `NEXT` line: `git push -u origin ...`
         "_switch_command": 1,      # the `git switch -c <branch>` line
-        "_add_command": 3,         # the `family.py add --family-root ...` line
+        # every `<python> family.py <verb> --family-root ...` line (#1127)
+        "_family_line": 3,
+        "_add_command": 1,         # `init`'s `add`: its `--member <org>/...`
+        # `bump`'s `member-unknown`: its `add` line's `--member` (#1127)
+        "_unknown_members_repository": 2,
         "_print_next_steps": 2,    # `init`'s block: its `switch -c` and `cd`
         "_checked_mount_path": 1,  # the `git rm -r --cached -- <path>` remedy
-        "_checked_add_target": 1,  # `member-already-present`'s `bump` line
-        # `add`'s `member-duplicate-id`: its `bump` line (#927) and its
-        # `remove` line (#1005)
-        "_checked_member_id": 2,
-        "_checked_bumped_id": 1,   # `bump`'s `member-duplicate-id`: `remove`
-        "cmd_bump": 1,             # `bump`'s `member-unknown`: its `add` line
     },
+}
+
+#: The kinds of line README's sentence lists for `family.py`, in its words,
+#: and the functions of NAMED that print each (#1127, RV1117's N5 on #1117):
+#: the sentence's list was tied to nothing, so a verb dropped from both docs
+#: passed. `_family_line` prints every line of `family.py`'s own that a
+#: remedy names, so its kinds are the verbs its calls name
+#: (`family_line_verbs`), read from the source.
+FAMILY_LINES = {
+    "_print_next": {"NEXT"},
+    "_switch_command": {"switch -c"},
+    "_family_line": None,
+    "_add_command": {"add"},
+    "_unknown_members_repository": {"add"},
+    "_print_next_steps": {"switch -c", "cd"},
+    "_checked_mount_path": {"git rm -r --cached"},
 }
 
 #: The quoters' own home is not a tool, and only these two bodies are what the
@@ -342,6 +356,63 @@ def test_the_functions_that_quote_for_the_host_are_the_ones_the_sentence_names(
         f"{tool}'s functions that use a host-dialect quoter, with their "
         f"number of uses, are {counted}, and the sentence names "
         f"{NAMED[tool]}: change the sentence in both places, then NAMED here.")
+
+
+def sentence_lists_for_family_py() -> set:
+    """The kinds of line README's sentence names for `family.py`, read from
+    README as written, its backticks kept: "`family.py`'s `NEXT`, ..., `bump`
+    and `remove` lines"."""
+    text = squashed((REPO / "README.md").read_text(encoding="utf-8"))
+    listed = re.search(r"`family\.py`'s (.*?) lines are quoted for the shell",
+                       text)
+    assert listed is not None, "README names no `family.py` lines"
+    return set(re.findall(r"`([^`]+)`", listed.group(1)))
+
+
+def family_line_verbs(source: str) -> list:
+    """The first argument of each call of `_family_line` in `source`: the
+    verb of the line it prints, or None where that is not a string constant,
+    which nobody can read without running the tool."""
+    return [call.args[0].value
+            if call.args and isinstance(call.args[0], ast.Constant)
+            and isinstance(call.args[0].value, str) else None
+            for call in ast.walk(ast.parse(source))
+            if isinstance(call, ast.Call)
+            and isinstance(call.func, ast.Name)
+            and call.func.id == "_family_line"]
+
+
+def family_line_kinds(source: str) -> set:
+    """Every kind of line `FAMILY_LINES` says the functions of `family.py`
+    print, `_family_line`'s read from `source`."""
+    kinds = set()
+    for function, said in FAMILY_LINES.items():
+        kinds |= set(family_line_verbs(source)) if said is None else said
+    return kinds
+
+
+def test_the_kinds_of_family_lines_are_the_ones_the_sentence_lists():
+    """README lists the kinds of `family.py` line that are quoted for the
+    shell they are printed in, and NAMED pins the functions that print them:
+    each function's kinds, `_family_line`'s from the verb each call names,
+    are the sentence's list, no more and no fewer (#1127). A verb dropped
+    from the sentence, or a line of a new verb, fails here."""
+    source = (REPO / "scripts" / "family.py").read_text(encoding="utf-8")
+    assert set(FAMILY_LINES) == set(NAMED["scripts/family.py"])
+    verbs = family_line_verbs(source)
+    assert verbs, "`family.py` calls `_family_line` nowhere"
+    assert None not in verbs, verbs
+    assert family_line_kinds(source) == sentence_lists_for_family_py()
+
+
+def test_the_kinds_follow_the_verbs_family_line_is_called_with():
+    """`family_line_verbs` reads each call's verb, and a verb no one can read
+    is None, which the test of the kinds refuses."""
+    source = ("def f(h, v):\n    _family_line('bump', h)\n"
+              "    _family_line(v, h)\n    other('add', h)\n")
+    assert family_line_verbs(source) == ["bump", None]
+    assert "siblings" in family_line_kinds(
+        "def f(h):\n    return _family_line('siblings', h)\n")
 
 
 def test_a_quoter_imported_under_another_name_is_a_host_call():

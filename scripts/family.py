@@ -2276,15 +2276,95 @@ def _family_script() -> str:
         return str(here)
 
 
+def _family_line(verb: str, holder: Path, *words: str) -> str:
+    """`<python> <this file> <verb> --family-root <holder> <words>`: ONE line
+    of this file's own, as `init`'s NEXT STEPS and every remedy that names a
+    verb print it, each value spelled by `shell_quoted` for the reader's
+    shell (#486, #1127).
+
+    THE ONE SPELLING OF THESE LINES (#1127, RV1117's N2 and N4 on #1117).
+    `_add_command` printed the interpreter and this file's path from where
+    the person stands (`_family_script`); the remedies that named `bump`,
+    `remove` and `add` said a bare `family.py`, which runs only from
+    `scripts/` and only where the file is executable, and printed a row's
+    `project:` raw, two words where it held a space. A placeholder
+    (`<commit>`, `<org>/...`) is the caller's to add after the line, bare:
+    quoted, it would read as a value.
+
+    THE VERB IS A STRING AT EVERY CALL, and
+    `tests/test_readme_windows_quoting_sentence.py` reads each one: README
+    lists the verbs whose lines are quoted for the shell they are printed
+    in, and a call naming a verb it does not list fails there."""
+    return " ".join([PYTHON, shell_quoted(_family_script()), verb,
+                     "--family-root", shell_quoted(holder),
+                     *(shell_quoted(word) for word in words)])
+
+
+def _cited(command: str) -> str:
+    """`command` between backticks, as a remedy's prose names a command, or
+    bare where the command holds a backtick of its own (#1127, RV1117's
+    N6): a holder under a folder named with one closed the quotation inside
+    its path, so the text between the marks was half the command. Every
+    shell reads the line the same either way."""
+    return command if "`" in command else f"`{command}`"
+
+
+def _off_the_tracking_branch(family: "Family", refuses: str,
+                             suggested: str) -> str:
+    """The clause a remedy puts before the line of this file it names, where
+    the refusal is said before `_checked_branch` asks the holder's branch
+    (#1127, RV1117's N1): `bump`'s `member-unknown`, and `add`'s
+    `member-already-present`. On the tracking branch, where a fresh clone
+    stands, the line that followed was refused `family-on-tracking-branch`.
+    So the clause says where the line runs and names the `switch -c` that
+    makes a branch, as the holder's `validate-family.py` does before the
+    `remove` its `member-duplicate-id` prints; the remedy ends with
+    `BRANCH_LEFT` (#607). In words true on any branch: the refusal is said
+    before the branch is read, and reading it here could refuse in its
+    place. `refuses` names the verb or verbs the branch is refused by and
+    says so: "`add` refuses", or "`bump` and `remove` refuse"."""
+    switch = _cited(_switch_command(family.root, suggested))
+    return ("on a branch other than the holder's tracking branch, which "
+            f"{refuses} ({switch} makes one), ")
+
+
 def _add_command(holder: Path, org: str) -> str:
     """The `add` that grows the holder at `holder`, as `init` prints it:
     ONE line, so it pastes into PowerShell too, with this file's path, the
     holder's and the organisation each spelled by `shell_quoted` for the
-    reader's shell (#486). A holder under `my work/` used to print
-    `--family-root .../my work/Orbit`, two arguments to argparse.
-    `<Project>` is left for the person to fill in."""
-    return (f"{PYTHON} {shell_quoted(_family_script())} add --family-root "
-            f"{shell_quoted(holder)} --member {shell_quoted(org)}/<Project>")
+    reader's shell (#486), by `_family_line`, as every remedy's line is
+    (#1127). A holder under `my work/` used to print `--family-root .../my
+    work/Orbit`, two arguments to argparse. `<Project>` is left for the
+    person to fill in."""
+    return (f"{_family_line('add', holder)} --member "
+            f"{shell_quoted(org)}/<Project>")
+
+
+def _unknown_members_repository(family: "Family", typed: str,
+                                project: str) -> str:
+    """The `--member` value of the `add` that `bump`'s `member-unknown`
+    names: `<org>/<Project>` with the owner filled in where it is known
+    (#1127, RV1117's N3), as ONE word for the reader's shell.
+
+    THE OWNER, IN THIS ORDER: the one the person typed, where `bump
+    --member` was given as `<org>/<Project>`; else `family.yaml`'s `org:`,
+    the organisation `init` made the holder in and its NEXT STEPS' `add`
+    names; else the blank `<org>`, which is left only where neither is
+    there. The blank pasted unfilled is a redirection in every shell, not a
+    value: `family.py` never runs, and where a file named `org` is in the
+    working directory the shell tries to create the path after it. A member
+    may live in another organisation than the family's (`MEMBER_RE`), so
+    the family's is the likeliest owner, not a certain one; an `add` of a
+    repository that is not there refuses before it touches the holder.
+    Either owner is used only where `<owner>/<project>` is a `--member`
+    `add` takes."""
+    typed = typed.strip()
+    org = family.data.get("org")
+    for owner in (typed.rpartition("/")[0], org):
+        if isinstance(owner, str) and MEMBER_RE.fullmatch(
+                f"{owner}/{project}"):
+            return shell_quoted(f"{owner}/{project}")
+    return f"<org>/{shell_quoted(project)}"
 
 
 def _standard_checkout(start: Path) -> Path | None:
@@ -6454,17 +6534,25 @@ def _checked_add_target(family: Family, repository: str, project: str,
     """
     held = family.holding(repository, project)
     if held is not None:
-        # THE `bump` IT NAMES RUNS AS PRINTED (#927): `bump` requires
-        # `--family-root`, so the line names this holder, spelled by
-        # `shell_quoted` as `_add_command`'s is.
+        # THE `bump` AND THE `remove` IT NAMES RUN AS PRINTED (#927, #1127),
+        # each a `_family_line` with this holder's `--family-root` and the
+        # row's own name, quoted. Said before `_checked_branch`, so a person
+        # on the tracking branch is told the branch both verbs need first.
+        name = str(held.get("project"))
+        suggested = _suggested_branch("bump", str(held.get("id") or name))
         raise Refusal(
             "member-already-present",
             f"{project} is already a member of {family.data.get('name')}: "
             f"the row {held.get('project')} pins {held.get('repository')}",
-            "Remediation: `family.py bump --family-root "
-            f"{shell_quoted(family.root)} --member {held.get('project')} "
-            "--to <commit>` moves an existing member; `remove` takes it "
-            "out. Adding it twice is not a way to move it.")
+            "Remediation: "
+            + _off_the_tracking_branch(family, "`bump` and `remove` refuse",
+                                       suggested)
+            + _cited(_family_line("bump", family.root, "--member", name)
+                     + " --to <commit>")
+            + " moves an existing member and "
+            + _cited(_family_line("remove", family.root, "--member", name))
+            + " takes it out. Adding it twice is not a way to move it. "
+            + BRANCH_LEFT)
     # Everything the mount's `--force` would otherwise let past git, but the
     # cached store, which is asked below (#242).
     _checked_mount_path(family.root, project, path,
@@ -6582,8 +6670,9 @@ def _checked_member_id(family: Family, repository: str, project: str,
     if row is not None:
         name = row["project"]
         # THE `remove` AND THE `bump` IT NAMES RUN AS PRINTED (#1005, #927),
-        # each with this holder's `--family-root`, which both verbs require,
-        # as `member-already-present`'s `bump` does.
+        # each a `_family_line` with this holder's `--family-root`, which
+        # both verbs require, and the row's own name, quoted (#1127). A real
+        # `add` asks this after `_checked_branch`, so no branch is named.
         raise Refusal(
             "member-duplicate-id",
             f"{project} is already a member of {family.data.get('name')} "
@@ -6593,14 +6682,14 @@ def _checked_member_id(family: Family, repository: str, project: str,
             "project twice, which `validate-family.py` refuses",
             "Remediation: a family pins each project once. If "
             f"{repository} is {row.get('repository')} renamed at the forge, "
-            "`family.py remove --family-root "
-            f"{shell_quoted(family.root)} --member {name}` takes the old row "
-            "out and this `add` then pins it under the new name; `family.py "
-            f"bump --family-root {shell_quoted(family.root)} --member {name} "
-            "--to <commit>` moves the row that is there instead. Two "
-            "projects that record one id are a fault in one of their "
-            "`project.yaml` files, mended in that project, not in the "
-            "family.")
+            + _cited(_family_line("remove", family.root, "--member", name))
+            + " takes the old row out and this `add` then pins it under the "
+            "new name; "
+            + _cited(_family_line("bump", family.root, "--member", name)
+                     + " --to <commit>")
+            + " moves the row that is there instead. Two projects that "
+            "record one id are a fault in one of their `project.yaml` files, "
+            "mended in that project, not in the family.")
 
 
 def _probe_member(url: str, protocol: list[str], repository: str,
@@ -8631,8 +8720,9 @@ def _checked_bumped_id(family: Family, row: dict, commit: str,
         return
     repository = row.get("repository")
     # THE `remove` IT NAMES RUNS AS PRINTED (#1005): `remove` requires
-    # `--family-root`, so the line names this holder, spelled by
-    # `shell_quoted` as `member-already-present`'s `bump` is (#927).
+    # `--family-root`, so the line is a `_family_line` naming this holder and
+    # the other row's own name, quoted, as every remedy's line is (#1127). A
+    # real `bump` asks this after `_checked_branch`, so no branch is named.
     raise Refusal(
         "member-duplicate-id",
         f"{repository} at {commit[:12]} is already a member of "
@@ -8643,11 +8733,12 @@ def _checked_bumped_id(family: Family, row: dict, commit: str,
         "Remediation: a family pins each project once. Pass `--to` a commit "
         f"of {repository} whose project.yaml records an id no other row "
         f"records. If {repository} and {held.get('repository')} are one "
-        "project, `family.py remove --family-root "
-        f"{shell_quoted(family.root)} --member {held['project']}` takes the "
-        "other row out first. Two projects that record one id are a fault in "
-        "one of their `project.yaml` files, mended in that project, not in "
-        "the family.")
+        "project, "
+        + _cited(_family_line("remove", family.root, "--member",
+                              held["project"]))
+        + " takes the other row out first. Two projects that record one id "
+        "are a fault in one of their `project.yaml` files, mended in that "
+        "project, not in the family.")
 
 
 def _head_oid(root: Path, path: str) -> str | None:
@@ -9331,15 +9422,20 @@ def cmd_bump(args) -> int:
     row = family.member(project)
     if row is None:
         # THE `add` IT NAMES RUNS AS PRINTED (#1005): `add` requires
-        # `--family-root`, so the line names this holder, spelled by
-        # `shell_quoted` as `_add_command`'s is (#486). `<org>` is left for
-        # the person to fill in: nothing here says whose repository it is.
+        # `--family-root`, so the line is a `_family_line` naming this
+        # holder (#1127), with the member's owner where it is known
+        # (`_unknown_members_repository`). Said before `_checked_branch`, so
+        # a person on the tracking branch is told the branch `add` needs.
         raise Refusal(
             "member-unknown",
             f"{project} is not a member of {family.data.get('name')}",
-            "Remediation: `family.py add --family-root "
-            f"{shell_quoted(family.root)} --member <org>/{project}` puts it "
-            "in the family first.")
+            "Remediation: "
+            + _off_the_tracking_branch(family, "`add` refuses",
+                                       _suggested_branch("add", project))
+            + _cited(_family_line("add", family.root) + " --member "
+                     + _unknown_members_repository(family, args.member,
+                                                   project))
+            + " puts it in the family first. " + BRANCH_LEFT)
     project = str(row["project"])
     commit = checked_value("--to", args.to).lower()
     if not COMMIT_RE.match(commit):
