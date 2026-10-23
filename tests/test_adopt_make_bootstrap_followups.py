@@ -156,10 +156,12 @@ def test_the_readme_says_it_once_for_every_make_bootstrap_below():
 ])
 def test_make_reads_the_template_makefile_only_where_nothing_comes_first(
         tmp_path, kept, said):
-    """The measurement the caveat rests on, with the template's own
-    `Makefile` at the root: `make -n bootstrap` prints the command the
+    """The caveat, and the measurement it rests on, with the template's
+    own `Makefile` at the root: `make -n bootstrap` prints the command the
     caveat names where nothing comes before it, and exits 2 where the root
     keeps a `GNUmakefile` or a `makefile`, file or directory."""
+    assert CAVEAT in flowed(
+        (TEMPLATE / "AGENTS-shape.md").read_text(encoding="utf-8"))
     (tmp_path / "Makefile").write_bytes((TEMPLATE / "Makefile").read_bytes())
     for path, text in kept.items():
         (tmp_path / path).parent.mkdir(parents=True, exist_ok=True)
@@ -236,9 +238,14 @@ RUN_THERE = "`make bootstrap` and the shape's other make targets run there"
 RUNS = (f"; {COMMAND} is what the shape's `make bootstrap` runs.")
 
 
-def next_said(adopter, capsys, collisions, surviving) -> str:
-    adopter._next_steps({"assembly": PROJECT}, collisions,
-                        surviving=surviving)
+def next_said(adopter, capsys, collisions, surviving=None) -> str:
+    """What `_next_steps` prints, given the root's paths where `surviving`
+    is not None."""
+    if surviving is None:
+        adopter._next_steps({"assembly": PROJECT}, collisions)
+    else:
+        adopter._next_steps({"assembly": PROJECT}, collisions,
+                            surviving=surviving)
     return capsys.readouterr().out
 
 
@@ -293,14 +300,14 @@ def test_next_after_the_merges_names_python3_where_a_directory_stops_make(
 def test_the_480_note_names_python_on_windows(adopter, capsys):
     """A root that kept only its own `Makefile`: the command line is the
     one pasted as printed, and the NOTE names the Windows interpreter."""
-    said = next_said(adopter, capsys, [("Makefile", "shape/Makefile")],
-                     ["Makefile"])
-    assert said == (
-        f"{HEAD}    python3 scripts/bootstrap.py\n"
-        "NOTE the root keeps its own Makefile and the shape's is "
-        "shape/Makefile, so `make bootstrap` and the shape's other make "
-        "targets arrive only once the follow-up merges the two; "
-        f"{COMMAND} is what `make bootstrap` runs.\n")
+    note = (f"{HEAD}    python3 scripts/bootstrap.py\n"
+            "NOTE the root keeps its own Makefile and the shape's is "
+            "shape/Makefile, so `make bootstrap` and the shape's other make "
+            "targets arrive only once the follow-up merges the two; "
+            f"{COMMAND} is what `make bootstrap` runs.\n")
+    aside = [("Makefile", "shape/Makefile")]
+    assert next_said(adopter, capsys, aside) == note
+    assert next_said(adopter, capsys, aside, ["Makefile"]) == note
 
 
 def test_the_collision_follow_up_names_python_on_windows():
@@ -331,8 +338,8 @@ def test_the_script_aside_tail_says_what_each_merge_lets_run():
 @needs_make
 def test_the_script_merge_alone_lets_python3_run_the_shapes_bootstrap(
         tmp_path):
-    """The measurement, with the template's own `Makefile` as the shape's
-    copy: in a root that keeps its own `Makefile` and
+    """The tail, and the measurement it rests on, with the template's own
+    `Makefile` as the shape's copy: in a root that keeps its own `Makefile` and
     `scripts/bootstrap.py`, the script's merge alone makes `python3
     scripts/bootstrap.py` run the shape's bootstrap while `make bootstrap`
     still exits 2, and both merges make `make bootstrap` run it."""
@@ -374,6 +381,11 @@ def test_the_script_merge_alone_lets_python3_run_the_shapes_bootstrap(
     both = make()
     assert both.returncode == 0, both.stdout + both.stderr
     assert both.stdout.strip() == "SHAPE-BOOT"
+    # And the follow-up says what each merge lets run.
+    assert shape_materialize.collision_follow_up(
+        "Makefile", "shape/Makefile",
+        {"Makefile": "shape/Makefile",
+         "scripts/bootstrap.py": "shape/scripts/bootstrap.py"}).endswith(TAIL)
 
 
 # --- a real adoption that keeps a `GNUmakefile/` directory -------------------
