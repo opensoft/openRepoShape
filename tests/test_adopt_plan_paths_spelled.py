@@ -29,6 +29,17 @@ no raw byte reaches stdout. `check` and `execute` say the `cloning` line
 `plan` says, and each is run here: `execute` keeps the clone it makes and
 hands `Source.clone` no list of them, where `plan` and `check` do.
 
+A LOCALE OF ONE BYTE TO A CHARACTER, Latin-1 say, is not one these rows ran
+under, and the tool is right in it (#1196, from #1185's review). Every child
+is told `PYTHONIOENCODING=utf-8`, so every run reads what it wrote as UTF-8,
+and the two bytes of U+00E9 are one character in the parent too. The row of a
+`--work-dir` that is not UTF-8 skips where the locale reads the byte 0xFF as
+U+00FF, as Latin-1 does: that is a printable name there, which `_shown`
+prints as it was typed, and the row's premise, that Python reads it in as
+U+DCFF, does not hold (`skip_where_a_name_cannot_be_not_utf_8` asks). A
+character Latin-1 cannot spell, U+202E and the rest, is skipped as under
+ASCII.
+
 THE TEST SOURCE IS ASCII: every character that is not printable is written as
 an escape.
 """
@@ -43,7 +54,8 @@ from pathlib import Path
 
 import pytest
 
-from conftest import (ADOPT, NOT_UTF_8_PROBE, make_source_repo, run_script,
+from conftest import (ADOPT, IDENTITY_EMAIL, IDENTITY_NAME, NOT_UTF_8_PROBE,
+                      blank_unnamed_pin_sources, make_source_repo, run_script,
                       skip_where_a_name_cannot_be_not_utf_8,
                       skip_where_the_environment_cannot_carry)
 
@@ -95,7 +107,7 @@ def plan_of_a_local_source(tmp_path: Path, out: Path | str,
     is written there."""
     source = make_source_repo(tmp_path / PROJECT, tree=TREE, edits=())
     return run_script(ADOPT, *plan_arguments(str(source), out), cwd=cwd,
-                      env={"PYTHONIOENCODING": "utf-8"})
+                      env={"PYTHONIOENCODING": "utf-8"}, encoding="utf-8")
 
 
 def a_gh_that_refuses(base: Path) -> dict:
@@ -122,7 +134,8 @@ def plan_of_a_repository_on_github(tmp_path: Path,
     stand_in = a_gh_that_refuses(tmp_path)
     return run_script(
         ADOPT, *plan_arguments(REPOSITORY, tmp_path / "plan.yaml",
-                               "--work-dir", str(work)), env=stand_in)
+                               "--work-dir", str(work)), env=stand_in,
+        encoding="utf-8")
 
 
 def where_the_clone_goes(work: Path) -> str:
@@ -289,15 +302,32 @@ def test_a_printable_non_ascii_work_dir_is_named_as_it_was_typed(tmp_path):
     ], result.stdout
 
 
+def the_environment_of_a_child_read_as_bytes(tmp_path: Path) -> dict:
+    """The environment `run_script` gives a child, with the stand-in `gh` that
+    refuses and a `surrogateescape` stdout (#1196): no lane, no pin-source
+    override of the machine running the suite, and an identity git can commit
+    with. The run below ends at the clone refusal, before a pin is read or a
+    commit is made, so none of the three changes what it says; they are here
+    so that this child is started as every other one is, as
+    `test_stdout_encoding.py`'s `run_tool_bytes` starts its own."""
+    environment = blank_unnamed_pin_sources(
+        {**os.environ, "LANES_LANE": "", **a_gh_that_refuses(tmp_path),
+         "PYTHONIOENCODING": "utf-8:surrogateescape"}, {})
+    for name, value in (("GIT_AUTHOR_NAME", IDENTITY_NAME),
+                        ("GIT_AUTHOR_EMAIL", IDENTITY_EMAIL),
+                        ("GIT_COMMITTER_NAME", IDENTITY_NAME),
+                        ("GIT_COMMITTER_EMAIL", IDENTITY_EMAIL)):
+        environment.setdefault(name, value)
+    return environment
+
+
 def plan_of_a_repository_on_github_as_bytes(
         tmp_path: Path, work: Path) -> tuple[int, bytes, bytes]:
     """`(exit, stdout, stderr)` of `plan --source testorg/Thing --work-dir
     <work>` with the stand-in `gh` that refuses, and a `surrogateescape`
     stdout: the bytes the child wrote. `run_script` decodes them in the
     parent's own locale, which a raw byte that is not UTF-8 fails."""
-    environment = {**os.environ, "LANES_LANE": "",
-                   **a_gh_that_refuses(tmp_path),
-                   "PYTHONIOENCODING": "utf-8:surrogateescape"}
+    environment = the_environment_of_a_child_read_as_bytes(tmp_path)
     arguments = plan_arguments(REPOSITORY, tmp_path / "plan.yaml",
                                "--work-dir", str(work))
     proc = subprocess.run([sys.executable, str(ADOPT), *arguments],
@@ -312,7 +342,8 @@ def test_a_work_dir_that_is_not_utf8_is_spelled_and_no_raw_byte_is_written(
     it in as U+DCFF, which a `surrogateescape` stdout writes back as the raw
     byte. The line is the one `_shown` writes, `\\udcff` between backticks, and
     no raw byte reaches stdout. The `--out` row of `test_stdout_encoding.py`
-    holds the same for `plan written to`."""
+    holds the same for `plan written to`. Skipped where the locale reads the
+    byte as U+00FF, Latin-1 say, where it is the printable `wd<U+00FF>k`."""
     skip_where_a_name_cannot_be_not_utf_8(tmp_path)
     work = tmp_path / f"wd{NOT_UTF_8_PROBE}k"
     code, stdout, stderr = plan_of_a_repository_on_github_as_bytes(
@@ -365,7 +396,7 @@ def test_each_of_the_two_paths_is_spelled_in_one_run(tmp_path):
     work = tmp_path / f"wd{typed}k"
     result = run_script(
         ADOPT, *plan_arguments(REPOSITORY, out, "--work-dir", str(work)),
-        env=a_gh_that_clones(tmp_path, origin))
+        env=a_gh_that_clones(tmp_path, origin), encoding="utf-8")
     assert result.returncode == 0, result.stdout + result.stderr
     assert out.is_file(), result.stdout
     base = os.path.realpath(tmp_path)
@@ -390,7 +421,7 @@ def a_command_on_github(tmp_path: Path, command: str,
     assert planned.returncode == 0, planned.stdout + planned.stderr
     return run_script(ADOPT, command, "--plan", str(plan), "--source",
                       REPOSITORY, "--work-dir", str(work),
-                      env=a_gh_that_refuses(tmp_path))
+                      env=a_gh_that_refuses(tmp_path), encoding="utf-8")
 
 
 @pytest.mark.parametrize("command", ["check", "execute"])
