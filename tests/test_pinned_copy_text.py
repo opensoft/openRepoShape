@@ -790,8 +790,12 @@ PINNED_IMPORTERS = {
 }
 
 #: What a kept `repo_shape.py` may predate: `shown_path`, new with this bump
-#: (#610), and `host_shell_dialect`, new with v1.1.1's (#711).
-NEWER_THAN_A_KEPT_LIBRARY = ("shown_path", "host_shell_dialect")
+#: (#610), `host_shell_dialect`, new with v1.1.1's (#711), and the four names
+#: of the default-ignorable table (#1128): `DEFAULT_IGNORABLE_RANGES`,
+#: `DEFAULT_IGNORABLE`, `code_point_escaped` and `visible_repr`.
+NEWER_THAN_A_KEPT_LIBRARY = (
+    "shown_path", "host_shell_dialect", "DEFAULT_IGNORABLE_RANGES",
+    "DEFAULT_IGNORABLE", "code_point_escaped", "visible_repr")
 
 
 @pytest.mark.parametrize("name", sorted(PINNED_IMPORTERS))

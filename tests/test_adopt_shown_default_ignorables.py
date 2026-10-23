@@ -142,6 +142,18 @@ def test_the_table_is_unicodes():
     assert held == IGNORABLE
 
 
+def test_the_compiled_pattern_matches_the_table_and_nothing_else():
+    """`DEFAULT_IGNORABLE`, the pattern every helper asks, matches exactly
+    the code points of the table, over all 0x110000: not one more, not one
+    fewer. The sweeps below take their expected value from the pattern, so a
+    pattern that ran one past each range spelled the extra characters and
+    passed every one of them (RV1171's N1, mutant M11); the table row above
+    reads `DEFAULT_IGNORABLE_RANGES` and never the compiled pattern."""
+    matched = [code for code in range(0x110000)
+               if repo_shape.DEFAULT_IGNORABLE.match(chr(code))]
+    assert matched == IGNORABLE
+
+
 def test_every_default_ignorable_character_is_spelled(adopter):
     """Each of the 4174, between two letters, is spelled by `_shown` and by
     `_spelled_character` as its code-point escape, and never returned as it
@@ -171,6 +183,29 @@ def test_every_default_ignorable_character_is_escaped_in_a_refusal():
                 or f"'ma{escaped(code)}in'" not in refused.value.detail):
             raw.append(f"U+{code:04X}")
     assert not raw, f"{len(raw)} not escaped: {raw[:8]}"
+
+
+def test_each_of_three_default_ignorables_in_one_value_is_escaped(adopter):
+    """A value that holds three, `m` U+034F `a` U+3164 `in` U+FE0F (#1128's
+    own characters), is refused by `checked_value` and shown by `_shown`
+    with EACH written as its code-point escape, and none of the three as it
+    is. Every other row holds one character to a value, so a `visible_repr`
+    that escaped only the first match (`count=1`) passed all of them and
+    printed the second and the third raw on stderr again (RV1171's S1,
+    mutant M12)."""
+    value = "m\u034fa\u3164in\ufe0f"
+    raw = ("\u034f", "\u3164", "\ufe0f")
+    with pytest.raises(repo_shape.Refusal) as refused:
+        repo_shape.checked_value("--tracking-branch", value)
+    assert refused.value.code == "unsafe-value"
+    assert " is 'm\\u034fa\\u3164in\\ufe0f', " in refused.value.detail, (
+        refused.value.detail)
+    shown = adopter._shown(value)
+    assert shown == "`m\\u034fa\\u3164in\\ufe0f`", shown
+    for char in raw:
+        assert char not in refused.value.detail, (hex(ord(char)),
+                                                  refused.value.detail)
+        assert char not in shown, (hex(ord(char)), shown)
 
 
 # --- the helpers, by the issue's characters -----------------------------------
