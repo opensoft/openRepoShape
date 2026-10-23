@@ -86,6 +86,14 @@ TAGGED = "v1.0.0"
 #: That branch as all three push lines now name it.
 FULL = f"refs/heads/{TAGGED}:refs/heads/{TAGGED}"
 
+#: The two blanks that `str.strip()` cuts and the reader does not (#1220). The
+#: reader's blanks are a space and a tab (`_YAML_WHITE`); it keeps these as
+#: text, so `<blank>files:` is the key `<blank>files`, a key of its own.
+NO_BREAK_SPACE = "\u00a0"
+IDEOGRAPHIC_SPACE = "\u3000"
+BLANKS = {"no-break-space": NO_BREAK_SPACE,
+          "ideographic-space": IDEOGRAPHIC_SPACE}
+
 
 def apply(standard, root: Path, at: str, *extra: str, env=None):
     """`apply --yes` at `standard[at]`, through the real tool."""
@@ -214,15 +222,26 @@ def test_a_quoted_shape_header_beside_a_bare_one_is_the_key_written_twice(
     pytest.param('"files":#rows', id="comment-glued-on"),
     pytest.param('"files" rows:', id="quoted-key-then-text"),
     pytest.param("files[0]:", id="bracket-in-key"),
+    pytest.param(NO_BREAK_SPACE + "files:", id="no-break-space-in-front"),
+    pytest.param(IDEOGRAPHIC_SPACE + "files:",
+                 id="ideographic-space-in-front"),
+    pytest.param("files: " + NO_BREAK_SPACE, id="no-break-space-after"),
+    pytest.param("files: " + IDEOGRAPHIC_SPACE,
+                 id="ideographic-space-after"),
 ])
 def test_a_line_that_is_no_files_header_to_the_reader_is_still_counted_none(
         update_shape, header):
     """The column and the rest of the line are the reader's too. Indented,
     or with a comment glued on, the line is no top-level `files` key, and
-    the last two are lines `_split_key` refuses, as the reader refuses the
+    the next two are lines `_split_key` refuses, as the reader refuses the
     file holding one: here each is no header, never a traceback, and the
     rewrite's own count refuses, before any byte is written (it only
-    returns text)."""
+    returns text).
+
+    AND A BLANK IS A SPACE OR A TAB (#1220). U+00A0 or U+3000 in front of
+    `files:` makes the key `<blank>files` to the reader, and one after the
+    colon makes it a value, so neither is the header: `.strip()` with no
+    argument cut them and counted the line as the one header."""
     before = with_header(make_pin("assembly shape pin", OLD_COMMIT, OLD_TREE,
                                   OLD_ROWS), "files", header)
 
@@ -234,6 +253,58 @@ def test_a_line_that_is_no_files_header_to_the_reader_is_still_counted_none(
     assert caught.value.code == "update-pin-unrecognised"
     assert "has 0 `files` line(s) where exactly one was expected" in \
         caught.value.detail
+
+
+@pytest.mark.parametrize("blank", BLANKS.values(), ids=BLANKS)
+def test_a_files_key_that_opens_with_a_blank_the_reader_keeps_is_carried_over(
+        update_shape, blank):
+    """THE SAME RULE FROM THE OTHER SIDE (#1220). `<blank>files:` above the
+    real header is a key of its own to the reader, which gives the pin both,
+    so the real `files:` is the one header and the stray line is carried over
+    as it was. The bare `.strip()` counted the stray line as the header: the
+    rows went under it, `break` dropped the real header and the rows under
+    it, and the result did not read back."""
+    stray = f"{blank}files:"
+    spelled = f"{stray}\nfiles:"
+    before = with_header(make_pin("assembly shape pin", OLD_COMMIT, OLD_TREE,
+                                  OLD_ROWS), "files", spelled)
+    assert read_back(before) == (OLD_COMMIT, OLD_TREE)
+    assert list(parse_yaml(before))[-2:] == [f"{blank}files", "files"], (
+        "fixture: the reader takes two keys")
+
+    new = update_shape.rewrite_shape_pin(
+        before, NEW_COMMIT, NEW_TREE,
+        [update_shape.Row(path, digest) for path, digest in NEW_ROWS])
+
+    assert new == with_header(make_pin("assembly shape pin", NEW_COMMIT,
+                                       NEW_TREE, NEW_ROWS), "files", spelled)
+    assert read_back(new) == (NEW_COMMIT, NEW_TREE)
+    assert [row["path"] for row in parse_yaml(new)["files"]] == [
+        path for path, _ in NEW_ROWS]
+
+
+@pytest.mark.parametrize("kind_name", ["PROJECT_KIND", "FAMILY_KIND"])
+@pytest.mark.parametrize("blank", BLANKS.values(), ids=BLANKS)
+def test_a_shape_key_that_opens_with_a_blank_the_reader_keeps_is_carried_over(
+        update_shape, kind_name, blank):
+    """THE MANIFEST'S HALF of the test above, for `project.yaml` and for a
+    holder's `family.yaml`. The bare `.strip()` found two `shape:` headers,
+    and refused the manifest `update-manifest-unrecognised`, "holds the
+    `shape:` key twice", of a file in which the reader finds one `shape` key
+    and one `<blank>shape`."""
+    spelled = f"{blank}shape:\nshape:"
+    before = manifest_text(spelled, OLD_COMMIT, OLD_TREE)
+    keys = list(parse_yaml(before))
+    assert keys.count("shape") == 1 and f"{blank}shape" in keys, (
+        "fixture: the reader takes two keys, not one written twice")
+
+    new = update_shape.rewrite_manifest(before, NEW_COMMIT, NEW_TREE,
+                                        getattr(update_shape, kind_name))
+
+    assert new == manifest_text(spelled, NEW_COMMIT, NEW_TREE)
+    shape = parse_yaml(new)["shape"]
+    assert (shape["commit"], shape["digests"]["tree_sha256"]) == (
+        NEW_COMMIT, NEW_TREE)
 
 
 def respell_the_header(path: Path, key: str, spelling: str) -> None:
@@ -274,6 +345,107 @@ def test_check_and_apply_agree_on_a_quoted_header(standard, root, key, path):
     for validator in ("validate-pins.py", "validate-manifest.py"):
         green = run_script(root / "scripts" / validator, cwd=root)
         assert green.returncode == 0, green.stdout + green.stderr
+
+
+def check_of(standard, root: Path):
+    """`check` at B, through the real tool."""
+    return run_script(UPDATE, "check", "--root", str(root), "--upstream",
+                      str(standard["upstream"]), "--at", standard["b"])
+
+
+def tree_of(root: Path) -> tuple:
+    """What a refusal must leave as it was: the four rewritten files' bytes
+    and what git says is changed."""
+    return held(root), git("status", "--porcelain", cwd=root).stdout
+
+
+@pytest.mark.parametrize("blank", BLANKS.values(), ids=BLANKS)
+@pytest.mark.parametrize("key, path", [("files", PIN), ("shape", MANIFEST)],
+                         ids=["pin", "manifest"])
+def test_apply_carries_over_a_key_opening_with_a_blank_the_reader_keeps(
+        standard, root, key, path, blank):
+    """THE ISSUE'S RUN, end to end (#1220). `<blank>files:` or
+    `<blank>shape:` above the real header is a key of its own to the reader,
+    so both validators pass the file and `check` sends the person to `apply`.
+    `apply` takes the update: exit 0, the stray line written back as it was,
+    the pin moved to B, and the validators green. The bare `.strip()` took
+    the stray line for the header: `apply` wrote the rows under it and the
+    pin's validator refused (`update-validators-red`), and a manifest was
+    refused `update-manifest-unrecognised` for a `shape:` key "twice"."""
+    respell_the_header(root / path, key, blank + "{key}:\n{key}:")
+    keys = list(parse_yaml((root / path).read_text(encoding="utf-8")))
+    assert keys.count(key) == 1 and f"{blank}{key}" in keys, (
+        "fixture: the reader takes two keys")
+    for validator in ("validate-pins.py", "validate-manifest.py"):
+        green = run_script(root / "scripts" / validator, cwd=root)
+        assert green.returncode == 0, green.stdout + green.stderr
+    checked = check_of(standard, root)
+    assert checked.returncode == 1, checked.stdout + checked.stderr
+    assert "update-shape.py apply " in next_line_of(checked.stdout)
+
+    result = apply(standard, root, "b")
+
+    assert result.returncode == 0, result.stdout + result.stderr
+    for code in ("update-validators-red", "update-manifest-unrecognised",
+                 "update-pin-unrecognised"):
+        assert code not in result.stderr
+    assert f"{blank}{key}:\n{key}:" in (root / path).read_text(
+        encoding="utf-8")
+    assert parse_yaml((root / PIN).read_text(encoding="utf-8"))[
+        "commit"].lower() == standard["b"]
+    assert parse_yaml((root / MANIFEST).read_text(encoding="utf-8"))[
+        "shape"]["commit"].lower() == standard["b"]
+    for validator in ("validate-pins.py", "validate-manifest.py"):
+        green = run_script(root / "scripts" / validator, cwd=root)
+        assert green.returncode == 0, green.stdout + green.stderr
+
+
+@pytest.mark.parametrize("blank", BLANKS.values(), ids=BLANKS)
+def test_apply_refuses_a_manifest_whose_only_shape_line_opens_with_a_blank(
+        standard, root, blank):
+    """The reader gives such a manifest no `shape` key, so `apply` refuses it
+    as it refuses one with no `shape:` line at all: `update-manifest-no-shape`
+    from the rewrite's own count, naming the manifest, the tree as it was.
+    The bare `.strip()` found the line, rewrote the block under it, and the
+    manifest's validator refused after the write (`update-validators-red`),
+    which says the project is red, and it was."""
+    respell_the_header(root / MANIFEST, "shape", blank + "{key}:")
+    keys = list(parse_yaml((root / MANIFEST).read_text(encoding="utf-8")))
+    assert "shape" not in keys and f"{blank}shape" in keys, (
+        "fixture: the reader takes the blank as part of the key")
+    kept = tree_of(root)
+
+    result = apply(standard, root, "b")
+
+    assert result.returncode == 2, result.stdout + result.stderr
+    assert ("REFUSED update-manifest-no-shape: project.yaml has no `shape:` "
+            "block, so there is nothing to mirror the pin into"
+            ) in result.stderr
+    assert "update-validators-red" not in result.stderr
+    assert ("ROLLED BACK: every byte this command wrote has been put back, "
+            "and the tree is exactly as it was") in result.stderr
+    assert tree_of(root) == kept
+
+
+@pytest.mark.parametrize("blank", BLANKS.values(), ids=BLANKS)
+def test_check_and_apply_stop_at_a_pin_whose_only_files_line_is_blanked(
+        standard, root, blank):
+    """The reader gives such a pin no `files` key, so BOTH commands refuse it
+    `update-pin-no-files` as they read the rows, and the rewrite is never
+    reached: the tree is as it was. This holds the answer the header finder
+    does not give, so the day the reader's refusal moves, the finder's own
+    rows above still say what it does."""
+    respell_the_header(root / PIN, "files", blank + "{key}:")
+    keys = list(parse_yaml((root / PIN).read_text(encoding="utf-8")))
+    assert "files" not in keys and f"{blank}files" in keys, (
+        "fixture: the reader takes the blank as part of the key")
+    kept = tree_of(root)
+
+    for result in (check_of(standard, root), apply(standard, root, "b")):
+        assert result.returncode == 2, result.stdout + result.stderr
+        assert "REFUSED update-pin-no-files: " in result.stderr
+        assert "update-pin-unrecognised" not in result.stderr
+        assert tree_of(root) == kept
 
 
 # ---------------------------------------------------------------------------
