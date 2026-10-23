@@ -531,7 +531,9 @@ def seed_tree(role: str, values: dict, tracking: str, scratch: Path) -> str:
 #: `docs/cli.md`, the README, the handbook and each remedy that sends a
 #: person into that re-run on GitHub say a prompt can still come, and how a
 #: person keeps a run from waiting in their own setup (`PROMPTS_STILL_ASK`).
-#: `RULESET_HINT`, the ruleset's refusal, does not say it yet (#1108).
+#: That includes `RULESET_HINT`, the ruleset's refusal: the constant says
+#: nothing of it, and `_refused_push` appends `RULESET_HINT_PROMPTS` after it,
+#: on GitHub alone and where no login remedy has said it already (#1108).
 REMOTE_ENV = {"GIT_TERMINAL_PROMPT": "0"}
 
 #: What `only_commit`'s two commands run with: the prompt rule, and git's
@@ -554,17 +556,21 @@ PROBE_ENV = {**REMOTE_ENV, "LC_ALL": "C"}
 PUSH_ENV = {**REMOTE_ENV, "LC_ALL": "C"}
 
 #: What each remedy that sends a person into a `--reuse-empty-repo` re-run
-#: says of the prompt rule, after "That re-run" (#915, U037): the prompts
-#: `REMOTE_ENV` leaves as the operator set them up, and the three ways to keep
-#: a run from waiting at one, each in the person's own setup. ssh under
-#: `BatchMode=yes` refuses the host-key and passphrase prompts and fails at
-#: once (measured: the probe is refused at once, as `scaffold-remote-exists`
-#: with ssh's `Host key verification failed.`). `GIT_SSH_COMMAND` replaces
+#: says of the prompt rule, after "That re-run" or "The --reuse-empty-repo
+#: re-run" (#915, U037): the prompts `REMOTE_ENV` leaves as the operator set
+#: them up, and the three ways to keep a run from waiting at one, each in
+#: the person's own setup. ssh under `BatchMode=yes` refuses the host-key
+#: and passphrase prompts and fails at once (measured: the probe is refused
+#: at once, as `scaffold-remote-exists` with ssh's `Host key verification
+#: failed.`, and a push at once too, with `_host_key_remedy`'s remedy,
+#: #1108). `GIT_SSH_COMMAND` replaces
 #: `core.sshCommand`, so the person carries over what theirs adds. Said by
-#: `_exists_remedy` and `_login_remedy`; not under `--local-remote-dir`,
-#: whose paths on disk git reads with no ssh, helper or askpass at all.
-#: `RULESET_HINT`, the ruleset's refusal, also sends a person into that
-#: re-run and does not say it yet (#1108).
+#: `_exists_remedy`, and by each remedy for a refused push
+#: (`_then_re_run`); not under `--local-remote-dir`, whose paths on disk git
+#: reads with no ssh, helper or askpass at all. `RULESET_HINT`, the
+#: ruleset's refusal, sends a person into that re-run too: the constant says
+#: nothing of it, and `_refused_push` appends `RULESET_HINT_PROMPTS` after
+#: it, on GitHub alone and where no login remedy has said it already (#1108).
 PROMPTS_STILL_ASK = (
     "turns off git's own terminal prompt and no other, so it can still wait "
     "at an ssh passphrase or host-key prompt, at a credential helper that "
@@ -574,6 +580,19 @@ PROMPTS_STILL_ASK = (
     "`GIT_SSH_COMMAND='ssh -o BatchMode=yes'` (with anything your "
     "`core.sshCommand` adds) in your shell for the run, which makes ssh fail "
     "at once instead")
+
+#: What `_refused_push` prints after `RULESET_HINT` on GitHub (#1108): the
+#: hint's one exit is the `--reuse-empty-repo` re-run, which can wait at the
+#: prompts `PROMPTS_STILL_ASK` names as each other re-run can. An append, at
+#: the one place the hint is printed, and not words in the hint: the hint is
+#: printed under `--local-remote-dir` too, where no such prompt can come,
+#: and its text is pinned byte for byte beside `family.py`'s and the
+#: adoption's (`tests/test_ruleset_hint_tracking_branch.py`), which stay as
+#: they are. A paragraph of its own, after the hint's last, which speaks of
+#: a clean re-run, so it names the re-run it means. Not where a login remedy
+#: printed before the hint has said it of the same re-run: once is enough.
+RULESET_HINT_PROMPTS = ("\nThe --reuse-empty-repo re-run " + PROMPTS_STILL_ASK
+                        + ".\n")
 
 
 def only_commit(url: str,
@@ -2125,6 +2144,85 @@ LOGIN_REFUSED = ("Authentication failed for ",)
 #: than a key lists them after `publickey`, so the list is read up to it.
 KEY_REFUSED = ("Permission denied (publickey",)
 
+#: What ssh says when it could not verify the key of the host a push reached
+#: (#1108): `Host key verification failed.`, before git's generic line
+#: (`GENERIC_FATAL`), where a `url.<base>.insteadOf` or
+#: `url.<base>.pushInsteadOf` rule sends a push over ssh. ssh says it of a
+#: key no known_hosts file holds when it refuses without asking, as under
+#: `BatchMode=yes`, which `PROMPTS_STILL_ASK` advises, or with no terminal
+#: to ask in, or is answered no; and of a key other than the one held
+#: (`HOST_KEY_CHANGED`). It fails before git sends anything, so no ruleset
+#: was asked. Such a push was told `RULESET_HINT` alone, whose re-run fails
+#: the same way (RV1101's S1; measured on main at 823624d, a first run's
+#: push and a re-run's: exit 2 in under 2 s). OpenSSH's own words, which it
+#: does not translate. Only ssh's own lines are read: git prefixes each line
+#: the server sent with `remote:`, so words a ruleset's message or a hook
+#: carries cannot turn a ruleset refusal into this remedy
+#: (`_without_remote_lines`). Where ssh's `LogLevel` hides what it says, each
+#: case is safe (measured on OpenSSH 9.6, the last one read from the ssh
+#: binary): `LogLevel=QUIET` prints neither this line nor
+#: `HOST_KEY_CHANGED`'s, so the push gets the ruleset hint, as at main;
+#: `LogLevel=FATAL` keeps this line and drops the changed-key banner, so a
+#: changed key gets the unknown-key remedy, whose `ssh -T` (`HOST_KEY_CHECK`)
+#: refuses a changed key again; and a revoked key, which ssh always refuses,
+#: gets the unknown-key remedy too.
+HOST_KEY_FAILED = ("Host key verification failed.",)
+
+#: What ssh prints before `HOST_KEY_FAILED` where the host sent a key other
+#: than the one a known_hosts file holds for it (#1108): `WARNING: REMOTE
+#: HOST IDENTIFICATION HAS CHANGED!`, then the new key's fingerprint and an
+#: `ssh-keygen -R` line to remove the old one. ssh refuses such a key
+#: whether it may ask or not (measured, with `BatchMode=yes` and without).
+#: A machine in the middle of the connection shows it as well as a host
+#: that replaced its key, so its remedy never says to accept the key, or to
+#: remove the old one, before its fingerprint is checked against GitHub's
+#: (`GITHUB_FINGERPRINTS`). OpenSSH's own words.
+HOST_KEY_CHANGED = ("REMOTE HOST IDENTIFICATION HAS CHANGED",)
+
+#: Where a person reads the fingerprints GitHub publishes for its ssh host
+#: keys over a connection other than the one in doubt (#1108): `gh`, over
+#: https, from GitHub's `meta` endpoint, which lists them, for github.com
+#: whatever `GH_HOST` says, since the scaffold only reaches
+#: `https://github.com/`. `gh` prints each without the `SHA256:` that ssh
+#: shows before it, so the clause says so.
+GITHUB_FINGERPRINTS = ("`gh api --hostname github.com meta --jq "
+                       ".ssh_key_fingerprints` prints them, and ssh shows "
+                       "each with `SHA256:` before it")
+
+#: How a person sees the fingerprint of the key the host sends, and keeps
+#: it (#1108): ssh asked as git asks it, as `SSH_KEY_CHECK` is, but with
+#: `-o BatchMode=no -o StrictHostKeyChecking=ask` first. ssh keeps the first
+#: value it is given for an option, so those two win over the person's
+#: ssh_config and over a later `-o`, which `GIT_SSH_COMMAND` or
+#: `core.sshCommand` can add: `BatchMode yes` refuses an unknown key without
+#: showing or asking anything, `accept-new` keeps it without showing its
+#: fingerprint or asking, and `yes` refuses it without asking (all
+#: measured, OpenSSH 9.6, in a terminal).
+HOST_KEY_CHECK = ("`ssh -T -o BatchMode=no -o StrictHostKeyChecking=ask`, "
+                  "both options first so that they win over your ssh_config "
+                  "and any later `-o`, against the user, host and port your "
+                  "rule names, with the rest of what your `GIT_SSH_COMMAND` "
+                  "or `core.sshCommand` adds, shows the fingerprint of the "
+                  "key the host sends and asks whether to keep it")
+
+
+def _then_re_run(fix: str, reused: bool) -> str:
+    """A refused push's remedy line (#915, #993, #1108): `fix`, the cause
+    and what to do first, then the re-run that finishes the run, then that
+    re-run's prompts (`PROMPTS_STILL_ASK`). Each cause below fails the push
+    before any ref is updated, so each repository this run made or reused is
+    as it was: empty, or, for a leg pushed before a later push was refused,
+    holding its seed, and the re-run with `--reuse-empty-repo` reuses each
+    (`_reusable_remotes`). A run that was itself the re-run (`reused`) is
+    re-run as it was."""
+    again = ("the same command with a new --work-dir or none" if reused else
+             "the same command with --reuse-empty-repo added (after `--` "
+             "through setup.sh) and a new --work-dir or none")
+    return (f"\nRemediation: {fix}, then re-run {again}: it reuses the "
+            "repositories this run left empty, and a leg whose one commit is "
+            "the seed this scaffold pushes. That re-run "
+            + PROMPTS_STILL_ASK + ".")
+
 
 def _login_remedy(output: str, repo: str, reused: bool) -> str:
     """How to give git the login a refused push lacked, then the re-run
@@ -2175,28 +2273,99 @@ def _login_remedy(output: str, repo: str, reused: bool) -> str:
                "first (" + SSH_KEY_CHECK + ")")
     else:
         return ""
-    again = ("the same command with a new --work-dir or none" if reused else
-             "the same command with --reuse-empty-repo added (after `--` "
-             "through setup.sh) and a new --work-dir or none")
-    return (f"\nRemediation: {fix}, then re-run {again}: it reuses the "
-            "repositories this run left empty, and a leg whose one commit is "
-            "the seed this scaffold pushes. That re-run "
-            + PROMPTS_STILL_ASK + ".")
+    return _then_re_run(fix, reused)
+
+
+def _without_remote_lines(output: str) -> str:
+    """`output` without the lines the server sent (#1108). git prefixes each
+    line the server sent, and each part after a carriage return in it, with
+    `remote:` (measured, git 2.43), so a line that starts with it is the
+    server's from end to end, and a split at newlines alone keeps it whole.
+    A ruleset's message, or a hook's, is the server's to write, so its words
+    are no evidence of what ssh did."""
+    return "\n".join(line for line in output.split("\n")
+                     if not line.startswith("remote:"))
+
+
+def _host_key_remedy(output: str, repo: str, reused: bool) -> str:
+    """How to give ssh the key of the host a refused push reached, then the
+    re-run (#1108), or "" where `output`, git's for that push, shows no host
+    key ssh refused (`HOST_KEY_FAILED`) in a line of its own: not one the
+    server sent (`_without_remote_lines`). Printed INSTEAD OF
+    `RULESET_HINT`: ssh refused before git sent anything, so no ruleset was
+    asked, and the hint's re-run alone fails the same way.
+
+    A KEY THAT CHANGED (`HOST_KEY_CHANGED`) is never told to be accepted as
+    it comes: it is what a machine in the middle of the connection shows,
+    so its fingerprint, which ssh printed, is checked against GitHub's
+    (`GITHUB_FINGERPRINTS`) first, nothing is pushed while it is not one of
+    them, and only then is the old key removed and the new one kept, with
+    `HOST_KEY_CHECK`, answering yes only to a fingerprint GitHub publishes,
+    which can be another of its keys than the one checked: the push's ssh
+    asked first for the key type it held, and once that key is removed the
+    `ssh -T` asks first for ssh's default, ED25519, and it can be sent
+    another key than the push's. A key ssh does not know is checked the
+    same way, before it is kept."""
+    said = _without_remote_lines(output)
+    if not any(words in said for words in HOST_KEY_FAILED):
+        return ""
+    if any(words in said for words in HOST_KEY_CHANGED):
+        fix = (f"the host the push to {repo} reached sent ssh a key other "
+               "than the one your known_hosts holds for it: a "
+               "`url.<base>.insteadOf` or `url.<base>.pushInsteadOf` rule in "
+               "your git config sends it over ssh, and ssh refuses a changed "
+               "key, so nothing was pushed, and a re-run is refused the same "
+               "way. A machine in the middle of the connection shows this as "
+               "well as a key GitHub replaced, so accept no key from that "
+               "host, and push nothing to it, until you have checked that the "
+               "fingerprint ssh printed above is one GitHub publishes ("
+               + GITHUB_FINGERPRINTS + "); only then remove the old key (the "
+               "`ssh-keygen -R` line ssh printed) and keep the new one ("
+               + HOST_KEY_CHECK + "), answering yes only to a fingerprint "
+               "GitHub publishes, which can be another of its keys than "
+               "the one you checked")
+    else:
+        fix = (f"ssh could not verify the key of the host the push to {repo} "
+               "reached: a `url.<base>.insteadOf` or "
+               "`url.<base>.pushInsteadOf` rule in your git config sends it "
+               "over ssh, that key is in none of your known_hosts files, and "
+               "ssh refused it without asking, as under `BatchMode=yes`, or "
+               "was answered no, so nothing was pushed, and a re-run is "
+               "refused the same way until ssh holds the key. Keep it first, "
+               "once you know it is GitHub's: " + HOST_KEY_CHECK + ", so "
+               "answer yes only to a fingerprint GitHub publishes ("
+               + GITHUB_FINGERPRINTS + ")")
+    return _then_re_run(fix, reused)
 
 
 def _refused_push(failed: CommandFailed, what: str, repo: str,
-                  tracking: str, reused: bool) -> None:
+                  tracking: str, reused: bool, local: bool) -> None:
     """What a refused push prints, a leg's and the root's (#462, #915,
-    #993): the command and git's output, then, where it shows git could not
-    get a login, the host refused the one git sent, or ssh was refused the
-    key, how to give git one and the re-run (`_login_remedy`), then
-    `RULESET_HINT` for `repo` and `tracking`. Any other refusal, a ruleset's
-    above all, and an HTTP 403 too, prints what it always printed."""
+    #993, #1108): the command and git's output, then one of three.
+
+    Where ssh refused the host's key, how to check and keep it, then the
+    re-run (`_host_key_remedy`), and no `RULESET_HINT`: no ruleset was
+    asked, and the hint's re-run fails the same way.
+
+    Where git could not get a login, the host refused the one git sent, or
+    ssh was refused the key, how to give git one and the re-run
+    (`_login_remedy`), then `RULESET_HINT` for `repo` and `tracking`.
+
+    Any other refusal, a ruleset's above all, and an HTTP 403 too, prints
+    `RULESET_HINT`, and on GitHub (not `local`, `--local-remote-dir`) the
+    prompts its re-run can still wait at (`RULESET_HINT_PROMPTS`), which a
+    login remedy has already said where there is one."""
     print(failed.loudly(what), file=sys.stderr)
+    host_key = _host_key_remedy(failed.output, repo, reused)
+    if host_key:
+        print(host_key, file=sys.stderr)
+        return
     remedy = _login_remedy(failed.output, repo, reused)
     if remedy:
         print(remedy, file=sys.stderr)
-    print(RULESET_HINT.format(repo=repo, tracking=tracking), file=sys.stderr)
+    print(RULESET_HINT.format(repo=repo, tracking=tracking)
+          + ("" if local or remedy else RULESET_HINT_PROMPTS),
+          file=sys.stderr)
 
 
 def _seed_legs(args, values: dict, names: dict, repositories: dict,
@@ -2250,7 +2419,8 @@ def _seed_legs(args, values: dict, names: dict, repositories: dict,
             except CommandFailed as exc:
                 _refused_push(exc, f"pushing the {role} leg",
                               repositories[role], args.tracking_branch,
-                              args.reuse_empty_repo)
+                              args.reuse_empty_repo,
+                              args.local_remote_dir is not None)
                 return None
         print(f"  {role:<9} {commit[:12]} tree {leg_digests[role][:12]}… "
               f"-> {urls[role]}")
@@ -2369,7 +2539,8 @@ def _build_assembly_root(args, values: dict, names: dict, repositories: dict,
         except CommandFailed as exc:
             _refused_push(exc, "pushing the assembly root",
                           repositories["assembly"], args.tracking_branch,
-                          args.reuse_empty_repo)
+                          args.reuse_empty_repo,
+                          args.local_remote_dir is not None)
             return False
     print(f"  assembly  {run(['git', 'rev-parse', 'HEAD'], cwd=assembly)[:12]} "
           f"-> {urls['assembly']}")
