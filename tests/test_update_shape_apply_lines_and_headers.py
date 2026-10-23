@@ -219,6 +219,7 @@ def test_a_quoted_shape_header_beside_a_bare_one_is_the_key_written_twice(
 
 @pytest.mark.parametrize("header", [
     pytest.param('  "files":', id="indented"),
+    pytest.param("\tfiles:", id="tab-in-front"),
     pytest.param('"files":#rows', id="comment-glued-on"),
     pytest.param('"files" rows:', id="quoted-key-then-text"),
     pytest.param("files[0]:", id="bracket-in-key"),
@@ -232,7 +233,8 @@ def test_a_quoted_shape_header_beside_a_bare_one_is_the_key_written_twice(
 def test_a_line_that_is_no_files_header_to_the_reader_is_still_counted_none(
         update_shape, header):
     """The column and the rest of the line are the reader's too. Indented,
-    or with a comment glued on, the line is no top-level `files` key, and
+    with a tab in front (the reader refuses a tab for indentation), or
+    with a comment glued on, the line is no top-level `files` key, and
     the next two are lines `_split_key` refuses, as the reader refuses the
     file holding one: here each is no header, never a traceback, and the
     rewrite's own count refuses, before any byte is written (it only
@@ -263,7 +265,9 @@ def test_a_files_key_that_opens_with_a_blank_the_reader_keeps_is_carried_over(
     so the real `files:` is the one header and the stray line is carried over
     as it was. The bare `.strip()` counted the stray line as the header: the
     rows went under it, `break` dropped the real header and the rows under
-    it, and the result did not read back."""
+    it, and the result lost its `files` key. `rewrite_fault` read only the
+    commit and the tree, so it returned None, and validate-pins refused the
+    pin after the write."""
     stray = f"{blank}files:"
     spelled = f"{stray}\nfiles:"
     before = with_header(make_pin("assembly shape pin", OLD_COMMIT, OLD_TREE,
@@ -295,7 +299,9 @@ def test_a_shape_key_that_opens_with_a_blank_the_reader_keeps_is_carried_over(
     spelled = f"{blank}shape:\nshape:"
     before = manifest_text(spelled, OLD_COMMIT, OLD_TREE)
     keys = list(parse_yaml(before))
-    assert keys.count("shape") == 1 and f"{blank}shape" in keys, (
+    assert keys.count("shape") == 1, (
+        "fixture: the reader takes two keys, not one written twice")
+    assert f"{blank}shape" in keys, (
         "fixture: the reader takes two keys, not one written twice")
 
     new = update_shape.rewrite_manifest(before, NEW_COMMIT, NEW_TREE,
@@ -374,8 +380,8 @@ def test_apply_carries_over_a_key_opening_with_a_blank_the_reader_keeps(
     refused `update-manifest-unrecognised` for a `shape:` key "twice"."""
     respell_the_header(root / path, key, blank + "{key}:\n{key}:")
     keys = list(parse_yaml((root / path).read_text(encoding="utf-8")))
-    assert keys.count(key) == 1 and f"{blank}{key}" in keys, (
-        "fixture: the reader takes two keys")
+    assert keys.count(key) == 1, "fixture: the reader takes two keys"
+    assert f"{blank}{key}" in keys, "fixture: the reader takes two keys"
     for validator in ("validate-pins.py", "validate-manifest.py"):
         green = run_script(root / "scripts" / validator, cwd=root)
         assert green.returncode == 0, green.stdout + green.stderr
@@ -411,7 +417,9 @@ def test_apply_refuses_a_manifest_whose_only_shape_line_opens_with_a_blank(
     which says the project is red, and it was."""
     respell_the_header(root / MANIFEST, "shape", blank + "{key}:")
     keys = list(parse_yaml((root / MANIFEST).read_text(encoding="utf-8")))
-    assert "shape" not in keys and f"{blank}shape" in keys, (
+    assert "shape" not in keys, (
+        "fixture: the reader takes the blank as part of the key")
+    assert f"{blank}shape" in keys, (
         "fixture: the reader takes the blank as part of the key")
     kept = tree_of(root)
 
@@ -437,7 +445,9 @@ def test_check_and_apply_stop_at_a_pin_whose_only_files_line_is_blanked(
     rows above still say what it does."""
     respell_the_header(root / PIN, "files", blank + "{key}:")
     keys = list(parse_yaml((root / PIN).read_text(encoding="utf-8")))
-    assert "files" not in keys and f"{blank}files" in keys, (
+    assert "files" not in keys, (
+        "fixture: the reader takes the blank as part of the key")
+    assert f"{blank}files" in keys, (
         "fixture: the reader takes the blank as part of the key")
     kept = tree_of(root)
 
