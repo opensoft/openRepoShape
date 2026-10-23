@@ -160,7 +160,9 @@ DEGRADE_LINE = "authority is not wallet-carried in this org"
 #: a dependency again, which is the whole thing the copies exist to avoid.
 SHAPE_UPSTREAM_ENV = "SHAPE_UPSTREAM_PATH"
 SHAPE_UPSTREAM_CACHE = ".shape-upstream-tip"
-COMMIT_40 = re.compile(r"^[0-9a-fA-F]{40}$")
+#: `\Z`, NEVER `$` (#1017): `$` also matches before a trailing line feed, as it
+#: did in `repo_shape.COMMIT_RE`, which this is a copy of.
+COMMIT_40 = re.compile(r"^[0-9a-fA-F]{40}\Z")
 #: Where a remote-tracking ref lives. Only an upstream there holds a branch's
 #: commits on the remote's behalf; an upstream of `.` is another local branch.
 REMOTE_TRACKING = "refs/remotes/"

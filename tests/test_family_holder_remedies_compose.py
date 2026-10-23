@@ -1334,13 +1334,15 @@ def test_round1_nit_6_the_value_s_put_back_serves_the_removal_after_it(
         family, holder, offline, tmp_path):
     """Lane 1's NIT 6 on #889 (its mutant MX1): `update = None` committed
     in IRSS's section, `git rm --cached members/IRRS`, and the work tree's
-    `.gitmodules` deleted. The value finding puts back HEAD's file and
-    records that, so the removal after it prints no line for the file,
-    which HEAD's gives MEMBER's section in. Put back again from the
-    index's, which holds the value, it undid the fix, and the commit died
-    (`invalid value for 'submodule.members/IRSS.update'`, exit 128).
-    Typed in order and committed, the gate passes in every mode and a
-    plain clone checks both out."""
+    `.gitmodules` deleted. The value finding puts back the index's file,
+    the one git reads, which gives the value as HEAD's does (#1077: it put
+    back HEAD's), and records that, so the removal after it prints no line
+    for the file, which gives MEMBER's section. Put back again from the
+    index's after the value's lines, which hold the value, it undid the
+    fix, and the commit died (`invalid value for
+    'submodule.members/IRSS.update'`, exit 128). Typed in order and
+    committed, the gate passes in every mode and a plain clone checks both
+    out."""
     env = cloning(offline, tmp_path, family)
     value_committed(holder, env, OTHER_ROW)
     raw(holder, env, "rm", "-q", "--cached", "--", ROW)
@@ -1350,7 +1352,7 @@ def test_round1_nit_6_the_value_s_put_back_serves_the_removal_after_it(
 
     assert codes_of(found) == ["gitmodules-value-refused",
                                "member-gitlink-removal-staged"]
-    assert commands(found[0])[0] == "git checkout HEAD -- .gitmodules"
+    assert commands(found[0])[0] == "git checkout -- .gitmodules"
     assert commands(found[1]) == [f"git reset -q -- {ROW}"]
     typed_in_order(holder, env, validate(holder, "--no-members"))
     staged_and_committed(holder, env, "Typed in order")
