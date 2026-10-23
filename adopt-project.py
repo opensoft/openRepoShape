@@ -13150,6 +13150,34 @@ def _nothing_rolled_back(urls: dict, pushed: list, work_root: Path,
     return notice
 
 
+def _unacted(text: str, kept: str = "") -> str:
+    """`text` with each character a terminal would act on -- one
+    `str.isprintable` refuses, other than those in `kept` -- spelled as
+    `_spelled_character` spells it, and every other as it is, with no
+    backticks around it: what `_first_said` does to the line gh said."""
+    return "".join(char if char.isprintable() or char in kept
+                   else _spelled_character(char) for char in text)
+
+
+def _loudly(exc: CommandFailed, step: str) -> str:
+    """`exc.loudly(step)`, the REFUSED block `CommandFailed` prints, with
+    each argument of the command, the directory it ran in and what it
+    printed `_unacted`, as `_first_said` spells what gh said (#1195). What
+    it printed keeps its line breaks, so it still reads a line to a line.
+
+    `CommandFailed` is `scripts/shape_materialize.py`'s, shared by every
+    tool, and names all three as they are. A command names what was typed:
+    under `--local-remote-dir <D>/re<U+202E>mote`, a leg push a hook refused
+    printed the override raw three times, in the command and in git's own
+    `To` and `error:` lines, below the `bare` lines and above the notice,
+    which spell it (#1152). A character that is printable prints as it is,
+    so a command of plain paths prints the block it printed before."""
+    return CommandFailed(
+        [_unacted(str(argument)) for argument in exc.args_list],
+        _unacted(str(exc.cwd)) if exc.cwd else exc.cwd, exc.code,
+        _unacted(exc.output, kept="\n")).loudly(step)
+
+
 def _failed_loudly(step: str, exc: BaseException) -> str:
     """What failed during `step`, as the REFUSED block `CommandFailed` prints.
 
@@ -13163,7 +13191,7 @@ def _failed_loudly(step: str, exc: BaseException) -> str:
     follows.
     """
     if isinstance(exc, CommandFailed):
-        return exc.loudly(step)
+        return _loudly(exc, step)
     if isinstance(exc, Refusal):
         said = f"REFUSED {step}. {exc.code}: {exc.detail}"
         return said if exc.remediation in ("", REMEDIATION) \
@@ -13988,7 +14016,7 @@ def _push_the_leg(step: str, work: Path, url: str, tracking: str,
         run(["git", "push", "-q", url, f"HEAD:refs/heads/{tracking}"], cwd=work)
     except CommandFailed as exc:
         _flush_stdout()
-        print(exc.loudly(step), file=sys.stderr)
+        print(_loudly(exc, step), file=sys.stderr)
         print(ADOPT_RULESET_HINT.format(repo=repository, tracking=tracking),
               file=sys.stderr)
         exc.reported = True
@@ -16060,6 +16088,17 @@ def _next_steps(names: dict, collisions: list,
     pasting the line did in #582's review. Without `split`, the block is
     what it was, byte for byte.
 
+    A PATH A TERMINAL DOES NOT SHOW AS ITSELF GETS A NOTE (#1195). The url
+    is the source's own path, and `_refuse_an_unwritable_clone_url` lets
+    one through that holds a `Cf` character other than the nine bidi
+    controls, or a space other than ASCII's, as #255 rules: U+200B, the
+    joiner a Persian name needs, the marks U+200E and U+200F. `shlex.quote`
+    neutralises no character, so `'<D>/so<U+200B>urce/Thing'` read as
+    `<D>/source/Thing`. The command stays as it is, since `sh` reads a
+    quoted path and not a spelled one (`_branch_deletion`'s rule), and a
+    NOTE before the block names the path as the `split` line does,
+    `_spelled`. A url whose every character is printable gets none.
+
     `collisions` is each `(intended, actual)` the materializer wrote beside a
     file the source kept: where the shape's files WENT, and not a second
     look at the tree. `make bootstrap` is a target of the SHAPE's Makefile. A
@@ -16092,6 +16131,11 @@ def _next_steps(names: dict, collisions: list,
         clone = " ".join(["git", *FILE_PROTOCOL, "clone",
                           "--recurse-submodules", "-b", shlex.quote(branch),
                           shlex.quote(url)])
+        if not url.isprintable():
+            print("\nNOTE the path in the clone command below holds a "
+                  "character a terminal does not show as itself, so it can "
+                  f"read as another path: it is {_spelled(url)}, as the "
+                  "`split` line names it.")
     print(f"\nNEXT: review {review}, then\n    {clone}{bootstrap}")
     if script:
         kept = [path for path in (SHAPE_MAKEFILE, BOOTSTRAP)
@@ -17781,7 +17825,8 @@ def main(argv: list[str] | None = None) -> int:
     except CommandFailed as exc:
         _flush_stdout()
         if not _reported(exc):
-            print(exc.loudly("a git or gh command failed"), file=sys.stderr)
+            print(_loudly(exc, "a git or gh command failed"),
+                  file=sys.stderr)
         return 2
     except (OSError, UnicodeError) as exc:
         # A step that reported one has printed it as REFUSED, with what it

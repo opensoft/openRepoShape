@@ -42,6 +42,17 @@ login does. A child that prints a byte that is not UTF-8 raw is read back with
 `\\udcff` is six ASCII characters. POSIX only: no Windows file name holds a
 line feed, an escape or byte 0xff.
 
+THE FOLLOW-UPS (#1195, from RV1177's review of #1177). Rows for what the
+first 148 left to chance, each a mutant that passed all of them: a `--plan`
+that `str.isprintable` passes, which #900's two rules spell or which is
+relative; a PLACEMENT plan's `plan-wrong-kind`, and `adopt-org-too-long`;
+a printable `--local-remote-dir` outside ASCII; and, in
+`tests/test_adopt_github_exits.py`, the GitHub-mode `split` line. And two
+routes that printed a path raw: a refused command's REFUSED block, which
+now spells the remote and work directories, and `NEXT:`'s clone command,
+before which a NOTE now says when the path in it holds a character a
+terminal does not show as itself.
+
 THE TEST SOURCE IS ASCII: every character that is not printable is written as
 an escape.
 """
@@ -118,20 +129,23 @@ def skip_where_cannot_carry(typed: str, tmp_path: Path) -> None:
         skip_where_a_name_cannot_be_not_utf_8(tmp_path)
 
 
-def run_adopt(*args: str) -> tuple[int, str, str]:
+def run_adopt(*args: str, cwd: Path | None = None,
+              over: dict | None = None) -> tuple[int, str, str]:
     """`(exit, stdout, stderr)` of one run of the tool, as text a byte that is
     not UTF-8 survives in (`surrogateescape`): the child's stdout is given
     `ENCODING`, so a path it prints raw reaches this process as the bytes it
-    held."""
+    held. `cwd` is where it runs, for a relative `--plan`, and `over` names
+    variables set over its environment."""
     env = blank_unnamed_pin_sources(
-        {**os.environ, "LANES_LANE": "", "PYTHONIOENCODING": ENCODING}, {})
+        {**os.environ, "LANES_LANE": "", "PYTHONIOENCODING": ENCODING,
+         **(over or {})}, {})
     for key, value in (("GIT_AUTHOR_NAME", IDENTITY_NAME),
                        ("GIT_AUTHOR_EMAIL", IDENTITY_EMAIL),
                        ("GIT_COMMITTER_NAME", IDENTITY_NAME),
                        ("GIT_COMMITTER_EMAIL", IDENTITY_EMAIL)):
         env.setdefault(key, value)
     proc = subprocess.run([sys.executable, str(ADOPT), *args],
-                          capture_output=True, env=env,
+                          capture_output=True, env=env, cwd=cwd,
                           stdin=subprocess.DEVNULL, check=False)
     return (proc.returncode,
             proc.stdout.decode("utf-8", "surrogateescape"),
@@ -210,6 +224,8 @@ EDITS: dict[str, Callable[[str, Path], str]] = {
     "unchanged": lambda text, source: text,
     "wrong-kind": lambda text, source: replaced(
         text, "kind: adoption-plan\n", "kind: something-else\n"),
+    "placement-kind": lambda text, source: replaced(
+        text, "kind: adoption-plan\n", "kind: placement-plan\n"),
     "new-root": lambda text, source: replaced(
         text, "mode: in-place\n", "mode: new-root\n"),
     "a-list": lambda text, source: "- legs\n- paths\n",
@@ -226,6 +242,8 @@ EDITS: dict[str, Callable[[str, Path], str]] = {
         text, "assembly: Thing\n", "assembly: NUL\n"),
     "double-hyphen-org": lambda text, source: replaced(
         text, "org: testorg\n", "org: a--b\n"),
+    "long-org": lambda text, source: replaced(
+        text, "org: testorg\n", f"org: {'o' * 40}\n"),
     "long-id": lambda text, source: replaced(
         text, "id: thing\n", f"id: {'a' * 40}\n"),
     "another-repository": lambda text, source: replaced(
@@ -282,8 +300,12 @@ def a_finding_naming_the_plan(code: str, then: str
 
 ID_PATTERN = "^[a-z0-9][a-z0-9-]*$"
 KIND = "kind is 'something-else', expected 'adoption-plan'"
+PLACEMENT_KIND = "kind is 'placement-plan', expected 'adoption-plan'"
 MODE = "mode is 'new-root'; v0.2 implements `in-place` only"
 NO_SOURCE = "`source:` names neither a local path nor a repository"
+#: `org:` one character past GitHub's 39, cut in the middle as a refusal
+#: cuts a long name.
+LONG_ORG = "`org:` is oooooooooooo...oooooooooooo, 40 characters"
 ROWS = [
     Row("mistyped-plan", "plain", "mistyped", False, {
         "check": (1, in_a_finding),
@@ -298,6 +320,13 @@ ROWS = [
     Row("plan-wrong-kind", "plain", "wrong-kind", False, {
         "check": (2, a_refusal_naming_the_plan("plan-wrong-kind", KIND)),
         "execute": (2, a_refusal_naming_the_plan("plan-wrong-kind", KIND))}),
+    # A PLACEMENT plan is refused with a remediation of its own, after the
+    # same detail (#1195).
+    Row("plan-wrong-kind-a-placement-plan", "plain", "placement-kind", False, {
+        "check": (2, a_refusal_naming_the_plan("plan-wrong-kind",
+                                               PLACEMENT_KIND)),
+        "execute": (2, a_refusal_naming_the_plan("plan-wrong-kind",
+                                                 PLACEMENT_KIND))}),
     Row("plan-unsupported-mode", "plain", "new-root", False, {
         "check": (2, a_refusal_naming_the_plan("plan-unsupported-mode", MODE)),
         "execute": (2, a_refusal_naming_the_plan("plan-unsupported-mode",
@@ -340,6 +369,12 @@ ROWS = [
             "adopt-bad-org", "`org:` is 'a--b'")),
         "execute": (2, a_refusal_naming_the_plan(
             "adopt-bad-org", "`org:` is 'a--b'"))}),
+    # The other refusal of the same `org:` sentence, asked first (#1195).
+    Row("org-too-long", "plain", "long-org", False, {
+        "check": (1, a_finding_naming_the_plan("adopt-org-too-long",
+                                               LONG_ORG)),
+        "execute": (2, a_refusal_naming_the_plan("adopt-org-too-long",
+                                                 LONG_ORG))}),
     Row("topic-too-long", "plain", "long-id", False, {
         "check": (1, a_finding_naming_the_plan(
             "adopt-topic-too-long", "`id:` is aaaaaaaaaaaa...aaaaaaaaaaaa, "
@@ -404,6 +439,42 @@ def test_the_plan_is_named_as_a_path_is(request, tmp_path, row, command,
         assert typed not in stdout + stderr, stdout + stderr
 
 
+#: A `--plan` whose every character is printable: `typed`, given whole
+#: (`absolute`) or relative to the directory `check` runs in, and how `check`
+#: names it, `{base}` standing for that directory. A name that ends in a
+#: space, or begins and ends with a backtick, is spelled by #900's rules; any
+#: other prints as it was typed, relative where it was, and `./` dropped as
+#: `Path` drops it.
+PRINTABLE_PLANS = [
+    pytest.param("plan.yaml ", True, "`{base}/plan.yaml `",
+                 id="ends-in-a-space"),
+    pytest.param("`plan.yaml`", False, "`\\x60plan.yaml\\x60`",
+                 id="relative-between-backticks"),
+    pytest.param("plan.yaml", False, "plan.yaml", id="relative"),
+    pytest.param("./plan.yaml", False, "plan.yaml", id="relative-from-dot"),
+]
+
+
+@pytest.mark.parametrize("typed, absolute, named", PRINTABLE_PLANS)
+def test_a_printable_plan_is_named_as_typed_unless_900_spells_it(
+        plain, tmp_path, typed, absolute, named):
+    """The four characters above are not printable, and no row there asked
+    of a name `str.isprintable` passes: one #900's two rules spell, or one
+    given relative. So `check`'s count line could name `--plan` by
+    `str.isprintable` alone, which printed the first two as they were
+    typed, or as `plan.path.absolute()`, which printed the last two as
+    `<D>/plan.yaml`, and every row passed (#1195, RV1177's K1 and K2)."""
+    (tmp_path / typed).write_text(EDITS["uncovered"](plain.text, plain.source),
+                                  encoding="utf-8")
+    code, stdout, stderr = run_adopt(
+        "check", "--plan", str(tmp_path / typed) if absolute else typed,
+        cwd=tmp_path)
+    assert code == 1, stdout + stderr
+    assert "Traceback" not in stderr, stderr
+    assert_the_lines(stderr,
+                     in_a_finding(named.format(base=os.fspath(tmp_path))))
+
+
 # --- `--local-remote-dir`: `bare`, the leg lines, `already exists`, `split` --
 
 #: What each leg's line says before the url it ends with: an extracted leg's
@@ -414,24 +485,38 @@ SEEDED = re.compile(r"  (?P<role>spec|code)\s+0 path\(s\) -> [0-9a-f]{12} "
                     r"\(SEEDED from [^)]*\) -> (?P<url>.*)")
 
 
-def where_a_leg_is(tmp_path: Path, typed: str, spelled: str, leaf: str
-                   ) -> str:
+def where_a_leg_is(tmp_path: Path, typed: str, spelled: str | None,
+                   leaf: str) -> str:
     """How the tool names `<remote dir>/<leaf>`, the remote dir being
-    `re<typed>mote` beside `tmp_path`'s resolved path, or a plain `remote`."""
+    `re<typed>mote` beside `tmp_path`'s resolved path, or a plain `remote`:
+    as it is where `spelled` is None, `typed` being printable."""
     base = os.path.realpath(tmp_path)
     if not typed:
         return f"{base}/remote/{leaf}"
+    if spelled is None:
+        return f"{base}/re{typed}mote/{leaf}"
     return f"`{base}/re{spelled}mote/{leaf}`"
 
 
+#: `CHARACTERS`, and a character outside ASCII that is printable, which
+#: `_shown` prints as it is, with no backticks: `spelled` is None.
+REMOTE_CHARACTERS = [
+    *CHARACTERS,
+    pytest.param("\u00e9", None, id="printable-U+00E9"),
+]
+
+
 @needs_filter_repo
-@pytest.mark.parametrize("typed, spelled", CHARACTERS)
+@pytest.mark.parametrize("typed, spelled", REMOTE_CHARACTERS)
 def test_a_remote_dir_is_named_in_the_bare_and_leg_lines_as_a_path_is(
         tmp_path, typed, spelled):
     """On main `bare  {path}` and each leg's `-> {url}` printed the typed
     `--local-remote-dir` as it was. The code leg is extracted and the spec
     leg is seeded (`--allow-empty-leg spec` over a source with no `specs/`),
-    so `_extract_leg`'s line and `_seed_leg`'s are both said, once."""
+    so `_extract_leg`'s line and `_seed_leg`'s are both said, once. A
+    `re\\u00e9mote` prints as typed: with no row of it, the extracted leg's
+    line could spell every url outside ASCII, and every row passed (#1195,
+    RV1177's K6)."""
     skip_where_cannot_carry(typed, tmp_path)
     planned = a_source_and_its_plan(tmp_path / "src", NO_SPECS)
     plan = tmp_path / "plan.yaml"
@@ -452,31 +537,46 @@ def test_a_remote_dir_is_named_in_the_bare_and_leg_lines_as_a_path_is(
     seeded = {m["role"]: m["url"] for m in map(SEEDED.fullmatch, lines) if m}
     assert extracted == {"code": leg_code}, stdout
     assert seeded == {"spec": spec}, stdout
-    if typed not in ("", "\n"):
+    if spelled and typed != "\n":
         assert typed not in stdout + stderr, stdout + stderr
 
 
 #: A source directory `_shown` spells and `adopt-unwritable-value` lets
-#: through: the parent holds U+200B, or the source's own name ends in a space.
+#: through: the parent holds U+200B or U+200F, or the source's own name ends
+#: in a space. `noted`: whether `NEXT:` says its path holds a character a
+#: terminal does not show as itself, which a trailing space is not.
 SPLIT_SOURCES = [
-    pytest.param("so\u200burce", "Thing", "so\\u200burce", "Thing",
+    pytest.param("so\u200burce", "Thing", "so\\u200burce", "Thing", True,
                  id="zero-width-space"),
-    pytest.param("source", "Thing ", "source", "Thing ",
+    pytest.param("so\u200furce", "Thing", "so\\u200furce", "Thing", True,
+                 id="right-to-left-mark"),
+    pytest.param("source", "Thing ", "source", "Thing ", False,
                  id="name-ends-in-a-space"),
-    pytest.param("source", "Thing", "source", "Thing", id="plain-control"),
+    pytest.param("source", "Thing", "source", "Thing", False,
+                 id="plain-control"),
 ]
+
+#: What is said of such a path just before `NEXT:` and its clone command,
+#: then the path as the `split` line names it (#1195).
+UNSEEN = ("NOTE the path in the clone command below holds a character a "
+          "terminal does not show as itself, so it can read as another path: "
+          "it is ")
 
 
 @needs_filter_repo
-@pytest.mark.parametrize("parent, name, spelled_parent, spelled_name",
-                         SPLIT_SOURCES)
+@pytest.mark.parametrize(
+    "parent, name, spelled_parent, spelled_name, noted", SPLIT_SOURCES)
 def test_the_split_line_names_the_source_as_a_path_is(
-        tmp_path, parent, name, spelled_parent, spelled_name):
+        tmp_path, parent, name, spelled_parent, spelled_name, noted):
     """Under `--local-remote-dir` the split is pushed to the source itself, so
     `split <commit> on <branch> -> {url}` names the source's path. On main it
     was printed as it was: a zero-width space invisible in it, and a trailing
     space that reads as nothing. `NEXT:` names the same path as a person types
-    it, through `shlex.quote`, and is not respelled."""
+    it, through `shlex.quote`, and is not respelled: a command to paste. So
+    U+200B or U+200F reached the terminal raw there, inside the quotes, and
+    the path read as `source/Thing`; a NOTE just before the block now says
+    so and names it as the `split` line does (#1195, RV1177's N4). A
+    trailing space shows between the quotes, and gets none."""
     skip_where_the_environment_cannot_carry(parent + name)
     base = tmp_path / parent
     source = make_source_repo(base / name, tree=TREE, edits=())
@@ -499,6 +599,11 @@ def test_the_split_line_names_the_source_as_a_path_is(
         split[0]), split
     assert (f"-b {SPLIT_BRANCH} {shlex.quote(where)}\n"
             in stdout), stdout
+    said = [line for line in stdout.split("\n") if line.startswith(UNSEEN)]
+    assert said == ([f"{UNSEEN}{named}, as the `split` line names it."]
+                    if noted else []), stdout
+    if noted:
+        assert stdout.index(said[0]) < stdout.index("\nNEXT: "), stdout
 
 
 @pytest.mark.parametrize("typed, spelled", CHARACTERS)
@@ -519,3 +624,127 @@ def test_a_leg_remote_already_there_is_named_as_a_path_is(
     shown = (os.fspath(leg) if not typed else
              f"`{os.fspath(tmp_path)}/re{spelled}mote/Thing-spec.git`")
     assert caught.value.detail == f"{shown} already exists"
+
+
+# --- a refused command: `CommandFailed.loudly` (#1195) ----------------------
+
+#: What the `pre-receive` hook says as it refuses a push.
+HOOK_SAYS = "this remote takes no push"
+
+#: The characters a refused command named raw, and the control. A line feed
+#: is left out: git's own output names the remote with it, and the line
+#: breaks in what a command printed are kept as line breaks.
+REFUSED_CHARACTERS = [param for param in CHARACTERS
+                      if param.id != "line-feed"]
+
+
+def a_global_config_whose_hook_refuses_every_push(tmp_path: Path) -> Path:
+    """A global git config holding the session's (`conftest`'s
+    `no_auto_maintenance` writes it) and a `core.hooksPath` whose
+    `pre-receive` hook refuses every push. Given as `GIT_CONFIG_GLOBAL`, it
+    reaches the `receive-pack` a push to a local path starts, so the first
+    leg push of an `execute` is refused, after both legs exist."""
+    hooks = tmp_path / "hooks"
+    hooks.mkdir()
+    hook = hooks / "pre-receive"
+    hook.write_text(f"#!/bin/sh\necho '{HOOK_SAYS}' >&2\nexit 1\n",
+                    encoding="utf-8", newline="\n")
+    hook.chmod(0o755)
+    session = os.environ["GIT_CONFIG_GLOBAL"]
+    config = tmp_path / "gitconfig"
+    config.write_text(f'[include]\n\tpath = "{session}"\n'
+                      f'[core]\n\thooksPath = "{hooks}"\n', encoding="utf-8")
+    return config
+
+
+@needs_filter_repo
+@pytest.mark.parametrize("typed, spelled", REFUSED_CHARACTERS)
+def test_a_refused_command_names_the_remote_and_work_dirs_spelled(
+        tmp_path, typed, spelled):
+    """A refused leg push is said by `CommandFailed.loudly`: the command, the
+    directory it ran in, and what it printed. Each was printed as it was, so
+    under `--local-remote-dir <D>/re<U+202E>mote` the override reached the
+    terminal three times, in the command and in git's own `To` and `error:`
+    lines, where the `bare` lines above and the notice below spell it
+    (#1195, RV1177's N3). Now each is spelled as `_first_said` spells gh's,
+    with no backticks, and what it printed keeps its line breaks. The work
+    directory holds the character too, for the `(in ...)` line. A byte that
+    is not UTF-8 printed as `\\udcff` before as well, since stderr is
+    `backslashreplace`; git's own lines hold U+FFFD for it, as `run`
+    decodes what a command printed."""
+    skip_where_cannot_carry(typed, tmp_path)
+    planned = a_source_and_its_plan(tmp_path / "src", NO_SPECS)
+    plan = tmp_path / "plan.yaml"
+    plan.write_text(planned.text, encoding="utf-8")
+    config = a_global_config_whose_hook_refuses_every_push(tmp_path)
+    code, stdout, stderr = run_adopt(
+        "execute", "--plan", str(plan), "--yes", "--allow-empty-leg", "spec",
+        "--local-remote-dir", str(tmp_path / f"re{typed}mote"),
+        "--work-dir", str(tmp_path / f"wo{typed}rk"),
+        over={"GIT_CONFIG_GLOBAL": str(config)})
+    assert code == 2, stdout + stderr
+    assert "Traceback" not in stderr, stderr
+    base = os.path.realpath(tmp_path)
+    lines = stderr.split("\n")
+    start = lines.index(
+        "REFUSED pushing the seeded spec leg. THE EXACT COMMAND WAS:")
+    assert lines[start + 1:start + 5] == [
+        f"    git push -q {base}/re{spelled}mote/Thing-spec.git "
+        "HEAD:refs/heads/main",
+        f"    (in {base}/wo{spelled}rk/Thing-spec)",
+        "    exit 1",
+        "--- output ---"], stderr
+    said = lines[start + 5:lines.index("--- end output ---", start)]
+    assert f"remote: {HOOK_SAYS}" in [line.rstrip() for line in said], stderr
+    if typed:
+        assert typed not in stdout + stderr, stdout + stderr
+
+
+def a_refused_push(adopter, typed: str):
+    """A `CommandFailed` as a refused split push raises it, `typed` in the
+    remote it was pushed to, the directory it ran in and what git said."""
+    return adopter.CommandFailed(
+        ["git", "push", "-q", f"/remotes/re{typed}mote/Thing.git",
+         SPLIT_BRANCH], f"/work/wo{typed}rk/Thing", 1,
+        f"To /remotes/re{typed}mote/Thing.git\n"
+        " ! [remote rejected] (pre-receive hook declined)\n")
+
+
+def the_block_of(step: str, typed: str, spelled: str) -> str:
+    """The REFUSED block `a_refused_push` is said in: the command and the
+    directory with `typed` spelled, and what git said with it spelled too,
+    but a line feed kept as the line break it is there."""
+    said = typed if typed == "\n" else spelled
+    return (f"REFUSED {step}. THE EXACT COMMAND WAS:\n"
+            f"    git push -q /remotes/re{spelled}mote/Thing.git "
+            f"{SPLIT_BRANCH}\n"
+            f"    (in /work/wo{spelled}rk/Thing)\n"
+            "    exit 1\n"
+            "--- output ---\n"
+            f"To /remotes/re{said}mote/Thing.git\n"
+            " ! [remote rejected] (pre-receive hook declined)\n"
+            "--- end output ---")
+
+
+@pytest.mark.parametrize("typed, spelled", CHARACTERS)
+def test_a_late_refused_command_is_said_spelled(adopter, typed, spelled):
+    """`_failed_loudly`, which says a command refused after both legs exist
+    (a split push, the pull request, the topic), says it as the leg push's
+    block is said, through `_loudly` (#1195)."""
+    assert adopter._failed_loudly(
+        "pushing the split", a_refused_push(adopter, typed)) == \
+        the_block_of("pushing the split", typed, spelled)
+
+
+@pytest.mark.parametrize("typed, spelled", CHARACTERS)
+def test_a_refused_command_no_step_said_is_said_spelled(
+        adopter, monkeypatch, capsys, tmp_path, typed, spelled):
+    """A refused command no step has said reaches `main`, which says it as
+    "a git or gh command failed", through `_loudly` as well (#1195)."""
+    def refused(_args):
+        raise a_refused_push(adopter, typed)
+
+    monkeypatch.setattr(adopter, "cmd_check", refused)
+    assert adopter.main(["check", "--plan", str(tmp_path / "plan.yaml")]) == 2
+    assert capsys.readouterr().err == the_block_of(
+        "a git or gh command failed", typed, spelled) + "\n"
