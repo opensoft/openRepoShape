@@ -16135,8 +16135,12 @@ def _next_steps(names: dict, collisions: list,
     `CONTRACTS_DIR` line names the same directory. Where the root keeps one,
     the command is `python3 scripts/bootstrap.py`, the NOTE says `make`
     stops there, in `_make_reads_first_clause`'s words, and where the script
-    went aside, that command is the one named after the merges. A kept FILE
-    of that name, which GNU make reads, is #1047's.
+    went aside, that command is the one named after the merges. Beside a
+    kept `Makefile` alone, the NOTE says the targets run there once the
+    follow-up merges the two, AND only once the root keeps no directory of
+    that name: with the directory gone, the root's `Makefile` is still the
+    source's own until that merge (#1207's review, NIT-3). A kept FILE of
+    that name, which GNU make reads, is #1047's.
 
     A NOTE THAT NAMES `python3 scripts/bootstrap.py` FOR A PERSON TO RUN
     names `python` on Windows too, as the template's `scripts/bootstrap.py`
@@ -16163,9 +16167,11 @@ def _next_steps(names: dict, collisions: list,
                           "--recurse-submodules", "-b", shlex.quote(branch),
                           shlex.quote(url)])
     print(f"\nNEXT: review {review}, then\n    {clone}{bootstrap}")
+    merged = (" once the follow-up merges the two, and" if makefile
+              and not script else "")
     stopped = _make_reads_first_clause(
-        stops, "`make bootstrap` and the shape's other make targets run there",
-        "has them") if stops else ""
+        stops, "`make bootstrap` and the shape's other make targets run "
+        f"there{merged}", "has them") if stops else ""
     if script:
         kept = [path for path in (SHAPE_MAKEFILE, BOOTSTRAP)
                 if path in aside]

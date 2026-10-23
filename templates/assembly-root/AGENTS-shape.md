@@ -101,7 +101,7 @@ make resume      recreate the parked features here, from that record
 
 They are the shape's Makefile's targets, so `make` at the root reaches them
 only where the file it reads first holds them, or includes a Makefile that
-does (above); `python3 scripts/bootstrap.py` (`python` on Windows) is what
+does; `python3 scripts/bootstrap.py` (`python` on Windows) is what
 `make bootstrap` runs.
 
 `make bootstrap` places a leg on its tracking branch AT the pin only where that

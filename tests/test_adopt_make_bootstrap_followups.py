@@ -115,26 +115,33 @@ def test_agents_shape_says_what_to_run_where_make_reads_another_file():
 
 
 def test_agents_shape_says_the_five_commands_are_the_shapes_targets():
-    """The sentence after the five-commands table."""
+    """The sentence after the five-commands table. It pointed "(above)" at
+    a Makefile that includes another, which nothing above it names (#1207's
+    review, NIT-1)."""
     text = (TEMPLATE / "AGENTS-shape.md").read_text(encoding="utf-8")
     table = text.index("make resume      recreate the parked features here")
     after = text[text.index("```", table) + 3:].lstrip("\n")
     assert flowed(after.split("\n\n", 1)[0]) == (
         "They are the shape's Makefile's targets, so `make` at the root "
         "reaches them only where the file it reads first holds them, or "
-        "includes a Makefile that does (above); `python3 "
-        "scripts/bootstrap.py` (`python` on Windows) is what `make "
-        "bootstrap` runs.")
+        "includes a Makefile that does; `python3 scripts/bootstrap.py` "
+        "(`python` on Windows) is what `make bootstrap` runs.")
 
 
-def test_the_readme_says_it_once_for_every_make_bootstrap_below():
+def test_the_readme_says_it_once_for_each_make_target_below():
     """README.md's Get started: the sentence comes after its first `make
-    bootstrap` and before the parking steps' one, which "below" names."""
+    bootstrap` and before the parking steps' one, which "below" names, and
+    it says the parking steps' own targets, `make park` and `make resume`,
+    work there only where the file GNU make reads first holds them: they
+    are the shape's targets, and no command stands in for them (#1207's
+    review, NIT-2)."""
     text = (TEMPLATE / "README.md").read_text(encoding="utf-8")
     sentence = (
         "Where this root keeps a `GNUmakefile` or a `makefile`, which GNU "
         f"make reads before `Makefile`, run {COMMAND} instead, here and "
-        "below: it is what the shape's `make bootstrap` runs.")
+        "below: it is what the shape's `make bootstrap` runs. There, `make "
+        "park` and `make resume` below work only where that file holds them, "
+        "or includes a Makefile that does.")
     flat = flowed(text)
     assert sentence in flat
     at = flat.index(sentence)
@@ -142,6 +149,7 @@ def test_the_readme_says_it_once_for_every_make_bootstrap_below():
                 re.finditer(re.escape("make bootstrap"), flat)]
     assert commands[0] < at, commands
     assert flat.index("cd {{PROJECT}} && make bootstrap && make resume") > at
+    assert flat.index("make park # before you leave this workstation") > at
 
 
 @needs_make
@@ -264,16 +272,23 @@ def test_next_names_python3_where_a_kept_directory_stops_make(
         f"{stops(name, RUN_THERE)}{RUNS}\n")
 
 
+#: Beside a kept `Makefile`, what reaches `make` once the directory is gone.
+MERGED = f"{RUN_THERE} once the follow-up merges the two, and"
+
+
+@pytest.mark.parametrize("name", ["GNUmakefile", "makefile"])
 def test_next_beside_a_kept_makefile_says_the_merge_is_not_enough(
-        adopter, capsys):
+        adopter, capsys, name):
     """#480's NOTE said the targets arrive once the two `Makefile`s are
-    merged; beside a kept `GNUmakefile/` they do not."""
+    merged; beside a kept `GNUmakefile/` they do not. Nor once the
+    directory alone is gone, for the root's `Makefile` is the source's own
+    until the merge: the NOTE says both (#1207's review, NIT-3)."""
     said = next_said(adopter, capsys, [("Makefile", "shape/Makefile")],
-                     ["Makefile", "GNUmakefile/"])
+                     ["Makefile", f"{name}/"])
     assert said == (
         f"{HEAD}    python3 scripts/bootstrap.py\n"
         "NOTE the root keeps its own Makefile and the shape's is "
-        f"shape/Makefile, and {stops('GNUmakefile', RUN_THERE)}{RUNS}\n")
+        f"shape/Makefile, and {stops(name, MERGED)}{RUNS}\n")
     assert "arrive only once the follow-up merges the two" not in said
 
 
@@ -293,6 +308,22 @@ def test_next_after_the_merges_names_python3_where_a_directory_stops_make(
         "the shape's bootstrap yet: merge shape/Makefile into Makefile and "
         "shape/scripts/bootstrap.py into scripts/bootstrap.py first, and "
         f"then run {COMMAND}; {stops('GNUmakefile', RUN_THERE)}.\n")
+
+
+def test_next_after_the_script_merge_names_python3_where_make_stops(
+        adopter, capsys):
+    """Where only the script went aside, the shape's `Makefile` is the
+    root's, and still the command named after the merge is the one that
+    runs, and not `make bootstrap` (#1207's review, SHOULD-1)."""
+    said = next_said(adopter, capsys,
+                     [("scripts/bootstrap.py", "shape/scripts/bootstrap.py")],
+                     ["scripts/", "GNUmakefile/"])
+    assert said == (
+        f"{HEAD}NOTE the root keeps its own scripts/bootstrap.py, and the "
+        "shape's is shape/scripts/bootstrap.py, so neither `make bootstrap` "
+        "nor `python3 scripts/bootstrap.py` runs the shape's bootstrap yet: "
+        "merge shape/scripts/bootstrap.py into scripts/bootstrap.py first, "
+        f"and then run {COMMAND}; {stops('GNUmakefile', RUN_THERE)}.\n")
 
 
 # --- `python` on Windows (item 3) --------------------------------------------
@@ -388,7 +419,7 @@ def test_the_script_merge_alone_lets_python3_run_the_shapes_bootstrap(
          "scripts/bootstrap.py": "shape/scripts/bootstrap.py"}).endswith(TAIL)
 
 
-# --- a real adoption that keeps a `GNUmakefile/` directory -------------------
+# --- real adoptions of a source with a `GNUmakefile/` directory --------------
 
 #: A rule above the shipped ones (the first match wins) that sends a
 #: `GNUmakefile/` directory to the root, which no shipped rule does: there
@@ -412,8 +443,8 @@ def policy_keeping_the_directory(base: Path) -> Path:
     return policy
 
 
-def answered_root(plan: Path, path: str) -> None:
-    """The plan's question for `path` answered `root`, LF as `plan` wrote
+def answered(plan: Path, path: str, leg: str) -> None:
+    """The plan's question for `path` answered `leg`, LF as `plan` wrote
     it."""
     text = plan.read_text(encoding="utf-8")
     asked = re.search(rf"(?m)^  - path: {re.escape(path)}\n    leg: null\n",
@@ -421,8 +452,8 @@ def answered_root(plan: Path, path: str) -> None:
     assert asked, text
     with plan.open("w", encoding="utf-8", newline="\n") as handle:
         handle.write(text.replace(asked.group(0), (
-            f"  - path: {path}\n    leg: root\n"
-            "    resolution: \"the source's make rules stay in the root\"\n"),
+            f"  - path: {path}\n    leg: {leg}\n"
+            f"    resolution: \"the source's make rules go to the {leg}\"\n"),
             1))
 
 
@@ -453,7 +484,7 @@ def test_an_adoption_keeping_a_gnumakefile_directory(tmp_path, by_policy):
     written = write_plan(source, plan, project=PROJECT, extra=extra)
     assert written.returncode == 0, written.stderr + written.stdout
     if not by_policy:
-        answered_root(plan, "GNUmakefile/")
+        answered(plan, "GNUmakefile/", "root")
     (line,) = [str(item) for item in load_yaml(plan)["follow_ups"]
                if "wires `CONTRACTS_DIR`" in str(item)]
     if by_policy:
@@ -489,4 +520,43 @@ def test_an_adoption_keeping_a_gnumakefile_directory(tmp_path, by_policy):
     ran = subprocess.run([sys.executable, *said[2].split()[1:]],
                          cwd=str(clone), capture_output=True, text=True,
                          encoding="utf-8", errors="replace", check=False)
+    assert ran.returncode == 0, ran.stdout + ran.stderr
+
+
+@needs_filter_repo
+@needs_make
+def test_an_adoption_sending_a_gnumakefile_directory_to_a_leg(tmp_path):
+    """The same source, with `plan`'s question for `GNUmakefile/` answered
+    `code`: the directory goes to the code leg, the root keeps none, and
+    NEXT names `make bootstrap`, which runs in the clone NEXT's own clone
+    line makes. NEXT reads only the paths the plan sends to the ROOT: given
+    every leg's paths, it said GNU make stops at a directory the root does
+    not hold (#1207's review, NIT-4)."""
+    source = make_source_repo(
+        tmp_path / "Thing",
+        {**TREE, "GNUmakefile/rules.mk": "build:\n\t@echo source build\n"},
+        edits=EDITS)
+    plan = tmp_path / "adoption-plan.yaml"
+    written = write_plan(source, plan, project=PROJECT)
+    assert written.returncode == 0, written.stderr + written.stdout
+    answered(plan, "GNUmakefile/", "code")
+
+    result = run_script(ADOPT, "execute", "--plan", str(plan), "--yes",
+                        "--local-remote-dir", str(tmp_path / "remotes"),
+                        "--work-dir", str(tmp_path / "work"))
+
+    assert result.returncode == 0, result.stderr + result.stdout
+    said = next_block(result.stdout)
+    assert said == [*local_next(source), "    make bootstrap"], result.stdout
+    here = tmp_path / "here"
+    here.mkdir()
+    cloned = pasted(said[1], here, tmp_path / "remotes")
+    assert cloned.returncode == 0, cloned.stdout + cloned.stderr
+    clone = here / source.name
+    assert (clone / "code" / "GNUmakefile" / "rules.mk").is_file()
+    assert not (clone / "GNUmakefile").exists()
+    ran = subprocess.run(["make", "-s", *said[2].split()[1:],
+                          f"PYTHON={sys.executable}"], cwd=str(clone),
+                         capture_output=True, text=True, encoding="utf-8",
+                         errors="replace", check=False)
     assert ran.returncode == 0, ran.stdout + ran.stderr

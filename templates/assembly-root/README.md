@@ -19,7 +19,9 @@ make bootstrap
 
 Where this root keeps a `GNUmakefile` or a `makefile`, which GNU make reads
 before `Makefile`, run `python3 scripts/bootstrap.py` (`python` on Windows)
-instead, here and below: it is what the shape's `make bootstrap` runs.
+instead, here and below: it is what the shape's `make bootstrap` runs. There,
+`make park` and `make resume` below work only where that file holds them, or
+includes a Makefile that does.
 
 `make bootstrap` puts each leg on the `{{TRACKING_BRANCH}}` branch **at its
 pinned commit** (so you are not staring at a detached HEAD) where that loses
