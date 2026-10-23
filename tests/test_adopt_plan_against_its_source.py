@@ -35,6 +35,15 @@ unanswered entry. Each of the first three is mended by running `plan` again,
 and a fresh plan takes back every answer given before, so an unanswered
 entry, mended by an answer in the plan, comes last.
 
+WHERE THE RULE SITS AMONG THE OTHER FINDINGS. `check` lists the rule's
+problems before the split branch and the entries, and `execute` asks the
+rule before every refusal `check` lists after it and before the plan's
+values (`_checked_plan_values`, #499). A row beside an ordinary finding pins
+each: the source keeps a branch `adopt`, which `check` finds as
+`plan-split-branch-taken` after the rule's problems (`check` lists it
+before the entries), or the plan's `tracking_branch:` is a value `execute`
+refuses as `unsafe-value` once the rule's problem is not in the way.
+
 Each row runs `check` and then `execute --yes` on one hand-edited plan, both
 with the same `--local-remote-dir`, so no `gh` runs and no remote is asked,
 and asserts that no leg was made. `execute` refuses every plan here before
@@ -46,14 +55,20 @@ from __future__ import annotations
 
 import pytest
 
+from conftest import git
 from test_adopt_plan_value_order import (
-    ANOTHER_ORG, REFUSED_NAME, both_on, edited, named_first,
-    needs_filter_repo, planned_with)
+    ANOTHER_ORG, BAD_TRACKING_BRANCH, REFUSED_NAME, both_on, edited,
+    findings_of, named_first, needs_filter_repo, planned_with)
 
 ANOTHER = "plan-not-the-source"
 NAME = "naming-unclassified"
 MOVED = "plan-stale"
 UNANSWERED = "plan-unresolved"
+#: Two ordinary findings, which `check` lists after the rule's problems and
+#: `execute` refuses only once none of them is in the way: the split branch
+#: taken, and an unsafe `tracking_branch:`.
+TAKEN = "plan-split-branch-taken"
+TRACKING = "unsafe-value"
 
 #: The order both commands name the four in, the order a person mends them
 #: in (#1113).
@@ -72,13 +87,27 @@ PROBLEM = {
     UNANSWERED: ((), {"unanswered"}),
 }
 
+#: Each ordinary finding, as `PROBLEM` reads it. The split branch taken is
+#: a branch `adopt` the source keeps, made as `test_adopt_split_branch.py`
+#: makes it, and an unsafe `tracking_branch:` is a hand edit.
+ORDINARY = {
+    TAKEN: ((), {"taken"}),
+    TRACKING: ((BAD_TRACKING_BRANCH,), set()),
+}
+
 
 def holding(base, *problems: str) -> str:
     """The text of a plan for a new source at `base` that holds each of
     `problems`, and nothing else wrong with it."""
-    edits = [edit for problem in problems for edit in PROBLEM[problem][0]]
-    holds = set().union(*(PROBLEM[problem][1] for problem in problems))
-    return edited(planned_with(base, holds), *edits)
+    held = {**PROBLEM, **ORDINARY}
+    edits = [edit for problem in problems for edit in held[problem][0]]
+    holds = set().union(*(held[problem][1] for problem in problems))
+    text = edited(planned_with(base, holds), *edits)
+    if "taken" in holds:
+        # `planned_with` makes the source at `base / "Thing"`; the branch
+        # comes after `plan`, which would find it taken itself.
+        git("branch", "adopt", cwd=base / "Thing")
+    return text
 
 
 def code_of(line: str) -> str:
@@ -142,3 +171,53 @@ def test_each_problem_alone_is_named_by_its_own_code(tmp_path, problem):
     assert named_first(executed).startswith(f"REFUSED {problem}: "), (
         executed.stderr)
     assert listed(checked) == [problem], checked.stderr
+
+
+#: The rule's problem beside an ordinary finding, by test id: `(the rule's
+#: problem, the ordinary finding)`. Both commands name the rule's problem
+#: first. `unanswered-and-taken` is left out: `check` lists an unanswered
+#: entry with the entries, after the split branch, and `execute` refuses it
+#: first, so the two disagree on it before and after this fix (#1197).
+WITH_AN_ORDINARY_FINDING = {
+    "another-and-taken": (ANOTHER, TAKEN),
+    "name-and-taken": (NAME, TAKEN),
+    "moved-and-taken": (MOVED, TAKEN),
+    "another-and-tracking": (ANOTHER, TRACKING),
+    "name-and-tracking": (NAME, TRACKING),
+    "moved-and-tracking": (MOVED, TRACKING),
+    "unanswered-and-tracking": (UNANSWERED, TRACKING),
+}
+
+#: The first `Remediation:` line `check` prints, where a row pins it: the
+#: remediation lines follow the findings' order, so the rule's come first.
+FIRST_REMEDIATION = {
+    "another-and-taken": "Remediation: Run `plan` again with `--project",
+}
+
+
+@needs_filter_repo
+@pytest.mark.parametrize("case", sorted(WITH_AN_ORDINARY_FINDING))
+def test_the_rules_problem_is_named_before_an_ordinary_finding(tmp_path,
+                                                               case):
+    """`check` lists the rule's problem before the split branch taken or an
+    unsafe `tracking_branch:`, and lists that finding too, and `execute`
+    refuses the rule's problem before it: both name it first, `check` exit
+    1 and `execute` exit 2, before any leg exists. Where `FIRST_REMEDIATION`
+    names one, `check`'s first `Remediation:` line is the rule's."""
+    problem, ordinary = WITH_AN_ORDINARY_FINDING[case]
+    checked, executed = both_on(holding(tmp_path, problem, ordinary),
+                                tmp_path)
+    assert checked.returncode == 1, checked.stdout + checked.stderr
+    assert executed.returncode == 2, executed.stdout + executed.stderr
+    assert (code_of(named_first(checked)),
+            code_of(named_first(executed))) == (problem, problem), (
+        checked.stderr + executed.stderr)
+    assert named_first(executed).startswith(f"REFUSED {problem}: "), (
+        executed.stderr)
+    assert ordinary in [code_of(line) for line in findings_of(checked)][1:], (
+        checked.stderr)
+    assert listed(checked) == [problem], checked.stderr
+    if case in FIRST_REMEDIATION:
+        fixes = [line for line in checked.stderr.splitlines()
+                 if line.startswith("Remediation:")]
+        assert fixes[0].startswith(FIRST_REMEDIATION[case]), checked.stderr
