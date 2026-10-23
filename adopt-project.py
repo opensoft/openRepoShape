@@ -116,8 +116,10 @@ THREE SUBCOMMANDS, BECAUSE THE MIDDLE ONE IS A HUMAN.
            Source paths the plan keeps in one repository that differ only
            in case, `A` and `a`, or a file and a folder above another
            path, `f` and `F/x`, are `plan-case-twins` on every disk, as a
-           disk that ignores case holds each set as one name (#1161); a
-           set of one name whose paths hold one blob in one mode is a NOTE.
+           disk that ignores case holds each set as one name (#1161). A
+           set of one name whose paths hold one blob in one mode is a NOTE
+           in a leg, and in the root only where it is two paths whose names
+           differ only in their last part.
            It prints what will happen and changes nothing.
   execute  asks about both legs before it makes either (#798), then
            creates the two legs, extracts them with `git filter-repo`, makes
@@ -9284,12 +9286,28 @@ def _unsafe_path_findings(plan: Plan) -> tuple[list[str], list[str]]:
 # stopped at `git rm`, after both legs were pushed.
 #
 # A set of ONE NAME whose paths hold one blob in one mode loses nothing on
-# such a disk: the one path it checks out holds what each path holds, and
-# `execute` there verified `A` and `a` of one blob in every run measured
-# for #1189: 8, 2 kept in the root, 5 in the code leg and 1 in the spec
-# leg. It is a NOTE, not this finding (`_one_blob_twins`). A file
-# against a folder is always the finding: such a disk cannot hold a file
-# and a folder under one name, whatever their bytes.
+# such a disk: the one path it checks out holds what each path holds. In a
+# leg it is a NOTE, not this finding (`_one_blob_twins`): `execute` there
+# verified every such set measured for #1189, two files in one folder in 6
+# runs, 5 in the code leg and 1 in the spec leg, and for its second review
+# folder twins (`src/D/x`, `src/d/x`), alone and beside folders that only
+# merge, and symlinks to one target, 1 run each. In the root the NOTE takes
+# only two paths whose names differ only in their last part, `A` and `a`,
+# the shape `execute` verified there in every run measured: 2 of files,
+# and for the second review 1 of symlinks to one target and 1 of
+# executables; and with the rule above, in 2 runs each, files `A` and `a`
+# and files `D/A` and `D/a` in one folder: `check` printed the NOTE and
+# `plan ok`, and `execute` verified. Other sets of one blob in the root met
+# git's `will not add file alias` there, which the #654 rehearsal reports
+# as `plan-file-reencoded`, in 1 run each for the second review: folder
+# twins (`D/x`, `d/x`), alone and beside folders that only merge, in
+# `check`; three paths (`AB`, `Ab`, `ab`) in `execute` alone, before any
+# leg, after `check` had said `plan ok`. With the rule above, in 2 runs
+# each, `check` met it for both, beside `plan-case-twins`, and `execute`
+# refused both as `plan-case-twins` before any leg. So in the root they
+# stay this finding, and its remediation, a rename. A file against a
+# folder is always the finding: such a disk cannot hold a file and a folder
+# under one name, whatever their bytes.
 
 #: `check`'s finding, and the code of `execute`'s refusal, for paths the
 #: plan keeps in one repository that a disk ignoring case holds as one.
@@ -9334,12 +9352,19 @@ def _case_twin_sets(paths: list[str]) -> list[list[str]]:
     return [named for named in sets.values() if len(named) > 1]
 
 
-def _one_blob_twins(named: list[str], kinds: dict) -> bool:
-    """Whether every path of the set `named` folds to ONE name and holds one
-    blob in one mode, `kinds` giving each path's `(mode, object)`: the one
-    path a disk ignoring case checks out then holds what each holds. A
-    file against a folder is never such a set, nor are submodules, whose
-    object is a commit and no blob."""
+def _one_blob_twins(named: list[str], kinds: dict, leg: str) -> bool:
+    """Whether the set `named`, which the plan keeps in the repository
+    `leg:` `leg` sends it to, is left to the NOTE: every path folds to ONE
+    name and holds one blob in one mode, `kinds` giving each path's `(mode,
+    object)`, so the one path a disk ignoring case checks out holds what
+    each holds. In the root, only TWO paths whose names differ only in
+    their last part, `A` and `a`, are: folder twins (`D/x`, `d/x`) and sets
+    of three or more met git's `will not add file alias` there, and stay
+    the finding. A file against a folder is never such a set, nor are
+    submodules, whose object is a commit and no blob."""
+    if leg == "root" and (len(named) != 2 or len(
+            {path.rpartition("/")[0] for path in named}) != 1):
+        return False
     return (len({path.casefold() for path in named}) == 1
             and len({kinds[path] for path in named}) == 1
             and kinds[named[0]][0] != GITLINK_MODE)
@@ -9352,10 +9377,11 @@ def _case_twin_findings(plan: Plan, tree: list,
     keeps case twins in (`_case_twin_sets`), in `TWIN_REPOSITORIES`' order,
     naming `NAMED_PATHS` of them set by set and counting the rest; what to
     print once after every finding; and a NOTE for each repository whose
-    sets of one name hold one blob in one mode (`_one_blob_twins`), which
-    the finding leaves out. Only the paths ONE answered entry sends there
-    are asked (`_answered_legs`), and none git refuses, `refused`:
-    `plan-path-git-refuses` names those."""
+    sets of one name hold one blob in one mode, in the root only sets of
+    two paths whose names differ only in their last part
+    (`_one_blob_twins`), which the finding leaves out. Only the paths ONE
+    answered entry sends there are asked (`_answered_legs`), and none git
+    refuses, `refused`: `plan-path-git-refuses` names those."""
     held = set(refused)
     kinds = {path: (mode, oid) for path, mode, oid, _ in tree}
     answered = _answered_legs(plan.entries, [path for path, _, _, _ in tree
@@ -9364,7 +9390,8 @@ def _case_twin_findings(plan: Plan, tree: list,
     for leg, where in TWIN_REPOSITORIES.items():
         sets = _case_twin_sets([path for path, (answer, _) in answered.items()
                                 if answer == leg])
-        alike = [named for named in sets if _one_blob_twins(named, kinds)]
+        alike = [named for named in sets
+                 if _one_blob_twins(named, kinds, leg)]
         sets = [named for named in sets if named not in alike]
         if alike:
             same = [path for named in alike for path in named]
@@ -9389,7 +9416,7 @@ def _case_twin_findings(plan: Plan, tree: list,
             f"{_named_and_counted(twins)}. A disk that ignores case, as a "
             "macOS or Windows disk does by default, holds each set as one "
             "name: a clone made there checks out only one path of each set, "
-            "and `execute` would stop there before any leg exists, at git's "
+            "and `execute` could stop there before any leg exists, at git's "
             "`will not add file alias`, or after both legs are pushed, as "
             "`adopt-lost` or at `git rm` mounting the legs, so `execute` "
             "refuses them on every disk.")
@@ -9568,7 +9595,8 @@ def _entry_findings(plan: Plan, source: Source,
     about the answers, and they ask no path git refuses, which the finding
     before them names. A set of one name whose paths hold one blob in one
     mode loses nothing there, and is a NOTE instead, listed first of the
-    NOTEs returned here.
+    NOTEs returned here: in a leg, and in the root where it is two paths
+    whose names differ only in their last part.
 
     `check`'S THROWAWAY REPOSITORIES (#910) are made in the work directory.
     Each but #183's symlink probe is made with the source's object format

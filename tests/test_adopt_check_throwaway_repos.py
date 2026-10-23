@@ -536,7 +536,7 @@ def twins_kept(sets: str, where: str, paths: str, named: str) -> str:
             "case, or one naming in another case a folder above another: "
             f"{named}. A disk that ignores case, as a macOS or Windows disk "
             "does by default, holds each set as one name: a clone made there "
-            "checks out only one path of each set, and `execute` would stop "
+            "checks out only one path of each set, and `execute` could stop "
             "there before any leg exists, at git's `will not add file "
             "alias`, or after both legs are pushed, as `adopt-lost` or at "
             "`git rm` mounting the legs, so `execute` refuses them on every "
@@ -675,7 +675,11 @@ def test_twins_come_before_coverage_and_name_executes_refusal(
 #: own, the plan's answers, the finding, the NOTE)`: r1189's SHOULD 5. A
 #: set of one name whose paths hold one blob in one mode is checked out as
 #: one path holding what each holds, and no path is lost; its own blobs
-#: lose one. A file against a folder is the finding with one blob too.
+#: lose one. A file against a folder is the finding with one blob too. In
+#: the root the NOTE takes only two paths whose names differ only in their
+#: last part (r1189b's SHOULD 1): on a disk that ignores case, folder twins
+#: and three paths of one blob there met git's `will not add file alias`,
+#: and in a leg they verified.
 ONE_BLOB = [
     pytest.param(("A", "a"), False, {"A": ROOT, "a": ROOT}, [],
                  [one_blob_twins("1 set", ROOT_TWINS, "2 paths",
@@ -692,6 +696,35 @@ ONE_BLOB = [
                  [twins_kept("1 set", ROOT_TWINS, "2 paths",
                              "`F/x` and `f`")],
                  [], id="a-folder-and-a-file-with-one-blob"),
+    pytest.param(("D/x", "d/x"), False, {"D/": ROOT, "d/": ROOT},
+                 [twins_kept("1 set", ROOT_TWINS, "2 paths",
+                             "`D/x` and `d/x`")],
+                 [], id="folder-twins-of-one-blob-in-the-root"),
+    pytest.param(("AB", "Ab", "ab"), False,
+                 dict.fromkeys(("AB", "Ab", "ab"), ROOT),
+                 [twins_kept("1 set", ROOT_TWINS, "3 paths",
+                             "`AB`, `Ab` and `ab`")],
+                 [], id="three-of-one-blob-in-the-root"),
+    pytest.param(("D/A", "D/a"), False, {"D/": ROOT}, [],
+                 [one_blob_twins("1 set", ROOT_TWINS, "2 paths",
+                                 "`D/A` and `D/a`")],
+                 id="two-of-one-blob-in-one-folder-of-the-root"),
+    pytest.param(("src/D/x", "src/d/x"), False, {}, [],
+                 [one_blob_twins("1 set", CODE_TWINS, "2 paths",
+                                 "`src/D/x` and `src/d/x`")],
+                 id="folder-twins-of-one-blob-in-the-code-leg"),
+    # The spec leg takes the NOTE as the code leg does: only the root asks
+    # for two paths in one folder.
+    pytest.param(("specs/D/x", "specs/d/x"), False, {}, [],
+                 [one_blob_twins("1 set", SPEC_TWINS, "2 paths",
+                                 "`specs/D/x` and `specs/d/x`")],
+                 id="folder-twins-of-one-blob-in-the-spec-leg"),
+    # A file against a folder in a leg, one blob and one last name: the
+    # whole paths fold to two names, so it is the finding there too.
+    pytest.param(("src/F/f", "src/f"), False, {},
+                 [twins_kept("1 set", CODE_TWINS, "2 paths",
+                             "`src/F/f` and `src/f`")],
+                 [], id="a-folder-and-a-file-of-one-blob-in-the-code-leg"),
 ]
 
 
@@ -711,11 +744,12 @@ def test_a_set_of_one_blob_is_a_note_and_not_the_finding(
     assert (TWINS_REMEDY in result.stderr) is bool(found), result.stderr
 
 
-def asked_of(adopter, rows: list[tuple[str, str, str]]):
+def asked_of(adopter, rows: list[tuple[str, str, str]], leg: str = ROOT):
     """`_case_twin_findings` over a tree of `(path, mode, object)` rows, the
-    plan keeping each in the root: its findings and NOTEs, no remediation
-    but where there is a finding."""
-    plan = SimpleNamespace(entries=[{"path": path, "leg": ROOT}
+    plan keeping each in the repository `leg:` `leg` sends it to, the root
+    unless named: its findings and NOTEs, no remediation but where there is
+    a finding."""
+    plan = SimpleNamespace(entries=[{"path": path, "leg": leg}
                                     for path, _, _ in rows])
     found, remedies, notes = adopter._case_twin_findings(
         plan, [(path, mode, oid, 1) for path, mode, oid in rows])
@@ -762,6 +796,12 @@ ONE_BLOB_ROWS = [
                  [], [one_blob_twins("1 set", ROOT_TWINS, "2 paths",
                                      "`STRASSE` and `straße`")],
                  id="sharp-s-and-ss-of-one-blob"),
+    # Two paths in the root whose names differ in their folder AND their
+    # last part are not the NOTE's shape: their folders are twins too.
+    pytest.param([("D/A", "100644", ONE), ("d/a", "100644", ONE)],
+                 [twins_kept("1 set", ROOT_TWINS, "2 paths",
+                             "`D/A` and `d/a`")],
+                 [], id="two-of-one-blob-in-folders-in-another-case"),
 ]
 
 
@@ -769,6 +809,19 @@ ONE_BLOB_ROWS = [
 def test_only_one_blob_in_one_mode_is_left_to_the_note(adopter, rows, found,
                                                        noted):
     assert asked_of(adopter, rows) == (found, noted)
+
+
+@pytest.mark.parametrize("mode", ["100755", "120000"],
+                         ids=["executable", "symlink"])
+def test_every_path_of_a_leg_set_is_asked_its_mode(adopter, mode):
+    """Three paths of one name and one blob in the code leg, the last of
+    them an executable or a symlink: the set holds two modes, so it is the
+    finding, and no NOTE, whichever path differs."""
+    rows = [("src/AB", "100644", ONE), ("src/Ab", "100644", ONE),
+            ("src/ab", mode, ONE)]
+    assert asked_of(adopter, rows, "code") == (
+        [twins_kept("1 set", CODE_TWINS, "3 paths",
+                    "`src/AB`, `src/Ab` and `src/ab`")], [])
 
 
 def test_the_one_blob_note_is_the_first_of_the_entries_notes(
@@ -840,6 +893,34 @@ def test_execute_refuses_case_twins_before_any_leg(adopter, monkeypatch,
         planned(source, tmp_path, {"F/": ROOT, "f": ROOT}), tmp_path)
     assert refusal.code == PLAN_CASE_TWINS
     assert TWINS_REMEDY in refusal.remediation
+
+
+def test_execute_takes_sets_of_one_blob_past_checks_findings(
+        adopter, monkeypatch, tmp_path):
+    """The NOTE is no refusal: a plan keeping sets of one blob in the root
+    (`A`, `a`) and in the code leg (`src/A`, `src/a`) is `plan ok`, and
+    `execute` goes on past `check`'s findings to its next step, which a
+    sentinel stops here before any leg exists."""
+    source = a_source(tmp_path)
+    with_paths(source, ("A", "a", "src/A", "src/a"))
+    plan = planned(source, tmp_path, {"A": ROOT, "a": ROOT})
+    assert findings(plan) == []
+
+    class NextStep(Exception):
+        """`execute` reached the step after `_refuse_what_check_finds`."""
+
+    def next_step(*_args):
+        raise NextStep
+
+    monkeypatch.setattr(adopter, "_require_filter_repo", lambda: None)
+    monkeypatch.setattr(adopter, "_refuse_symlinks_checked_out_as_files",
+                        next_step)
+    remotes = tmp_path / "remotes"
+    with pytest.raises(NextStep):
+        adopter.cmd_execute(Namespace(
+            plan=str(plan), source=None, local_remote_dir=remotes,
+            allow_empty_leg=[], yes=True, work_dir=tmp_path / "work"))
+    assert not remotes.exists()
 
 
 def test_on_a_disk_that_ignores_case_check_names_the_twins_too(tmp_path):
