@@ -160,6 +160,36 @@ def test_a_value_the_index_s_file_alone_gives_is_named_beside_a_clean_one(
     ends_well(holder, env, family, tmp_path)
 
 
+def test_a_value_here_and_in_head_ends_staging_it_with_no_index_s_file(
+        family, holder, offline, tmp_path):
+    """`update = !true` committed in MEMBER's section, the work tree's
+    file on disk giving it too, and `git rm --cached` has taken
+    `.gitmodules` out of the index: git reads the work tree's here, and
+    the index's, which a plain `git commit` records, gives nothing. HEAD's
+    giving the value is what makes the lines end staging the work tree's
+    file, not the index's: with no stage line, a plain `git commit` after
+    them records `.gitmodules` gone from HEAD. Typed, then a plain `git
+    commit`: HEAD gives no value, and the gate and a plain clone pass."""
+    env = cloning(offline, tmp_path, family)
+    data = head_bytes(holder, env)
+    committed_gitmodules(holder, env, valued(data, ROW, NOT_RUN))
+    raw(holder, env, "rm", "-q", "--cached", "--", GITMODULES)
+
+    found = found_alike(holder, *MODES)
+
+    assert found == [
+        VALUE_SAID.format(where="here and in HEAD, which a clone reads",
+                          dies=DIES_HERE)
+        + "Take the key out by hand, in a POSIX shell, then stage and "
+        "commit .gitmodules:\n    git config -f .gitmodules --unset-all "
+        f"submodule.{ROW}.update\n    {STAGE}"]
+    typed_in_order(holder, env, validate(holder, "--no-members"))
+    committed_as_staged(holder, env)
+    assert head_bytes(holder, env) == data
+    assert raw(holder, env, "status", "--porcelain").stdout == b""
+    ends_well(holder, env, family, tmp_path)
+
+
 # --- N2: an index's file git cannot parse ------------------------------------
 
 #: What comes before the line git cannot parse in the index's file, the
