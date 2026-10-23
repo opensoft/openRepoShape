@@ -155,6 +155,8 @@ GIT_HOOKS = ".git/hooks"
 NOWHERE_MD = "nowhere.md"
 #: The probe B-OFF makes, as tests put a stand-in in its place.
 PROBE = "_checks_out_symlinks"
+#: And the probe of how git keeps the clone's refs (#904).
+REF_PROBE = "_clone_ref_store"
 SYMLINKS_OFF_CODE = "adopt-symlinks-off"
 #: What the assembly's clone holds in its own `.git` when the shape is
 #: written, besides `HEAD`: the files git makes in every clone it checks
@@ -162,6 +164,28 @@ SYMLINKS_OFF_CODE = "adopt-symlinks-off"
 #: and the stores of the legs `execute` has mounted (2b of #183's re-verify).
 GIT_KEPT = (".git/index", ".git/packed-refs", ".git/logs/HEAD",
             ".git/refs/heads", ".git/objects/pack", ".git/modules/spec")
+#: And the names in those directories that #904 names, where it counted
+#: each directory with whatever might be under it (L1-J1 of #457): what git
+#: makes in every such clone on its files backend, the branch the clone
+#: checks out (the source's HEAD branch, `main` here), `origin/HEAD`, the
+#: split branch and a log of each among them.
+GIT_NAMED = (".git/config", ".git/refs/tags", ".git/objects/info",
+             ".git/modules/code", ".git/refs/heads/main",
+             ".git/refs/remotes/origin/HEAD", f".git/refs/heads/{BRANCH}",
+             ".git/logs/refs/heads/main",
+             ".git/logs/refs/remotes/origin/HEAD",
+             f".git/logs/refs/heads/{BRANCH}")
+#: Names in those directories that the clone does NOT hold, which checked
+#: ok while they were counted whole: `execute` wrote the shape's file into
+#: each, in the clone's `.git` (L1-J1 of #457).
+GIT_MISSING = (".git/refs/remotes/origin/main", ".git/logs/refs/heads/nope",
+               ".git/modules/nope", ".git/refs/heads/nope")
+#: A name under no directory the clone's `.git` holds; one in its object
+#: store, which `check` does not read; and one in a leg's store, which is
+#: made after `check`.
+GIT_NO_DIRECTORY = ".git/nowhere/x"
+GIT_OBJECT = ".git/objects/zz/nothing"
+GIT_IN_A_STORE = ".git/modules/spec/nope"
 SPEC_OTHER = "spec/docs/other.md"
 VENDOR = "vendor"
 PERSONAL = "a personal file\n"
@@ -407,6 +431,65 @@ def no_filter_repo_probe(adopter, monkeypatch):
 # ---------------------------------------------------------------------------
 
 NOT_IN_THE_TREE = "is not in the source tree"
+#: Why a link the shape writes through cannot lead it into the assembly's
+#: own `.git` (#904): ABOVE a path the shape writes, never (D9); AT one, to
+#: a name the clone does not hold by then, the shape's file would go into
+#: `.git`, or find no directory there; and where `check` does not read
+#: what is there, which of the two cannot be told.
+IN_ITS_GIT = "is in the assembly's own `.git`"
+NOT_INTO_GIT = ("a symlink above a path the shape writes is followed only "
+                "through directories the root holds, never into `.git`")
+ABOVE_INTO_GIT = f"{IN_ITS_GIT}, and {NOT_INTO_GIT}"
+NOTHING_THERE = (f"{IN_ITS_GIT}, where its clone holds nothing of that name "
+                 "by the time the shape is written, so ")
+WRITTEN_INTO_GIT = (NOTHING_THERE + "the shape would write its file through "
+                    "the link into `.git`, where no commit holds it")
+NO_DIRECTORY_IN_GIT = (NOTHING_THERE + "the shape would find no directory "
+                       "there to write its file in, and stop after both leg "
+                       "repositories were created and pushed")
+OBJECT_STORE = ("the clone's object store, which holds what the source's own "
+                "store holds when `execute` clones it and the objects "
+                "`execute` writes before the shape")
+SPEC_STORE = ("the store of the spec leg, which `git submodule add` makes "
+              "from that leg, with this machine's git template, after this "
+              "check")
+REFTABLES = ("where the reftable backend keeps the clone's refs, in tables "
+             "git names as it writes them")
+#: Where the source's HEAD is on no branch: each link into the refs of the
+#: branch `git clone` checks out, which git guesses, and the directory of
+#: them `check` reads nothing in, with what it holds.
+GUESSED = "which git guesses where the source's HEAD is on no branch"
+GUESSED_REFS = {
+    ".git/refs/heads/main": (
+        ".git/refs/heads",
+        f"where `git clone` writes the branch it checks out, {GUESSED}"),
+    ".git/refs/remotes/origin/HEAD": (
+        ".git/refs/remotes",
+        "where `git clone` writes `origin/HEAD` for the branch it checks "
+        f"out, {GUESSED}"),
+    ".git/logs/refs/heads/main": (
+        ".git/logs/refs/heads",
+        "where `git clone` writes the reflog of the branch it checks out, "
+        f"{GUESSED}"),
+    ".git/logs/refs/remotes/origin/HEAD": (
+        ".git/logs/refs/remotes",
+        "where `git clone` writes the reflog of `origin/HEAD` for the branch "
+        f"it checks out, {GUESSED}"),
+}
+
+
+def inside(top: str, holds: str) -> str:
+    """Where a name is that `check` reads nothing of: in `top`, which holds
+    `holds`."""
+    return f"inside {ticked(top)}, {holds}, and `check` reads nothing there"
+
+
+def unread(top: str, holds: str) -> str:
+    """Why a link AT a path the shape writes is refused where it leads into
+    such a place."""
+    return (f"is {inside(top, holds)}, so whether `place` would write the "
+            "shape's copy beside it or the shape's file into `.git` cannot "
+            "be told before any leg exists")
 SPEC_MOUNT = "it enters `spec`, where the plan mounts the spec leg"
 ON_THIS_MACHINE = ("an absolute path: a place on this machine, not in the "
                    "assembly")
@@ -478,7 +561,7 @@ REFUSED = [
                  id="into-the-other-mount"),
     pytest.param({}, {GITHUB: GIT_INFO}, {GITHUB: ROOT},
                  (GITHUB, GIT_INFO, WORKFLOW,
-                  leads(GITHUB, GIT_INFO, NOT_IN_THE_TREE)),
+                  leads(GITHUB, GIT_INFO, ABOVE_INTO_GIT)),
                  id="D9-into-dot-git"),
     pytest.param({}, {GITHUB: "../Northwind/ci"}, {GITHUB: ROOT},
                  (GITHUB, "../Northwind/ci", WORKFLOW, climbs(GITHUB)),
@@ -553,12 +636,54 @@ REFUSED = [
     # `.git`, where no commit holds it.
     pytest.param({}, {CLAUDE: GIT_DESCRIPTION}, {CLAUDE: ROOT},
                  (CLAUDE, GIT_DESCRIPTION, CLAUDE,
-                  leads(CLAUDE, GIT_DESCRIPTION, NOT_IN_THE_TREE)),
+                  leads(CLAUDE, GIT_DESCRIPTION, WRITTEN_INTO_GIT)),
                  id="at-a-path-to-what-only-a-template-puts-in-dot-git"),
     pytest.param({}, {CLAUDE: GIT_HOOKS}, {CLAUDE: ROOT},
                  (CLAUDE, GIT_HOOKS, CLAUDE,
-                  leads(CLAUDE, GIT_HOOKS, NOT_IN_THE_TREE)),
+                  leads(CLAUDE, GIT_HOOKS, WRITTEN_INTO_GIT)),
                  id="at-a-path-to-the-hooks-only-a-template-makes"),
+    # #904, L1-J1 of #457: a name the clone's `.git` does not hold, in a
+    # directory git makes there, which checked ok while `.git/objects`,
+    # `.git/refs`, `.git/logs` and `.git/modules` were counted whole.
+    *(pytest.param({}, {CLAUDE: missing}, {CLAUDE: ROOT},
+                   (CLAUDE, missing, CLAUDE,
+                    leads(CLAUDE, missing, WRITTEN_INTO_GIT)),
+                   id="J1-at-a-path-to-no-" + missing[5:].replace("/", "-"))
+      for missing in GIT_MISSING),
+    pytest.param({}, {CLAUDE: GIT_NO_DIRECTORY}, {CLAUDE: ROOT},
+                 (CLAUDE, GIT_NO_DIRECTORY, CLAUDE,
+                  leads(CLAUDE, GIT_NO_DIRECTORY, NO_DIRECTORY_IN_GIT)),
+                 id="at-a-path-to-no-directory-in-dot-git"),
+    pytest.param({}, {CLAUDE: GIT_OBJECT}, {CLAUDE: ROOT},
+                 (CLAUDE, GIT_OBJECT, CLAUDE,
+                  leads(CLAUDE, GIT_OBJECT,
+                        unread(".git/objects", OBJECT_STORE))),
+                 id="J1-at-a-path-into-the-object-store"),
+    pytest.param({}, {CLAUDE: GIT_IN_A_STORE}, {CLAUDE: ROOT},
+                 (CLAUDE, GIT_IN_A_STORE, CLAUDE,
+                  leads(CLAUDE, GIT_IN_A_STORE,
+                        unread(".git/modules/spec", SPEC_STORE))),
+                 id="at-a-path-into-a-legs-store"),
+    # J2 of #457: a `..` in the clone's `.git`. ABOVE a path the shape
+    # writes it is refused, as D9 refuses the link, and says so; AT one it
+    # steps back out only of a directory git makes there.
+    pytest.param({}, {GITHUB: ".git/refs/.."}, {GITHUB: ROOT},
+                 (GITHUB, ".git/refs/..", WORKFLOW,
+                  "it passes through `.git/refs`, in the assembly's own "
+                  f"`.git`, and {NOT_INTO_GIT}"),
+                 id="J2-above-a-path-back-out-of-dot-git-refs"),
+    pytest.param({}, {CLAUDE: ".git/refs/nope/../HEAD"}, {CLAUDE: ROOT},
+                 (CLAUDE, ".git/refs/nope/../HEAD", CLAUDE,
+                  "it passes through `.git/refs/nope`, in the assembly's own "
+                  "`.git`, where its clone holds no directory of that name by "
+                  "the time the shape is written"),
+                 id="J2-at-a-path-back-out-of-no-directory-in-dot-git"),
+    pytest.param({}, {CLAUDE: ".git/objects/ab/../info"}, {CLAUDE: ROOT},
+                 (CLAUDE, ".git/objects/ab/../info", CLAUDE,
+                  "it passes through `.git/objects/ab`, "
+                  f"{inside('.git/objects', OBJECT_STORE)}, so whether it is "
+                  "a directory cannot be told before any leg exists"),
+                 id="J2-at-a-path-back-out-of-the-object-store"),
     # B2: the copy under `shape/` lands on something already there.
     pytest.param({}, {SHAPE_DIR: "."}, {SHAPE_DIR: ROOT},
                  (SHAPE_DIR, ".", SHAPE_README,
@@ -626,8 +751,9 @@ def test_one_finding_per_link_however_many_shape_paths_run_through_it(
 def test_a_link_at_the_copy_is_one_finding_by_the_rule_that_sees_it(
         adopter, no_filter_repo_probe, tmp_path):
     """A symlink kept AT the copy under `shape/` of a path the root holds is
-    #262's: `plan-root-blocks-shape-copy` names it, the shape's copy written
-    THROUGH it, and this rule does not say the same link again. `execute`
+    #262's: `plan-root-blocks-shape-copy` names it, saying the materializer
+    writes no copy through it and stops there (#904, L1-K9 of #457), and
+    this rule does not say the same link again. `execute`
     refuses with that line, before any leg. Where the root holds the path
     only through a symlink above it (`.github -> ci`, the project's own
     `ci/workflows/validate.yml` kept), #262's rule, which follows no link,
@@ -643,7 +769,8 @@ def test_a_link_at_the_copy_is_one_finding_by_the_rule_that_sees_it(
             if line.startswith(COPY_FINDING)]
     assert len(said) == 1, checked.stderr
     assert f"That path is the symlink {ticked(SHAPE_README)}." in said[0]
-    assert "`execute` would write the copy through it " in said[0]
+    assert ("the materializer writes no copy through it: it would stop "
+            "there (`materialize-copy-blocked`)") in said[0]
     refusal = refused_by(adopter, execute_args(held, plan))
     assert refusal.code == COPY_IN_THE_WAY
     assert f"  {said[0]}" in refusal.detail.splitlines()
@@ -954,6 +1081,142 @@ def test_a_link_at_a_pins_file_is_one_finding_by_the_rule_that_sees_it(
     no_leg_was_created(tmp_path)
 
 
+#: What `plan-root-holds-pin` says of a declared pin's file.
+DECLARED_HELD = ("the pin the plan declares on `openGlass`. The shape's pin "
+                 "would be written beside it, under `shape/`, and the root's "
+                 "own `validate-pins.py` would read the source's file as that "
+                 "pin")
+#: `(files, links, what is kept at the pin's file, the link it is reached
+#: through, aside)`: rv183g's source, `governance/` kept, holding the pin's
+#: file, reached through a kept link above `contracts/`. `place` finds it
+#: there, writes the pin beside it, and the root's `contracts/
+#: openglass-pin.yaml` is the source's: `check` passed each, and the
+#: root's first bootstrap refused the file as `yaml-unparsable` and the
+#: link as `neutral-pin-unreadable` (#904, L1-K2 of #457).
+HELD_THROUGH = [
+    pytest.param({GOVERNANCE_PIN: "not a pin\n"}, {CONTRACTS: GOVERNANCE},
+                 "the file", CONTRACTS, "", id="a-file"),
+    pytest.param({}, {CONTRACTS: GOVERNANCE, GOVERNANCE_PIN: README},
+                 "the symlink", CONTRACTS, "", id="a-link-to-the-readme"),
+    pytest.param({GOVERNANCE_PIN: "not a pin\n"}, {"Contracts": GOVERNANCE},
+                 "the file", "Contracts", CASE_ASIDE, id="through-a-case-twin"),
+]
+
+
+def held_pins(result) -> list[str]:
+    return [line for line in result.stderr.splitlines()
+            if line.startswith(f"FINDING {ROOT_HOLDS_PIN}: ")]
+
+
+def held_through(kind: str, link: str, aside: str, held: str, rel: str,
+                 written: str) -> str:
+    """`plan-root-holds-pin` for `held`, kept under `governance/` and
+    reached as the pin's file `rel` through the symlink `link`."""
+    return (f"FINDING {ROOT_HOLDS_PIN}: the plan keeps {kind} {ticked(held)} "
+            "in the assembly root under the entry `governance/`, at "
+            f"{ticked(rel)} through the symlink {ticked(link)} to "
+            f"`governance`{aside}, where `execute` writes {written}: send "
+            f"{ticked(link)} to a leg or `drop` it, or rename {ticked(held)} "
+            "in the source and re-run `plan`.")
+
+
+@pytest.mark.parametrize(("files", "links", "kind", "link", "aside"),
+                         HELD_THROUGH)
+def test_a_pins_file_the_root_keeps_through_a_link_is_refused_before_any_leg(
+        adopter, no_filter_repo_probe, links_as_links, tmp_path, files, links,
+        kind, link, aside):
+    """The pin's file is asked through the links the plan keeps above it,
+    as the walk follows it, and the source's file there is #273's
+    `plan-root-holds-pin`, once, naming the link; `execute` refuses with the
+    same line before any leg. A link there that leads nowhere is the walk's
+    still (`PIN_THROUGH`): one link, one finding."""
+    base_files, _ = THROUGH_GOVERNANCE
+    _, plan = planned(tmp_path, {**base_files, **files}, links,
+                      {"governance/": ROOT, link: ROOT})
+    declare(plan, A_PIN)
+    checked = check(plan)
+    assert checked.returncode == 1, checked.stderr + checked.stdout
+    assert symlink_findings(checked) == [], checked.stderr
+    line = held_through(kind, link, aside, GOVERNANCE_PIN, PIN_FILE,
+                        DECLARED_HELD)
+    assert held_pins(checked) == [line], checked.stderr
+    refusal = refused_by(adopter, execute_args(tmp_path, plan))
+    assert refusal.code == ROOT_HOLDS_PIN
+    assert f"  {line}" in refusal.detail.splitlines()
+    no_leg_was_created(tmp_path)
+
+
+def test_the_shapes_own_pin_the_root_keeps_through_a_link_is_refused_too(
+        adopter, no_filter_repo_probe, links_as_links, tmp_path):
+    """The same for the shape's own pin, with no pin declared: `place`
+    wrote it beside `governance/shape-pin.yaml`, and `execute`'s
+    verification failed as `adopt-shape-pin-unreadable` after both legs
+    (measured on main 6c861635 and 5e539a87)."""
+    files, legs = THROUGH_GOVERNANCE
+    held = f"{GOVERNANCE}/shape-pin.yaml"
+    _, plan = planned(tmp_path, {**files, held: "x\n"},
+                      {CONTRACTS: GOVERNANCE}, legs)
+    checked = check(plan)
+    assert checked.returncode == 1, checked.stderr + checked.stdout
+    said = held_pins(checked)
+    assert len(said) == 1, checked.stderr
+    whole = held_through("the file", CONTRACTS, "", held, SHAPE_PIN,
+                         "the shape's own pin")
+    head, _, tail = whole.partition("the shape's own pin")
+    assert said[0].startswith(head + "the shape's own pin: "), said[0]
+    assert said[0].endswith(tail), said[0]
+    refusal = refused_by(adopter, execute_args(tmp_path, plan))
+    assert refusal.code == ROOT_HOLDS_PIN
+    no_leg_was_created(tmp_path)
+
+
+def test_a_directory_at_a_pins_file_through_a_link_names_what_it_reaches(
+        adopter, no_filter_repo_probe, links_as_links, tmp_path):
+    """A directory the root keeps where the walk reaches the pin's file,
+    `governance/openglass-pin.yaml/`, is `plan-root-holds-pin` too: the
+    finding names the first file kept in it (`README.md`, which sorts
+    before `notes.md`), inside the pin's file, and its fix renames the
+    directory the walk reaches, not that file (rv1091's NIT 4 on #1091).
+    Before #1091 `check` passed it (measured on main 823624d9). The
+    directory holds two files, so that the first is not the last
+    (rv1140's NIT 1)."""
+    files, legs = THROUGH_GOVERNANCE
+    held = f"{GOVERNANCE_PIN}/{README}"
+    later = f"{GOVERNANCE_PIN}/notes.md"
+    _, plan = planned(tmp_path, {**files, later: "# notes\n",
+                                 held: "# readme\n"},
+                      {CONTRACTS: GOVERNANCE}, legs)
+    declare(plan, A_PIN)
+    checked = check(plan)
+    assert checked.returncode == 1, checked.stderr + checked.stdout
+    assert symlink_findings(checked) == [], checked.stderr
+    line = (f"FINDING {ROOT_HOLDS_PIN}: the plan keeps the file "
+            f"{ticked(held)} in the assembly root under the entry "
+            f"`governance/`, inside {ticked(PIN_FILE)} through the symlink "
+            f"{ticked(CONTRACTS)} to `governance`, where `execute` writes "
+            f"{DECLARED_HELD}: send {ticked(CONTRACTS)} to a leg or `drop` "
+            f"it, or rename {ticked(GOVERNANCE_PIN)} in the source and "
+            "re-run `plan`.")
+    assert held_pins(checked) == [line], checked.stderr
+    refusal = refused_by(adopter, execute_args(tmp_path, plan))
+    assert refusal.code == ROOT_HOLDS_PIN
+    assert f"  {line}" in refusal.detail.splitlines()
+    no_leg_was_created(tmp_path)
+
+
+def test_a_pins_file_through_a_link_to_where_nothing_is_kept_is_no_finding(
+        links_as_links, tmp_path):
+    """The control: nothing is kept at `governance/openglass-pin.yaml`, so
+    `place` writes the pin there, through the link, and the root reads it
+    at `contracts/openglass-pin.yaml`, as on main."""
+    files, legs = THROUGH_GOVERNANCE
+    _, plan = planned(tmp_path, files, {CONTRACTS: GOVERNANCE}, legs)
+    declare(plan, A_PIN)
+    checked = check(plan)
+    assert held_pins(checked) == [], checked.stderr
+    assert symlink_findings(checked) == [], checked.stderr
+
+
 #: `pins:` blocks `execute` writes no pin file from, with the code `check`
 #: names each by.
 NOT_A_PIN = [
@@ -1245,6 +1508,17 @@ ACCEPTED = [
                    id="at-a-path-to-the-clones-own-"
                       + kept[5:].replace("/", "-"))
       for kept in GIT_KEPT),
+    # #904: what git makes in those directories, named (L1-J1 of #457);
+    # and J2's `..` back out of a directory git makes there, which was
+    # refused as no directory in the assembly root, as main adopts it.
+    *(pytest.param({}, {CLAUDE: named}, {CLAUDE: ROOT},
+                   id="at-a-path-to-the-clones-own-"
+                      + named[5:].replace("/", "-"))
+      for named in GIT_NAMED),
+    pytest.param({}, {CLAUDE: ".git/refs/../HEAD"}, {CLAUDE: ROOT},
+                 id="J2-at-a-path-back-out-of-dot-git-refs"),
+    pytest.param({}, {CLAUDE: ".git/../AGENTS.md"}, {CLAUDE: ROOT},
+                 id="J2-at-a-path-back-out-of-dot-git"),
 ]
 
 #: Links no path the shape writes runs through: main keeps each exactly as
@@ -1366,6 +1640,7 @@ def test_an_adoption_with_no_link_beneath_a_shape_path_makes_no_probe(
     """An ordinary adoption runs exactly as before: nothing is made in the
     work directory to ask `git` a question this plan does not raise."""
     monkeypatch.setattr(adopter, PROBE, no_probe)
+    monkeypatch.setattr(adopter, REF_PROBE, no_probe)
     links_as_files(monkeypatch)
     _, plan = planned(tmp_path, files, links, legs)
     loaded = adopter.Plan.load(plan)
@@ -1630,6 +1905,238 @@ def test_a_work_directory_no_probe_can_be_made_in_reports_as_before(
             loaded, loaded.open_source(None, unwritable_work))
     assert caught.value.code == ROOT_SYMLINK
     assert f"  {line}" in caught.value.detail.splitlines()
+
+
+# ---------------------------------------------------------------------------
+# What the clone's own `.git` holds, as this machine's git keeps refs (#904)
+# ---------------------------------------------------------------------------
+#
+# Which names git makes in the clone's `.git` depends on how git here keeps
+# refs: on its files backend, its default, or on the reftable backend (git
+# 2.45 and later, where `GIT_DEFAULT_REF_FORMAT` or `init.defaultRefFormat`
+# says so: L1-K8 of #457), and with reflogs or none (`core.logAllRefUpdates`).
+# `check` and `execute` each ask a throwaway repository in their own work
+# directory, once, and only where a walk is led into the clone's `.git`.
+
+GIT_VERSION = re.search(r"(\d+)\.(\d+)", subprocess.run(
+    ["git", "--version"], capture_output=True, text=True,
+    check=False).stdout)
+#: Whether this runner's git has the reftable backend.
+REFTABLE_GIT = GIT_VERSION is not None and (
+    int(GIT_VERSION[1]), int(GIT_VERSION[2])) >= (2, 45)
+needs_reftable = pytest.mark.skipif(
+    not REFTABLE_GIT, reason="the reftable backend needs git 2.45 or later")
+REF_FORMAT = "GIT_DEFAULT_REF_FORMAT"
+LOG_HEAD = ".git/logs/HEAD"
+PACKED_REFS = ".git/packed-refs"
+TABLES = ".git/reftable"
+
+
+def refs_on_reftable(monkeypatch) -> None:
+    """`git` told to make every repository on the reftable backend."""
+    monkeypatch.setenv(REF_FORMAT, "reftable")
+
+
+def no_reflogs(monkeypatch) -> None:
+    """`git` told to write no reflog, after the runner's own
+    `GIT_CONFIG_*`."""
+    for name, entry in appended_to_command_scope(
+            os.environ, [("core.logAllRefUpdates", "false")]).items():
+        monkeypatch.setenv(name, entry)
+
+
+def test_the_ref_probe_answers_what_git_would_do(adopter, tmp_path,
+                                                 monkeypatch):
+    """Git's defaults where nothing says otherwise, the files backend with
+    reflogs; none where `core.logAllRefUpdates` is false; and nothing is
+    left behind."""
+    monkeypatch.delenv(REF_FORMAT, raising=False)
+    assert adopter._clone_ref_store(tmp_path) == (False, True)
+    no_reflogs(monkeypatch)
+    assert adopter._clone_ref_store(tmp_path) == (False, False)
+    assert list(tmp_path.iterdir()) == []
+
+
+@needs_reftable
+def test_the_ref_probe_answers_reftable_where_git_makes_it(adopter, tmp_path,
+                                                           monkeypatch):
+    refs_on_reftable(monkeypatch)
+    assert adopter._clone_ref_store(tmp_path) == (True, True)
+
+
+def test_with_no_work_directory_the_refs_are_gits_defaults(adopter,
+                                                          monkeypatch):
+    """A `Source` that no command opened has no work directory to ask: no
+    probe is made, and git's defaults are taken."""
+    monkeypatch.setattr(adopter, REF_PROBE, no_probe)
+    assert adopter._SymlinkProbe(None).ref_store() == (False, True)
+
+
+#: `(where CLAUDE.md leads, why it is refused, or None)` where the clone
+#: keeps its refs on the reftable backend: measured with git 2.47.1, its
+#: `.git` holds `reftable/tables.list` and the tables, and a `refs/heads`
+#: that is a file, and no `packed-refs` and no `logs` (L1-K8 of #457).
+ON_REFTABLE = [
+    pytest.param(TABLES, None, id="the-tables"),
+    pytest.param(f"{TABLES}/tables.list", None, id="their-list"),
+    pytest.param(".git/refs/heads", None, id="refs-heads-a-file"),
+    pytest.param(GIT_HEAD, None, id="head"),
+    pytest.param(PACKED_REFS, WRITTEN_INTO_GIT, id="no-packed-refs"),
+    pytest.param(LOG_HEAD, NO_DIRECTORY_IN_GIT, id="no-logs"),
+    pytest.param(".git/refs/heads/main", NO_DIRECTORY_IN_GIT,
+                 id="no-loose-branch"),
+    pytest.param(f"{TABLES}/0x01.ref", unread(TABLES, REFTABLES),
+                 id="a-table"),
+]
+
+
+def root_symlink_findings_here(adopter, base: Path, plan: Path) -> list:
+    """`check`'s symlink findings, asked in this process, where a stand-in
+    for a probe answers."""
+    loaded = adopter.Plan.load(plan)
+    (base / WORK).mkdir(exist_ok=True)
+    source = loaded.open_source(None, base / WORK)
+    return adopter._root_symlink_findings(loaded, source, source.tree())
+
+
+@pytest.mark.parametrize(("target", "why"), ON_REFTABLE)
+def test_on_the_reftable_backend_the_clones_git_is_what_git_makes_there(
+        adopter, links_as_links, tmp_path, monkeypatch, target, why):
+    """Asked of any git, the probe answered: a link to the tables was
+    refused, though the copy goes beside them, and one to `packed-refs`
+    checked ok and had the shape's file written there."""
+    monkeypatch.setattr(adopter, REF_PROBE, lambda _work_root: (True, True))
+    _, plan = planned(tmp_path, {}, {CLAUDE: target}, {CLAUDE: ROOT})
+    assert root_symlink_findings_here(adopter, tmp_path, plan) == (
+        [] if why is None
+        else [finding(CLAUDE, target, CLAUDE, leads(CLAUDE, target, why))])
+
+
+@needs_reftable
+def test_where_git_keeps_refs_on_reftable_check_and_execute_ask_it(
+        adopter, no_filter_repo_probe, links_as_links, tmp_path,
+        monkeypatch):
+    """The same of a real git that makes reftable repositories, as `check`
+    and `execute` each ask it."""
+    refs_on_reftable(monkeypatch)
+    there = tmp_path / "there"
+    _, plan = planned(there, {}, {CLAUDE: TABLES}, {CLAUDE: ROOT})
+    passed_alike(adopter, there, plan)
+    gone = tmp_path / "gone"
+    _, plan = planned(gone, {}, {CLAUDE: PACKED_REFS}, {CLAUDE: ROOT})
+    refused_alike(adopter, gone, plan, finding(
+        CLAUDE, PACKED_REFS, CLAUDE,
+        leads(CLAUDE, PACKED_REFS, WRITTEN_INTO_GIT)))
+
+
+def test_where_git_writes_no_reflogs_a_link_to_one_is_refused(
+        adopter, no_filter_repo_probe, links_as_links, tmp_path,
+        monkeypatch):
+    """`core.logAllRefUpdates` false: the clone has no `.git/logs`, so the
+    shape would find no directory for `.git/logs/HEAD` and stop after both
+    legs; `check` and `execute` refuse it before them."""
+    _, plan = planned(tmp_path, {}, {CLAUDE: LOG_HEAD}, {CLAUDE: ROOT})
+    no_reflogs(monkeypatch)
+    refused_alike(adopter, tmp_path, plan, finding(
+        CLAUDE, LOG_HEAD, CLAUDE, leads(CLAUDE, LOG_HEAD,
+                                        NO_DIRECTORY_IN_GIT)))
+
+
+@pytest.mark.parametrize("target", GUESSED_REFS)
+def test_where_the_sources_head_is_on_no_branch_its_branch_is_not_named(
+        adopter, no_filter_repo_probe, links_as_links, tmp_path, target):
+    """`git clone` checks out the branch the source's HEAD is on. Where HEAD
+    is on none, git guesses one, so a link to `refs/heads/main` cannot be
+    told to find something, and is refused saying so; and so is one to the
+    `origin/HEAD` it writes for that branch, or to the reflog of either,
+    each saying what git writes there (rv1091's NIT 2 on #1091)."""
+    top, holds = GUESSED_REFS[target]
+    source, plan = planned(tmp_path, {}, {CLAUDE: target}, {CLAUDE: ROOT})
+    git("checkout", "-q", "--detach", cwd=source)
+    refused_alike(adopter, tmp_path, plan, finding(
+        CLAUDE, target, CLAUDE, leads(CLAUDE, target, unread(top, holds))))
+
+
+#: How `git init` fails where `GIT_DEFAULT_HASH` names no hash, as #910's
+#: probe tests raise it, and how the NOTE that says so begins.
+UNKNOWN_HASH = "fatal: unknown hash algorithm 'bogus'"
+NO_REF_PROBE_NOTE = ("NOTE `check` could not ask git how it keeps the refs "
+                     "of a repository made in ")
+
+
+@pytest.mark.parametrize("failure", [
+    pytest.param(lambda adopter: adopter.CommandFailed(
+        ["git", "init", "-q", "probe"], None, 128, UNKNOWN_HASH),
+        id="command-failed"),
+    pytest.param(lambda adopter: adopter.Refusal(
+        "git-failed", f"`git init` exited 128: {UNKNOWN_HASH}"),
+        id="refusal")])
+def test_a_ref_probe_git_will_not_make_takes_gits_defaults_and_says_so(
+        adopter, monkeypatch, tmp_path, failure):
+    """As #910 has the symlink probe do: a `git init` that fails otherwise
+    than with an `OSError` stops nothing; git's defaults are taken, and a
+    NOTE says why, in git's words."""
+    def refused(_work_root):
+        raise failure(adopter)
+
+    monkeypatch.setattr(adopter, REF_PROBE, refused)
+    probe = adopter._SymlinkProbe(tmp_path)
+    assert probe.ref_store() == adopter.GIT_DEFAULT_REFS
+    notes = probe.notes()
+    assert len(notes) == 1, notes
+    assert notes[0].startswith(NO_REF_PROBE_NOTE), notes[0]
+    assert UNKNOWN_HASH in notes[0]
+
+
+def test_a_ref_probe_in_a_work_directory_it_cannot_write_gives_no_note(
+        adopter, monkeypatch, tmp_path):
+    """An `OSError` is `adopt-work-dir-unwritable`'s to say (#524), and the
+    probe adds no NOTE of its own."""
+    def unwritable(_work_root):
+        raise PermissionError(13, "Permission denied")
+
+    monkeypatch.setattr(adopter, REF_PROBE, unwritable)
+    probe = adopter._SymlinkProbe(tmp_path)
+    assert probe.ref_store() == adopter.GIT_DEFAULT_REFS
+    assert probe.notes() == []
+
+
+def test_check_says_where_git_would_not_make_the_ref_probe(
+        links_as_links, tmp_path, monkeypatch):
+    """`GIT_DEFAULT_HASH=bogus` fails the ref probe's `git init`, and not
+    `check`'s throwaway repositories, which name the source's format:
+    `check` passes a link to `.git/HEAD`, as git's defaults hold it, and
+    says why it took them."""
+    _, plan = planned(tmp_path, {}, {CLAUDE: GIT_HEAD}, {CLAUDE: ROOT})
+    monkeypatch.setenv("GIT_DEFAULT_HASH", "bogus")
+    checked = check(plan)
+    assert checked.returncode == 0, checked.stderr + checked.stdout
+    assert NO_REF_PROBE_NOTE in checked.stdout, checked.stdout
+    assert UNKNOWN_HASH in checked.stdout, checked.stdout
+
+
+def test_the_ref_probe_is_made_once_however_many_walks_ask(adopter, tmp_path,
+                                                           monkeypatch):
+    """Two links into the clone's `.git`, each met by both disks' walks and
+    by the pins' walks, make one probe of how git keeps refs."""
+    asked = []
+
+    def probe(work_root):
+        asked.append(work_root)
+        return adopter.GIT_DEFAULT_REFS
+
+    monkeypatch.setattr(adopter, REF_PROBE, probe)
+    _, plan = planned(tmp_path, {},
+                      {CLAUDE: GIT_HEAD, AGENTS: ".git/refs/heads/nope"},
+                      {CLAUDE: ROOT, AGENTS: ROOT})
+    loaded = adopter.Plan.load(plan)
+    work = tmp_path / WORK
+    work.mkdir()
+    source = loaded.open_source(None, work)
+    with pytest.raises(adopter.Refusal) as caught:
+        adopter._refuse_what_check_finds(loaded, source)
+    assert caught.value.code == ROOT_SYMLINK
+    assert len(asked) == 1
 
 
 # ---------------------------------------------------------------------------
@@ -2032,6 +2539,14 @@ INTO_THE_CLONES_GIT = [
                  id="a-log-and-the-packs"),
     pytest.param({CLAUDE: ".git/refs/heads", AGENTS: ".git/modules/spec"},
                  id="the-branches-and-a-legs-store"),
+    # #904: J2's step back out of `.git/refs`, and names in the directories
+    # that were counted whole (L1-J1 of #457).
+    pytest.param({CLAUDE: ".git/refs/../HEAD",
+                  AGENTS: ".git/refs/remotes/origin/HEAD"},
+                 id="J2-back-out-of-refs-and-origins-head"),
+    pytest.param({CLAUDE: ".git/refs/heads/main",
+                  AGENTS: f".git/logs/refs/heads/{BRANCH}"},
+                 id="the-cloned-branch-and-the-split-branchs-log"),
 ]
 
 
@@ -2044,6 +2559,21 @@ def test_links_into_what_the_clones_own_git_holds_adopt_beside_them(
     written, so `place` finds it there and writes the copy beside the link,
     as on main. Before 2b only five such names counted, and these were
     refused."""
+    source, plan = planned(tmp_path, {}, links, {link: ROOT for link in links})
+    adopted_beside(execute(tmp_path, plan), source, links)
+
+
+@needs_filter_repo
+@needs_disk_symlinks
+@needs_reftable
+def test_on_reftable_links_to_what_its_git_holds_adopt_beside_them(
+        tmp_path, monkeypatch):
+    """L1-K8 of #457 end to end: where git keeps refs on the reftable
+    backend, the clone's `.git` holds `reftable` and a `refs/heads` file,
+    so `place` writes the copies beside the links, and the adoption
+    verifies."""
+    refs_on_reftable(monkeypatch)
+    links = {CLAUDE: TABLES, AGENTS: ".git/refs/heads"}
     source, plan = planned(tmp_path, {}, links, {link: ROOT for link in links})
     adopted_beside(execute(tmp_path, plan), source, links)
 

@@ -49,7 +49,8 @@ RV882'S ITEMS ON #882, TAKEN HERE (lane 2's review of #878): both of
 `_stage_first`'s branches that print no `git add -- .gitmodules`, where
 the work tree holds no file and where the index holds none (SHOULD 1);
 `gitlink-unnamed` reading the paths from the file git reads where the
-work tree's is gone (SHOULD 2); and `-f` over what is on disk at a staged
+work tree's is gone (SHOULD 2, whose section is `gitmodules-path-unnamed`
+since #1036 reads that file too); and `-f` over what is on disk at a staged
 gitlink and is no checkout, a directory holding a file or a file, and
 none over an empty directory, which git takes the plain line over (NIT
 2). NIT 3's clause is in `STAGE_SAID`, which the C3 rows pin.
@@ -113,17 +114,17 @@ from test_family_member_path import MEMBER, OTHER, raw
 from test_family_remove_gitmodules import verb_args
 from test_family_unnamed_gitlink import (
     COMMIT_THAT, FORCED_NO_HEAD, RENAMED, STAGE_LINE, STAGE_SAID, TAKE_OUT,
-    TOOLS, assert_a_plain_clone_checks_out_every_member, at_tools,
-    found_in_every_mode, outside, section_taken_out_alone, staged_at,
-    submodule_added,
+    THEN_COMMIT, TOOLS, assert_a_plain_clone_checks_out_every_member,
+    at_tools, found_in_every_mode, outside, section_first,
+    section_taken_out_alone, staged_at, submodule_added,
 )
 from test_validate_family_typed_states import (
     GONE, ROW, SECTION_GIVEN_BACK, URL_ABSENT, VARIANT_PATH, gone,
     unnamed_as_moved,
 )
 from test_validate_family_unnamed_mounts import (
-    GITLINK_SAID, GITLINK_SAID_FETCHED, VARIANT, codes, commands, findings,
-    spare_commits, stage_gitlink,
+    GITLINK_SAID, GITLINK_SAID_FETCHED, SECTION_SAID, VARIANT, WRONG_CASE,
+    codes, commands, findings, spare_commits, stage_gitlink,
 )
 
 MODES = ((), ("--pins",), ("--no-members",))
@@ -238,12 +239,15 @@ def test_c1_one_put_back_serves_the_move_and_a_url_finding_after_it(
     `--no-members` the move prints first, and `member-gitmodules-url-absent`
     after it put back the file the move had just staged, one key in it.
     The move puts the file back first now, and the url finding puts nothing
-    back. Typed in order and committed, the gate passes in every mode and a
-    plain clone checks both out."""
+    back. The section of the file git reads that gives `Members/IRRS` is
+    named between them, as with the file on disk, and prints no command
+    (#1036). Typed in order and committed, the gate passes in every mode
+    and a plain clone checks both out."""
     env = cloning(offline, tmp_path, family)
     commit = moved_in_head(holder, env)
     data = raw(holder, env, "show", f"HEAD:{GITMODULES}").stdout
     committed_gitmodules(holder, env, without_url(data, OTHER))
+    url = url_of(holder, env, ROW)
     gone(holder, env, how)
 
     result = validate(holder, "--no-members")
@@ -252,6 +256,8 @@ def test_c1_one_put_back_serves_the_move_and_a_url_finding_after_it(
     assert findings(result) == [
         unnamed_as_moved(VARIANT_PATH, commit, moved_refused(commit, how),
                          said=GITLINK_SAID_FETCHED),
+        SECTION_SAID.format(path=VARIANT_PATH, name=ROW, url=f"url {url}")
+        + WRONG_CASE.format(row_path=ROW, project=MEMBER, what="section"),
         URL_ABSENT.format(commit=pinned(holder, OTHER))]
     typed_in_order(holder, env, result)
     staged_and_committed(holder, env, "Typed in order")
@@ -827,12 +833,33 @@ def test_rv882_should_2_a_gitlink_the_file_git_reads_gives_is_no_finding(
     The index's or HEAD's file, which git reads in its place, gives tools/x
     a section, and a plain clone checks it out, while `gitlink-unnamed`
     said that no section gave it. The paths are read from the file git
-    reads now: no mode finds `gitlink-unnamed`, and the gate passes."""
+    reads now: no mode finds `gitlink-unnamed`.
+
+    IT SAID THE GATE PASSED, which it did only because
+    `gitmodules-path-unnamed` read the work tree's file alone (#1036): with
+    the file on disk the same state is that finding
+    (`tests/test_family_unnamed_gitlink.py`'s `tools-x` form). It is that
+    finding now, in every mode: the gitlink out first, then the file put
+    back, then the section's keys. Typed as printed, staged and committed,
+    HEAD's `.gitmodules` gives the two members alone, the gate passes in
+    every mode and a plain clone checks both out."""
     env = cloning(offline, tmp_path, family)
     at_tools(holder, env, family)
+    url = url_of(holder, env, TOOLS)
     gone(holder, env, how)
 
-    assert_passes_in_every_mode(holder, 2)
+    finding = found_in_every_mode(holder, "gitmodules-path-unnamed")
+
+    whose, line = GONE[how]
+    removed = f"\n    git rm --cached -- {TOOLS}"
+    assert finding == section_first(
+        TOOLS, TOOLS, url, COMMIT_THAT,
+        f"after the line that puts {PUT_BACK_THEN.format(whose=whose)}, "
+        + THEN_COMMIT).replace(removed, f"{removed}\n    {line}")
+    typed(holder, env, finding)
+    staged_and_committed(holder, env, "Typed as printed")
+    assert head_paths(holder, env) == {ROW, OTHER_ROW}
+    ends_well(holder, env, family, tmp_path)
 
 
 def on_disk_under(root: Path, path: str) -> list[str]:
@@ -1307,13 +1334,15 @@ def test_round1_nit_6_the_value_s_put_back_serves_the_removal_after_it(
         family, holder, offline, tmp_path):
     """Lane 1's NIT 6 on #889 (its mutant MX1): `update = None` committed
     in IRSS's section, `git rm --cached members/IRRS`, and the work tree's
-    `.gitmodules` deleted. The value finding puts back HEAD's file and
-    records that, so the removal after it prints no line for the file,
-    which HEAD's gives MEMBER's section in. Put back again from the
-    index's, which holds the value, it undid the fix, and the commit died
-    (`invalid value for 'submodule.members/IRSS.update'`, exit 128).
-    Typed in order and committed, the gate passes in every mode and a
-    plain clone checks both out."""
+    `.gitmodules` deleted. The value finding puts back the index's file,
+    the one git reads, which gives the value as HEAD's does (#1077: it put
+    back HEAD's), and records that, so the removal after it prints no line
+    for the file, which gives MEMBER's section. Put back again from the
+    index's after the value's lines, which hold the value, it undid the
+    fix, and the commit died (`invalid value for
+    'submodule.members/IRSS.update'`, exit 128). Typed in order and
+    committed, the gate passes in every mode and a plain clone checks both
+    out."""
     env = cloning(offline, tmp_path, family)
     value_committed(holder, env, OTHER_ROW)
     raw(holder, env, "rm", "-q", "--cached", "--", ROW)
@@ -1323,7 +1352,7 @@ def test_round1_nit_6_the_value_s_put_back_serves_the_removal_after_it(
 
     assert codes_of(found) == ["gitmodules-value-refused",
                                "member-gitlink-removal-staged"]
-    assert commands(found[0])[0] == "git checkout HEAD -- .gitmodules"
+    assert commands(found[0])[0] == "git checkout -- .gitmodules"
     assert commands(found[1]) == [f"git reset -q -- {ROW}"]
     typed_in_order(holder, env, validate(holder, "--no-members"))
     staged_and_committed(holder, env, "Typed in order")

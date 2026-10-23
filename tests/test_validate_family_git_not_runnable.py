@@ -26,14 +26,22 @@ assembly root's `_git_runs` and the holder's `git_not_started` (#694; RV983's
 NIT 1 on #983). The errors are the ones `validate-pins.py`'s own tests hand
 its wrapper (`tests/test_validate_pins_without_git.py`), the member checkout
 git could not enter, and Windows' `[WinError 193]`, which every copy now
-counts (#1001). And the four are held to one text.
+counts (#1001), with the rest of the `winerror`s that say Windows could not
+start git (#1040). And the four are held to one text.
 
 WINDOWS' `[WinError 193]` (#1001), a `git.exe` Windows cannot execute, names
 no file and is neither `FileNotFoundError` nor `PermissionError`, so no copy
 counted it, and each run ended in a traceback, exit 1. Each copy now counts a
 nameless `OSError` whose `winerror` is 193, with the words, the remedy and
 the exit of a missing git; here each copy's own script is run with git
-raising it, as Windows would.
+raising it, as Windows would. So it is with the rest of Windows' nameless
+failures to start a program (#1040): 216, a `git.exe` built for another
+architecture, 1260 and 4551, one a policy blocks, and the rest of 193's
+`ENOEXEC` family, 11 and 188 to 202. Each is a plain `OSError`
+(`PC/errmap.h`), each copy counts each, and each script is run with git
+raising 216 too. The set is exact: a nameless `[WinError 267]`, a `cwd`
+that is not a folder, still passes through, and so do a nameless
+`[WinError 87]` and `[WinError 8]`, which say nothing of git (RV1062's S2).
 
 THE REST RUNS THE HOLDER'S OWN VALIDATOR IN THIS PROCESS, with git failing
 at one of the three calls that are still wrapped (the gitlink, the pinned
@@ -55,6 +63,7 @@ import pytest
 
 from conftest import REPO, git, load_without_bytecode, run_script
 from test_bootstrap_without_git import (ASSEMBLY_REMEDY, FAMILY_REMEDY,
+                                        GIT_FOR_ANOTHER_MACHINE,
                                         GIT_NOT_WIN32)
 from test_family import MEMBERS, family, holder  # noqa: F401
 from test_validate_family_without_git import (REMEDIATION, holder_validator,
@@ -62,7 +71,9 @@ from test_validate_family_without_git import (REMEDIATION, holder_validator,
 from test_validate_pins_without_git import (CANNOT_EXECUTE, NO_FILE_NAMED,
                                             NO_GIT, NOT_EXECUTABLE,
                                             NOT_EXECUTABLE_NO_FILE_NAMED,
-                                            NOT_GIT, WIN_ERROR_193)
+                                            NOT_GIT, WIN_ERROR_193,
+                                            WIN_ERROR_216, WIN_ERROR_1260,
+                                            WIN_ERROR_4551, win_error)
 from test_validate_pins_without_git import REMEDIATION as PINS_REMEDIATION
 
 FAMILY_TEMPLATE = (REPO / "templates" / "family-root" / "scripts" /
@@ -105,7 +116,8 @@ def win_error_193_naming(path: Path) -> OSError:
 
 #: The errors git raises when it will not start, each named `git` or naming
 #: nothing (`tests/test_validate_pins_without_git.py`'s): every copy counts
-#: them, Windows' `[WinError 193]` too (#1001).
+#: them, Windows' `[WinError 193]` too (#1001), and its `[WinError 216]`,
+#: `[WinError 1260]` and `[WinError 4551]` (#1040).
 WILL_NOT_START = {
     "no-git": NO_GIT,
     "git-not-executable": NOT_EXECUTABLE,
@@ -113,12 +125,42 @@ WILL_NOT_START = {
     "no-git-naming-no-file": NO_FILE_NAMED,
     "git-not-executable-naming-no-file": NOT_EXECUTABLE_NO_FILE_NAMED,
     "winerror-193": WIN_ERROR_193,
+    "winerror-216": WIN_ERROR_216,
+    "winerror-1260": WIN_ERROR_1260,
+    "winerror-4551": WIN_ERROR_4551,
+}
+
+#: What Windows says of a program it cannot run, for most of `NOT_LOADABLE`.
+CANNOT_RUN = "The operating system cannot run %1"
+#: The rest of the `ENOEXEC` family `[WinError 193]` is in (#1040), each a
+#: program Windows cannot load: `ERROR_BAD_FORMAT` (11), and 188 to 202 but
+#: 193. `PC/errmap.h` maps each to `ENOEXEC`, so each is a plain `OSError`
+#: that names no file, as 193 is, and is 193 but for its `winerror` and its
+#: words. Each copy counts each; they are asked of the four copies alone, and
+#: the per-call rows below ask 193 for them.
+NOT_LOADABLE = {
+    f"winerror-{code}": win_error(code, errno.ENOEXEC, words)
+    for code, words in {
+        11: "An attempt was made to load a program with an incorrect format",
+        188: CANNOT_RUN, 189: CANNOT_RUN, 190: CANNOT_RUN,
+        191: "Cannot run %1 in Win32 mode",
+        192: CANNOT_RUN, 194: CANNOT_RUN, 195: CANNOT_RUN,
+        196: "The operating system cannot run this application program",
+        197: "The operating system is not presently configured to run this "
+             "application",
+        198: CANNOT_RUN,
+        199: "The operating system cannot run this application program",
+        200: "The code segment cannot be greater than or equal to 64K",
+        201: CANNOT_RUN, 202: CANNOT_RUN,
+    }.items()
 }
 
 #: The errors that are not a git that will not start, each built from a
-#: root: `validate-pins.py`'s `NOT_GIT`, the member's checkout git could
-#: not enter, which `subprocess` names in `filename`, as #928 names it, and
-#: a `[WinError 193]` that names it.
+#: root: `validate-pins.py`'s `NOT_GIT`, a nameless `[WinError 267]`,
+#: `[WinError 87]` and `[WinError 8]` among them (#1040; the last two hold
+#: the set exact, RV1062's S2), the member's checkout git could not enter,
+#: which `subprocess` names in `filename`, as #928 names it, and a
+#: `[WinError 193]` that names it.
 NOT_GITS = {
     **NOT_GIT,
     "member-checkout-not-entered": lambda root: PermissionError(
@@ -129,7 +171,7 @@ NOT_GITS = {
 
 PARITY = [
     *(pytest.param(lambda _root, error=error: error, COUNTED, id=name)
-      for name, error in WILL_NOT_START.items()),
+      for name, error in {**WILL_NOT_START, **NOT_LOADABLE}.items()),
     *(pytest.param(make, PASSED, id=name) for name, make in NOT_GITS.items()),
 ]
 
@@ -152,7 +194,7 @@ def answer(module, error: OSError) -> str:
     git's words and remedy, or `error` itself raised on, else what it raised
     instead, or that it raised nothing. A `_git_runs` is handed it inside
     its block; the holder's `git_not_started` is asked as its call site
-    asks it (`fetch_members`), and the refusal it gives is raised from it."""
+    asks it (`started`, #954), and the refusal it gives is raised from it."""
     try:
         if hasattr(module, "_git_runs"):
             with module._git_runs("the check named"):
@@ -177,11 +219,12 @@ def answer(module, error: OSError) -> str:
 @pytest.mark.parametrize("make, expected", PARITY)
 def test_the_four_copies_give_one_answer_to_each_oserror(copies, tmp_path,
                                                          make, expected):
-    """THE PARITY (#928, #1001): one rule in four pinned copies.
+    """THE PARITY (#928, #1001, #1040): one rule in four pinned copies.
     `validate-family.py` counted all of these, and `validate-pins.py` and
     both bootstraps the five that say git will not start, until #1001 made
-    `[WinError 193]` the sixth in all four. A change to any copy's rule
-    fails here until the other three say the same."""
+    `[WinError 193]` the sixth in all four, and #1040 the rest of the
+    `winerror`s that say Windows could not start git. A change to any
+    copy's rule fails here until the other three say the same."""
     error = make(tmp_path)
     answers = {name: answer(module, error) for name, module in copies.items()}
     assert answers == dict.fromkeys(copies, expected)
@@ -216,6 +259,10 @@ def test_the_four_copies_are_one_text():
     assert rules == dict.fromkeys(COPIES, rules["validate-pins.py"])
 
 
+@pytest.mark.parametrize("raising, error", [
+    pytest.param(GIT_NOT_WIN32, WIN_ERROR_193, id="winerror-193"),
+    pytest.param(GIT_FOR_ANOTHER_MACHINE, WIN_ERROR_216, id="winerror-216"),
+])
 @pytest.mark.parametrize("root, script, remedy", [
     pytest.param("holder", "validate-family.py", REMEDIATION,
                  id="validate-family.py"),
@@ -227,23 +274,25 @@ def test_the_four_copies_are_one_text():
                  id="assembly-root bootstrap.py"),
 ])
 def test_a_git_windows_cannot_execute_is_refused_by_each_copy(
-        request, tmp_path, root, script, remedy):
+        request, tmp_path, root, script, remedy, raising, error):
     """#1001's ROW IN EACH COPY, RUN: the root's own script, in a child, where
-    every start of git raises Windows' `[WinError 193]`. Each ended in a
-    traceback, exit 1; each now refuses `git-not-runnable`, exit 2, at the
-    first check that runs git, with its remedy to put git on PATH."""
+    every start of git raises Windows' `[WinError 193]`, and #1040's, where
+    every start raises its `[WinError 216]`, a `git.exe` built for another
+    architecture. Each ended in a traceback, exit 1; each now refuses
+    `git-not-runnable`, exit 2, at the first check that runs git, with its
+    remedy to put git on PATH."""
     where = request.getfixturevalue(root)
     shim = tmp_path / "git-not-win32"
     shim.mkdir()
-    (shim / "sitecustomize.py").write_text(GIT_NOT_WIN32, encoding="utf-8")
+    (shim / "sitecustomize.py").write_text(raising, encoding="utf-8")
     result = run_script(where / "scripts" / script, cwd=where,
                         env={"PYTHONPATH": str(shim)})
     assert result.returncode == 2, result.stderr + result.stdout
     assert "Traceback" not in result.stderr, result.stderr
     refused, said = result.stderr.splitlines()[-2:]
     assert refused.startswith(f"REFUSED {COUNTED}: "), result.stderr
-    assert refused.endswith(": git could not be run (%1 is not a valid "
-                            "Win32 application)"), result.stderr
+    assert refused.endswith(
+        f": git could not be run ({error.strerror})"), result.stderr
     assert said == remedy, result.stderr
 
 

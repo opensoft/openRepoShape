@@ -472,7 +472,7 @@
 
       <!-- reads README.md § preamble: blob ddadd23a162129f7e64fefce899105661440c05c -->
 
-      <!-- reads README.md § Starting a project in a new organisation: blob 8f25ef0d24d075f9e7c2f4ed3279079ebe061105 -->
+      <!-- reads README.md § Starting a project in a new organisation: blob ffaedeefe61720051098400cbf2212de50b923f3 -->
 
       <!-- reads README.md § The three legs: blob 4ec313e8424665e41fc92a4147808e0bd4901d78 -->
 
@@ -612,7 +612,7 @@ openRepoShape &lt;Project&gt; --org &lt;your-org&gt;</code></pre></div>
 
     <section id="start">
 
-      <!-- reads README.md § Starting a project in a new organisation: blob 8f25ef0d24d075f9e7c2f4ed3279079ebe061105 -->
+      <!-- reads README.md § Starting a project in a new organisation: blob ffaedeefe61720051098400cbf2212de50b923f3 -->
 
       <p class="eyebrow">Setup</p>
       <h2>Start here</h2>
@@ -1092,7 +1092,7 @@ cd Atlas &amp;&amp; python3 scripts/bootstrap.py   # what `make bootstrap` runs<
 
     <section id="partway">
 
-      <!-- reads README.md § Starting a project in a new organisation: blob 8f25ef0d24d075f9e7c2f4ed3279079ebe061105 -->
+      <!-- reads README.md § Starting a project in a new organisation: blob ffaedeefe61720051098400cbf2212de50b923f3 -->
 
       <p class="eyebrow">Setup</p>
       <h2>If it fails part-way</h2>
@@ -1124,6 +1124,14 @@ cd Atlas &amp;&amp; python3 scripts/bootstrap.py   # what `make bootstrap` runs<
         re-running it. A leg with other commits is refused, and a root that HAS commits is a live
         repository, which <a href="#adopt"><code>adopt-project.py</code></a> converts in place
         instead.</li>
+        <li>The <code>--reuse-empty-repo</code> re-run, as every run, turns off git&rsquo;s own
+        terminal prompt and no other: an ssh passphrase or host-key prompt, a credential helper
+        that prompts, or
+        <code>GIT_ASKPASS</code>, <code>SSH_ASKPASS</code> or <code>core.askPass</code> can still
+        make it wait. A key in an ssh agent, a helper that answers without prompting, or
+        <code>GIT_SSH_COMMAND='ssh -o BatchMode=yes'</code> (with anything your
+        <code>core.sshCommand</code> adds) set in your shell for the run, which makes ssh fail at
+        once instead, keeps it from waiting.</li>
         <li><code>--visibility internal</code> is the third value every tool here accepts; only a
         GitHub Enterprise Cloud organisation offers it at all, and one that does not is refused by
         GitHub rather than by this tool.</li>
@@ -1133,7 +1141,7 @@ cd Atlas &amp;&amp; python3 scripts/bootstrap.py   # what `make bootstrap` runs<
 
     <section id="ci">
 
-      <!-- reads README.md § Starting a project in a new organisation: blob 8f25ef0d24d075f9e7c2f4ed3279079ebe061105 -->
+      <!-- reads README.md § Starting a project in a new organisation: blob ffaedeefe61720051098400cbf2212de50b923f3 -->
 
       <!-- reads README.md § The three legs: blob 4ec313e8424665e41fc92a4147808e0bd4901d78 -->
 
@@ -1196,7 +1204,7 @@ gh secret set SHAPE_LEGS_APP_PRIVATE_KEY --org &lt;your-org&gt; &lt; app-private
 
     <section id="legs">
 
-      <!-- reads README.md § Starting a project in a new organisation: blob 8f25ef0d24d075f9e7c2f4ed3279079ebe061105 -->
+      <!-- reads README.md § Starting a project in a new organisation: blob ffaedeefe61720051098400cbf2212de50b923f3 -->
 
       <!-- reads README.md § The three legs: blob 4ec313e8424665e41fc92a4147808e0bd4901d78 -->
 
@@ -1452,7 +1460,7 @@ python3 scripts/family.py siblings --family-root ../InkRouter/InkRouter</code></
 
     <section id="doublepin">
 
-      <!-- reads README.md § Starting a project in a new organisation: blob 8f25ef0d24d075f9e7c2f4ed3279079ebe061105 -->
+      <!-- reads README.md § Starting a project in a new organisation: blob ffaedeefe61720051098400cbf2212de50b923f3 -->
 
       <!-- reads README.md § The double pin, and the lockstep invariant: blob 57fffa08ffad5476f8eae73dd3e8494a02e050c9 -->
 
@@ -1552,7 +1560,7 @@ python3 scripts/family.py siblings --family-root ../InkRouter/InkRouter</code></
 
     <section id="current">
 
-      <!-- reads README.md § Keeping a project's shape current: blob 5edbfec7e824a4064e9ff5331da208f21cab7423 -->
+      <!-- reads README.md § Keeping a project's shape current: blob 355e197f5b3e9b283a9cdb13d71ff81e99a120f8 -->
 
       <p class="eyebrow">Reference</p>
       <h2>Keeping a project&rsquo;s shape current</h2>
@@ -1614,7 +1622,7 @@ python3 scripts/family.py siblings --family-root ../InkRouter/InkRouter</code></
 
     <section id="doctor">
 
-      <!-- reads README.md § Keeping a project's shape current: blob 5edbfec7e824a4064e9ff5331da208f21cab7423 -->
+      <!-- reads README.md § Keeping a project's shape current: blob 355e197f5b3e9b283a9cdb13d71ff81e99a120f8 -->
 
       <p class="eyebrow">Reference</p>
       <h2>Is this repository compliant? <code>openRepoShape --doctor</code></h2>
@@ -1669,7 +1677,7 @@ openRepoShape --doctor                 # the repository you are standing in
           <tr><td><code>COMPLIANT</code></td><td>0</td><td>no row is a <code>FINDING</code>, and the pin names this standard&rsquo;s commit</td></tr>
           <tr><td><code>COMPLIANT, SHAPE BEHIND (n upstream-changed, m upstream-added)</code>, or <code>(pin &lt;a&gt; -&gt; &lt;b&gt;, no copied file differs)</code></td><td>1</td><td>valid, and the standard has moved on</td></tr>
           <tr><td><code>DRIFTED (&hellip;)</code></td><td>1</td><td>a copy was edited, deleted or no longer maps onto the standard, or a leg (a member, in a holder) is off its pin</td></tr>
-          <tr><td><code>MISPLACED (n paths)</code></td><td>1</td><td>a tracked path sits in a leg the path policy puts elsewhere, or a submodule in a leg other than the one its <code>submodules:</code> record names</td></tr>
+          <tr><td><code>MISPLACED (n paths)</code></td><td>1</td><td>a tracked path sits in a leg the path policy puts elsewhere (unless <code>answered_paths:</code> answers it into that leg), or a submodule in a leg other than the one its <code>submodules:</code> record names</td></tr>
           <tr><td><code>INVALID (&lt;rows&gt;)</code></td><td>1</td><td>a validator went red, or (<code>merge</code>) the index holds an unmerged path</td></tr>
           <tr><td><code>NOT A SHAPE ROOT</code></td><td>2</td><td>neither manifest is there &mdash; adopt, or scaffold</td></tr>
         </tbody>
@@ -1751,7 +1759,7 @@ openRepoShape --doctor                 # the repository you are standing in
 
     <section id="park">
 
-      <!-- reads README.md § Starting a project in a new organisation: blob 8f25ef0d24d075f9e7c2f4ed3279079ebe061105 -->
+      <!-- reads README.md § Starting a project in a new organisation: blob ffaedeefe61720051098400cbf2212de50b923f3 -->
 
       <!-- reads README.md § Carrying in-flight work to another workstation: blob b84512ad39c09085dfe6bf7ea694017f5e28c1dd -->
 

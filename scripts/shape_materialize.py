@@ -520,12 +520,35 @@ def neutral_pin_path(product: str) -> str:
 #: `Icon\n` bare, over two lines of the plan (#199).
 PLAIN_SCALAR_RE = re.compile(r"^[A-Za-z_.][A-Za-z0-9_./@:+-]*\Z")
 
+#: WHAT A STANDARD YAML READER TAKES FOR NO TEXT (#912): of the plain scalars
+#: `PLAIN_SCALAR_RE` takes, which begin with a letter, `_` or `.`, the ones
+#: YAML 1.1 or YAML 1.2's core schema resolves to a bool, a null or a float.
+#: The bools are YAML 1.1's (yaml.org/type/bool.html): `y`, `n`, `yes`, `no`,
+#: `on` and `off`, which 1.2 dropped, and `true` and `false`, which both
+#: keep, each in its lower, capitalised and upper case. The null is `null`,
+#: in both and in the same three cases. The floats begin with a point:
+#: `.inf` and `.nan` in their three cases, and a point before digits, as
+#: YAML 1.1's pattern is written (`\.[0-9.]*`, so `.` and `..` too), and as
+#: its own example `685.230_15e+03` and its readers read it, with `_` among
+#: the digits (PyYAML takes `.5_` for 0.5, ruamel.yaml `._` for a float), and
+#: YAML 1.2's unsigned exponent, `.5e3`. Nothing else either resolves to no
+#: text is a plain scalar `PLAIN_SCALAR_RE` takes: `~` and the empty null,
+#: YAML 1.1's `<<` and `=`, and an int, a timestamp or a float that begins
+#: with a digit or a sign.
+YAML_NOT_TEXT_RE = re.compile(
+    r"^(?:[yYnN]|yes|Yes|YES|no|No|NO|on|On|ON|off|Off|OFF"
+    r"|true|True|TRUE|false|False|FALSE|null|Null|NULL"
+    r"|\.(?:inf|Inf|INF|nan|NaN|NAN)"
+    r"|\.[0-9.]*(?:[eE][-+][0-9]+)?"
+    r"|\.[0-9_]+(?:[eE][-+]?[0-9]+)?)\Z")
+
 
 def neutral_pin_entry(product: str) -> str:
     """One `neutral_product_pins:` entry, as `scaffold-project.py` and
     `adopt-project.py execute` both write it: `product` bare where it is a
     plain scalar (`PLAIN_SCALAR_RE`) that the project's reader reads back as
-    `product`, and `double_quoted` (#284) where it is not.
+    `product` and that YAML 1.1 and 1.2 read as text (`YAML_NOT_TEXT_RE`),
+    and `double_quoted` (#284) where it is not.
 
     ONE SPELLING, WHICHEVER TOOL MADE THE ROOT (#924). The scaffold wrote a
     product bare wherever the reader read it back, and adopt wrote it as `y`
@@ -536,9 +559,17 @@ def neutral_pin_entry(product: str) -> str:
     scaffold's `0x1F` for 31 and its `1_000` for 1000. Both tools call this
     one function now, and it is adopt's rule: a name that begins with a
     digit or `-` is double-quoted, as `plan` quotes it in `product:`, and
-    `openGlass`, `007` and `yes` are written as both tools wrote them. A
-    bare `yes`, `on`, `.5` or `.inf` stays bare: the project's reader reads
-    it back as typed, though PyYAML does not (#457's L2-14, #912).
+    `openGlass` and `007` are written as both tools wrote them.
+
+    A NAME ONLY A STANDARD READER MISREADS IS DOUBLE-QUOTED TOO (#912,
+    #457's L2-14). `yes`, `no`, `on`, `off`, `.5`, `.inf` and `.nan` were
+    written bare, because the project's reader reads each back as typed,
+    and PyYAML's `safe_load` read them as True, False, 0.5, inf and nan: no
+    gate of the root failed, but any other tool reading the manifest read
+    a pin on a bool or a number. So a name YAML 1.1 or YAML 1.2's core
+    schema resolves to a bool, a null or a float (`YAML_NOT_TEXT_RE`) is
+    double-quoted whatever the project's reader makes of it, and every
+    other name is written as it was: `openGlass` byte for byte.
 
     THE READER IS ASKED, as `family.py` asks it of a member's id (#259),
     rather than a list of the words it takes for something else: in the two
@@ -547,16 +578,17 @@ def neutral_pin_entry(product: str) -> str:
     `  - - a` is a list of its own, where `id: - a` is the text (#715;
     `id: -` is refused since #393). A spelling the reader refuses is read
     back as nothing, so it is double-quoted too. A name it reads back bare,
-    `openGlass` and every other plain name, is the line it always was;
-    `007`, `2026`, `1.5`, `true` and `null` are double-quoted, and a
-    double-quoted name always reads back.
+    `openGlass` and every other plain name a standard reader reads as text
+    too, is the line it always was; `007`, `2026`, `1.5`, `true` and `null`
+    are double-quoted, and a double-quoted name always reads back.
     """
-    if PLAIN_SCALAR_RE.match(product) and all(
-            _reads_back(written, read) for written, read in (
+    if (PLAIN_SCALAR_RE.match(product)
+            and not YAML_NOT_TEXT_RE.match(product)
+            and all(_reads_back(written, read) for written, read in (
                 (f"key: {product}", {"key": product}),
                 (f"- {product}", [product]),
                 (f"neutral_product_pins:\n  - {product}",
-                 {"neutral_product_pins": [product]}))):
+                 {"neutral_product_pins": [product]})))):
         return product
     return double_quoted(product)
 
@@ -1555,7 +1587,7 @@ def readable_branch(what: str, value) -> str:
 
 
 # ---------------------------------------------------------------------------
-# What a fetch for a branch's answer carries (#686, #898, #1037)
+# What a fetch for a branch's answer carries (#686, #898, #1037, #1066)
 # ---------------------------------------------------------------------------
 #
 # `family.py bump` fetches a member's `origin` (#686), and `bump-leg.py` a
@@ -1580,14 +1612,21 @@ def readable_branch(what: str, value) -> str:
 ORIGIN_BRANCHES = "+refs/heads/*:refs/remotes/origin/*"
 
 #: The names `ORIGIN_BRANCHES` gives the branches (#905): a refspec of the
-#: repository's own that gives another namespace these very names is not
-#: carried (`origin_fetch_refspecs`).
+#: repository's own onto these very names is not carried, whether it gives
+#: them another namespace's refs (#905) or a folder of branches (#1066)
+#: (`origin_fetch_refspecs`).
 ORIGIN_BRANCH_NAMES = ORIGIN_BRANCHES.partition(":")[2]
 
 #: Where a repository keeps its tags: a refspec of the repository's own
 #: whose source can name a ref here is not carried (`can_name_a_tag`,
 #: #1009).
 TAGS_PREFIX = "refs/tags/"
+
+#: Where a repository keeps its branches, the source of `ORIGIN_BRANCHES`:
+#: a refspec of the repository's own whose source is here is carried only
+#: where it gives each branch the name `ORIGIN_BRANCHES` gives it
+#: (`gives_a_branch_another_name`, #1066).
+HEADS_PREFIX = "refs/heads/"
 
 
 def can_name_a_tag(source: str) -> bool:
@@ -1629,6 +1668,86 @@ def can_name_a_tag(source: str) -> bool:
     return not source.startswith("refs/")
 
 
+def gives_a_branch_another_name(source: str, destination: str) -> bool:
+    """Whether a fetch refspec from `source` to `destination` puts a branch
+    of the remote under a name `ORIGIN_BRANCHES` does not give it, so that
+    the fetch does not carry the repository's refspec that has it
+    (`origin_fetch_refspecs`; #1066).
+
+    A SOURCE UNDER `refs/heads/` NAMES BRANCHES, and the first refspec
+    brings every branch already, under `refs/remotes/origin/` and its own
+    name. Such a refspec is carried only where its destination is that very
+    name, `refs/remotes/origin/` and the source's part after `refs/heads/`,
+    a pattern's `*` in the same place: one branch
+    (`+refs/heads/main:refs/remotes/origin/main`) or a folder of them
+    (`+refs/heads/release/*:refs/remotes/origin/release/*`). It maps each
+    branch it takes where the first refspec maps it, so it clashes with
+    nothing, and a branch it names that the remote lacks fails the fetch as
+    it fails the repository's own (`couldn't find remote ref`).
+
+    ANY OTHER PUTS A BRANCH ON THE NAME OF ANOTHER, the name the first
+    refspec gives the branch of that name: a folder onto the branches'
+    names (`+refs/heads/release/*:refs/remotes/origin/*`, `release/x` onto
+    `x`), one branch onto another's
+    (`+refs/heads/release/x:refs/remotes/origin/x`), every branch into a
+    folder (`+refs/heads/*:refs/remotes/origin/all/*`, `x` onto `all/x`),
+    or a folder into another
+    (`+refs/heads/release/*:refs/remotes/origin/rel/*`). Carried, each
+    clashed with the first refspec wherever the remote has both branches:
+    the fetch exited 128 ("Cannot fetch both refs/heads/x and
+    refs/heads/release/x to refs/remotes/origin/x") where the repository's
+    own `git fetch origin`, which has no such first refspec, exits 0
+    (measured, git 2.43, each).
+
+    A PATTERN WHOSE PART BEFORE THE `*` IS A START OF `refs/heads/` NAMES
+    BRANCHES TOO (#1100), as `can_name_a_tag` reads one for tags: git
+    matches a pattern against each ref's whole name, so `refs/heads*` takes
+    every branch, its `*` standing for the `/` and the branch's name. As
+    the `*` takes what the pattern leaves of `refs/heads/` too, no
+    destination under `refs/remotes/origin/` gives a branch the name the
+    first refspec gives it. So such a refspec puts a branch under another
+    name: `+refs/heads*:refs/remotes/origin/h*` put `x` on `h/x`, and
+    clashed wherever the remote has `x` and `h/x`, 128 where the
+    repository's own fetch exits 0, until #1100. Or, where the part before
+    the `*` is all of `refs/heads` and the destination's `*` comes right
+    after a `/` (`+refs/heads*:refs/remotes/origin/h/*`), git refuses the
+    name it gives each branch, `h//x` ("Ignoring funny ref", exit 0), and
+    writes no branch at all (each measured, git 2.43 and 2.47.1). Either
+    way it brings no branch the first refspec does not bring, but its
+    pattern also takes the refs of another namespace it matches, such as
+    `refs/heads-archive/old` for `refs/heads*`, and `origin_fetch_refspecs`
+    says what leaving those out costs (BUT A COMMIT ONLY A REF THAT IS NO
+    BRANCH REACHES). A shorter start, such as `refs/*` or `*`, can name a
+    tag, and that clause has left it out first. ANY OTHER SOURCE NAMES NO
+    BRANCH, though a refspec from one can still put a ref on a branch's
+    name: `origin_fetch_refspecs` says where (WHAT CAN STILL CLASH).
+    """
+    fixed, star, _ = source.partition("*")
+    if not source.startswith(HEADS_PREFIX):
+        return bool(star) and HEADS_PREFIX.startswith(fixed)
+    return destination != ORIGIN_BRANCH_NAMES.replace(
+        "*", source[len(HEADS_PREFIX):])
+
+
+def _left_out(source: str, destination: str) -> bool:
+    """Whether one of the four clauses of `origin_fetch_refspecs` leaves out
+    the positive refspec from `source` to `destination`, asked in that
+    function's order; its docstring says why each does. The chain is its
+    own function so that the next clause has room under the cognitive
+    complexity the analysis allows (#1100)."""
+    if not destination.startswith("refs/remotes/origin/"):
+        return True  # it writes outside where both tools read branches
+    if can_name_a_tag(source):
+        return True  # a tag is not a branch (RV946's S1, #1009, #1037)
+    if destination == ORIGIN_BRANCH_NAMES:
+        return True  # it lands on the branches' own names (U183, #1066)
+    # the first refspec brings each branch it takes, under its own name
+    # (#1066); a ref that is no branch, which a pattern takes too, no
+    # longer answers for one, so a commit only it reaches is refused, as
+    # one only a tag reaches is (#1100)
+    return gives_a_branch_another_name(source, destination)
+
+
 def origin_fetch_refspecs(configured: list[str]) -> list[str]:
     """The refspecs a fetch for a branch's answer carries: `ORIGIN_BRANCHES`,
     then each value of the repository's own `remote.origin.fetch` in
@@ -1644,14 +1763,15 @@ def origin_fetch_refspecs(configured: list[str]) -> list[str]:
     remote-tracking ref only mirrors the remote, and a refspec without it
     would fail the fetch on a ref force-pushed.
 
-    THREE CLAUSES LEAVE A REFSPEC OUT, asked in this order, and the first
+    FOUR CLAUSES LEAVE A REFSPEC OUT, asked in this order, and the first
     that matches is the one that leaves it out: a destination OUTSIDE
-    `refs/remotes/origin/`, A SOURCE THAT CAN NAME A TAG, and THE BRANCHES'
-    GLOB.
+    `refs/remotes/origin/`, A SOURCE THAT CAN NAME A TAG, THE BRANCHES'
+    GLOB, and A BRANCH UNDER ANOTHER NAME. `_left_out` asks them.
 
     A DESTINATION OUTSIDE `refs/remotes/origin/`, a mirror's `+refs/*:refs/*`
     or `+refs/heads/*:refs/heads/*`, is never carried, so no refspec the
-    fetch names writes outside it.
+    fetch names writes outside it. The `/` is the clause's: a destination
+    in `refs/remotes/originx/` is outside it too.
 
     A SOURCE THAT CAN NAME A TAG IS LEFT OUT, wherever under `origin/` it
     writes (#905, #459's U183, RV946's S1, #1009, #1037): a tag is not a
@@ -1680,20 +1800,89 @@ def origin_fetch_refspecs(configured: list[str]) -> list[str]:
     fetch maps, and the repository's own next `git fetch origin` writes it
     back. A refspec that can name no tag and writes a folder of its own
     under `origin/` (pull requests, `+refs/pull/*/head:
-    refs/remotes/origin/pr/*`) still rides along.
+    refs/remotes/origin/pr/*`) still rides along, unless it puts a branch
+    under another name (below).
 
-    THE BRANCHES' GLOB: ONE THAT GIVES ANOTHER NAMESPACE THE BRANCHES' NAMES
-    IS LEFT OUT (#905, #459's U183), a refspec whose destination is the
-    first refspec's own, `refs/remotes/origin/*`, and whose source is not
-    under `refs/heads/`. The tags onto the branches' names and the mirror
-    into `origin/` meet it too, and the clause before has left them out
-    already; this one alone leaves out a source that can name no tag, such
-    as pull requests onto the branches' names
-    (`+refs/pull/*/head:refs/remotes/origin/*`). Carried, that clashed with
-    the first refspec wherever a pull request and a branch share a name
-    ("Cannot fetch both refs/heads/7 and refs/pull/7/head to
-    refs/remotes/origin/7") where `git fetch origin` exits 0 (measured, git
-    2.43).
+    THE BRANCHES' GLOB: A REFSPEC ONTO IT IS LEFT OUT, WHATEVER ITS SOURCE
+    (#905, #459's U183, #1066): its destination is the first refspec's own,
+    `refs/remotes/origin/*`, so each ref it takes lands on the name the
+    first refspec gives the branch of that name. From another namespace it
+    gives other refs the branches' names: pull requests
+    (`+refs/pull/*/head:refs/remotes/origin/*`) clashed with the first
+    refspec wherever a pull request and a branch share a name ("Cannot
+    fetch both refs/heads/7 and refs/pull/7/head to
+    refs/remotes/origin/7"). From a folder of branches it gives a branch
+    another's name: `+refs/heads/release/*:refs/remotes/origin/*` clashed
+    wherever the remote has `x` and `release/x` ("Cannot fetch both
+    refs/heads/x and refs/heads/release/x to refs/remotes/origin/x"). Each
+    exited 128 where `git fetch origin` exits 0 (measured, git 2.43). #946
+    left out only a source not under `refs/heads/`, so the folder of
+    branches was carried, and failed both tools' fetch, until #1066. The
+    tags onto the branches' names and the mirror into `origin/` meet this
+    clause too, and the clause before has left them out already; the
+    branches' own glob is the first refspec.
+
+    A BRANCH UNDER ANOTHER NAME IS LEFT OUT (#1066): a source under
+    `refs/heads/`, or a pattern whose part before the `*` is a start of it
+    (`refs/heads*`, #1100), whose destination is not the name the first
+    refspec gives each branch it takes, such as one branch onto another's
+    (`+refs/heads/release/x:refs/remotes/origin/x`) or every branch into a
+    folder (`+refs/heads/*:refs/remotes/origin/all/*`, `x` onto `all/x`).
+    `gives_a_branch_another_name` says which, and how each clashed. One
+    that gives each branch its own name, a branch or a folder of them,
+    still rides along.
+
+    LEFT OUT BY EITHER OF THE LAST TWO, NO BRANCH IS LOST TO THE ANSWER:
+    the first refspec brings every branch under its own name, so a commit a
+    branch of the remote reaches is reached there, and the fetch works.
+    What the repository kept under another name is pruned, or holds the
+    branch of that name, until its own next `git fetch origin` writes it
+    back, as for a tag refspec left out.
+
+    BUT A COMMIT ONLY A REF THAT IS NO BRANCH REACHES IS REFUSED where the
+    refspec left out is the one that took that ref, as a commit only a tag
+    reaches is: the pull requests onto the branches' names
+    (`+refs/pull/*/head:refs/remotes/origin/*`, #946), and, since #1100, a
+    ref of another namespace that a pattern by a start of `refs/heads/`
+    takes beside the branches, git matching it against every ref's whole
+    name: `refs/heads-archive/old` by `+refs/heads*:refs/remotes/origin/h*`
+    (onto `origin/h-archive/old`), and `refs/hidden/1` by
+    `+refs/h*:refs/remotes/origin/hh/*`. Carried, such a pattern kept that
+    ref under `origin/`, where it answered for a branch, so both tools
+    pinned the commit until #1100. Left out, the prune drops the ref, the
+    repository's own next `git fetch origin` writes it back, and every run
+    of either tool refuses the commit alike, the dry run and the real run.
+    A refspec whose source is that namespace itself
+    (`+refs/heads-archive/*:refs/remotes/origin/h-archive/*`) is no such
+    pattern: it is carried, and the commit is pinned through it (each
+    measured, git 2.43 and 2.47.1).
+
+    THE COST, ACCEPTED (#1100): where that refspec was written without its
+    `+`, and the commit it keeps under a branch's name does not descend
+    from that branch's own, the repository's next `git fetch origin` is
+    refused as non-fast-forward, exit 1 ("! [rejected] release/x -> origin/x
+    (non-fast-forward)"), and so is every one after it, until `git fetch
+    --force origin` writes the ref back (exit 0, and a plain fetch exits 0
+    after it, until either tool runs again). Carried, the refspec clashed in
+    those very states, so the tools' fetch exited 128 and left that ref
+    alone. No commit is lost: the remote keeps it, and where it is a
+    branch's, the first refspec keeps it under that branch's own name. The
+    tags onto the branches' names, unforced
+    (`refs/tags/*:refs/remotes/origin/*`), have cost the same since #905
+    (each measured, git 2.43 and 2.47.1).
+
+    WHAT CAN STILL CLASH is a refspec carried whose source names no branch,
+    wherever a name it writes is a branch's (#1100): one into a folder of
+    its own from another namespace, such as the pull requests in
+    `origin/pr/`, where the remote has a branch whose name falls in that
+    folder (`pr/7` beside pull request 7), and one onto a single name, such
+    as `+refs/pull/7/head:refs/remotes/origin/main` where the remote has a
+    branch `main`. The repository's own fetch clashes there too wherever it
+    has the branches' glob, as a clone's default refspec is; where it has
+    not, it exits 0 and this fetch 128 (measured, git 2.43 and 2.47.1).
+    Which names the remote's branches have is not known from its refspecs,
+    and left out, what such a refspec keeps would be pruned on every run,
+    which is why #686 carries it.
     """
     refspecs = [ORIGIN_BRANCHES]
     for spec in (value.strip() for value in configured):
@@ -1701,13 +1890,8 @@ def origin_fetch_refspecs(configured: list[str]) -> list[str]:
             continue  # a narrowing refspec never decides reachability (p07)
         spec = spec if spec.startswith("+") else "+" + spec
         source, _, destination = spec[1:].partition(":")
-        if not destination.startswith("refs/remotes/origin/"):
-            continue
-        if can_name_a_tag(source):
-            continue  # a tag is not a branch (RV946's S1, #1009, #1037)
-        if (destination == ORIGIN_BRANCH_NAMES
-                and not source.startswith("refs/heads/")):
-            continue  # it gives other refs the branches' names (U183)
+        if _left_out(source, destination):
+            continue  # one of the four clauses above leaves it out
         if spec not in refspecs:
             refspecs.append(spec)
     return refspecs
@@ -3813,7 +3997,15 @@ def commit_in_clone(clone: Path, oid: str) -> tuple[str, str]:
     names no commit, `why` as `not_a_commit` says it. And `(oid, "")` where
     the clone cannot say, no object with that id or no clone there, which
     the digest's reader then names in its own words
-    (`pin-source-unreadable`)."""
+    (`pin-source-unreadable`).
+
+    A TAG WHOSE TARGET THE CLONE LACKS IS ONE IT CANNOT SAY (#912). Its peel
+    cannot be read there (git: "missing object referenced by" the tag), so
+    nothing in the clone says what the tag names, and it is `(oid, "")`:
+    the digest's reader then finds no tree at the id and says to point
+    `--pin-source` at a clone that has the commit, `git fetch --all` first,
+    as it said before #651. It was refused as "an annotated tag that names
+    no commit", which no tag of a commit is."""
     kind = _git_answer(clone, "cat-file", "-t", oid)
     if kind in (None, COMMIT_KIND):
         return oid, ""
@@ -3823,6 +4015,8 @@ def commit_in_clone(clone: Path, oid: str) -> tuple[str, str]:
                               f"{oid}^{{}}") or "").lower()
         names = (_git_answer(clone, "cat-file", "-t", peeled) if peeled
                  else None)
+        if names is None:
+            return oid, ""
         if names == COMMIT_KIND:
             return peeled, ""
     return oid, not_a_commit(kind, names)
@@ -5178,6 +5372,17 @@ _VALIDATORS: dict = {}
 #: Which placeholder carries the value a finding of the validator is about,
 #: for the ones a tool is handed a value for. A finding with no row is still
 #: refused, in the validator's words and without a flag to point at.
+#:
+#: THE TWO RECORDS' CODES HAVE NO ROW, ON PURPOSE (#914): #189's
+#: `submodules:` (`manifest-submodules`, `manifest-submodule-*`) and #525's
+#: `answered_paths:` (`manifest-answered-paths`, `manifest-answered-*`),
+#: which the validator spells from its `_Record`s. No placeholder carries a row
+#: of either: `adopt-project.py execute` appends both to `project.yaml` after
+#: the render its gate asks, so no tool is handed a value of theirs and no
+#: such finding can arise there today. Should a caller render a record into
+#: that question, a finding about one is about no placeholder, and
+#: `manifest_judged` answers None: every value is left to the validator, the
+#: safe direction, and none is named as one a flag carries.
 FINDING_PLACEHOLDER = {
     "manifest-id": "PROJECT_ID", "manifest-topic": "PROJECT_ID",
     "manifest-name": "PROJECT_NAME", "manifest-elected-by": "ELECTED_BY",

@@ -194,7 +194,7 @@ def assert_compliant(standard: Path, root: Path) -> None:
 # --- the doctor names both, and the gate is still its NEXT ------------------
 
 def test_a_hand_committed_gitlink_names_both_bump_leg_commands(
-        standard, hand_moved):
+        standard, hand_moved, monkeypatch):
     """`--to` the gitlink's commit and `--to` the pin's, each a line the
     reader's shell hands back whole, in the reason and in `detail`, with
     their `--dry-run` first and what each needs to commit; and the NEXT is
@@ -214,6 +214,12 @@ def test_a_hand_committed_gitlink_names_both_bump_leg_commands(
     keep, back = repairs[0]["keep_gitlink"], repairs[0]["keep_pin"]
     assert pasted(keep) == bump_argv(standard, root, gitlink), keep
     assert pasted(back) == bump_argv(standard, root, pinned), back
+    # THE EXPECTATION IS BUILT IN THIS PROCESS, so it reads THIS process's
+    # `LANES_LANE`, where `pins_row`'s run read the blank `conftest.run_script`
+    # gives every tool under test. In a shell that exports a lane, only the
+    # expectation then carried ` --trailer 'Lane: <lane>'` (#1060): the same
+    # blank, here, is what makes the two lines the one line.
+    monkeypatch.setenv("LANES_LANE", "")
     module = doctor_module(standard)
     assert repairs == [{
         "role": "spec", "path": "spec", "gitlink": gitlink, "pin": pinned,

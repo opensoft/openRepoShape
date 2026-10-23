@@ -505,6 +505,13 @@ manifest, sets the topic `xf-project-atlas` on all three, clones the root as
 > refused is finished by an operator holding the bypass right re-running it.
 > A leg with other commits is refused, and a root that HAS commits is a live
 > repository, which `adopt-project.py` converts in place instead.
+> That re-run, as every run, turns off git's own terminal prompt and no
+> other: an ssh passphrase or host-key prompt, a credential helper that
+> prompts, or `GIT_ASKPASS`, `SSH_ASKPASS` or `core.askPass` can still make it
+> wait. A key in an ssh agent, a helper that answers without prompting, or
+> `GIT_SSH_COMMAND='ssh -o BatchMode=yes'` (with anything your
+> `core.sshCommand` adds) set in your shell for the run, which makes ssh fail
+> at once instead, keeps it from waiting.
 > `--visibility internal` is the third value every tool here accepts; only a
 > GitHub Enterprise Cloud organisation offers it at all, and one that does not
 > is refused by GitHub rather than by this tool.
@@ -1209,7 +1216,7 @@ one verdict, and its exit code:
 | `COMPLIANT` | 0 | no row is a `FINDING`, and the pin names this standard's commit |
 | `COMPLIANT, SHAPE BEHIND (n upstream-changed, m upstream-added)`, or `(pin <a> -> <b>, no copied file differs)` | 1 | valid, and the standard has moved on |
 | `DRIFTED (…)` | 1 | a copy was edited, deleted or no longer maps onto the standard, or a leg (a member, in a holder) is off its pin |
-| `MISPLACED (n paths)` | 1 | a tracked path sits in a leg the path policy puts elsewhere, or a submodule in a leg other than the one its `submodules:` record names |
+| `MISPLACED (n paths)` | 1 | a tracked path sits in a leg the path policy puts elsewhere (unless `answered_paths:` answers it into that leg), or a submodule in a leg other than the one its `submodules:` record names |
 | `INVALID (<rows>)` | 1 | a validator went red, or (`merge`) the index holds an unmerged path |
 | `NOT A SHAPE ROOT` | 2 | neither manifest is there — adopt, or scaffold |
 

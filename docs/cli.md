@@ -369,7 +369,16 @@ options:
                         right finishes a run a ruleset refused by re-running
                         it with this. A root with commits, and a leg with any
                         other, is still refused: that is a live repository,
-                        not a slot.
+                        not a slot. A run with it on GitHub, like every run
+                        there, turns off git's own terminal prompt and no
+                        other, so it can still wait at an ssh passphrase or
+                        host-key prompt, at a credential helper that prompts,
+                        or at `GIT_ASKPASS`, `SSH_ASKPASS` or `core.askPass`:
+                        a key loaded into an ssh agent, a helper that answers
+                        without prompting, or `GIT_SSH_COMMAND='ssh -o
+                        BatchMode=yes'` (with anything `core.sshCommand` adds)
+                        set for the run, which makes ssh fail at once instead,
+                        keeps it from waiting.
   --pin openProduct@COMMIT
                         declare a neutral-product pin, e.g. --pin
                         openGlass@<40 hex>. It writes
@@ -461,9 +470,9 @@ options:
                         `source-unresolvable` refuses an empty value, and one
                         that is neither a path that exists nor an `org/repo`;
                         `source-unreadable`, a path this user cannot reach
-                        (under a directory it may not search), which is never
-                        read as one that is not there, nor cloned as an
-                        `org/repo`.
+                        (under a directory it may not search, or one it may
+                        not enter), which is never read as one that is not
+                        there, nor cloned as an `org/repo`.
   --project PROJECT     the assembly-root name; for an in-place adoption it is
                         the source repository's own name. `execute` refuses
                         one over 95 characters without --local-remote-dir:

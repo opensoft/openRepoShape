@@ -7699,6 +7699,18 @@ def _member_head(member: Path) -> tuple[str | None, str | None]:
     #365): the rollback would have taken the holder's commit for the
     member's. A `.git` whose `lstat` is refused is raised (`_is_there`,
     #430), not read as no checkout.
+
+    THE BRANCH IS READ AS THE BYTES GIT WROTE, as `_holder_branch` reads the
+    holder's (#918, #457's L1-70): exactly one newline and exactly
+    `refs/heads/` come off the bytes, and the rest is decoded with
+    `surrogateescape`, as #425 decodes a source's default branch. Read
+    strictly, a member checked out on a branch that is not UTF-8
+    (`caf<0xE9>`) raised `UnicodeDecodeError` out of `PinRollback`, so
+    `bump` and `remove` ended in a traceback before they wrote anything.
+    Kept as a lone surrogate, the name is handed back to git as the byte it
+    is (`_head_target`, `_head_back`), so a rollback puts the member back
+    ON that branch. And `strip()` no longer takes a trailing U+00A0 off a
+    branch's name, which named another branch (#765).
     """
     if not _is_there(member / ".git"):
         return None, None
@@ -7708,11 +7720,13 @@ def _member_head(member: Path) -> tuple[str | None, str | None]:
     except Refusal:
         at = None
     try:
-        ref = git_out(["symbolic-ref", "-q", "HEAD"], cwd=member)
+        ref = git_out(["symbolic-ref", "-q", "HEAD"], cwd=member, binary=True)
     except Refusal:
-        ref = ""
-    return at, (ref[len(HEADS_PREFIX):] if ref.startswith(HEADS_PREFIX)
-                else None)
+        ref = b""
+    ref = ref[:-1] if ref.endswith(b"\n") else ref
+    heads = HEADS_PREFIX.encode("ascii")
+    return at, (ref[len(heads):].decode("utf-8", "surrogateescape")
+                if ref.startswith(heads) else None)
 
 
 def _head_target(member: Path, at: str, branch: str | None) -> list[str]:
@@ -7750,12 +7764,86 @@ def _head_back(member: Path, at: str | None, branch: str | None) -> bool:
     return True
 
 
+def _branch_by_hand(branch: str) -> str:
+    """`branch` as ONE word a person types into a POSIX shell, so the shell
+    hands git the branch's exact bytes (#1079).
+
+    A UTF-8 name is `shlex.quote`d, as it always was. A name read from git
+    with `surrogateescape` that holds a byte which is not UTF-8 has no
+    spelling `shlex.quote` can give it: the surrogate is printed as the text
+    `\\udce9`, which typed names a branch that is not there. It is spelled
+    `"$(printf '<escapes>')"`, a form any POSIX shell reads the same way: each
+    byte that is not printable ASCII is a three-digit octal escape (`\\351`),
+    and so are the four ASCII bytes the format, its quotes or an interactive
+    shell's history scanner would read as something else, `'`, `\\`, `%` and
+    `!` (`\\041`), so the line is ASCII whatever the stream it is printed on,
+    and never depends on a shell's history expansion. A ref name cannot hold a
+    newline, so the substitution's stripped trailing newlines lose nothing."""
+    if _is_utf_8(branch):
+        return shlex.quote(branch)
+    escapes = _printf_escapes(branch.encode("utf-8", "surrogateescape"))
+    return f"\"$(printf '{escapes}')\""
+
+
+def _is_utf_8(text: str) -> bool:
+    """Whether `text`, read from git with `surrogateescape`, is UTF-8: it
+    holds no lone surrogate standing for a byte that is not."""
+    try:
+        text.encode("utf-8")
+    except UnicodeEncodeError:
+        return False
+    return True
+
+
+def _printf_escapes(raw: bytes) -> str:
+    """`raw` as the text of a `printf` format in single quotes that writes
+    `raw` back, as `_branch_by_hand` spells it: each printable ASCII byte as
+    itself, and every other byte, and `'`, `\\`, `%` and `!`, as `\\` and
+    three octal digits (#1079)."""
+    return "".join(
+        chr(byte) if 0x20 <= byte < 0x7f and chr(byte) not in "'\\%!"
+        else f"\\{byte:03o}" for byte in raw)
+
+
+def _path_by_hand(path: str) -> str:
+    """`path` as ONE word a person types into a POSIX shell, so the shell
+    hands git the path's exact bytes (#1086): the directory of `git -C`, or
+    a pathspec after `--`.
+
+    A UTF-8 path is `shlex.quote`d, as it always was. A path read from git
+    with `surrogateescape` (a leg's, from its member's `ls-files -z`) that
+    holds a byte which is not UTF-8 is spelled as `_branch_by_hand` spells
+    such a branch, `"$(printf '<escapes>/')"`, for two things a path can
+    hold and a ref name cannot.
+
+    A NEWLINE AT ITS END, which `$(...)` strips: the format ends in a `/`,
+    so the last byte the substitution writes is never a newline, in sh,
+    dash, bash or zsh. Each word this is for names a directory, and git
+    reads `<dir>/` as `<dir>`: `git -C` changes into it, and `git submodule
+    update -- <leg>/` updates the gitlink at `<leg>`, which no index entry
+    can sit under. One word with no variable, so the line stays one command
+    a person pastes as it is.
+
+    A `-` AT ITS START, which the `printf` of sh, dash and bash reads as an
+    option (`Illegal option -c`; zsh's prints it): it is an escape too,
+    `\\055`. The rest of the line is ASCII, as `_branch_by_hand`'s is."""
+    if _is_utf_8(path):
+        return shlex.quote(path)
+    escapes = _printf_escapes(path.encode("utf-8", "surrogateescape"))
+    if escapes.startswith("-"):
+        escapes = "\\055" + escapes[1:]
+    return f"\"$(printf '{escapes}/')\""
+
+
 def _head_by_hand(path: str, at: str, branch: str | None) -> str:
     """`_head_back` as the human types it in the holder: the branch the
     checkout was on, else the commit. FROM THE RECORD, with no git call: it
-    is named when a step failed, often with `path` not on disk at all."""
-    target = f"{shlex.quote(branch)} --" if branch is not None else at
-    return f"git -C {shlex.quote(path)} checkout -q {target}"
+    is named when a step failed, often with `path` not on disk at all. The
+    branch is spelled by `_branch_by_hand`, which keeps the bytes of a name
+    that is not UTF-8 (#1079), and the path by `_path_by_hand`, which keeps
+    those of a leg's path inside its member (#1086)."""
+    target = f"{_branch_by_hand(branch)} --" if branch is not None else at
+    return f"git -C {_path_by_hand(path)} checkout -q {target}"
 
 
 def _entries_by_hand(name: str, entries: list[bytes]) -> str:
@@ -8146,7 +8234,7 @@ class PinRollback:
     def _head_said(self) -> str:
         at = (self.at or "")[:12]
         if self.branch is not None:
-            return f"{self.path} back on {self.branch} at {at}"
+            return f"{self.path} back on {_shown(self.branch)} at {at}"
         return f"{self.path} checked out at {at} again"
 
     def _work_tree_said(self) -> str:
@@ -8155,7 +8243,7 @@ class PinRollback:
         if self.at is None:
             return f"{self.path} checked out again"
         said = (f"{self.path} checked out again at {self.at[:12]}"
-                + (f" on {self.branch}" if self.branch else "")
+                + (f" on {_shown(self.branch)}" if self.branch else "")
                 + " from the object store `git rm` keeps")
         if self.legs:
             said += (", and " + " and ".join(leg for leg, _, _, _ in self.legs)
@@ -8245,9 +8333,11 @@ class PinRollback:
         legs = [] if self.legs_back else [
             leg for leg in self.legs if leg[0] not in self.legs_left]
         if legs:
+            # A leg's path is read with `surrogateescape`, so it is spelled
+            # by `_path_by_hand`, as its `git -C` below is (#1086).
             typed.append(f"git -C {shlex.quote(self.path)} {offline} "
                          "submodule update --init --no-fetch -- " + " ".join(
-                             shlex.quote(leg) for leg, _, _, _ in legs))
+                             _path_by_hand(leg) for leg, _, _, _ in legs))
             typed += [_head_by_hand(f"{self.path}/{leg}", at, branch)
                       for leg, _, at, branch in legs
                       if at is not None and branch is not None]
@@ -8689,11 +8779,12 @@ def _origin_fetch_refspecs(member: Path) -> list[str]:
     """The refspecs `bump`'s fetch of `origin` carries (#686): every branch of
     `origin`, then what the mount's own `remote.origin.fetch` keeps under
     `refs/remotes/origin/`, and none of what it excludes, nor one whose
-    source can name a tag, nor what gives another namespace the names the
-    branches take there (#905, #1009). Which of the mount's are carried is
-    `shape_materialize`'s `origin_fetch_refspecs`, the one rule
-    `bump-leg.py` asks of a leg's fetch too (#1037); its docstring says
-    which clause leaves out what, and why.
+    source can name a tag, nor one onto the names the branches take there
+    (#905, #1009), nor one that puts a branch under another name, which
+    failed this fetch where `git fetch origin` works (#1066). Which of the
+    mount's are carried is `shape_materialize`'s `origin_fetch_refspecs`,
+    the one rule `bump-leg.py` asks of a leg's fetch too (#1037); its
+    docstring says which clause leaves out what, and why.
 
     WHY THE MOUNT'S OWN ARE ADDED. `--prune` deletes every ref under
     `refs/remotes/origin/` that no refspec on the command line maps a ref of
@@ -8725,7 +8816,12 @@ def _origin_fetch_refspecs(member: Path) -> list[str]:
     A mount whose refspec git cannot satisfy, one that names a ref `origin`
     lacks or two that map to one destination, fails this fetch as it fails
     the person's own `git fetch origin`, and `bump` says so as it says any
-    failed fetch.
+    failed fetch. So does one carried into a folder of its own where a
+    branch's name falls in that folder (pull requests in `origin/pr/`
+    beside a branch `pr/7`), which the person's own fetch fails too
+    wherever the mount has the branches' glob, as `add` leaves it, and
+    which this fetch alone fails where it has not. A branch put under
+    another name failed this fetch alone until #1066, and is left out now.
 
     READ BY A LISTING, `git config --list -z`, not `--get-all`: the dry
     run's test holds every `git config` it runs to a listing, the one form

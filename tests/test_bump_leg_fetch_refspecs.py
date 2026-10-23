@@ -29,6 +29,20 @@ of the leg that moves is one the fetch should not have moved. `WHICH_CLAUSE`
 is `tests/test_family_bump_fetch_refspecs.py`'s own table, asked here of
 `_leg_fetch_refspecs` in process: one table holds both tools to one rule.
 
+AND #1066, WHICH THE SHARED RULE CARRIED FROM #946: a refspec of the leg's
+own that puts a branch on the name `+refs/heads/*:refs/remotes/origin/*`
+gives another, such as a folder of branches onto the branches' names
+(`+refs/heads/release/*:refs/remotes/origin/*`). Where the remote has `x`
+and `release/x` the fetch exited 128, "Cannot fetch both refs/heads/x and
+refs/heads/release/x to refs/remotes/origin/x", where the leg's own `git
+fetch origin` exits 0, and both runs gave the failed-fetch note. Every
+refspec onto the branches' names is left out now, and every one that puts a
+branch under a name not its own; `BRANCH_UNDER_ANOTHER_NAME` is the
+member's rows, imported, run here end to end. Since #1100 so is a pattern
+by a start of `refs/heads/`, such as `refs/heads*`, and
+`NO_BRANCH_A_PATTERN_TAKES`'s rows hold what that costs: a commit only a
+ref that is no branch reaches, which the pattern takes too, is refused.
+
 Every remote a test writes is the private bare copy `private_remote` points
 the leg's `origin` at.
 """
@@ -46,12 +60,17 @@ from test_bump_leg_dry_run_truth import VIA, assert_one_refusal, tagged
 #: #898's helpers: the private remote, a commit made in the leg, a push, a
 #: ref's reach, the refusal's two lines in the tag words, and the leg's refs.
 from test_bump_leg_reachability_words import (
-    bare_of, contains, made_in_the_leg, private_remote, pushed, refs, refusal,
-    runner, tag_reaches,
+    bare_of, contains, local_only, made_in_the_leg, only_a_tag_reaches,
+    private_remote, pushed, refs, refusal, runner, tag_reaches,
 )
+#: The root's snapshot, which a refusal leaves as it was.
 from test_bump_leg_rollback import snapshot
-#: The member's table of clauses, asked of the leg's fetch below.
-from test_family_bump_fetch_refspecs import WHICH_CLAUSE
+#: The member's table of clauses, asked of the leg's fetch below, its
+#: refspecs that put a branch on another's name (#1066), and its patterns
+#: that take a ref that is no branch beside the branches (#1100).
+from test_family_bump_fetch_refspecs import (
+    BRANCH_UNDER_ANOTHER_NAME, NO_BRANCH_A_PATTERN_TAKES, WHICH_CLAUSE,
+)
 
 sys.path.insert(0, str(REPO / "scripts"))
 from repo_shape import load_yaml  # noqa: E402
@@ -113,35 +132,27 @@ def fetched_as_bump(leg: Path) -> None:
         "--refmap=", "origin", BRANCHES, cwd=leg)
 
 
-@TAGS_UNDER_ORIGIN
-@pytest.mark.parametrize("via", VIA)
-def test_a_branch_and_a_tag_of_one_name_fail_no_fetch_of_the_leg(
-        project, scaffolded, via, refspec):
-    """The leg's only refspec puts the tags of its remote under `origin/`,
-    and the remote has a tag, at the pin, and a branch named where that
-    refspec puts the tag, holding `--to`. The leg's own `git fetch origin`
-    exits 0, and a fetch carrying that refspec beside `BRANCHES` exits 128,
-    "Cannot fetch both", so both runs gave the failed-fetch note and
-    answered from refs the fetch had not renewed. Left out, both runs fetch,
-    print no note and pin the commit, and no ref of the leg moves."""
-    remotes = private_remote(project, scaffolded)
-    leg = project / "spec"
-    pin = git("rev-parse", "HEAD", cwd=leg).stdout.strip()
-    made = made_in_the_leg(project, "SHARED")
-    spec = refspec.format(tag=SHARED)
-    branch = where_the_tag_lands(spec, SHARED)
-    pushed(project, made, f"refs/heads/{branch}")
-    git("tag", SHARED, pin, cwd=bare_of(remotes))
-    refspecs_only(leg, spec)
-    fetched_as_bump(leg)
+def clashes(leg: Path, refspec: str, branch: str) -> None:
+    """The premise of a clash row: the leg's own `git fetch origin` works,
+    and a fetch carrying the leg's `refspec` beside `BRANCHES` exits 128,
+    "Cannot fetch both", over `origin/<branch>`."""
     assert git(*FILE_PROTOCOL, "fetch", "--dry-run", "origin", cwd=leg,
                check=False).returncode == 0, (
         "premise: the leg's own fetch works")
     clash = git(*FILE_PROTOCOL, "fetch", "--dry-run", "origin", BRANCHES,
-                spec, cwd=leg, check=False)
+                refspec, cwd=leg, check=False)
     assert clash.returncode == 128, "premise: the two refspecs clash"
     assert "Cannot fetch both " in clash.stderr
     assert f" to {ORIGIN}{branch}" in clash.stderr
+
+
+def both_runs_pin(project: Path, remotes: Path, via: str, pin: str,
+                  made: str) -> None:
+    """Both runs through `via`, the root branched first: the dry run prints
+    the move from `pin` to `made`, exit 0, and the real run pins `made`,
+    each with nothing on stderr (no note that the fetch failed) and no ref
+    of the leg moved."""
+    leg = project / "spec"
     branched(project)
     run = runner(project, remotes, via)
     before = refs(leg)
@@ -164,6 +175,58 @@ def test_a_branch_and_a_tag_of_one_name_fail_no_fetch_of_the_leg(
 
 @TAGS_UNDER_ORIGIN
 @pytest.mark.parametrize("via", VIA)
+def test_a_branch_and_a_tag_of_one_name_fail_no_fetch_of_the_leg(
+        project, scaffolded, via, refspec):
+    """The leg's only refspec puts the tags of its remote under `origin/`,
+    and the remote has a tag, at the pin, and a branch named where that
+    refspec puts the tag, holding `--to`. The leg's own `git fetch origin`
+    exits 0, and a fetch carrying that refspec beside `BRANCHES` exits 128,
+    "Cannot fetch both", so both runs gave the failed-fetch note and
+    answered from refs the fetch had not renewed. Left out, both runs fetch,
+    print no note and pin the commit, and no ref of the leg moves."""
+    remotes = private_remote(project, scaffolded)
+    leg = project / "spec"
+    pin = git("rev-parse", "HEAD", cwd=leg).stdout.strip()
+    made = made_in_the_leg(project, "SHARED")
+    spec = refspec.format(tag=SHARED)
+    branch = where_the_tag_lands(spec, SHARED)
+    pushed(project, made, f"refs/heads/{branch}")
+    git("tag", SHARED, pin, cwd=bare_of(remotes))
+    refspecs_only(leg, spec)
+    fetched_as_bump(leg)
+    clashes(leg, spec, branch)
+
+    both_runs_pin(project, remotes, via, pin, made)
+
+
+@BRANCH_UNDER_ANOTHER_NAME
+@pytest.mark.parametrize("via", VIA)
+def test_a_branch_put_on_another_branchs_name_fails_no_fetch_of_the_leg(
+        project, scaffolded, via, refspec, taken, shared):
+    """#1066. The leg's only refspec puts a branch of its remote on the
+    name `BRANCHES` gives another: `taken`, at the pin, onto `shared`, a
+    branch holding `--to`. The leg's own `git fetch origin` exits 0, and a
+    fetch carrying that refspec beside `BRANCHES` exits 128, "Cannot fetch
+    both", so both runs gave the failed-fetch note and answered from refs
+    the fetch had not renewed, through the leg's `origin` and through
+    `--local-remote-dir`. Left out, by THE BRANCHES' GLOB or as A BRANCH
+    UNDER ANOTHER NAME, both runs fetch, print no note and pin the commit,
+    and no ref of the leg moves."""
+    remotes = private_remote(project, scaffolded)
+    leg = project / "spec"
+    pin = git("rev-parse", "HEAD", cwd=leg).stdout.strip()
+    made = made_in_the_leg(project, "RENAMED")
+    pushed(project, made, f"refs/heads/{shared}")
+    pushed(project, pin, f"refs/heads/{taken}")
+    refspecs_only(leg, refspec)
+    fetched_as_bump(leg)
+    clashes(leg, refspec, shared)
+
+    both_runs_pin(project, remotes, via, pin, made)
+
+
+@TAGS_UNDER_ORIGIN
+@pytest.mark.parametrize("via", VIA)
 def test_a_tag_the_leg_maps_into_origin_does_not_answer_for_a_branch(
         project, scaffolded, via, refspec):
     """A commit no branch of the leg's remote reaches, pushed with its
@@ -175,19 +238,47 @@ def test_a_tag_the_leg_maps_into_origin_does_not_answer_for_a_branch(
     remote reaches, with nothing in the root moved, and no ref of the leg
     moves."""
     remotes = private_remote(project, scaffolded)
-    bare = bare_of(remotes)
     leg = project / "spec"
     made = made_in_the_leg(project, "TAGGED")
     tagged(leg, RELEASE, made)
     pushed(project, f"refs/tags/{RELEASE}", f"refs/tags/{RELEASE}")
     refspecs_only(leg, refspec.format(tag=RELEASE))
     fetched_as_bump(leg)
-    assert not contains(bare, made, "refs/heads/"), (
-        "premise: no branch of the leg's remote reaches it")
-    assert contains(bare, made, "refs/tags/"), (
-        "premise: a tag of the leg's remote does")
+    run, before = only_a_tag_reaches(project, remotes, via, made)
+    leg_refs = refs(leg)
+
+    stderr = assert_one_refusal(project, run, made,
+                                "bump-leg-commit-local-only", before)
+
+    assert refusal(stderr) == tag_reaches(made)
+    assert refs(leg) == leg_refs, "no ref of the leg moved"
+
+
+@NO_BRANCH_A_PATTERN_TAKES
+@pytest.mark.parametrize("via", VIA)
+def test_a_ref_a_heads_pattern_takes_answers_for_no_branch_of_the_leg(
+        project, scaffolded, via, refspec, ref):
+    """#1100, what leaving the pattern out costs (RV1157's finding 2), for
+    a leg. A commit no branch of the leg's remote reaches, which `ref` of
+    that remote, no branch, holds, in a leg whose only refspec is a pattern
+    by a start of `refs/heads/` that takes `ref` too. Carried until #1100,
+    the refspec put `ref` under `origin/`, where `on_a_remote_branch` reads
+    branches, and both runs pinned the commit. Left out, both refuse it
+    `bump-leg-commit-local-only` in the plain words, as one only a tag of
+    the remote reaches is refused, through the leg's `origin` and through
+    `--local-remote-dir`, with nothing in the root moved, and no ref of the
+    leg moves."""
+    remotes = private_remote(project, scaffolded)
+    leg = project / "spec"
+    made = made_in_the_leg(project, "PATTERN")
+    pushed(project, made, ref)
+    refspecs_only(leg, refspec)
+    fetched_as_bump(leg)
+    assert contains(bare_of(remotes), made, ref), f"premise: {ref} reaches it"
+    assert not contains(bare_of(remotes), made, "refs/heads/"), (
+        "premise: no branch of the leg's remote does")
     assert not contains(leg, made, "refs/remotes/"), (
-        "premise: no remote-tracking ref of the leg does")
+        "premise: nor does a remote-tracking ref of the leg")
     branched(project)
     run = runner(project, remotes, via)
     before = snapshot(project)
@@ -196,7 +287,7 @@ def test_a_tag_the_leg_maps_into_origin_does_not_answer_for_a_branch(
     stderr = assert_one_refusal(project, run, made,
                                 "bump-leg-commit-local-only", before)
 
-    assert refusal(stderr) == tag_reaches(made)
+    assert refusal(stderr) == local_only(made)
     assert refs(leg) == leg_refs, "no ref of the leg moved"
 
 
@@ -215,9 +306,11 @@ def test_which_clause_leaves_each_refspec_out_of_the_legs_fetch(
     carries every branch and, where no clause of `origin_fetch_refspecs`
     leaves it out, `refspec`, forced. The rows and their ids are the
     member's (`test_family_bump_fetch_refspecs.py` says which clause each
-    holds), so a clause either tool gains is asked of both; on main every
-    row the member leaves out by a tag or the branches' glob was carried
-    here."""
+    holds), so a clause either tool gains is asked of both; at #1037's base
+    every row the member leaves out by a tag or the branches' glob was
+    carried here, and until #1066 both tools carried the folder of branches
+    onto the branches' names and every `another-name` row, the
+    `another-name-heads-pattern` rows until #1100."""
     leg = tmp_path / "leg"
     git("init", "-q", str(leg), cwd=tmp_path)
     git("remote", "add", "origin", str(tmp_path / "origin.git"), cwd=leg)
