@@ -15668,9 +15668,13 @@ def cmd_execute(args) -> int:
         # Where the shape's Makefile and bootstrap script WENT, as the
         # materializer reports it, and not a second look at the tree (#480);
         # under `--local-remote-dir` no pull request is opened, so NEXT names
-        # the split's branch, and the repository it is pushed to (#523).
+        # the split's branch, and the repository it is pushed to (#523); and
+        # the paths the plan keeps in the root, where a `GNUmakefile` or
+        # `makefile` is what GNU make reads there before any `Makefile`
+        # (#1047).
         _next_steps(names, collisions,
-                    (branch, urls["assembly"]) if local else None)
+                    (branch, urls["assembly"]) if local else None,
+                    surviving=paths_for["root"])
     _finish_by_hand(not verified, refused, topic, unset, opened=opened,
                     carried=carried)
     if verified:
@@ -16233,7 +16237,8 @@ SHAPE_MAKEFILE = "Makefile"
 
 
 def _next_steps(names: dict, collisions: list,
-                split: tuple[str, str] | None = None) -> None:
+                split: tuple[str, str] | None = None, *,
+                surviving: list[str] | tuple = ()) -> None:
     """What a person does once the split is verified AND its pull request is
     open, or none was tried. Not said after a refused `gh pr create`: there
     the command to open it is the next step (#304).
@@ -16266,12 +16271,29 @@ def _next_steps(names: dict, collisions: list,
     `shape/scripts/bootstrap.py`, and there both commands run the SOURCE's
     script, which can exit 0 having placed no leg and validated nothing. So
     no bootstrap command is named: a line says which merges come first, and
-    that `make bootstrap` is run after them. Elsewhere the block is what it
-    was, byte for byte."""
+    that `make bootstrap` is run after them.
+
+    AND GNU MAKE AT THE ROOT MAY READ ANOTHER FILE (#1047). It reads the
+    first it finds of `GNUmakefile`, `makefile` and `Makefile`, and only
+    that one, so where the source keeps `GNUmakefile` or `makefile` in the
+    root, `make bootstrap` there reads the source's file and not the
+    shape's, wherever the shape's went, and exits 2 with `No rule to make
+    target 'bootstrap'` where that file has no such rule. NEXT printed it
+    anyway, and its NOTE said the shape's targets arrive once the two
+    `Makefile`s are merged, which brings them to a file GNU make does not
+    read. `surviving` is each path the plan's entries send to the root,
+    asked as `_makefile_follow_up` asks it (`_root_keeps`), whose line names
+    the same file. Where it holds one, the command is `python3
+    scripts/bootstrap.py`, and the NOTE names the file and says what it
+    takes for `make bootstrap` to run there; where the script went aside,
+    that is the command named after the merges. Elsewhere the block is what
+    it was, byte for byte."""
     aside = dict(collisions)
     script, makefile = aside.get(BOOTSTRAP), aside.get(SHAPE_MAKEFILE)
+    first = next((name for name in GNU_MAKE_READS if name != SHAPE_MAKEFILE
+                  and _root_keeps(set(surviving), name)), None)
     bootstrap = ("" if script else
-                 "\n    python3 scripts/bootstrap.py" if makefile else
+                 "\n    python3 scripts/bootstrap.py" if makefile or first else
                  "\n    make bootstrap")
     if split is None:
         review = f"the pull request on {names['assembly']}"
@@ -16285,6 +16307,14 @@ def _next_steps(names: dict, collisions: list,
                           "--recurse-submodules", "-b", shlex.quote(branch),
                           shlex.quote(url)])
     print(f"\nNEXT: review {review}, then\n    {clone}{bootstrap}")
+    reads = (
+        f"GNU make at the root reads the source's {_spelled(first)}, the "
+        f"first of {_and_listed([_spelled(name) for name in GNU_MAKE_READS])}"
+        " it finds, so `make bootstrap` and the shape's other make targets "
+        f"run there only once {_spelled(first)} has them, or includes a "
+        "Makefile that does") if first else ""
+    runs = ("; `python3 scripts/bootstrap.py` is what the shape's `make "
+            "bootstrap` runs.")
     if script:
         kept = [path for path in (SHAPE_MAKEFILE, BOOTSTRAP)
                 if path in aside]
@@ -16294,7 +16324,14 @@ def _next_steps(names: dict, collisions: list,
               f"`make bootstrap` nor `python3 {BOOTSTRAP}` runs the "
               "shape's bootstrap yet: merge "
               + _and_listed([f"{aside[path]} into {path}" for path in kept])
-              + " first, and then run `make bootstrap`.")
+              + (f" first, and then run `python3 {BOOTSTRAP}`; {reads}."
+                 if first else " first, and then run `make bootstrap`."))
+    elif makefile and first:
+        print(f"NOTE the root keeps its own {SHAPE_MAKEFILE} and the shape's "
+              f"is {makefile}, and {reads}{runs}")
+    elif first:
+        print(f"NOTE the shape's Makefile is the root's `{SHAPE_MAKEFILE}`, "
+              f"but {reads}{runs}")
     elif makefile:
         print(f"NOTE the root keeps its own {SHAPE_MAKEFILE} and the shape's "
               f"is {makefile}, so `make bootstrap` and the shape's other make "
