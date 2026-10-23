@@ -243,12 +243,14 @@ from repo_shape import (  # noqa: E402
     shown_path, spelled as spelled_as_git_out, tree_digest,
 )
 from shape_materialize import (  # noqa: E402
+    BOOTSTRAP_COMMAND, GNU_MAKE_READS,
     PLACEHOLDER_RE, SHAPE_REPOSITORY, SYMLINK_HOPS,
     TEMPLATED, TOO_MANY_SYMLINKS, CommandFailed, Materialized,
     adopt_makefile_block, assembly_root_paths, collision_follow_up, copy_tree,
     default_reference,
     election_date, env_commit, escape_what_stdout_cannot_encode,
-    git_init_commit, materialize_assembly_root, naming_block, render, run,
+    git_init_commit, make_reads_first_clause, materialize_assembly_root,
+    naming_block, render, run,
     template_files, write_lf,
     write_paths_listing,
 )
@@ -3792,9 +3794,30 @@ def _root_keeps(surviving: set[str], path: str, *,
     return path in surviving or f"{path.split('/')[0]}/" in surviving
 
 
-#: The names GNU make looks for when no `-f` is given, in its order: it reads
-#: the first it finds, and only that one.
-GNU_MAKE_READS = ("GNUmakefile", "makefile", "Makefile")
+def _make_reads_first(surviving) -> str | None:
+    """The source's file GNU make finds at the root before the shape's
+    `Makefile`: the first of `GNUmakefile` and `makefile` the root keeps, in
+    `GNU_MAKE_READS`' order and asked as `_root_keeps` asks it, with a `/`
+    where the root keeps a DIRECTORY of that name; None where it keeps
+    neither. `surviving` is each path the plan's entries send to the root.
+
+    ONE LOOKUP, for the three texts that name that file (#1132, RV1105's
+    NIT 5): the `CONTRACTS_DIR` line (`_makefile_follow_up`, #977), the
+    Makefile's collision follow-up (`_predict_collisions`, #1048) and
+    `execute`'s NEXT (`_next_steps`, #1047). Each made its own, three
+    lookups that had to agree for one plan to name one file. The tuple is
+    `shape_materialize`'s, imported, and not a second one held equal to it.
+
+    A DIRECTORY of that name is what GNU make finds first all the same, and
+    it stops there, `GNUmakefile: Is a directory.`, for every target
+    (RV1121's NIT-1, measured with GNU make 4.3): the `/` is how each text
+    knows to say so (`make_reads_first_clause`), and not what that file
+    would take.
+    """
+    kept = set(surviving)
+    return next((name if name in kept else f"{name}/"
+                 for name in GNU_MAKE_READS
+                 if name != SHAPE_MAKEFILE and _root_keeps(kept, name)), None)
 
 
 def _makefile_follow_up(surviving: set[str]) -> str:
@@ -3823,15 +3846,18 @@ def _makefile_follow_up(surviving: set[str]) -> str:
     case is kept, and as `shape/Makefile` where it is not, naming the kept
     path that takes the name there. Whether GNU make itself reads a name by
     its case there is its build's to say, so nothing more is said of it.
+
+    The file is `_make_reads_first`'s, the one lookup NEXT and the collision
+    follow-up ask too, and the clause is `make_reads_first_clause`'s: where
+    the root keeps a DIRECTORY of that name, it says GNU make stops there,
+    and not what the file would take (#1132).
     """
     aside = _root_keeps(surviving, SHAPE_MAKEFILE)
     folded = (not aside
               and _root_keeps(surviving, SHAPE_MAKEFILE, fold=True))
     twins = sorted(kept.rstrip("/") for kept in surviving
                    if kept.rstrip("/").casefold() == SHAPE_MAKEFILE.casefold())
-    first = next((name for name in GNU_MAKE_READS
-                  if name != SHAPE_MAKEFILE and _root_keeps(surviving, name)),
-                 None)
+    first = _make_reads_first(surviving)
     whose = "the shape's" if aside or folded or first else "the root"
     said = (f"{whose} Makefile wires `CONTRACTS_DIR` to the `contracts/` of "
             "the spec leg, where the plan's `legs.spec_path` mounts it, and "
@@ -3851,12 +3877,9 @@ def _makefile_follow_up(surviving: set[str]) -> str:
     elif first:
         said += f"; it is written as the root's `{SHAPE_MAKEFILE}`"
     if first:
-        listed = _and_listed([f"`{name}`" for name in GNU_MAKE_READS])
-        said += (
-            f"{'; and' if aside or folded else ', but'} GNU make at the root "
-            f"reads the source's {_spelled(first)}, the first of {listed} it "
-            f"finds, so `make` there exports `CONTRACTS_DIR` only once "
-            f"{_spelled(first)} does, or includes a Makefile that does")
+        said += (f"{'; and' if aside or folded else ', but'} "
+                 + make_reads_first_clause(
+                     first, "`make` there exports `CONTRACTS_DIR`", "does"))
     return said
 
 
@@ -6425,10 +6448,13 @@ def _predict_collisions(entries: list[Entry], *,
     the root, so the follow-up is in the plan the human reads rather than in
     output they may never scroll back to.
 
-    The WORDING comes from `shape_materialize.collision_follow_up`, the same
-    function `execute` reports its actual collisions through — including the
-    one collision whose answer is not "merge": an `AGENTS.md` or `CLAUDE.md`
-    the source already holds needs ONE LINE ADDED, not a merge.
+    The WORDING comes from `shape_materialize.collision_follow_up`, the one
+    place a collision's follow-up is said: the plan stores what it returns
+    in `follow_ups:`, and `execute` carries those items into the split
+    commit's message, naming the collisions that actually happened by path
+    only (#1105's reviews, NIT-4 and NIT-3) — including the one collision
+    whose answer is not "merge": an `AGENTS.md` or `CLAUDE.md` the source
+    already holds needs ONE LINE ADDED, not a merge.
 
     The PATHS come from `assembly_root_paths`, the list #172's mount rule
     reads, so the two cannot list different files. The list this function
@@ -6439,9 +6465,10 @@ def _predict_collisions(entries: list[Entry], *,
     until it is merged, and that depends on whether `scripts/bootstrap.py`
     went aside too (#493's review, F2). It is told which file GNU make reads
     before the shape's `Makefile` as well, where the plan keeps a
-    `GNUmakefile` or a `makefile`, read as `_makefile_follow_up` reads it
-    (`GNU_MAKE_READS`, `_root_keeps`): the merge brings the shape's make
-    targets only where `make` reads the merged file (#1048).
+    `GNUmakefile` or a `makefile`, file or directory, by `_make_reads_first`,
+    the lookup the `CONTRACTS_DIR` line and NEXT ask too (#1132): the merge
+    brings the shape's make targets only where `make` reads the merged file
+    (#1048).
 
     `attributes_link` says the source's root `.gitattributes` is a symlink,
     read from the source tree's mode as `execute` reads it from the index:
@@ -6451,9 +6478,7 @@ def _predict_collisions(entries: list[Entry], *,
     beside = {path: f"{COLLISION_DIR}/{path}"
               for path in sorted(set(assembly_root_paths()))
               if _root_keeps(surviving, path)}
-    reads_first = next((name for name in GNU_MAKE_READS
-                        if name != SHAPE_MAKEFILE
-                        and _root_keeps(surviving, name)), None)
+    reads_first = _make_reads_first(surviving)
     return [collision_follow_up(path, actual, beside,
                                 attributes_link=attributes_link,
                                 reads_first=reads_first)
@@ -16089,16 +16114,23 @@ def _next_steps(names: dict, collisions: list,
     anyway, and its NOTE said the shape's targets arrive once the two
     `Makefile`s are merged, which brings them to a file GNU make does not
     read. `surviving` is each path the plan's entries send to the root,
-    asked as `_makefile_follow_up` asks it (`_root_keeps`), whose line names
-    the same file. Where it holds one, the command is `python3
-    scripts/bootstrap.py`, and the NOTE names the file and says what it
-    takes for `make bootstrap` to run there; where the script went aside,
-    that is the command named after the merges. Elsewhere the block is what
-    it was, byte for byte."""
+    asked by `_make_reads_first`, the one lookup the `CONTRACTS_DIR` line
+    and the collision follow-up ask too, whose lines name the same file.
+    Where it holds one, the command is `python3 scripts/bootstrap.py`, and
+    the NOTE names the file and says what it takes for `make bootstrap` to
+    run there; where the script went aside, that is the command named after
+    the merges. Where the root keeps a DIRECTORY of that name, GNU make
+    stops at it for every target, and the NOTE says so, in the clause the
+    other two texts use (`make_reads_first_clause`, #1132).
+
+    WHERE A NOTE NAMES `python3 scripts/bootstrap.py` FOR A PERSON TO RUN, it
+    names `python` on Windows too, as the template's `scripts/bootstrap.py`
+    does (`BOOTSTRAP_COMMAND`, #1132, RV1121's NIT-2): a Windows install
+    usually puts no `python3` on PATH. The command line itself is the one
+    pasted where the clone is made, and stays as it was."""
     aside = dict(collisions)
     script, makefile = aside.get(BOOTSTRAP), aside.get(SHAPE_MAKEFILE)
-    first = next((name for name in GNU_MAKE_READS if name != SHAPE_MAKEFILE
-                  and _root_keeps(set(surviving), name)), None)
+    first = _make_reads_first(surviving)
     bootstrap = ("" if script else
                  "\n    python3 scripts/bootstrap.py" if makefile or first else
                  "\n    make bootstrap")
@@ -16114,14 +16146,10 @@ def _next_steps(names: dict, collisions: list,
                           "--recurse-submodules", "-b", shlex.quote(branch),
                           shlex.quote(url)])
     print(f"\nNEXT: review {review}, then\n    {clone}{bootstrap}")
-    reads = (
-        f"GNU make at the root reads the source's {_spelled(first)}, the "
-        f"first of {_and_listed([_spelled(name) for name in GNU_MAKE_READS])}"
-        " it finds, so `make bootstrap` and the shape's other make targets "
-        f"run there only once {_spelled(first)} has them, or includes a "
-        "Makefile that does") if first else ""
-    runs = ("; `python3 scripts/bootstrap.py` is what the shape's `make "
-            "bootstrap` runs.")
+    reads = make_reads_first_clause(
+        first, "`make bootstrap` and the shape's other make targets run there",
+        "has them") if first else ""
+    runs = f"; {BOOTSTRAP_COMMAND} is what the shape's `make bootstrap` runs."
     if script:
         kept = [path for path in (SHAPE_MAKEFILE, BOOTSTRAP)
                 if path in aside]
@@ -16131,7 +16159,7 @@ def _next_steps(names: dict, collisions: list,
               f"`make bootstrap` nor `python3 {BOOTSTRAP}` runs the "
               "shape's bootstrap yet: merge "
               + _and_listed([f"{aside[path]} into {path}" for path in kept])
-              + (f" first, and then run `python3 {BOOTSTRAP}`; {reads}."
+              + (f" first, and then run {BOOTSTRAP_COMMAND}; {reads}."
                  if first else " first, and then run `make bootstrap`."))
     elif makefile and first:
         print(f"NOTE the root keeps its own {SHAPE_MAKEFILE} and the shape's "
@@ -16143,7 +16171,7 @@ def _next_steps(names: dict, collisions: list,
         print(f"NOTE the root keeps its own {SHAPE_MAKEFILE} and the shape's "
               f"is {makefile}, so `make bootstrap` and the shape's other make "
               "targets arrive only once the follow-up merges the two; "
-              "`python3 scripts/bootstrap.py` is what `make bootstrap` runs.")
+              f"{BOOTSTRAP_COMMAND} is what `make bootstrap` runs.")
 
 
 def _account_for(before: dict, after: dict, drops: list[str]) -> tuple[dict, list]:

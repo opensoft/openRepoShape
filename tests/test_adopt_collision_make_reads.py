@@ -10,9 +10,10 @@ one, so a source that keeps `makefile` or `GNUmakefile` has a root where
 
   * the collision follow-up for a kept `Makefile` said the shape's make
     targets "arrive only with that merge". Where the root also keeps a
-    `GNUmakefile` or a `makefile`, `cat shape/Makefile >> Makefile` leaves
-    `make -n bootstrap` at the root exiting 2, "No rule to make target
-    'bootstrap'", for `make` reads the other file;
+    `GNUmakefile` or a `makefile` that neither includes `Makefile` nor is a
+    link to it, `cat shape/Makefile >> Makefile` leaves `make -n bootstrap`
+    at the root exiting 2, "No rule to make target 'bootstrap'", for `make`
+    reads the other file;
   * the pinned `AGENTS-shape.md` said, of a kept `Makefile`, that the block
     "waits in `shape/Makefile` until the two are merged", and of a kept
     `makefile` or `GNUmakefile` nothing.
@@ -25,15 +26,17 @@ the root keeps only the source's `Makefile` the collision follow-up is what it
 was, byte for byte (`tests/test_adopt_e2e.py` pins it).
 
 And neither says more than `make` does (#1105's review). Where the file
-`make` reads ends in `include Makefile`, a common idiom, the merge alone
-brings the targets, so the follow-up says they reach `make` once that file has
-them or includes a Makefile that does, and not that the merge alone fails;
-where `scripts/bootstrap.py` went aside too, it says what the script's merge
-lets `python3 scripts/bootstrap.py` run, and not that `make bootstrap` runs it
+`make` reads ends in `include Makefile`, a common idiom, or is a link to
+`Makefile` (#1105's second review, NIT-1), the merge alone brings the
+targets, so the follow-up says they reach `make` once that file has them or
+includes a Makefile that does, and not that the merge alone fails; where
+`scripts/bootstrap.py` went aside too, it says what the script's merge lets
+`python3 scripts/bootstrap.py` run, and not that `make bootstrap` runs it
 after both merges (NIT-2); and the pinned file says `make` reads the shape's
 Makefile there only where that file includes it (NIT-3). The words are those
-of `execute`'s NEXT (#1047): "has them", and "what the shape's `make
-bootstrap` runs".
+of `execute`'s NEXT (#1047), from one function since #1132
+(`make_reads_first_clause`): "has them", and "what the shape's `make
+bootstrap` runs", which names `python` on Windows too.
 
 The tests that run `execute` need `git filter-repo` and skip without it, and
 the ones that run `make` skip without it. No network and no GitHub: the legs
@@ -79,26 +82,33 @@ LISTED = (", ".join(f"`{name}`" for name in GNU_MAKE_READS[:-1])
 #: reads before `Makefile`: the merge is all it takes (#480).
 MERGE_IS_ENOUGH = (
     f"The shape's make targets ({TARGETS}) arrive only with that merge; "
-    "until then `python3 scripts/bootstrap.py` is what `make bootstrap` runs")
-MEANWHILE = ("; until then `python3 scripts/bootstrap.py` is what the "
-             "shape's `make bootstrap` runs")
+    "until then `python3 scripts/bootstrap.py` (`python` on Windows) is what "
+    "`make bootstrap` runs")
+MEANWHILE = ("; until then `python3 scripts/bootstrap.py` (`python` on "
+             "Windows) is what the shape's `make bootstrap` runs")
 #: How the follow-up goes on where `scripts/bootstrap.py` went aside too.
 SCRIPT_ASIDE = (
     " the root's scripts/bootstrap.py is the source's own until "
-    "shape/scripts/bootstrap.py is merged into it as well, so neither `make "
-    "bootstrap` nor `python3 scripts/bootstrap.py` runs the shape's "
-    "bootstrap ")
-#: ... where `make` reads the merged `Makefile`: `make bootstrap` waits for
-#: the two merges and nothing else (#493's review, F2).
-BOTH_MERGES = ", and" + SCRIPT_ASIDE + "before both merges are made"
+    "shape/scripts/bootstrap.py is merged into it as well, so ")
+#: ... where `make` reads the merged `Makefile`: the script's merge alone
+#: lets `python3 scripts/bootstrap.py` run the shape's bootstrap, and `make
+#: bootstrap` waits for the two merges and nothing else (#493's review, F2;
+#: "neither ... before both merges are made" was untrue of the first,
+#: #1105's second review, NIT-2).
+BOTH_MERGES = (", and" + SCRIPT_ASIDE
+               + "`python3 scripts/bootstrap.py` (`python` on Windows) runs "
+               "the shape's bootstrap once the script is merged, and `make "
+               "bootstrap` once both merges are made")
 #: ... where `make` reads another file: the script's merge is what lets
 #: `python3 scripts/bootstrap.py` run the shape's bootstrap, and `make
 #: bootstrap` runs it only once that file has the targets or includes a
 #: Makefile that does, with or without the `Makefile` merge (#1105's review,
 #: NIT-2), which the sentence before says.
 SCRIPT_MERGED = ("; and" + SCRIPT_ASIDE
-                 + "until then, and then `python3 scripts/bootstrap.py` runs "
-                 "it")
+                 + "neither `make bootstrap` nor `python3 "
+                 "scripts/bootstrap.py` runs the shape's bootstrap until "
+                 "then, and then `python3 scripts/bootstrap.py` (`python` on "
+                 "Windows) runs it")
 
 
 def reads_instead(first: str, then: str) -> str:

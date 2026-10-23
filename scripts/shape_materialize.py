@@ -770,18 +770,22 @@ ASSISTANT_INSTRUCTIONS = ("AGENTS.md", "CLAUDE.md")
 #: that kept the source's `Makefile` has none of them until the shape's copy
 #: is merged into it (#480); where the root also keeps a `GNUmakefile` or a
 #: `makefile`, which GNU make reads first, the merge alone brings them only
-#: where that file includes `Makefile` (#1048, #1105's review). The collision
-#: follow-up says what each root takes.
+#: where that file includes `Makefile` or is a link to it (#1048, #1105's
+#: reviews). The collision follow-up says what each root takes.
 #: `tests/test_adopt_e2e.py` holds this to the template's own targets.
 SHAPE_MAKE_TARGETS = ("bootstrap", "validate", "pins", "park", "resume")
 #: The names GNU make looks for when no `-f` is given, in its order: it reads
-#: the first it finds, and only that one. `collision_follow_up` names them
-#: (#1048), and so does the pinned `AGENTS-shape.md`, in this order.
-#: `adopt-project.py` keeps the same tuple under the same name for
-#: `_makefile_follow_up` (#977) and `_predict_collisions`, which picks the
-#: file `reads_first` names;
-#: `tests/test_adopt_collision_make_reads.py` holds the two tuples equal.
+#: the first it finds, and only that one. `make_reads_first_clause` names
+#: them (#1048), and so does the pinned `AGENTS-shape.md`, in this order.
+#: `adopt-project.py` imports this tuple for `_make_reads_first`, the one
+#: lookup its three texts ask (#1132): two tuples held equal by a test was
+#: one more place for the order to drift.
 GNU_MAKE_READS = ("GNUmakefile", "makefile", "Makefile")
+#: The command the shape's `make bootstrap` runs, as a sentence names it for
+#: a person to type: with the interpreter's name on Windows, where there is
+#: usually no `python3`, as the template's `scripts/bootstrap.py` names both
+#: (#1132).
+BOOTSTRAP_COMMAND = f"`python3 {BOOTSTRAP}` (`python` on Windows)"
 
 
 # ---------------------------------------------------------------------------
@@ -1011,8 +1015,9 @@ def collision_follow_up(intended: str, actual: str,
     split commit's message, so the plan a human approves and the commit
     message they read afterwards hold one spelling of each. `execute` names
     the collisions that actually happened by path only: its `beside` lines,
-    and the split message's "WRITTEN BESIDE" list. `Materialized.follow_ups()`
-    would say this of them, and nothing calls it (#1105's review, NIT-4).
+    and the split message's "WRITTEN BESIDE" list (#1105's reviews, NIT-4
+    and NIT-3; `Materialized.follow_ups()`, which said them with no
+    `reads_first` and which nothing called, is gone).
 
     A `.gitattributes` THAT IS A SYMLINK gets no block (`_append_eol_block`),
     so `attributes_link` says which of two things happened, and the follow-up
@@ -1029,29 +1034,38 @@ def collision_follow_up(intended: str, actual: str,
     beside one the source kept to where it went, the whole list, and only the
     Makefile's follow-up reads it. Where the root's `scripts/bootstrap.py` is
     the source's own, that command runs the source's script and exits 0, so
-    the follow-up names no command, and says both merges come first (#493's
-    review, F2).
+    the follow-up names no command to run meanwhile (#493's review, F2): it
+    says `python3 scripts/bootstrap.py` runs the shape's bootstrap once the
+    script is merged, and `make bootstrap` once both merges are made. It said
+    that neither runs it "before both merges are made", which is untrue of
+    `python3 scripts/bootstrap.py`: the script's merge alone lets it run the
+    shape's (#1105's second review, NIT-2). The command is named as the
+    template's `scripts/bootstrap.py` names it, `python` on Windows as well
+    (`BOOTSTRAP_COMMAND`, #1132).
 
     BUT GNU MAKE READS THE FIRST OF `GNUmakefile`, `makefile` AND `Makefile`
     IT FINDS, AND ONLY THAT ONE (#1048, measured on #1046's review). Where
     the root keeps a `GNUmakefile` or a `makefile` beside the source's own
     `Makefile`, `make` reads that file, so the merge alone brings the targets
-    only where that file includes `Makefile`: after `cat shape/Makefile >>
-    Makefile`, `make -n bootstrap` at the root still exits 2 with the same
-    `No rule` where it does not, and exits 0 where it ends in `include
-    Makefile` (#1105's review, SHOULD-1). `reads_first` names that file, the
-    one `adopt-project.py`'s `_makefile_follow_up` names (#977), as its
-    caller reads it from the plan's root paths; the follow-up then says
-    `make` reads it, that the targets reach `make` there only once it has
-    them or includes a Makefile that does, and, as before, what runs
-    meanwhile, in the words `execute`'s NEXT uses (#1047). It says nothing of
-    the merge alone, which turns on that file's own lines. Where
-    `scripts/bootstrap.py` went aside as well, it says `python3
-    scripts/bootstrap.py` runs the shape's bootstrap once that script is
-    merged, and not that `make bootstrap` does. With none, the Makefile's
-    follow-up is what it was, byte for byte: a root whose only Makefile is
-    the source's is one where `make` reads the merged file. It is read by no
-    other collision.
+    only where that file includes `Makefile` or is a link to it: after `cat
+    shape/Makefile >> Makefile`, `make -n bootstrap` at the root still exits
+    2 with the same `No rule` where it does neither, and exits 0 where it
+    ends in `include Makefile` (#1105's review, SHOULD-1) or is a link to
+    `Makefile` (#1105's second review, NIT-1). `reads_first` names that file,
+    the one `adopt-project.py`'s `_make_reads_first` finds in the plan's root
+    paths for each of its three texts; the follow-up then says `make` reads
+    it, that the targets reach `make` there only once it has them or
+    includes a Makefile that does, and, as before, what runs meanwhile, in
+    the words `execute`'s NEXT uses (#1047), from one function
+    (`make_reads_first_clause`). It says nothing of the merge alone, which
+    turns on that file's own lines. Where `scripts/bootstrap.py` went aside
+    as well, it says `python3 scripts/bootstrap.py` runs the shape's
+    bootstrap once that script is merged, and not that `make bootstrap`
+    does. A `reads_first` that ends in `/` is a DIRECTORY of that name, which
+    GNU make finds first all the same and stops at, for every target, so the
+    clause says that (#1132). With none, the Makefile's follow-up is what
+    #493 made it: a root whose only Makefile is the source's is one where
+    `make` reads the merged file. It is read by no other collision.
 
     AND A PINNED COPY'S FOLLOW-UP SAYS WHAT HAPPENS TO ITS ROW (#502). The
     shape pin has a row for a copied file at the path it landed on, so once
@@ -1107,26 +1121,59 @@ def collision_follow_up(intended: str, actual: str,
         arrive = (f"The shape's make targets ({targets}) arrive only with "
                   "that merge")
         joint = ", and"
-        meanwhile = ("`python3 scripts/bootstrap.py` is what `make "
-                     "bootstrap` runs")
-        until = "before both merges are made"
+        meanwhile = f"{BOOTSTRAP_COMMAND} is what `make bootstrap` runs"
+        then = (f"{BOOTSTRAP_COMMAND} runs the shape's bootstrap once the "
+                "script is merged, and `make bootstrap` once both merges are "
+                "made")
     else:
-        listed = _listed([f"`{name}`" for name in GNU_MAKE_READS])
-        arrive = (
-            f"GNU make at the root reads the source's `{reads_first}`, the "
-            f"first of {listed} it finds, so the shape's make targets "
-            f"({targets}) reach `make` there only once `{reads_first}` has "
-            "them, or includes a Makefile that does")
+        arrive = make_reads_first_clause(
+            reads_first,
+            f"the shape's make targets ({targets}) reach `make` there",
+            "has them")
         joint = "; and"
-        meanwhile = ("`python3 scripts/bootstrap.py` is what the shape's "
-                     "`make bootstrap` runs")
-        until = f"until then, and then `python3 {BOOTSTRAP}` runs it"
+        meanwhile = (f"{BOOTSTRAP_COMMAND} is what the shape's `make "
+                     "bootstrap` runs")
+        then = (f"neither `make bootstrap` nor `python3 {BOOTSTRAP}` runs the "
+                f"shape's bootstrap until then, and then {BOOTSTRAP_COMMAND} "
+                "runs it")
     if script is None:
         return f"{merge}. {arrive}; until then {meanwhile}"
     return (f"{merge}. {arrive}{joint} the root's {BOOTSTRAP} is the source's "
-            f"own until {script} is merged into it as well, so neither `make "
-            f"bootstrap` nor `python3 {BOOTSTRAP}` runs the shape's "
-            f"bootstrap {until}")
+            f"own until {script} is merged into it as well, so {then}")
+
+
+def make_reads_first_clause(first: str, reach: str, has: str) -> str:
+    """What a text says of the source's file GNU make reads at the root
+    before the shape's `Makefile`: `first` is its name, ending in `/` where
+    the root keeps a DIRECTORY of that name; `reach` is what then reaches
+    `make` there, and `has` how that file would hold it.
+
+    ONE SPELLING, for the three texts that name that file (#1132): the
+    `CONTRACTS_DIR` line (`_makefile_follow_up`, #977), the Makefile's
+    collision follow-up (`collision_follow_up`, #1048) and `execute`'s NEXT
+    (`_next_steps`, #1047). Each built its own, and RV1105's and RV1121's
+    reviews found three verbs and two bootstrap phrases among them.
+
+    A FILE: `make` reads it, so the shape's targets reach `make` there only
+    once that file has them, or includes a Makefile that does.
+
+    A DIRECTORY: GNU make finds it first all the same and stops there,
+    `GNUmakefile: Is a directory.`, exit 2, for every target, with or
+    without a `Makefile` beside it, measured with GNU make 4.3 (#1132,
+    RV1121's NIT-1). A file cannot "have" anything there, so the clause
+    says `make` stops at it, and that nothing reaches `make` at the root
+    while the root keeps it.
+    """
+    listed = _listed([f"`{name}`" for name in GNU_MAKE_READS])
+    name = first.rstrip("/")
+    if name != first:
+        return (f"GNU make at the root stops at the source's directory "
+                f"`{first}`, the first of {listed} it finds (`{name}: Is a "
+                f"directory`), so {reach} only once the root keeps no "
+                "directory of that name")
+    return (f"GNU make at the root reads the source's `{first}`, the first of "
+            f"{listed} it finds, so {reach} only once `{first}` {has}, or "
+            "includes a Makefile that does")
 
 
 def _attributes_link_follow_up(intended: str, actual: str,
@@ -3357,11 +3404,6 @@ class Materialized:
         self.collisions: list[tuple[str, str]] = []
         self.shape_files: list[str] = []
         self.eol_block: list[str] = []
-
-    def follow_ups(self) -> list[str]:
-        beside = dict(self.collisions)
-        return [collision_follow_up(intended, actual, beside)
-                for intended, actual in self.collisions]
 
 
 def materialize_assembly_root(shape_root: Path, target: Path,
