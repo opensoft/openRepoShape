@@ -596,19 +596,16 @@ def unasked_clone(work: Path, code: int, said: str) -> str:
             + said + UNASKED_ENDS)
 
 
-def test_a_default_branch_is_asked_of_the_splits_own_clone(tmp_path):
-    """`init.defaultBranch = a..b`: `check` answers as the split's own `git
-    clone` of the source does on this git (#1083). git 2.43's stops at it,
-    `fatal: invalid branch name`, and `check` says so as one
-    `adopt-git-unasked`, where 2a119f28 said `plan ok` and `execute` then
-    stopped after both legs existed. git 2.55's takes it (CI on #1031), and
-    there no `git init` stops a question: each names its branch, and the
-    CRLF file the plan keeps is found."""
+def check_asks_the_clone_a_default_branch(tmp_path: Path, env_of) -> None:
+    """The rows that give `check` an `init.defaultBranch = a..b` in the
+    form `env_of(tmp_path)` builds: `check` answers as this git's `git
+    clone` does, one `adopt-git-unasked` where it stops at the name and,
+    where it takes it, the CRLF file the plan keeps."""
     plan = planned(a_source(tmp_path, files={ROOT_ATTRIBUTES: TEXT_EOL_LF,
                                              NOTES: CRLF}),
                    tmp_path, {NOTES: ROOT})
     work = tmp_path / "work"
-    env = bad_default_branch(tmp_path)
+    env = env_of(tmp_path)
     clone = this_gits_clone(tmp_path, env)
     result = checked(plan, env, "--work-dir", str(work))
     assert "REFUSED" not in result.stderr, result.stderr
@@ -619,6 +616,17 @@ def test_a_default_branch_is_asked_of_the_splits_own_clone(tmp_path):
         assert finding_lines(result) == [unasked_clone(
             work, clone.returncode, clone.stderr.decode().strip())]
     assert list(work.iterdir()) == []
+
+
+def test_a_default_branch_is_asked_of_the_splits_own_clone(tmp_path):
+    """`init.defaultBranch = a..b`: `check` answers as the split's own `git
+    clone` of the source does on this git (#1083). git 2.43's stops at it,
+    `fatal: invalid branch name`, and `check` says so as one
+    `adopt-git-unasked`, where 2a119f28 said `plan ok` and `execute` then
+    stopped after both legs existed. git 2.55's takes it (CI on #1031), and
+    there no `git init` stops a question: each names its branch, and the
+    CRLF file the plan keeps is found."""
+    check_asks_the_clone_a_default_branch(tmp_path, bad_default_branch)
 
 
 def test_a_default_branch_git_will_not_take_stops_no_throwaway_init(
@@ -820,13 +828,14 @@ def test_no_url_is_asked_once_the_clone_cannot_be_made(tmp_path):
     assert list(work.iterdir()) == []
 
 
-def test_execute_refuses_a_default_branch_its_clone_will_not_take(
-        adopter, monkeypatch, tmp_path):
-    """`init.defaultBranch = a..b`, on a git whose `git clone` stops at it,
-    as 2.43's does: `execute` refuses it before any leg exists, where on
-    2a119f28 it made both and stopped extracting the spec leg (#1083)."""
+def execute_refuses_a_default_branch_its_clone_will_not_take(
+        adopter, monkeypatch, tmp_path, env_of) -> None:
+    """The rows that give `execute` an `init.defaultBranch = a..b` in the
+    form `env_of(tmp_path)` builds: on a git whose `git clone` stops at it,
+    `execute` refuses it before any leg exists; where the clone takes it,
+    the row is skipped."""
     plan = planned(a_source(tmp_path), tmp_path, {})
-    env = bad_default_branch(tmp_path)
+    env = env_of(tmp_path)
     if this_gits_clone(tmp_path, env).returncode == 0:
         pytest.skip("this git's `git clone` takes `init.defaultBranch = "
                     "a..b`, as 2.55's does: the split clones there")
@@ -841,6 +850,15 @@ def test_execute_refuses_a_default_branch_its_clone_will_not_take(
     assert caught.value.code == UNASKED
     assert "invalid branch name" in caught.value.detail
     assert not remotes.exists()
+
+
+def test_execute_refuses_a_default_branch_its_clone_will_not_take(
+        adopter, monkeypatch, tmp_path):
+    """`init.defaultBranch = a..b`, on a git whose `git clone` stops at it,
+    as 2.43's does: `execute` refuses it before any leg exists, where on
+    2a119f28 it made both and stopped extracting the spec leg (#1083)."""
+    execute_refuses_a_default_branch_its_clone_will_not_take(
+        adopter, monkeypatch, tmp_path, bad_default_branch)
 
 
 # ---------------------------------------------------------------------------
@@ -1172,21 +1190,8 @@ def test_a_parent_gits_default_branch_is_asked_of_the_splits_own_clone(
     `execute`'s clone, which takes the whole environment, stopped after
     both legs existed. git 2.55's clone takes the name, and there the CRLF
     file the plan keeps is found."""
-    plan = planned(a_source(tmp_path, files={ROOT_ATTRIBUTES: TEXT_EOL_LF,
-                                             NOTES: CRLF}),
-                   tmp_path, {NOTES: ROOT})
-    work = tmp_path / "work"
-    env = handed(tmp_path, BAD_DEFAULT_BRANCH)
-    clone = this_gits_clone(tmp_path, env)
-    result = checked(plan, env, "--work-dir", str(work))
-    assert "REFUSED" not in result.stderr, result.stderr
-    assert result.returncode == 1, result.stderr
-    if clone.returncode == 0:
-        assert codes(result) == [REENCODED_FILES], result.stderr
-    else:
-        assert finding_lines(result) == [unasked_clone(
-            work, clone.returncode, clone.stderr.decode().strip())]
-    assert list(work.iterdir()) == []
+    check_asks_the_clone_a_default_branch(
+        tmp_path, lambda base: handed(base, BAD_DEFAULT_BRANCH))
 
 
 @pytest.mark.parametrize("handed", FROM_A_PARENT)
@@ -1195,22 +1200,9 @@ def test_execute_refuses_a_parent_gits_default_branch_before_any_leg(
     """Measured on bdcf9952 with git 2.43 and `GIT_CONFIG_PARAMETERS`:
     `execute` made both legs and stopped extracting the spec leg, `fatal:
     invalid branch name`, with nothing rolled back."""
-    plan = planned(a_source(tmp_path), tmp_path, {})
-    env = handed(tmp_path, BAD_DEFAULT_BRANCH)
-    if this_gits_clone(tmp_path, env).returncode == 0:
-        pytest.skip("this git's `git clone` takes `init.defaultBranch = "
-                    "a..b`, as 2.55's does: the split clones there")
-    for name, value in env.items():
-        monkeypatch.setenv(name, value)
-    monkeypatch.setattr(adopter, "_require_filter_repo", lambda: None)
-    remotes = tmp_path / "remotes"
-    with pytest.raises(adopter.Refusal) as caught:
-        adopter.cmd_execute(Namespace(
-            plan=str(plan), source=None, local_remote_dir=remotes,
-            allow_empty_leg=[], yes=True, work_dir=tmp_path / "work"))
-    assert caught.value.code == UNASKED
-    assert "invalid branch name" in caught.value.detail
-    assert not remotes.exists()
+    execute_refuses_a_default_branch_its_clone_will_not_take(
+        adopter, monkeypatch, tmp_path,
+        lambda base: handed(base, BAD_DEFAULT_BRANCH))
 
 
 #: The setting the stub `git` of `refusing_a_setting` reads, under a key no
