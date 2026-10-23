@@ -745,6 +745,11 @@ ONE_BLOB_ROWS = [
                  [one_blob_twins("2 sets", ROOT_TWINS, "4 paths",
                                  "`A`, `a`, `B` and `b`")],
                  id="two-sets-of-one-blob-set-by-set"),
+    # One name as `casefold` folds it, as the set itself was folded.
+    pytest.param([("STRASSE", "100644", ONE), ("straße", "100644", ONE)],
+                 [], [one_blob_twins("1 set", ROOT_TWINS, "2 paths",
+                                     "`STRASSE` and `straße`")],
+                 id="sharp-s-and-ss-of-one-blob"),
 ]
 
 
