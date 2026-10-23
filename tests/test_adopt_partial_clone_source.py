@@ -17,8 +17,8 @@ source then made again as the partial clone at the same commit:
   the same way.
 
 Now both commands run with `GIT_NO_LAZY_FETCH=1` (`_lazy_fetch_off`), and
-refuse a partial clone that lacks an object its branches or tags reach as
-`source-partial-clone` before anything reads it
+refuse a partial clone that lacks an object its branches, tags or HEAD reach
+as `source-partial-clone` before anything reads it
 (`_refuse_a_partial_clone_short`). A partial clone given every object again
 (`git fetch --refetch --no-filter`) lacks nothing and is read as a full clone
 is. Each row counts the promisor's `upload-pack` runs through a counting
@@ -186,8 +186,8 @@ class Source:
                         .glob("*.promisor")))
 
     def lacking(self, refs: str = "--all") -> int:
-        """How many objects `refs` (`--all`, `--branches` or `--tags`)
-        reach that the source lacks."""
+        """How many objects `refs` (`--all`, `--branches`, `--tags` or
+        `HEAD`) reach that the source lacks."""
         listed = git("rev-list", "--objects", "--missing=print", refs,
                      cwd=self.path).stdout
         return sum(line.startswith("?") for line in listed.splitlines())
@@ -199,6 +199,24 @@ class Source:
             f"refs/tags/{TAG}:refs/tags/{TAG}", cwd=self.path)
         self.log.write_text("", encoding="utf-8")
         self.before = self.store()
+
+    def detach_at_the_fetched_tag(self) -> None:
+        """Fetch `TAG` as `fetch_the_tag` does, move HEAD (not a branch) to
+        its commit, and delete the tag: only HEAD reaches the blob that is
+        lacking, as in a clone detached at a commit it fetched with its
+        filter. `update-ref --no-deref`, not `switch --detach`, which would
+        check the commit out and fetch that blob."""
+        self.fetch_the_tag()
+        commit = git("rev-parse", f"{TAG}^{{commit}}",
+                     cwd=self.path).stdout.strip()
+        git("update-ref", "--no-deref", "HEAD", commit, cwd=self.path)
+        git("tag", "-d", TAG, cwd=self.path)
+        self.before = self.store()
+
+    def unborn_head(self) -> None:
+        """HEAD on a branch that does not exist, as `git switch --orphan`
+        leaves it: it names no commit."""
+        git("symbolic-ref", "HEAD", "refs/heads/unborn", cwd=self.path)
 
     def untouched(self) -> None:
         """No `upload-pack` ran, and `objects/` is as it was."""
@@ -258,15 +276,17 @@ def test_check_refuses_a_partial_clone_that_lacks_objects_and_fetches_none(
         made, variant):
     """Base: `plan ok`, after 26 `upload-pack` runs and `.promisor` files 1
     -> 27 for `nocheckout`, and none for `checkout`, whose 2 lacking history
-    blobs `execute` then failed on. Head: refused, nothing fetched, and the
-    refusal says a later fetch stays filtered (the cure leaves
-    `partialclonefilter` set)."""
+    blobs `execute` then failed on. Head: refused, nothing fetched, the
+    refusal gives the count it lacks at least and the cure, and says a later
+    fetch stays filtered (the cure leaves `partialclonefilter` set)."""
     source = made(variant)
     assert source.lacking() > 0
     promisor = source.promisor_packs()
     result = source.check()
     assert result.returncode == 2, result.stderr + result.stdout
     assert REFUSED in result.stderr
+    assert "that lacks at least " in result.stderr
+    assert "Remediation: make the source whole" in result.stderr
     assert CURE in result.stderr
     assert LATER in result.stderr
     assert "plan ok" not in result.stdout
@@ -432,25 +452,132 @@ def test_a_branch_whose_commit_the_source_lacks_is_refused(made):
     source.untouched()
 
 
+@pytest.mark.parametrize("head", ["born", "unborn"])
 def test_a_partial_clone_git_cannot_walk_is_refused_on_any_git(
-        adopter, made, monkeypatch, capsys):
+        adopter, made, monkeypatch, capsys, head):
     """A walk that fails tells nothing of what is lacking, so it is no
     `0`: a cured partial clone, its walk made to fail (an option no git
-    has), is refused, naming how git exited, saying git could not walk the
-    refs (and no object count), and naming `git fsck`."""
+    has), is refused, naming the walk as run (`HEAD` last where HEAD names a
+    commit) and how git exited, saying git could not walk the refs (and no
+    object count), naming `git fsck` in the source, as what names a ref
+    whose object is lacking and no object a promisor holds, and the cure."""
     monkeypatch.setattr(adopter, "LACKING_WALK",
                         ("rev-list", "--no-such-option"), raising=False)
     source = made("cured")
+    if head == "unborn":
+        source.unborn_head()
+    code = adopter.main(["check", "--plan", str(source.plan),
+                         "--work-dir", str(source.base / "work")])
+    said = capsys.readouterr()
+    walk = "`git rev-list --no-such-option" + (
+        " HEAD`" if head == "born" else "`")
+    assert code == 2, said.err + said.out
+    assert REFUSED in said.err
+    assert (f"{walk}, which lists what a clone lacks without fetching it, "
+            "exited ") in said.err
+    assert "branches, tags and HEAD git could not walk" in said.err
+    assert "lacks at least" not in said.err
+    assert (f"Remediation: run `git fsck` in "
+            f"{adopter.shown_path(source.path)}: it names a branch, tag or "
+            "HEAD whose object the repository lacks, and does not list what "
+            "a partial clone's promisor remote holds.") in said.err
+    assert CURE in said.err
+    assert LATER in said.err
+    source.untouched()
+
+
+@pytest.mark.parametrize("command", ["check", "execute"])
+def test_a_head_whose_blob_the_source_lacks_is_refused(made, command):
+    """Only HEAD reaches what is lacking: a cured partial clone lacks
+    nothing, then fetches `TAG` with the filter it keeps, so that the blob
+    that tag's commit changes is lacking, moves HEAD to that commit and
+    deletes the tag. Its branches and tags lack 0 objects and HEAD's commit
+    lacks some. Refused through `check` and through `execute`, no leg made,
+    nothing fetched. With HEAD out of the walk, `check` said `plan ok`, and
+    `execute` made both legs and then its clone died in the checkout of
+    HEAD, `unable to read sha1 file`."""
+    source = made("cured")
+    source.detach_at_the_fetched_tag()
+    assert source.lacking("--branches") == 0
+    assert source.lacking("--tags") == 0
+    assert source.lacking("HEAD") > 0
+    result = getattr(source, command)()
+    assert result.returncode == 2, result.stderr + result.stdout
+    assert REFUSED in result.stderr
+    assert "that lacks at least " in result.stderr
+    assert "plan ok" not in result.stdout
+    assert not (source.base / "remotes").exists()
+    source.untouched()
+
+
+def test_a_head_at_a_commit_the_source_lacks_is_refused_and_not_fetched(
+        adopter, made, monkeypatch, capsys):
+    """HEAD names a commit the source lacks, written into `.git/HEAD` by
+    hand (`git update-ref` would fetch it): refused, and fetched by nothing,
+    with the variable ignored too. Asking HEAD for a commit
+    (`HEAD^{commit}`) read the object, and fetched it."""
+    monkeypatch.setattr(adopter, "NO_LAZY_FETCH", IGNORED, raising=False)
+    source = made("cured")
+    (source.path / ".git" / "HEAD").write_text(
+        source.planned["side"] + "\n", encoding="ascii")
     code = adopter.main(["check", "--plan", str(source.plan),
                          "--work-dir", str(source.base / "work")])
     said = capsys.readouterr()
     assert code == 2, said.err + said.out
     assert REFUSED in said.err
-    assert "`git rev-list --no-such-option`" in said.err
-    assert "branches and tags git could not walk" in said.err
-    assert "lacks at least" not in said.err
-    assert "Remediation: run `git fsck` in " in said.err
-    assert LATER in said.err
+    source.untouched()
+
+
+@pytest.mark.parametrize("command", [
+    "check", pytest.param("execute", marks=needs_filter_repo)])
+def test_an_unborn_head_is_read_as_before(made, command):
+    """HEAD on a branch that does not exist (`git switch --orphan`) names no
+    commit, and a cured partial clone lacks nothing: read as a full clone is,
+    nothing fetched. A plain `HEAD` in the walk exits 128 on it, `ambiguous
+    argument 'HEAD'`, and would refuse it."""
+    source = made("cured")
+    source.unborn_head()
+    assert source.lacking("--branches") == 0
+    result = getattr(source, command)()
+    assert result.returncode == 0, result.stderr + result.stdout
+    assert CODE not in result.stderr + result.stdout
+    if command == "check":
+        assert "plan ok" in result.stdout
+        source.untouched()
+    else:
+        assert sorted(path.name
+                      for path in (source.base / "remotes").iterdir())
+        assert source.runs() == 0
+
+
+@pytest.mark.parametrize("lacked", ["branch", "tag", "head", "promised"])
+def test_git_fsck_names_a_ref_whose_object_is_lacking_and_no_promised_one(
+        made, lacked):
+    """What the refusal of a walk git could not make says of `git fsck`: it
+    names a branch, tag or HEAD whose object the source lacks, and lists no
+    object its promisor remote holds. The blobs `nocheckout` lacks are
+    promised, and fsck is silent on them; and it fetches nothing."""
+    source = made("nocheckout")
+    assert source.lacking("--branches") > 0
+    ghost = source.planned["side"] + "\n"
+    git_dir = source.path / ".git"
+    if lacked == "branch":
+        (git_dir / "refs" / "heads" / "ghost").write_text(ghost,
+                                                          encoding="ascii")
+    elif lacked == "tag":
+        (git_dir / "refs" / "tags" / "ghost").write_text(ghost,
+                                                         encoding="ascii")
+    elif lacked == "head":
+        (git_dir / "HEAD").write_text(ghost, encoding="ascii")
+    fsck = git("fsck", cwd=source.path, check=False)
+    said = fsck.stdout + fsck.stderr
+    if lacked == "promised":
+        assert fsck.returncode == 0, said
+        assert said == ""
+    else:
+        assert fsck.returncode != 0, said
+        assert {"branch": "refs/heads/ghost", "tag": "refs/tags/ghost",
+                "head": "HEAD"}[lacked] in said
     source.untouched()
 
 

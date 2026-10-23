@@ -12930,7 +12930,7 @@ def _grouped_findings(stored: list[str], taken: list[str], copies: list[str],
 #   it fetched, whatever reads it and whichever commit it reads, a commit
 #   the plan names included;
 # - `_refuse_a_partial_clone_short`, as soon as the source is opened: a
-#   partial clone that lacks an object its branches or tags reach is
+#   partial clone that lacks an object its branches, tags or HEAD reach is
 #   refused before anything else reads it, on every git, the gits that
 #   ignore the variable included. What comes first is `Plan.open_source`'s
 #   `_not_a_whole_clone`, for a `source.cloned: true` plan: it reads the
@@ -12947,19 +12947,29 @@ def _grouped_findings(stored: list[str], taken: list[str], copies: list[str],
 #: The variable git reads to leave out the fetch a partial clone makes for an
 #: object it lacks: `shape-doctor.py`'s `NO_LAZY_FETCH` (#787, #1145).
 NO_LAZY_FETCH = "GIT_NO_LAZY_FETCH"
-#: Refused: a source that is a partial clone and lacks an object its branches
-#: or tags reach (#1145).
+#: Refused: a source that is a partial clone and lacks an object its branches,
+#: tags or HEAD reach (#1145).
 SOURCE_PARTIAL_CLONE = "source-partial-clone"
 #: The config keys `_promisor_remotes` reads: git's, in `promisor-remote.c`,
 #: as the doctor's `PROMISOR_KEYS` (#683).
 PROMISOR_KEYS = (r"^(remote\..*\.(promisor|partialclonefilter)"
                  r"|extensions\.partialclone)$")
 #: What `_objects_lacking` runs: every object the source's branches and tags
-#: reach, one a line, and `?<id>` for each the source lacks. It never
+#: reach, one a line, and `?<id>` for each the source lacks; and, where
+#: `HEAD_ID` gives one, the objects the source's HEAD reaches too. It never
 #: fetches, on any git that has `--missing` (measured with git 2.43 and
-#: `GIT_NO_LAZY_FETCH` unset: no `upload-pack` ran).
+#: `GIT_NO_LAZY_FETCH` unset: no `upload-pack` ran, with HEAD at a commit the
+#: clone lacks included).
 LACKING_WALK = ("rev-list", "--objects", "--missing=print", "--branches",
                 "--tags")
+#: What `_head_id` asks: HEAD's id, printed, and exit 1 where HEAD is unborn
+#: (`git switch --orphan`). A plain `HEAD` in the walk fails there,
+#: `ambiguous argument 'HEAD'`, exit 128. NOT `HEAD^{commit}`: it reads the
+#: object, and where the clone lacks it that fetched it (measured with git
+#: 2.43, `GIT_NO_LAZY_FETCH` unset: 1 `upload-pack` run), and under the
+#: variable it exits 1, as an unborn HEAD does. `HEAD` prints the id of a
+#: commit the clone lacks and runs nothing.
+HEAD_ID = ("rev-parse", "--verify", "-q", "HEAD")
 
 
 @contextlib.contextmanager
@@ -13034,27 +13044,52 @@ def _promisor_remotes(path: Path) -> list[str]:
     return [name for name in dict.fromkeys(names) if name not in last] + last
 
 
+def _head_id(path: Path) -> str | None:
+    """The id HEAD names in the repository at `path` (`HEAD_ID`), or None
+    where it names none: an unborn HEAD, or git cannot run. It reads no
+    object, so it fetches nothing."""
+    try:
+        asked = subprocess.run(["git", *HEAD_ID], cwd=str(path),
+                               capture_output=True, check=False)
+    except OSError:
+        return None
+    named = asked.stdout.decode("utf-8", "replace").strip()
+    return named if asked.returncode == 0 and named else None
+
+
 def _objects_lacking(path: Path) -> tuple[int | None, str]:
-    """`(how many objects the branches and tags of the repository at `path`
-    reach that it lacks, "")`, or `(None, what git said)` where `git
-    rev-list` cannot walk them: a branch whose commit it lacks, before git
-    2.45, among them. The output is read as it comes, a line at a time, and
-    git's own words go to a file, so neither pipe can fill and stall the
-    other. A missing tree hides what is under it, so the count is a least."""
+    """`(how many objects the branches and tags of the repository at `path`,
+    and its HEAD where that names a commit, reach that it lacks, "")`, or
+    `(None, the walk, and what git said)` where `git rev-list` cannot walk
+    them: a branch whose commit it lacks, before git 2.45, among them. The
+    output is read as it comes, a line at a time, and git's own words go to
+    a file, so neither pipe can fill and stall the other. A missing tree
+    hides what is under it, so the count is a least.
+
+    HEAD IS WALKED BY ITS ID, AND ONLY WHERE `_head_id` has one: a plain
+    `HEAD` fails on an unborn HEAD (exit 128), and a file of the source's
+    work tree named `HEAD` would be read as a path (`ambiguous argument
+    'HEAD': both revision and filename`). The walk is named with `HEAD`, as
+    a person asks it."""
+    head = _head_id(path)
+    shown = (*LACKING_WALK, "HEAD") if head else LACKING_WALK
+    walked = (f"`git {' '.join(shown)}`, which lists what a clone lacks "
+              "without fetching it")
     lacking = 0
     try:
         with tempfile.TemporaryFile() as said, subprocess.Popen(
-                ["git", *LACKING_WALK], cwd=str(path),
+                ["git", *LACKING_WALK, *([head] if head else [])],
+                cwd=str(path),
                 stdout=subprocess.PIPE, stderr=said) as walk:
             for line in walk.stdout:
                 lacking += line.startswith(b"?")
             if walk.wait():
                 said.seek(0)
                 words = said.read().decode("utf-8", "replace").strip()
-                return None, (f"exited {walk.returncode}: "
+                return None, (f"{walked}, exited {walk.returncode}: "
                               f"{spelled_as_git_out(words)}")
     except OSError as exc:
-        return None, f"could not run ({_os_reason(exc)})"
+        return None, f"{walked}, could not run ({_os_reason(exc)})"
     return lacking, ""
 
 
@@ -13076,24 +13111,30 @@ def _filter_key(remote: str) -> str:
 
 def _refuse_a_partial_clone_short(source: Source) -> None:
     """`source-partial-clone` for a source that is a partial clone
-    (`_promisor_remotes`) and lacks an object its branches or tags reach
-    (`_objects_lacking`), or whose branches and tags git cannot walk; asked
-    by `check` and `execute` as soon as the source is opened, before
-    anything else reads it (#1145).
+    (`_promisor_remotes`) and lacks an object its branches, tags or HEAD
+    reach (`_objects_lacking`), or whose branches, tags and HEAD git cannot
+    walk; asked by `check` and `execute` as soon as the source is opened,
+    before anything else reads it (#1145).
 
     ONLY WHAT IS LACKING IS REFUSED. A partial clone given every object
     again (`git fetch --refetch --no-filter`) keeps its promisor config, and
     lacks nothing a read could fetch: it is read as a full clone is. A full
     clone is asked its config alone, which reads no object.
 
-    WHY BRANCHES AND TAGS: the source's branch is what `check` reads and
-    `execute` splits, and `execute`'s `git filter-repo` rewrites a clone of
-    the source, which copies every branch and tag. Measured with git 2.43, a
-    `--filter=blob:none` clone that had checked out its branch, and so
-    lacked only blobs of the history, passed `check` and failed `execute`
-    in `git filter-repo`, `Blob not found`, after both leg repositories
-    were made. A commit the plan names that no branch or tag reaches is
-    `_lazy_fetch_off`'s to keep unfetched.
+    WHY BRANCHES, TAGS AND HEAD: the source's branch is what `check` reads
+    and `execute` splits, `execute`'s `git filter-repo` rewrites a clone of
+    the source, which copies every branch and tag, and that clone (`git
+    clone`) checks out the source's HEAD before the branch is reset to the
+    plan's commit. Measured with git 2.43, a `--filter=blob:none` clone that
+    had checked out its branch, and so lacked only blobs of the history,
+    passed `check` and failed `execute` in `git filter-repo`, `Blob not
+    found`, after both leg repositories were made. And a cured partial
+    clone with its HEAD detached at a commit no branch or tag reaches, one
+    that changed a blob the clone lacks (the commit of a tag fetched with
+    the filter the clone keeps, the tag then deleted), passed `check`, and
+    `execute` made both leg repositories and died in that clone's checkout,
+    `unable to read sha1 file`. A commit the plan names that no branch, tag
+    or HEAD reaches is `_lazy_fetch_off`'s to keep unfetched.
 
     THE WAY OUT FETCHES, AND IS THE PERSON'S OWN: run in the source, from
     each promisor remote, `git fetch --refetch --no-filter` (git 2.36 or
@@ -13102,10 +13143,13 @@ def _refuse_a_partial_clone_short(source: Source) -> None:
     a later fetch stays filtered while that is set, so the refusal says so.
 
     WHERE GIT CANNOT WALK THE REFS, what is lacking is not known, and the
-    refusal says that, not that it lacks something: it names `git fsck`, as
-    `Source.tree` does, which lists each object a repository lacks. The
-    refetch is named too, but it fetches what the remote's refspec names
-    and no more."""
+    refusal says that, not that it lacks something: it names `git fsck`,
+    which names a branch, tag or HEAD whose object the repository lacks
+    (measured with git 2.43: `error: refs/heads/ghost: invalid sha1
+    pointer`, `error: HEAD: invalid sha1 pointer`, and no `upload-pack`
+    ran). It lists no object a partial clone's promisor remote holds, so
+    the refusal does not say it does. The refetch is named too, but it
+    fetches what the remote's refspec names and no more."""
     remotes = _promisor_remotes(source.path)
     if not remotes:
         return
@@ -13113,24 +13157,23 @@ def _refuse_a_partial_clone_short(source: Source) -> None:
     if lacking == 0:
         return
     where = shown_path(source.path)
-    walk = f"`git {' '.join(LACKING_WALK)}`"
     refetch = ", then ".join(map(_refetch, remotes))
     later = (f"Later fetches stay filtered while "
              f"{' or '.join(map(_filter_key, remotes))} is set, so the "
              "source can lack objects again.")
     if lacking is None:
-        short = (f"whose branches and tags git could not walk, so what it "
-                 f"lacks is not known: {walk}, which lists what a clone "
-                 f"lacks without fetching it, {said}")
+        short = (f"whose branches, tags and HEAD git could not walk, so what "
+                 f"it lacks is not known: {said}")
         remediation = (
-            f"Remediation: run `git fsck` in {where}: it names each object "
-            f"the repository lacks. Restore them, or fetch every object "
-            f"again with {refetch} (git 2.36 or later), or pass a full "
-            "clone (`git clone` with no `--filter`) with --source, and run "
-            f"this command again. {later}")
+            f"Remediation: run `git fsck` in {where}: it names a branch, "
+            "tag or HEAD whose object the repository lacks, and does not "
+            "list what a partial clone's promisor remote holds. Restore "
+            f"it, or fetch every object again with {refetch} (git 2.36 or "
+            "later), or pass a full clone (`git clone` with no `--filter`) "
+            f"with --source, and run this command again. {later}")
     else:
-        short = (f"that lacks at least {lacking} object(s) its branches and "
-                 "tags reach")
+        short = (f"that lacks at least {lacking} object(s) its branches, "
+                 "tags and HEAD reach")
         remediation = (
             f"Remediation: make the source whole, then run this command "
             f"again: in {where}, run {refetch}, which fetches every object "
@@ -13142,9 +13185,10 @@ def _refuse_a_partial_clone_short(source: Source) -> None:
         f"{short}. Git fetches an object a partial clone lacks from its "
         f"promisor remote ({', '.join(map(_spelled, remotes))}) on any read "
         "that needs it, and `check` and `execute` never fetch into the "
-        "source: `execute`'s `git filter-repo` reads every branch and tag, "
-        "and a partial clone short of one of their blobs failed it after "
-        "both leg repositories were made",
+        "source: `execute`'s clone of it checks out its HEAD, and its `git "
+        "filter-repo` reads every branch and tag, and a partial clone short "
+        "of one of their blobs failed it after both leg repositories were "
+        "made",
         remediation)
 
 
@@ -17974,7 +18018,7 @@ SOURCE_OVERRIDE_HELP = (
     "`source-not-top-level`; and one this user cannot reach, a clone "
     "`plan` made included, as `source-unreadable`, never cloned again. "
     "Either source, where it is a partial clone (`git clone --filter`) "
-    "that lacks an object its branches or tags reach, is refused as "
+    "that lacks an object its branches, tags or HEAD reach, is refused as "
     "`source-partial-clone` before anything reads it: git would fetch that "
     "object into it, and neither command fetches into the source. `git "
     "fetch --refetch --no-filter <remote>`, run in it, makes it whole.")
