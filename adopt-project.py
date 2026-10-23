@@ -12965,12 +12965,12 @@ PROMISOR_KEYS = (r"^(remote\..*\.(promisor|partialclonefilter)"
 LACKING_WALK = ("rev-list", "--objects", "--missing=print", "--branches",
                 "--tags")
 #: What `_head_id` asks: HEAD's id, printed, and exit 1 where HEAD is unborn
-#: (`git switch --orphan`). A plain `HEAD` in the walk fails there,
-#: `ambiguous argument 'HEAD'`, exit 128. NOT `HEAD^{commit}`: it reads the
-#: object, and where the clone lacks it that fetched it (measured with git
-#: 2.43, `GIT_NO_LAZY_FETCH` unset: 1 `upload-pack` run), and under the
-#: variable it exits 1, as an unborn HEAD does. `HEAD` prints the id of a
-#: commit the clone lacks and runs nothing.
+#: (`git switch --orphan`). A plain `HEAD` in the walk, which ends with
+#: `--`, fails there, `bad revision 'HEAD'`, exit 128. NOT `HEAD^{commit}`:
+#: it reads the object, and where the clone lacks it that fetched it
+#: (measured with git 2.43, `GIT_NO_LAZY_FETCH` unset: 1 `upload-pack` run),
+#: and under the variable it exits 1, as an unborn HEAD does. `HEAD` prints
+#: the id of a commit the clone lacks and runs nothing.
 HEAD_ID = ("rev-parse", "--verify", "-q", "HEAD")
 
 
@@ -13069,14 +13069,16 @@ def _objects_lacking(path: Path) -> tuple[int | None, str]:
     hides what is under it, so the count is a least.
 
     HEAD IS WALKED BY ITS ID, AND ONLY WHERE `_head_id` has one: a plain
-    `HEAD` fails on an unborn HEAD (exit 128), and a file of the source's
-    work tree named `HEAD` would be read as a path (`ambiguous argument
-    'HEAD': both revision and filename`). A file named as the id is read
-    as a path too, `ambiguous argument '<id>': both revision and
-    filename`, so the walk ENDS WITH `--`: everything before it is a
-    revision or an option, and no file of the work tree is read at all.
-    The walk is named with `HEAD`, as a person asks it, and with the `--`
-    it ends with, so what a person pastes is the walk that ran."""
+    `HEAD` fails on an unborn HEAD (`bad revision 'HEAD'`, exit 128).
+    Without the `--`, a file of the source's work tree named `HEAD`, or
+    named as the id, is read as a path (`ambiguous argument 'HEAD': both
+    revision and filename`, and the same for the id, exit 128), so the
+    walk ENDS WITH `--`: everything before it is a revision or an option,
+    and no file of the work tree is read at all. With the `--`, `HEAD` by
+    name would now do as well where HEAD names a commit (measured with git
+    2.43); the walk keeps the id `_head_id` gives. The walk is named with
+    `HEAD`, as a person asks it, and with the `--` it ends with, so what a
+    person pastes is the walk that ran."""
     head = _head_id(path)
     shown = (*LACKING_WALK, *(("HEAD",) if head else ()), "--")
     walked = (f"`git {' '.join(shown)}`, which lists what a clone lacks "
