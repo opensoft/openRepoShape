@@ -15,6 +15,14 @@ CI runs the suite on Linux only (#597), so what Windows answers is EMULATED:
 surrogate three bytes, as Windows' does. No Windows run was made. macOS's
 EILSEQ is emulated the same way, by a `mkdir` that answers it.
 
+The locale's question is asked between the two (#1196): in a locale of one
+byte to a character, Latin-1 say, `os.fsdecode(b"\\xff")` is the character
+U+00FF and not the surrogate U+DCFF, so a name that holds the byte is text
+there, and a test that expects it spelled as a name that is not UTF-8 would
+fail on a tool that is right. `os.fsdecode` is EMULATED too, for one test: no
+Latin-1 locale is built here, as `tests/test_adopt_one_byte_locale.py` builds
+one for a child.
+
 The two tools the tests below are written with are held here too:
 `skip_message`, which every one of them reads a skip with, and
 `windows_fsencode`, the emulation itself.
@@ -38,6 +46,28 @@ LINUX_ONLY = pytest.mark.skipif(
     not sys.platform.startswith("linux"),
     reason="Linux stores any byte in a file name; the other systems are "
            "asked by the tests below that emulate them")
+
+
+def fsdecode_in(encoding: str):
+    """`os.fsdecode` as a locale whose file name encoding is `encoding` has
+    it: text is returned as it is, and bytes are read in `encoding`, with
+    `surrogateescape` for each one it cannot read (a UTF-8 locale gives the
+    byte 0xFF as U+DCFF, and a Latin-1 one as U+00FF)."""
+    def fsdecode(filename):
+        filename = os.fspath(filename)
+        if isinstance(filename, str):
+            return filename
+        return filename.decode(encoding, "surrogateescape")
+    return fsdecode
+
+
+def skip_where_an_earlier_question_skips() -> None:
+    """The rows that let the probe through to the real disk ask the system's
+    question and the locale's first (#1196), and skip where either would: the
+    helper then skips on its own reason, and not on the one they hold."""
+    if (len(os.fsencode(NOT_UTF_8_PROBE)) != 1
+            or os.fsdecode(b"\xff") != NOT_UTF_8_PROBE):
+        pytest.skip("on this system an earlier question is the one that skips")
 
 
 def mkdir_answers(code: int, said: str):
@@ -144,6 +174,7 @@ def test_where_fsencode_makes_three_bytes_a_name_that_is_text_is_not_skipped(
 def test_a_disk_that_takes_the_name_is_not_skipped_and_the_probe_is_removed(
         tmp_path):
     """The control: no skip, and nothing is left in the directory."""
+    skip_where_an_earlier_question_skips()
     assert skip_message(skip_where_a_name_cannot_be_not_utf_8,
                         tmp_path) is None
     assert list(tmp_path.iterdir()) == []
@@ -162,11 +193,40 @@ def test_where_fsencode_makes_three_bytes_the_disk_is_not_asked(
     assert "os.fsencode" in reason, reason
 
 
+@LINUX_ONLY
+@pytest.mark.parametrize("encoding", ["utf-8", "ascii"])
+def test_a_locale_that_reads_the_byte_as_the_surrogate_is_not_skipped(
+        tmp_path, monkeypatch, encoding):
+    """The control of the locale's question (#1196): UTF-8 and ASCII give the
+    byte 0xFF back as U+DCFF, which is `NOT_UTF_8_PROBE`, so no test that
+    asks is skipped, and the probe is removed."""
+    monkeypatch.setattr(os, "fsdecode", fsdecode_in(encoding))
+    assert os.fsdecode(b"\xff") == NOT_UTF_8_PROBE
+    assert skip_message(skip_where_a_name_cannot_be_not_utf_8,
+                        tmp_path) is None
+    assert list(tmp_path.iterdir()) == []
+
+
+def test_a_locale_that_reads_the_byte_as_a_character_skips_before_the_disk(
+        tmp_path, monkeypatch):
+    """Latin-1 (emulated): the byte 0xFF is U+00FF, a printable character,
+    so no name holding it is one that is not UTF-8, and the name is skipped.
+    THE LOCALE IS ASKED BEFORE THE DISK (#1196), as the system is: the
+    directory does not exist, so an `mkdir` under it would be
+    FileNotFoundError and not a skip, and the skip is the answer."""
+    monkeypatch.setattr(os, "fsdecode", fsdecode_in("iso8859-1"))
+    assert os.fsdecode(b"\xff") == "\u00ff"
+    reason = skip_message(skip_where_a_name_cannot_be_not_utf_8,
+                          tmp_path / "absent")
+    assert reason is not None, "the helper went on to ask the disk"
+    assert "0xFF" in reason, reason
+    assert "'\\xff'" in reason, reason
+
+
 def test_a_disk_that_answers_eilseq_is_skipped(tmp_path, monkeypatch):
     """macOS (emulated): APFS answers EILSEQ, `Illegal byte sequence`, to a
     file name that is not UTF-8, and no clone can sit at such a path."""
-    if len(os.fsencode(NOT_UTF_8_PROBE)) != 1:
-        pytest.skip("on this system the first question is the one that skips")
+    skip_where_an_earlier_question_skips()
     monkeypatch.setattr(Path, "mkdir",
                         mkdir_answers(errno.EILSEQ, "Illegal byte sequence"))
     reason = skip_message(skip_where_a_name_cannot_be_not_utf_8, tmp_path)
@@ -181,8 +241,7 @@ def test_any_other_error_from_the_disk_is_the_tests_own(
     """Only EILSEQ is the filesystem's refusal of the name: a full disk, a
     folder nobody can write in or a probe left by an earlier run is a
     failure of the test, raised as it was, and never a skip that hides it."""
-    if len(os.fsencode(NOT_UTF_8_PROBE)) != 1:
-        pytest.skip("on this system the first question is the one that skips")
+    skip_where_an_earlier_question_skips()
     monkeypatch.setattr(Path, "mkdir", mkdir_answers(code, os.strerror(code)))
     with pytest.raises(OSError) as raised:
         skip_message(skip_where_a_name_cannot_be_not_utf_8, tmp_path)
