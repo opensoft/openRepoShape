@@ -59,6 +59,7 @@ PIN_FILE = Path(PROJECT) / "contracts" / "openglass-pin.yaml"
 #: `side`, which a `--single-branch` clone of `main` lacks.
 KINDS = {
     "tree0": (("--filter=tree:0", "--no-checkout"), "main"),
+    "tree0-checkout": (("--filter=tree:0",), "main"),
     "lacks-commit": (("--filter=blob:none", "--no-checkout"), "side"),
     "full": ((), "main"),
     "blobnone": (("--filter=blob:none", "--no-checkout"), "main"),
@@ -268,13 +269,14 @@ def test_the_cure_as_printed_makes_the_clone_readable(
 
 
 @pytest.mark.parametrize("kind", ["full", "blobnone", "blobnone-checkout",
-                                  "tree0-cured"])
+                                  "tree0-checkout", "tree0-cured"])
 def test_a_clone_holding_the_pin_and_its_trees_is_read_with_no_fetch(
         glass, tmp_path, kind):
     """A full clone, a `blob:none` clone holding the commit (its trees come
-    with it), checked out or not, and a `tree:0` clone made whole by `git
-    fetch --refetch --no-filter`: the real run reads the origin's own
-    digest, and runs no `upload-pack`. The same on 961640c6."""
+    with it), checked out or not, a `tree:0` clone checked out at the
+    commit, whose checkout fetched its trees, and a `tree:0` clone made
+    whole by `git fetch --refetch --no-filter`: the real run reads the
+    origin's own digest, and runs no `upload-pack`. The same on 961640c6."""
     clone = clone_of(glass, tmp_path,
                      "tree0" if kind == "tree0-cured" else kind)
     if kind == "tree0-cured":
