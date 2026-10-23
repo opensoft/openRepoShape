@@ -399,10 +399,9 @@ def assert_both_readings_and_the_url(adopter, spec: str, name: str) -> None:
     pytest.param("{}/" + PROJECT, None, "{}/" + PROJECT, OWNER_MAX,
                  id="owner"),
     pytest.param(ORG + "/{}", ORG, ORG + "/{}", NAME_MAX, id="repository"),
-    pytest.param("github.com/{}/" + PROJECT, "github.com", "{}/" + PROJECT,
-                 OWNER_MAX, id="bare-github-url"),
-    pytest.param("www.github.com/{}/" + PROJECT, "www.github.com",
-                 "{}/" + PROJECT, OWNER_MAX, id="www-github-url"),
+    # A `github.com/` spelling past GitHub's limits names no `owner/repo`,
+    # and `_repository_in_url` refuses it before any `stat` (#1129):
+    # tests/test_adopt_source_github_limits.py holds it.
 ])
 def test_a_spelling_too_long_for_the_disk_is_offered_no_url(
         adopter, monkeypatch, tmp_path, written, holder, names, limit):
@@ -451,8 +450,7 @@ def test_a_spelling_too_long_for_the_disk_is_offered_no_url(
                  id="repository-one-over"),
     pytest.param(ORG + "/{}", ORG + "/{}", NAME_MAX, len(LONG),
                  id="repository-too-long-for-the-disk"),
-    pytest.param("github.com/{}/" + PROJECT, "{}/" + PROJECT, OWNER_MAX,
-                 OWNER_MAX + 1, id="bare-github-url-owner-one-over"),
+    # A `github.com/` spelling: tests/test_adopt_source_github_limits.py.
 ])
 def test_a_name_github_cannot_hold_is_offered_no_url_whatever_the_reason(
         adopter, monkeypatch, tmp_path, code, written, names, limit, length):
