@@ -395,6 +395,13 @@ PROMISOR_CONFIG = {
     "config-order": ([("remote.z.promisor", "true"),
                       ("remote.y.promisor", "true")], ["z", "y"]),
     "dotted-name": ([("remote.a.b.promisor", "true")], ["a.b"]),
+    # A boolean git itself dies on: `git config --type=bool --get-regexp`
+    # lists nothing then (git 2.43 collects every value before it writes
+    # one, and `a` is not listed), so only the filter names a remote, and
+    # nothing is raised.
+    "bad-boolean": ([("remote.a.promisor", "true"),
+                     ("remote.b.promisor", "maybe"),
+                     ("remote.c.partialclonefilter", "blob:none")], ["c"]),
 }
 
 
