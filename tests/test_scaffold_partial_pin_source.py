@@ -210,6 +210,24 @@ def test_a_partial_clone_short_of_the_pin_is_refused_with_no_fetch(
     assert objects_of(clone) == before
 
 
+def test_a_relative_pin_source_is_named_in_the_cure_by_its_resolved_path(
+        glass, honoured, tmp_path):
+    """`--pin-source openGlass`, typed relative to the folder the run is
+    in: the refusal's remediation names the clone's absolute path, the one a
+    person pastes the cure into from any folder, and not `openGlass` as
+    typed. The partial clone is still found through the typed path."""
+    if not honoured:
+        pytest.skip(IGNORED)
+    clone = clone_of(glass, tmp_path, "tree0")
+    result = scaffold(tmp_path, Path(clone.name), glass["main"], dry_run=True)
+    assert result.returncode == 2, result.stdout + result.stderr
+    assert "REFUSED pin-source-unreadable: " in result.stderr, result.stderr
+    assert PARTIAL in result.stderr, result.stderr
+    assert f"{NOTHING_MADE}{clone.resolve()}, run {CURE}," in result.stderr
+    assert f"{NOTHING_MADE}{clone.name}, run" not in result.stderr
+    assert upload_packs(tmp_path) == 0, "the scaffold fetched"
+
+
 def test_the_cure_as_printed_makes_a_tree0_clone_readable(
         glass, honoured, tmp_path):
     """The command the refusal names, run as printed in the clone, makes it
