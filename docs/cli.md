@@ -473,12 +473,13 @@ options:
                         (under a directory it may not search, or one it may
                         not enter), which is never read as one that is not
                         there, nor cloned as an `org/repo`. A partial clone
-                        (`git clone --filter`) short of an object its branches
-                        or tags reach is refused as `source-partial-clone`, as
-                        `check` refuses it, before anything reads it: git
-                        would fetch that object into it, and `plan` never
-                        fetches into the source. Run `git fetch --refetch
-                        --no-filter <remote>` in it to make it whole.
+                        (`git clone --filter`) short of an object its
+                        branches, tags or HEAD reach is refused as `source-
+                        partial-clone`, as `check` refuses it, before anything
+                        reads it: git would fetch that object into it, and
+                        `plan` never fetches into the source. Run `git fetch
+                        --refetch --no-filter <remote>` in it to make it
+                        whole.
   --project PROJECT     the assembly-root name; for an in-place adoption it is
                         the source repository's own name. `execute` refuses
                         one over 95 characters without --local-remote-dir:
