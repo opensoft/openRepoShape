@@ -11676,9 +11676,12 @@ def _split_checkout_env() -> dict:
     for the root's own, `check` said `plan ok`, where the split's `git add`
     of that file fails. Each throwaway borrows the source's objects
     (`_objects_borrowed`), so an object id names there the tree it names in
-    the split's clones. A name such as `HEAD` names nothing in a throwaway,
-    which holds no ref, and git there reads the files' own rules, as with
-    no setting (#1136's known limit).
+    the split's clones, and the rehearsal asks which files a rule reaches as
+    the split's `git add` reads them, not with `--cached`, which reads no
+    `attr.tree` (`_SplitRehearsal.reached`, r1169b's SHOULD-1). A name such
+    as `HEAD` names nothing in a throwaway, which holds no ref, and git
+    there reads the files' own rules, as with no setting (#1136's known
+    limit).
 
     NOT `GIT_ATTR_SOURCE`: it is refused before any question is asked
     (`_attr_source_unasked`)."""
@@ -12738,10 +12741,18 @@ class _SplitRehearsal:
     def reached(self, index: str,
                 paths: list[str]) -> dict[str, dict[str, str]]:
         """`{path: {attribute: value}}` for each of `paths` one of
-        `BYTE_ATTRIBUTES` reaches, with the rules `index` holds."""
+        `BYTE_ATTRIBUTES` reaches, with the rules `index` holds, or those of
+        the tree an `attr.tree` names, as the split's checkout and `git add`
+        read them. Not `check-attr --cached`, which reads the index alone
+        and no `attr.tree` (git 2.43): a file only that tree's rules reach
+        was never asked about, `check` said `plan ok`, and `execute` stopped
+        after both legs were pushed (r1169b's SHOULD-1). Without it, git's
+        check-in direction reads a work-tree `.gitattributes` first;
+        `_rules_reaching` asks before any checkout or `place()` writes one,
+        so git falls back to the index."""
         if not paths:
             return {}
-        fields = self.asked(["check-attr", "--cached", "-z", "--stdin",
+        fields = self.asked(["check-attr", "-z", "--stdin",
                              *BYTE_ATTRIBUTES], index,
                             b"".join(map(_nul, paths))).split(b"\0")
         said: dict[str, dict[str, str]] = {}
