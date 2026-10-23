@@ -69,7 +69,7 @@ from test_family_holder_bootstrap_texts import WORK
 from test_family_member_path import MEMBER, OTHER, raw
 from test_validate_family_remedies_typed import STAGED
 from test_validate_family_unnamed_mounts import (
-    SECTION_REMEDY, SECTION_SAID, codes, commands, findings, removal,
+    SECTION_REMEDY, SECTION_SAID, STAGE, codes, commands, findings, removal,
     spare_commits, stage_gitlink, with_section,
 )
 
@@ -133,9 +133,11 @@ SECTION_THEN = (" Then, with the lines after it, take the section out by "
                 "hand, in a POSIX shell, every key it holds, so a submodule "
                 "later given its name inherits none of them, {then}:")
 
-#: How the section's text ends: the commit, or, where HEAD's `.gitmodules`
-#: holds no section of its name, the file staged and nothing to commit.
-THEN_COMMIT = "then commit .gitmodules"
+#: How the section's text ends: the file staged and committed, or, where
+#: HEAD's `.gitmodules` holds no section of its name, staged and nothing to
+#: commit. Its lines end `git add -- .gitmodules` either way (#1077,
+#: RV1069's NIT 3 on #1069).
+THEN_COMMIT = "then stage and commit .gitmodules"
 THEN_STAGE = ("then stage .gitmodules: HEAD's holds no section of that name, "
               "so nothing of it is left to commit")
 
@@ -159,7 +161,8 @@ def section_first(path: str, name: str, url: str, said: str, then: str,
     """`gitmodules-path-unnamed` whole for the section `name`, giving `path`
     and `url`, at a gitlink outside `members/`: its `git rm --cached`,
     carrying `flag`, after `git add -- .gitmodules` where `stage`, of which
-    it says `said`, then its own lines, and `then`."""
+    it says `said`, then its own lines, and `then`, the lines ending `git
+    add -- .gitmodules` (#1077)."""
     nth = "the second line" if stage else "the first line"
     return (SECTION_SAID.format(path=path, name=name, url=f"url {url}")
             + ROW_BACK + GITLINK_FIRST + (STAGE_SAID if stage else "")
@@ -168,7 +171,7 @@ def section_first(path: str, name: str, url: str, said: str, then: str,
             + f"\n    git rm --cached{flag} -- {path}"
             + "".join(f"\n    {line}" for line in removal(name, "path",
                                                            "url"))
-            + (STAGE_LINE if then.endswith(THEN_STAGE) else ""))
+            + STAGE_LINE)
 
 
 def found_in_every_mode(root: Path, code: str) -> str:
@@ -501,8 +504,8 @@ def test_two_sections_for_one_gitlink_outside_members_print_one_git_rm(
                              "gitmodules-path-unnamed"], result.stderr
     first, second = findings(result)[1:]
     assert commands(first) == [f"git rm --cached -- {TOOLS}",
-                               *removal(TOOLS, "path", "url")]
-    assert commands(second) == removal("second", "path", "url")
+                               *removal(TOOLS, "path", "url"), STAGE]
+    assert commands(second) == [*removal("second", "path", "url"), STAGE]
     env = isolated(offline, tmp_path)
     for finding in (first, second):
         typed(holder, env, finding)
@@ -541,8 +544,8 @@ def test_a_section_with_no_gitlink_in_the_index_prints_its_lines_alone(
 
     assert finding == (
         SECTION_SAID.format(path=TOOLS, name=TOOLS, url="url /nowhere/x.git")
-        + SECTION_REMEDY + "".join(f"\n    {line}" for line in removal(
-            TOOLS, "path", "url")))
+        + SECTION_REMEDY + "".join(f"\n    {line}" for line in [*removal(
+            TOOLS, "path", "url"), STAGE]))
     typed(holder, env, finding)
     staged_and_committed(holder, env, "Typed as printed")
     assert_passes_in_every_mode(holder, 2)
