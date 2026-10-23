@@ -458,10 +458,13 @@ def main(argv: list[str] | None = None) -> int:
                              "clone's: any other path is refused as "
                              "`pin-source-not-a-clone`. A partial clone "
                              "(`git clone --filter`) is read where it holds "
-                             "the pinned commit and its trees. One git "
-                             "could read only by fetching what it lacks is "
-                             "`pin-source-unreadable`: the scaffold never "
-                             "fetches into it.")
+                             "the pinned commit and its trees. On a git "
+                             "that honours `GIT_NO_LAZY_FETCH` (2.45 or "
+                             "later, or a security release from 2.39.4 on), "
+                             "one git could read only by fetching what it "
+                             "lacks is `pin-source-unreadable`, and the "
+                             "scaffold fetches nothing into it; an older "
+                             "git fetches what it lacks into it.")
     parser.add_argument("--work-dir", default=None,
                         help="where the working trees are built "
                              "(default: a temporary directory). An empty "
