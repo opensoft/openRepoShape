@@ -57,12 +57,12 @@ from pathlib import Path
 
 import pytest
 
-from conftest import git
+from conftest import PROJECT, cloned_just_pushed, git
 from test_bom_rewrites import (
     FINDERS, MARK, MARK_TEXT, key_first, read, the_file,
 )
-from test_bump_leg import (  # noqa: F401
-    SPEC_PIN, advanced, branched, bump, commit_spec_pin, validate,
+from test_bump_leg import (
+    SPEC_PIN, branched, bump, commit_spec_pin, validate,
 )
 from test_pin_rewrite_layout import (  # noqa: F401
     NEW_COMMIT, NEW_ROWS, NEW_TREE, OLD_COMMIT, OLD_ROWS, OLD_TREE, tools,
@@ -320,6 +320,35 @@ def test_the_key_moved_down_a_line_keeps_the_marks_where_they_were(
 # Each tool, end to end, through its entry point
 # ---------------------------------------------------------------------------
 
+#: Where the advanced spec commit is pushed. Not another module's branch: the
+#: bare remotes are session-scoped, and a second, different commit pushed to
+#: a name already taken is refused as non-fast-forward.
+ADVANCE_BRANCH = "bom-tool-io-advance"
+
+
+@pytest.fixture(scope="module")
+def advanced(scaffolded, tmp_path_factory) -> str:
+    """A real new commit on the spec leg's bare remote; returns its sha.
+
+    THIS FILE'S OWN, AND NOT `tests/test_bump_leg.py`'s. A module-scoped
+    fixture runs once for every module that names it, and that one pushes to
+    `bump-leg-advance` on the session's one remote: imported here it ran
+    twice in one session, and whichever pushed second was refused as
+    non-fast-forward (47 setup errors in `tests/test_bump_leg.py` in CI's
+    full suite, #1188's first run). This one pushes to a branch of its own,
+    as every other module that advances the leg does.
+    """
+    work = cloned_just_pushed(
+        scaffolded["remotes"] / f"{PROJECT}-spec.git",
+        tmp_path_factory.mktemp("spec-advance-bom-io") / f"{PROJECT}-spec")
+    (work / "BOM-TOOL-IO-CONTRACT.md").write_text("# a contract gained\n")
+    git("add", "--", "BOM-TOOL-IO-CONTRACT.md", cwd=work)
+    git("-c", "user.name=t", "-c", "user.email=t@t", "commit", "-qm",
+        "Advance the spec leg for the byte-order-mark tool rows", cwd=work)
+    git("push", "-q", "origin", f"HEAD:refs/heads/{ADVANCE_BRANCH}", cwd=work)
+    return git("rev-parse", "HEAD", cwd=work).stdout.strip()
+
+
 def values_moved(text: str, was: dict, now: dict) -> str:
     """`text` with the two lines the tools move, and nothing else: each
     `<key>: "<value>"` that held `was[key]` holds `now[key]`."""
@@ -371,7 +400,7 @@ def test_update_shape_apply_writes_the_marks_of_the_pin_and_the_manifest(
 
 @pytest.mark.parametrize("marks", [1, 2], ids=["mark", "two-marks"])
 def test_bump_leg_writes_the_marks_of_the_leg_pin(
-        project, scaffolded, advanced, marks):  # noqa: F811
+        project, scaffolded, advanced, marks):
     """`bump-leg.py`, on a leg pin committed with `commit:` on line 1 after
     the marks. The pin is written with the marks it had, every byte after
     them is the pin with the two values moved, and the project's own gate is
@@ -418,7 +447,7 @@ def test_update_shape_apply_refuses_a_pin_indented_on_every_line_unchanged(
 
 
 def test_bump_leg_refuses_a_pin_indented_on_every_line_unchanged(
-        project, scaffolded, advanced):  # noqa: F811
+        project, scaffolded, advanced):
     """The same for a leg pin: refused as it was, nothing written."""
     branched(project)
     pin = project / SPEC_PIN
