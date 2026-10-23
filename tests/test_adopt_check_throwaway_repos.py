@@ -78,8 +78,8 @@ from types import SimpleNamespace
 import pytest
 
 from conftest import (ADOPT, WINDOWS_SKIP, appended_to_command_scope,
-                      command_line_entries, findings, git, planned,
-                      refused_before_any_leg, run_script)
+                      findings, git, planned, refused_before_any_leg,
+                      run_script)
 from test_adopt_nested_attributes import (KEEP_GITHUB, ROOT, ROOT_ATTRIBUTES,
                                           SOURCE, YML_CRLF, adoption_plan,
                                           committed_raw, github)
@@ -1314,6 +1314,15 @@ def test_execute_refuses_a_setting_that_stops_its_clone_before_any_leg(
     assert not remotes.exists()
 
 
+#: The variables that name another repository, its objects, an index or a
+#: work tree, and a tree to read attributes from, and what each names below
+#: the test's directory: no throwaway takes one.
+ANOTHER_REPOSITORY = {
+    "GIT_DIR": "git-dir", "GIT_WORK_TREE": "work-tree",
+    "GIT_INDEX_FILE": "index", "GIT_COMMON_DIR": "common",
+    "GIT_OBJECT_DIRECTORY": "objects", "GIT_ATTR_SOURCE": "HEAD"}
+
+
 def test_the_clone_takes_a_parent_gits_settings_and_no_other_repository(
         adopter, monkeypatch, tmp_path):
     """`_split_clone_env()`: `_inherited_env()`, which keeps
@@ -1324,9 +1333,7 @@ def test_the_clone_takes_a_parent_gits_settings_and_no_other_repository(
     entries are appended after those the environment holds, as every test
     gives git a setting (`appended_to_command_scope`, #758), and the last
     entry `_split_clone_env()` keeps is the second (r1119b's MUST-1)."""
-    named = {"GIT_DIR": "git-dir", "GIT_WORK_TREE": "work-tree",
-             "GIT_INDEX_FILE": "index", "GIT_COMMON_DIR": "common",
-             "GIT_OBJECT_DIRECTORY": "objects", "GIT_ATTR_SOURCE": "HEAD"}
+    named = ANOTHER_REPOSITORY
     for name, value in named.items():
         monkeypatch.setenv(name, str(tmp_path / value))
     parameters = "'test.parentone'='one' 'core.hooksPath'='/nowhere'"
@@ -1923,122 +1930,26 @@ def test_execute_refuses_git_attr_source_before_any_leg(
     assert not remotes.exists()
 
 
-def handed_by_a_parent(cwd: Path, *settings: str) -> str:
-    """`GIT_CONFIG_PARAMETERS` as a parent `git -c <setting>` hands it to an
-    alias it runs, read back by the alias: git's own writing of each
-    setting, after the entries the environment holds."""
-    args = ["git"]
-    for setting in settings:
-        args += ["-c", setting]
-    args += ["-c", 'alias.w1136params=!printf %s "$GIT_CONFIG_PARAMETERS"',
-             "w1136params"]
-    return subprocess.run(args, cwd=str(cwd), capture_output=True,
-                          check=True).stdout.decode("utf-8")
-
-
-def appended_by_hand(entries: str) -> str:
-    """`entries`, as an older git wrote them or as git cannot read them,
-    after the entries `GIT_CONFIG_PARAMETERS` holds."""
-    return f"{os.environ.get(PARAMETERS, '')} {entries}".strip()
-
-
-def listed(cwd: Path, parameters: str | None) -> subprocess.CompletedProcess:
-    """`git config --show-origin --list` in `cwd`, under `parameters` as
-    `GIT_CONFIG_PARAMETERS`, or with none where it is None."""
-    env = {name: value for name, value in os.environ.items()
-           if name != PARAMETERS}
-    if parameters is not None:
-        env[PARAMETERS] = parameters
-    return subprocess.run(["git", "config", "--show-origin", "--list"],
-                          cwd=str(cwd), env=env, capture_output=True,
-                          text=True, encoding="utf-8", errors="replace",
-                          check=False)
-
-
-#: `GIT_CONFIG_PARAMETERS` values, each built at the test from what the
-#: environment holds: as git writes them, from `git -c` (new-style
-#: `'<key>'='<value>'` since git 2.31), and as git before 2.31 wrote them
-#: (`'<key>=<value>'`), by hand.
-READABLE = [
-    pytest.param(lambda cwd: handed_by_a_parent(cwd, "core.protectHFS=true"),
-                 id="one-setting"),
-    pytest.param(lambda cwd: handed_by_a_parent(cwd, "attr.tree=HEAD"),
-                 id="attr-tree-alone"),
-    pytest.param(lambda cwd: handed_by_a_parent(
-        cwd, "core.protectHFS=true", "attr.tree=HEAD", "filter.x.clean=false"),
-        id="attr-tree-among-others"),
-    pytest.param(lambda cwd: handed_by_a_parent(
-        cwd, "ATTR.TREE=HEAD", "a.b=it's here!", "q.w", "sub.Se c.k=v=w",
-        "Attr.Tree=x", "z.y="),
-        id="cases-quotes-bools-subsections-and-empties"),
-    pytest.param(lambda cwd: handed_by_a_parent(
-        cwd, "x.y=a'b", "attr.treex=1", "attr.x.tree=2"),
-        id="keys-that-are-not-attr-tree"),
-    pytest.param(lambda _cwd: appended_by_hand("'core.protecthfs=true'"),
-                 id="old-style"),
-    pytest.param(lambda _cwd: appended_by_hand(
-        "'attr.tree=HEAD' 'core.protecthfs=true'"),
-        id="old-style-attr-tree"),
-    pytest.param(lambda _cwd: appended_by_hand("'q.w'"),
-                 id="old-style-bool"),
-    pytest.param(lambda _cwd: appended_by_hand("' attr.tree =x' 'a.b=1'"),
-                 id="old-style-attr-tree-spaced"),
-]
-
-
-@pytest.mark.parametrize("parameters", READABLE)
-def test_a_parent_gits_settings_are_handed_on_but_attr_tree(
-        adopter, monkeypatch, tmp_path, parameters):
-    """`_parent_settings()` reads `GIT_CONFIG_PARAMETERS` as git does: git
-    lists the same command-line entries under its answer as under the
-    whole value, less each `attr.tree`. Where the value holds one, the
-    answer is another value; where it holds nothing else, the answer is
-    None."""
-    whole = parameters(tmp_path)
-    monkeypatch.setenv(PARAMETERS, whole)
-    kept = adopter._parent_settings()
-    everything = listed(tmp_path, whole)
-    assert everything.returncode == 0, everything.stderr
-    entries = command_line_entries(everything.stdout)
-    wanted = [entry for entry in entries
-              if entry.split("=", 1)[0] != "attr.tree"]
-    answered = listed(tmp_path, kept)
-    assert answered.returncode == 0, answered.stderr
-    assert command_line_entries(answered.stdout) == wanted
-    assert (kept != whole) == (wanted != entries), (whole, kept)
-    if not command_line_entries(listed(tmp_path, None).stdout) and \
-            not wanted:
-        assert kept is None
-
-
-#: Values git reads none of (`bogus format in GIT_CONFIG_PARAMETERS`).
-UNREADABLE = ["core.x=1", "'a.b'='c'x", "'a.b", "'a.b'\\x"]
-
-
-@pytest.mark.parametrize("unreadable", UNREADABLE)
-def test_settings_git_cannot_read_are_handed_on_as_they_stand(
-        adopter, monkeypatch, tmp_path, unreadable):
-    """So that git refuses them in the throwaway, as it does everywhere
-    else. The control: git refuses them."""
-    whole = appended_by_hand(unreadable)
-    monkeypatch.setenv(PARAMETERS, whole)
-    assert adopter._parent_settings() == whole
-    assert listed(tmp_path, whole).returncode != 0
-
-
 def test_the_checkout_questions_take_the_settings_and_no_attr_source(
-        adopter, monkeypatch):
-    """`_split_checkout_env()`: `_inherited_env()`, which leaves out
-    `GIT_ATTR_SOURCE` and every `GIT_CONFIG_PARAMETERS`, and the parent's
-    settings as `_parent_settings()` gives them; with none, none."""
-    monkeypatch.setenv("GIT_ATTR_SOURCE", "HEAD")
-    monkeypatch.setenv(PARAMETERS, appended_by_hand(
-        "'attr.tree'='HEAD' 'core.protectHFS'='true'"))
+        adopter, monkeypatch, tmp_path):
+    """`_split_checkout_env()`: this process's environment, a parent git's
+    settings in both forms as they stand among it, `attr.tree` too, as
+    the split's checkout, `git rm` and `git add` take them; and none of
+    the variables that name another repository, its objects, an index or
+    a work tree, nor `GIT_ATTR_SOURCE`, which is refused before any
+    question. With no `GIT_CONFIG_PARAMETERS` there is none."""
+    for name, value in ANOTHER_REPOSITORY.items():
+        monkeypatch.setenv(name, str(tmp_path / value))
+    parameters = "'attr.tree'='HEAD' 'core.protectHFS'='true'"
+    monkeypatch.setenv(PARAMETERS, parameters)
+    scope = appended_to_command_scope(
+        os.environ, [("attr.tree", "HEAD"), ("test.heldone", "one")])
+    for name, value in scope.items():
+        monkeypatch.setenv(name, value)
     env = adopter._split_checkout_env()
-    assert PARAMETERS not in adopter._inherited_env()
-    assert env[PARAMETERS] == adopter._parent_settings()
-    assert "'core.protectHFS'='true'" in env[PARAMETERS]
-    assert "attr.tree" not in env[PARAMETERS]
-    assert "GIT_ATTR_SOURCE" not in env
+    assert env[PARAMETERS] == parameters
+    assert {name: env.get(name) for name in scope} == scope
+    assert env == {name: value for name, value in os.environ.items()
+                   if name not in ANOTHER_REPOSITORY}
     monkeypatch.delenv(PARAMETERS)
     assert PARAMETERS not in adopter._split_checkout_env()
