@@ -7694,8 +7694,9 @@ def copy_command(source, target, platform: str | None = None) -> str:
 LABEL_LEG_SHAPE_FILES = "leg shape files"
 
 
-def shape_file_state(here: Path, there: Path, name: str) -> str:
-    """What ONE leg shape file is, against the template's copy of it.
+def shape_file_state(here: Path, there: Path, name: str) -> tuple:
+    """`(what ONE leg shape file is, against the template's copy of it, the
+    `OSError` of a read the operating system refused or None)`.
 
     The five answers this returns are the whole vocabulary of the row above,
     and they are five because a byte comparison is only meaningful for two of
@@ -7714,31 +7715,36 @@ def shape_file_state(here: Path, there: Path, name: str) -> str:
     `stat` or read the operating system refuses (#430). It was `absent` on
     Python 3.14, with a `cp` of the template over a file that is there, and
     up to 3.13 the row `could not be run`. `there` is the standard's own copy.
+
+    ITS ERROR IS KEPT BESIDE IT (#1175): the words carry only the reason, and
+    the row's `why` is the gate's advice for the cause (`cannot_read_why`),
+    which a permission and an I/O error are told apart by.
     """
     try:
         if not is_a(here, stat.S_ISREG):
-            return "absent"
+            return "absent", None
     except OSError as exc:
-        return f"cannot be read ({os_reason(exc)})"
+        return f"cannot be read ({os_reason(exc)})", exc
     if name in LEG_RENDERED:
-        return "rendered"
+        return "rendered", None
     if not there.is_file():
-        return "present (the template has none)"
+        return "present (the template has none)", None
     try:
         mine = here.read_bytes()
     except OSError as exc:
-        return f"cannot be read ({os_reason(exc)})"
+        return f"cannot be read ({os_reason(exc)})", exc
     if mine == there.read_bytes():
-        return "identical"
-    return "differs"
+        return "identical", None
+    return "differs", None
 
 
 def leg_shape_comparison(ctx: Context, role: str, rel: str) -> tuple:
     """ONE leg's shape files, and the ones that are not there at all.
 
-    Returns the `--json` entry for the leg and the `(role, leg, file)` triples
-    the row names as missing, so that the caller adds them up rather than
-    being handed a half-built dictionary to finish.
+    Returns the `--json` entry for the leg, the `(role, leg, file)` triples
+    the row names as missing and the `OSError` of each file this user cannot
+    read (#1175), so that the caller adds them up rather than being handed a
+    half-built dictionary to finish.
 
     EVERY EARLY RETURN IS A LEG THERE IS NOTHING TO COMPARE, and neither of
     them is a fault of the repository's: a leg nobody has bootstrapped has no
@@ -7754,20 +7760,25 @@ def leg_shape_comparison(ctx: Context, role: str, rel: str) -> tuple:
     template = ctx.shape / "templates" / f"{role}-root"
     populated, _own_git, unread = mount_read(ctx.root, rel)
     if unread is not None:
-        return {"role": role, "state": unread[0], MOUNT_UNREAD: unread[0]}, []
+        return ({"role": role, "state": unread[0], MOUNT_UNREAD: unread[0]},
+                [], [])
     if not populated:
-        return {"role": role, "state": "not populated"}, []
+        return {"role": role, "state": "not populated"}, [], []
     if not template.is_dir():
         return {"role": role,
-                "state": f"no templates/{role}-root/ to compare against"}, []
+                "state": f"no templates/{role}-root/ to compare against"}, [], []
     files: dict[str, str] = {}
     absent: list[tuple[str, str, str]] = []
+    refused: list[OSError] = []
     for name in LEG_SHAPE_FILES:
-        state = shape_file_state(mount / name, template / name, name)
+        state, exc = shape_file_state(mount / name, template / name, name)
         files[name] = state
         if state == "absent":
             absent.append((role, rel, name))
-    return {"role": role, "state": "compared", "files": files}, absent
+        if exc is not None:
+            refused.append(exc)
+    return ({"role": role, "state": "compared", "files": files}, absent,
+            refused)
 
 
 def leg_shape_summary(rel: str, entry: dict) -> str:
@@ -7848,6 +7859,15 @@ def check_leg_shape_files(ctx: Context) -> Row:
     is a `note`, because what is missing is a read, the `legs` row asserts
     the mount, and "compared" is not a claim to make about a file nobody
     read. It offers no copy: the file is there.
+
+    A FILE THIS USER CANNOT READ IS TOLD THE CURE (#1175): the note's `why`
+    is the gate's advice for the cause (`cannot_read_why`), as every other
+    path this doctor cannot read is told it, and beside a missing file's
+    copy it follows what that line's `why` says. A mount is not: the `legs`
+    row names it and gives its advice. The NEXT stays None and the row stays
+    a note, so the verdict is what it was: no leg file gates anything, so a
+    file nobody could read cannot change it, and the advice ends by saying
+    to run this doctor again.
     """
     needs = "there are no legs to compare"
     waiting = (waiting_row(ctx, "leg-shape-files", LABEL_LEG_SHAPE_FILES,
@@ -7862,15 +7882,19 @@ def check_leg_shape_files(ctx: Context) -> Row:
                    "no legs to compare", None, {"legs": []})
     per_leg: dict[str, dict] = {}
     missing: list[tuple[str, str, str]] = []
+    #: The `OSError` of each leg file this user cannot read (#1175).
+    refused: list[OSError] = []
     for leg in legs:
         role = str(leg.get("role") or "?")
         rel = str(leg.get("path") or role)
-        entry, absent = leg_shape_comparison(ctx, role, rel)
+        entry, absent, unread_files = leg_shape_comparison(ctx, role, rel)
         per_leg[rel] = entry
         missing.extend(absent)
+        refused.extend(unread_files)
     detail = {"legs": per_leg, "compared": list(LEG_SHAPE_FILES)}
     summary = "; ".join(leg_shape_summary(rel, entry)
                         for rel, entry in per_leg.items())
+    advice = cannot_read_why(refused) if refused else None
     if missing:
         named = ", ".join(f"{leg}/{file}" for _, leg, file in missing)
         # `note`, NOT `FINDING`. This is the row that printed `INVALID`
@@ -7882,14 +7906,14 @@ def check_leg_shape_files(ctx: Context) -> Row:
         # rule this standard never made. The difference is worth a reader's
         # eye and is not a verdict.
         fix, why = missing_shape_file_fix(ctx, missing)
+        # A file this user cannot read beside it: its advice follows (#1175).
+        why = ". ".join(said for said in (why, advice) if said) or None
         return Row("leg-shape-files", LABEL_LEG_SHAPE_FILES, NOTE,
                    f"{summary}  (missing: {named})", fix, detail, why=why)
-    unread = any(MOUNT_UNREAD in entry
-                 or any(state.startswith("cannot be read")
-                        for state in (entry.get("files") or {}).values())
-                 for entry in per_leg.values())
+    unread = bool(refused) or any(MOUNT_UNREAD in entry
+                                  for entry in per_leg.values())
     return Row("leg-shape-files", LABEL_LEG_SHAPE_FILES,
-               NOTE if unread else OK, summary, None, detail)
+               NOTE if unread else OK, summary, None, detail, why=advice)
 
 
 # ---------------------------------------------------------------------------

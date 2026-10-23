@@ -4029,13 +4029,15 @@ def _index_listed(root: Path) -> bytes:
 
 
 def _listed_as_git_reads(root: Path) -> tuple[bytes, str]:
-    """`(what git config -z --list prints of .gitmodules as git reads it,
-    git's name for the file it reads in place of the work tree's)`: the
-    index's, then HEAD's (`_gitmodules_put_back`, `_blob_listed`), and
-    nothing where no file is there (#1077). The caller asks it only where
-    the work tree's file is gone, which `_gitmodules_put_back` asks again,
-    so it asks no guard of its own (RV1124's S1: #1111's hygiene test).
-    What `gitmodules-value-refused` reads here, as `_sections_as_git_reads`
+    """Where the work tree's .gitmodules is gone from disk, `(what git config
+    -z --list prints of .gitmodules as git reads it, git's name for the file
+    it reads in place of the work tree's)`: the index's, then HEAD's
+    (`_gitmodules_put_back`, `_blob_listed`), and nothing where no file is
+    there (#1077). It returns nothing, `(b'', '')`, where the work tree's
+    file is on disk (#1181). The caller asks it only where that file is
+    gone, which `_gitmodules_put_back` asks again, so it asks no guard of
+    its own (RV1124's S1: #1111's hygiene test). What
+    `gitmodules-value-refused` reads here, as `_sections_as_git_reads`
     reads the sections."""
     spec = _gitmodules_put_back(root)[0]
     return (_blob_listed(root, spec) if spec else b""), spec
