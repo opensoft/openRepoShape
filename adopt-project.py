@@ -12530,8 +12530,9 @@ def _reencoded_attributes_findings(plan: Plan, source: Source,
 # source holds, git's object freshening sets the modification time of the
 # source's pack or loose object file that holds it to now) and runs with this
 # machine's config, as `_stored_as_written` does, with git-lfs's smudge
-# skipped. First, which rules reach which path: `git
-# check-attr --cached` of `BYTE_ATTRIBUTES`, over indexes `read-tree` makes of
+# skipped. First, which rules reach which path: `git check-attr` of
+# `BYTE_ATTRIBUTES`, never with `--cached`, which reads the index alone and no
+# `attr.tree` (`_SplitRehearsal.reached`), over indexes `read-tree` makes of
 # the commit, once as the source holds its rules and once as the split's root
 # will (what goes to a leg or is dropped gone, the root's `.gitattributes` as
 # the split writes it, the shape's own beside it). Only the files a rule
