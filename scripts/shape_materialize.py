@@ -4244,10 +4244,12 @@ def pin_values_unfetched(args, *, reader: str,
         with lazy_fetch_off():
             return declared_pin_values(args)
     except Refusal as exc:
-        clone = (None if exc.code != PIN_SOURCE_UNREADABLE
-                 or args.pin_source is None
-                 else _resolved_pin_source(args.pin_source))
-        remotes = [] if clone is None else promisor_remotes(clone)
+        # Only `pin_digest_from_source` gives this code, and only for a
+        # `--pin-source`, so the clone is there to ask.
+        if exc.code != PIN_SOURCE_UNREADABLE:
+            raise
+        clone = _resolved_pin_source(args.pin_source)
+        remotes = promisor_remotes(clone)
         if not remotes:
             raise
         raise Refusal(
