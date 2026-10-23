@@ -457,10 +457,11 @@ def test_a_partial_clone_git_cannot_walk_is_refused_on_any_git(
         adopter, made, monkeypatch, capsys, head):
     """A walk that fails tells nothing of what is lacking, so it is no
     `0`: a cured partial clone, its walk made to fail (an option no git
-    has), is refused, naming the walk as run (`HEAD` last where HEAD names a
-    commit) and how git exited, saying git could not walk the refs (and no
-    object count), naming `git fsck` in the source, as what names a ref
-    whose object is lacking and no object a promisor holds, and the cure."""
+    has), is refused, naming the walk as run (`HEAD` where HEAD names a
+    commit, then `--` last) and how git exited, saying git could not walk
+    the refs (and no object count), naming `git fsck` in the source, as what
+    names a ref whose object is lacking and no object a promisor holds, and
+    the cure."""
     monkeypatch.setattr(adopter, "LACKING_WALK",
                         ("rev-list", "--no-such-option"), raising=False)
     source = made("cured")
@@ -470,7 +471,7 @@ def test_a_partial_clone_git_cannot_walk_is_refused_on_any_git(
                          "--work-dir", str(source.base / "work")])
     said = capsys.readouterr()
     walk = "`git rev-list --no-such-option" + (
-        " HEAD`" if head == "born" else "`")
+        " HEAD --`" if head == "born" else " --`")
     assert code == 2, said.err + said.out
     assert REFUSED in said.err
     assert (f"{walk}, which lists what a clone lacks without fetching it, "
@@ -559,6 +560,24 @@ def test_a_file_named_head_in_the_source_is_no_path_of_the_walk(made):
     nothing."""
     source = made("cured")
     (source.path / "HEAD").write_text("not a revision\n", encoding="utf-8")
+    result = source.check()
+    assert result.returncode == 0, result.stderr + result.stdout
+    assert "plan ok" in result.stdout
+    assert CODE not in result.stderr + result.stdout
+    source.untouched()
+
+
+def test_a_file_named_as_the_head_id_is_no_path_of_the_walk(made):
+    """The walk ends with `--`: HEAD is walked by its id, and a file of the
+    source's work tree named as that id made git exit 128, `ambiguous
+    argument '<id>': both revision and filename`, and refused a source that
+    lacks nothing. A commit cannot hold a file named as its own id, so the
+    file is in the work tree only."""
+    source = made("cured")
+    head = git("rev-parse", "HEAD", cwd=source.path).stdout.strip()
+    (source.path / head).write_text("not a revision\n", encoding="utf-8")
+    assert git("rev-list", head, cwd=source.path,
+               check=False).returncode == 128
     result = source.check()
     assert result.returncode == 0, result.stderr + result.stdout
     assert "plan ok" in result.stdout

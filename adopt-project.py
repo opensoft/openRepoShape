@@ -13068,7 +13068,9 @@ PROMISOR_KEYS = (r"^(remote\..*\.(promisor|partialclonefilter)"
                  r"|extensions\.partialclone)$")
 #: What `_objects_lacking` runs: every object the source's branches and tags
 #: reach, one a line, and `?<id>` for each the source lacks; and, where
-#: `HEAD_ID` gives one, the objects the source's HEAD reaches too. It never
+#: `HEAD_ID` gives one, the objects the source's HEAD reaches too; then `--`,
+#: which `_objects_lacking` appends, so no file of the work tree is a path of
+#: the walk, whatever it is named (#1145). It never
 #: fetches, on any git that has `--missing` (measured with git 2.43 and
 #: `GIT_NO_LAZY_FETCH` unset: no `upload-pack` ran, with HEAD at a commit the
 #: clone lacks included).
@@ -13149,16 +13151,20 @@ def _objects_lacking(path: Path) -> tuple[int | None, str]:
     HEAD IS WALKED BY ITS ID, AND ONLY WHERE `_head_id` has one: a plain
     `HEAD` fails on an unborn HEAD (exit 128), and a file of the source's
     work tree named `HEAD` would be read as a path (`ambiguous argument
-    'HEAD': both revision and filename`). The walk is named with `HEAD`, as
-    a person asks it."""
+    'HEAD': both revision and filename`). A file named as the id is read
+    as a path too, `ambiguous argument '<id>': both revision and
+    filename`, so the walk ENDS WITH `--`: everything before it is a
+    revision or an option, and no file of the work tree is read at all.
+    The walk is named with `HEAD`, as a person asks it, and with the `--`
+    it ends with, so what a person pastes is the walk that ran."""
     head = _head_id(path)
-    shown = (*LACKING_WALK, "HEAD") if head else LACKING_WALK
+    shown = (*LACKING_WALK, *(("HEAD",) if head else ()), "--")
     walked = (f"`git {' '.join(shown)}`, which lists what a clone lacks "
               "without fetching it")
     lacking = 0
     try:
         with tempfile.TemporaryFile() as said, subprocess.Popen(
-                ["git", *LACKING_WALK, *([head] if head else [])],
+                ["git", *LACKING_WALK, *([head] if head else []), "--"],
                 cwd=str(path),
                 stdout=subprocess.PIPE, stderr=said) as walk:
             for line in walk.stdout:
