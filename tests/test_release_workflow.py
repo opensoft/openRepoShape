@@ -596,18 +596,6 @@ def test_the_package_job_runs_its_python_3_9_on_ubuntu_24_04():
     assert pythons == ["3.9"]
 
 
-def test_the_tests_job_runs_the_suite_on_ubuntu_24_04():
-    """#1096: `tests.yml`'s `tests` job runs the whole suite, and on the
-    Ubuntu 26.04 that `ubuntu-latest` now gives out it ended `2436 failed,
-    11382 passed, 380 skipped, 5579 errors`, with `[Errno 122] Disk quota
-    exceeded` under pytest's basetemp in `/tmp` and `No space left on
-    device` after it. The job is pinned to 24.04, where it passed, until
-    the suite runs on 26.04; the change that moves it back takes this test
-    with it."""
-    jobs = load_yaml(WORKFLOWS / "tests.yml")["jobs"]
-    assert jobs["tests"]["runs-on"] == "ubuntu-24.04"
-
-
 def setup_python_pairs():
     """Every (file, job, runner, Python) a setup-python step of `tests.yml`
     or `release.yml` asks for, as text. A job with an `include` matrix
@@ -656,6 +644,29 @@ def test_no_setup_python_on_ubuntu_latest_asks_for_a_python_26_04_lacks():
     # The two 3.9 jobs are among the pairs, so the loop is not vacuous.
     assert ("tests.yml", "package", "ubuntu-24.04", "3.9") in pairs
     assert ("release.yml", "install", "ubuntu-24.04", "3.9") in pairs
+
+
+def test_the_suite_keeps_its_temporary_files_on_the_runners_disk():
+    """#1096: on the Ubuntu 26.04 that `ubuntu-latest` now gives out, the
+    whole suite filled `/tmp` under pytest's default basetemp (`Disk quota
+    exceeded`, then `No space left on device`) and ended `2436 failed,
+    11382 passed, 380 skipped, 5579 errors`. `tests.yml`'s `tests` step
+    gives pytest a basetemp under `$RUNNER_TEMP`, on the runner's disk, and
+    sets `TMPDIR` to `runner.temp` for everything it starts, so nothing the
+    suite writes goes to `/tmp`. The step prints the room on both
+    filesystems after the suite as well, and still ends with the suite's
+    own exit status."""
+    steps = load_yaml(WORKFLOWS / "tests.yml")["jobs"]["tests"]["steps"]
+    [step] = [step for step in steps if step.get("name") == "tests"]
+    assert step["env"] == {"TMPDIR": "${{ runner.temp }}"}
+    lines = commands(step["run"])
+    assert lines == [
+        'df -hT /tmp "$RUNNER_TEMP"',
+        "status=0",
+        'python3 -m pytest tests -q --basetemp="$RUNNER_TEMP/pytest" '
+        "|| status=$?",
+        'df -hT /tmp "$RUNNER_TEMP"',
+        'exit "$status"']
 
 
 def test_the_header_says_how_to_release(workflow):
