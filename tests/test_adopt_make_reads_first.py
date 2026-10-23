@@ -129,14 +129,22 @@ ROWS = [
 #: `(path, leg)` rows no shipped rule writes, which a `--path-policy` rule can
 #: (a person's answer in the plan changes no follow-up): `MAKEFILE` kept in
 #: the root, a name GNU make never reads where case is kept and one a disk
-#: that ignores case takes for `Makefile`; and `makefile` and `GNUmakefile`
-#: sent to the legs, which leaves the root nothing GNU make reads but the
-#: shape's.
+#: that ignores case takes for `Makefile`; `makefile` and `GNUmakefile` sent
+#: to the legs, which leaves the root nothing GNU make reads but the shape's;
+#: and `makefile/`, a directory the root keeps as an entry of its own, which
+#: `_root_keeps` finds by its directory form and `twins` must read without
+#: the slash, or be empty and have `twins[0]` raise in `plan` (#1061's (a):
+#: no test failed on it). GNU make 4.3 stops on it with `makefile: Is a
+#: directory.` (r1046's measure), so the case is contrived, and the line it
+#: gets is the one a kept `makefile` file gets.
 ANSWERED = [
     pytest.param((("MAKEFILE", "root"),), SHAPES + written_as("MAKEFILE"),
                  id="MAKEFILE"),
     pytest.param((("makefile", "code"), ("GNUmakefile", "spec")),
                  MAKEFILE_FOLLOW_UP, id="sent-to-legs"),
+    pytest.param((("makefile/", "root"),),
+                 SHAPES + written_as("makefile") + reads("makefile"),
+                 id="makefile-directory"),
 ]
 
 
@@ -172,7 +180,10 @@ def test_a_name_only_a_disk_that_ignores_case_takes_for_makefile(
     """`MAKEFILE` is no name GNU make reads where case is kept, and the
     shape's `Makefile` is the root's there; where case is ignored `place`
     finds `Makefile` taken by it and writes the shape's to `shape/Makefile`.
-    A name sent to a leg is in no root at all."""
+    A name sent to a leg is in no root at all. A kept directory is the entry
+    `makefile/`, no file: the line names it `makefile` all the same, both as
+    the name a disk that ignores case takes for `Makefile` and as the one
+    GNU make reads, so `twins` must read the entry without its slash."""
     assert makefile_lines(follow_ups_of(adopter, monkeypatch, rows)) == [said]
 
 
@@ -304,13 +315,16 @@ ADOPTING = "Adopting an existing repository"
 #: The sentence, in r906's words as its re-check corrected them, with
 #: `Makefile` spelled as the file it is: a source that keeps `makefile` has
 #: the shape's Makefile written as the root's `Makefile` on a disk that
-#: keeps case.
+#: keeps case. It ends with what #1046's review (NIT-D, #1061's (b)) found
+#: missing: `make` at the root reads a kept `GNUmakefile` or `makefile`
+#: instead, as the line `plan` writes says of the file it names.
 SENTENCE = (
     "the shape's Makefile exports `CONTRACTS_DIR`, pointing at the "
     "`contracts/` of the spec leg where the plan mounts it "
     "(`$(CURDIR)/spec/contracts` by default); it is the root's Makefile, or, "
     "where the source keeps a `Makefile` of its own, `shape/Makefile`, which "
-    "holds the export until a person merges the two.")
+    "holds the export until a person merges the two; `make` at the root reads "
+    "a kept `GNUmakefile` or `makefile` instead.")
 
 
 def segment(name: str) -> str:
@@ -323,7 +337,9 @@ def segment(name: str) -> str:
 def test_readme_says_which_makefile_exports_contracts_dir():
     """It said "the root Makefile it materializes exports `CONTRACTS_DIR`",
     and where the source keeps a `Makefile` of its own the root's is the
-    source's, untouched, and the export is in `shape/Makefile` only."""
+    source's, untouched, and the export is in `shape/Makefile` only. The
+    sentence that fixed it said nothing of the file `make` reads first,
+    where the source keeps a `GNUmakefile` or a `makefile` (#1061)."""
     said = " ".join(segment(ADOPTING).split())
     assert SENTENCE in said
     assert "the root Makefile it materializes" not in said

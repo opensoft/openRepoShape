@@ -3718,8 +3718,10 @@ def contracts_from_code_leg(spec_path, code_path, spec_leg_paths,
     NO PATH, so no hand edit of either can contradict it, and it leaves the
     path itself to the two mounts printed beside it. That path is the one
     #522's review (auA-13) showed a person gets wrong for nested legs by
-    hand, and `CONTRACTS_DIR` is the root Makefile's alone. So it is printed
-    where the mounts are, computed from the values the surface itself prints:
+    hand, and `CONTRACTS_DIR` is the shape's Makefile's alone: the root's
+    `Makefile`, or, where the source keeps a `Makefile` of its own,
+    `shape/Makefile` (#906, #977, #1061). So it is printed where the mounts
+    are, computed from the values the surface itself prints:
     `check`'s `mount the legs at X/ and Y/`, from the plan as it stands, and
     the split message's `mounted back here at X/ and Y/`, from the mounts
     `execute` made. It is never stored in `follow_ups:`, so it cannot go stale
