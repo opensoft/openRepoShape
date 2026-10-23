@@ -188,6 +188,7 @@ import shutil
 import stat
 import subprocess
 import sys
+import unicodedata
 from collections.abc import Callable
 from pathlib import Path
 
@@ -705,6 +706,87 @@ def branch_of(path: Path) -> str:
 
 
 # ---------------------------------------------------------------------------
+# the columns a name takes in the layout table (#1216)
+# ---------------------------------------------------------------------------
+#
+# A ROW PADS ITS NAME BY THE COLUMNS A TERMINAL GIVES IT, not the code points
+# it holds, which is all a format width counts. `\u65e5\u672c\u8a9e`, three
+# wide characters, was padded as 3 and took 6 columns, so its row's `state`
+# stood 3 columns right of every other row's; `e\u0301cole`, whose acute is
+# drawn over the `e`, was padded as 6 and took 5, and stood 1 column left.
+# And the name is measured as stdout writes it: on a stdout that cannot hold
+# a character, `escape_unencodable_stdout` has it written as `\u65e5`, six
+# columns the pad had counted as one.
+#
+# THE RULE IS WRITTEN HERE, NOT IMPORTED. It is the one #1034 gives
+# `adopt-project.py`'s `plan` table, and
+# `scripts/validate-repository-naming.py` writes its own copy for its
+# listing (#1217). A holder that kept an older `repo_shape.py`
+# (`update-shape.py apply --accept-local`) must still be able to run this
+# file, and an import of a name its copy lacks would stop `make siblings`,
+# `park` and `resume` dead, as the `mv` lines below say of `shell_line`.
+# `tests/test_pinned_copy_columns.py` holds the copies to one answer for
+# every character.
+
+#: The general categories a terminal gives no column of their own: a
+#: non-spacing mark and an enclosing one, drawn over the character before
+#: them, and a format character, which it does not draw.
+ZERO_COLUMN_CATEGORIES = frozenset(("Mn", "Me", "Cf"))
+#: The East Asian widths a terminal gives two columns: wide and fullwidth.
+TWO_COLUMN_WIDTHS = frozenset(("W", "F"))
+#: The Hangul medial vowels and final consonants, U+1160 to U+11FF in Hangul
+#: Jamo and U+D7B0 to U+D7FF in Hangul Jamo Extended-B. Each is a letter (Lo)
+#: of East Asian width N, so neither set above names them, and a terminal
+#: draws each inside the syllable its leading consonant begins: no column of
+#: its own, as glibc's `wcwidth` gives it none.
+MEDIAL_AND_FINAL_JAMO = frozenset(map(chr, range(0x1160, 0x1200)))
+MEDIAL_AND_FINAL_JAMO_EXTENDED_B = frozenset(map(chr, range(0xD7B0, 0xD800)))
+
+
+def _char_columns(char: str) -> int:
+    """The columns a terminal gives `char`. The category is asked before the
+    width: the voiced sound mark U+3099 is wide, and is drawn over the kana
+    before it. An ambiguous width is one column, as a terminal outside an
+    East Asian locale draws it."""
+    if (unicodedata.category(char) in ZERO_COLUMN_CATEGORIES
+            or char in MEDIAL_AND_FINAL_JAMO
+            or char in MEDIAL_AND_FINAL_JAMO_EXTENDED_B):
+        return 0
+    if unicodedata.east_asian_width(char) in TWO_COLUMN_WIDTHS:
+        return 2
+    return 1
+
+
+def _columns(text: str) -> int:
+    """How many columns a row's name takes on a terminal (`_char_columns`
+    for each of its characters)."""
+    return sum(_char_columns(char) for char in text)
+
+
+def _padded(text: str, columns: int) -> str:
+    """A row's name and the spaces that make it `columns` columns wide on a
+    terminal, as `f"{text:<{columns}}"` makes it that many code points. A
+    name wider than that is printed whole, with no space added, as there:
+    the row stands right, and nothing is cut."""
+    return text + " " * (columns - _columns(text))
+
+
+def _printed(text: str) -> str:
+    """A row's name as stdout writes it, which is what the row pads: each
+    character stdout's encoding cannot hold escaped, as its handler writes
+    it once `escape_unencodable_stdout` has made that `backslashreplace`.
+    On an ASCII stdout `\\u65e5\\u672c\\u8a9e` is the 18 characters of its
+    three escapes; on a UTF-8 one, the 3 it holds. Where stdout names no
+    encoding, or its own handler cannot write `text`, it is `text`."""
+    encoding = getattr(sys.stdout, "encoding", None) or "utf-8"
+    errors = getattr(sys.stdout, "errors", None) or "strict"
+    try:
+        return text.encode(encoding, errors).decode(encoding)
+    except (LookupError, UnicodeError):
+        return text
+
+
+# ---------------------------------------------------------------------------
 # one member
 # ---------------------------------------------------------------------------
 
@@ -725,9 +807,11 @@ class Sibling:
     def row(self, kind: str = "sibling") -> str:
         # `project` is a manifest's text and `branch` a clone's (#454), so a
         # row prints them spelled; the fields still hold the raw values, which
-        # the paths and the commands are made from.
-        return (f"  {kind:<9} {spelled(self.project):<18} {self.state:<22} "
-                f"{spelled(self.branch)}")
+        # the paths and the commands are made from. The name is padded by the
+        # columns it takes as stdout writes it (#1216): `kind` and `state` are
+        # this file's own ASCII words, and `branch` ends the row.
+        return (f"  {kind:<9} {_padded(_printed(spelled(self.project)), 18)} "
+                f"{self.state:<22} {spelled(self.branch)}")
 
 
 def refused_member(root: Path, row: dict, refusal: Refusal) -> Sibling:

@@ -42,6 +42,12 @@ answers differently.
 
 Every run is made from a directory of its own under `tmp_path`, and every
 manifest is written as bytes.
+
+The plain listing those rows read pads each name by the columns a terminal
+gives it (#1217). Measured on main 50ce8ab1, it padded by code points: on a
+UTF-8 stdout the label of `\\u65e5\\u672c\\u8a9e` stood 3 columns right of
+`codexGlass`'s and that of `e\\u0301cole` 1 left, and on an ASCII stdout,
+which writes each as its escapes, 15 and 5 right.
 """
 
 from __future__ import annotations
@@ -55,6 +61,7 @@ from conftest import REPO, SCAFFOLD, clear_ambient_pin_sources, git, run_script
 from test_link_source_chain_defaults import (MORE_SPECIFIC, manifest, naming,
                                              project, tree, two_firsts_note,
                                              unverified)
+from test_stdout_encoding import run_tool, shown
 
 # `project` here is that module's manifest writer, not conftest's fixture of
 # the same name, which no test below asks for.
@@ -265,6 +272,49 @@ def test_a_direct_pin_reaches_only_its_own_pin_file(tmp_path, pin, answer):
     assert result.returncode == 0, result.stderr
     assert result.stdout == f"  {'codexGlass':<32} {answer}\n"
     assert result.stderr == ""
+
+
+# --- the listing's columns (#1217) ------------------------------------------
+
+#: Three wide characters, and a name whose acute is a combining mark.
+WIDE = "\u65e5\u672c\u8a9e"
+COMBINING = "e\u0301cole"
+#: The columns a UTF-8 stdout's terminal gives each, counted by hand: two
+#: to a wide character and none to the combining acute. On an ASCII stdout
+#: each is written as its escapes, ASCII, one column to a character.
+NAME_COLUMNS = {WIDE: 6, COMBINING: 5}
+#: Where every label begins: the 2 of the indent, the 32 of the name, and a
+#: space.
+LABEL_COLUMN = 35
+
+
+@pytest.mark.parametrize("encoding", ["utf-8:strict", "ascii:strict"])
+def test_a_wide_or_combining_name_has_its_label_under_codexglass_s(
+        tmp_path, encoding):
+    """THE ISSUE'S ROWS: the ASCII control, `codexGlass`, then a name of
+    three wide characters and one with a combining acute, which no family
+    classifies. On main their labels began at columns 38 and 34 on a UTF-8
+    stdout, and 50 and 40 on an ASCII one, whose `backslashreplace` writes
+    each as its escapes. Each begins at column 35 now, as `codexGlass`'s
+    does, and the control's line is byte for byte what it was. Bytes,
+    decoded strictly in the encoding the run was given."""
+    code, out, err = run_tool(
+        REPO / "scripts" / "validate-repository-naming.py", "--role",
+        "assembly", "codexGlass", WIDE, COMBINING, encoding=encoding,
+        tmp_path=tmp_path, cwd=tmp_path)
+    assert code == 1, err
+    lines = out.split("\n")
+    assert lines[0] == (f"  {'codexGlass':<32} project-leg/assembly   "
+                        "also_matches domain-descendant"), out
+    assert lines[3:] == [""], out
+    for line, name in zip(lines[1:3], (WIDE, COMBINING)):
+        written = shown(name, encoding)
+        assert line.startswith(f"  {written} "), (line, out)
+        rest = line[2 + len(written):]
+        assert rest.lstrip(" ") == "NO FAMILY", (line, out)
+        takes = NAME_COLUMNS.get(written, len(written))
+        assert 2 + takes + len(rest) - len(rest.lstrip(" ")) == \
+            LABEL_COLUMN, (line, out)
 
 
 def test_chains_beginning_at_both_spellings_read_a_bare_tree_for_neither(
