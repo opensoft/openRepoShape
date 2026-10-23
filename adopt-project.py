@@ -9280,8 +9280,10 @@ def _unsafe_path_findings(plan: Plan) -> tuple[list[str], list[str]]:
 # path git refuses is `plan-path-git-refuses`'s alone, and a path no entry
 # answers once is another finding's. Twins the plan sends to DIFFERENT
 # repositories, and a twin it drops beside one it keeps, are not asked
-# either, though `execute` on a disk that ignores case loses them too, as
-# `adopt-lost` after both legs are pushed (#1183).
+# either: no repository the split makes holds two of them, and `execute`
+# mounts the legs so that a disk that ignores case loses none of them
+# (`_split_case_twins`, #1183), where it lost them as `adopt-lost`, or
+# stopped at `git rm`, after both legs were pushed.
 #
 # A set of ONE NAME whose paths hold one blob in one mode loses nothing on
 # such a disk: the one path it checks out holds what each path holds. In a
@@ -9314,10 +9316,11 @@ CASE_TWINS = "plan-case-twins"
 #: as `plan-case-twins` names it, in the order it is asked.
 TWIN_REPOSITORIES = {"root": "the assembly root", "spec": "the spec leg",
                      "code": "the code leg"}
-#: What a plan holding such twins is told to do, once after every finding.
-#: It offers no answer that sends the twins of a set into different
-#: repositories, or drops one: on a disk that ignores case `execute` loses
-#: those too, after both legs are pushed (#1183).
+#: What a plan holding such twins is told to do, once after every finding:
+#: a rename in the source. It was written while an answer that sends the
+#: twins of a set into different repositories, or drops all of a set but
+#: one, was lost by `execute` on a disk that ignores case too, after both
+#: legs were pushed; `_mount_the_legs` keeps those since #1183.
 CASE_TWINS_REMEDIATION = (
     "Remediation: rename paths in the source until no two that one "
     "repository would hold differ only in case -- each twin of a set but "
@@ -14329,22 +14332,98 @@ def _refuse_an_unmountable_path(assembly: Path, path: str) -> None:
 #: still a pathspec, where `*` and `?` are wildcards and a leading `:` is
 #: magic -- `git rm -- ':!keep.md'` removes every other path in the tree.
 GIT_RM = ("git", "--literal-pathspecs", "rm", "-r", "-q", "--")
+#: `GIT_RM` with `-f`, for a path at or above a case twin (#1183): see
+#: `_split_case_twins`. `-f` skips only git's question whether the file
+#: on the disk still holds what the index holds.
+GIT_RM_FORCED = ("git", "--literal-pathspecs", "rm", "-r", "-q", "-f", "--")
 
 
-def _git_rm(assembly: Path, path: str) -> None:
+def _git_rm(assembly: Path, path: str, forced: bool = False) -> None:
     """`git rm` of `path`, an entry's path as the plan holds it, in the
     assembly: what `run` does, with `path` handed to git as the bytes the
-    tree holds (`_path_argument`, #527).
+    tree holds (`_path_argument`, #527). `forced` is `GIT_RM_FORCED`, for a
+    path a case twin is at or under (#1183).
 
     `run` takes only text (`check_program`), so this asks `check_program` of
     the command as the person reads it, and a git that refuses raises
     `CommandFailed` with that command, as `run` raises it: what `execute`
     reports after both legs exist is unchanged.
     """
-    command = [*GIT_RM, path]
+    removal = GIT_RM_FORCED if forced else GIT_RM
+    command = [*removal, path]
     check_program(command)
-    proc = subprocess.run([*GIT_RM, _path_argument(path)], cwd=str(assembly),
-                          capture_output=True, check=False)
+    proc = subprocess.run([*removal, _path_argument(path)],
+                          cwd=str(assembly), capture_output=True, check=False)
+    if proc.returncode != 0:
+        raise CommandFailed(command, assembly, proc.returncode,
+                            (proc.stderr + proc.stdout).decode("utf-8",
+                                                               "replace"))
+
+
+#: `git checkout-index`, writing each path it reads from its input, each
+#: ended by a NUL, from the index over whatever the disk holds there.
+CHECKOUT_INDEX = ("git", "checkout-index", "-f", "-z", "--stdin")
+
+
+def _at_or_under(path: str, top: str) -> bool:
+    """Whether `path` is `top` or a path under it, both as git spells them:
+    case counts, as it does in the index."""
+    return path == top or path.startswith(top + "/")
+
+
+def _split_case_twins(assembly: Path,
+                      removed: list[str]) -> list[list[str]]:
+    """Each set of case twins the assembly's index holds (`_case_twin_sets`)
+    that has a path at or under one of `removed`, the paths `_mount_the_legs`
+    takes out of the root: a set the plan sends into different repositories,
+    or drops a path of (#1183).
+
+    A DISK THAT IGNORES CASE HOLDS EACH SUCH SET AS ONE FILE. Measured for
+    #1183 with git 2.43, on a FUSE disk that ignores case and keeps it: the
+    split's clone checks out one file per set, holding the bytes of the twin
+    git wrote last, in the index's order (`a` after `A`, `d/x` after `D/x`),
+    git saying `the following paths have collided`. The mount's `git rm` of
+    a twin then meets that file:
+    - where the twin that goes sorts last (`A` kept in the root, `a` sent to
+      the code leg or dropped, and `F/x` kept beside `f`), `git rm` deletes
+      the one file both names share, `git add -A` stages the kept twin's
+      deletion, and `execute` stopped after both legs and the split were
+      pushed, as `adopt-lost`;
+    - where it sorts first (`A` sent to a leg or dropped, `a` kept), `git
+      rm` refused, `the following file has local modifications: A`, and
+      `execute` stopped mounting the legs after both were pushed: also with
+      BOTH twins dropped, or one sent to each leg.
+    So each path such a set has at or under it is removed with `-f`, and
+    the paths of these sets that the root keeps are written back from the
+    index after the last `git rm`.
+
+    The list is asked of the index, which holds the source commit's tree,
+    once, and on every disk: on a disk that keeps case, the same commands
+    rewrite the bytes each kept twin already holds. A source with no such
+    set, as nearly every one is, gets the `git rm` of each path it always
+    got and nothing written back: this listing, which writes nothing, is
+    the one command added."""
+    raw = git_out(["ls-files", "-z"], cwd=assembly, binary=True)
+    paths = [_git_path(record) for record in raw.split(b"\x00") if record]
+    return [named for named in _case_twin_sets(paths)
+            if any(_at_or_under(twin, top)
+                   for twin in named for top in removed)]
+
+
+def _write_from_the_index(assembly: Path, paths: list[str]) -> None:
+    """`git checkout-index` of `paths`, which the assembly's index holds,
+    over whatever the disk holds at each (#1183): handed to git on its
+    input as the bytes the tree holds, each `_git_path` undone, so that no
+    locale and no length of a command line is in the way.
+
+    `CommandFailed` where git refuses, naming the command as `_git_rm`
+    names its own; what git said names the path."""
+    command = list(CHECKOUT_INDEX)
+    check_program(command)
+    proc = subprocess.run(
+        command, cwd=str(assembly), capture_output=True, check=False,
+        input=b"".join(path.encode("utf-8", "surrogateescape") + b"\x00"
+                       for path in paths))
     if proc.returncode != 0:
         raise CommandFailed(command, assembly, proc.returncode,
                             (proc.stderr + proc.stdout).decode("utf-8",
@@ -14361,13 +14440,25 @@ def _mount_the_legs(assembly: Path, work_root: Path, names: dict, urls: dict,
 
     Each path is the source tree's, so `_git_rm` hands it to git as the bytes
     the tree holds (#527). The mount paths are `checked_value`s, ASCII.
+
+    CASE TWINS THE PLAN SPLITS (#1183): a path with a twin at or under it
+    is removed with `-f`, and each twin the root keeps is written back from
+    the index after the last `git rm` (`_split_case_twins`), so that a disk
+    that ignores case loses none of them.
     """
     removed = sorted((p.rstrip("/") for p in (paths_for["spec"]
                                               + paths_for["code"]
                                               + paths_for["drop"])),
                      key=lambda p: (p != GITMODULES, p))
+    split = [twin for named in _split_case_twins(assembly, removed)
+             for twin in named]
     for path in removed:
-        _git_rm(assembly, path)
+        _git_rm(assembly, path,
+                any(_at_or_under(twin, path) for twin in split))
+    kept = [twin for twin in split
+            if not any(_at_or_under(twin, path) for path in removed)]
+    if kept:
+        _write_from_the_index(assembly, kept)
     # The plan moved (or dropped) the source's own .gitmodules, so its deletion
     # is staged, and `git submodule add` refuses to write into a file the index
     # says is going away. Give the assembly a fresh, EMPTY, staged one for its
