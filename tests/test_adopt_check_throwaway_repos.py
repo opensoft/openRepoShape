@@ -2005,6 +2005,50 @@ def test_a_parent_gits_attr_tree_filter_is_one_finding_over_an_own_rule(
     assert f"clean filter '{FAILING}' failed" in finding_lines(result)[0]
 
 
+#: A clean filter that stores a file as other bytes, and two rules for the
+#: pinned copies the split writes under `scripts/`: the source's own root's,
+#: and a side tree's.
+COPY_UPPER = "w1136upper"
+COPY_UPPER_CLEAN = [(f"filter.{COPY_UPPER}.clean", "tr a-z A-Z")]
+OWN_COPY_RULE = b"/scripts/*.py ident\n"
+TREE_COPY_RULE = f"/scripts/*.py filter={COPY_UPPER}\n".encode()
+COPIES = ("validate-pins.py", "validate-manifest.py", "bootstrap.py",
+          "repo_shape.py", "validate-repository-naming.py")
+
+
+@pytest.mark.parametrize("handed", EVERY_FORM)
+def test_a_pinned_copy_under_a_parent_gits_attr_tree_unsets_the_trees_rule(
+        tmp_path, handed):
+    """A parent's `attr.tree` names a side tree that says `/scripts/*.py
+    filter=<an upper-casing clean>`, over a source root that says
+    `/scripts/*.py ident`. The split's `git add` of the pinned copies reads
+    the tree's `filter` and not the root's `ident`, so the copies finding
+    names `-filter` for each copy, and no `-ident`. `_rules_reaching` asks
+    the split's root without `--cached`; with it there (M3) each line said
+    `-ident`, as on 25805102."""
+    source = a_source(tmp_path, files={ROOT_ATTRIBUTES: OWN_COPY_RULE})
+    env = handed(tmp_path, [*COPY_UPPER_CLEAN,
+                            ("attr.tree",
+                             on_a_side_branch(source, TREE_COPY_RULE))])
+    read = subprocess.run(["git", "check-attr", "filter", "ident", "--",
+                           "scripts/bootstrap.py"], cwd=str(source),
+                          env={**os.environ, **env}, capture_output=True,
+                          text=True, check=True)
+    if "filter: unspecified" in read.stdout:
+        pytest.skip("this git reads no `attr.tree`")
+    assert read.stdout.splitlines() == [
+        f"scripts/bootstrap.py: filter: {COPY_UPPER}",
+        "scripts/bootstrap.py: ident: unspecified"]
+    result = checked(planned(source, tmp_path, {}), env)
+    assert result.returncode == 1, result.stderr
+    assert codes(result) == [REENCODED_FILES], result.stderr
+    line = finding_lines(result)[0]
+    assert "store 5 pinned shape copies" in line, line
+    for name in COPIES:
+        assert f"`/scripts/{name} -filter`" in line, line
+    assert "-ident" not in line, line
+
+
 #: How `plan-file-reencoded` begins for the one CRLF file the plan sends to
 #: a leg.
 SENT_CRLF = ("the plan sends 1 file to a leg or drops it, and this "
