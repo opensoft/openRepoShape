@@ -38,6 +38,14 @@ with `chmod` for a permission and none for any other cause. `remove`'s
 rollback takes it as it takes a store it cannot read: the mount made again,
 empty, and the update typed after the cure, never "only from its remote".
 
+`PinRollback._file_by_hand` serves every file the rollback records:
+`bump`'s `family.yaml`, `remove`'s `.gitmodules` and `family.yaml`. Taking
+bytes it cannot read for not the recorded ones is its change for the
+`.gitmodules` above, and it is `family.yaml`'s too: a hook that takes the mode
+off `family.yaml` and refuses left the file as the verb had rewritten it, and
+the commands typed after the cure left it ` M` (r1164b's SHOULD-1). One row
+holds it under each verb (`..._family_yaml_at_000_types_the_index_copy`).
+
 EACH SITE HAS ITS ROWS: the control (nothing there, or a link this user can
 read); a refused `stat`, an I/O error or a refused `os.access` in process,
 on every Python and platform and as root (`refused`, `refused_stat`,
@@ -66,9 +74,10 @@ from test_family_add_refusals import (  # noqa: F401
     add_in_process, holder, offline,
 )
 from test_family_bump_remove_rollback import (
-    facts, in_process, remove, typed_by_hand,
+    bump, facts, in_process, remove, typed_by_hand,
 )
 from test_family_dry_run import isolated
+from test_family_member_path import older
 from test_family_py_unreadable import (
     EIO, STEP_CURE, assert_back_on_main, hook, refused, remedy, stat_failing,
 )
@@ -535,6 +544,44 @@ def test_a_rollback_meeting_a_gitmodules_at_000_types_the_index_copy(
 
     sentence = rollback_said(result)
     cured_and_typed(holder, sentence, at)
+
+
+@needs_a_mode
+@pytest.mark.parametrize("verb", ["bump", "remove"])
+def test_a_rollback_meeting_a_family_yaml_at_000_types_the_index_copy(
+        verb, family, holder, offline, tmp_path):
+    """`_file_by_hand` is every recorded file's, so the change above is
+    `family.yaml`'s too (r1164b's SHOULD-1): a `pre-commit` hook that only
+    takes the mode off `family.yaml` and refuses, under `bump` and under
+    `remove`. On `038dafba9` only the index entry was typed, and with the
+    mode given back `family.yaml` stayed the copy the verb had rewritten
+    (` M family.yaml`). Now the index's copy follows it, and the commands,
+    typed as printed once the mode is given back, leave `family.yaml` with
+    its recorded bytes and the holder clean."""
+    env = isolated(offline, tmp_path)
+    manifest = holder / "family.yaml"
+    recorded = manifest.read_bytes()
+    mode = stat.S_IMODE(manifest.stat().st_mode)
+    at = git("rev-parse", "HEAD", cwd=holder / PATH).stdout.strip()
+    hook(holder, tmp_path, "pre-commit", "chmod 000 family.yaml\nexit 1\n")
+    try:
+        result = (bump(holder, env, older(family)) if verb == "bump"
+                  else remove(holder, env))
+    finally:
+        manifest.chmod(mode)
+
+    assert result.returncode == 2, result.stdout + result.stderr
+    assert "Traceback" not in result.stderr
+    sentence = result.stderr.splitlines()[-1]
+    assert ("NOT family.yaml restored byte for byte: family.yaml: Permission "
+            f"denied; {STEP_CURE}") in sentence
+    assert manifest.read_bytes() != recorded, (
+        "premise: the verb had rewritten family.yaml")
+    git("config", "--local", "--unset", "core.hooksPath", cwd=holder)
+    typed_by_hand(holder, sentence)
+    assert manifest.read_bytes() == recorded
+    assert git("status", "--porcelain", cwd=holder).stdout == ""
+    assert_back_on_main(holder, at)
 
 
 # --- siblings.py: `submodule_urls` ---------------------------------------------
