@@ -294,8 +294,10 @@ def test_the_makefile_follow_up_says_the_shapes_targets_arrive_with_it(
         adopted):
     """The follow-up the plan carries, and the split commit lists, names
     each of the shape's make targets as arriving only with the merge, and
-    what runs meanwhile. The targets are read from the template, so a target
-    the shape gains and the follow-up does not name fails here."""
+    what runs meanwhile, `python` on Windows too, as the template's
+    `scripts/bootstrap.py` names it (#1132). The targets are read from the
+    template, so a target the shape gains and the follow-up does not name
+    fails here."""
     template = (REPO / "templates" / "assembly-root" / "Makefile").read_text(
         encoding="utf-8")
     targets = [name for name in re.findall(r"(?m)^([a-z][a-z-]*):", template)
@@ -309,7 +311,8 @@ def test_the_makefile_follow_up_says_the_shapes_targets_arrive_with_it(
         assert ("The shape's make targets ("
                 + ", ".join(f"`{target}`" for target in targets)
                 + ") arrive only with that merge; until then `python3 "
-                "scripts/bootstrap.py` is what `make bootstrap` runs") in text
+                "scripts/bootstrap.py` (`python` on Windows) is what `make "
+                "bootstrap` runs") in text
 
 
 @pytest.fixture(scope="module")
@@ -435,7 +438,11 @@ def test_the_makefile_follow_up_waits_for_a_script_that_went_aside_too(
     and tells each the whole list: where `scripts/` stays as well, the
     root's `scripts/bootstrap.py` is the source's own, so the Makefile's
     follow-up does not name `python3 scripts/bootstrap.py` as what runs
-    meanwhile (#493's review, F2)."""
+    meanwhile (#493's review, F2). It says that command runs the shape's
+    bootstrap once the script is merged, and `make bootstrap` once both
+    merges are made: "neither ... before both merges are made" was untrue
+    of the first (#1105's second review, NIT-2;
+    `tests/test_adopt_make_bootstrap_followups.py` measures both)."""
     kept = [adopter.Entry(path, adopter.Verdict(
         "root", "test", "kept by the test", "high"), 1, 1)
         for path in ("Makefile", "scripts/")]
@@ -446,9 +453,9 @@ def test_the_makefile_follow_up_waits_for_a_script_that_went_aside_too(
     assert makefile.endswith(
         "arrive only with that merge, and the root's scripts/bootstrap.py is "
         "the source's own until shape/scripts/bootstrap.py is merged into it "
-        "as well, so neither `make bootstrap` nor `python3 "
-        "scripts/bootstrap.py` runs the shape's bootstrap before both merges "
-        "are made"), makefile
+        "as well, so `python3 scripts/bootstrap.py` (`python` on Windows) "
+        "runs the shape's bootstrap once the script is merged, and `make "
+        "bootstrap` once both merges are made"), makefile
 
 
 def test_the_agent_file_collision_says_add_a_line_not_merge(adopted):
