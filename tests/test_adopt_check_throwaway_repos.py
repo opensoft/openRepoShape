@@ -754,6 +754,24 @@ def test_only_one_blob_in_one_mode_is_left_to_the_note(adopter, rows, found,
     assert asked_of(adopter, rows) == (found, noted)
 
 
+def test_the_one_blob_note_is_the_first_of_the_entries_notes(
+        adopter, monkeypatch, tmp_path):
+    """`_entry_findings` lists the twins' NOTE before the pins' NOTEs, as it
+    lists their finding before the pins' findings."""
+    source = a_source(tmp_path)
+    with_paths(source, ("A", "a"))
+    plan = adopter.Plan.load(planned(source, tmp_path, {"A": ROOT, "a": ROOT}))
+    work = tmp_path / "work"
+    work.mkdir()
+    opened = plan.open_source(None, work)
+    monkeypatch.setattr(adopter, "_pin_digest_findings",
+                        lambda _plan: ([], ["NOTE a pin's"]))
+    found, _, notes = adopter._entry_findings(plan, opened)
+    assert found == []
+    assert notes == [one_blob_twins("1 set", ROOT_TWINS, "2 paths",
+                                    "`A` and `a`"), "NOTE a pin's"]
+
+
 #: `(the paths, the answers)` of sources no repository the split makes holds
 #: twins of, and `check` finds nothing in, on 4c7b8acd and now.
 NO_TWINS_KEPT = [
