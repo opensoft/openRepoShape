@@ -284,8 +284,11 @@ def test_1077_a_value_head_gives_where_the_deletion_is_staged_puts_head_s_back(
     reads`, and its first line puts back HEAD's file, as the index holds
     none. A check that read the index's file alone, with no fallback to
     HEAD's, found nothing in it and said to commit the index's file, with
-    no line, over a deletion a plain `git commit` records. Typed in order,
-    staged and committed: HEAD's file holds no value, both members stay,
+    no line, over a deletion a plain `git commit` records. Its last line
+    stages the file, as the text says (#1150): typed without it, the
+    plain `git commit` after them exits 1 (`no changes added to commit`)
+    and HEAD keeps the value (rv1227's M1 on #1227). Typed in order, then
+    a plain `git commit`: HEAD's file holds no value, both members stay,
     nothing is left, and the gate and a plain clone pass."""
     env = cloning(offline, tmp_path, family)
     committed_gitmodules(holder, env, valued(
@@ -303,9 +306,8 @@ def test_1077_a_value_head_gives_where_the_deletion_is_staged_puts_head_s_back(
         "back HEAD's, as the index holds none. Take the key out by hand, in "
         "a POSIX shell, then stage and commit .gitmodules:\n    git "
         "checkout HEAD -- .gitmodules\n    git config -f .gitmodules "
-        f"--unset-all submodule.{ROW}.update"]
+        f"--unset-all submodule.{ROW}.update\n    {STAGE}"]
     typed_in_order(holder, env, validate(holder, "--no-members"))
-    raw(holder, env, "add", "--", GITMODULES)
     committed_as_staged(holder, env)
     assert b"!true" not in head_bytes(holder, env)
     assert head_paths(holder, env) == {ROW, OTHER_ROW}
