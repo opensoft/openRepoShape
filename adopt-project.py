@@ -242,6 +242,7 @@ from repo_shape import (  # noqa: E402
     parse_yaml, redacted, remote_is_a_path, remote_key, remote_local_path,
     shown_path, spelled as spelled_as_git_out, tree_digest,
 )
+from repo_shape import DEFAULT_IGNORABLE, code_point_escaped  # noqa: E402
 from shape_materialize import (  # noqa: E402
     PLACEHOLDER_RE, SHAPE_REPOSITORY, SYMLINK_HOPS,
     TEMPLATED, TOO_MANY_SYMLINKS, CommandFailed, Materialized,
@@ -3445,8 +3446,15 @@ def _shown(path: str) -> str:
     ENDS IN A SPACE, which reads as nothing: `git commit` strips it from
     the end of each line of the split commit's message, which lists names
     `_shown`, so `trail.md ` was listed as `trail.md`, and `plan`'s table
-    pads `trail.md ` and `trail.md` to the same row."""
-    if (path.isprintable() and not path.endswith(" ")
+    pads `trail.md ` and `trail.md` to the same row.
+
+    AND SO IS ONE THAT HOLDS A DEFAULT-IGNORABLE CHARACTER (#1128), which a
+    terminal draws as nothing (`DEFAULT_IGNORABLE`): `str.isprintable`
+    passes 267 of them, among them U+034F, the variation selectors and the
+    Hangul filler U+3164, so the branch `ma<U+034F>in` printed as `main`.
+    It is spelled `` `ma\\u034fin` `` now."""
+    if (path.isprintable() and not DEFAULT_IGNORABLE.search(path)
+            and not path.endswith(" ")
             and not (path.startswith("`") and path.endswith("`"))):
         return path
     return _spelled(path)
@@ -3465,9 +3473,15 @@ def _spelled_character(char: str) -> str:
     U+2028, and `\\udc85` for the byte 0x85, which `Source.tree` keeps as
     the surrogate U+DC00 plus the byte -- except a backtick, which the plan
     holds as it is and `_spelled` wraps a name in: `SPELLED_BACKTICK`, the
-    escape the plan's reader takes for one (#900)."""
+    escape the plan's reader takes for one (#900); and a default-ignorable
+    character (`DEFAULT_IGNORABLE`, #1128), which a terminal draws as
+    nothing: its code-point escape, `\\u034f` for U+034F, which the plan's
+    reader takes for that character, where the plan holds one
+    `str.isprintable` passes as it is."""
     if char == "`":
         return SPELLED_BACKTICK
+    if DEFAULT_IGNORABLE.match(char):
+        return code_point_escaped(char)
     return double_quoted(char)[1:-1]
 
 

@@ -467,11 +467,60 @@ def _escaped(char: str) -> str:
         return named
     if char.isprintable():
         return char
+    return code_point_escaped(char)
+
+
+def code_point_escaped(char: str) -> str:
+    """`char` as the shortest of YAML's code-point escapes that holds it
+    (`CODE_POINT_ESCAPES`), in lowercase hex: `\\x85`, `\\u034f`,
+    `\\U000e0100`. Python's `repr` writes the same escape for a character
+    it does not print."""
     code = ord(char)
     letter, digits = next((letter, digits)
                           for letter, digits in CODE_POINT_ESCAPES.items()
                           if code < 16 ** digits)
     return f"\\{letter}{code:0{digits}x}"
+
+
+#: UNICODE'S DEFAULT_IGNORABLE_CODE_POINT, the characters a terminal draws
+#: as nothing (#1128), as `(low, high)` code points, both ends in: the 27
+#: lines of `DerivedCoreProperties.txt` that list the property, with the
+#: lines that touch joined, 4174 code points, the same in Unicode 14.0.0,
+#: 16.0.0 and 17.0.0
+#: (https://www.unicode.org/Public/16.0.0/ucd/DerivedCoreProperties.txt).
+#: Most are format characters and unassigned code points, which
+#: `str.isprintable` refuses; 267 it passes: 263 combining marks (U+034F,
+#: U+17B4 and U+17B5, U+180B to U+180D, U+180F, and the variation
+#: selectors U+FE00 to U+FE0F and U+E0100 to U+E01EF) and the four Hangul
+#: fillers U+115F, U+1160, U+3164 and U+FFA0. Git takes each in a branch
+#: or a path, and printed as it is, `ma<U+034F>in` reads as `main`.
+#:
+#: WRITTEN HERE, NOT ASKED OF `unicodedata`, which has no such property and
+#: whose categories move with the interpreter: CI runs Python 3.14 (Unicode
+#: 16.0.0) and the bench 3.12 (15.0.0), and a rule read from them would
+#: spell a name on one and print it as it is on the other.
+DEFAULT_IGNORABLE_RANGES = (
+    (0x00AD, 0x00AD), (0x034F, 0x034F), (0x061C, 0x061C),
+    (0x115F, 0x1160), (0x17B4, 0x17B5), (0x180B, 0x180F),
+    (0x200B, 0x200F), (0x202A, 0x202E), (0x2060, 0x206F),
+    (0x3164, 0x3164), (0xFE00, 0xFE0F), (0xFEFF, 0xFEFF),
+    (0xFFA0, 0xFFA0), (0xFFF0, 0xFFF8), (0x1BCA0, 0x1BCA3),
+    (0x1D173, 0x1D17A), (0xE0000, 0xE0FFF),
+)
+#: One character of `DEFAULT_IGNORABLE_RANGES`, as a pattern.
+DEFAULT_IGNORABLE = re.compile("[" + "".join(
+    f"\\U{low:08x}-\\U{high:08x}" for low, high in DEFAULT_IGNORABLE_RANGES)
+    + "]")
+
+
+def visible_repr(value) -> str:
+    """`repr(str(value))`, with each default-ignorable character
+    (`DEFAULT_IGNORABLE`) written as its code-point escape (#1128). `repr`
+    escapes the ones `str.isprintable` refuses, U+200B as `\\u200b`, and
+    wrote U+034F and U+3164 as they are, so `'ma<U+034F>in'` read as
+    `'main'`. Every other character is as `repr` writes it."""
+    return DEFAULT_IGNORABLE.sub(lambda found: code_point_escaped(found[0]),
+                                 repr(str(value)))
 
 
 def _escape_at(body: str, index: int) -> tuple[str, int] | None:
@@ -2636,13 +2685,17 @@ def checked_value(what: str, value, pattern: re.Pattern = SAFE_ARG_RE) -> str:
     refusing those would refuse the platform rather than the threat. Whichever
     pattern is passed, a leading `-` and a value that is nothing but
     whitespace are refused here, before it is consulted.
+
+    The refusal spells the value as `visible_repr` does (#1128): `repr`
+    printed U+034F and U+3164 as they are, so the refusal of
+    `ma<U+034F>in` said `'main'`.
     """
     text = str(value)
     if text.startswith("-") or not text.strip() or not pattern.fullmatch(text):
         raise Refusal(
             "unsafe-value",
-            f"{what} is {text!r}, which is not a value this tool will put on "
-            "a `git` or `gh` command line",
+            f"{what} is {visible_repr(text)}, which is not a value this tool "
+            "will put on a `git` or `gh` command line",
             "Remediation: a leading `-` is refused because git reads its own "
             "arguments (`--upload-pack=…` is a command, not a branch); the "
             f"rest must match {pattern.pattern}.")
