@@ -4324,7 +4324,7 @@ def pin_values_unfetched(args, *, reader: str,
     that serves an object by id as a lazy fetch asks for one; with no
     commit named, the refetch fetched only what the clone's branches hold,
     and a `blob:none` clone of `main` pinned on another branch stayed
-    `pin-source-unreadable` after it (r1223 on #1223)."""
+    `pin-source-unreadable` after it (found in review of #1223)."""
     try:
         with lazy_fetch_off():
             return declared_pin_values(args)
