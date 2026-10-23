@@ -62,7 +62,7 @@ from types import SimpleNamespace
 
 import pytest
 
-from conftest import (ADOPT, REPO, appended_to_command_scope,
+from conftest import (ADOPT, REPO, WINDOWS_SKIP, appended_to_command_scope,
                       clear_ambient_pin_sources, cloned_just_pushed, git,
                       make_source_repo, run_script, write_plan)
 
@@ -2101,14 +2101,44 @@ def test_a_ref_probe_in_a_work_directory_it_cannot_write_gives_no_note(
     assert probe.notes() == []
 
 
+def refusing_the_ref_probe(base: Path) -> dict:
+    """The environment of a git that will not make the ref probe's
+    repository: a stub first on PATH fails each `git init` of a
+    `refs-probe-*` directory as `GIT_DEFAULT_HASH=bogus` fails it
+    (`UNKNOWN_HASH`, exit 128), and hands any other command to the real
+    git."""
+    stubs = base / "ref-probe-stubs"
+    stubs.mkdir()
+    stub = stubs / "git"
+    stub.write_bytes("\n".join([
+        "#!/bin/sh",
+        'for arg in "$@"; do',
+        '  [ "$arg" = init ] || continue',
+        '  for word in "$@"; do',
+        '    case "$word" in */refs-probe-*) ;; *) continue ;; esac',
+        f'    echo "{UNKNOWN_HASH}" >&2',
+        "    exit 128",
+        "  done",
+        "done",
+        'exec "$REAL_GIT" "$@"', ""]).encode("ascii"))
+    stub.chmod(0o755)
+    return {"PATH": str(stubs) + os.pathsep + os.environ["PATH"],
+            "REAL_GIT": shutil.which("git")}
+
+
+@WINDOWS_SKIP  # a `#!` stub named `git` first on PATH
 def test_check_says_where_git_would_not_make_the_ref_probe(
         links_as_links, tmp_path, monkeypatch):
-    """`GIT_DEFAULT_HASH=bogus` fails the ref probe's `git init`, and not
-    `check`'s throwaway repositories, which name the source's format:
-    `check` passes a link to `.git/HEAD`, as git's defaults hold it, and
-    says why it took them."""
+    """A git that will not make the ref probe's repository, and makes every
+    other: `check` passes a link to `.git/HEAD`, as git's defaults hold it,
+    and says why it took them, in git's words. The probe's `git init` is
+    failed by a stub, as `GIT_DEFAULT_HASH=bogus` failed it here before
+    #1083: that variable now stops the split's own `git clone` of the
+    source too, which `check` makes first and names `adopt-git-unasked`,
+    so it would no longer reach the probe (r1119b's MUST-2)."""
     _, plan = planned(tmp_path, {}, {CLAUDE: GIT_HEAD}, {CLAUDE: ROOT})
-    monkeypatch.setenv("GIT_DEFAULT_HASH", "bogus")
+    for name, value in refusing_the_ref_probe(tmp_path).items():
+        monkeypatch.setenv(name, value)
     checked = check(plan)
     assert checked.returncode == 0, checked.stderr + checked.stdout
     assert NO_REF_PROBE_NOTE in checked.stdout, checked.stdout
