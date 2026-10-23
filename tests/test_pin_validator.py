@@ -123,6 +123,19 @@ def test_a_commit_that_is_not_40_hex_refuses(project):
     assert "pin-tag-only" in result.stderr
 
 
+def test_a_commit_that_ends_in_a_line_break_refuses(project):
+    """`$` matched just before a trailing line feed (#1017), so a `commit:`
+    read as the 40 hex and a line feed (the double-quoted `\\n`, or a block
+    scalar) passed as 40 hex, and the refusal named the commit as one the
+    leg's object store lacks (`pin-commit-unresolvable`)."""
+    commit = git("rev-parse", "HEAD:spec", cwd=project).stdout.strip()
+    edit_pin(project, "spec-pin.yaml", f'commit: "{commit}"',
+             f'commit: "{commit}\\n"')
+    result = validate(project)
+    assert result.returncode == 2  # not 40 hex: a refusal, not a finding
+    assert "REFUSED pin-tag-only: " in result.stderr
+
+
 # --- drift case 2: the digest no longer describes the pinned bytes ----------
 
 def test_a_digest_that_does_not_recompute_is_a_finding(project):
@@ -132,6 +145,19 @@ def test_a_digest_that_does_not_recompute_is_a_finding(project):
     result = validate(project)
     assert result.returncode == 1
     assert "pin-digest-mismatch" in result.stderr
+
+
+def test_a_digest_that_ends_in_a_line_break_is_malformed(project):
+    """The same `$` (#1017): a `tree_sha256:` of the 64 hex and a line feed
+    was a digest to recompute and compare, `pin-digest-mismatch`, where it is
+    not 64 hex."""
+    pin = (project / "contracts" / "spec-pin.yaml").read_text()
+    recorded = pin.split("tree_sha256: \"")[1].split("\"")[0]
+    edit_pin(project, "spec-pin.yaml", f'tree_sha256: "{recorded}"',
+             f'tree_sha256: "{recorded}\\n"')
+    result = validate(project)
+    assert result.returncode == 1
+    assert "pin-digest-malformed" in result.stderr
 
 
 def test_an_unstated_digest_definition_is_a_finding(project):
@@ -268,6 +294,19 @@ def test_a_missing_shape_pin_refuses(project):
     result = validate(project)
     assert result.returncode == 2
     assert "shape-pin-missing" in result.stderr
+
+
+def test_a_shape_pin_commit_that_ends_in_a_line_break_is_a_finding(project):
+    """The same `$` (#1017), in the pin of the shape itself: its `commit:`
+    was 40 hex, and the only finding was that `project.yaml` names another
+    string (`shape-pin-manifest-disagree`)."""
+    pin = (project / "contracts" / "shape-pin.yaml").read_text()
+    commit = pin.split("commit: \"")[1].split("\"")[0]
+    edit_pin(project, "shape-pin.yaml", f'commit: "{commit}"',
+             f'commit: "{commit}\\n"')
+    result = validate(project)
+    assert result.returncode == 1
+    assert "FINDING shape-pin-commit: " in result.stderr
 
 
 def test_a_pin_path_that_disagrees_with_the_manifest_is_a_finding(project):

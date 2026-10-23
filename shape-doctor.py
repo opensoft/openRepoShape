@@ -3461,17 +3461,54 @@ def cannot_be_listed(named: str, exc: OSError) -> str:
 
 
 #: The key of a leg's or a member's `--json` entry that holds the gate's line
-#: for a mount this user cannot reach (#430), beside a leg's `cannot_be_read`,
-#: which is its PIN's (#847).
+#: for a mount this user cannot reach (#430), or whose git directory it
+#: cannot read (#1174), beside a leg's `cannot_be_read`, which is its PIN's
+#: (#847).
 MOUNT_UNREAD = "mount_cannot_be_read"
 
 
-def mount_read(root: Path, rel: str) -> tuple:
+def git_dir_of(dotgit: Path) -> Path | None:
+    """The git directory of a mount whose `.git` is `dotgit`, found as
+    `validate-pins.py`'s `_leg_git_dir` finds it (#968, #1174): `dotgit`
+    itself where it is no regular file (a checkout's own directory); the
+    directory a gitfile's `gitdir: ` line names, joined to the gitfile's own
+    directory as git joins it, its `..` left for the system to follow; and
+    None where the gitfile names none, which is left to git, as the gate
+    leaves it. Raises the `OSError` of a `stat` or a read the operating
+    system refused."""
+    if not is_a(dotgit, stat.S_ISREG):
+        return dotgit
+    data = dotgit.read_bytes()
+    if not data.startswith(b"gitdir: "):
+        return None
+    return dotgit.parent / os.fsdecode(data[len(b"gitdir: "):].rstrip(b"\r\n"))
+
+
+def git_dir_named(root: Path, rel: str, gitdir: Path) -> str:
+    """`gitdir` as the gate names it (`_named`, #968): normalized, from the
+    root and POSIX (`.git/modules/spec`), or whole where it is not under the
+    root. Where it is not under the mount at `rel`, the mount's path goes
+    first (`spec: .git/modules/spec`), so the line of every row that reads
+    the mount starts with that mount, as `leg_shape_summary`,
+    `leg_audit_summary` and `member_problem` print it (#1174)."""
+    path = Path(os.path.normpath(gitdir))
+    try:
+        named = path.relative_to(root).as_posix()
+    except ValueError:
+        named = str(path)
+    mount = root / rel
+    if path == mount or mount in path.parents:
+        return named
+    return f"{rel}: {named}"
+
+
+def mount_read(root: Path, rel: str, git_dir: bool = True) -> tuple:
     """`(populated, own_git, refused)` for the leg or member mounted at `rel`:
     whether a directory with anything in it is there, whether it holds a
     `.git` of its own, and None, or `(the gate's line, the OSError, whether it
     was the listing)` where the operating system refused the mount's `stat`,
-    its listing or its `.git`'s `stat` (#430).
+    its listing or its `.git`'s `stat` (#430), or a read of its git
+    directory (#1174).
 
     ONE QUESTION FOR THE FOUR ROWS THAT READ A MOUNT -- `legs`, `leg shape
     files`, `placement` and `members` -- each of which asked `mount.is_dir()
@@ -3492,6 +3529,29 @@ def mount_read(root: Path, rel: str) -> tuple:
     is asked only of a mount with something in it, which is the answer
     `(mount / ".git").exists()` gave an empty, absent or non-folder mount. A
     listing that fails because nothing is there any more is nothing there.
+
+    ITS GIT DIRECTORY IS ASKED AS THE GATE ASKS IT (#1174, the gate's
+    `_refuse_an_unreadable_git_dir`, #968): the `.git` itself where it is no
+    regular file, else the directory its gitfile's `gitdir: ` line names
+    (`git_dir_of`), and then the `stat` of that directory's `HEAD`. Git run
+    in a mount whose git directory this user cannot search failed, so the
+    `legs` and `members` rows read no HEAD and counted a leg or a member at
+    its pin as one off it, and `placement` said "it is not a git
+    repository"; and a `.git` DIRECTORY this user cannot search was passed
+    over by git, which read the ROOT's HEAD as the leg's and named a
+    checkout over it. A refused read of the gitfile is `<rel>/.git: cannot
+    be read (<reason>)`, and a refused `stat` of the `HEAD` names the git
+    directory as the gate names it (`git_dir_named`): `<rel>/.git`, or
+    `<rel>: .git/modules/<rel>` for one outside the mount. A gitfile that
+    names no directory, or a git directory with no `HEAD`, is not a read
+    this user was refused: it is left to git, which answers for it as it
+    always did.
+
+    `git_dir=False` ASKS NO GIT DIRECTORY, for the `leg shape files` row,
+    which compares a leg's files on disk and runs no git: a git directory
+    this user cannot search keeps no file in the mount from being read, so
+    that row compares them as it always did, and the `legs` row names the
+    directory and gives its advice (#1174).
     """
     mount = root / rel
     try:
@@ -3507,11 +3567,18 @@ def mount_read(root: Path, rel: str) -> tuple:
         return False, False, (cannot_be_listed(rel, exc), exc, True)
     if not populated:
         return False, False, None
+    dotgit = mount / ".git"
+    named = (Path(rel) / ".git").as_posix()
     try:
-        return True, is_a(mount / ".git", lambda _mode: True), None
+        if not is_a(dotgit, lambda _mode: True):
+            return True, False, None
+        gitdir = git_dir_of(dotgit) if git_dir else None
+        if gitdir is not None:
+            named = git_dir_named(root, rel, gitdir)
+            is_a(gitdir / "HEAD", lambda _mode: True)
     except OSError as exc:
-        return True, False, (cannot_be_read((Path(rel) / ".git").as_posix(),
-                                            exc), exc, False)
+        return True, False, (cannot_be_read(named, exc), exc, False)
+    return True, True, None
 
 
 def mount_unread_said(line: str) -> str:
@@ -7705,8 +7772,9 @@ def copy_command(source, target, platform: str | None = None) -> str:
 LABEL_LEG_SHAPE_FILES = "leg shape files"
 
 
-def shape_file_state(here: Path, there: Path, name: str) -> str:
-    """What ONE leg shape file is, against the template's copy of it.
+def shape_file_state(here: Path, there: Path, name: str) -> tuple:
+    """`(what ONE leg shape file is, against the template's copy of it, the
+    `OSError` of a read the operating system refused or None)`.
 
     The five answers this returns are the whole vocabulary of the row above,
     and they are five because a byte comparison is only meaningful for two of
@@ -7725,31 +7793,36 @@ def shape_file_state(here: Path, there: Path, name: str) -> str:
     `stat` or read the operating system refuses (#430). It was `absent` on
     Python 3.14, with a `cp` of the template over a file that is there, and
     up to 3.13 the row `could not be run`. `there` is the standard's own copy.
+
+    ITS ERROR IS KEPT BESIDE IT (#1175): the words carry only the reason, and
+    the row's `why` is the gate's advice for the cause (`cannot_read_why`),
+    which a permission and an I/O error are told apart by.
     """
     try:
         if not is_a(here, stat.S_ISREG):
-            return "absent"
+            return "absent", None
     except OSError as exc:
-        return f"cannot be read ({os_reason(exc)})"
+        return f"cannot be read ({os_reason(exc)})", exc
     if name in LEG_RENDERED:
-        return "rendered"
+        return "rendered", None
     if not there.is_file():
-        return "present (the template has none)"
+        return "present (the template has none)", None
     try:
         mine = here.read_bytes()
     except OSError as exc:
-        return f"cannot be read ({os_reason(exc)})"
+        return f"cannot be read ({os_reason(exc)})", exc
     if mine == there.read_bytes():
-        return "identical"
-    return "differs"
+        return "identical", None
+    return "differs", None
 
 
 def leg_shape_comparison(ctx: Context, role: str, rel: str) -> tuple:
     """ONE leg's shape files, and the ones that are not there at all.
 
-    Returns the `--json` entry for the leg and the `(role, leg, file)` triples
-    the row names as missing, so that the caller adds them up rather than
-    being handed a half-built dictionary to finish.
+    Returns the `--json` entry for the leg, the `(role, leg, file)` triples
+    the row names as missing and the `OSError` of each file this user cannot
+    read (#1175), so that the caller adds them up rather than being handed a
+    half-built dictionary to finish.
 
     EVERY EARLY RETURN IS A LEG THERE IS NOTHING TO COMPARE, and neither of
     them is a fault of the repository's: a leg nobody has bootstrapped has no
@@ -7758,27 +7831,34 @@ def leg_shape_comparison(ctx: Context, role: str, rel: str) -> tuple:
     which they are, in the `state` the row prints. A leg this user cannot
     reach is a third, and its `state` is the gate's line for it, kept under
     `mount_cannot_be_read` as the `legs` row keeps it (`mount_read`, #430).
+    A leg whose git directory this user cannot read is not: no file here is
+    read through git, so its files are compared (#1174).
 
     Split out of `check_leg_shape_files` for #134.
     """
     mount = ctx.root / rel
     template = ctx.shape / "templates" / f"{role}-root"
-    populated, _own_git, unread = mount_read(ctx.root, rel)
+    populated, _own_git, unread = mount_read(ctx.root, rel, git_dir=False)
     if unread is not None:
-        return {"role": role, "state": unread[0], MOUNT_UNREAD: unread[0]}, []
+        return ({"role": role, "state": unread[0], MOUNT_UNREAD: unread[0]},
+                [], [])
     if not populated:
-        return {"role": role, "state": "not populated"}, []
+        return {"role": role, "state": "not populated"}, [], []
     if not template.is_dir():
         return {"role": role,
-                "state": f"no templates/{role}-root/ to compare against"}, []
+                "state": f"no templates/{role}-root/ to compare against"}, [], []
     files: dict[str, str] = {}
     absent: list[tuple[str, str, str]] = []
+    refused: list[OSError] = []
     for name in LEG_SHAPE_FILES:
-        state = shape_file_state(mount / name, template / name, name)
+        state, exc = shape_file_state(mount / name, template / name, name)
         files[name] = state
         if state == "absent":
             absent.append((role, rel, name))
-    return {"role": role, "state": "compared", "files": files}, absent
+        if exc is not None:
+            refused.append(exc)
+    return ({"role": role, "state": "compared", "files": files}, absent,
+            refused)
 
 
 def leg_shape_summary(rel: str, entry: dict) -> str:
@@ -7859,6 +7939,15 @@ def check_leg_shape_files(ctx: Context) -> Row:
     is a `note`, because what is missing is a read, the `legs` row asserts
     the mount, and "compared" is not a claim to make about a file nobody
     read. It offers no copy: the file is there.
+
+    A FILE THIS USER CANNOT READ IS TOLD THE CURE (#1175): the note's `why`
+    is the gate's advice for the cause (`cannot_read_why`), as every other
+    path this doctor cannot read is told it, and beside a missing file's
+    copy it follows what that line's `why` says. A mount is not: the `legs`
+    row names it and gives its advice. The NEXT stays None and the row stays
+    a note, so the verdict is what it was: no leg file gates anything, so a
+    file nobody could read cannot change it, and the advice ends by saying
+    to run this doctor again.
     """
     needs = "there are no legs to compare"
     waiting = (waiting_row(ctx, "leg-shape-files", LABEL_LEG_SHAPE_FILES,
@@ -7873,15 +7962,19 @@ def check_leg_shape_files(ctx: Context) -> Row:
                    "no legs to compare", None, {"legs": []})
     per_leg: dict[str, dict] = {}
     missing: list[tuple[str, str, str]] = []
+    #: The `OSError` of each leg file this user cannot read (#1175).
+    refused: list[OSError] = []
     for leg in legs:
         role = str(leg.get("role") or "?")
         rel = str(leg.get("path") or role)
-        entry, absent = leg_shape_comparison(ctx, role, rel)
+        entry, absent, unread_files = leg_shape_comparison(ctx, role, rel)
         per_leg[rel] = entry
         missing.extend(absent)
+        refused.extend(unread_files)
     detail = {"legs": per_leg, "compared": list(LEG_SHAPE_FILES)}
     summary = "; ".join(leg_shape_summary(rel, entry)
                         for rel, entry in per_leg.items())
+    advice = cannot_read_why(refused) if refused else None
     if missing:
         named = ", ".join(f"{leg}/{file}" for _, leg, file in missing)
         # `note`, NOT `FINDING`. This is the row that printed `INVALID`
@@ -7893,14 +7986,14 @@ def check_leg_shape_files(ctx: Context) -> Row:
         # rule this standard never made. The difference is worth a reader's
         # eye and is not a verdict.
         fix, why = missing_shape_file_fix(ctx, missing)
+        # A file this user cannot read beside it: its advice follows (#1175).
+        why = ". ".join(said for said in (why, advice) if said) or None
         return Row("leg-shape-files", LABEL_LEG_SHAPE_FILES, NOTE,
                    f"{summary}  (missing: {named})", fix, detail, why=why)
-    unread = any(MOUNT_UNREAD in entry
-                 or any(state.startswith("cannot be read")
-                        for state in (entry.get("files") or {}).values())
-                 for entry in per_leg.values())
+    unread = bool(refused) or any(MOUNT_UNREAD in entry
+                                  for entry in per_leg.values())
     return Row("leg-shape-files", LABEL_LEG_SHAPE_FILES,
-               NOTE if unread else OK, summary, None, detail)
+               NOTE if unread else OK, summary, None, detail, why=advice)
 
 
 # ---------------------------------------------------------------------------
