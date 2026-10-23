@@ -966,14 +966,25 @@ def at_or_under(path: str, top: str) -> bool:
     return path == top or path.startswith(top + "/")
 
 
-def an_assembly(base: Path, paths: tuple[str, ...]) -> tuple[Path, dict]:
-    """`(assembly, blobs)`: `a_source` whose commit gains `paths`, each with
-    a blob of its own, cloned into `base/work` as `_commit_the_split` clones
-    it, with no template and the split branch checked out at that commit,
-    beside the two legs; `blobs` holds each path of that commit's tree and
-    its blob."""
+def z_rows(repository: Path, *args: str) -> list[str]:
+    """The rows `git <args>` prints in `repository`, each ended by a NUL,
+    decoded as `_git_path` decodes a path: a byte that is not UTF-8 kept as
+    a surrogate, which `git`'s text would refuse."""
+    raw = subprocess.run(["git", *args], cwd=str(repository),
+                         capture_output=True, check=True).stdout
+    return [row.decode("utf-8", "surrogateescape")
+            for row in raw.split(b"\0") if row]
+
+
+def an_assembly(base: Path, paths: tuple[str, ...],
+                add=with_paths) -> tuple[Path, dict]:
+    """`(assembly, blobs)`: `a_source` whose commit gains `paths` by `add`,
+    each with a blob of its own, cloned into `base/work` as
+    `_commit_the_split` clones it, with no template and the split branch
+    checked out at that commit, beside the two legs; `blobs` holds each
+    path of that commit's tree and its blob."""
     source = a_source(base)
-    with_paths(source, paths, own_blobs=True)
+    add(source, paths, own_blobs=True)
     commit = git("rev-parse", "HEAD", cwd=source).stdout.strip()
     work = base / "work"
     assembly = work / "Northwind"
@@ -981,9 +992,9 @@ def an_assembly(base: Path, paths: tuple[str, ...]) -> tuple[Path, dict]:
     git("checkout", "-q", "-B", SPLIT_BRANCH, commit, cwd=assembly)
     for role, name in LEG_NAMES.items():
         make_source_repo(work / name, tree={"file.txt": role}, edits=())
-    rows = git("ls-tree", "-r", "-z", commit, cwd=source).stdout
     return assembly, {row.split("\t", 1)[1]: row.split()[2]
-                      for row in rows.split("\0") if row}
+                      for row in z_rows(source, "ls-tree", "-r", "-z",
+                                        commit)}
 
 
 def as_one_file(assembly: Path, sets: tuple[tuple[str, ...], ...]) -> None:
@@ -1018,8 +1029,8 @@ def mounted(adopter, base: Path, assembly: Path, moved: dict) -> None:
 def staged(assembly: Path) -> dict:
     """Each path the assembly's index holds but the mount's own, and its
     object."""
-    rows = git("ls-files", "-s", "-z", cwd=assembly).stdout.split("\0")
-    held = {row.split("\t", 1)[1]: row.split()[1] for row in rows if row}
+    held = {row.split("\t", 1)[1]: row.split()[1]
+            for row in z_rows(assembly, "ls-files", "-s", "-z")}
     return {path: oid for path, oid in held.items() if path not in MOUNTED}
 
 
@@ -1119,6 +1130,64 @@ def test_a_path_git_cannot_write_back_is_refused_naming_the_command(
     assert caught.value.args_list == WRITTEN_AS
     assert caught.value.code != 0
     assert "nowhere" in caught.value.output
+
+
+def test_a_forced_git_rm_git_refuses_is_refused_naming_it_with_f(
+        adopter, tmp_path):
+    """`_git_rm` with `forced` of a path the index does not hold: git
+    refuses it, and the mount raises `CommandFailed` naming the command it
+    ran, with `-f`, as `execute` prints it after both legs exist."""
+    assembly, _ = an_assembly(tmp_path, ("A",))
+    with pytest.raises(adopter.CommandFailed) as caught:
+        adopter._git_rm(assembly, "nowhere", True)
+    assert caught.value.args_list == [*FORCED_AS, "nowhere"]
+    assert caught.value.code != 0
+    assert "nowhere" in caught.value.output
+
+
+#: Case twins whose names hold the byte E9, which is not UTF-8, each spelled
+#: as `_git_path` spells it: that byte as the surrogate U+DCE9.
+NOT_UTF8_TWINS = ("caf\udce9A", "caf\udce9a")
+
+
+def with_names_not_utf8(repository: Path, paths: tuple[str, ...],
+                        own_blobs: bool = True) -> None:
+    """`with_paths` for names that are not UTF-8, which it hands `git
+    mktree` as text: each of `paths` goes into the index as the bytes it
+    spells, with a blob of its own holding those bytes and a newline, and
+    the index is committed on `main`."""
+    assert own_blobs
+    for path in paths:
+        name = path.encode("utf-8", "surrogateescape")
+        blob = blob_of(repository, name + b"\n")
+        subprocess.run(["git", "update-index", "--add", "--cacheinfo",
+                        b"100644," + blob.encode("ascii") + b"," + name],
+                       cwd=str(repository), check=True)
+    git("commit", "-qm", "Add paths", cwd=repository)
+
+
+def test_twins_whose_names_are_not_utf_8_keep_their_own_blobs(
+        adopter, tmp_path):
+    """`caf<E9>A` kept in the root and `caf<E9>a` sent to the code leg, the
+    byte E9 not UTF-8, sharing one file: the mount reads the index's names
+    as bytes, and hands the twin it writes back to git as the bytes the
+    tree holds, so the root's index holds that twin with its own blob. A
+    listing decoded, or a name encoded, as strict UTF-8 raises a
+    `UnicodeError` there, after both legs are pushed."""
+    try:
+        os.close(os.open(os.fsencode(tmp_path) + b"/caf\xe9",
+                         os.O_CREAT | os.O_WRONLY, 0o644))
+    except (OSError, ValueError):
+        pytest.skip("this disk, or this platform, takes no file name that "
+                    "is not UTF-8")
+    kept, moved = NOT_UTF8_TWINS
+    assembly, blobs = an_assembly(tmp_path, NOT_UTF8_TWINS,
+                                  with_names_not_utf8)
+    as_one_file(assembly, (NOT_UTF8_TWINS,))
+    mounted(adopter, tmp_path, assembly, {"code": [moved]})
+    assert kept in blobs
+    assert staged(assembly) == {path: oid for path, oid in blobs.items()
+                                if path != moved}
 
 
 needs_filter_repo = pytest.mark.skipif(
