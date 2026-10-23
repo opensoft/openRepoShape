@@ -13,10 +13,10 @@ digest was read, and the run went on to exit 0.
 
 NOW THE PINS ARE READ WITH `GIT_NO_LAZY_FETCH=1` (`pin_values_unfetched`),
 and such a clone is `pin-source-unreadable`, whose refusal says the clone is
-a partial one and names `git fetch --refetch --no-filter <remote>`, which
-makes it whole. Every row counts the clone's `upload-pack` runs with a
-wrapper set as `remote.origin.uploadpack`, so "no fetch" is an answer: the
-controls, which do read, count none either.
+a partial one and names `git fetch --refetch --no-filter <remote> <commit>`,
+which fetches the pinned commit and its trees into it. Every row counts the
+clone's `upload-pack` runs with a wrapper set as `remote.origin.uploadpack`,
+so "no fetch" is an answer: the controls, which do read, count none either.
 
 WHICH GIT HONOURS THE VARIABLE: git 2.45.0 and later, and the security
 releases of 2024-05-14 back to 2.39.4. The rows that need it ask this git
@@ -72,11 +72,19 @@ IGNORED = ("this git ignores GIT_NO_LAZY_FETCH (older than 2.45.0, and no "
 
 PARTIAL = "That clone is a partial clone (`git clone --filter`)"
 NEVER_FETCHES = "the scaffold never fetches into a --pin-source"
-CURE = "`git fetch --refetch --no-filter origin`"
 FETCH_ALL = "(`git fetch --all` first)"
 NOTHING_MADE = ("Remediation: nothing was created, and `--dry-run` refuses "
-                "the same. Make that clone whole, then run the scaffold "
-                "again: in ")
+                "the same. Make that clone hold the pinned commit and its "
+                "trees, then run the scaffold again: in ")
+#: What the cure is said to do, after the command.
+FETCHES = ("which fetches that commit and every object it reaches, with no "
+           "filter (git 2.36 or later)")
+
+
+def cure(commit: str, remote: str = "origin") -> str:
+    """The command the refusal names: a fetch of the pinned commit by its
+    id, from the promisor remote, with no filter."""
+    return f"`git fetch --refetch --no-filter {remote} {commit}`"
 
 
 @pytest.fixture(scope="module")
@@ -191,20 +199,24 @@ def test_a_partial_clone_short_of_the_pin_is_refused_with_no_fetch(
     `blob:none` clone lacking the commit, were each fetched into once and
     the run went on (exit 0). Now: `pin-source-unreadable`, saying the clone
     is a partial one the scaffold never fetches into, and naming the cure,
-    not `git fetch --all`; nothing made, no `upload-pack`, and the clone's
-    objects as they were."""
+    a fetch of the pinned commit by its id, not `git fetch --all` and not a
+    refetch of what the clone's branches hold; nothing made, no
+    `upload-pack`, and the clone's objects as they were."""
     if not honoured:
         pytest.skip(IGNORED)
     clone = clone_of(glass, tmp_path, kind)
     before = objects_of(clone)
-    result = scaffold(tmp_path, clone, pinned(glass, kind), dry_run=dry_run)
+    commit = pinned(glass, kind)
+    result = scaffold(tmp_path, clone, commit, dry_run=dry_run)
     assert result.returncode == 2, result.stdout + result.stderr
     assert "REFUSED pin-source-unreadable: " in result.stderr, result.stderr
     assert f"{PARTIAL}, whose git fetches" in result.stderr, result.stderr
     assert "from its promisor remote (`origin`)" in result.stderr
     assert NEVER_FETCHES in result.stderr, result.stderr
-    assert f"{NOTHING_MADE}{clone.resolve()}, run {CURE}," in result.stderr
+    assert (f"{NOTHING_MADE}{clone.resolve()}, run {cure(commit)}, "
+            f"{FETCHES}. Or point --pin-source") in result.stderr
     assert FETCH_ALL not in result.stderr, result.stderr
+    assert "`git fetch --refetch --no-filter origin`" not in result.stderr
     assert made(tmp_path) == []
     assert upload_packs(tmp_path) == 0, "the scaffold fetched"
     assert objects_of(clone) == before
@@ -223,30 +235,35 @@ def test_a_relative_pin_source_is_named_in_the_cure_by_its_resolved_path(
     assert result.returncode == 2, result.stdout + result.stderr
     assert "REFUSED pin-source-unreadable: " in result.stderr, result.stderr
     assert PARTIAL in result.stderr, result.stderr
-    assert f"{NOTHING_MADE}{clone.resolve()}, run {CURE}," in result.stderr
+    assert (f"{NOTHING_MADE}{clone.resolve()}, run {cure(glass['main'])},"
+            ) in result.stderr
     assert f"{NOTHING_MADE}{clone.name}, run" not in result.stderr
     assert upload_packs(tmp_path) == 0, "the scaffold fetched"
 
 
-def test_the_cure_as_printed_makes_a_tree0_clone_readable(
-        glass, honoured, tmp_path):
+@pytest.mark.parametrize("kind", ["tree0", "lacks-commit"])
+def test_the_cure_as_printed_makes_the_clone_readable(
+        glass, honoured, tmp_path, kind):
     """The command the refusal names, run as printed in the clone, makes it
-    whole: the scaffold run again reads the pin, the origin's own digest,
-    with no fetch of its own."""
+    hold the pinned commit and its trees: a `tree:0` clone holding the
+    commit, and a `blob:none` clone of `main` lacking it, which no branch it
+    fetches holds. The scaffold run again reads the pin, the origin's own
+    digest of that commit, with no fetch of its own."""
     if not honoured:
         pytest.skip(IGNORED)
-    clone = clone_of(glass, tmp_path, "tree0")
-    refused = scaffold(tmp_path, clone, glass["main"], dry_run=True)
-    cure = re.search(r"run `(git fetch [^`]+)`", refused.stderr)
-    assert cure, refused.stderr
-    subprocess.run(shlex.split(cure.group(1)), cwd=str(clone), check=True,
+    clone = clone_of(glass, tmp_path, kind)
+    commit = pinned(glass, kind)
+    refused = scaffold(tmp_path, clone, commit, dry_run=True)
+    printed = re.search(r"run `(git fetch [^`]+)`", refused.stderr)
+    assert printed, refused.stderr
+    subprocess.run(shlex.split(printed.group(1)), cwd=str(clone), check=True,
                    capture_output=True)
     cured = upload_packs(tmp_path)
     assert cured >= 1
-    result = scaffold(tmp_path, clone, glass["main"], dry_run=False)
+    result = scaffold(tmp_path, clone, commit, dry_run=False)
     assert result.returncode == 0, result.stdout + result.stderr
-    assert f'tree_sha256: "{glass["digest"]}"' in (
-        tmp_path / "work" / PIN_FILE).read_text(encoding="utf-8")
+    assert (f'tree_sha256: "{tree_digest(glass["origin"], commit)}"'
+            ) in (tmp_path / "work" / PIN_FILE).read_text(encoding="utf-8")
     assert upload_packs(tmp_path) == cured, "the scaffold fetched"
 
 
@@ -343,11 +360,11 @@ def test_each_promisor_remote_is_named_with_its_own_cure(
     assert ("from its promisor remote (`origin`, `second`) on any read that "
             "needs it, and the reader never fetches into a --pin-source"
             ) in refusal.detail
-    assert str(refusal).count("Remediation: Nothing was made. Make that "
-                              "clone whole, then run the reader again: in "
-                              f"{clone.resolve()}, run {CURE}, then `git "
-                              "fetch --refetch --no-filter second`, which "
-                              "fetches every object again") == 1
+    assert str(refusal).count(
+        "Remediation: Nothing was made. Make that clone hold the pinned "
+        "commit and its trees, then run the reader again: in "
+        f"{clone.resolve()}, run {cure(glass['main'])}, then "
+        f"{cure(glass['main'], 'second')}, {FETCHES}.") == 1
     assert isinstance(refusal.__cause__, shape_materialize.Refusal)
     assert refusal.__cause__.code == "pin-source-unreadable"
     assert refusal.detail.startswith(refusal.__cause__.detail + ". ")
@@ -422,21 +439,25 @@ def test_promisor_remotes_of_a_folder_that_is_not_there_is_none(tmp_path):
     assert shape_materialize.promisor_remotes(tmp_path / "missing") == []
 
 
+#: A pin's commit, as `refetch_command` is handed one.
+COMMIT = "0123456789abcdef0123456789abcdef01234567"
+#: The step in words, for a remote whose name is not pasted.
+IN_WORDS = f"a `git fetch --refetch --no-filter` of {COMMIT} from the remote "
+
+
 @pytest.mark.parametrize("remote, expected", [
-    ("origin", "`git fetch --refetch --no-filter origin`"),
-    ("my remote", "`git fetch --refetch --no-filter 'my remote'`"),
-    ("-x", "a `git fetch --refetch --no-filter` from the remote named `-x`"),
-    ("a`b", "a `git fetch --refetch --no-filter` from the remote named "
-            + repr("a`b")),
-    ("a\x1bb", "a `git fetch --refetch --no-filter` from the remote named "
-               + repr("a\x1bb")),
+    ("origin", f"`git fetch --refetch --no-filter origin {COMMIT}`"),
+    ("my remote", f"`git fetch --refetch --no-filter 'my remote' {COMMIT}`"),
+    ("-x", f"{IN_WORDS}named `-x`"),
+    ("a`b", f"{IN_WORDS}named " + repr("a`b")),
+    ("a\x1bb", f"{IN_WORDS}named " + repr("a\x1bb")),
 ], ids=["plain", "spaced", "an-option", "a-backtick", "unprintable"])
 def test_refetch_command_is_one_to_paste_or_the_step_in_words(
         remote, expected):
-    """A name that pastes safely is quoted into the command; an option, a
-    backtick or a character that does not print is named, and the step said
-    in words."""
-    assert shape_materialize.refetch_command(remote) == expected
+    """A name that pastes safely is quoted into the command, the pinned
+    commit after it; an option, a backtick or a character that does not
+    print is named, and the step said in words, the commit in them."""
+    assert shape_materialize.refetch_command(remote, COMMIT) == expected
 
 
 @pytest.mark.parametrize("remote, expected", [

@@ -3648,14 +3648,18 @@ def pin_digest_from_source(source: Path, commit: str, repository: str) -> str:
         why = (exc.detail if isinstance(exc, Refusal)
                else exc.strerror or str(exc))
         named = shown_source(source)
-        raise Refusal(
+        refusal = Refusal(
             "pin-source-unreadable",
             f"{named} could not answer for {repository} @ {commit}: "
             f"{why.replace(str(source), named)}",
             "Remediation: point --pin-source at a clone of that repository "
             "that HAS the pinned commit (`git fetch --all` first), or drop "
             "--pin-source and let `gh api` read the forge.",
-        ) from exc
+        )
+        # The commit it could not read, which a partial clone's cure fetches
+        # by its id (`pin_values_unfetched`, #1182).
+        refusal.commit = commit
+        raise refusal from exc
 
 
 def scaffold_link_remedies(chain) -> dict[str, str]:
@@ -4282,15 +4286,18 @@ def _remote_named(remote: str) -> str:
     return repr(remote)
 
 
-def refetch_command(remote: str) -> str:
-    """The command that fetches every object again from `remote`, with no
-    filter, as a person pastes it: the name quoted, where it is printable,
-    holds no backtick and is no option; otherwise the step in words."""
+def refetch_command(remote: str, commit: str) -> str:
+    """The command that fetches `commit` from `remote` by its id, with every
+    object it reaches and no filter, as a person pastes it: the name quoted,
+    where it is printable, holds no backtick and is no option; otherwise the
+    step in words. `commit` is a pin's, 40 hex digits, which pastes as it
+    is."""
     if (remote.isprintable() and "`" not in remote
             and not remote.startswith("-")):
-        return f"`git fetch --refetch --no-filter {shlex.quote(remote)}`"
-    return ("a `git fetch --refetch --no-filter` from the remote named "
-            f"{_remote_named(remote)}")
+        return (f"`git fetch --refetch --no-filter {shlex.quote(remote)} "
+                f"{commit}`")
+    return (f"a `git fetch --refetch --no-filter` of {commit} from the "
+            f"remote named {_remote_named(remote)}")
 
 
 def pin_values_unfetched(args, *, reader: str,
@@ -4308,10 +4315,16 @@ def pin_values_unfetched(args, *, reader: str,
     is no partial one keeps the reader's refusal as it was. Whether it is
     one is read from its config alone, which reads no object.
 
-    THE CURE IS `git fetch --refetch --no-filter`, and not the reader's
-    `git fetch --all`. That one keeps the clone's filter: it fetches a
-    commit the clone lacks, where a branch it fetches holds it, but names no
-    cause for a `tree:0` clone that holds the commit and lacks its trees."""
+    THE CURE IS `git fetch --refetch --no-filter <remote> <commit>`, the
+    commit the reader could not read, and not the reader's `git fetch
+    --all`. That one keeps the clone's filter: it fetches a commit the clone
+    lacks, where a branch it fetches holds it, but names no cause for a
+    `tree:0` clone that holds the commit and lacks its trees. Named by its
+    id, the commit comes with every tree and blob it reaches, from a remote
+    that serves an object by id as a lazy fetch asks for one; with no
+    commit named, the refetch fetched only what the clone's branches hold,
+    and a `blob:none` clone of `main` pinned on another branch stayed
+    `pin-source-unreadable` after it (r1223 on #1223)."""
     try:
         with lazy_fetch_off():
             return declared_pin_values(args)
@@ -4324,6 +4337,8 @@ def pin_values_unfetched(args, *, reader: str,
         remotes = promisor_remotes(clone)
         if not remotes:
             raise
+        cures = ", then ".join(refetch_command(remote, exc.commit)
+                               for remote in remotes)
         raise Refusal(
             exc.code,
             f"{exc.detail}. That clone is a partial clone (`git clone "
@@ -4331,14 +4346,13 @@ def pin_values_unfetched(args, *, reader: str,
             f"promisor remote ({', '.join(map(_remote_named, remotes))}) on "
             f"any read that needs it, and {reader} never fetches into a "
             "--pin-source",
-            f"Remediation: {nothing_made} Make that clone whole, then run "
-            f"{reader} again: in {shown_source(clone)}, run "
-            f"{', then '.join(map(refetch_command, remotes))}, which "
-            "fetches every object again with no filter (git 2.36 or later) "
-            "where a branch it fetches holds the pinned commit. Or point "
-            "--pin-source at a full clone (`git clone` with no `--filter`) "
-            "that has the pinned commit, or drop --pin-source and let `gh "
-            "api` read the forge.") from exc
+            f"Remediation: {nothing_made} Make that clone hold the pinned "
+            f"commit and its trees, then run {reader} again: in "
+            f"{shown_source(clone)}, run {cures}, which fetches that commit "
+            "and every object it reaches, with no filter (git 2.36 or "
+            "later). Or point --pin-source at a full clone (`git clone` "
+            "with no `--filter`) that has the pinned commit, or drop "
+            "--pin-source and let `gh api` read the forge.") from exc
 
 
 def declared_pin_products(args) -> dict[str, None]:
