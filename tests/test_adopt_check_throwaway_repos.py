@@ -1492,7 +1492,9 @@ def test_an_environment_read_that_raises_leaves_no_throwaway(
     throwaway, so that a raise there leaves none in the work directory.
     On bdcf9952 `_resolved` and `_answers` made it first, and on bba168bd
     `_AttributesProbe`, `_stored_as_written` and the rehearsal did (#1136):
-    each left its throwaway behind. (By reading, a
+    each left its throwaway behind. The last two read
+    `_split_checkout_env()`, the others `_inherited_env()`, so both are
+    made to raise. (By reading, a
     `GIT_CONFIG_COUNT` of a superscript two raised in `_inherited_env()`,
     whose `isdigit()` is true and whose `int()` raises; measured, git
     refuses that count itself, `bogus count in GIT_CONFIG_COUNT`, at
@@ -1507,6 +1509,7 @@ def test_an_environment_read_that_raises_leaves_no_throwaway(
         raise RuntimeError("f1119: no environment")
 
     monkeypatch.setattr(adopter, "_inherited_env", unreadable)
+    monkeypatch.setattr(adopter, "_split_checkout_env", unreadable)
     with pytest.raises(RuntimeError, match="f1119: no environment"):
         asked(adopter, opened)
     assert list(work.iterdir()) == []
