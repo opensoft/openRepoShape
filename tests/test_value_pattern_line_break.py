@@ -54,6 +54,11 @@ LEFT AS THEY ARE, AND WHY:
 - `shape_advisory.py`'s `DATE_RE` is followed by `date.fromisoformat`, which
   refused the line feed on main; its row is the pattern's alone.
 
+A NEW READER of `PROJECT_ID_RE` is held to the same rule by
+`test_every_reader_of_the_id_pattern_is_in_the_table`: it asks with
+`fullmatch`, or it is listed in `ID_READERS` with the reason a line feed
+cannot reach it.
+
 No network and no GitHub: the projects and the family are the offline ones
 of `conftest.py` and `test_family.py`, and every `update-shape.py` row is
 refused before the upstream would be cloned.
@@ -61,6 +66,7 @@ refused before the upstream would be cloned.
 
 from __future__ import annotations
 
+import ast
 import re
 from pathlib import Path
 
@@ -136,6 +142,62 @@ def test_every_spelling_of_a_value_pattern_is_in_the_table():
              for name in names
              if pattern_spelled((REPO / path).read_bytes(), name)}
     assert found == {tuple(row.values[:2]) for row in PATTERNS}
+
+
+#: `{(module, method): (calls, why it is safe)}`: every call of a method of
+#: `repo_shape.PROJECT_ID_RE` in a tracked module outside `tests/`. The
+#: pattern keeps its `$`, so `match` takes a trailing line feed and
+#: `fullmatch` does not.
+ID_READERS = {
+    ("templates/assembly-root/scripts/validate-manifest.py", "fullmatch"): (
+        1, "the manifest's `id:`"),
+    ("templates/family-root/scripts/validate-family.py", "fullmatch"): (
+        1, "the family's `id:`"),
+    ("scripts/family.py", "fullmatch"): (
+        1, "a member's `project.yaml` `id:`, as `add` mounts it"),
+    ("scripts/family.py", "match"): (
+        1, "argv `--id`: `checked_value` refuses a line feed after it"),
+    ("scaffold-project.py", "match"): (
+        1, "argv `--id`: `checked_value` refuses a line feed after it"),
+    ("adopt-project.py", "match"): (
+        3, "argv `--id`, as above; and the plan's `id:` and the id derived "
+           "from `legs.assembly`, which a line feed never passes (the id is "
+           "refused by the project's own validate-manifest.py, the "
+           "derived one as `unsafe-value`)"),
+}
+
+
+def id_pattern_calls() -> dict[tuple[str, str], int]:
+    """`{(module, method): calls}` of every call of a method of
+    `PROJECT_ID_RE` (as `PROJECT_ID_RE.x(...)` or as
+    `repo_shape.PROJECT_ID_RE.x(...)`) in a tracked module outside `tests/`,
+    READ and never run."""
+    listed = git("ls-files", "-z", "--", "*.py", cwd=REPO).stdout
+    calls: dict[tuple[str, str], int] = {}
+    for path in listed.split("\0"):
+        if not path or path.startswith("tests/"):
+            continue
+        for node in ast.walk(ast.parse((REPO / path).read_bytes())):
+            if not isinstance(node, ast.Call):
+                continue
+            method = node.func
+            if not isinstance(method, ast.Attribute):
+                continue
+            owner = method.value
+            name = owner.id if isinstance(owner, ast.Name) else getattr(
+                owner, "attr", None)
+            if name == "PROJECT_ID_RE":
+                key = (path, method.attr)
+                calls[key] = calls.get(key, 0) + 1
+    return calls
+
+
+def test_every_reader_of_the_id_pattern_is_in_the_table():
+    """A reader written later that asks `PROJECT_ID_RE` with `match` (or
+    `search`) takes `"atlas\\n"`: it is read with `fullmatch`, or it is in
+    `ID_READERS` with the reason a line feed cannot reach it, or this fails."""
+    expected = {key: calls for key, (calls, _) in ID_READERS.items()}
+    assert id_pattern_calls() == expected
 
 
 @pytest.mark.parametrize("path, name, value", PATTERNS)
