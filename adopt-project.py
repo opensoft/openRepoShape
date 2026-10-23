@@ -6275,9 +6275,10 @@ def _lazy_fetch_off():
     2024-05-14 back to 2.39.4, whose fix for CVE-2024-32465 made
     `promisor-remote.c` read it, as distributions' own builds of those do
     (Ubuntu's 2.43.0-1ubuntu7.1 and later). An older git ignores it, and
-    there `_refuse_a_partial_clone_short` is what keeps the source whole; a
-    partial `--pin-source` short of the pinned commit or its trees is
-    fetched into there, as before #1162."""
+    there `_refuse_a_partial_clone_short` is what keeps the source whole,
+    but for the read `_not_a_whole_clone` makes before it, of the commit a
+    `source.cloned: true` plan names; a partial `--pin-source` short of the
+    pinned commit or its trees is fetched into there, as before #1162."""
     before = os.environ.get(NO_LAZY_FETCH)
     os.environ[NO_LAZY_FETCH] = "1"
     try:
@@ -13045,8 +13046,11 @@ def _grouped_findings(stored: list[str], taken: list[str], copies: list[str],
 #   the plan names included;
 # - `_refuse_a_partial_clone_short`, as soon as the source is opened: a
 #   partial clone that lacks an object its branches or tags reach is
-#   refused before anything reads it, on every git, the gits that ignore
-#   the variable included.
+#   refused before anything else reads it, on every git, the gits that
+#   ignore the variable included. What comes first is `Plan.open_source`'s
+#   `_not_a_whole_clone`, for a `source.cloned: true` plan: it reads the
+#   plan's commit in ANY partial clone, so on a git that ignores the
+#   variable it fetches a commit the clone lacks.
 #
 # NOT `-c protocol.allow=never`: measured, the source's own
 # `protocol.file.allow=always` outranks it, and the lazy fetch ran. NOR AN
@@ -13144,6 +13148,12 @@ def _refetch(remote: str) -> str:
             f"{_spelled(remote)}")
 
 
+def _filter_key(remote: str) -> str:
+    """The config key that makes a later fetch from `remote` filtered, as a
+    person reads it: `_spelled`, as every name here is."""
+    return _spelled(f"remote.{remote}.partialclonefilter")
+
+
 def _refuse_a_partial_clone_short(source: Source) -> None:
     """`source-partial-clone` for a source that is a partial clone
     (`_promisor_remotes`) and lacks an object its branches or tags reach
@@ -13168,7 +13178,14 @@ def _refuse_a_partial_clone_short(source: Source) -> None:
     THE WAY OUT FETCHES, AND IS THE PERSON'S OWN: run in the source, from
     each promisor remote, `git fetch --refetch --no-filter` (git 2.36 or
     later), which leaves it lacking nothing; or give a full clone with
-    `--source`."""
+    `--source`. It leaves `remote.<name>.partialclonefilter` as it was, and
+    a later fetch stays filtered while that is set, so the refusal says so.
+
+    WHERE GIT CANNOT WALK THE REFS, what is lacking is not known, and the
+    refusal says that, not that it lacks something: it names `git fsck`, as
+    `Source.tree` does, which lists each object a repository lacks. The
+    refetch is named too, but it fetches what the remote's refspec names
+    and no more."""
     remotes = _promisor_remotes(source.path)
     if not remotes:
         return
@@ -13177,25 +13194,38 @@ def _refuse_a_partial_clone_short(source: Source) -> None:
         return
     where = shown_path(source.path)
     walk = f"`git {' '.join(LACKING_WALK)}`"
-    short = (f"lacks at least {lacking} object(s) its branches and tags "
-             "reach" if lacking is not None else
-             f"lacks what its branches and tags reach, as far as git can "
-             f"tell: {walk}, which lists what a clone lacks without fetching "
-             f"it, {said}")
+    refetch = ", then ".join(map(_refetch, remotes))
+    later = (f"Later fetches stay filtered while "
+             f"{' or '.join(map(_filter_key, remotes))} is set, so the "
+             "source can lack objects again.")
+    if lacking is None:
+        short = (f"whose branches and tags git could not walk, so what it "
+                 f"lacks is not known: {walk}, which lists what a clone "
+                 f"lacks without fetching it, {said}")
+        remediation = (
+            f"Remediation: run `git fsck` in {where}: it names each object "
+            f"the repository lacks. Restore them, or fetch every object "
+            f"again with {refetch} (git 2.36 or later), or pass a full "
+            "clone (`git clone` with no `--filter`) with --source, and run "
+            f"this command again. {later}")
+    else:
+        short = (f"that lacks at least {lacking} object(s) its branches and "
+                 "tags reach")
+        remediation = (
+            f"Remediation: make the source whole, then run this command "
+            f"again: in {where}, run {refetch}, which fetches every object "
+            "again with no filter (git 2.36 or later). Or pass a full clone "
+            f"(`git clone` with no `--filter`) with --source. {later}")
     raise Refusal(
         SOURCE_PARTIAL_CLONE,
-        f"the source {where} is a partial clone (`git clone --filter`) that "
+        f"the source {where} is a partial clone (`git clone --filter`) "
         f"{short}. Git fetches an object a partial clone lacks from its "
         f"promisor remote ({', '.join(map(_spelled, remotes))}) on any read "
         "that needs it, and `plan`, `check` and `execute` never fetch into "
         "the source: `execute`'s `git filter-repo` reads every branch and "
         "tag, and a partial clone short of one of their blobs failed it "
         "after both leg repositories were made",
-        f"Remediation: make the source whole, then run this command again: "
-        f"in {where}, run "
-        f"{', then '.join(map(_refetch, remotes))}, which fetches every "
-        "object again with no filter (git 2.36 or later). Or pass a full "
-        "clone (`git clone` with no `--filter`) with --source.")
+        remediation)
 
 
 @_lazy_fetch_off()
