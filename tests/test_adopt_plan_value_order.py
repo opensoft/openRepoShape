@@ -50,6 +50,13 @@ to a repository is `unsafe-value` to both, where `execute` said
 `plan-not-the-source`. And a `pins:` ENTRY that is no pin is said as `pins:`
 itself is (`_read_as`): the number 7, not `7`.
 
+AND BEFORE `_work_root`'S OTHER REFUSALS AND A GONE SOURCE (#1179, RV1125b's
+NIT-A). The one row that pinned that position against the work directory
+used a directory `chmod` made unwritable. `_work_root` refuses two more
+things before it makes anything, a `--work-dir` that is a file and one every
+user can write in, and both commands refuse a plan whose source is gone: a
+bad `id:` or `org:` beside any of them is the value's refusal, in both.
+
 Each test runs `check` and then `execute --yes`, both with the same
 `--local-remote-dir`, on one hand-edited plan, as the issue measured, and
 asserts that the directory the legs go in was never made. `execute` stops
@@ -60,14 +67,21 @@ asks the disk whether each leg repository exists.
 
 from __future__ import annotations
 
+import os
 import shutil
+import sys
 from pathlib import Path
 
 import pytest
 
-from conftest import ADOPT, git, make_source_repo, planned, run_script
+from conftest import (ADOPT, REPO, WINDOWS_SKIP, git, make_source_repo,
+                      planned, run_script)
 from test_adopt_pins import ANSWERS, pin_entry
 from test_adopt_root_symlinks import unwritable_work  # noqa: F401 - a fixture
+from test_adopt_template_values import with_line
+
+sys.path.insert(0, str(REPO / "scripts"))
+from repo_shape import double_quoted  # noqa: E402
 
 UTF8 = "utf-8"
 PLAN_FILE = "adoption-plan.yaml"
@@ -527,6 +541,93 @@ def test_the_org_or_the_id_is_named_before_an_unwritable_work_dir(
     assert named_first(executed) == named_first(checked), executed.stderr
     for run in (checked, executed):
         assert "adopt-work-dir-unwritable" not in run.stderr, run.stderr
+
+
+#: What a bad `id:` or `org:` is refused beside what `_work_root` and the
+#: source refuse: none of the three codes is said by either command (#1179).
+NOT_SAID_BESIDE_A_VALUE = ("adopt-work-dir-unwritable",
+                           "adopt-work-dir-shared", "plan-source-gone")
+BAD_ID_OR_ORG = pytest.mark.parametrize(
+    ("edit", "refused"), [(BAD_ID, ID_REFUSED), (BAD_ORG, ORG_REFUSED)],
+    ids=["id", "org"])
+
+
+def named_before_a_refusal(text: str, base: Path, edit: tuple[str, str],
+                           refused: str, control: str,
+                           work: Path | None = None) -> None:
+    """The plan `text` is one both commands refuse, exit 2, with the first
+    line `control` (the control: `check` asks the source and the directory
+    as `execute` does). Edited by `edit`, a bad `id:` or `org:` that
+    `refused` begins, it is refused for that value by both, exit 2, in the
+    same words, and neither says a word of the directory or the source."""
+    for run in both_on(text, base, work):
+        assert run.returncode == 2, run.stdout + run.stderr
+        assert named_first(run) == control, run.stderr
+    checked, executed = both_on(edited(text, edit), base, work)
+    assert checked.returncode == 2, checked.stdout + checked.stderr
+    assert executed.returncode == 2, executed.stdout + executed.stderr
+    assert named_first(checked).startswith(refused), checked.stderr
+    assert named_first(executed) == named_first(checked), executed.stderr
+    for run in (checked, executed):
+        for code in NOT_SAID_BESIDE_A_VALUE:
+            assert code not in run.stderr, run.stderr
+
+
+@needs_filter_repo
+@BAD_ID_OR_ORG
+def test_the_org_or_the_id_is_named_before_a_work_dir_that_is_a_file(
+        answered, tmp_path, edit, refused):
+    """RV1125b's NIT-A (#1179): `_work_root` refuses a `--work-dir` that is
+    a file, `adopt-work-dir-unwritable`, before anything is made, so the
+    two asks sit before it in both commands, as before an unwritable one:
+    a bad `id:` or `org:` beside the file is that value's refusal to each,
+    and the plan unedited beside the same file is the control."""
+    a_file = tmp_path / "a-file"
+    a_file.write_text("mine\n", encoding=UTF8)
+    control = ("REFUSED adopt-work-dir-unwritable: --work-dir "
+               f"`{os.path.realpath(a_file)}` cannot be made: making it a "
+               "directory failed (File exists)")
+    named_before_a_refusal(answered, tmp_path, edit, refused, control, a_file)
+
+
+@needs_filter_repo
+@WINDOWS_SKIP
+@BAD_ID_OR_ORG
+def test_the_org_or_the_id_is_named_before_a_shared_work_dir(
+        answered, tmp_path, edit, refused):
+    """RV1125b's NIT-A (#1179): `_work_root` refuses a `--work-dir` every
+    user can write in, without the sticky bit, `adopt-work-dir-shared`,
+    before anything is made in it, so the two asks sit before it in both
+    commands: a bad `id:` or `org:` beside one is that value's refusal to
+    each, and the plan unedited beside the same directory is the control.
+    The shared test is never asked on Windows."""
+    work = tmp_path / "shared-work"
+    work.mkdir()
+    os.chmod(work, 0o777)
+    control = ("REFUSED adopt-work-dir-shared: --work-dir "
+               f"`{os.path.realpath(work)}` can be written in by every user, "
+               "without the sticky bit, so another user could rename or "
+               "replace what this run makes in it")
+    named_before_a_refusal(answered, tmp_path, edit, refused, control, work)
+
+
+@needs_filter_repo
+@BAD_ID_OR_ORG
+def test_the_org_or_the_id_is_named_before_a_source_that_is_gone(
+        answered, tmp_path, edit, refused):
+    """RV1125b's NIT-A (#1179): both commands refuse a plan whose
+    `source.local_path` names nothing, which `plan` did not clone,
+    `plan-source-gone`, once the source is opened, so the two asks sit
+    before it: a bad `id:` or `org:` beside a gone source is that value's
+    refusal to each, `check` asking it before it opens the source, and the
+    plan unedited beside the same path is the control."""
+    gone = tmp_path / "Gone"
+    text = with_line(answered, f"  local_path: {double_quoted(str(gone))}")
+    control = ("REFUSED plan-source-gone: the plan's `source.local_path`, "
+               f"`{gone}`, names nothing that exists, and the plan does not "
+               "record it as a clone `plan` made (`source.cloned` is not "
+               "`true`), so nothing clones it again")
+    named_before_a_refusal(text, tmp_path, edit, refused, control)
 
 
 @pytest.mark.parametrize(("edit", "refused"),
