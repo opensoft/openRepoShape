@@ -524,7 +524,7 @@ def twins_kept(sets: str, where: str, paths: str, named: str) -> str:
             "case, or one naming in another case a folder above another: "
             f"{named}. A disk that ignores case, as a macOS or Windows disk "
             "does by default, holds each set as one name: a clone made there "
-            "checks out only one path of each set, and `execute` would stop "
+            "checks out only one path of each set, and `execute` could stop "
             "there before any leg exists, at git's `will not add file "
             "alias`, or after both legs are pushed, as `adopt-lost` or at "
             "`git rm` mounting the legs, so `execute` refuses them on every "
@@ -663,7 +663,11 @@ def test_twins_come_before_coverage_and_name_executes_refusal(
 #: own, the plan's answers, the finding, the NOTE)`: r1189's SHOULD 5. A
 #: set of one name whose paths hold one blob in one mode is checked out as
 #: one path holding what each holds, and no path is lost; its own blobs
-#: lose one. A file against a folder is the finding with one blob too.
+#: lose one. A file against a folder is the finding with one blob too. In
+#: the root the NOTE takes only two paths whose names differ only in their
+#: last part (r1189b's SHOULD 1): on a disk that ignores case, folder twins
+#: and three paths of one blob there met git's `will not add file alias`,
+#: and in a leg they verified.
 ONE_BLOB = [
     pytest.param(("A", "a"), False, {"A": ROOT, "a": ROOT}, [],
                  [one_blob_twins("1 set", ROOT_TWINS, "2 paths",
@@ -680,6 +684,23 @@ ONE_BLOB = [
                  [twins_kept("1 set", ROOT_TWINS, "2 paths",
                              "`F/x` and `f`")],
                  [], id="a-folder-and-a-file-with-one-blob"),
+    pytest.param(("D/x", "d/x"), False, {"D/": ROOT, "d/": ROOT},
+                 [twins_kept("1 set", ROOT_TWINS, "2 paths",
+                             "`D/x` and `d/x`")],
+                 [], id="folder-twins-of-one-blob-in-the-root"),
+    pytest.param(("AB", "Ab", "ab"), False,
+                 dict.fromkeys(("AB", "Ab", "ab"), ROOT),
+                 [twins_kept("1 set", ROOT_TWINS, "3 paths",
+                             "`AB`, `Ab` and `ab`")],
+                 [], id="three-of-one-blob-in-the-root"),
+    pytest.param(("D/A", "D/a"), False, {"D/": ROOT}, [],
+                 [one_blob_twins("1 set", ROOT_TWINS, "2 paths",
+                                 "`D/A` and `D/a`")],
+                 id="two-of-one-blob-in-one-folder-of-the-root"),
+    pytest.param(("src/D/x", "src/d/x"), False, {}, [],
+                 [one_blob_twins("1 set", CODE_TWINS, "2 paths",
+                                 "`src/D/x` and `src/d/x`")],
+                 id="folder-twins-of-one-blob-in-the-code-leg"),
 ]
 
 
@@ -750,6 +771,12 @@ ONE_BLOB_ROWS = [
                  [], [one_blob_twins("1 set", ROOT_TWINS, "2 paths",
                                      "`STRASSE` and `straße`")],
                  id="sharp-s-and-ss-of-one-blob"),
+    # Two paths in the root whose names differ in their folder AND their
+    # last part are not the NOTE's shape: their folders are twins too.
+    pytest.param([("D/A", "100644", ONE), ("d/a", "100644", ONE)],
+                 [twins_kept("1 set", ROOT_TWINS, "2 paths",
+                             "`D/A` and `d/a`")],
+                 [], id="two-of-one-blob-in-folders-in-another-case"),
 ]
 
 
