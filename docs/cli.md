@@ -588,9 +588,12 @@ options:
                         clone's top level, or a bare clone's, where a --pin's
                         digest is read. A partial clone (`git clone --filter`)
                         is read where it holds the pinned commit and its
-                        trees; one git could read only by fetching what it
-                        lacks is refused as `pin-source-unreadable`, since
-                        `plan` never fetches into it.
+                        trees. On a git that honours `GIT_NO_LAZY_FETCH` (2.45
+                        or later, or a security release from 2.39.4 on), one
+                        git could read only by fetching what it lacks is
+                        refused as `pin-source-unreadable`, and nothing is
+                        fetched into it; an older git fetches what it lacks
+                        into it.
   --allow-empty-leg {spec,code}
                         record in the plan that this leg having NO path is
                         intended, so it may be SEEDED from the shape's

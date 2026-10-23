@@ -42,8 +42,9 @@ import pytest
 from conftest import ADOPT, FILE_PROTOCOL, git, make_source_repo, run_script
 from repo_shape import tree_digest
 from test_adopt_partial_clone_source import (  # noqa: F401 - fixtures
-    CODE, CURE, IGNORED, REFUSED, SIDE, VARIABLE, Source, adopter, made,
-    no_ambient_variable, planned_once, skip_where_git_ignores_the_variable)
+    CODE, CURE, IGNORED, LATER, REFUSED, SIDE, VARIABLE, Source, adopter,
+    made, no_ambient_variable, planned_once,
+    skip_where_git_ignores_the_variable)
 
 #: The refusal the pin's reader gives a `--pin-source` that cannot answer.
 PIN_CODE = "pin-source-unreadable"
@@ -220,8 +221,9 @@ def test_plan_refuses_a_partial_pin_source_it_could_read_only_by_fetching(
         glass, made, variant):
     """Base: the plan written, after one `upload-pack` run that fetched
     the trees, or the commit, into the pin clone, a promisor pack more.
-    Head: `pin-source-unreadable`, naming the partial clone and the fetch
-    that makes it whole; no plan, nothing fetched. Skipped where this git
+    Head: `pin-source-unreadable`, naming the partial clone, the fetch
+    that makes it whole, and that a later fetch stays filtered, as the
+    source's refusal says; no plan, nothing fetched. Skipped where this git
     ignores the variable, which alone keeps such a read unfetched."""
     source = made("full")
     pin = PinClone(glass, source, variant)
@@ -234,9 +236,29 @@ def test_plan_refuses_a_partial_pin_source_it_could_read_only_by_fetching(
     assert PARTIAL in result.stderr
     assert "`plan` never fetches into a --pin-source" in result.stderr
     assert CURE in result.stderr
+    assert f"{LATER}, so the clone can lack objects again." in result.stderr
     assert FETCH_ALL not in result.stderr
     assert not out.exists()
     assert source.runs() == 0
+    assert pin.store() == pin.before
+
+
+def test_a_partial_source_is_refused_before_a_partial_pin_source_is_read(
+        glass, made):
+    """The order: the `--source` guard comes before `_checked_plan_inputs`
+    reads the pins. A partial `--source` that lacks objects and a `tree:0`
+    `--pin-source` together are refused as `source-partial-clone`, not as
+    `pin-source-unreadable`: no plan, and nothing fetched into either
+    clone, on any git, since the pin clone is never read. With the guard
+    after the pin read, the pin's refusal came first."""
+    source = made("nocheckout")
+    pin = PinClone(glass, source, "tree0")
+    out, result = planned(source, *pin.flags())
+    assert result.returncode == 2, result.stderr + result.stdout
+    assert REFUSED in result.stderr
+    assert PIN_CODE not in result.stderr
+    assert not out.exists()
+    source.untouched()
     assert pin.store() == pin.before
 
 

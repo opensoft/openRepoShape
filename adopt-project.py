@@ -6295,8 +6295,10 @@ def _pins_read_unfetched(args) -> dict[str, dict[str, str]]:
     (#1162). A `--pin-source` that is a partial clone (`_promisor_remotes`)
     and cannot answer for a pin without fetching keeps the reader's own
     `pin-source-unreadable` and its words, and the refusal says that the
-    clone is a partial one, which `plan` never fetches into, and how to
-    make it whole.
+    clone is a partial one, which `plan` never fetches into, how to make it
+    whole, and, as the source's refusal does, that a later fetch stays
+    filtered while the clone's `partialclonefilter` is set: a later pin to
+    a newer commit in a `tree:0` clone lacks its trees again.
 
     ONLY A READ THAT FAILED IS ASKED ABOUT. A partial clone that holds the
     pinned commit and its trees answers as any clone does, and a clone that
@@ -6324,7 +6326,9 @@ def _pins_read_unfetched(args) -> dict[str, dict[str, str]]:
             "it fetches holds the pinned commit. Or point --pin-source at a "
             "full clone (`git clone` with no `--filter`) that has the "
             "pinned commit, or drop --pin-source and let `gh api` read the "
-            "forge.") from exc
+            "forge. Later fetches stay filtered while "
+            f"{' or '.join(map(_filter_key, remotes))} is set, so the clone "
+            "can lack objects again.") from exc
 
 
 @_lazy_fetch_off()
@@ -18239,9 +18243,13 @@ def main(argv: list[str] | None = None) -> int:
                            "or a bare clone's, where a --pin's digest is "
                            "read. A partial clone (`git clone --filter`) is "
                            "read where it holds the pinned commit and its "
-                           "trees; one git could read only by fetching what "
-                           "it lacks is refused as `pin-source-unreadable`, "
-                           "since `plan` never fetches into it.")
+                           "trees. On a git that honours `GIT_NO_LAZY_FETCH` "
+                           "(2.45 or later, or a security release from "
+                           "2.39.4 on), one git could read only by fetching "
+                           "what it lacks is refused as "
+                           "`pin-source-unreadable`, and nothing is fetched "
+                           "into it; an older git fetches what it lacks into "
+                           "it.")
     plan.add_argument("--allow-empty-leg", action="append", default=[],
                       choices=EXTRACTED_LEGS,
                       help="record in the plan that this leg having NO path "
