@@ -991,14 +991,16 @@ def test_two_findings_that_write_the_file_put_it_back_once(
     assert_passes_in_every_mode(holder, 2)
 
 
-def test_a_value_finding_that_put_head_s_back_is_not_put_back_over(
+def test_a_value_finding_that_put_the_file_back_is_not_put_back_over(
         holder, offline, tmp_path):
     """No second put back after `gitmodules-value-refused`'s: MEMBER's
     section given `update = None`, OTHER's taken out, committed, and the
-    work tree's file deleted. The value's finding puts HEAD's back first
-    (#768) and takes the key out; OTHER's `member-gitmodules-absent` then
-    writes into that file, and puts nothing back over the key it took
-    out. Typed as printed and committed, the gate passes in every mode."""
+    work tree's file deleted. The value's finding puts the index's back
+    first, the file git reads, which gives the value as HEAD's does (#768;
+    HEAD's until #1077), and takes the key out; OTHER's
+    `member-gitmodules-absent` then writes into that file, and puts nothing
+    back over the key it took out. Typed as printed and committed, the gate
+    passes in every mode."""
     env = isolated(offline, tmp_path)
     data = raw(holder, env, "show", "HEAD:.gitmodules").stdout
     line = f"\tpath = members/{MEMBER}\n".encode()
@@ -1012,8 +1014,7 @@ def test_a_value_finding_that_put_head_s_back_is_not_put_back_over(
     assert result.returncode == 1, result.stdout + result.stderr
     assert codes(result) == ["gitmodules-value-refused",
                              "member-gitmodules-absent"]
-    assert commands(findings(result)[0])[0] == (
-        "git checkout HEAD -- .gitmodules")
+    assert commands(findings(result)[0])[0] == "git checkout -- .gitmodules"
     assert findings(result)[1] == absent(OTHER, pinned(holder, OTHER),
                                          held=True)
     typed_and_committed(holder, env, result)
