@@ -32,6 +32,12 @@ folder), this doctor again as the NEXT and the gate's advice as the WHY; the
 verdict is INVALID naming the red rows and never DRIFTED; and a root this user
 cannot search is refused by name, exit 3, before any row.
 
+#1175 BUILDS THE BRANCHES NO CASE REACHED: a leg with no gitlink over a mount
+this user cannot reach, and a member it cannot reach beside one a checkout
+cures, by the holder's own bootstrap and by the git line. And the `leg shape
+files` note for a leg file it cannot read now carries the gate's advice as
+its WHY, as every other path here does.
+
 NOT HERE: the `shape currency` row's `copy-missing` under 3.14 for a `scripts/`
 or a `.github/workflows/` this user cannot search comes from
 `update-shape.py`'s comparison, which #430's slice B fixes. No test here
@@ -62,9 +68,12 @@ from conftest import REPO, git, load_without_bytecode
 #: #827's stand-in for a `stat` the operating system refuses, from the file
 #: that owns it (#383).
 from test_bump_leg_unopenable import refused_stat
-#: A private copy of the session's holder, from the file that owns the
-#: `members` row's tests.
-from test_doctor_legs_members_next import holder_copy
+#: A private copy of the session's holder, and the ways a leg or a member can
+#: be wrong, from the file that owns the `legs` and `members` rows' tests.
+from test_doctor_legs_members_next import (
+    add_member_row, holder_copy, holder_without, make_no_gitlink,
+    member_unbootstrapped,
+)
 #: This doctor's own line for a root, as `unreadable_next` spells it.
 from test_doctor_recorded_answers import doctor_again
 #: #847's helpers and the gate's advice, word for word, from the file that
@@ -75,7 +84,8 @@ from test_doctor_unreadable_pin import (
 )
 #: The doctor's fixtures, from the module that owns them.
 from test_shape_doctor import (  # noqa: F401
-    FAMILY_MEMBER, doctor, holder, project, scaffolded_here, standard,
+    FAMILY_MEMBER, doctor, holder, project, record_gitlink, scaffolded_here,
+    standard,
 )
 #: The one skip for a mode that root reads through and Windows ignores.
 from test_validate_pins_unreadable_workflow import CANNOT_RUN_AS_ROOT
@@ -89,6 +99,8 @@ MANIFEST_GATE = "scripts/validate-manifest.py"
 MANIFEST_TEMPLATE = "templates/assembly-root/scripts/validate-manifest.py"
 PINS_GATE = "scripts/validate-pins.py"
 MEMBER = f"members/{FAMILY_MEMBER}"
+#: A second member, which the cases beside a checkout make unreachable.
+GHOST = "members/Ghost"
 #: What every row said of a path it could not reach, and what none may say.
 COULD_NOT_RUN = "could not be run"
 #: The `members` row's words for an empty mount, which a member this user
@@ -117,6 +129,42 @@ def assert_nothing_could_not_run(rows: dict) -> None:
     """No row says it could not be run."""
     for row in rows.values():
         assert COULD_NOT_RUN not in row["reason"], row
+
+
+def with_a_member_beside_one_a_checkout_cures(root: Path) -> None:
+    """A holder with TWO members (#1175): `Ghost`, at the first one's
+    commit, with a `.gitmodules` section that gives its path and the first
+    one's url and an empty mount that each case makes unreachable; and the
+    first member emptied, so a checkout cures it and the row names a line.
+    The session's holder has one member, so no other case needs one."""
+    add_member_row(root, "Ghost")
+    record_gitlink(root, GHOST, git("rev-parse", f"HEAD:{MEMBER}",
+                                    cwd=root).stdout.strip())
+    url = git("config", "-f", ".gitmodules", f"submodule.{MEMBER}.url",
+              cwd=root).stdout.strip()
+    for key, value in (("path", GHOST), ("url", url)):
+        git("config", "-f", ".gitmodules", f"submodule.{GHOST}.{key}", value,
+            cwd=root)
+    (root / GHOST).mkdir()
+    member_unbootstrapped(root)
+
+
+def beside_the_checkout(module, why: str) -> bool:
+    """Whether a `members` row's why ends as it must beside a member this
+    user cannot reach: the sentence that the next run names what the line
+    leaves (`rerun_sentence`, which only the refusal asks for here), then
+    the gate's advice. The advice's own "Then run this doctor again" is not
+    that sentence, so the two are told apart."""
+    return why.endswith(module.rerun_sentence("member") + ". "
+                        + PERMISSION_WHY)
+
+
+def bootstrap_line(module, root: Path) -> str:
+    """The holder's own bootstrap, as the `members` row names it."""
+    resolved = root.resolve()
+    return (f"{module.PYTHON} "
+            f"{module.quote_arg(resolved / 'scripts' / 'bootstrap.py')} "
+            f"--root {module.quote_arg(resolved)}")
 
 
 # --- the mode cases: a real mode, the doctor run as a person runs it ---------
@@ -203,6 +251,48 @@ def test_a_member_this_user_cannot_reach_is_named_and_no_drift(
     assert UNBOOTSTRAPPED not in members["reason"]
     assert verdict == "INVALID (family)"
     assert_nothing_could_not_run(rows)
+
+
+@CANNOT_RUN_AS_ROOT
+def test_a_member_at_mode_000_beside_one_a_checkout_cures(standard, holder,
+                                                          tmp_path):
+    """A member's mount at 000 beside a member the holder's own bootstrap
+    cures (#1175): the row names both, the bootstrap is the NEXT, and its why
+    ends on the advice for the mount. Up to Python 3.13 the `.gitmodules`
+    asked in each member to say what the bootstrap carries raised the
+    refused `stat` out of the row, so that member is not asked."""
+    root = holder_copy(holder, tmp_path)
+    with_a_member_beside_one_a_checkout_cures(root)
+    module = in_process(standard, root)[0]
+    with mode_of(root, GHOST, 0):
+        rows, _verdict = doctored(standard, root)
+    members = rows["members"]
+    assert members["status"] == "FINDING", members
+    assert members["reason"].split("; ")[:2] == [
+        f"{MEMBER}: {UNBOOTSTRAPPED} submodule",
+        unread_mount(listed(GHOST, os.strerror(errno.EACCES)))]
+    assert members["next"] == bootstrap_line(module, root)
+    assert beside_the_checkout(module, members["why"]), members["why"]
+    assert_nothing_could_not_run(rows)
+
+
+@CANNOT_RUN_AS_ROOT
+def test_a_leg_file_at_mode_000_is_told_the_cure_and_gates_nothing(
+        standard, project):
+    """`spec/CLAUDE.md` at 000, as rv975 measured it (#1175): the `leg shape
+    files` note names the file and has no NEXT, as before, and its why is
+    now the gate's advice. The verdict stays COMPLIANT: no leg file gates
+    anything, so one nobody could read changes nothing."""
+    denied = os.strerror(errno.EACCES)
+    with mode_of(project, "spec/CLAUDE.md", 0):
+        rows, verdict = doctored(standard, project)
+    row = rows["leg-shape-files"]
+    assert row["status"] == "note", row
+    assert f"spec: AGENTS.md rendered, CLAUDE.md cannot be read ({denied})" \
+        in row["reason"], row
+    assert row["next"] is None, row
+    assert row["why"] == PERMISSION_WHY
+    assert verdict == "COMPLIANT"
 
 
 def root_refusal(root: Path, reason: str) -> str:
@@ -384,6 +474,27 @@ def test_beside_a_checkout_line_the_unread_mount_gets_the_advice(
     assert legs.why.endswith(". " + PERMISSION_WHY), legs.why
 
 
+def test_a_leg_with_no_gitlink_names_the_mount_it_cannot_reach_too(
+        standard, project, monkeypatch):
+    """A leg the root records no gitlink for, over a mount this user cannot
+    list (#1175): the lockstep fact is said first, the mount's line follows
+    it, the gate's line is the NEXT with the advice in its why, and the leg
+    is no drift."""
+    make_no_gitlink(project)
+    module, ctx = in_process(standard, project)
+    refusing(monkeypatch, "iterdir", "spec",
+             PermissionError(errno.EACCES, DENIED))
+    legs = module.check_legs(ctx)
+    assert legs.reason == ("spec: no gitlink recorded, so this leg is not "
+                           "mounted as a submodule at all, and "
+                           + listed("spec"))
+    assert legs.detail["legs"][0]["mount_cannot_be_read"] == listed("spec")
+    assert legs.next_command == module.lockstep_next(ctx, module.PINS_GATE,
+                                                     "leg")[0]
+    assert legs.why.endswith(". " + PERMISSION_WHY), legs.why
+    assert module.drifted_reasons({"legs": legs}, {}) == []
+
+
 def test_a_member_mount_refused_is_named_on_every_python(
         standard, holder, tmp_path, monkeypatch):
     """The `members` row for a member whose mount's `stat` is refused (a
@@ -402,10 +513,58 @@ def test_a_member_mount_refused_is_named_on_every_python(
     assert module.drifted_reasons({"members": members}, {}) == []
 
 
+def gitmodules_refused_in(monkeypatch, folder: Path) -> None:
+    """`Path.is_file` raising a refused `stat` for a name in `folder`, as
+    Python 3.9 to 3.13 raise it in a folder this user cannot search. 3.14
+    answers False, so this stand-in reaches it on every Python."""
+    real = Path.is_file
+
+    def is_file(self, *args, **kwargs):
+        if self.parent == folder:
+            raise PermissionError(errno.EACCES, DENIED, str(self))
+        return real(self, *args, **kwargs)
+
+    monkeypatch.setattr(Path, "is_file", is_file)
+
+
+@pytest.mark.parametrize("own_bootstrap", [
+    pytest.param(True, id="the-holders-bootstrap"),
+    pytest.param(False, id="the-git-line"),
+])
+def test_beside_a_member_checkout_the_unreached_member_gets_the_advice(
+        standard, holder, tmp_path, monkeypatch, own_bootstrap):
+    """One member's mount cannot be listed, and the other's is empty, which
+    a checkout cures (#1175): the holder's own bootstrap where it can run,
+    else the git line. Either way the row names both, its why says that the
+    next run names what the line leaves and ends on the advice for the
+    mount, and the unreached member's `.gitmodules`, whose `stat` would be
+    refused, is never asked."""
+    root = holder_copy(holder, tmp_path)
+    with_a_member_beside_one_a_checkout_cures(root)
+    if not own_bootstrap:
+        holder_without(root, "bootstrap.py")
+    module, ctx = in_process(standard, root)
+    refusing(monkeypatch, "iterdir", "Ghost",
+             PermissionError(errno.EACCES, DENIED))
+    gitmodules_refused_in(monkeypatch, ctx.root / GHOST)
+    members = module.check_members(ctx)
+    assert members.reason.split("; ")[:2] == [
+        f"{MEMBER}: {UNBOOTSTRAPPED} submodule", unread_mount(listed(GHOST))]
+    assert members.detail["members"][1]["mount_cannot_be_read"] == \
+        listed(GHOST)
+    if own_bootstrap:
+        assert members.next_command == bootstrap_line(module, root)
+    else:
+        assert members.next_command.endswith(f" -- {MEMBER}"), \
+            members.next_command
+    assert beside_the_checkout(module, members.why), members.why
+
+
 def test_a_leg_file_this_user_cannot_read_is_said_not_called_absent(
         standard, project, monkeypatch):
     """A leg's shape file whose `stat`, or whose read, is refused is `cannot
-    be read`, never `absent` with a copy over it: the row is a `note`."""
+    be read`, never `absent` with a copy over it: the row is a `note` with
+    no NEXT, and its why is the gate's advice (#1175)."""
     module, ctx = in_process(standard, project)
     refused_stat(monkeypatch, ".gitignore")
     refusing(monkeypatch, "read_bytes", "CLAUDE.md",
@@ -417,6 +576,51 @@ def test_a_leg_file_this_user_cannot_read_is_said_not_called_absent(
     assert row.status == module.NOTE
     assert row.next_command is None
     assert "absent" not in row.reason, row.reason
+    assert row.why == PERMISSION_WHY
+
+
+@pytest.mark.parametrize("method, name", [
+    pytest.param("stat", ".gitignore", id="stat"),
+    pytest.param("read_bytes", "CLAUDE.md", id="read"),
+])
+def test_a_leg_file_refused_for_another_reason_gets_the_other_advice(
+        standard, project, monkeypatch, method, name):
+    """A leg file whose `stat`, or whose read, alone fails for a reason that
+    is no permission (an I/O error): the system's reason, a `note`, and the
+    gate's other advice, which is not told to `chmod` (#1175)."""
+    module, ctx = in_process(standard, project)
+    refusing(monkeypatch, method, name, OSError(errno.EIO, IO_ERROR))
+    row = module.check_leg_shape_files(ctx)
+    assert row.detail["legs"]["spec"]["files"][name] == \
+        f"cannot be read ({IO_ERROR})"
+    assert row.status == module.NOTE
+    assert row.next_command is None
+    assert row.why == OTHER_WHY
+
+
+@pytest.mark.parametrize("name", [".gitignore", "AGENTS.md"])
+def test_beside_a_missing_leg_file_the_advice_follows_its_line(
+        standard, project, monkeypatch, name):
+    """A leg file missing beside one this user cannot read (#1175): the
+    NEXT is the missing file's line, as before, and the advice is the why
+    where that line's says nothing (a copy), or follows it (a file the
+    scaffold renders, which no copy makes)."""
+    module, ctx = in_process(standard, project)
+    (project / "code" / name).unlink()
+    refusing(monkeypatch, "read_bytes", "CLAUDE.md",
+             PermissionError(errno.EACCES, DENIED))
+    row = module.check_leg_shape_files(ctx)
+    line, said = module.missing_shape_file_fix(ctx, [("code", "code", name)])
+    assert row.status == module.NOTE
+    assert row.reason.endswith(f"(missing: code/{name})"), row.reason
+    assert row.next_command == line
+    if name == ".gitignore":
+        assert said is None
+        assert row.why == PERMISSION_WHY
+    else:
+        assert said.startswith("the missing file(s) are RENDERED"), said
+        # `Row` flattens the typography of what it is handed (`ascii_text`).
+        assert row.why == module.ascii_text(f"{said}. {PERMISSION_WHY}")
 
 
 def test_a_bootstrap_this_user_cannot_reach_cannot_run_on_every_python(

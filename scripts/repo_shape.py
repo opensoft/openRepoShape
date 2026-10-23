@@ -65,8 +65,11 @@ from typing import Any
 #: Exactly 40 hex, case-insensitive, normalised to lowercase before comparison.
 #: 40 means 40 — an abbreviated oid, a branch name or a tag cannot pass, which
 #: is `neutral-product-pin`'s "a tag can be moved" written as a regex.
-COMMIT_RE = re.compile(r"^[0-9a-fA-F]{40}$")
-SHA256_RE = re.compile(r"^[0-9a-fA-F]{64}$")
+#: BOTH END IN `\Z`, NEVER `$` (#1017): `$` also matches just before a trailing
+#: line feed, so a `commit:` or `tree_sha256:` read as `"<hex>\n"` (a
+#: double-quoted escape, or a block scalar) passed `.match` as well formed.
+COMMIT_RE = re.compile(r"^[0-9a-fA-F]{40}\Z")
+SHA256_RE = re.compile(r"^[0-9a-fA-F]{64}\Z")
 
 #: A project id is the lowercase machine name; the GitHub topic is derived.
 PROJECT_ID_RE = re.compile(r"^[a-z0-9][a-z0-9-]*$")
