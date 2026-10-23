@@ -577,7 +577,9 @@ def test_an_ordinary_mount_fetches_the_branch_and_moves_nothing_else(
 #: NAME (`another-name`, #1066), a pattern that takes the branches by a
 #: start of `refs/heads/` among them (the `another-name-heads-pattern`
 #: rows, #1100, from `refs/heads*` to `refs/h*`, and one with a suffix);
-#: `carried` where none does, and `skipped` for a negative refspec, which
+#: `carried` where none does (`carried-refs-h-not-a-pattern`, a start of
+#: `refs/heads/` with no `*`, is no pattern: it takes the one ref of that
+#: name, which is no branch), and `skipped` for a negative refspec, which
 #: no clause is asked of. `bump-leg.py`'s fetch of a leg is asked the same
 #: rows (`test_bump_leg_fetch_refspecs.py`).
 WHICH_CLAUSE = pytest.mark.parametrize("refspec, carried", [
@@ -644,6 +646,8 @@ WHICH_CLAUSE = pytest.mark.parametrize("refspec, carried", [
                  id="carried-not-refs-tags"),
     pytest.param("+refs/headsx/*:refs/remotes/origin/headsx/*", True,
                  id="carried-not-refs-heads"),
+    pytest.param("+refs/h:refs/remotes/origin/hy", True,
+                 id="carried-refs-h-not-a-pattern"),
 ])
 
 
@@ -682,8 +686,11 @@ def test_which_clause_leaves_each_refspec_out(
     git accepts and maps, `x` onto `h/x` (RV1157's finding 1). A `carried`
     row fails a clause that takes too much: the pull requests in a folder,
     which #946 carries, `refs/tagsx/`, which no tag is under,
-    `refs/headsx/`, which no branch is under, and a branch, a folder of
-    them or a pattern of them, each under the name `BRANCHES` gives it."""
+    `refs/headsx/`, which no branch is under, `refs/h` with no `*`, a start
+    of `refs/heads/` that is no pattern and takes only the ref of that name,
+    which is no branch and may stand beside the branches (the re-check of
+    #1157, NIT 1), and a branch, a folder of them or a pattern of them,
+    each under the name `BRANCHES` gives it."""
     env = isolated(offline, tmp_path)
     for key, value in env.items():
         monkeypatch.setenv(key, value)
