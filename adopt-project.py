@@ -492,7 +492,10 @@ def _pin_row_problem(row: dict) -> tuple[str, str, str] | None:
     Each value is held to what `plan` writes there: the commit to
     `COMMIT_RE`, the repository and the commit together to the scaffold's own
     `PIN_ARG_RE`, owner-qualified, with the product its name, the digest to
-    `SHA256_RE`, and the digest's source to `_a_digest_source`.
+    `SHA256_RE`, and the digest's source to `_a_digest_source`. A value that
+    is not text is said as `_read_as` says what the plan's reader read, the
+    number 7 or the boolean true, and a text value as Python spells it
+    (#1114).
 
     THE DIGEST'S SOURCE IS ONE OF THREE SPELLINGS (#540). It was held to one
     printable line, and `execute` wrote it into the root's pin file as it
@@ -516,9 +519,15 @@ def _pin_row_problem(row: dict) -> tuple[str, str, str] | None:
     not_text = [key for key, _ in PIN_FIELDS
                 if not isinstance(row.get(key), str)]
     if not_text:
-        why = "records " + ", ".join(
-            f"`{key}: {row[key]!r}`" for key in not_text) + ", which " + (
-            "is" if len(not_text) == 1 else "are") + " not text"
+        # Said as `_read_as` says what the plan's reader read (#1114), as
+        # `_read_pins` says a `pins:` that is no list: `commit: 7` is the
+        # number 7 and `true` the boolean true, not Python's `True`. A null
+        # or a blank is `missing` above, and a text is held to its form
+        # below, so only a number, a boolean, a list or a mapping is here.
+        why = ("records " + ", ".join(
+            f"`{key}:` as {_read_as(row[key])}" for key in not_text)
+               + ", which " + ("is" if len(not_text) == 1 else "are")
+               + " not text")
         return PIN_MALFORMED, why, _pin_written_from(not_text)
     product, repository, commit, digest, how = (
         row[key] for key, _ in PIN_FIELDS)

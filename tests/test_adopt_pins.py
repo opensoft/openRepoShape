@@ -1293,13 +1293,15 @@ def malformed(glass) -> dict:
                              f"{entry} `digest_source: 'local-clone "
                              f"(/x\\x00y)'`, {HOW_NOT_WHERE}"),
         # Unquoted, the reader reads a number: `not text`, and never a
-        # `TypeError` out of `COMMIT_RE` (N3).
+        # `TypeError` out of `COMMIT_RE` (N3). Said as `_read_as` says what
+        # the reader read, and not as Python spells it (#1114).
         "a-number-commit": ("pins:\n  - product: openGlass\n"
                             "    repository: opensoft/openGlass\n"
                             "    commit: 1234567\n"
                             f'    tree_sha256: "{digest}"\n'
                             '    digest_source: "local-clone (openGlass)"\n',
-                            f"{entry} `commit: 1234567`, which is not text"),
+                            f"{entry} `commit:` as the number 1234567, "
+                            "which is not text"),
     }
 
 
