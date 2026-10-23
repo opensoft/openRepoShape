@@ -441,8 +441,9 @@ def test_a_tree_this_machine_names_steers_the_question_as_it_steers_the_split(
     split's checkout and `git add` too, which take the whole environment:
     they store the CRLF file the plan keeps as its blob, and `execute`
     verifies. The rehearsal takes the setting now, so it finds nothing
-    either; with no setting it finds the file (the control). Until r1169's SHOULD-1 `attr.tree` was not inherited,
-    and the file was found where the split stores it as its blob:
+    either; with no setting it finds the file (the control). Until r1169's
+    SHOULD-1 `attr.tree` was not inherited, and the file was found where
+    the split stores it as its blob:
     `test_adopt_check_throwaway_repos.py`'s
     `test_execute_reads_a_parent_gits_attr_tree_as_check_does` runs that
     `execute`. `GIT_ATTR_SOURCE` is refused by name before any question

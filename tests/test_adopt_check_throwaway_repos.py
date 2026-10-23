@@ -1679,8 +1679,8 @@ def empty_tree_plan(base: Path, handed) -> tuple[Path, dict]:
 
 
 @pytest.mark.parametrize("handed", ATTR_TREE_HANDED)
-def test_a_parent_gits_attr_tree_is_read_in_the_rehearsal_as_the_split_reads_it(
-        tmp_path, handed):
+def test_a_parent_gits_attr_tree_is_read_as_the_split_reads_it(tmp_path,
+                                                                handed):
     """`attr.tree` naming the empty tree makes git read no rule, in the
     split's checkout and `git add` too, which take this process's whole
     environment: the CRLF file the plan keeps is stored as its blob there,
@@ -1879,9 +1879,12 @@ def unasked_attr_source(work: Path, value: str) -> str:
 #: stopped under the first four: at extracting the spec leg, at seeding the
 #: code leg, and at pushing the spec leg. It took the next two to `adoption
 #: verified`, and refusing them too is #1136's known limit. The last two
-#: were rows of `test_no_tree_this_machine_names_steers_the_question` and
-#: `..._steers_the_split_question`, which found the file the throwaway was
-#: asked about while every throwaway left the variable out.
+#: were params of three older rows, which found the file the throwaway was
+#: asked about while every throwaway left the variable out:
+#: `test_adopt_nested_attributes.py`'s
+#: `test_no_tree_this_machine_names_steers_the_question` and its split
+#: question's row, and `test_adopt_reencoded_files.py`'s row (the last two
+#: are `test_a_tree_this_machine_names_steers_...` now).
 ATTR_SOURCES = [
     pytest.param(lambda _source: "bogus", False, id="bogus"),
     pytest.param(lambda _source: "", False, id="empty"),
