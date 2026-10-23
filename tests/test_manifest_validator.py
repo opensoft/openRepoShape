@@ -38,6 +38,29 @@ def test_a_scaffolded_manifest_is_valid(project):
     assert "manifest ok" in result.stdout
 
 
+def shape_of(project) -> dict:
+    return parse_yaml((project / "project.yaml").read_text())["shape"]
+
+
+def test_a_shape_commit_that_ends_in_a_line_break_is_a_finding(project):
+    """`$` matched just before a trailing line feed (#1017), so a
+    `shape.commit` read as the 40 hex and a line feed (the double-quoted
+    `\\n`, or a block scalar) was `manifest ok`."""
+    commit = shape_of(project)["commit"]
+    edit(project, f'commit: "{commit}"', f'commit: "{commit}\\n"')
+    result = validate(project)
+    assert result.returncode == 1, result.stderr
+    assert "manifest-shape-commit" in result.stderr
+
+
+def test_a_shape_digest_that_ends_in_a_line_break_is_a_finding(project):
+    digest = shape_of(project)["digests"]["tree_sha256"]
+    edit(project, f'tree_sha256: "{digest}"', f'tree_sha256: "{digest}\\n"')
+    result = validate(project)
+    assert result.returncode == 1, result.stderr
+    assert "manifest-shape-digest" in result.stderr
+
+
 def test_wrong_kind_is_a_finding(project):
     edit(project, "kind: project-manifest", "kind: project-register")
     result = validate(project)

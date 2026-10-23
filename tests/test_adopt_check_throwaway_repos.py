@@ -44,6 +44,14 @@ finding, with a NOTE.
   failed", and `_resolved`'s `update-index` ran this machine's
   `post-index-change` hook. They are made as the others are now.
 
+#1033: `refused_paths` writes its own index with `update-index -z
+--index-info`, and no row said what that index makes of case twins (`a` and
+`A`) where `core.ignorecase` is true, the default on a disk that ignores
+case. Measured with git 2.43, it holds both twins of a path git takes, each
+with its own blob, and `plan-path-git-refuses` names both twins of a path git
+refuses. This bench has no usable disk that ignores case, so the row that
+needs one skips here.
+
 #1136 followed, measured on bba168bd with git 2.43. In each case `check`
 said `plan ok`, and `execute` made both legs and stopped extracting the
 spec leg:
@@ -168,23 +176,33 @@ def mktree(repo: Path, rows: list[str]) -> str:
     return made.stdout.decode().strip()
 
 
-def with_paths(repo: Path, paths: tuple[str, ...]) -> None:
+def blob_of(repo: Path, data: bytes) -> str:
+    return subprocess.run(["git", "hash-object", "-w", "--stdin"],
+                          cwd=str(repo), input=data, capture_output=True,
+                          check=True).stdout.decode().strip()
+
+
+def with_paths(repo: Path, paths: tuple[str, ...],
+               own_blobs: bool = False, links: tuple[str, ...] = ()) -> None:
     """A commit on `main` whose tree gains each of `paths`, whether git
     takes it as a path or not: `git mktree` writes what it is given, and no
-    index is asked."""
-    blob = subprocess.run(["git", "hash-object", "-w", "--stdin"],
-                          cwd=str(repo), input=b"x\n", capture_output=True,
-                          check=True).stdout.decode().strip()
+    index is asked. With `own_blobs`, each path's blob holds its own name,
+    so an index that holds one path's blob under another's name is seen.
+    Each of `links` is written as a symlink (mode 120000), not a file."""
+    shared = blob_of(repo, b"x\n")
     nested: dict = {}
     for path in paths:
         *directories, name = path.split("/")
         here = nested
         for directory in directories:
             here = here.setdefault(directory, {})
-        here[name] = None
+        here[name] = ("120000" if path in links else "100644",
+                      blob_of(repo, f"{path}\n".encode("utf-8"))
+                      if own_blobs else shared)
 
     def rows(names: dict) -> list[str]:
-        return [f"100644 blob {blob}\t{name}" if below is None
+        return [f"{below[0]} blob {below[1]}\t{name}"
+                if isinstance(below, tuple)
                 else f"040000 tree {mktree(repo, rows(below))}\t{name}"
                 for name, below in names.items()]
 
@@ -336,6 +354,167 @@ def test_the_rehearsal_asks_nothing_more_of_a_tree_git_refuses(adopter,
     assert adopter._reencoded_files_findings(plan, opened,
                                              opened.tree()) == []
     assert list(work.iterdir()) == []
+
+
+# ---------------------------------------------------------------------------
+# #1033: case twins, with `core.ignorecase` true
+# ---------------------------------------------------------------------------
+
+#: `(the case twins a source commit holds, the ones git refuses)`. `git
+#: mktree` writes twins that no checkout on a disk that ignores case could,
+#: each with a blob of its own (`with_paths`).
+CASE_TWINS = [
+    pytest.param(("A", "a"), (), id="file-twins"),
+    pytest.param(("D/x", "d/x"), (), id="folder-twins"),
+    pytest.param(("F/x", "f"), (), id="a-folder-and-a-file"),
+    pytest.param(("E", "e/x"), (), id="a-file-and-a-folder"),
+    pytest.param(("AB", "Ab", "ab"), (), id="three-twins"),
+    pytest.param(("\u00c9", "\u00e9"), (), id="non-ascii-twins"),
+    pytest.param((".Git/A", ".Git/a"), (".Git/A", ".Git/a"),
+                 id="twins-under-a-path-git-refuses"),
+    pytest.param((".GIT/x", ".Git/x"), (".GIT/x", ".Git/x"),
+                 id="twins-git-refuses"),
+]
+#: The twins of `file-twins`, `folder-twins` and `a-folder-and-a-file`, and
+#: the two refused sets above, in one source commit; the ones git refuses,
+#: in the tree's order; and the plan's answers for them all.
+ALL_TWINS = ("A", "a", "D/x", "d/x", "F/x", "f", ".Git/A", ".Git/a",
+             ".GIT/x", ".Git/x")
+TWINS_REFUSED = (".GIT/x", ".Git/A", ".Git/a", ".Git/x")
+TWIN_ANSWERS = {"A": ROOT, "a": ROOT, "D/": ROOT, "d/": ROOT, "F/": ROOT,
+                "f": ROOT, ".GIT/": ROOT, ".Git/": ROOT}
+
+
+def with_twins(adopter, base: Path, twins: tuple[str, ...],
+               links: tuple[str, ...] = ()):
+    """`a_source` whose commit gains `twins`, each with a blob of its own,
+    opened as `check` opens it, with `base/work` its work directory."""
+    path = a_source(base)
+    with_paths(path, twins, own_blobs=True, links=links)
+    work = base / "work"
+    work.mkdir()
+    return adopter.Source(path, None, "main",
+                          git("rev-parse", "HEAD", cwd=path).stdout.strip(),
+                          work_root=work)
+
+
+def twins_asked(adopter, source, twins: tuple[str, ...],
+                ignorecase: str | None) -> tuple[str, list[str], dict]:
+    """`(core.ignorecase as the rehearsal's own config holds it, the paths
+    `refused_paths` names, each twin's fate)`, the fate read from the index
+    with `git ls-files -s`: `held` under its own name with its own blob,
+    `named`, `held with another blob`, or `dropped without a word`. Where
+    `ignorecase` is given it is written into that config first, as `git
+    init` writes `true` on a disk that ignores case; None keeps what `git
+    init` wrote. The index must hold every path of the tree it does not
+    name, and nothing else."""
+    tree = source.tree()
+    blobs = {path: oid for path, _, oid, _ in tree}
+    with adopter._SplitRehearsal(source) as asked:
+        if ignorecase is not None:
+            git("config", "core.ignorecase", ignorecase, cwd=asked.work)
+        written = git("config", "--local", "--get", "core.ignorecase",
+                      cwd=asked.work, check=False).stdout.strip()
+        named = asked.refused_paths(tree)
+        held = asked.staged(adopter.PATHS_HELD)
+    assert sorted(held) == [path for path, _, _, _ in tree
+                            if path not in named], held
+    return written, named, {
+        twin: "named" if twin in named
+        else "held" if held.get(twin) == blobs[twin]
+        else "held with another blob" if twin in held
+        else "dropped without a word" for twin in twins}
+
+
+def as_measured(twins: tuple[str, ...], refused: tuple[str, ...]) -> dict:
+    return {twin: "named" if twin in refused else "held" for twin in twins}
+
+
+@pytest.mark.parametrize("ignorecase", ["true", "false"])
+@pytest.mark.parametrize(("twins", "refused"), CASE_TWINS)
+def test_each_case_twin_is_held_with_its_own_blob_or_named(
+        adopter, tmp_path, twins, refused, ignorecase):
+    """`refused_paths` writes its index with `update-index -z --index-info`.
+    Measured with git 2.43 and `core.ignorecase` true in the rehearsal's
+    own config:
+    - git holds each twin of a path it takes, each under its own name with
+      its own blob, at a file, a folder, or a folder beside a file;
+    - git leaves out both twins of a path it refuses, and `refused_paths`
+      names each one.
+    No twin is folded into the other, and none is dropped without a word.
+    `false` is the control, and git answers the same."""
+    source = with_twins(adopter, tmp_path, twins)
+    written, named, fates = twins_asked(adopter, source, twins, ignorecase)
+    assert written == ignorecase
+    assert named == list(refused)
+    assert fates == as_measured(twins, refused)
+
+
+@pytest.mark.parametrize("ignorecase", ["true", "false"])
+def test_a_twin_git_refuses_by_its_mode_is_named_beside_the_one_it_holds(
+        adopter, tmp_path, ignorecase):
+    """Git refuses a path by its mode too: a symlink named `.GITMODULES`, in
+    any case, and holds the file `.gitmodules`. Measured with git 2.43,
+    `core.ignorecase` unset, false and true: so git can refuse one twin and
+    hold the other, and an answer that folds the index's paths into one case
+    would take the refused twin for a held one."""
+    twins = (".GITMODULES", ".gitmodules")
+    source = with_twins(adopter, tmp_path, twins, links=(".GITMODULES",))
+    written, named, fates = twins_asked(adopter, source, twins, ignorecase)
+    assert written == ignorecase
+    assert named == [".GITMODULES"]
+    assert fates == {".GITMODULES": "named", ".gitmodules": "held"}
+
+
+def test_on_a_disk_that_ignores_case_each_twin_is_held_or_named(adopter,
+                                                                tmp_path):
+    """Where the work directory's disk ignores case, as on macOS and
+    Windows, `git init` writes `core.ignorecase=true` into each throwaway
+    repository's own config. `refused_paths` reads nothing else of the disk:
+    `update-index --index-info` and `ls-files` read the index, never the
+    work tree. The rows above write that setting by hand, so they answer
+    for such a disk on any disk. This row asks the disk itself, and is
+    skipped on a disk that keeps case, as every CI disk is (CI is Linux
+    only since #597)."""
+    source = with_twins(adopter, tmp_path, ALL_TWINS)
+    written, named, fates = twins_asked(adopter, source, ALL_TWINS, None)
+    if written != "true":
+        pytest.skip("needs a disk that ignores case: `git init` wrote no "
+                    "`core.ignorecase=true` in the work directory, so that "
+                    "disk keeps case; the rows above write the setting into "
+                    "the throwaway repository by hand instead")
+    assert named == list(TWINS_REFUSED)
+    assert fates == as_measured(ALL_TWINS, TWINS_REFUSED)
+
+
+def test_check_names_each_twin_git_refuses_and_no_twin_it_holds(tmp_path):
+    """`check` over a source holding the twins of `file-twins`,
+    `folder-twins` and `a-folder-and-a-file`, and the two refused sets
+    above, with `core.ignorecase` true in the global config. On a disk that
+    keeps case, `git init` writes no `core.ignorecase` into a throwaway
+    repository, so the global setting is the one each throwaway reads.
+    `plan` asks about each twin as a path of its own (`planned` answers
+    each by name). Under a global `core.ignorecase=true` the #654
+    rehearsal's `git add` refuses the folder twins `D/x` and `d/x` as
+    `plan-file-reencoded`; this row does not see it, because the rehearsal
+    asks nothing of a source that holds a path git refuses
+    (`_reencoded_files_findings`, `if refused: return []`).
+    `refused_paths` meets every twin, and `plan-path-git-refuses` names, in
+    the tree's order, the four git refuses and none of the six it holds."""
+    source = a_source(tmp_path)
+    with_paths(source, ALL_TWINS, own_blobs=True)
+    result = checked(planned(source, tmp_path, TWIN_ANSWERS),
+                     config_with(tmp_path, "[core]", "\tignorecase = true"))
+    assert "REFUSED" not in result.stderr, result.stderr
+    assert result.returncode == 1, result.stderr
+    assert finding_lines(result) == [
+        f"FINDING {PATH_GIT_REFUSES}: the source commit holds 4 paths this "
+        "machine's git refuses as a path, and holds in no index: `.GIT/x`, "
+        "`.Git/A`, `.Git/a` and `.Git/x`. Each clone the split makes of the "
+        "source would stop at the first, `unable to checkout working tree`, "
+        "so `execute` refuses them before it makes either leg, whatever the "
+        "plan answers for them."]
+    assert result.stderr.count(PATH_REMEDY) == 1, result.stderr
 
 
 # ---------------------------------------------------------------------------
@@ -618,19 +797,16 @@ def unasked_clone(work: Path, code: int, said: str) -> str:
             + said + UNASKED_ENDS)
 
 
-def test_a_default_branch_is_asked_of_the_splits_own_clone(tmp_path):
-    """`init.defaultBranch = a..b`: `check` answers as the split's own `git
-    clone` of the source does on this git (#1083). git 2.43's stops at it,
-    `fatal: invalid branch name`, and `check` says so as one
-    `adopt-git-unasked`, where 2a119f28 said `plan ok` and `execute` then
-    stopped after both legs existed. git 2.55's takes it (CI on #1031), and
-    there no `git init` stops a question: each names its branch, and the
-    CRLF file the plan keeps is found."""
+def check_asks_the_clone_a_default_branch(tmp_path: Path, env_of) -> None:
+    """The rows that give `check` an `init.defaultBranch = a..b` in the
+    form `env_of(tmp_path)` builds: `check` answers as this git's `git
+    clone` does, one `adopt-git-unasked` where it stops at the name and,
+    where it takes it, the CRLF file the plan keeps."""
     plan = planned(a_source(tmp_path, files={ROOT_ATTRIBUTES: TEXT_EOL_LF,
                                              NOTES: CRLF}),
                    tmp_path, {NOTES: ROOT})
     work = tmp_path / "work"
-    env = bad_default_branch(tmp_path)
+    env = env_of(tmp_path)
     clone = this_gits_clone(tmp_path, env)
     result = checked(plan, env, "--work-dir", str(work))
     assert "REFUSED" not in result.stderr, result.stderr
@@ -641,6 +817,17 @@ def test_a_default_branch_is_asked_of_the_splits_own_clone(tmp_path):
         assert finding_lines(result) == [unasked_clone(
             work, clone.returncode, clone.stderr.decode().strip())]
     assert list(work.iterdir()) == []
+
+
+def test_a_default_branch_is_asked_of_the_splits_own_clone(tmp_path):
+    """`init.defaultBranch = a..b`: `check` answers as the split's own `git
+    clone` of the source does on this git (#1083). git 2.43's stops at it,
+    `fatal: invalid branch name`, and `check` says so as one
+    `adopt-git-unasked`, where 2a119f28 said `plan ok` and `execute` then
+    stopped after both legs existed. git 2.55's takes it (CI on #1031), and
+    there no `git init` stops a question: each names its branch, and the
+    CRLF file the plan keeps is found."""
+    check_asks_the_clone_a_default_branch(tmp_path, bad_default_branch)
 
 
 def test_a_default_branch_git_will_not_take_stops_no_throwaway_init(
@@ -842,13 +1029,14 @@ def test_no_url_is_asked_once_the_clone_cannot_be_made(tmp_path):
     assert list(work.iterdir()) == []
 
 
-def test_execute_refuses_a_default_branch_its_clone_will_not_take(
-        adopter, monkeypatch, tmp_path):
-    """`init.defaultBranch = a..b`, on a git whose `git clone` stops at it,
-    as 2.43's does: `execute` refuses it before any leg exists, where on
-    2a119f28 it made both and stopped extracting the spec leg (#1083)."""
+def execute_refuses_a_default_branch_its_clone_will_not_take(
+        adopter, monkeypatch, tmp_path, env_of) -> None:
+    """The rows that give `execute` an `init.defaultBranch = a..b` in the
+    form `env_of(tmp_path)` builds: on a git whose `git clone` stops at it,
+    `execute` refuses it before any leg exists; where the clone takes it,
+    the row is skipped."""
     plan = planned(a_source(tmp_path), tmp_path, {})
-    env = bad_default_branch(tmp_path)
+    env = env_of(tmp_path)
     if this_gits_clone(tmp_path, env).returncode == 0:
         pytest.skip("this git's `git clone` takes `init.defaultBranch = "
                     "a..b`, as 2.55's does: the split clones there")
@@ -863,6 +1051,15 @@ def test_execute_refuses_a_default_branch_its_clone_will_not_take(
     assert caught.value.code == UNASKED
     assert "invalid branch name" in caught.value.detail
     assert not remotes.exists()
+
+
+def test_execute_refuses_a_default_branch_its_clone_will_not_take(
+        adopter, monkeypatch, tmp_path):
+    """`init.defaultBranch = a..b`, on a git whose `git clone` stops at it,
+    as 2.43's does: `execute` refuses it before any leg exists, where on
+    2a119f28 it made both and stopped extracting the spec leg (#1083)."""
+    execute_refuses_a_default_branch_its_clone_will_not_take(
+        adopter, monkeypatch, tmp_path, bad_default_branch)
 
 
 # ---------------------------------------------------------------------------
@@ -1194,21 +1391,8 @@ def test_a_parent_gits_default_branch_is_asked_of_the_splits_own_clone(
     `execute`'s clone, which takes the whole environment, stopped after
     both legs existed. git 2.55's clone takes the name, and there the CRLF
     file the plan keeps is found."""
-    plan = planned(a_source(tmp_path, files={ROOT_ATTRIBUTES: TEXT_EOL_LF,
-                                             NOTES: CRLF}),
-                   tmp_path, {NOTES: ROOT})
-    work = tmp_path / "work"
-    env = handed(tmp_path, BAD_DEFAULT_BRANCH)
-    clone = this_gits_clone(tmp_path, env)
-    result = checked(plan, env, "--work-dir", str(work))
-    assert "REFUSED" not in result.stderr, result.stderr
-    assert result.returncode == 1, result.stderr
-    if clone.returncode == 0:
-        assert codes(result) == [REENCODED_FILES], result.stderr
-    else:
-        assert finding_lines(result) == [unasked_clone(
-            work, clone.returncode, clone.stderr.decode().strip())]
-    assert list(work.iterdir()) == []
+    check_asks_the_clone_a_default_branch(
+        tmp_path, lambda base: handed(base, BAD_DEFAULT_BRANCH))
 
 
 @pytest.mark.parametrize("handed", FROM_A_PARENT)
@@ -1217,22 +1401,9 @@ def test_execute_refuses_a_parent_gits_default_branch_before_any_leg(
     """Measured on bdcf9952 with git 2.43 and `GIT_CONFIG_PARAMETERS`:
     `execute` made both legs and stopped extracting the spec leg, `fatal:
     invalid branch name`, with nothing rolled back."""
-    plan = planned(a_source(tmp_path), tmp_path, {})
-    env = handed(tmp_path, BAD_DEFAULT_BRANCH)
-    if this_gits_clone(tmp_path, env).returncode == 0:
-        pytest.skip("this git's `git clone` takes `init.defaultBranch = "
-                    "a..b`, as 2.55's does: the split clones there")
-    for name, value in env.items():
-        monkeypatch.setenv(name, value)
-    monkeypatch.setattr(adopter, "_require_filter_repo", lambda: None)
-    remotes = tmp_path / "remotes"
-    with pytest.raises(adopter.Refusal) as caught:
-        adopter.cmd_execute(Namespace(
-            plan=str(plan), source=None, local_remote_dir=remotes,
-            allow_empty_leg=[], yes=True, work_dir=tmp_path / "work"))
-    assert caught.value.code == UNASKED
-    assert "invalid branch name" in caught.value.detail
-    assert not remotes.exists()
+    execute_refuses_a_default_branch_its_clone_will_not_take(
+        adopter, monkeypatch, tmp_path,
+        lambda base: handed(base, BAD_DEFAULT_BRANCH))
 
 
 #: The setting the stub `git` of `refusing_a_setting` reads, under a key no
