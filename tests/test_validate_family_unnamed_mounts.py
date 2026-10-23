@@ -126,7 +126,13 @@ SECTION_REMEDY = (
     " If its row was deleted or its path: edited by hand, put the row back "
     "as git last had it. Otherwise take the section out by hand, in a POSIX "
     "shell, every key it holds, so a submodule later given its name inherits "
-    "none of them, then commit .gitmodules:")
+    "none of them, then stage and commit .gitmodules:")
+
+#: The line every section's remedy prints after its keys' lines (#1077,
+#: RV1069's NIT 3 on #1069): the commit records the index's `.gitmodules`,
+#: so where HEAD's holds the section a plain `git commit` after the keys'
+#: lines alone left it there.
+STAGE = "git add -- .gitmodules"
 
 #: What a path a row names in another case adds, in place of the "deleted
 #: or edited" sentence: the row it belongs to.
@@ -337,7 +343,8 @@ def test_a_section_no_row_names_is_a_finding(holder, tmp_path, extra):
     assert section.splitlines()[0] == SECTION_SAID.format(
         path="members/Old", name="members/Old",
         url="url /nowhere/old.git") + SECTION_REMEDY
-    assert commands(section) == removal("members/Old", "path", "url")
+    assert commands(section) == [*removal("members/Old", "path", "url"),
+                                 STAGE]
 
 
 @MODES
@@ -360,8 +367,8 @@ def test_a_section_for_a_case_variant_of_a_members_path_names_that_row(
         + VARIANT.format(row_path="members/IRRS", project="IRRS")
         + " Take the section out by hand, in a POSIX shell, every key it "
         "holds, so a submodule later given its name inherits none of them, "
-        "then commit .gitmodules:")
-    assert commands(section) == removal("ghost", "path", "url")
+        "then stage and commit .gitmodules:")
+    assert commands(section) == [*removal("ghost", "path", "url"), STAGE]
 
 
 # --- the two findings' edges -------------------------------------------------
@@ -632,8 +639,8 @@ def test_two_sections_for_a_hand_mounts_path_each_keep_their_commands(
                              "gitmodules-path-unnamed",
                              "gitmodules-path-unnamed"]
     first, second = findings(result)[2:]
-    assert commands(first) == removal(path, "path", "url")
-    assert commands(second) == removal("second", "path", "url")
+    assert commands(first) == [*removal(path, "path", "url"), STAGE]
+    assert commands(second) == [*removal("second", "path", "url"), STAGE]
     assert first.splitlines()[0].endswith(SECTION_REMEDY)
     assert "takes this section out too" not in result.stderr
     git(*shlex.split(commands(findings(result)[1])[1])[1:], cwd=holder)
