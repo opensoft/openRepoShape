@@ -644,6 +644,7 @@ def test_any_read_refused_after_the_writes_rolls_them_back(
     assert apply_b(update_shape, root, upstream_and_project) == 2
     out, err = capsys.readouterr()
     assert_rolled_back(out + err, root, upstream_and_project, changed)
+    assert (out + err).count("ROLLED BACK") == 1, out + err
 
 
 # --- any other `OSError` after the first write (#1173) -----------------------
@@ -703,7 +704,9 @@ def test_a_stdout_nobody_reads_is_rolled_back_under_its_broken_pipe(
     has its line. The flush before the root's validators raised over the
     written tree. It still raises, over a tree as it was, and what went
     back reaches stderr, above the traceback, though stdout will not take
-    the flush that comes first."""
+    the flush that comes first. `PYTHONUNBUFFERED` is blanked so stdout is
+    block-buffered whoever runs the test: unbuffered, the `copied` print
+    breaks the pipe first, and the refusal for it answers instead."""
     before = snapshot(root, {})
     reader, writer = os.pipe()
     os.close(reader)
@@ -713,7 +716,8 @@ def test_a_stdout_nobody_reads_is_rolled_back_under_its_broken_pipe(
              "--yes", "--upstream", str(upstream_and_project["upstream"]),
              "--at", upstream_and_project["b"]],
             stdin=subprocess.DEVNULL, stdout=writer, stderr=subprocess.PIPE,
-            text=True, check=False, env={**os.environ, "LANES_LANE": ""})
+            text=True, check=False,
+            env={**os.environ, "LANES_LANE": "", "PYTHONUNBUFFERED": ""})
     finally:
         os.close(writer)
     assert proc.returncode != 0, proc.stderr
