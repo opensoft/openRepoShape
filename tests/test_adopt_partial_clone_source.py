@@ -505,6 +505,8 @@ def test_a_head_whose_blob_the_source_lacks_is_refused(made, command):
     assert result.returncode == 2, result.stderr + result.stdout
     assert REFUSED in result.stderr
     assert "that lacks at least " in result.stderr
+    assert "its branches, tags and HEAD reach" in result.stderr
+    assert "checks out its HEAD" in result.stderr
     assert "plan ok" not in result.stdout
     assert not (source.base / "remotes").exists()
     source.untouched()
@@ -548,6 +550,20 @@ def test_an_unborn_head_is_read_as_before(made, command):
         assert sorted(path.name
                       for path in (source.base / "remotes").iterdir())
         assert source.runs() == 0
+
+
+def test_a_file_named_head_in_the_source_is_no_path_of_the_walk(made):
+    """HEAD is walked by its id: with `HEAD` in the walk, a file of the
+    source's work tree named `HEAD` made git exit 128, `ambiguous argument
+    'HEAD': both revision and filename`, and refused a source that lacks
+    nothing."""
+    source = made("cured")
+    (source.path / "HEAD").write_text("not a revision\n", encoding="utf-8")
+    result = source.check()
+    assert result.returncode == 0, result.stderr + result.stdout
+    assert "plan ok" in result.stdout
+    assert CODE not in result.stderr + result.stdout
+    source.untouched()
 
 
 @pytest.mark.parametrize("lacked", ["branch", "tag", "head", "promised"])
