@@ -499,10 +499,18 @@ def test_check_names_each_twin_git_refuses_and_each_set_it_holds(tmp_path):
 # #1161: the case twins the plan keeps in one repository
 # ---------------------------------------------------------------------------
 
-#: The finding #1161 adds, the code of `execute`'s refusal, and how its
-#: remediation begins.
+#: The finding #1161 adds, the code of `execute`'s refusal, how its
+#: remediation begins, and the whole of it: a rename in the source, and no
+#: answer that sends the twins into different repositories, which a disk
+#: that ignores case loses too (#1183, r1189's MUST 1).
 PLAN_CASE_TWINS = "plan-case-twins"
 TWINS_REMEDY = "Remediation: rename paths in the source until no two"
+TWINS_REMEDIATION = (
+    "Remediation: rename paths in the source until no two that one "
+    "repository would hold differ only in case -- each twin of a set but "
+    "one, or the folder above a twin -- commit that, and re-run `plan`: a "
+    "plan is written against one commit of the source, and `check` calls it "
+    "`plan-stale` once the source has moved.")
 #: Where `plan-case-twins` says the plan keeps a set.
 ROOT_TWINS, SPEC_TWINS, CODE_TWINS = ("the assembly root", "the spec leg",
                                       "the code leg")
@@ -516,9 +524,25 @@ def twins_kept(sets: str, where: str, paths: str, named: str) -> str:
             "case, or one naming in another case a folder above another: "
             f"{named}. A disk that ignores case, as a macOS or Windows disk "
             "does by default, holds each set as one name: a clone made there "
-            "checks out only one path of each set, and `execute` run there "
-            "can stop before any leg exists, at git's `will not add file "
-            "alias`, or after both legs are pushed, as `adopt-lost`.")
+            "checks out only one path of each set, and `execute` would stop "
+            "there before any leg exists, at git's `will not add file "
+            "alias`, or after both legs are pushed, as `adopt-lost` or at "
+            "`git rm` mounting the legs, so `execute` refuses them on every "
+            "disk.")
+
+
+def one_blob_twins(sets: str, where: str, paths: str, named: str) -> str:
+    """The NOTE `check` prints for `sets` sets of twins in `where` whose
+    paths fold to one name and hold one blob in one mode, `paths` paths,
+    named as `named`: `plan-case-twins` leaves them out (r1189's SHOULD
+    5)."""
+    return (f"NOTE the plan keeps {sets} of case twins in {where} whose "
+            f"paths hold one blob in one mode, {paths}: {named}. A disk that "
+            "ignores case holds each set as one name, and a clone made there "
+            "checks out one path of each, git saying `the following paths "
+            "have collided`; that path holds what each path of the set "
+            "holds, so none is lost, and `check` names no "
+            f"`{PLAN_CASE_TWINS}` for them.")
 
 
 #: `(the paths a source commit gains, each with a blob of its own, the
@@ -570,6 +594,26 @@ TWINS_KEPT = [
                              "`A`, `a`, `B`, `b`, `C`, `c`, `D`, `d`, `E`, "
                              "`e` and 2 more")],
                  id="ten-named-and-the-rest-counted"),
+    # r1189's SHOULD 6: a file against a folder below the top level, and
+    # one against a folder two levels above another path.
+    pytest.param(("src/E", "src/e/x"), {},
+                 [twins_kept("1 set", CODE_TWINS, "2 paths",
+                             "`src/E` and `src/e/x`")],
+                 id="a-file-and-a-folder-in-the-code-leg"),
+    pytest.param(("f", "F/G/x"), {"f": ROOT, "F/": ROOT},
+                 [twins_kept("1 set", ROOT_TWINS, "2 paths",
+                             "`F/G/x` and `f`")],
+                 id="a-file-and-a-folder-two-levels-above"),
+    # Known limit 1: `casefold` folds `ß` to `ss`, as `lower` does not.
+    pytest.param(("src/straße", "src/STRASSE"), {},
+                 [twins_kept("1 set", CODE_TWINS, "2 paths",
+                             "`src/STRASSE` and `src/straße`")],
+                 id="sharp-s-folded-as-ss"),
+    pytest.param(("AB", "Ab", "aB", "ab"), dict.fromkeys(("AB", "Ab", "aB",
+                                                          "ab"), ROOT),
+                 [twins_kept("1 set", ROOT_TWINS, "4 paths",
+                             "`AB`, `Ab`, `aB` and `ab`")],
+                 id="one-set-of-four"),
 ]
 
 
@@ -591,6 +635,123 @@ def test_check_names_the_case_twins_the_plan_keeps_in_one_repository(
     assert result.returncode == 1, result.stderr
     assert finding_lines(result) == found
     assert result.stderr.count(TWINS_REMEDY) == 1, result.stderr
+    assert TWINS_REMEDIATION in result.stderr.splitlines(), result.stderr
+    assert "NOTE the plan keeps" not in result.stdout, result.stdout
+
+
+def test_twins_come_before_coverage_and_name_executes_refusal(
+        adopter, monkeypatch, tmp_path):
+    """r1189's SHOULD 6: beside a path no entry covers, `plan-case-twins`
+    is listed before `plan-uncovered`, as a rename in the source is their
+    first fix, and so it is the code of `execute`'s refusal."""
+    source = a_source(tmp_path)
+    with_paths(source, ("A", "a", "z"), own_blobs=True)
+    plan = planned(source, tmp_path, {"A": ROOT, "a": ROOT, "z": ROOT})
+    lines = plan.read_bytes().decode().splitlines(keepends=True)
+    start = lines.index("  - path: z\n")
+    end = start + 1
+    while lines[end].startswith("    "):
+        end += 1
+    plan.write_bytes("".join(lines[:start] + lines[end:]).encode())
+    assert [code for code, _ in findings(plan)] == [PLAN_CASE_TWINS,
+                                                    "plan-uncovered"]
+    refusal = refused_before_any_leg(adopter, monkeypatch, plan, tmp_path)
+    assert refusal.code == PLAN_CASE_TWINS
+
+
+#: `(the paths a source commit gains, all with one blob, or each with its
+#: own, the plan's answers, the finding, the NOTE)`: r1189's SHOULD 5. A
+#: set of one name whose paths hold one blob in one mode is checked out as
+#: one path holding what each holds, and no path is lost; its own blobs
+#: lose one. A file against a folder is the finding with one blob too.
+ONE_BLOB = [
+    pytest.param(("A", "a"), False, {"A": ROOT, "a": ROOT}, [],
+                 [one_blob_twins("1 set", ROOT_TWINS, "2 paths",
+                                 "`A` and `a`")],
+                 id="one-blob"),
+    pytest.param(("A", "a"), True, {"A": ROOT, "a": ROOT},
+                 [twins_kept("1 set", ROOT_TWINS, "2 paths", "`A` and `a`")],
+                 [], id="two-blobs"),
+    pytest.param(("src/AB", "src/Ab", "src/ab"), False, {}, [],
+                 [one_blob_twins("1 set", CODE_TWINS, "3 paths",
+                                 "`src/AB`, `src/Ab` and `src/ab`")],
+                 id="one-blob-in-the-code-leg"),
+    pytest.param(("F/x", "f"), False, {"F/": ROOT, "f": ROOT},
+                 [twins_kept("1 set", ROOT_TWINS, "2 paths",
+                             "`F/x` and `f`")],
+                 [], id="a-folder-and-a-file-with-one-blob"),
+]
+
+
+@pytest.mark.parametrize(("paths", "own_blobs", "answers", "found", "noted"),
+                         ONE_BLOB)
+def test_a_set_of_one_blob_is_a_note_and_not_the_finding(
+        tmp_path, paths, own_blobs, answers, found, noted):
+    source = a_source(tmp_path)
+    with_paths(source, paths, own_blobs=own_blobs)
+    result = checked(planned(source, tmp_path, answers))
+    assert "REFUSED" not in result.stderr, result.stderr
+    assert result.returncode == (1 if found else 0), result.stderr
+    assert finding_lines(result) == found
+    assert [line for line in result.stdout.splitlines()
+            if line.startswith("NOTE the plan keeps")] == noted
+    assert ("plan ok" in result.stdout) is not found, result.stdout
+    assert (TWINS_REMEDY in result.stderr) is bool(found), result.stderr
+
+
+def asked_of(adopter, rows: list[tuple[str, str, str]]):
+    """`_case_twin_findings` over a tree of `(path, mode, object)` rows, the
+    plan keeping each in the root: its findings and NOTEs, no remediation
+    but where there is a finding."""
+    plan = SimpleNamespace(entries=[{"path": path, "leg": ROOT}
+                                    for path, _, _ in rows])
+    found, remedies, notes = adopter._case_twin_findings(
+        plan, [(path, mode, oid, 1) for path, mode, oid in rows])
+    assert remedies == ([TWINS_REMEDIATION] if found else [])
+    return found, notes
+
+
+ONE = "1" * 40
+OTHER = "2" * 40
+
+
+#: `(the tree's rows, the findings, the NOTEs)`: one blob in one mode,
+#: asked of the function itself, as `with_paths` writes no mode but a
+#: file's or a symlink's.
+ONE_BLOB_ROWS = [
+    pytest.param([("A", "100644", ONE), ("a", "100755", ONE)],
+                 [twins_kept("1 set", ROOT_TWINS, "2 paths", "`A` and `a`")],
+                 [], id="one-blob-in-two-modes"),
+    pytest.param([("A", "160000", ONE), ("a", "160000", ONE)],
+                 [twins_kept("1 set", ROOT_TWINS, "2 paths", "`A` and `a`")],
+                 [], id="submodules-at-one-commit"),
+    pytest.param([("A", "120000", ONE), ("a", "120000", ONE)], [],
+                 [one_blob_twins("1 set", ROOT_TWINS, "2 paths",
+                                 "`A` and `a`")],
+                 id="symlinks-to-one-target"),
+    pytest.param([("AB", "100644", ONE), ("Ab", "100644", ONE),
+                  ("ab", "100644", OTHER)],
+                 [twins_kept("1 set", ROOT_TWINS, "3 paths",
+                             "`AB`, `Ab` and `ab`")],
+                 [], id="one-of-three-another-blob"),
+    pytest.param([("A", "100644", ONE), ("B", "100644", ONE),
+                  ("a", "100644", ONE), ("b", "100644", OTHER)],
+                 [twins_kept("1 set", ROOT_TWINS, "2 paths", "`B` and `b`")],
+                 [one_blob_twins("1 set", ROOT_TWINS, "2 paths",
+                                 "`A` and `a`")],
+                 id="a-set-of-each-in-one-repository"),
+    pytest.param([("A", "100644", ONE), ("B", "100644", OTHER),
+                  ("a", "100644", ONE), ("b", "100644", OTHER)], [],
+                 [one_blob_twins("2 sets", ROOT_TWINS, "4 paths",
+                                 "`A`, `a`, `B` and `b`")],
+                 id="two-sets-of-one-blob-set-by-set"),
+]
+
+
+@pytest.mark.parametrize(("rows", "found", "noted"), ONE_BLOB_ROWS)
+def test_only_one_blob_in_one_mode_is_left_to_the_note(adopter, rows, found,
+                                                       noted):
+    assert asked_of(adopter, rows) == (found, noted)
 
 
 #: `(the paths, the answers)` of sources no repository the split makes holds
@@ -611,9 +772,12 @@ NO_TWINS_KEPT = [
 @pytest.mark.parametrize(("paths", "answers"), NO_TWINS_KEPT)
 def test_paths_no_one_repository_holds_as_one_name_are_no_finding(
         tmp_path, paths, answers):
-    """Twins the plan sends to different repositories are held apart, one
-    a drop takes out is in none, and folders in another case merge into one
-    whose names differ."""
+    """Folders in another case merge into one whose names differ, and no
+    path is lost. Twins the plan sends to different repositories, and a
+    twin it drops beside one it keeps, are not this finding, which asks one
+    repository at a time; on a disk that ignores case `execute` loses them
+    too, as `adopt-lost` after both legs are pushed (r1189's SHOULD 3,
+    #1183)."""
     source = a_source(tmp_path)
     with_paths(source, paths, own_blobs=True)
     assert findings(planned(source, tmp_path, answers)) == []
