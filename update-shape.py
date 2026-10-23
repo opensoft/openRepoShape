@@ -176,8 +176,11 @@ from repo_shape import (  # noqa: E402
 # purpose: `shape_materialize` imports it the same way and says why (#380). A
 # block header is found with it, so a trailing comment is one here wherever it
 # is one to the reader (#437), and with the reader's rule for a key, so a
-# quoted key or a space before the colon is one here too (#674).
-from repo_shape import _split_key, _strip_comment  # noqa: E402
+# quoted key or a space before the colon is one here too (#674), and with the
+# reader's blanks, a space and a tab and no other (`_YAML_WHITE`), so a line
+# that opens with U+00A0 or U+3000 is another key here as it is to the reader
+# (#1220).
+from repo_shape import _YAML_WHITE, _split_key, _strip_comment  # noqa: E402
 # U+FEFF by the reader's own name: the two line rewrites take it off line 1
 # as `parse_yaml` does, and put it back (#933). On a line of its own, for the
 # reason the branch rule's import below gives.
@@ -1690,14 +1693,21 @@ def _is_block_header(line: str, key: str) -> bool:
     line(s)"), or a manifest `update-manifest-no-shape`, saying it has no
     `shape:` block when the reader gives it one. The column is the
     reader's: no space in front, and no tab among the blanks in front,
-    which the reader refuses outright; the text is `.strip()`ped first,
-    as `_tokenise` strips it. A line `_split_key` refuses is one the
-    reader refuses as well, so it is no header here rather than a
-    traceback, and the count that follows says so."""
-    if line.startswith(" ") or "\t" in line[:len(line) - len(line.lstrip())]:
+    which the reader refuses outright; the text is stripped of
+    `_YAML_WHITE` first, as `_significant_text` strips it for `_tokenise`.
+    A BLANK IS A SPACE OR A TAB AND NOTHING ELSE (#1220). `.strip()` with no
+    argument also cuts U+00A0 and U+3000, which the reader keeps as text, so
+    `<U+00A0>shape:` was the header here, where the reader gives it the key
+    `<U+00A0>shape`, and the rewrite wrote the block under a line the reader
+    does not read as one. A line `_split_key` refuses is one the reader
+    refuses as well, so it is no header here rather than a traceback, and
+    the count that follows says so."""
+    blanks = len(line) - len(line.lstrip(_YAML_WHITE))
+    if line.startswith(" ") or "\t" in line[:blanks]:
         return False
     try:
-        return _split_key(_strip_comment(line.strip())) == (key, "")
+        return _split_key(
+            _strip_comment(line.strip(_YAML_WHITE))) == (key, "")
     except YamlError:
         return False
 

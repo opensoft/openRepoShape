@@ -57,6 +57,12 @@ PIN = "contracts/shape-pin.yaml"
 HOLDER = "Contoso"
 FAMILY_SOURCE = "templates/family-root/scripts/validate-family.py"
 
+#: The two blanks that `str.strip()` cuts and the reader does not (#1220): its
+#: blanks are a space and a tab (`_YAML_WHITE`). In front of `shape:` they make
+#: the key `<blank>shape`, and after the colon a value.
+NO_BREAK_SPACE = "\u00a0"
+IDEOGRAPHIC_SPACE = "\u3000"
+
 #: Every way a comment may follow a header. `_strip_comment` takes a `#` after
 #: a space or a tab, and a later `#` or a quote inside the comment is part of
 #: it.
@@ -208,12 +214,29 @@ def test_a_pin_with_no_files_header_is_still_refused_by_its_count(
                  id="indented"),
     pytest.param(lambda text: text.replace("\nshape:\n", "\n# shape:\n", 1),
                  id="commented-out"),
+    pytest.param(lambda text: text.replace(
+        "\nshape:\n", f"\n{NO_BREAK_SPACE}shape:\n", 1),
+        id="no-break-space-in-front"),
+    pytest.param(lambda text: text.replace(
+        "\nshape:\n", f"\n{IDEOGRAPHIC_SPACE}shape:\n", 1),
+        id="ideographic-space-in-front"),
+    pytest.param(lambda text: text.replace(
+        "\nshape:\n", f"\nshape: {NO_BREAK_SPACE}\n", 1),
+        id="no-break-space-after"),
+    pytest.param(lambda text: text.replace(
+        "\nshape:\n", f"\nshape: {IDEOGRAPHIC_SPACE}\n", 1),
+        id="ideographic-space-after"),
 ])
 def test_a_manifest_with_no_shape_header_still_names_this_kinds_validator(
         update_shape, kind_name, validator, damage):
     """`update-manifest-no-shape` is kept for a manifest that really has no
     `shape:` block at column 0, and its remedy still names the validator the
-    kind carries."""
+    kind carries.
+
+    A BLANK IS A SPACE OR A TAB (#1220). U+00A0 or U+3000 in front of
+    `shape:` is the key `<blank>shape` to the reader, and one after the
+    colon is a value, so neither is a header: the bare `.strip()` found the
+    block there, and the refusal was left to the validator, after a write."""
     before = MANIFEST.format(member="e" * 40, commit=OLD_COMMIT, tree=OLD_TREE)
     broken = damage(before)
     assert broken != before
