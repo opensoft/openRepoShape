@@ -43,6 +43,14 @@ What #919 left, #968, from rv919's review of #952 at `8a7671b3`:
   * rv919's surviving mutants r2 (a socket named as a FIFO) and r4 (an
     empty remedy where none was given) each fail a row now.
 
+What #968 left, #1222, from RV1200's review of #1200 (its N2):
+
+  * The `HEAD` of a leg's git directory at mode 000, under `.git/modules/`
+    or in a `.git` directory, stats, so #968's `stat` passed it, and git,
+    which could not read it, ended the run in `pin-commit-unresolvable`
+    under THE LOCKSTEP RULE. It is opened as a gitfile is, and refused
+    `pin-submodule-unreadable`, naming that `HEAD`.
+
 THE HARNESS is `tests/test_validate_pins_named_and_spelled.py`'s: the gate
 runs as the copy a real scaffold wrote (`validate`), and in-process as that
 copy loaded as a module (`validator`). A stub `gh` is a `#!` script, so its
@@ -911,3 +919,86 @@ def test_a_git_directory_is_its_own_and_a_gitfile_naming_none_is_gits(
     other.parent.mkdir()
     other.write_bytes(b"not a gitfile" + LF.encode("ascii"))
     assert validator._leg_git_dir(other) is None
+
+
+# --- #1222: a leg git directory's `HEAD` this user cannot open ---------------
+
+#: `(whether the leg's git directory is its own, its `HEAD`)`: a gitfile
+#: leg's, under `.git/modules/`, and a `.git` directory's (#1222). Each
+#: `HEAD` is the path the gate names.
+HEADS = [
+    pytest.param(False, ".git/modules/spec/HEAD", id="gitfile-leg"),
+    pytest.param(True, "spec/.git/HEAD", id="git-directory-leg"),
+]
+
+
+@CANNOT_RUN_AS_ROOT
+@pytest.mark.parametrize("own_directory, head", HEADS)
+def test_a_leg_git_directory_head_this_user_cannot_open_is_refused(
+        project, own_directory, head):
+    """#1222, RV1200's N2: the `HEAD` of the leg's git directory at mode
+    000. It stats, so #968's `stat` of it passed, and git, which could not
+    read it, ended the run in `pin-commit-unresolvable` under THE LOCKSTEP
+    RULE, which says the pinned commit is not in the leg's object store. It
+    is `pin-submodule-unreadable`, naming that `HEAD`. The control first:
+    readable, the same leg passes."""
+    if own_directory:
+        leg_with_its_own_git_directory(project)
+    passed = validate(project)
+    assert passed.returncode == 0, passed.stdout + passed.stderr
+    assert_the_checkout_refused(project, head, 0, head)
+
+
+@pytest.mark.parametrize("own_directory, head", HEADS)
+@pytest.mark.parametrize("failure, advice", CAUSES)
+def test_a_leg_git_directory_head_whose_open_is_refused_is_refused_everywhere(
+        validator, project, monkeypatch, own_directory, head, failure,
+        advice):
+    """The same in-process, so on every platform and as root: the open of
+    the `HEAD` refused, each cause with its own advice."""
+    if own_directory:
+        leg_with_its_own_git_directory(project)
+    failing(monkeypatch, "open", {"HEAD": failure})
+    refusal = refusal_of_the_run(validator, project)
+    assert refusal.code == "pin-submodule-unreadable"
+    assert refusal.detail == f"{head}: cannot be read ({failure.strerror})"
+    assert refusal.remediation == CHECKOUT_READS + advice + AGAIN
+
+
+def test_a_head_gone_when_it_is_opened_is_left_to_git(validator, project,
+                                                     monkeypatch):
+    """Asked as `_is_a` asks a `stat`: an open of the `HEAD` that finds
+    nothing at the name is a git directory with no `HEAD`, which git answers
+    for, and not a file this user cannot read. Here git reads it, so the run
+    finds nothing."""
+    failing(monkeypatch, "open", {"HEAD": os_error(errno.ENOENT)})
+    report = validator.Report()
+    validator._run_all_checks(project, report, [])
+    assert report.findings == []
+
+
+@pytest.mark.parametrize("make", [
+    pytest.param(made_directory, id="directory"),
+    pytest.param(made_fifo, id="fifo", marks=POSIX_NODES),
+])
+def test_a_head_that_is_no_regular_file_is_not_opened(validator, tmp_path,
+                                                      monkeypatch, make):
+    """Only a `HEAD` that is a regular file is opened: one that is anything
+    else is git's to answer for, and the open of a FIFO would wait for a
+    writer. An open of either fails the row rather than hanging it."""
+    dotgit = tmp_path / "leg" / ".git"
+    dotgit.mkdir(parents=True)
+    make(dotgit / "HEAD")
+    failing(monkeypatch, "open", {"HEAD": AssertionError("opened")})
+    assert validator._refuse_an_unreadable_git_dir(tmp_path, dotgit) is None
+
+
+def test_a_head_no_system_call_can_name_is_left_to_git(validator, tmp_path):
+    """A `gitdir: ` line that holds a NUL names a git directory no system
+    call can take, so its `HEAD` is nothing there, as `_is_there` answers a
+    name the system cannot take: nothing is opened, no `ValueError` ends
+    the run, and git refuses the gitfile as it always did."""
+    dotgit = tmp_path / "leg" / ".git"
+    dotgit.parent.mkdir()
+    dotgit.write_bytes(b"gitdir: ../m" + chr(0).encode("ascii") + b"x")
+    assert validator._refuse_an_unreadable_git_dir(tmp_path, dotgit) is None
