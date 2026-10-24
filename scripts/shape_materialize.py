@@ -1718,9 +1718,15 @@ def gives_a_branch_another_name(source: str, destination: str) -> bool:
     `refs/heads-archive/old` for `refs/heads*`, and `origin_fetch_refspecs`
     says what leaving those out costs (BUT A COMMIT ONLY A REF THAT IS NO
     BRANCH REACHES). A shorter start, such as `refs/*` or `*`, can name a
-    tag, and that clause has left it out first. ANY OTHER SOURCE NAMES NO
-    BRANCH, though a refspec from one can still put a ref on a branch's
-    name: `origin_fetch_refspecs` says where (WHAT CAN STILL CLASH).
+    tag, and that clause has left it out first. ANY OTHER SOURCE TAKES NO
+    BRANCH BY A PATTERN, and a full name that is no pattern, such as
+    `refs/h`, takes the one ref git completes it to on the remote: that ref
+    itself, or one such as the branch `refs/heads/refs/h` or the tag
+    `refs/tags/refs/h` (measured, git 2.43 and 2.47.1). Such a name can
+    stand for a branch its spelling does not show, so it is not left out
+    here. A refspec from any such source can still put a ref on a branch's
+    name, if the ref is not that branch itself: `origin_fetch_refspecs`
+    says where (WHAT CAN STILL CLASH).
     """
     fixed, star, _ = source.partition("*")
     if not source.startswith(HEADS_PREFIX):
