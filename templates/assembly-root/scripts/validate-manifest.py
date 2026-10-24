@@ -113,8 +113,12 @@ from repo_shape import (  # noqa: E402
     pin_source_env_name, pin_source_env_shared, repo_basename,
 )
 
-DATE_RE = re.compile(r"^\d{4}-\d{2}-\d{2}$")
-QUALIFIED_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_.-]*/[A-Za-z0-9][A-Za-z0-9_.-]*$")
+#: BOTH END IN `\Z`, NEVER `$` (#1139): `$` also matches just before a
+#: trailing line feed, so an `elected_on:` or a leg's `repository:` read as
+#: the value and a line feed (a double-quoted `\n`, or a block scalar) passed
+#: `.match` as well formed and the manifest was `manifest ok`.
+DATE_RE = re.compile(r"^\d{4}-\d{2}-\d{2}\Z")
+QUALIFIED_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_.-]*/[A-Za-z0-9][A-Za-z0-9_.-]*\Z")
 REQUIRED_ROLES = {"assembly", "spec", "code"}
 
 #: The `OSError`s that `Path.is_file()` answered False to on Python 3.9 to
@@ -791,7 +795,13 @@ def _id_findings(manifest: dict) -> tuple[list[str], str | None]:
     as `_findings` used to null out its local `project_id` on that path.
     """
     project_id = manifest.get("id")
-    if not isinstance(project_id, str) or not PROJECT_ID_RE.match(project_id):
+    # `fullmatch`, NOT `match` (#1139): `PROJECT_ID_RE` ends in `$`, which
+    # also matches just before a trailing line feed, so `id: "atlas\n"` was
+    # an id and the finding was the topic's, "expected 'xf-project-atlas\n'".
+    # The pattern is the project's own `repo_shape.py`'s, whose text the
+    # finding prints, so it is asked whole here rather than respelled.
+    if not isinstance(project_id, str) or not PROJECT_ID_RE.fullmatch(
+            project_id):
         return ([_finding(
             "manifest-id",
             f"id is {project_id!r}; it must match {PROJECT_ID_RE.pattern}")],

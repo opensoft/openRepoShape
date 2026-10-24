@@ -307,8 +307,10 @@ HEADS_PREFIX = "refs/heads/"
 #: holder only through `update-shape.py`. `tests/test_family_member_name.py`
 #: reads every spelling and fails when they differ, so it is one rule kept in
 #: three places and never three rules. Change one and the test names the rest.
+#: It ends in `\Z` with them (#1139). `--member` is stripped before it is
+#: asked, so no line feed reached this copy's `$`.
 MEMBER_RE = re.compile(
-    r"^[A-Za-z0-9][A-Za-z0-9_.-]*/[A-Za-z0-9][A-Za-z0-9_.-]*$")
+    r"^[A-Za-z0-9][A-Za-z0-9_.-]*/[A-Za-z0-9][A-Za-z0-9_.-]*\Z")
 
 #: The suffix a LEG's name carries after its assembly root's — the
 #: `(?:-spec|-code)?` that `contracts/repository-naming.yaml`'s leg pattern
@@ -1128,7 +1130,11 @@ def _read_member_project(path: Path, project: str, repository: str,
         raise Refusal("member-manifest-unreadable",
                       f"{repository}: project.yaml is not a mapping")
     project_id = str(manifest.get("id") or "")
-    if not PROJECT_ID_RE.match(project_id):
+    # `fullmatch`, NOT `match` (#1139): `$` also matches just before a
+    # trailing line feed, so a member whose `project.yaml` read `id:
+    # "irqs\n"` was mounted, and its row recorded that id, which the
+    # holder's gate compares with the same manifest and passed.
+    if not PROJECT_ID_RE.fullmatch(project_id):
         raise Refusal(
             "member-bad-id",
             f"{repository}: project.yaml `id:` is {manifest.get('id')!r}, "
