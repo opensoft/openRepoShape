@@ -217,6 +217,7 @@ from __future__ import annotations
 import argparse
 import contextlib
 import datetime as _dt
+import decimal
 import errno
 import itertools
 import json
@@ -8379,10 +8380,19 @@ FOLLOW_UPS_REMEDIATION = (
 
 def _read_as(value) -> str:
     """What the plan's reader handed back for a value, in words, spelled as a
-    YAML plan spells it where that differs from Python (`true`, `null`)."""
+    YAML plan spells it where that differs from Python (`true`, `null`).
+
+    A FLOAT IS SAID IN DIGITS, WITH NO EXPONENT (#1212). `repr` writes
+    `1e+300` and `1e-05`, which the plan's reader reads as text, so "the
+    number 1e+300" named a value no plan can hold. The digits are `repr`'s,
+    the shortest that read back as that float, written out in full, with
+    `.0` where they hold no point, so the reader reads them back as it."""
     if isinstance(value, bool):
         return f"the boolean {str(value).lower()}"
-    if isinstance(value, (int, float)):
+    if isinstance(value, float):
+        said = format(decimal.Decimal(repr(value)), "f")
+        return f"the number {said if '.' in said else said + '.0'}"
+    if isinstance(value, int):
         return f"the number {value!r}"
     if isinstance(value, str):
         return f"the text {value!r}"
