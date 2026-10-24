@@ -65,8 +65,8 @@ PYTHON = "    python3 scripts/bootstrap.py"
 OWN_MAKEFILE_NOTE = (
     "NOTE the root keeps its own Makefile and the shape's is shape/Makefile, "
     "so `make bootstrap` and the shape's other make targets arrive only once "
-    "the follow-up merges the two; `python3 scripts/bootstrap.py` is what "
-    "`make bootstrap` runs.")
+    "the follow-up merges the two; `python3 scripts/bootstrap.py` (`python` "
+    "on Windows) is what `make bootstrap` runs.")
 #: #493's NOTE, for a root that keeps only its own `scripts/bootstrap.py`:
 #: unchanged.
 OWN_SCRIPT_NOTE = (
@@ -75,8 +75,8 @@ OWN_SCRIPT_NOTE = (
     "scripts/bootstrap.py` runs the shape's bootstrap yet: merge "
     "shape/scripts/bootstrap.py into scripts/bootstrap.py first, and then "
     "run `make bootstrap`.")
-RUNS = ("; `python3 scripts/bootstrap.py` is what the shape's `make "
-        "bootstrap` runs.")
+RUNS = ("; `python3 scripts/bootstrap.py` (`python` on Windows) is what "
+        "the shape's `make bootstrap` runs.")
 
 
 def reads(name: str) -> str:
@@ -115,7 +115,7 @@ def script_aside(name: str, makefile: bool) -> str:
     return (f"NOTE the root keeps {kept}, so neither `make bootstrap` nor "
             "`python3 scripts/bootstrap.py` runs the shape's bootstrap yet: "
             f"merge {merges} first, and then run `python3 "
-            f"scripts/bootstrap.py`; {reads(name)}.")
+            f"scripts/bootstrap.py` (`python` on Windows); {reads(name)}.")
 
 
 #: `(what the root keeps, NEXT's lines after the clone, the file GNU make

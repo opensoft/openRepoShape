@@ -16,7 +16,9 @@ commit of each leg this project currently IS, and the gate that checks them.
 **Work from here, not from a leg clone.** An agent standing in a leg clone can
 see neither the manifest nor the other leg, so it is reading half a project and
 cannot advance it at all. `git clone --recurse-submodules` this repository and
-run `make bootstrap`.
+run `make bootstrap`; where the root keeps a `GNUmakefile` or a `makefile`,
+which GNU make reads before `Makefile`, run `python3 scripts/bootstrap.py`
+(`python` on Windows), which is what the shape's `make bootstrap` runs.
 
 ## Advancing a leg is ONE commit here
 
@@ -96,6 +98,11 @@ make park        commit, push and RECORD every open feature, so another
                  workstation can take the work up
 make resume      recreate the parked features here, from that record
 ```
+
+They are the shape's Makefile's targets, so `make` at the root reaches them
+only where the file it reads first holds them, or includes a Makefile that
+does; `python3 scripts/bootstrap.py` (`python` on Windows) is what
+`make bootstrap` runs.
 
 `make bootstrap` places a leg on its tracking branch AT the pin only where that
 loses no commit, and otherwise leaves its checkout where it is, saying why. The
