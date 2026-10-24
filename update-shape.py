@@ -4194,9 +4194,10 @@ def _nothing_to_do(rows: list[Row], pinned: str, target: str,
 def _refuse_kept_copies_missing_names(root: Path, rows: list[Row],
                                       taking: list[Addition], accepted: set,
                                       target: str, kind: Kind) -> None:
-    """`update-accept-local-missing-name` (#536, #604): a copy
-    `--accept-local` keeps and a copy this run writes beside it disagree on
-    a name. One imports it from the other, whose bytes do not define it.
+    """`update-accept-local-missing-name` (#536, #604, #1082): a copy this
+    run writes, or one `--accept-local` keeps, and a copy beside it
+    disagree on a name, as this run would leave them. One imports it from
+    the other, whose bytes do not define it.
 
     THE VALIDATORS CANNOT SEE IT, AND NOTHING ELSE RUNS THAT COPY. Since
     #456 moved `spelled` and `escape_unencodable_stdout` into
@@ -4224,36 +4225,59 @@ def _refuse_kept_copies_missing_names(root: Path, rows: list[Row],
     `_validators_meet` finds none of them meeting a line it names: a
     clause that is false of one line in the list is false.
 
-    WHAT IS ASKED, AND OF WHAT: BOTH DIRECTIONS, between a KEPT copy, a
-    `both` or `locally-modified` row `--accept-local` named, read from its
-    bytes on disk, and a copy this run WRITES, read from the bytes it is
-    about to write: each `upstream-changed` row and each `--add` file.
+    WHAT IS ASKED, AND OF WHAT: a copy this run WRITES, read from the bytes
+    it is about to write (each `upstream-changed` row and each `--add`
+    file), against the module it imports from; and a KEPT copy, read from
+    its bytes on disk, against a module this run writes: a `both` or
+    `locally-modified` row `--accept-local` named, or an `unchanged` row
+    an earlier run kept (#1082).
 
-      * A WRITTEN IMPORTER AND A KEPT MODULE (#536,
-        `_kept_copies_lacking`): each written `.py` copy's imports, against
-        what the kept bytes define.
-      * A KEPT IMPORTER AND A WRITTEN MODULE (#604,
+      * A WRITTEN IMPORTER (#536, #1082, `_written_copies_lacking`): each
+        written `.py` copy's imports, against what its module defines AS
+        THIS RUN LEAVES IT (`_copies_as_left`): the bytes this run writes
+        there, or else the bytes on disk. That module may be a copy this
+        run's `--accept-local` keeps (#536); a copy AN EARLIER RUN KEPT,
+        whose row reads `unchanged` because the pin records the project's
+        own bytes and the upstream has not changed the file since (#1082);
+        or the upstream's own bytes at the target, written by this run or
+        already on disk. #536 asked the first alone, so a holder whose
+        `apply --accept-local scripts/bootstrap.py` had kept a
+        `bootstrap.py` from before #1023 was written, by its next apply
+        and with no `--accept-local` at all, the `siblings.py` that takes
+        `member_make_environment` from it: `copied`, validators green, a
+        commit, and an `ImportError` from the first `siblings.py --help`.
+      * A KEPT IMPORTER AND A WRITTEN MODULE (#604, #1082,
         `_kept_copies_importing_dropped`): each kept `.py` copy's imports,
-        against what the module's written bytes define. Upstream does drop
-        public names: cac6bb20 took `link_manifest_path` and
-        `declared_neutral_pins` out of `scripts/repo_shape.py`. A project
-        whose kept `bootstrap.py` imported a name dropped like that got
-        `pins ok`, `manifest ok`, and an `ImportError` from its next
-        `bootstrap.py --help`. Only what THIS RUN takes away is refused: a
-        name the module's bytes on disk define now and its written bytes do
-        not. A name the bytes on disk lack too already stops the kept copy
-        today, and a module with no file yet, an `--add` file, defines
-        nothing to take away.
+        whoever kept it, against what the module's written bytes define.
+        Upstream does drop public names: cac6bb20 took `link_manifest_path`
+        and `declared_neutral_pins` out of `scripts/repo_shape.py`. A
+        project whose kept `bootstrap.py` imported a name dropped like that
+        got `pins ok`, `manifest ok`, and an `ImportError` from its next
+        `bootstrap.py --help`. A copy an earlier run kept met it from a run
+        with no `--accept-local` at all: a holder whose `apply
+        --accept-local scripts/siblings.py` had kept its own `siblings.py`,
+        edited to take a name from `bootstrap.py`, was written, by its next
+        apply, a `bootstrap.py` that no longer defined it (#1082). Only
+        what THIS RUN takes away is refused: a name the module's bytes on
+        disk define now and its written bytes do not. A name the bytes on
+        disk lack too already stops the kept copy today, and a module with
+        no file yet, an `--add` file, defines nothing to take away.
 
-    A row the run leaves alone is not asked about, in either direction: an
-    edit that already broke an untouched importer is the project's doing,
-    not this run's. A module is resolved the way every shipped importer
-    resolves it, its own directory first on `sys.path`: `from M import ...`
-    in `<dir>/<file>.py` is the copy at `<dir>/M.py`, a dotted `M` naming
-    that path's subdirectories. So the same code covers `repo_shape.py`
-    today, and any helper kept or written beside its importer later, a
-    holder's `bootstrap.py` under its `siblings.py` among them. A module
-    that resolves to no copy on the other side is not asked about.
+    AN IMPORTER THIS RUN DOES NOT WRITE IS ASKED ONLY WHERE IT HOLDS THE
+    PROJECT'S OWN BYTES: a copy this run's `--accept-local` keeps (#604),
+    or one an earlier run kept (#1082), and only against a module this run
+    writes. An `unchanged` copy that holds the upstream's own bytes is not
+    asked as an importer: that pair is two of the target's own copies, and
+    no shipped copy disagrees with the module beside it, as the last
+    paragraph says. A module is resolved the way every shipped importer
+    resolves it, its own directory first on `sys.path`: `from M import
+    ...` in `<dir>/<file>.py` is the copy at `<dir>/M.py`, a dotted `M`
+    naming that path's subdirectories. So the same code covers
+    `repo_shape.py` today, and any helper kept or written beside its
+    importer later, a holder's `bootstrap.py` under its `siblings.py`
+    among them. A module that resolves to no pinned copy this run leaves
+    at its path, or to no copy this run writes for a kept importer, is not
+    asked about.
     `_names_imported` reads what a copy takes, and `_names_defined` (a file)
     or `_names_defined_in` (bytes) what a module binds.
 
@@ -4279,35 +4303,58 @@ def _refuse_kept_copies_missing_names(root: Path, rows: list[Row],
     `break`, a `continue` or a `return` (`_names_imported`): a refusal
     Python would not make, though still one before the yes and before any
     write. A name bound only through `globals()`, `setattr` on the module
-    or `exec` reads as missing: refused where a kept module binds it that
-    way (#536), or where the written bytes do and the bytes on disk bound
-    it plainly (#604). One bound and then deleted (`NAME = 1`, then `del
-    NAME`) reads as defined, so that copy's `ImportError` is still its
-    first run's to meet.
+    or `exec` reads as missing: refused where the module a written copy
+    imports from binds it that way (#536), or where the written bytes do
+    and the bytes on disk bound it plainly (#604). One bound and then
+    deleted (`NAME = 1`, then `del NAME`) reads as defined, so that copy's
+    `ImportError` is still its first run's to meet. No shipped copy takes
+    a name the readers miss from the module beside it (the reader rows of
+    `tests/test_update_shape_kept_helper.py`), so a root that holds none
+    of its own bytes meets this only where the target's own copies
+    disagree.
     """
     kept = {row.path: row for row in rows
             if row.state in (BOTH, LOCALLY_MODIFIED) and row.path in accepted}
-    if not kept:
-        return
     written = _written_copies(rows, taking)
-    pairs = sorted(_kept_copies_lacking(root, written, kept)
-                   + _kept_copies_importing_dropped(root, written, kept))
+    left = _copies_as_left(rows, written, kept)
+    earlier = {row.path: row for row in rows
+               if left.get(row.path) == EARLIER_MODULE}
+    pairs = sorted(_written_copies_lacking(root, written, left)
+                   + _kept_copies_importing_dropped(root, written, kept,
+                                                    earlier))
     if pairs:
         raise _missing_name_refusal(
-            pairs, kept, target, _validators_meet(root, written, pairs, kind))
+            pairs, {row.path: row for row in rows}, target,
+            _validators_meet(root, written, pairs, kind))
 
 
 #: Which side of a pair `update-accept-local-missing-name` names is the
-#: MODULE (#604): the kept bytes lack a name a written copy imports (#536),
-#: or the written bytes drop one a kept copy imports.
+#: MODULE, and whose its bytes are as this run leaves them (#604, #1082):
+#: the bytes a copy kept by this run's `--accept-local` (#536), or by an
+#: earlier run's (#1082), lack a name a written copy imports; the
+#: upstream's own bytes at the target do (#1082); or the bytes this run
+#: writes drop one a copy imports that this run's `--accept-local` keeps
+#: (#604), or that an earlier run kept (#1082).
 KEPT_MODULE = "kept"
+EARLIER_MODULE = "kept by an earlier run"
+UPSTREAM_MODULE = "the upstream's"
 WRITTEN_MODULE = "written"
+WRITTEN_UNDER_EARLIER = "written under a copy an earlier run kept"
+#: The word a `(written) no longer defines` line gives its importer, by
+#: the line's side: the kept copy's, `(kept)` or `(kept by an earlier
+#: run)`.
+KEPT_IMPORTERS = {WRITTEN_MODULE: KEPT_MODULE,
+                  WRITTEN_UNDER_EARLIER: EARLIER_MODULE}
 
 
 class Disagreement(NamedTuple):
-    """One line of `update-accept-local-missing-name` (#536, #604):
-    `importer` imports `names` from `module`, and `side` says whether the
-    module is the kept copy (`KEPT_MODULE`) or the written one."""
+    """One line of `update-accept-local-missing-name` (#536, #604, #1082):
+    `importer` imports `names` from `module`, and `side` says whose bytes
+    the module holds as this run leaves it: a copy this run keeps
+    (`KEPT_MODULE`), one an earlier run kept (`EARLIER_MODULE`), the
+    upstream's own (`UPSTREAM_MODULE`), or the bytes this run writes there
+    under an importer this run's `--accept-local` keeps (`WRITTEN_MODULE`)
+    or one an earlier run kept (`WRITTEN_UNDER_EARLIER`)."""
     module: str
     importer: str
     names: list
@@ -4325,11 +4372,42 @@ def _written_copies(rows: list[Row],
     return written
 
 
-def _kept_copies_lacking(root: Path, written: dict, kept: dict) -> list:
-    """`(kept module, written copy, [the names it lacks], KEPT_MODULE)` for
-    each written `.py` copy that imports from a kept one (#536). Split out
-    of `_refuse_kept_copies_missing_names`, which says what is asked of
-    what; each kept copy is read once, however many copies import from it.
+def _copies_as_left(rows: list[Row], written: dict,
+                    kept: dict) -> dict[str, str]:
+    """`{path: side}` for every pinned copy this run leaves at its path,
+    the modules a written copy is asked against (#1082): which of
+    `Disagreement`'s sides its bytes are then.
+
+    A copy THIS RUN'S `--accept-local` keeps is `KEPT_MODULE` (#536). An
+    `unchanged` row is the upstream's own bytes where it holds the
+    target's, and `EARLIER_MODULE` where it does not: its digest is the
+    pin's, so an earlier run recorded the project's own bytes there, and
+    the upstream has not changed the file since. A written copy, an `--add`
+    file and an `already-at-target` row hold the target's bytes, and are
+    `UPSTREAM_MODULE`. A `merged-away` row leaves no file at its path, and
+    the conflicts and the unaccepted `locally-modified` rows were refused
+    before this is asked, so none of those is here.
+    """
+    left = dict.fromkeys(written, UPSTREAM_MODULE)
+    for row in rows:
+        if row.path in kept:
+            left[row.path] = KEPT_MODULE
+        elif row.state == ALREADY_AT_TARGET:
+            left[row.path] = UPSTREAM_MODULE
+        elif row.state == UNCHANGED:
+            upstreams = (row.target_bytes is not None
+                         and row.digest == file_bytes_sha256(row.target_bytes))
+            left[row.path] = UPSTREAM_MODULE if upstreams else EARLIER_MODULE
+    return left
+
+
+def _written_copies_lacking(root: Path, written: dict, left: dict) -> list:
+    """`(module, written copy, [the names it lacks], side)` for each written
+    `.py` copy that imports from a copy this run leaves (#536, #1082), its
+    module read as this run leaves it and its side `_copies_as_left`'s.
+    Split out of `_refuse_kept_copies_missing_names`, which says what is
+    asked of what; each module is read once, however many copies import
+    from it.
     """
     imports = [(path, module, names) for path, data in sorted(written.items())
                if path.endswith(".py") and data is not None
@@ -4338,28 +4416,43 @@ def _kept_copies_lacking(root: Path, written: dict, kept: dict) -> list:
     lacking = []
     for path, module, names in imports:
         helper = _module_beside(path, module)
-        if helper not in kept:
+        if helper not in left:
             continue
         if helper not in defined:
-            defined[helper] = _names_defined(root / helper)
+            defined[helper] = _names_as_left(root, helper, written)
         known = defined[helper]
         missing = sorted(names - known) if known is not None else []
         if missing:
-            lacking.append(Disagreement(helper, path, missing, KEPT_MODULE))
+            lacking.append(Disagreement(helper, path, missing, left[helper]))
     return lacking
 
 
-def _kept_copies_importing_dropped(root: Path, written: dict,
-                                   kept: dict) -> list:
-    """`(written module, kept copy, [the names this run drops],
-    WRITTEN_MODULE)` for each kept `.py` copy that imports from a module
-    this run writes (#604): the reverse of `_kept_copies_lacking`, which
-    `_refuse_kept_copies_missing_names` says the why of. Each written
-    module is read once, however many kept copies import from it.
+def _names_as_left(root: Path, path: str, written: dict) -> set[str] | None:
+    """What the module at `path` defines as this run leaves it (#1082):
+    in the bytes this run writes there, else in its bytes on disk. None
+    where that cannot be told, which is no refusal."""
+    if path not in written:
+        return _names_defined(root / path)
+    data = written[path]
+    return _names_defined_in(data) if data is not None else None
+
+
+def _kept_copies_importing_dropped(root: Path, written: dict, kept: dict,
+                                   earlier: dict) -> list:
+    """`(written module, kept copy, [the names this run drops], side)` for
+    each kept `.py` copy that imports from a module this run writes
+    (#604): the reverse of `_written_copies_lacking`, which
+    `_refuse_kept_copies_missing_names` says the why of. A copy in `kept`,
+    which this run's `--accept-local` keeps, is `WRITTEN_MODULE`'s
+    importer; one in `earlier`, which an earlier run kept, is
+    `WRITTEN_UNDER_EARLIER`'s (#1082). Each written module is read once,
+    however many kept copies import from it.
     """
+    importers = {**dict.fromkeys(earlier, WRITTEN_UNDER_EARLIER),
+                 **dict.fromkeys(kept, WRITTEN_MODULE)}
     dropped: dict[str, set[str]] = {}
     pairs = []
-    for path in sorted(kept):
+    for path, side in sorted(importers.items()):
         for module, names in sorted(_imports_on_disk(root, path).items()):
             beside = _module_beside(path, module)
             if beside not in written:
@@ -4369,8 +4462,7 @@ def _kept_copies_importing_dropped(root: Path, written: dict,
                                                  written[beside])
             missing = sorted(names & dropped[beside])
             if missing:
-                pairs.append(Disagreement(beside, path, missing,
-                                          WRITTEN_MODULE))
+                pairs.append(Disagreement(beside, path, missing, side))
     return pairs
 
 
@@ -4440,83 +4532,145 @@ def _validators_meet(root: Path, written: dict, pairs: list,
     return False
 
 
-def _missing_name_refusal(pairs: list, kept: dict, target: str,
+#: How `update-accept-local-missing-name` opens. Where every line names a
+#: copy this run's `--accept-local` keeps (#536, #604), as it always has;
+#: where a line names a copy an earlier run kept, or the upstream's own,
+#: which nothing this run was given keeps (#1082), in words true of every
+#: kind of line.
+KEPT_LEAD = ("--accept-local keeps this project's own bytes of a copy that "
+             "disagrees with a copy this run writes beside it: one of the "
+             "two imports a name from the other that the other's bytes do "
+             "not define")
+LEFT_LEAD = ("a copy imports a name from a copy beside it whose bytes, as "
+             "this run leaves them, do not define it, and this run writes "
+             "one of the two")
+
+
+def _missing_name_refusal(pairs: list, copies: dict, target: str,
                           validated: bool) -> Refusal:
     """The one `update-accept-local-missing-name` refusal, one line per
-    pair, in either direction (#536, #604). Every sentence in it is true
-    of every line it lists, whichever side of the line is the kept copy;
-    the validators clause is said only where `validated`, which
-    `_validators_meet` answers, is false, as
-    `_refuse_kept_copies_missing_names` says why.
+    pair, in either direction (#536, #604, #1082). Every sentence in it is
+    true of every line it lists, whichever side of the line is the kept
+    copy, and whoever kept it: `KEPT_LEAD` where every line is one this
+    run's `--accept-local` makes, else `LEFT_LEAD`. The validators clause
+    is said only where `validated`, which `_validators_meet` answers, is
+    false, as `_refuse_kept_copies_missing_names` says why. `copies` is
+    every pinned row, by its path.
     """
+    sides = {pair.side for pair in pairs}
+    lead = KEPT_LEAD if sides <= {KEPT_MODULE, WRITTEN_MODULE} else LEFT_LEAD
     return Refusal(
         "update-accept-local-missing-name",
-        "--accept-local keeps this project's own bytes of a copy that "
-        "disagrees with a copy this run writes beside it: one of the two "
-        "imports a name from the other that the other's bytes do not "
-        "define, so the importer would stop on an ImportError the first "
+        lead + ", so the importer would stop on an ImportError the first "
         "time it runs"
         + ("" if validated else
            ", though the validators, which never import it, pass")
         + ":\n" + "\n".join(_missing_name_line(*pair) for pair in pairs),
-        _missing_name_remediation(pairs, kept, target))
+        _missing_name_remediation(pairs, copies, target))
 
 
 def _missing_name_line(module: str, importer: str, names: list[str],
                        side: str) -> str:
-    """One pair's line: which copy is kept, which written, and the names.
+    """One pair's line: whose bytes the module holds, which copy imports
+    from it, and the names. A side's own constant is its word: `(kept)`,
+    `(kept by an earlier run)` or `(the upstream's)` for a written
+    importer's module, and `(written)` under a kept importer (#604), whose
+    own word, `(kept)` or `(kept by an earlier run)` (#1082), says who
+    kept it (`KEPT_IMPORTERS`).
     """
     said = ", ".join(names)
-    if side == KEPT_MODULE:
-        return (f"    {module} (kept) lacks {said}, which {importer} "
-                "imports from it")
-    return (f"    {module} (written) no longer defines {said}, which "
-            f"{importer} (kept) imports from it")
+    if side in KEPT_IMPORTERS:
+        return (f"    {module} (written) no longer defines {said}, which "
+                f"{importer} ({KEPT_IMPORTERS[side]}) imports from it")
+    return (f"    {module} ({side}) lacks {said}, which {importer} "
+            "imports from it")
 
 
-def _missing_name_remediation(pairs: list, kept: dict, target: str) -> str:
-    """The human's two exits, for each kept copy the lines name (#536,
-    #604). Keeping the edit is the human's decision: change the kept copy
-    so it agrees, as the side it is on asks, commit each change, and run
-    again with the same `--accept-local`; or drop the edit, so the
-    upstream's copy is taken. Each change names the lines it settles, so
-    neither is read as settling the other's. `--accept-local` is named in
-    prose, and no NEXT line passes it. The upstream's bytes are named by
-    `upstream_show`, quoted, since #604 made a kept copy any `.py` path.
+def _missing_name_remediation(pairs: list, copies: dict, target: str) -> str:
+    """The human's exits (#536, #604, #1082): for each copy the project
+    keeps that a line names, `_keep_or_drop`'s two; and for a line whose
+    module is the upstream's own, another target, since no edit of the
+    project's settles two of the upstream's copies disagreeing. `copies`
+    maps a path to its row. Nothing was written, whichever.
     """
-    named = sorted({pair.module if pair.side == KEPT_MODULE else pair.importer
-                    for pair in pairs})
-    upstreams = "; ".join(f"`{upstream_show(target, kept[path].source)}` "
-                          f"for {path}" for path in named)
-    both = [path for path in named if kept[path].state == BOTH]
     sides = {pair.side for pair in pairs}
+    said = ([_keep_or_drop(pairs, copies, target, sides)]
+            if sides - {UPSTREAM_MODULE} else [])
+    if UPSTREAM_MODULE in sides:
+        said.append("A `(the upstream's) lacks` line is two of the "
+                    "upstream's own copies disagreeing at this target, "
+                    "which no edit of this project's settles: run this "
+                    "again with an --at whose copies agree.")
+    return "Remediation: " + " ".join(said) + " Nothing was written."
+
+
+def _keep_or_drop(pairs: list, copies: dict, target: str, sides: set) -> str:
+    """The human's two exits, for each kept copy the lines name (#536,
+    #604, #1082). Keeping the edit is the human's decision: change the
+    kept copy so it agrees, as the side it is on asks, commit each change,
+    and run again with the same `--accept-local`, and with it on a copy an
+    earlier run kept, whose changed row then reads `locally-modified`; or
+    drop the edit, so the upstream's copy is taken. Each change names the
+    lines it settles, so none is read as settling another's, and the kept
+    copy a `(written) no longer defines` line names is its importer.
+    `--accept-local` is named in prose, and no NEXT line passes it. The
+    upstream's bytes are named by `upstream_show`, quoted, since #604 made
+    a kept copy any `.py` path.
+    """
+    named = sorted({pair.importer if pair.side in KEPT_IMPORTERS
+                    else pair.module
+                    for pair in pairs if pair.side != UPSTREAM_MODULE})
+    upstreams = "; ".join(f"`{upstream_show(target, copies[path].source)}` "
+                          f"for {path}" for path in named)
+    both = [path for path in named if copies[path].state == BOTH]
     changes = []
     if KEPT_MODULE in sides:
         changes.append("merge the upstream's version by hand into a kept "
                        "copy that lacks a name, so it defines every name "
                        "its `(kept) lacks` line names")
+    if EARLIER_MODULE in sides:
+        changes.append("merge the upstream's version by hand into a copy "
+                       "an earlier run kept that lacks a name, so it "
+                       "defines every name its `(kept by an earlier run) "
+                       "lacks` line names")
     if WRITTEN_MODULE in sides:
         changes.append("change a kept copy that imports a name the module "
                        "written beside it no longer defines, so it no "
                        "longer takes any name its `(written) no longer "
                        "defines` line names")
+    if WRITTEN_UNDER_EARLIER in sides:
+        changes.append("change a copy an earlier run kept that imports a "
+                       "name the module written beside it no longer "
+                       "defines, so it no longer takes any name its "
+                       "`(written) no longer defines` line names")
+    earlier = sides & {EARLIER_MODULE, WRITTEN_UNDER_EARLIER}
+    again = "with the same --accept-local"
+    if earlier:
+        changed = ("--accept-local on each copy an earlier run kept that you "
+                   "changed, whose row then reads `locally-modified`")
+        again = (f"{again}, and with {changed}"
+                 if sides & {KEPT_MODULE, WRITTEN_MODULE} else
+                 f"with {changed}")
     return (
-        "Remediation: whether the project keeps its edit is the human's "
-        "decision, and a kept copy must still agree with the copies "
-        "written beside it on every name one imports from the other. "
-        "Either " + ", and ".join(changes) + ", commit each, and run this "
-        "again with the same --accept-local; or drop the edit, so the "
-        "upstream's copy is taken: write the upstream's bytes over it, "
-        "commit that, and run this again without --accept-local on that "
-        f"path. In a shape clone the upstream's bytes are {upstreams}"
+        "whether the project keeps its edit is the human's decision, and a "
+        "kept copy must still agree with the copies written beside it on "
+        "every name one imports from the other. "
+        + ("An earlier run kept each `(kept by an earlier run)` copy: the "
+           "pin records the project's own bytes for it, and the upstream "
+           "has not changed it since, so `check` reads its row "
+           "`unchanged`. " if earlier else "")
+        + "Either " + ", and ".join(changes) + f", commit each, and run "
+        f"this again {again}; or drop the edit, so the upstream's copy is "
+        "taken: write the upstream's bytes over it, commit that, and run "
+        "this again without --accept-local on that path. In a shape clone "
+        f"the upstream's bytes are {upstreams}"
         + (", and for a kept copy that imports a name they show what the "
            "upstream's own copy of that file imports instead"
-           if WRITTEN_MODULE in sides else "")
+           if sides & set(KEPT_IMPORTERS) else "")
         + "."
         + (f" {', '.join(both)} changed upstream too, so dropping the edit "
            "there is `update-conflict`'s merge by hand again, settled on the "
-           "upstream's side." if both else "")
-        + " Nothing was written.")
+           "upstream's side." if both else ""))
 
 
 def _module_beside(path: str, module: str) -> str:

@@ -42,6 +42,24 @@ gains `DROPPED_NAME` and `STILL_NAME`, which no shipped copy imports. Off
   * `both-ways`: the same, and the holder's `siblings.py` imports a name
     its `bootstrap.py` gains, so a holder that keeps its own `bootstrap.py`
     meets both directions in one run.
+  * `kept-no-name`: the holder's `validate-family.py` changes, and no name
+    is added or taken away: the target of #1082's earlier apply below.
+
+A COPY AN EARLIER APPLY KEPT IS ASKED TOO (#1082). Its row reads
+`unchanged` once the upstream stops changing it, and #536 asked only the
+copies this run's `--accept-local` names, so the next apply wrote an
+importer beside it unasked. `earlier_standard` holds #1023's case: a
+third `InkRouter` is cut at `before-1023`, a branch off A whose holder
+`bootstrap.py` spells #1023's `member_make_environment` by #950's name and
+whose `siblings.py` defines its own, as before #1023; off it,
+`bootstrap-1023` puts back A's `bootstrap.py` (#1023's first half, as
+#1045 was `untraced`'s), and `siblings-no-name` off that changes
+`siblings.py` and takes no new name. A itself is #1023's second half.
+SUCH A COPY IS ASKED AS AN IMPORTER TOO: #604 asked only a copy this
+run's `--accept-local` names, so a plain apply wrote a module beside it
+that no longer defined a name it takes. The holder cut at `kept-base`
+keeps its own `bootstrap.py`, which imports `DROPPED_NAME`, through an
+earlier apply to `kept-no-name`, and `dropped` is the next apply's target.
 
 The project's own edit is committed, as a project's is, so `check` reads
 the edited copy as `both` or `locally-modified`, and `--branch` meets this
@@ -264,8 +282,9 @@ def standard(tmp_path_factory) -> dict:
 def dropping_standard(standard, tmp_path_factory) -> dict:
     """The reverse direction (#604), in the same clone: `kept-base`, a
     branch off A whose `repo_shape.py` gains two names no shipped copy
-    imports; `Atlas` and `InkRouter` cut from it; and `dropped` and
-    `both-ways`, the two branches off it the module docstring names."""
+    imports; `Atlas` and `InkRouter` cut from it; and `dropped`,
+    `both-ways` and `kept-no-name`, the three branches off it the module
+    docstring names."""
     upstream = standard["upstream"]
     base = tmp_path_factory.mktemp("update-shape-kept-importer")
     kept_base = branch_off(upstream, standard["a"], "kept-base", {
@@ -279,6 +298,8 @@ def dropping_standard(standard, tmp_path_factory) -> dict:
         REPO_SHAPE: dropping(DROPPED_NAME),
         f"{FAMILY_SCRIPTS}/bootstrap.py": defining(BOOT_NAME),
         f"{FAMILY_SCRIPTS}/siblings.py": importing(BOOT_NAME, "bootstrap")})
+    commits["kept-no-name"] = branch_off(upstream, kept_base, "kept-no-name", {
+        f"{FAMILY_SCRIPTS}/validate-family.py": adding_no_name})
     return {"upstream": upstream, "clone": clone, "holder": holder,
             **commits}
 
@@ -371,18 +392,20 @@ def assert_refused_writing_nothing(result, root: Path, before: dict,
     assert git("status", "--porcelain", cwd=root).stdout == ""
 
 
-def assert_stops_on_the_import(beside: Path, copies: dict, name: str) -> None:
-    """THE PREMISE, MEASURED: `bootstrap.py --help`, in a `scripts/` that
-    holds `copies` (`{file name: bytes}`) and nothing else, stops on an
-    `ImportError` that names `name`."""
+def assert_stops_on_the_import(beside: Path, copies: dict, name: str,
+                               script: str = "bootstrap.py") -> None:
+    """THE PREMISE, MEASURED: `<script> --help`, `bootstrap.py` unless
+    another is named, in a `scripts/` that holds `copies` (`{file name:
+    bytes}`) and nothing else, stops on an `ImportError` that names
+    `name`."""
     beside.mkdir(parents=True)
     for file, data in copies.items():
         (beside / file).write_bytes(data)
-    started = run_script(beside / "bootstrap.py", "--help",
+    started = run_script(beside / script, "--help",
                          env={"PYTHONDONTWRITEBYTECODE": "1"})
     assert started.returncode != 0, started.stdout
     assert "ImportError" in started.stderr, (
-        "bootstrap.py did not stop on an ImportError: " + started.stderr)
+        f"{script} did not stop on an ImportError: " + started.stderr)
     assert name in started.stderr, (
         f"the ImportError does not name {name}: " + started.stderr)
 
@@ -636,19 +659,34 @@ def imports(*names: str, module: str = "repo_shape") -> bytes:
 def refusal(update_shape, root: Path, kept: dict, written: dict,
             added: dict | None = None, state: str = "both",
             accepted: set | None = None, writing: str = "upstream-changed",
-            kind=None, current: dict | None = None):
+            kind=None, current: dict | None = None, left: dict | None = None,
+            at_target: dict | None = None):
     """`_refuse_kept_copies_missing_names` over rows made by hand: `kept`
     (`{path: bytes on disk}`) in `state`, `written` (`{path: target bytes}`)
     in `writing`, with `current` (`{path: bytes on disk}`) for those that
     have a file now, and `added` as `--add` files, in a root of `kind` (a
-    project's unless one is given). The refusal, or None."""
+    project's unless one is given). `left` (`{path: (bytes on disk, the
+    target's bytes)}`) are `unchanged` rows whose pin records their bytes
+    on disk, and `at_target` (`{path: bytes}`) `already-at-target` ones
+    (#1082). The refusal, or None."""
     rows = []
-    for path, data in {**(current or {}), **kept}.items():
+    alone = {path: here for path, (here, _) in (left or {}).items()}
+    for path, data in {**(current or {}), **kept, **alone,
+                       **(at_target or {})}.items():
         (root / path).parent.mkdir(parents=True, exist_ok=True)
         (root / path).write_bytes(data)
     for path in kept:
         row = update_shape.Row(path, "")
         row.state, row.source = state, path
+        rows.append(row)
+    for path, (_, there) in (left or {}).items():
+        row = update_shape.Row(path, file_sha256(root / path))
+        row.state, row.source, row.target_bytes = "unchanged", path, there
+        rows.append(row)
+    for path, data in (at_target or {}).items():
+        row = update_shape.Row(path, "")
+        row.state, row.source = "already-at-target", path
+        row.target_bytes, row.digest = data, file_sha256(root / path)
         rows.append(row)
     for path, data in written.items():
         row = update_shape.Row(path, "")
@@ -1288,6 +1326,7 @@ def test_keeping_a_copy_that_imports_a_name_the_run_drops_is_refused(
     result = apply(root, standard, "dropped", "--accept-local", BOOTSTRAP)
     assert_refused_writing_nothing(result, root, before,
                                    dropped_line(BOOTSTRAP))
+    assert result.stderr.startswith(KEPT_LEAD), result.stderr
     remedy = result.stderr.split("Remediation:", 1)[1]
     assert (f"`git show {standard['dropped']}:templates/assembly-root/"
             f"{BOOTSTRAP}` for {BOOTSTRAP}") in remedy, remedy
@@ -1331,11 +1370,39 @@ def test_a_kept_validator_importing_a_dropped_name_omits_the_clause(
     assert VALIDATORS_PASS not in result.stderr, result.stderr
 
 
-@pytest.mark.parametrize("name, starts", [
+#: A name the kept `bootstrap.py` imports that `dropped` does not take
+#: away, and whether that copy starts, before the run and after it.
+NOT_TAKEN_AWAY = [
     pytest.param(NEVER_NAME, False, id="a name the module lacked before too"),
     pytest.param(STILL_NAME, True,
                  id="a name the written module still defines"),
-])
+]
+
+
+def assert_the_kept_copy_starts_as_before(root: Path, dropping: dict,
+                                          flags: list, starts: bool) -> None:
+    """The apply to `dropped`, with `flags`, copies `repo_shape.py`, leaves
+    the kept `bootstrap.py` as it was, its row re-pinned from its bytes,
+    and that copy starts after the run exactly where it started before it
+    (`starts`)."""
+    kept = (root / BOOTSTRAP).read_bytes()
+
+    def started() -> bool:
+        return run_script(root / BOOTSTRAP, "--help",
+                          env={"PYTHONDONTWRITEBYTECODE": "1"}).returncode == 0
+
+    assert started() is starts, "the kept copy before the run"
+    result = apply(root, dropping, "dropped", *flags)
+    assert result.returncode == 0, result.stdout + result.stderr
+    assert f"  copied   {REPO_SHAPE}" in result.stdout
+    assert (root / REPO_SHAPE).read_bytes() == blob(
+        dropping, "dropped", REPO_SHAPE)
+    assert (root / BOOTSTRAP).read_bytes() == kept
+    assert pin_rows(root)[BOOTSTRAP] == file_sha256(root / BOOTSTRAP)
+    assert started() is starts, "the kept copy after the run"
+
+
+@pytest.mark.parametrize("name, starts", NOT_TAKEN_AWAY)
 def test_a_kept_copy_importing_what_this_run_does_not_take_away_applies(
         dropping_standard, tmp_path, name, starts):
     """Only what THIS RUN takes away is refused. A name `repo_shape.py`
@@ -1345,23 +1412,9 @@ def test_a_kept_copy_importing_what_this_run_does_not_take_away_applies(
     apply: `repo_shape.py` is copied, the kept edit is re-pinned from the
     local bytes, and the kept copy starts after the run exactly where it
     started before it."""
-    root = importing_root(dropping_standard, tmp_path, name=name)
-    kept = (root / BOOTSTRAP).read_bytes()
-
-    def started() -> bool:
-        return run_script(root / BOOTSTRAP, "--help",
-                          env={"PYTHONDONTWRITEBYTECODE": "1"}).returncode == 0
-
-    assert started() is starts, "the kept copy before the run"
-    result = apply(root, dropping_standard, "dropped", "--accept-local",
-                   BOOTSTRAP)
-    assert result.returncode == 0, result.stdout + result.stderr
-    assert f"  copied   {REPO_SHAPE}" in result.stdout
-    assert (root / REPO_SHAPE).read_bytes() == blob(
-        dropping_standard, "dropped", REPO_SHAPE)
-    assert (root / BOOTSTRAP).read_bytes() == kept
-    assert pin_rows(root)[BOOTSTRAP] == file_sha256(root / BOOTSTRAP)
-    assert started() is starts, "the kept copy after the run"
+    assert_the_kept_copy_starts_as_before(
+        importing_root(dropping_standard, tmp_path, name=name),
+        dropping_standard, ["--accept-local", BOOTSTRAP], starts)
 
 
 def test_a_holder_keeping_a_bootstrap_that_imports_a_dropped_name_is_refused(
@@ -1381,10 +1434,12 @@ def test_both_directions_in_one_run_are_one_refusal(dropping_standard,
     """`both-ways` drops the name the holder's kept `bootstrap.py` imports,
     AND has `siblings.py` import a name only the upstream's `bootstrap.py`
     defines: the kept copy is the module of one line and the importer of
-    the other. One refusal names both, sorted by module, says the
-    validators pass (none of the importers is `validate-family.py`), gives
-    each exit in the words of the lines it settles, with "commit each", and
-    sends the `both` row to `update-conflict`'s merge."""
+    the other. One refusal names both, sorted by module, opens as a refusal
+    of this run's own `--accept-local` always has (`KEPT_LEAD`, since both
+    lines are ones it makes), says the validators pass (none of the
+    importers is `validate-family.py`), gives each exit in the words of the
+    lines it settles, with "commit each", and sends the `both` row to
+    `update-conflict`'s merge."""
     checked = run_script(UPDATE, "check", "--root", str(importing_holder),
                          "--upstream", str(dropping_standard["upstream"]),
                          "--at", dropping_standard["both-ways"])
@@ -1394,6 +1449,7 @@ def test_both_directions_in_one_run_are_one_refusal(dropping_standard,
                    "--accept-local", BOOTSTRAP)
     assert_refused_writing_nothing(result, importing_holder, before,
                                    dropped_line(BOOTSTRAP))
+    assert result.stderr.startswith(KEPT_LEAD), result.stderr
     assert result.stderr.count("REFUSED") == 1, result.stderr
     assert detail_lines(result.stderr) == [
         f"    {BOOTSTRAP} (kept) lacks {BOOT_NAME}, which {SIBLINGS} "
@@ -1708,6 +1764,551 @@ def test_a_path_it_cannot_read_is_one_it_cannot_tell(update_shape, tmp_path,
 
     monkeypatch.setattr(type(path), "read_bytes", too_big)
     assert update_shape._names_defined(path) is None
+
+
+# --- a copy an earlier apply kept, end to end (#1082) ------------------------
+
+#: #1023's name: the holder's `siblings.py` takes it from `bootstrap.py`
+#: since #1023, and a `bootstrap.py` from before #1023 does not define it.
+MAKE_ENVIRONMENT = "member_make_environment"
+#: #950's name for that function (#987), which `before-1023` spells it by.
+MAKE_ENV = "member_make_env"
+#: Where `siblings.py` takes #1023's name, and the function it defined
+#: itself before #1023, which `before-1023` puts back.
+TAKES_MAKE_ENVIRONMENT = b"credential, member_make_environment, member_path,"
+OWN_MAKE_ENVIRONMENT = (
+    b"def member_make_environment(make: str) -> dict[str, str]:\n"
+    b"    \"\"\"This holder's own, as before #1023.\"\"\"\n"
+    b"    return dict(os.environ)\n\n\n")
+#: The branch the earlier apply commits on.
+FIRST_APPLY = "shape/first-apply"
+#: How the refusal opens where every line is one this run's
+#: `--accept-local` makes, as it always has, and where one is not.
+KEPT_LEAD = (f"REFUSED {REFUSAL}: --accept-local keeps this project's own "
+             "bytes of a copy that disagrees with a copy this run writes "
+             "beside it: one of the two imports a name from the other")
+LEFT_LEAD = (f"REFUSED {REFUSAL}: a copy imports a name from a copy beside "
+             "it whose bytes, as this run leaves them, do not define it, and "
+             "this run writes one of the two")
+#: The exits for a copy an earlier run kept, as a module and as an
+#: importer, and for the upstream's own.
+EARLIER_LACKS_EXIT = ("so it defines every name its `(kept by an earlier "
+                      "run) lacks` line names")
+EARLIER_DROPS_EXIT = ("change a copy an earlier run kept that imports a name "
+                      "the module written beside it no longer defines")
+EARLIER_AGAIN = ("--accept-local on each copy an earlier run kept that you "
+                 "changed, whose row then reads `locally-modified`")
+EARLIER_WHY = ("the pin records the project's own bytes for it, and the "
+               "upstream has not changed it since, so `check` reads its row "
+               "`unchanged`")
+UPSTREAM_EXIT = "run this again with an --at whose copies agree"
+
+
+def before_1023_bootstrap(data: bytes) -> bytes:
+    """The holder's `bootstrap.py` before #1023: the function its
+    `siblings.py` takes by #1023's name is spelled by #950's."""
+    assert MAKE_ENVIRONMENT.encode() in data, "bootstrap.py lost the name"
+    return data.replace(MAKE_ENVIRONMENT.encode(), MAKE_ENV.encode())
+
+
+def before_1023_siblings(data: bytes) -> bytes:
+    """The holder's `siblings.py` before #1023: it defines its own
+    `member_make_environment`, and takes only the other names from
+    `bootstrap.py`."""
+    anchor = b"from bootstrap import ("
+    assert TAKES_MAKE_ENVIRONMENT in data, "siblings.py no longer takes it"
+    assert anchor in data, "siblings.py no longer opens its bootstrap list"
+    return data.replace(TAKES_MAKE_ENVIRONMENT, b"credential, member_path,",
+                        1).replace(anchor, OWN_MAKE_ENVIRONMENT + anchor, 1)
+
+
+@pytest.fixture(scope="module")
+def earlier_standard(standard, tmp_path_factory) -> dict:
+    """#1023 in two halves (#1082), in the same clone: `before-1023`, a
+    branch off A as the holder's two files were before #1023; a third
+    `InkRouter` cut from it; `bootstrap-1023` off it, with A's
+    `bootstrap.py` back; and `siblings-no-name` off that, the control.
+    A is the second half: its `siblings.py` takes the name."""
+    upstream = standard["upstream"]
+    base = tmp_path_factory.mktemp("update-shape-kept-earlier")
+    before = branch_off(upstream, standard["a"], "before-1023", {
+        f"{FAMILY_SCRIPTS}/bootstrap.py": before_1023_bootstrap,
+        f"{FAMILY_SCRIPTS}/siblings.py": before_1023_siblings})
+    holder = cut_family(upstream, base)
+    commits = {"a": standard["a"], "before-1023": before}
+    commits["bootstrap-1023"] = branch_off(
+        upstream, before, "bootstrap-1023", {
+            f"{FAMILY_SCRIPTS}/bootstrap.py": lambda _: blob(
+                standard, "a", f"{FAMILY_SCRIPTS}/bootstrap.py")})
+    commits["siblings-no-name"] = branch_off(
+        upstream, commits["bootstrap-1023"], "siblings-no-name", {
+            f"{FAMILY_SCRIPTS}/siblings.py": adding_no_name})
+    return {"upstream": upstream, "holder": holder, **commits}
+
+
+def kept_by_an_earlier_apply(standard: dict, tmp_path: Path, at: str,
+                             *edit) -> Path:
+    """`standard`'s holder, with its own `bootstrap.py` edit (`kept_edit`'s,
+    unless `edit` names one) committed and KEPT BY AN EARLIER APPLY: `apply
+    --at <at> --accept-local scripts/bootstrap.py --branch`, which commits
+    the re-pin."""
+    holder = kept_edit(standard["holder"], tmp_path / FAMILY, BOOTSTRAP,
+                       *edit)
+    first = apply(holder, standard, at, "--accept-local", BOOTSTRAP,
+                  "--branch", FIRST_APPLY)
+    assert first.returncode == 0, first.stdout + first.stderr
+    assert f"  kept     {BOOTSTRAP} (local bytes" in first.stdout, first.stdout
+    assert git("status", "--porcelain", cwd=holder).stdout == ""
+    return holder
+
+
+def kept_earlier(earlier: dict, tmp_path: Path) -> Path:
+    """The holder cut at `before-1023`, its own `bootstrap.py` edit kept by
+    an earlier apply to `bootstrap-1023`, which writes no importer of it."""
+    holder = kept_by_an_earlier_apply(earlier, tmp_path, "bootstrap-1023")
+    assert MAKE_ENVIRONMENT.encode() not in (holder / BOOTSTRAP).read_bytes()
+    return holder
+
+
+def earlier_line(name: str = MAKE_ENVIRONMENT) -> str:
+    """#1082's line: the holder's `bootstrap.py`, kept by an earlier run,
+    lacks `name`, which the written `siblings.py` imports from it."""
+    return (f"    {BOOTSTRAP} (kept by an earlier run) lacks {name}, which "
+            f"{SIBLINGS} imports from it")
+
+
+def siblings_help(holder: Path):
+    return run_script(holder / SIBLINGS, "--help",
+                      env={"PYTHONDONTWRITEBYTECODE": "1"})
+
+
+def test_an_earlier_kept_copy_is_asked_when_the_next_apply_writes_its_importer(
+        earlier_standard, tmp_path):
+    """The issue's case, on #1023's name: the earlier apply kept the
+    holder's `bootstrap.py` from before #1023, so `check` reads it
+    `unchanged` against A, and A's `siblings.py`, which takes
+    `member_make_environment` from it, is `upstream-changed`. The apply
+    to A, with no `--accept-local`, is refused before any write, naming
+    the copy, who kept it, and the name, with the tree, the refs and HEAD
+    as they were. Before #1082 it exited 0, copied `siblings.py` and
+    committed.
+
+    THE PREMISE IS MEASURED, NOT ASSUMED: A's `siblings.py` beside the
+    kept `bootstrap.py` dies on that import at `--help`."""
+    earlier = earlier_standard
+    holder = kept_earlier(earlier, tmp_path)
+    checked = run_script(UPDATE, "check", "--root", str(holder),
+                         "--upstream", str(earlier["upstream"]),
+                         "--at", earlier["a"])
+    assert verdicts(checked.stdout)[BOOTSTRAP] == "unchanged", checked.stdout
+    assert verdicts(checked.stdout)[SIBLINGS] == "upstream-changed"
+
+    before = snapshot(holder)
+    result = apply(holder, earlier, "a")
+    assert_refused_writing_nothing(result, holder, before, earlier_line())
+    assert result.stderr.startswith(LEFT_LEAD), result.stderr
+    assert VALIDATORS_PASS in result.stderr, result.stderr
+    remedy = result.stderr.split("Remediation:", 1)[1]
+    for words in (EARLIER_WHY, EARLIER_LACKS_EXIT,
+                  f"again with {EARLIER_AGAIN}",
+                  f"`git show {earlier['a']}:{FAMILY_SCRIPTS}/bootstrap.py` "
+                  f"for {BOOTSTRAP}"):
+        assert words in remedy, remedy
+    for words in ("with the same --accept-local", "update-conflict",
+                  UPSTREAM_EXIT):
+        assert words not in remedy, remedy
+
+    assert_stops_on_the_import(tmp_path / "beside" / "scripts", {
+        "repo_shape.py": (holder / REPO_SHAPE).read_bytes(),
+        "bootstrap.py": (holder / BOOTSTRAP).read_bytes(),
+        "siblings.py": blob(earlier, "a", f"{FAMILY_SCRIPTS}/siblings.py")},
+        MAKE_ENVIRONMENT, "siblings.py")
+
+
+def test_with_branch_an_earlier_kept_copy_is_refused_before_any_branch(
+        earlier_standard, tmp_path):
+    """`--branch` meets the same refusal, before `git checkout -b`: no
+    branch, and HEAD on the earlier apply's branch."""
+    holder = kept_earlier(earlier_standard, tmp_path)
+    before = snapshot(holder)
+    result = apply(holder, earlier_standard, "a", "--branch", BRANCH)
+    assert_refused_writing_nothing(result, holder, before, earlier_line())
+    assert git("branch", "--list", BRANCH, cwd=holder).stdout == ""
+    assert git("branch", "--show-current",
+               cwd=holder).stdout.strip() == FIRST_APPLY
+
+
+def test_the_one_step_run_is_refused_as_it_was(earlier_standard, tmp_path):
+    """The holder cut before #1023 keeping its `bootstrap.py` in the run
+    that writes A's `siblings.py`: #536's refusal, in its own words."""
+    holder = kept_edit(earlier_standard["holder"], tmp_path / FAMILY,
+                       BOOTSTRAP)
+    before = snapshot(holder)
+    result = apply(holder, earlier_standard, "a", "--accept-local",
+                   BOOTSTRAP)
+    assert_refused_writing_nothing(
+        result, holder, before,
+        f"    {BOOTSTRAP} (kept) lacks {MAKE_ENVIRONMENT}, which {SIBLINGS} "
+        "imports from it")
+    assert result.stderr.startswith(KEPT_LEAD), result.stderr
+    remedy = result.stderr.split("Remediation:", 1)[1]
+    assert ", commit each, and run this again with the same --accept-local;" \
+        in remedy, remedy
+    assert EARLIER_WHY not in remedy, remedy
+
+
+def test_an_earlier_kept_copy_that_defines_every_name_applies(
+        earlier_standard, tmp_path):
+    """The control: the same holder and the same earlier apply, then a
+    `siblings.py` that takes no name the kept `bootstrap.py` lacks. It is
+    copied, the kept copy is left as it was, and `siblings.py` starts."""
+    holder = kept_earlier(earlier_standard, tmp_path)
+    kept = (holder / BOOTSTRAP).read_bytes()
+    result = apply(holder, earlier_standard, "siblings-no-name")
+    assert result.returncode == 0, result.stdout + result.stderr
+    assert f"  copied   {SIBLINGS}" in result.stdout, result.stdout
+    assert (holder / BOOTSTRAP).read_bytes() == kept
+    started = siblings_help(holder)
+    assert started.returncode == 0, started.stdout + started.stderr
+
+
+def changed_by_hand(standard: dict, holder: Path, at: str) -> list[str]:
+    """The remedy's first exit: the target's `bootstrap.py` with the
+    holder's own edit on it, as merging by hand, or changing the edit so it
+    takes no name the target drops, leaves it, and the flag the remedy
+    names for it."""
+    (holder / BOOTSTRAP).write_bytes(
+        blob(standard, at, f"{FAMILY_SCRIPTS}/bootstrap.py") + LOCAL_EDIT)
+    return ["--accept-local", BOOTSTRAP]
+
+
+def dropped_edit(standard: dict, holder: Path, at: str) -> list[str]:
+    """The second: the upstream's bytes over it, and no flag."""
+    (holder / BOOTSTRAP).write_bytes(
+        blob(standard, at, f"{FAMILY_SCRIPTS}/bootstrap.py"))
+    return []
+
+
+#: Each exit, and how `check` then reads the settled `bootstrap.py`: the
+#: remedy says `locally-modified` after the first.
+EXITS = [
+    pytest.param(changed_by_hand, "locally-modified",
+                 id="the edit changed by hand, and --accept-local on it"),
+    pytest.param(dropped_edit, "already-at-target", id="the edit dropped"),
+]
+
+
+def assert_the_exit_applies(standard: dict, holder: Path, at: str, exit_by,
+                            state: str, written: str, stopped: str) -> None:
+    """The apply to `at` refused, and the remedy's exit `exit_by` taken and
+    committed: `check` reads the holder's `bootstrap.py` in `state`, the
+    apply the remedy then names writes `written`, and `stopped`, the copy
+    that would have stopped on the import, starts."""
+    refused = apply(holder, standard, at)
+    assert refused.returncode == 2, refused.stdout + refused.stderr
+    flags = exit_by(standard, holder, at)
+    git("-c", "user.name=t", "-c", "user.email=t@t", "commit", "-q", "-m",
+        "The holder settles its bootstrap.py", "--", BOOTSTRAP, cwd=holder)
+    checked = run_script(UPDATE, "check", "--root", str(holder),
+                         "--upstream", str(standard["upstream"]),
+                         "--at", standard[at])
+    assert verdicts(checked.stdout)[BOOTSTRAP] == state, checked.stdout
+    result = apply(holder, standard, at, *flags)
+    assert result.returncode == 0, result.stdout + result.stderr
+    assert f"  copied   {written}" in result.stdout, result.stdout
+    started = run_script(holder / stopped, "--help",
+                         env={"PYTHONDONTWRITEBYTECODE": "1"})
+    assert started.returncode == 0, started.stdout + started.stderr
+
+
+@pytest.mark.parametrize("exit_by, state", EXITS)
+def test_either_exit_the_remedy_names_applies(earlier_standard, tmp_path,
+                                              exit_by, state):
+    """What the remedy tells a holder whose copy an earlier run kept is
+    true: merge it by hand, commit, and run again with `--accept-local`
+    on it, as its row then reads `locally-modified`; or write the
+    upstream's bytes over it, commit, and run again, as its row then reads
+    `already-at-target`. Either apply writes `siblings.py`, which then
+    starts."""
+    assert_the_exit_applies(earlier_standard,
+                            kept_earlier(earlier_standard, tmp_path), "a",
+                            exit_by, state, SIBLINGS, SIBLINGS)
+
+
+# --- a copy an earlier apply kept, as an importer, end to end (#1082) -------
+
+def importer_kept_earlier(dropping: dict, tmp_path: Path,
+                          name: str = DROPPED_NAME) -> Path:
+    """The holder cut at `kept-base`, its own `bootstrap.py` importing
+    `name` from `repo_shape`, kept by an earlier apply to `kept-no-name`,
+    which writes no `repo_shape.py`."""
+    return kept_by_an_earlier_apply(dropping, tmp_path, "kept-no-name",
+                                    importing(name))
+
+
+def earlier_dropped_line(name: str = DROPPED_NAME) -> str:
+    """#1082's reverse line: the written `repo_shape.py` drops `name`,
+    which the holder's `bootstrap.py`, kept by an earlier run, imports."""
+    return (f"    {REPO_SHAPE} (written) no longer defines {name}, which "
+            f"{BOOTSTRAP} (kept by an earlier run) imports from it")
+
+
+def test_an_earlier_kept_copy_is_asked_when_the_next_apply_drops_its_name(
+        dropping_standard, tmp_path):
+    """The reverse of the issue's case: the earlier apply kept the
+    holder's own `bootstrap.py`, which imports `DROPPED_NAME` from
+    `repo_shape.py`, so `check` reads it `unchanged` against `dropped`,
+    whose `repo_shape.py` no longer defines the name and is
+    `upstream-changed`. This run's own write would break a copy that
+    started before it. The apply to `dropped`, with no `--accept-local`,
+    is refused before any write, naming the written module, the copy, who
+    kept it, and the name, opening in words true of that line, and giving
+    that copy its exits. It exited 0 and copied `repo_shape.py` before.
+
+    THE PREMISE IS MEASURED, NOT ASSUMED: the kept `bootstrap.py` beside
+    `dropped`'s `repo_shape.py` dies on that import at `--help`."""
+    standard = dropping_standard
+    holder = importer_kept_earlier(standard, tmp_path)
+    checked = run_script(UPDATE, "check", "--root", str(holder),
+                         "--upstream", str(standard["upstream"]),
+                         "--at", standard["dropped"])
+    assert verdicts(checked.stdout)[BOOTSTRAP] == "unchanged", checked.stdout
+    assert verdicts(checked.stdout)[REPO_SHAPE] == "upstream-changed"
+
+    before = snapshot(holder)
+    result = apply(holder, standard, "dropped")
+    assert_refused_writing_nothing(result, holder, before,
+                                   earlier_dropped_line())
+    assert detail_lines(result.stderr) == [earlier_dropped_line()]
+    assert result.stderr.startswith(LEFT_LEAD), result.stderr
+    assert VALIDATORS_PASS in result.stderr, result.stderr
+    remedy = result.stderr.split("Remediation:", 1)[1]
+    for words in (EARLIER_WHY, EARLIER_DROPS_EXIT, DROPS_EXIT,
+                  f"again with {EARLIER_AGAIN};",
+                  f"`git show {standard['dropped']}:{FAMILY_SCRIPTS}/"
+                  f"bootstrap.py` for {BOOTSTRAP}",
+                  "what the upstream's own copy of that file imports"):
+        assert words in remedy, remedy
+    for words in ("with the same --accept-local", "change a kept copy",
+                  LACKS_EXIT, "update-conflict", UPSTREAM_EXIT):
+        assert words not in remedy, remedy
+
+    assert_stops_on_the_import(tmp_path / "beside" / "scripts", {
+        "repo_shape.py": blob(standard, "dropped", REPO_SHAPE),
+        "bootstrap.py": (holder / BOOTSTRAP).read_bytes()}, DROPPED_NAME)
+
+
+@pytest.mark.parametrize("name, starts", NOT_TAKEN_AWAY)
+def test_an_earlier_kept_copy_importing_what_this_run_keeps_applies(
+        dropping_standard, tmp_path, name, starts):
+    """The controls: of a copy an earlier run kept, as of one this run's
+    `--accept-local` keeps, only what THIS RUN takes away is refused. A
+    name `repo_shape.py` lacked before too, and one the written
+    `repo_shape.py` still defines, both apply with no `--accept-local`."""
+    assert_the_kept_copy_starts_as_before(
+        importer_kept_earlier(dropping_standard, tmp_path, name),
+        dropping_standard, [], starts)
+
+
+@pytest.mark.parametrize("exit_by, state", EXITS)
+def test_either_exit_for_an_earlier_kept_importer_applies(dropping_standard,
+                                                          tmp_path, exit_by,
+                                                          state):
+    """The remedy's exits for that copy are true: change it so it takes
+    the name no more, commit, and run again with `--accept-local` on it, as
+    its row then reads `locally-modified`; or write the upstream's bytes
+    over it, commit, and run again, as its row then reads
+    `already-at-target`. Either apply writes `repo_shape.py`, and
+    `bootstrap.py` then starts."""
+    assert_the_exit_applies(dropping_standard,
+                            importer_kept_earlier(dropping_standard,
+                                                  tmp_path),
+                            "dropped", exit_by, state, REPO_SHAPE,
+                            BOOTSTRAP)
+
+
+# --- whose bytes the module holds, in process (#1082) ------------------------
+
+#: A `repo_shape.py` that defines `NEW`, beside `LACKS_NEW`, which does not.
+DEFINES_NEW = b"OLD = 1\nNEW = 1\n"
+#: How `module_left` leaves `repo_shape.py`, and the word its line says.
+WHOSE = [
+    pytest.param("kept earlier", "kept by an earlier run",
+                 id="a copy an earlier run kept"),
+    pytest.param("unchanged", "the upstream's",
+                 id="an unchanged copy holding the target's bytes"),
+    pytest.param("at target", "the upstream's",
+                 id="an already-at-target copy"),
+    pytest.param("written", "the upstream's", id="a module this run writes"),
+]
+
+
+def module_left(update_shape, root: Path, how: str, module: bytes):
+    """`refusal` over a written `bootstrap.py` taking `NEW` from a
+    `repo_shape.py` this run leaves holding `module`, which `how` says
+    whose it is: a copy an earlier run kept, the target's own on disk
+    (`unchanged` or `already-at-target`), or the bytes this run writes,
+    over bytes on disk that say the opposite."""
+    takes = {BOOTSTRAP: imports("NEW")}
+    if how == "kept earlier":
+        return refusal(update_shape, root, {}, takes,
+                       left={REPO_SHAPE: (module, module + NO_NAME_LINE)})
+    if how == "unchanged":
+        return refusal(update_shape, root, {}, takes,
+                       left={REPO_SHAPE: (module, module)})
+    if how == "at target":
+        return refusal(update_shape, root, {}, takes,
+                       at_target={REPO_SHAPE: module})
+    other = LACKS_NEW if module == DEFINES_NEW else DEFINES_NEW
+    return refusal(update_shape, root, {}, {**takes, REPO_SHAPE: module},
+                   current={REPO_SHAPE: other})
+
+
+@pytest.mark.parametrize("how, word", WHOSE)
+def test_a_written_copy_is_asked_against_its_module_as_this_run_leaves_it(
+        update_shape, tmp_path, how, word):
+    """#536 asked a written importer only against a copy this run's
+    `--accept-local` keeps. Now it is asked against its module as this run
+    leaves it, whoever's bytes those are, and the line says whose: a copy
+    an earlier run kept, or the upstream's own, on disk or written. The
+    refusal opens in words true of every kind of line."""
+    refused = module_left(update_shape, tmp_path, how, LACKS_NEW)
+    assert refused is not None, f"{how}: repo_shape.py lacks NEW"
+    assert refused.code == REFUSAL, refused.code
+    assert [line for line in refused.detail.splitlines()
+            if line.startswith("    ")] == [
+        f"    {REPO_SHAPE} ({word}) lacks NEW, which {BOOTSTRAP} imports "
+        "from it"], refused.detail
+    assert f"REFUSED {REFUSAL}: {refused.detail}".startswith(LEFT_LEAD), \
+        refused.detail
+
+
+@pytest.mark.parametrize("how, word", WHOSE)
+def test_a_module_left_defining_every_name_is_not_refused(update_shape,
+                                                          tmp_path, how,
+                                                          word):
+    """The control for each: the module, as this run leaves it, defines
+    `NEW`."""
+    assert module_left(update_shape, tmp_path, how, DEFINES_NEW) is None, word
+
+
+@pytest.mark.parametrize("how, said, unsaid", [
+    pytest.param("kept earlier", [EARLIER_WHY, EARLIER_LACKS_EXIT,
+                                  f"again with {EARLIER_AGAIN};",
+                                  f"`git show {'a' * 40}:{REPO_SHAPE}`"],
+                 [UPSTREAM_EXIT, "with the same --accept-local",
+                  "update-conflict"],
+                 id="a copy an earlier run kept"),
+    pytest.param("written", [UPSTREAM_EXIT],
+                 ["--accept-local", "git show", EARLIER_WHY],
+                 id="the upstream's own copies"),
+])
+def test_each_kind_of_module_is_given_its_own_exit(update_shape, tmp_path,
+                                                   how, said, unsaid):
+    """A copy an earlier run kept is merged and kept with `--accept-local`
+    on it, or dropped, as `check` reads it `unchanged`; two of the
+    upstream's own copies that disagree are no edit of the project's, and
+    the exit is another target."""
+    refused = module_left(update_shape, tmp_path, how, LACKS_NEW)
+    assert refused is not None, "repo_shape.py lacks NEW"
+    for words in said:
+        assert words in refused.remediation, refused.remediation
+    for words in unsaid:
+        assert words not in refused.remediation, refused.remediation
+
+
+#: A helper beside `bootstrap.py` that a written copy takes `Y` from.
+PATHS = "scripts/helpers/paths.py"
+
+
+@pytest.mark.parametrize("helper, word, again, show", [
+    pytest.param({"left": {PATHS: (b"X = 1\n", b"X = 1\nY = 1\n")}},
+                 "kept by an earlier run",
+                 f"with the same --accept-local, and with {EARLIER_AGAIN};",
+                 True, id="a copy this run keeps and one an earlier run kept"),
+    pytest.param({"written": {PATHS: b"X = 1\n"}}, "the upstream's",
+                 "with the same --accept-local;", False,
+                 id="a copy this run keeps and the upstream's own"),
+])
+def test_every_kind_of_line_in_one_run_is_one_refusal(update_shape, tmp_path,
+                                                      helper, word, again,
+                                                      show):
+    """A kept `repo_shape.py` lacking `NEW`, and a `paths.py` lacking `Y`
+    that is a copy an earlier run kept, or the upstream's own: one
+    refusal, a line per pair sorted by module, opening in words true of
+    both, and each line's exit, the `git show` only for a copy the project
+    keeps."""
+    takes = {BOOTSTRAP: imports("NEW") + imports("Y", module="helpers.paths")}
+    refused = refusal(update_shape, tmp_path, {REPO_SHAPE: LACKS_NEW},
+                      {**takes, **helper.get("written", {})},
+                      left=helper.get("left"))
+    assert refused is not None, "both modules lack a name"
+    assert [line for line in refused.detail.splitlines()
+            if line.startswith("    ")] == [
+        f"    {PATHS} ({word}) lacks Y, which {BOOTSTRAP} imports from it",
+        f"    {REPO_SHAPE} (kept) lacks NEW, which {BOOTSTRAP} imports from "
+        "it"], refused.detail
+    assert f"REFUSED {REFUSAL}: {refused.detail}".startswith(LEFT_LEAD)
+    for words in (LACKS_EXIT, f", commit each, and run this again {again}",
+                  f"`git show {'a' * 40}:{REPO_SHAPE}` for {REPO_SHAPE}",
+                  f"{REPO_SHAPE} changed upstream too"):
+        assert words in refused.remediation, refused.remediation
+    assert (f"`git show {'a' * 40}:{PATHS}`" in refused.remediation) is show
+    assert (UPSTREAM_EXIT in refused.remediation) is not show
+    assert f"{PATHS} changed upstream too" not in refused.remediation
+
+
+def test_an_importer_holding_the_targets_bytes_is_not_asked(
+        update_shape, tmp_path):
+    """An `unchanged` copy that holds the upstream's own bytes is not asked
+    as an importer: the written `repo_shape.py` drops `GONE`, which such a
+    `bootstrap.py` beside it takes, and the run is not refused. That pair
+    is two of the target's own copies (`_refuse_kept_copies_missing_names`).
+    """
+    assert refusal(update_shape, tmp_path, {}, {REPO_SHAPE: DROPS_GONE},
+                   current={REPO_SHAPE: DEFINES_GONE},
+                   left={BOOTSTRAP: (TAKES_GONE, TAKES_GONE)}) is None
+
+
+#: The line for an `unchanged` `bootstrap.py` an earlier run kept, taking
+#: `GONE`, which the written `repo_shape.py` drops.
+EARLIER_GONE = (f"    {REPO_SHAPE} (written) no longer defines GONE, which "
+                f"{BOOTSTRAP} (kept by an earlier run) imports from it")
+
+
+@pytest.mark.parametrize("kept, lines, again", [
+    pytest.param({}, [EARLIER_GONE], f"again with {EARLIER_AGAIN};",
+                 id="a copy an earlier run kept"),
+    pytest.param({HELPER: TAKES_GONE},
+                 [EARLIER_GONE, f"    {REPO_SHAPE} (written) no longer "
+                  f"defines GONE, which {HELPER} (kept) imports from it"],
+                 f"again with the same --accept-local, and with "
+                 f"{EARLIER_AGAIN};", id="and a copy this run keeps"),
+])
+def test_an_importer_an_earlier_run_kept_is_asked_against_a_written_module(
+        update_shape, tmp_path, kept, lines, again):
+    """#604 asked only a copy this run's `--accept-local` keeps as an
+    importer. A copy an earlier run kept is asked too (#1082): the written
+    `repo_shape.py` drops `GONE`, which an `unchanged` `bootstrap.py`
+    holding the project's own bytes takes. Its line says who kept it, the
+    refusal opens in words true of every kind of line, and the remedy
+    gives that copy its exits, `--accept-local` on it once changed."""
+    refused = refusal(update_shape, tmp_path, kept, {REPO_SHAPE: DROPS_GONE},
+                      state="locally-modified",
+                      current={REPO_SHAPE: DEFINES_GONE},
+                      left={BOOTSTRAP: (TAKES_GONE, imports("KEPT"))})
+    assert refused is not None, "the written repo_shape.py drops GONE"
+    assert [line for line in refused.detail.splitlines()
+            if line.startswith("    ")] == lines, refused.detail
+    assert f"REFUSED {REFUSAL}: {refused.detail}".startswith(LEFT_LEAD), \
+        refused.detail
+    for words in (EARLIER_WHY, EARLIER_DROPS_EXIT, again,
+                  f"`git show {'a' * 40}:{BOOTSTRAP}` for {BOOTSTRAP}"):
+        assert words in refused.remediation, refused.remediation
+    for words in (EARLIER_LACKS_EXIT, UPSTREAM_EXIT, "update-conflict"):
+        assert words not in refused.remediation, refused.remediation
+    assert ("with the same --accept-local" in refused.remediation) is \
+        bool(kept), refused.remediation
 
 
 # --- the upstream's bytes a remedy names, pasted (#675) ----------------------
