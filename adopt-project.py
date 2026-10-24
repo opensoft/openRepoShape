@@ -230,6 +230,7 @@ import stat
 import subprocess
 import sys
 import tempfile
+import unicodedata
 from pathlib import Path, PurePosixPath
 from typing import Callable, NamedTuple
 
@@ -6385,10 +6386,16 @@ def _print_entries(entries: list[Entry]) -> None:
     stood 3 characters right of its heading. The rule id is a path
     policy's, which `--path-policy` may name and nothing asks to be
     printable, so it is `_shown` as a question is.
+
+    AND IT IS PADDED BY THE COLUMNS IT TAKES, not the code points it holds
+    (#1034, `_padded`). `\\u540d\\u524d.md`, two wide characters, takes 7
+    columns and was padded as 5, so its row stood 2 columns right of its
+    headings; `e\\u0301.md`, whose acute is drawn over the `e`, takes 4 and
+    was padded as 5, 1 column left.
     """
     print(f"\n{'path':<34} {'leg':<10} {'conf':<7} {'files':>6} {'rule'}")
     for entry in entries:
-        print(f"{_printed(_shown(entry.path)):<34} "
+        print(f"{_padded(_printed(_shown(entry.path)), 34)} "
               f"{(entry.leg or 'REVIEW'):<10} "
               f"{entry.confidence:<7} {entry.files:>6} "
               f"{_shown(str(entry.rule))}")
@@ -6408,6 +6415,55 @@ def _printed(text: str) -> str:
         return text.encode(encoding, errors).decode(encoding)
     except (LookupError, UnicodeError):
         return text
+
+
+#: The general categories a terminal gives no column of their own (#1034):
+#: a non-spacing mark and an enclosing one, which it draws over the
+#: character before them, and a format character, which it does not draw.
+#: `_shown` spells every format character, so none reaches `plan`'s table
+#: as it is.
+ZERO_COLUMN_CATEGORIES = frozenset(("Mn", "Me", "Cf"))
+#: The East Asian widths a terminal gives two columns: wide and fullwidth.
+TWO_COLUMN_WIDTHS = frozenset(("W", "F"))
+#: The Hangul medial vowels and final consonants, which a terminal gives no
+#: column of their own, as glibc's `wcwidth` gives them none (#1034): U+1160
+#: to U+11FF in the block Hangul Jamo, and U+D7B0 to U+D7FF in Hangul Jamo
+#: Extended-B. Their category is Lo and their East Asian width N, so neither
+#: set above names them, but a terminal draws each inside the syllable its
+#: leading consonant begins: U+1112 U+1161 U+11AB, one syllable spelled in
+#: its three jamo, takes the 2 columns of U+1112.
+MEDIAL_AND_FINAL_JAMO = frozenset(map(chr, range(0x1160, 0x1200)))
+MEDIAL_AND_FINAL_JAMO_EXTENDED_B = frozenset(map(chr, range(0xD7B0, 0xD800)))
+
+
+def _columns(text: str) -> int:
+    """How many columns `text` takes on a terminal (#1034): none for a
+    character of `ZERO_COLUMN_CATEGORIES` or a Hangul medial vowel or final
+    consonant (`MEDIAL_AND_FINAL_JAMO`, `MEDIAL_AND_FINAL_JAMO_EXTENDED_B`),
+    two for one `unicodedata.east_asian_width` calls wide or fullwidth, and
+    one for any other, an ambiguous one among them, as a terminal outside
+    an East Asian locale draws it.
+
+    THE CATEGORY IS ASKED FIRST: the voiced sound mark U+3099, which a
+    decomposed `\\u304c` ends in, is wide, and is drawn over the kana
+    before it. AND IT IS THE CATEGORY, not `unicodedata.combining`, whose
+    canonical combining class is 0 for marks a terminal draws over the
+    character before them all the same: the Thai vowel sign U+0E35 and
+    the variation selector U+FE0F among them."""
+    return sum(
+        0 if (unicodedata.category(char) in ZERO_COLUMN_CATEGORIES
+              or char in MEDIAL_AND_FINAL_JAMO
+              or char in MEDIAL_AND_FINAL_JAMO_EXTENDED_B)
+        else 2 if unicodedata.east_asian_width(char) in TWO_COLUMN_WIDTHS
+        else 1
+        for char in text)
+
+
+def _padded(text: str, columns: int) -> str:
+    """`text` and the spaces that make it `columns` columns wide on a
+    terminal (`_columns`), as `f"{text:<{columns}}"` makes it that many
+    code points. A text wider than that is `text` as it is, as there."""
+    return text + " " * (columns - _columns(text))
 
 
 def _print_summary(entries: list[Entry]) -> None:
