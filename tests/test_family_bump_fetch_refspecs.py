@@ -578,9 +578,11 @@ def test_an_ordinary_mount_fetches_the_branch_and_moves_nothing_else(
 #: start of `refs/heads/` among them (the `another-name-heads-pattern`
 #: rows, #1100, from `refs/heads*` to `refs/h*`, and one with a suffix);
 #: `carried` where none does (`carried-refs-h-not-a-pattern`, a start of
-#: `refs/heads/` with no `*`, is no pattern: it takes the one ref of that
-#: name, which is no branch), and `skipped` for a negative refspec, which
-#: no clause is asked of. `bump-leg.py`'s fetch of a leg is asked the same
+#: `refs/heads/` with no `*`, is no pattern: it takes the one ref that name
+#: stands for, `refs/h` itself or a ref git completes it to, such as the
+#: branch `refs/heads/refs/h` or the tag `refs/tags/refs/h`, and not the
+#: branches as a set), and `skipped` for a negative refspec, which no
+#: clause is asked of. `bump-leg.py`'s fetch of a leg is asked the same
 #: rows (`test_bump_leg_fetch_refspecs.py`).
 WHICH_CLAUSE = pytest.mark.parametrize("refspec, carried", [
     pytest.param("+refs/heads/*:refs/heads/*", False, id="outside-heads"),
@@ -687,10 +689,12 @@ def test_which_clause_leaves_each_refspec_out(
     row fails a clause that takes too much: the pull requests in a folder,
     which #946 carries, `refs/tagsx/`, which no tag is under,
     `refs/headsx/`, which no branch is under, `refs/h` with no `*`, a start
-    of `refs/heads/` that is no pattern and takes only the ref of that name,
-    which is no branch and may stand beside the branches (the re-check of
-    #1157, NIT 1), and a branch, a folder of them or a pattern of them,
-    each under the name `BRANCHES` gives it."""
+    of `refs/heads/` that is no pattern and takes only the one ref that name
+    stands for (`refs/h` itself or a ref git completes it to, such as the
+    branch `refs/heads/refs/h` or the tag `refs/tags/refs/h`), whose fetch
+    clashes, as a pull request's ref does, where its destination is a
+    branch's name (the re-check of #1157, NIT 1), and a branch, a folder of
+    them or a pattern of them, each under the name `BRANCHES` gives it."""
     env = isolated(offline, tmp_path)
     for key, value in env.items():
         monkeypatch.setenv(key, value)
