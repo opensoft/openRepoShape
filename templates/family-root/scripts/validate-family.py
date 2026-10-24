@@ -149,8 +149,9 @@ operating system for the path's `stat` (`_is_a`), the same answer on every
 Python, and one it refuses is refused by name, `<path>: cannot be read
 (<reason>)`, with a cure for the cause, exit 2: a member's checkout or what
 is on disk at any gitlink `member-unreadable`, the shape pin
-`shape-pin-unreadable`, a shape copy `shape-copy-unreadable` and
-`family.yaml` `family-manifest-unreadable`. A member's `project.yaml` is
+`shape-pin-unreadable`, a shape copy `shape-copy-unreadable`, `family.yaml`
+`family-manifest-unreadable`, and the holder's own `.git`, or the git
+directory it names, `git-repo-unreadable` (#1148). A member's `project.yaml` is
 the finding `member-manifest-unreadable`, exit 1, as one that cannot be
 opened already was. Python 3.14's `is_file()` and `exists()` read each as
 not there.
@@ -508,17 +509,79 @@ def _cannot_read(named: str, exc: OSError) -> str:
             f"({exc.strerror or type(exc).__name__})")
 
 
-def _unreadable(code: str, named: str, exc: OSError) -> Refusal:
+def _unreadable(code: str, named: str, exc: OSError,
+                reads: str = PATHS_READ) -> Refusal:
     """`code`'s refusal, exit 2, for the path `named` whose `stat` or open
     the operating system refused (#430): `_cannot_read`'s line and a remedy
     that follows the cause (`_advice`), as `validate-pins.py`'s
     `_unreadable_file` says it. A path this validator must read and cannot
-    is a question it cannot answer, never "absent"."""
+    is a question it cannot answer, never "absent". `reads` is what the
+    remedy says this validator reads: the holder's own repository, for its
+    `.git` (`_refuse_an_unreadable_root`, #1148)."""
     return Refusal(
         code, _cannot_read(named, exc),
-        f"Remediation: this validator reads {PATHS_READ}, and one it cannot "
+        f"Remediation: this validator reads {reads}, and one it cannot "
         "read is a question it cannot answer, never a pass. "
         + _advice(exc) + RUN_AGAIN)
+
+
+#: The refusal of a holder whose own `.git` this user cannot read (#1148),
+#: the code the assembly root's validators refuse theirs by (#1146), and
+#: what that repository is read for, as `_unreadable`'s remedy names it.
+ROOT_UNREADABLE = "git-repo-unreadable"
+ROOT_READ = ("the holder's own repository, where it finds the holder and "
+             "each gitlink, `.gitmodules` and HEAD it records")
+
+
+def _refuse_an_unreadable_root(start: Path) -> None:
+    """`git-repo-unreadable`, by name, exit 2, where this user cannot read
+    the `.git` that `find_repo_root` stops at, at `start` or above it
+    (#1148).
+
+    `find_repo_root` ASKS `exists()`, AND IS A SHAPE COPY THIS FILE MAY NOT
+    RELY ON BEING NEWER THAN ITSELF (#370, #610), so each `.git` it would ask
+    is asked here first, with `_is_a`, in the same order. A holder whose
+    `.git` is a link into a folder this user cannot search ended in a
+    `PermissionError` traceback on Python 3.12, exit 1, a FINDING's code,
+    which the doctor's `family` row called a validator that crashed; from
+    3.14 `exists()` answers False, and the run refused `not-a-git-repo` (`no
+    .git found`) about a holder that has one. A `.git` that answers absent
+    (nothing there, a link that leads nowhere or to itself) is passed over,
+    as `exists()` passes it.
+
+    THE FIRST `.git` THAT IS THERE IS ASKED WHAT `validate-pins.py` ASKS
+    ITS ROOT'S (#1146), since every gitlink here is read through it: a
+    gitfile it cannot open, or a git directory whose `HEAD` it cannot reach.
+    A `.git` directory at mode 000 passed the `stat`, and git's `fatal: not
+    a git repository` was refused `gitlinks-unreadable` under the remedy to
+    ask `git status`, which says the same. Each is named relative to where
+    the walk starts, or whole where it is not under it. A gitfile that names
+    no directory, and a git directory with no `HEAD`, are left to git, as
+    they always were."""
+    path = Path(start).resolve()
+    for candidate in [path, *path.parents]:
+        dotgit = candidate / ".git"
+        named = dotgit
+        try:
+            if not _is_a(dotgit, _any_kind):
+                continue
+            gitdir = dotgit
+            if _is_a(dotgit, stat.S_ISREG):
+                data = dotgit.read_bytes()
+                if not data.startswith(b"gitdir: "):
+                    return
+                gitdir = dotgit.parent / os.fsdecode(
+                    data[len(b"gitdir: "):].rstrip(b"\r\n"))
+                named = Path(os.path.normpath(gitdir))
+            _is_a(gitdir / "HEAD", _any_kind)
+        except OSError as exc:
+            try:
+                shown = named.relative_to(path).as_posix()
+            except ValueError:
+                shown = str(named)
+            raise _unreadable(ROOT_UNREADABLE, shown, exc,
+                              ROOT_READ) from exc
+        return
 
 
 def _asked(path: Path, kind: Callable[[int], bool], code: str,
@@ -4255,7 +4318,10 @@ def _run_checks(args: argparse.Namespace,
     members)`, which `main` still needs afterward for the final summary
     line, whose THE LOCKSTEP RULE names the holder (#610).
     """
-    root = find_repo_root(args.root or Path(__file__).resolve().parents[1])
+    start = args.root or Path(__file__).resolve().parents[1]
+    # A `.git` this user cannot read is refused by name first (#1148).
+    _refuse_an_unreadable_root(start)
+    root = find_repo_root(start)
     manifest_path = root / MANIFEST
     # A `family.yaml` whose `stat` is refused (a link into a folder this
     # user cannot search) is refused by name (#430): on Python 3.14 it was
