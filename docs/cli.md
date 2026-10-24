@@ -642,6 +642,13 @@ options:
                         inside a repository, as `source-not-top-level`; and
                         one this user cannot reach, a clone `plan` made
                         included, as `source-unreadable`, never cloned again.
+                        Either source, where it is a partial clone (`git clone
+                        --filter`) that lacks an object its branches, tags or
+                        HEAD reach, is refused as `source-partial-clone`
+                        before anything reads it: git would fetch that object
+                        into it, and neither command fetches into the source.
+                        `git fetch --refetch --no-filter <remote>`, run in it,
+                        makes it whole.
   --local-remote-dir LOCAL_REMOTE_DIR
                         the directory `execute --local-remote-dir` will be
                         given (the TEST path): each relative submodule url the
@@ -701,6 +708,13 @@ options:
                         inside a repository, as `source-not-top-level`; and
                         one this user cannot reach, a clone `plan` made
                         included, as `source-unreadable`, never cloned again.
+                        Either source, where it is a partial clone (`git clone
+                        --filter`) that lacks an object its branches, tags or
+                        HEAD reach, is refused as `source-partial-clone`
+                        before anything reads it: git would fetch that object
+                        into it, and neither command fetches into the source.
+                        `git fetch --refetch --no-filter <remote>`, run in it,
+                        makes it whole.
   --local-remote-dir LOCAL_REMOTE_DIR
                         create the legs as bare repositories here instead of
                         calling `gh` (the TEST path). Both are asked about
