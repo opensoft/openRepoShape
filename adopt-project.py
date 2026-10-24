@@ -2761,7 +2761,12 @@ class Source:
         if made is not None:
             made.append(claim)
         try:
-            print(f"cloning {repository} (read only) into {path}")
+            # The path is the caller's typed `--work-dir`, made absolute, so
+            # it is `_shown` as `plan`'s other lines name a path (#1115,
+            # #1120's N4): printed as it was, a bidi control in it reached
+            # the terminal and a line feed split the line.
+            print(f"cloning {repository} (read only) into "
+                  f"{_shown(str(path))}")
             run(["gh", "repo", "clone", repository, str(path), "--",
                  "--quiet"])
         except BaseException as exc:
@@ -6336,8 +6341,10 @@ def cmd_plan(args) -> int:
     args.plan_written = True
     # And it is SAID from here, before the report reads more of the source:
     # the report's last reads (`symlink_targets`) can still refuse, exit 2,
-    # and the plan is on disk (#799's L1-79).
-    print(f"\nplan written to {out}")
+    # and the plan is on disk (#799's L1-79). The path is the caller's typed
+    # `--out`, so it is `_shown` as every other path this report names is
+    # (#1115): a bidi control in it reached the terminal as it was typed.
+    print(f"\nplan written to {_shown(str(out))}")
 
     _print_plan_report(args, source, tree, entries, follow_ups, seeded, pins)
     return 0
