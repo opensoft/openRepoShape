@@ -9128,6 +9128,32 @@ def slashed_rows(answers: dict, role: str, rel: str, files: list) -> list:
     return [f"{rel}/{path}" for path in rows if path[:-1] in named]
 
 
+def read_through_the_root(root: Path, rel: str) -> bool:
+    """Whether the leg mounted at `rel` keeps its repository in the root's
+    own (#1146): its `.git` a gitfile naming a git directory under the
+    root's `.git`, or under the directory a root's gitfile names, where git
+    keeps a submodule's (`.git/modules/<leg>`, and `<that directory>/modules/
+    <leg>` for a root that is a linked worktree or a submodule itself). A
+    `.git` directory of the leg's own, a gitfile that names no directory,
+    and a read refused on the way are not: the leg's own line stands."""
+    try:
+        gitdir = git_dir_of(root / rel / ".git")
+    except OSError:
+        return False
+    if gitdir is None:
+        return False
+    homes = [root / ".git"]
+    try:
+        named = git_dir_of(root / ".git")
+    except OSError:
+        named = None
+    if named is not None:
+        homes.append(named)
+    path = Path(os.path.normpath(gitdir))
+    return any(home == path or home in path.parents
+               for home in (Path(os.path.normpath(each)) for each in homes))
+
+
 def audit_leg(adopt, policy, patterns: list, role: str, rel: str,
               root: Path, record: dict, answers: dict,
               root_line: str | None = None) -> tuple:
@@ -9209,7 +9235,9 @@ def audit_leg(adopt, policy, patterns: list, role: str, rel: str,
     said `it is not a git repository`, a claim about the leg. A leg with a
     repository of its own that git reads is audited as before, and a leg
     with no `.git` of its own is not its own repository whatever the root's
-    `.git` says, so it keeps git's answer.
+    `.git` says, so it keeps git's answer. `mount_read` refuses such a leg's
+    git directory first (#1174), and the root's line is given ahead of that
+    refusal (`read_through_the_root`).
     """
     entry = {"role": role, "path": rel}
     mount = root / rel
@@ -9218,6 +9246,16 @@ def audit_leg(adopt, policy, patterns: list, role: str, rel: str,
         entry["state"] = escaped
         return entry, [], [], [], []
     populated, own_git, unread = mount_read(root, rel)
+    if (unread is not None and root_line is not None
+            and read_through_the_root(root, rel)):
+        # THE ROOT'S LINE COMES FIRST (#1146 over #1174): this leg's git
+        # directory is inside the root's own, so it cannot be read because
+        # the root's `.git` cannot, and what mends the root's mends it.
+        # `mount_read`'s `<leg>: .git/modules/<leg>: cannot be read` would
+        # name that symptom once per leg, and `placement` could not say the
+        # root's line once, as the `legs` row does.
+        entry["state"] = entry[GITLINK_UNREAD] = root_line
+        return entry, [], [], [], []
     if unread is not None:
         # A leg this user cannot reach, in the gate's words, as the `legs`
         # row says it (#430): a READ that is missing, never a clean leg, and

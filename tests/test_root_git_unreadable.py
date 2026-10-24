@@ -710,6 +710,80 @@ def test_only_a_leg_git_names_no_repository_for_is_given_the_roots_line(
          module.GITLINK_UNREAD: line}]
 
 
+def legs_under_a_moved_root(root: Path) -> None:
+    """The root's `.git` moved to `elsewhere/projgit` with a gitfile naming
+    it, and each leg's gitfile naming its git directory under that one, as
+    git writes it for a root that is a linked worktree or a submodule
+    itself (`../../elsewhere/projgit/modules/<leg>`)."""
+    moved_out(root)
+    for leg in ("spec", "code"):
+        (root / leg / ".git").write_bytes(
+            f"gitdir: ../../elsewhere/projgit/modules/{leg}\n".encode())
+
+
+def every_head_refused(monkeypatch) -> None:
+    """The `stat` of every `HEAD` refused, the root's and each leg's: a
+    stand-in, in process, for a root's git directory this user cannot
+    search, and the legs' git directories inside it."""
+    refusing(monkeypatch, "stat", "HEAD", PermissionError(errno.EACCES,
+                                                          DENIED))
+
+
+@pytest.mark.parametrize("arrange, named", [
+    pytest.param(lambda root: None, lambda root: ".git",
+                 id="under-the-roots-git"),
+    pytest.param(legs_under_a_moved_root,
+                 lambda root: str(root.parent / "elsewhere" / "projgit"),
+                 id="under-the-directory-the-roots-gitfile-names"),
+])
+def test_a_leg_git_directory_inside_the_roots_is_given_the_roots_line(
+        standard, project, monkeypatch, arrange, named):
+    """#1146 over #1174, in process, on every platform and as root. Each
+    leg's git directory is inside the root's own, and every `HEAD` is
+    refused: `mount_read` refuses each leg's git directory, and the merge of
+    the two said `<leg>: .git/modules/<leg>: cannot be read` of each, so
+    `placement` could not say the root's line once. The root's line now
+    comes first, for a root's `.git` that is the git directory and for one
+    that is a gitfile naming it, and both rows say it once."""
+    arrange(project)
+    module, ctx = in_process(standard, project)
+    every_head_refused(monkeypatch)
+    line = cannot(named(ctx.root))
+    assert module.root_git_read(ctx.root)[0] == line
+    assert module.check_legs(ctx).reason == legs_said(line)
+    placement = module.check_placement(ctx)
+    assert placement.status == module.NA
+    assert placement.reason == placement_said(line)
+    assert placement.detail["legs"] == [
+        {"role": role, "path": role, "state": line,
+         module.GITLINK_UNREAD: line} for role in ("spec", "code")]
+
+
+def test_a_git_directory_of_the_legs_own_keeps_its_own_line(
+        standard, project, monkeypatch):
+    """The control, in process: every `HEAD` refused, and the spec leg's
+    repository in a `.git` directory of its own. Its git directory is not
+    inside the root's, so the root's `.git` is not what kept it from being
+    read: it keeps `mount_read`'s line, `spec/.git: cannot be read` (#1174),
+    and only the code leg, read through the root's repository, is given the
+    root's line."""
+    own_repository(project)
+    module, ctx = in_process(standard, project)
+    every_head_refused(monkeypatch)
+    line = cannot(".git")
+    own = cannot("spec/.git")
+    placement = module.check_placement(ctx)
+    assert placement.status == module.NA
+    assert placement.reason == (
+        f"no leg could be read, so nothing was classified: {own}; "
+        f"code: read through the root's repository, and {line}")
+    assert placement.detail["legs"] == [
+        {"role": "spec", "path": "spec", "state": own,
+         module.MOUNT_UNREAD: own},
+        {"role": "code", "path": "code", "state": line,
+         module.GITLINK_UNREAD: line}]
+
+
 def test_a_leg_whose_gitlink_cannot_be_read_is_never_drift(standard,
                                                            project):
     """`drifted_reasons` counts no leg that carries `gitlink_cannot_be_read`
