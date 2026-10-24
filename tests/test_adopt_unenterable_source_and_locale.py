@@ -67,10 +67,10 @@ ACCENTED = "Thing\u00e9"
 #: UTF-8 mode under the C locale: how the plan is written.
 UTF8_MODE = {"LC_ALL": "C", "PYTHONUTF8": "1"}
 
-#: The child of `test_the_clone_at_the_record_is_kept_under_the_c_locale`:
+#: The child `kept_clones` runs, for the C locale (#918) and Latin-1 (#1078):
 #: `Plan._keep_the_clone_at_the_record` of a plan recording argv[2], a JSON
 #: string, for the clones whose paths are the hex of their bytes in argv[3:]
-#: (every argument is ASCII, as the locale under test spells nothing else).
+#: (every argument is ASCII, which the C locale spells and Latin-1 alike).
 #: It prints one line of ASCII JSON: whether this locale spells the record,
 #: and the hex of each clone left.
 KEEP_THE_CLONE = r"""
@@ -343,18 +343,12 @@ def test_a_surrogate_no_byte_is_read_as_is_asked_as_written(adopter):
     assert adopter._recorded_spelling("Thing\ud800") == ("Thing\ud800", "")
 
 
-def test_the_clone_at_the_record_is_kept_under_the_c_locale(tmp_path):
-    """`_keep_the_clone_at_the_record` (#803, #918): `check --source` takes
-    the clone this run made off its list of clones to remove where it is at
-    the plan's own `source.local_path`. A plan written in UTF-8 mode records
-    `Thing\\u00e9` as itself, which `LC_ALL=C PYTHONUTF8=0` cannot spell: if
-    the record is asked as written, `os.path.realpath` meets the
-    `UnicodeEncodeError` and the method returns, the clone at the record
-    stays on the list and `check` removes it, #803's bug again under the C
-    locale. Asked as the UTF-8 bytes the plan holds, that one clone is taken
-    off, and a clone made elsewhere stays. The method runs in a child that
-    is the C locale itself, with a real directory at the record."""
-    env = c_locale_or_skip()
+def kept_clones(tmp_path: Path, env: dict) -> tuple[bool, list[str], str]:
+    """`KEEP_THE_CLONE` in a child started with `env`, for a record at
+    `<tmp>/Thing\\u00e9/source-readonly/Thing` and two real clones, one at the
+    record and one elsewhere: `(spells, left, elsewhere)`, whether that
+    locale spells the record, the clones left on the list to remove, and
+    the one made elsewhere (#803, #918, #1078)."""
     base = Path(os.path.realpath(tmp_path))
     clone = base / ACCENTED / "source-readonly" / "Thing"
     elsewhere = base / "work" / "source-readonly" / "Thing"
@@ -369,7 +363,22 @@ def test_the_clone_at_the_record_is_kept_under_the_c_locale(tmp_path):
 
     assert child.returncode == 0, child.stderr.decode("utf-8", "replace")
     answer = json.loads(child.stdout.decode("ascii"))
-    assert answer["spells"] is False, "premise: this locale cannot spell it"
     left = [os.fsdecode(bytes.fromhex(held)) for held in answer["left"]]
-    assert left == [str(elsewhere)], (
+    return answer["spells"], left, str(elsewhere)
+
+
+def test_the_clone_at_the_record_is_kept_under_the_c_locale(tmp_path):
+    """`_keep_the_clone_at_the_record` (#803, #918): `check --source` takes
+    the clone this run made off its list of clones to remove where it is at
+    the plan's own `source.local_path`. A plan written in UTF-8 mode records
+    `Thing\\u00e9` as itself, which `LC_ALL=C PYTHONUTF8=0` cannot spell: if
+    the record is asked as written, `os.path.realpath` meets the
+    `UnicodeEncodeError` and the method returns, the clone at the record
+    stays on the list and `check` removes it, #803's bug again under the C
+    locale. Asked as the UTF-8 bytes the plan holds, that one clone is taken
+    off, and a clone made elsewhere stays. The method runs in a child that
+    is the C locale itself, with a real directory at the record."""
+    spells, left, elsewhere = kept_clones(tmp_path, c_locale_or_skip())
+    assert spells is False, "premise: this locale cannot spell it"
+    assert left == [elsewhere], (
         f"the clone at the record is not taken off: {left}")
