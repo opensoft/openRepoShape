@@ -7642,9 +7642,24 @@ def _store_git_uses(root: Path, path: str) -> tuple[str, Path] | None:
 #: `PinRollback._work_tree_by_hand` (which types the store's update for it,
 #: and calls no store-less checkout) route on this code; the only refusal
 #: either can meet with it is `_unrestorable`'s, since `_storeless` reads
-#: nothing else of the disk. `tests/test_family_py_unreadable.py` pins the
-#: two to one value.
+#: nothing else of the disk but the `.gitmodules` that names the store,
+#: whose own code is `GITMODULES_UNREAD_CODE`.
+#: `tests/test_family_py_unreadable.py` pins the two to one value.
 STORE_UNREADABLE = "member-unreadable"
+#: The code `_gitmodules_on_disk` raises for a work tree's `.gitmodules`
+#: this user may not read (#1110): the code `add` already gives the same
+#: file where git cannot read it (`_submodule_paths`), so one file has one
+#: name, and the cure follows the cause. A CODE, NOT `GITMODULES_UNREADABLE`,
+#: which is the remediation `_submodule_paths` gives a file git cannot parse.
+GITMODULES_UNREAD_CODE = "gitmodules-unreadable"
+#: What the rollback's restore may meet where a path it must read cannot be
+#: read (#430, #1110): the store `git submodule update` checks the member
+#: out of, or the `.gitmodules` that tells git which store that is. Neither
+#: is a store that is gone. Once the cure is given, the checkout comes back
+#: from that store with no network, so `PinRollback` makes the mount again,
+#: empty, and types the update after the cure; it never says the checkout
+#: comes back only from its remote.
+READABLE_ONCE_CURED = (STORE_UNREADABLE, GITMODULES_UNREAD_CODE)
 
 
 def _unrestorable(root: Path, path: str, commit: str | None) -> str | None:
@@ -8184,11 +8199,23 @@ class PinRollback:
         # without it: it would clone (#365). One this user may not read is
         # raised from here, named, and the commands typed by hand bring the
         # checkout back from it once it can be read (#430); the directory is
-        # made again first, as for a store that is gone.
+        # made again first, as for a store that is gone. So is a
+        # `.gitmodules` this user may not read, which names that store
+        # (#1110): it is no section gone.
         try:
             why = self._storeless()
         except Refusal as exc:
-            if exc.code == STORE_UNREADABLE and self._made_again_if_can():
+            if exc.code == GITMODULES_UNREAD_CODE:
+                # With its cure, as a store's detail carries its own: the
+                # sentence prints no remediation (r1164's NIT-1). Not
+                # "inside the holder": a link can lead out of it.
+                exc.detail += ": " + (
+                    "`chmod u+r` on it, and `chmod u+rx` on every directory "
+                    "above it, lets git read it"
+                    if isinstance(exc.__cause__, PermissionError)
+                    else OTHER_CURE)
+            if exc.code in READABLE_ONCE_CURED and \
+                    self._made_again_if_can():
                 exc.detail += f", and {self.path} was made again, empty"
             raise
         if why is not None:
@@ -8254,15 +8281,23 @@ class PinRollback:
         """The commands that put `name` back: its index entries, then its
         bytes from them where they are what the index held. Bytes git does
         not have — an edit nobody had staged — have no command, and the
-        sentence's `git status` shows them."""
+        sentence's `git status` shows them.
+
+        BYTES THIS USER MAY NOT READ ARE NOT TAKEN FOR THE RECORDED ONES
+        (#1110). A `pre-commit` hook that made `.gitmodules` unreadable (a
+        link into a folder at mode 000, or the file at 000) and refused left
+        the copy `git rm` wrote, the member's section gone, so the update
+        typed after the cure said `No url found for submodule path`. Typed
+        after the cure, the checkout from the index writes the recorded
+        bytes back, and where they were there already it writes the same.
+        """
         data, entries = self.files[name]
         typed = [_entries_by_hand(name, entries)]
         try:
             same = self._bytes(name) == data
         except OSError:
-            # Named by the step that met it (#430); the index entry is still
-            # this command's to type, and the bytes are `git status`'s.
-            return typed
+            # Named by the step that met it, with its cure (#430).
+            same = False
         if same:
             return typed
         if data is None:
@@ -8316,7 +8351,9 @@ class PinRollback:
         except Refusal as exc:
             # A store this user may not read is one the checkout comes back
             # from once it can (#430): its update is typed, after the cure.
-            storeless = exc.code != STORE_UNREADABLE
+            # So is one named by a `.gitmodules` this user may not read
+            # (#1110), which said "no section, so only from its remote".
+            storeless = exc.code not in READABLE_ONCE_CURED
         except CommandFailed:
             storeless = True
         if storeless:
@@ -9499,6 +9536,57 @@ def _suspicious_name(name: str) -> bool:
     return not name or ".." in re.split(r"[/\\]", name)
 
 
+#: What `gitmodules-unreadable` says each verb reads the work tree's
+#: `.gitmodules` for, where `_gitmodules_on_disk` refuses it (#1110): `remove`
+#: through its two readers and `_stages_as`, `add` through `_stages_as`.
+GITMODULES_READ_FOR = {
+    "remove": (f"`remove` reads the work tree's {GITMODULES} before it writes "
+               "anything, for the section `git rm` takes out and the object "
+               "store the member would come back from, and its rollback "
+               "reads it again to bring the member back."),
+    "add": (f"`add` reads the work tree's {GITMODULES} before it writes "
+            "anything, to find out whether it is the copy the index holds: "
+            "`git submodule add` writes the member's section into it and "
+            "the commit takes all of it."),
+}
+
+
+def _gitmodules_on_disk(root: Path, verb: str = "remove") -> bool:
+    """Whether the work tree of `root` has a `.gitmodules` that is a file,
+    asked as `_is_a` asks for the two readers of it below and for
+    `_stages_as`, so one this user may not read is `gitmodules-unreadable`
+    (#1110), never one that is not there; its remedy says what `verb`
+    reads it for (`GITMODULES_READ_FOR`).
+
+    A `.gitmodules` THAT IS A LINK INTO A FOLDER THIS USER CANNOT SEARCH was
+    asked with `Path.is_file()`, which raised `PermissionError` on Python
+    3.12 and from 3.14 answers False. Measured: a `pre-commit` hook that
+    made it such a link and refused the commit ended `remove`'s rollback in
+    that traceback on 3.12, with the member's directory gone; on 3.14 the
+    rollback read no section, said the checkout came back only from its
+    remote, and typed no command for the object store it had. And with its
+    `stat` refused in a work tree whose copy git still reads as the index's
+    (in process), `remove --dry-run` said no section is removed, exit 0.
+
+    Nothing at the name is no file, as it always was. A `stat` the
+    operating system refuses, and a file whose `stat` it answers but that
+    this user may not open (`os.access`, as `_checked_mount_readable` asks a
+    store's `HEAD`: git could not read it either), are refused by name,
+    with the cure for the cause. The directories above it are not said to
+    be inside the holder: a link can lead out of it.
+    """
+    path = root / GITMODULES
+    try:
+        there = _is_a(path, stat.S_ISREG)
+        if there and not os.access(path, os.R_OK):
+            raise PermissionError(errno.EACCES, os.strerror(errno.EACCES),
+                                  str(path))
+    except OSError as exc:
+        raise _unreadable(GITMODULES_UNREAD_CODE, GITMODULES, exc,
+                          GITMODULES_READ_FOR[verb], where="") from exc
+    return there
+
+
 def _gitmodules_names(root: Path, path: str) -> tuple[str | None, list[str]]:
     """`(the name whose sections `git rm` drops for the gitlink at `path`,
     or None, every other name with a `path = <path>` line)` (#326).
@@ -9522,9 +9610,11 @@ def _gitmodules_names(root: Path, path: str) -> tuple[str | None, list[str]]:
     The file is read by `git config --list`, never by a parser of this
     tool's, as `add`'s `_submodule_paths` reads it; the rules are git's, as
     git 2.43 applies them and as the tests check them against a real
-    `remove` on every runner.
+    `remove` on every runner. A file this user may not read is refused,
+    `gitmodules-unreadable` (`_gitmodules_on_disk`, #1110), never read as
+    giving no section.
     """
-    if not (root / GITMODULES).is_file():
+    if not _gitmodules_on_disk(root):
         return None, []
     listed = _git_bytes(["config", "-z", "--file", GITMODULES, "--list"],
                         root)
@@ -9576,9 +9666,11 @@ def _sections_giving(root: Path, path: str
     the path and then moves on took the path out of git's lookup altogether,
     so `git rm` took out nothing and the member's own section stayed. Read
     where `git rm` reads, the work tree's file, by `git config --list`, as
-    `_gitmodules_names` reads it.
+    `_gitmodules_names` reads it, and refused where this user may not read
+    it (`_gitmodules_on_disk`, #1110), never read as giving the path to no
+    section.
     """
-    if not (root / GITMODULES).is_file():
+    if not _gitmodules_on_disk(root):
         return []
     listed = _git_bytes(["config", "-z", "--file", GITMODULES, "--list"],
                         root)
@@ -9616,12 +9708,22 @@ def _gitmodules_in_index(root: Path) -> list[tuple[str, str, int]]:
     return found
 
 
-def _stages_as(root: Path, blob: str) -> bool:
+def _stages_as(root: Path, blob: str, verb: str) -> bool:
     """Whether git would stage the work tree's `.gitmodules` as `blob`: a
     regular file, not a link, whose bytes `git hash-object` reads as that
     blob through the file's own attributes, which is how `git add` reads
-    them. Without `-w` it writes nothing."""
-    if not stat.S_ISREG(os.lstat(root / GITMODULES).st_mode):
+    them. Without `-w` it writes nothing.
+
+    A FILE THIS USER MAY NOT READ IS `gitmodules-unreadable` HERE TOO
+    (`_gitmodules_on_disk`, #1110), before `git hash-object` is asked. A
+    `.gitmodules` at mode 000 was refused by `remove` one of two ways, by
+    git's stat cache (r1164's SHOULD-2): where `git ls-files -m` had to read
+    the file, could not and listed it as modified, the refusal was `a git or
+    gh command failed`, quoting `git hash-object`; where git's cache spared
+    the read, `_gitmodules_names` named it `gitmodules-unreadable`. A link
+    is not regular, so it is `gitmodules-unstaged`'s first, as before."""
+    if not stat.S_ISREG(os.lstat(root / GITMODULES).st_mode) or \
+            not _gitmodules_on_disk(root, verb):
         return False
     hashed = _git_bytes(["hash-object", f"--path={GITMODULES}", "--",
                          GITMODULES], root)
@@ -9775,7 +9877,7 @@ def _checked_gitmodules_as_staged(root: Path, verb: str) -> None:
     # `add` cannot stage a skip-worktree `.gitmodules` at all; `remove`
     # commits a clean one on disk rightly, as it did before #407.
     if tag.upper() == "S" and (verb == "add" or not on_disk
-                               or not _stages_as(root, blob)):
+                               or not _stages_as(root, blob, verb)):
         raise Refusal(
             "gitmodules-sparse",
             f"the index marks {GITMODULES} skip-worktree, as a sparse "
@@ -9815,10 +9917,10 @@ def _checked_gitmodules_as_staged(root: Path, verb: str) -> None:
                 "holds: git lists it as modified, a change nobody has staged"
                 + (", though `git add` would stage the index's own content "
                    "from it: the difference may be its line endings alone"
-                   if _stages_as(root, blob) else ""))
+                   if _stages_as(root, blob, verb) else ""))
         remedy = keep_or_drop.format(
             stage=f"stage it first, `git add {GITMODULES}`")
-    elif tag.islower() and not _stages_as(root, blob):
+    elif tag.islower() and not _stages_as(root, blob, verb):
         said = (f"the work tree's {GITMODULES} is not the copy the index "
                 "holds, a change nobody has staged, and git does not list it "
                 "as modified: the index marks it assume-unchanged, so git "

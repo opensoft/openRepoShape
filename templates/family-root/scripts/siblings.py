@@ -174,7 +174,10 @@ EXIT CODES
        `scripts/bootstrap.py` or `Makefile`, whose `stat` the operating
        system refused, as it does in a folder this user cannot search. That
        member is refused by name, with the cure, and the others are still
-       tried. An unanswerable question is never an implicit pass.
+       tried. The holder's own `.gitmodules`, which every member's url
+       comes from, is `gitmodules-unreadable` (#1110), and then no member
+       is cloned, fetched or run in. An unanswerable question is never an
+       implicit pass.
 """
 
 from __future__ import annotations
@@ -348,13 +351,23 @@ def member_unreadable(named: str, exc: OSError, what: str,
     permission (`PermissionError`, which is `EACCES` and `EPERM`) is put
     right by the mode or the owner, and any other cause is `OTHER_REASON`,
     which is not told to `chmod`."""
+    return path_unreadable("member-unreadable", named, exc, what, then)
+
+
+def path_unreadable(code: str, named: str, exc: OSError, what: str,
+                    then: str = "Then run the same command again."
+                    ) -> Refusal:
+    """`code`'s refusal of a path this command must read and the operating
+    system will not let it, in `member_unreadable`'s words: the holder's
+    `.gitmodules` is `gitmodules-unreadable` (#1110), the code the holder's
+    own `validate-family.py` and `family.py` give that file."""
     advice = (
         "Make what this user may not open readable by this user: `chmod u+r` "
         "on a file, `chmod u+rx` on a directory (and on every directory above "
         "it), or fix who owns it. "
         if isinstance(exc, PermissionError) else OTHER_REASON)
     return Refusal(
-        "member-unreadable",
+        code,
         f"{named}: cannot be read ({exc.strerror or type(exc).__name__})",
         f"Remediation: {what} A path this command cannot read is a question "
         f"it cannot answer, never a pass. {advice}{then}")
@@ -429,9 +442,32 @@ def submodule_urls(root: Path) -> dict[str, str]:
     any of these: `git submodule init` says `No url found` or `bad config
     line`, or that the value is invalid, and a clone made from the url
     would be of a member git does not mount.
+
+    A `.gitmodules` THIS USER MAY NOT READ IS REFUSED, NEVER NONE (#1110):
+    `gitmodules-unreadable`, raised before anything is cloned, fetched or
+    run. Asked with `Path.is_file()`, one that is a link into a folder this
+    user cannot search ended `make siblings` and `make park` in a
+    `PermissionError` traceback on Python 3.12, and on 3.14 was no file, so
+    each member was planned and cloned from its row's
+    `https://github.com/<repository>.git`, a remote the holder is not
+    pinned against. It is asked as `_is_a` asks: nothing at the name is no
+    file, as it always was; a refused `stat`, and a file this user may not
+    open (`os.access`: git could not read it either, and its failure is
+    read as no url below), are refused by name.
     """
     path = root / ".gitmodules"
-    if not path.is_file():
+    try:
+        there = _is_a(path, stat.S_ISREG)
+        if there and not os.access(path, os.R_OK):
+            raise PermissionError(errno.EACCES, os.strerror(errno.EACCES),
+                                  str(path))
+    except OSError as exc:
+        raise path_unreadable(
+            "gitmodules-unreadable", ".gitmodules", exc,
+            "siblings.py reads the holder's .gitmodules for each member's "
+            "url, the one `make bootstrap` uses, and nothing was cloned, "
+            "fetched or run without it.") from exc
+    if not there:
         return {}
     proc = subprocess.run(["git", "config", "-z", "-f", str(path), "--list"],
                           capture_output=True, check=False)
@@ -1270,7 +1306,15 @@ def dispatch_all(root: Path, name: str, rows: list[dict],
           "holder. This")
     print("  command clones nothing and fetches nothing: it only dispatches.")
 
-    urls = submodule_urls(root)
+    # Each working clone is verified against its `.gitmodules` url, so a
+    # `.gitmodules` this user may not read runs the verb in no member
+    # (#1110): exit 2, as a refusal is.
+    try:
+        urls = submodule_urls(root)
+    except Refusal as exc:
+        sys.stdout.flush()
+        print(str(exc), file=sys.stderr)
+        return 2
     print(f"\n(a) make {target}, one member at a time")
     dispatched: list[Sibling] = []
     if not rows:
@@ -1726,7 +1770,14 @@ def _run_placement(root: Path, name: str, rows: list[dict], manifest: dict,
         return 1
 
     prefix, source, token = git_prefix()
-    urls = submodule_urls(root)
+    # Each member is cloned from its `.gitmodules` url, so a `.gitmodules`
+    # this user may not read clones and fetches nothing (#1110): exit 2.
+    try:
+        urls = submodule_urls(root)
+    except Refusal as exc:
+        sys.stdout.flush()
+        print(str(exc), file=sys.stderr)
+        return 2
     print(f"\n(a) the members, beside the holder (credential source: "
           f"{source})")
     siblings = _place_all_members(root, rows, urls, prefix, token, dry_run)
