@@ -1966,6 +1966,10 @@ SOURCE_UNREADABLE = "source-unreadable"
 SOURCE_UNREADABLE_PERMISSION = (
     "Make it readable by this user: `chmod u+rx` on the directory and on "
     "every directory above it, or fix who owns them. ")
+#: The same for a file, a `.git` that names the git directory (#1099).
+SOURCE_UNREADABLE_FILE_PERMISSION = (
+    "Make it readable by this user: `chmod u+r` on the file and `chmod "
+    "u+rx` on every directory above it, or fix who owns them. ")
 SOURCE_UNREADABLE_OTHER = (
     "The operating system gave another reason than permission, which no "
     "`chmod` puts right: put right what it names. ")
@@ -2043,15 +2047,18 @@ def _ambiguous(spec: str, name: str) -> Refusal:
 
 
 def _source_unreadable(named: str, exc: OSError, untold: str,
-                       instead: str = "") -> Refusal:
+                       instead: str = "", *,
+                       permission: str = SOURCE_UNREADABLE_PERMISSION
+                       ) -> Refusal:
     """`source-unreadable` (#430): `named` (`--source '<it>'`, or the plan's
     `source.local_path`) is a path whose `stat` the operating system refused
     for another reason than that nothing is there, `<named>: cannot be read
     (<reason>)`, as `validate-pins.py`'s `_cannot_read` words it; `untold` is
     what that leaves unknown, which is not guessed. The way out follows the
-    cause (`SOURCE_UNREADABLE_PERMISSION`, `SOURCE_UNREADABLE_OTHER`), and
+    cause (`permission`, a directory's `SOURCE_UNREADABLE_PERMISSION` unless
+    the caller names a file's, or `SOURCE_UNREADABLE_OTHER`), and
     `instead`, another way to name the source, ends it."""
-    advice = (SOURCE_UNREADABLE_PERMISSION if isinstance(exc, PermissionError)
+    advice = (permission if isinstance(exc, PermissionError)
               else SOURCE_UNREADABLE_OTHER)
     return Refusal(
         SOURCE_UNREADABLE,
@@ -2082,7 +2089,7 @@ def _source_there(spec: str, candidate: Path, name: str | None) -> bool:
     except OSError as exc:
         if name is None:
             raise _source_unreadable(f"--source {spec!r}", exc,
-                                     "whether a repository is there") from exc
+                                     REPOSITORY_UNTOLD) from exc
         here = _spelled("./" + spec.rstrip("/"))
         raise _source_unreadable(
             f"--source {spec!r}", exc,
@@ -2185,7 +2192,9 @@ def _source_spec(spec: str) -> tuple[Path | None, str | None]:
         return _top_level(
             candidate, f"--source {spec!r}",
             lambda exc: _source_unreadable(f"--source {spec!r}", exc,
-                                           "whether a repository is there")
+                                           REPOSITORY_UNTOLD),
+            git_refused=lambda part: part.refusal(f"--source {spec!r}", spec,
+                                                  REPOSITORY_UNTOLD)
         ), None
     if name is None:
         raise Refusal(
@@ -2196,8 +2205,254 @@ def _source_spec(spec: str) -> tuple[Path | None, str | None]:
     return None, name
 
 
+# ---------------------------------------------------------------------------
+# A part of a repository git reads that this user cannot read (#1151)
+# ---------------------------------------------------------------------------
+
+#: What `source-unreadable` cannot tell of a source git reads no repository
+#: in: a `--source`, or a plan's `source.local_path` `plan` was given.
+REPOSITORY_UNTOLD = "whether a repository is there"
+#: The same of a clone `plan` made (`source.cloned: true`).
+CLONE_WHOLE_UNTOLD = ("whether `plan`'s clone is still whole, to be read, or "
+                      "no longer whole, to be cloned again,")
+#: The way past `source-unreadable` of a plan's `source.local_path`.
+RECORDED_SOURCE_INSTEAD = ("pass the source again with --source, which is "
+                           "held to the plan's `commit:`")
+#: How `source-unreadable` names the git directory a `.git` file's
+#: `gitdir:` line names, and the common one a linked worktree's
+#: `commondir` names, before it names the source.
+GIT_DIRECTORY_OF = "the git directory of"
+COMMON_GIT_DIRECTORY_OF = "the common git directory of"
+#: How a `.git` file names the git directory, as git's `read_gitfile_gently`
+#: reads it.
+GITDIR_PREFIX = b"gitdir: "
+
+
+class _GitPartRefused(Exception):
+    """Raised by the questions `_refused_git_path` asks: the operating system
+    refused this user `at`, a part of a repository git reads (`exc`): a file
+    it would not let this user open where `a_file`, and otherwise a
+    directory it would not let this user search."""
+
+    def __init__(self, at: Path, exc: OSError, a_file: bool):
+        super().__init__(at, exc, a_file)
+        self.at, self.exc, self.a_file = at, exc, a_file
+
+
+class _RefusedGitPath(NamedTuple):
+    """What `_refused_git_path` found (#1151): `role`, how `source-unreadable`
+    names the part before it names the source (the `.git/HEAD` in, the git
+    directory of); `at`, the part's path, from the source where it is in
+    the source's own `.git` and whole elsewhere; the operating system's
+    `OSError`; and whether it is a file this user cannot open, whose cure
+    is a file's."""
+    role: str
+    at: str
+    exc: OSError
+    a_file: bool
+
+    def refusal(self, named: str, source: str, untold: str,
+                instead: str = "") -> Refusal:
+        """`source-unreadable` of this part of the source `named` (`--source
+        '<it>'`, the plan's `source.local_path`), whose path is `source` as
+        the person gave it: `at` is joined to it, which leaves a whole `at`
+        as it is. `untold` and `instead` are `_source_unreadable`'s."""
+        return _source_unreadable(
+            f"{self.role} {named}, {_spelled(os.path.join(source, self.at))}",
+            self.exc, untold, instead,
+            permission=(SOURCE_UNREADABLE_FILE_PERMISSION if self.a_file
+                        else SOURCE_UNREADABLE_PERMISSION))
+
+
+def _where_refused(target: Path, exc: OSError) -> tuple[Path, OSError]:
+    """Where the operating system refused the `stat` of `target` (`exc`), and
+    why: the directory this user cannot search, which is the one above the
+    first part of `target`'s real path whose `stat` is refused for a
+    permission, each part before it having been `stat`ed; or that part,
+    refused for another reason. `target` and `exc` where nothing is refused
+    now."""
+    real = Path(os.path.realpath(target))
+    for depth in range(1, len(real.parts) + 1):
+        part = Path(*real.parts[:depth])
+        try:
+            _is_there(part)
+        except PermissionError as refused:
+            return part.parent, refused
+        except OSError as other:
+            return part, other
+    return target, exc
+
+
+def _a_stat_asked(target: Path, kind: Callable[[int], bool]) -> bool:
+    """`_is_a(target, kind)`, the `stat` git asks of `target`, a refused one
+    raised as `_GitPartRefused`, naming where it was refused."""
+    try:
+        return _is_a(target, kind)
+    except OSError as exc:
+        raise _GitPartRefused(*_where_refused(target, exc), False) from exc
+
+
+def _read_asked(target: Path, size: int = 1 << 16) -> bytes | None:
+    """Up to `size` bytes of the file at `target`, opened as git opens it
+    once a `stat` found it, and never waiting on a FIFO; None where nothing
+    is there. An open refused is `_GitPartRefused`, naming the file."""
+    flags = (os.O_RDONLY | getattr(os, "O_NONBLOCK", 0)
+             | getattr(os, "O_BINARY", 0))
+    try:
+        handle = os.open(target, flags)
+    except OSError as exc:
+        if _absent(exc):
+            return None
+        raise _GitPartRefused(target, exc, True) from exc
+    try:
+        return os.read(handle, size)
+    finally:
+        os.close(handle)
+
+
+def _git_directory_named(dot_git: Path) -> Path | None:
+    """The git directory `dot_git` names, as git's `read_gitfile_gently`
+    reads it: `dot_git` itself where it is a directory; where it is a file,
+    the path its `gitdir: ` line names, from the directory it is in; and
+    None where it is neither, or a file that names none, which git refuses
+    in its own words."""
+    if not _a_stat_asked(dot_git, stat.S_ISREG):
+        return dot_git if _is_a(dot_git, stat.S_ISDIR) else None
+    text = _read_asked(dot_git) or b""
+    if not text.startswith(GITDIR_PREFIX):
+        return None
+    named = text[len(GITDIR_PREFIX):].rstrip(b"\r\n")
+    return dot_git.parent / os.fsdecode(named) if named else None
+
+
+def _head_asked(head: Path) -> bool:
+    """Whether the git directory's `HEAD` is there, asked as git's
+    `validate_headref` asks it: `lstat`ed, and opened unless it is a link,
+    which git reads as text."""
+    try:
+        mode = os.lstat(head).st_mode
+    except OSError as exc:
+        if _absent(exc):
+            return False
+        raise _GitPartRefused(*_where_refused(head, exc), False) from exc
+    return stat.S_ISLNK(mode) or _read_asked(head, 1) is not None
+
+
+def _common_directory_named(git_dir: Path) -> Path:
+    """The common git directory of `git_dir`, as git's `get_common_dir`
+    reads it: the path its `commondir` names, from `git_dir`, where it holds
+    one, as a linked worktree's does; `git_dir` itself otherwise."""
+    commondir = git_dir / "commondir"
+    if not _a_stat_asked(commondir, lambda _mode: True):
+        return git_dir
+    return git_dir / os.fsdecode((_read_asked(commondir) or b"")
+                                 .rstrip(b"\r\n"))
+
+
+def _searched_asked(directory: Path) -> bool:
+    """Whether `directory` (`objects`, `refs`) is a directory, as git's
+    `is_git_directory` asks it with `access(X_OK)`: False where it is not
+    there or is none, git's own question; one this user may not search is
+    `_GitPartRefused`, naming it."""
+    if not _a_stat_asked(directory, stat.S_ISDIR):
+        return False
+    if not os.access(directory, os.X_OK):
+        raise _GitPartRefused(directory, PermissionError(
+            errno.EACCES, os.strerror(errno.EACCES), str(directory)), False)
+    return True
+
+
+def _git_part_named(at: Path, source: Path, git_dir: Path,
+                    common: Path) -> tuple[str, str]:
+    """`_RefusedGitPath`'s `(role, at)` for `at`, a part of the repository at
+    `source` that the operating system refused: in the source's own `.git`,
+    the part from the source; in its git directory elsewhere (`git_dir`),
+    or in the common one (`common`), the part from there; and a directory
+    above either, as that."""
+    own = source / ".git"
+    if at == own or own in at.parents:
+        part = at.relative_to(source).as_posix()
+        return f"the {_spelled(part)} in", part
+    at = Path(os.path.realpath(at))
+    for base, whole in ((git_dir, GIT_DIRECTORY_OF),
+                        (common, COMMON_GIT_DIRECTORY_OF)):
+        if at == base:
+            return whole, str(at)
+        if base in at.parents:
+            part = at.relative_to(base).as_posix()
+            return f"the {_spelled(part)} in {whole}", str(at)
+    above = GIT_DIRECTORY_OF if at in git_dir.parents \
+        else COMMON_GIT_DIRECTORY_OF
+    return f"a directory above {above}", str(at)
+
+
+def _refused_git_path(path: Path) -> _RefusedGitPath | None:
+    """The part of the repository at `path` that git reads and the operating
+    system refuses this user, as `source-unreadable` names it; None where
+    git can read each part, or one is not there, which is git's own
+    question, asked as before (#1151).
+
+    GIT SAYS "NOT A GIT REPOSITORY" OF A PART IT CANNOT READ, as it says of
+    a clone emptied, and climbs to the directory above, which may be another
+    repository; of a `config` it cannot read it says "unable to access". So
+    on main `plan --source` and `check --source` of a repository whose
+    `.git` is at mode 000 were `git-failed`, naming no `.git`, and a clone
+    `plan` made whose `.git/HEAD`, `objects`, `refs` or `config`, whose
+    `gitdir:` target, a linked worktree's git directory or the common
+    `.git` above it, a submodule's `.git/modules/<m>`, or a directory above
+    a `.git` link's target was at mode 000 was "no longer whole (git finds
+    no repository there)" and cloned again from GitHub, `gh` asked.
+
+    ASKED AS GIT ASKS, IN GIT'S ORDER (git 2.43's `read_gitfile_gently` and
+    `is_git_directory`): the `.git`, followed where it is a link; a `.git`
+    file opened, and its `gitdir:` line read; the git directory's `HEAD`;
+    its `commondir`, where it is there; `objects` and `refs` in the common
+    git directory, each searched; and its `config`. A `stat` refused names
+    the directory this user cannot search (`_where_refused`), with the cure
+    for a directory, and an open refused names the file, with a file's.
+    Anything else git cannot read is git's to word. It is asked ONLY WHERE
+    GIT FOUND NO REPOSITORY WHOSE TOP LEVEL IS `path` (`_top_level`,
+    `_not_a_whole_clone`), so a repository git reads is never refused
+    here."""
+    source = Path(os.path.realpath(path))
+    git_dir = common = Path(os.path.realpath(source / ".git"))
+    try:
+        named = _git_directory_named(source / ".git")
+        if named is None:
+            return None
+        git_dir = common = Path(os.path.realpath(named))
+        if not _head_asked(named / "HEAD"):
+            return None
+        common_named = _common_directory_named(named)
+        common = Path(os.path.realpath(common_named))
+        if all(_searched_asked(common_named / part)
+               for part in ("objects", "refs")):
+            _read_asked(common_named / "config", 1)
+    except _GitPartRefused as refused:
+        return _RefusedGitPath(*_git_part_named(refused.at, source, git_dir,
+                                                common),
+                               refused.exc, refused.a_file)
+    except (OSError, ValueError):
+        # read but not as git reads it (a `HEAD` that is a directory, a NUL
+        # in a `gitdir:` line): git's own words say what it is
+        return None
+    return None
+
+
+def _refuse_a_git_part(path: Path, git_refused: Callable[
+        [_RefusedGitPath], Refusal] | None) -> None:
+    """Raises `git_refused(<it>)` where the operating system refuses this
+    user a part of the repository at `path` that git reads
+    (`_refused_git_path`, #1151); returns where it refuses none, or where
+    `git_refused` is None."""
+    found = None if git_refused is None else _refused_git_path(path)
+    if found is not None:
+        raise git_refused(found)
+
+
 def _top_level(path: Path, named: str,
-               refused: Callable[[OSError], Refusal]) -> Path:
+               refused: Callable[[OSError], Refusal], *,
+               git_refused: Callable[[_RefusedGitPath], Refusal]) -> Path:
     """`path`, a local source that exists, resolved, where it is the
     top-level directory of a repository; refused as `source-not-top-level`
     where it is not a directory, or is a directory inside a repository
@@ -2229,7 +2484,14 @@ def _top_level(path: Path, named: str,
     #457's L1-105): git runs IN the directory, and at mode 000 `subprocess`
     raised the `PermissionError` of `cwd=` out of `plan`, `check` and
     `execute`, a traceback. No other `OSError` is: a git that cannot be
-    started is raised, as `git_out` leaves it (`_refused_at`)."""
+    started is raised, as `git_out` leaves it (`_refused_at`).
+
+    A PART OF ITS REPOSITORY THIS USER CANNOT READ IS `git_refused(<it>)`
+    (`_refused_git_path`, #1151), asked where git reads no repository in
+    the directory, and where it reads it as a directory inside another:
+    git says "not a git repository" of a `.git` it cannot read and climbs
+    above it. On main that was `git-failed`, or `source-not-top-level`
+    under another repository, and neither named the part."""
     resolved = Path(os.path.realpath(path))
     if not resolved.is_dir():
         raise Refusal(SOURCE_NOT_TOP_LEVEL,
@@ -2241,6 +2503,9 @@ def _top_level(path: Path, named: str,
         if not _refused_at(exc, resolved):
             raise
         raise refused(exc) from exc
+    except Refusal:
+        _refuse_a_git_part(resolved, git_refused)
+        raise
     if inside == "true":
         git_dir = os.fsdecode(git_out(["rev-parse", "--absolute-git-dir"],
                                       cwd=resolved, binary=True).rstrip(b"\n"))
@@ -2252,6 +2517,7 @@ def _top_level(path: Path, named: str,
     prefix = os.fsdecode(git_out(["rev-parse", "--show-prefix"],
                                  cwd=resolved, binary=True).rstrip(b"\n"))
     if prefix:
+        _refuse_a_git_part(resolved, git_refused)
         top = os.fsdecode(git_out(["rev-parse", "--show-toplevel"],
                                   cwd=resolved, binary=True).rstrip(b"\n"))
         raise Refusal(
@@ -2600,7 +2866,9 @@ def _claimed(work_root: Path, path: Path, repository: str,
                   _identity(os.lstat(path.parent)), made_parent)
 
 
-def _not_a_whole_clone(path: Path, commit: str) -> str | None:
+def _not_a_whole_clone(path: Path, commit: str,
+                       git_refused: Callable[[_RefusedGitPath], Refusal]
+                       | None = None) -> str | None:
     """Why the clone `plan` made at `path`, which exists, is no longer one
     the plan's source can be read from, in words; None where it is (#652).
 
@@ -2614,19 +2882,28 @@ def _not_a_whole_clone(path: Path, commit: str) -> str | None:
     A DIRECTORY THIS USER CANNOT ENTER IS NEITHER (#918, #457's L1-105): the
     `OSError` of `cwd=` (`_refused_at`) is raised, for the caller to name.
     It was "git finds no repository there", and the clone, still there, was
-    cloned again or refused as gone."""
+    cloned again or refused as gone.
+
+    NOR IS ONE WHOSE REPOSITORY HOLDS A PART THIS USER CANNOT READ (#1151):
+    where git finds no repository there, or reads it as part of another,
+    such a part is `git_refused(<it>)` (`_refused_git_path`), where the
+    caller gives one. It was "git finds no repository there", and the
+    clone was cloned again from GitHub."""
     if not path.is_dir():
         return "it is not a directory"
     try:
         top = os.fsdecode(git_out(["rev-parse", "--show-toplevel"],
                                   cwd=path, binary=True).strip())
     except Refusal:
+        _refuse_a_git_part(path, git_refused)
         return "git finds no repository there"
     except OSError as exc:
         if _refused_at(exc, path):
             raise
+        _refuse_a_git_part(path, git_refused)
         return "git finds no repository there"
     if os.path.realpath(top) != os.path.realpath(path):
+        _refuse_a_git_part(path, git_refused)
         return f"git reads it as part of the repository at {_spelled(top)}"
     if COMMIT_RE.match(commit):
         try:
@@ -6609,6 +6886,18 @@ class Plan:
                 f"names no `owner/repo` on {GITHUB_HOST}", SOURCE_REMEDIATION)
         return name
 
+    def _git_part_unreadable(self, local_path: str,
+                             part: _RefusedGitPath) -> Refusal:
+        """`source-unreadable` of `part`, a part of the repository at the
+        plan's `source.local_path` that git reads and the operating system
+        refuses this user (`_refused_git_path`, #1151). What git would find
+        there cannot be told, so the clone is neither read nor called no
+        longer whole nor cloned again."""
+        return part.refusal(
+            "the plan's `source.local_path`", local_path,
+            (CLONE_WHOLE_UNTOLD if self.source.get("cloned") is True
+             else REPOSITORY_UNTOLD), RECORDED_SOURCE_INSTEAD)
+
     def _recorded_source(self, local_path: str, work_root: Path,
                          unwritable: str | None, made: list | None,
                          done: str = "") -> Source:
@@ -6677,8 +6966,10 @@ class Plan:
                 ("whether `plan`'s clone is still there, to be read, or gone, "
                  "to be cloned again," if self.source.get("cloned") is True
                  else "whether the source is still there"),
-                "pass the source again with --source, which is held to the "
-                "plan's `commit:`")
+                RECORDED_SOURCE_INSTEAD)
+
+        def git_unreadable(part: _RefusedGitPath) -> Refusal:
+            return self._git_part_unreadable(local_path, part)
 
         try:
             there = _is_there(path)
@@ -6687,15 +6978,16 @@ class Plan:
         if self.source.get("cloned") is not True:
             if there:
                 return Source.in_place(_top_level(path, f"{named},",
-                                                  unreadable),
+                                                  unreadable,
+                                                  git_refused=git_unreadable),
                                        work_root, self.read_at)
             raise self._gone(local_path, "names nothing that exists" + said,
                              "the plan does not record it as a clone `plan` "
                              "made (`source.cloned` is not `true`), so "
                              "nothing clones it again")
         try:
-            broken = _not_a_whole_clone(path, self.source_commit) if there \
-                else None
+            broken = _not_a_whole_clone(path, self.source_commit,
+                                        git_unreadable) if there else None
         except OSError as exc:
             raise unreadable(exc) from exc
         if there and broken is None:
