@@ -640,8 +640,9 @@ options:
                         and any other `local_path` that is gone is refused as
                         `plan-source-gone`; one that is a file, or a directory
                         inside a repository, as `source-not-top-level`; and
-                        one this user cannot reach, a clone `plan` made
-                        included, as `source-unreadable`, never cloned again.
+                        one this user cannot reach, or one whose `.git` this
+                        user cannot read, a clone `plan` made included, as
+                        `source-unreadable`, never cloned again.
   --local-remote-dir LOCAL_REMOTE_DIR
                         the directory `execute --local-remote-dir` will be
                         given (the TEST path): each relative submodule url the
@@ -699,8 +700,9 @@ options:
                         and any other `local_path` that is gone is refused as
                         `plan-source-gone`; one that is a file, or a directory
                         inside a repository, as `source-not-top-level`; and
-                        one this user cannot reach, a clone `plan` made
-                        included, as `source-unreadable`, never cloned again.
+                        one this user cannot reach, or one whose `.git` this
+                        user cannot read, a clone `plan` made included, as
+                        `source-unreadable`, never cloned again.
   --local-remote-dir LOCAL_REMOTE_DIR
                         create the legs as bare repositories here instead of
                         calling `gh` (the TEST path). Both are asked about
