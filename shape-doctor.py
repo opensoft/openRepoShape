@@ -3491,6 +3491,28 @@ def git_dir_named(root: Path, rel: str, gitdir: Path) -> str:
     return f"{rel}: {named}"
 
 
+def regular_file_opens(path: Path) -> bool:
+    """Whether `path` can be opened where it is a regular file, asked as
+    `validate-pins.py`'s `_gitfile_opens` asks it (#919, #1222): False where
+    the open finds nothing there (`ABSENT_ERRNOS`, `ABSENT_WINERRORS`), the
+    `OSError` of an open the operating system REFUSED raised, and True for
+    anything that is no regular file, which is not opened.
+
+    A FILE AT MODE 000 STATS, so a `stat` alone passes one this user cannot
+    open. Only a regular file is opened, since the open of a FIFO waits for
+    a writer, and what is no regular file is left to git, as the gate
+    leaves it."""
+    if not is_a(path, stat.S_ISREG):
+        return True
+    try:
+        path.open("rb").close()
+    except OSError as exc:
+        if refused_read(exc) is None:
+            return False
+        raise
+    return True
+
+
 def mount_read(root: Path, rel: str, git_dir: bool = True) -> tuple:
     """`(populated, own_git, refused)` for the leg or member mounted at `rel`:
     whether a directory with anything in it is there, whether it holds a
@@ -3536,6 +3558,17 @@ def mount_read(root: Path, rel: str, git_dir: bool = True) -> tuple:
     this user was refused: it is left to git, which answers for it as it
     always did.
 
+    A `HEAD` THIS USER CANNOT OPEN STATS (#1222), so a `HEAD` at mode 000
+    passed the `stat`, git in the mount could not read it, and the `legs`
+    and `members` rows counted the mount as drift. The gate's
+    `_refuse_an_unreadable_git_dir` now opens it, and so does this: a
+    `HEAD` that is there is opened as the gate opens it
+    (`regular_file_opens`): only where it is a regular file, and an open
+    that finds nothing is a git directory with no `HEAD`. One this user
+    cannot open is named as the gate names it, after the mount where it is
+    outside it: `<rel>: .git/modules/<rel>/HEAD: cannot be read (<reason>)`,
+    or `<rel>/.git/HEAD: cannot be read (<reason>)`.
+
     `git_dir=False` ASKS NO GIT DIRECTORY, for the `leg shape files` row,
     which compares a leg's files on disk and runs no git: a git directory
     this user cannot search keeps no file in the mount from being read, so
@@ -3564,7 +3597,10 @@ def mount_read(root: Path, rel: str, git_dir: bool = True) -> tuple:
         gitdir = git_dir_of(dotgit) if git_dir else None
         if gitdir is not None:
             named = git_dir_named(root, rel, gitdir)
-            is_a(gitdir / "HEAD", lambda _mode: True)
+            head = gitdir / "HEAD"
+            if is_a(head, lambda _mode: True):
+                named = git_dir_named(root, rel, head)
+                regular_file_opens(head)
     except OSError as exc:
         return True, False, (cannot_be_read(named, exc), exc, False)
     return True, True, None

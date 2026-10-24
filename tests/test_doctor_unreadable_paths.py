@@ -49,6 +49,17 @@ over it. Each of those rows now names the directory as the gate does, and
 the verdict is the gate's INVALID. The `leg shape files` row runs no git, so
 it still compares the files of such a leg.
 
+#1222 OPENS THAT GIT DIRECTORY'S `HEAD`, as the gate opens it now. A `HEAD`
+at mode 000 stats, so the `stat` #1174 asked passed it, git could not read
+it, and the `legs` row read DRIFTED: `spec: populated, but git cannot read a
+HEAD in it`, or, for a `.git` directory, the ROOT's HEAD quoted as the leg's
+with a checkout over it, while `placement` called the leg no repository.
+Each row now names that `HEAD` as the gate does (`spec: .git/modules/spec/
+HEAD`, `spec/.git/HEAD`), and the verdict is the gate's INVALID. Only a
+regular file is opened: a FIFO's open would wait for a writer. A parity row
+holds the doctor's `mount_read` and the gate's `_refuse_an_unreadable_git_dir`
+to one answer for each `HEAD`.
+
 NOT HERE: the `shape currency` row's `copy-missing` under 3.14 for a `scripts/`
 or a `.github/workflows/` this user cannot search comes from
 `update-shape.py`'s comparison, which #430's slice B fixes. No test here
@@ -68,6 +79,7 @@ local bare remotes, and the session's `gh` guard for the `machine` row.
 
 from __future__ import annotations
 
+import contextlib
 import errno
 import os
 import sys
@@ -239,8 +251,9 @@ def test_a_leg_mount_this_user_cannot_reach_is_named_and_no_drift(
 
 #: `(whether the leg's .git is a directory of its own, the path set to the
 #: mode, the mode, the line the leg is named by)` for each git directory of a
-#: leg this user cannot search, and the gitfile it cannot open: the gate's
-#: cells (#968), each the path the gate names (#1174).
+#: leg this user cannot search, the gitfile it cannot open, and the `HEAD`
+#: of either git directory that it cannot open: the gate's cells (#968,
+#: #1222), each the path the gate names (#1174).
 GIT_DIR_CELLS = [
     pytest.param(False, ".git/modules/spec", 0, "spec: .git/modules/spec",
                  id="modules-000"),
@@ -250,6 +263,10 @@ GIT_DIR_CELLS = [
     pytest.param(True, "spec/.git", 0, "spec/.git", id="git-directory-000"),
     pytest.param(True, "spec/.git", 0o444, "spec/.git",
                  id="git-directory-r--"),
+    pytest.param(False, ".git/modules/spec/HEAD", 0,
+                 "spec: .git/modules/spec/HEAD", id="modules-head-000"),
+    pytest.param(True, "spec/.git/HEAD", 0, "spec/.git/HEAD",
+                 id="git-directory-head-000"),
 ]
 
 
@@ -277,7 +294,10 @@ def test_a_leg_whose_git_directory_this_user_cannot_search_is_no_drift(
     `placement` rows now name the path the `pins` row names, after the leg
     where it is outside the mount, no HEAD is read, the NEXT is this doctor
     again, and the verdict is the gate's INVALID. The `leg shape files` row
-    reads no git, so it compares the leg's files as it always did."""
+    reads no git, so it compares the leg's files as it always did. The two
+    `HEAD` cells (#1222) stayed DRIFTED after #1174, whose `stat` of that
+    `HEAD` passed a file at mode 000; it is opened now, as the gate opens
+    it, and named."""
     if own_directory:
         leg_with_its_own_git_directory(project)
     denied = os.strerror(errno.EACCES)
@@ -307,17 +327,21 @@ MEMBER_GIT_DIR = f".git/modules/{MEMBER}"
 
 
 @CANNOT_RUN_AS_ROOT
-@pytest.mark.parametrize("bits", [pytest.param(0, id="000"),
-                                  pytest.param(0o444, id="r--")])
+@pytest.mark.parametrize("relative, bits", [
+    pytest.param(MEMBER_GIT_DIR, 0, id="000"),
+    pytest.param(MEMBER_GIT_DIR, 0o444, id="r--"),
+    pytest.param(f"{MEMBER_GIT_DIR}/HEAD", 0, id="head-000"),
+])
 def test_a_member_whose_git_directory_this_user_cannot_search_is_no_drift(
-        standard, holder, tmp_path, bits):
+        standard, holder, tmp_path, relative, bits):
     """A member's git directory this user cannot search: the `members` row
     said `checked out at ?`, and the verdict was DRIFTED (#1174). It names
     the directory after the member, no HEAD is read, and the verdict is the
-    `family` row's INVALID."""
+    `family` row's INVALID. So is that directory's `HEAD` at mode 000,
+    which it can search and not open, named as the gate names it (#1222)."""
     root = holder_copy(holder, tmp_path)
-    line = cannot(f"{MEMBER}: {MEMBER_GIT_DIR}", os.strerror(errno.EACCES))
-    with mode_of(root, MEMBER_GIT_DIR, bits):
+    line = cannot(f"{MEMBER}: {relative}", os.strerror(errno.EACCES))
+    with mode_of(root, relative, bits):
         rows, verdict = doctored(standard, root)
     members = rows["members"]
     assert members["status"] == "FINDING", members
@@ -574,13 +598,22 @@ def git_dir_line(leg: str, reason: str = DENIED) -> str:
     return f"{leg}: {cannot(f'.git/modules/{leg}', reason)}"
 
 
-def refused_head(error: OSError):
+def head_line(leg: str, reason: str = DENIED) -> str:
+    """The line for a leg whose gitfile names `.git/modules/<leg>`, outside
+    the mount, where the open of that directory's `HEAD` is refused: the
+    gate's line, naming the `HEAD`, after the leg's path (#1222)."""
+    return f"{leg}: {cannot(f'.git/modules/{leg}/HEAD', reason)}"
+
+
+def refused_head(error: OSError, method: str = "stat"):
     """A stand-in for a git directory this user cannot search: the `stat`
     of the `HEAD` in each one is refused with `error`, except the root's
     own `.git/HEAD`, so the root's repository stays one this user can read
-    and each row reaches the mounts (#1174)."""
+    and each row reaches the mounts (#1174). With `method="open"`, the
+    `HEAD` stats and its open is refused, as a `HEAD` at mode 000 is
+    (#1222)."""
     def refuse(monkeypatch, root: Path) -> None:
-        real = Path.stat
+        real = getattr(Path, method)
         own = root / ".git" / "HEAD"
 
         def refused(self, *args, **kwargs):
@@ -588,7 +621,7 @@ def refused_head(error: OSError):
                 raise type(error)(error.errno, error.strerror, str(self))
             return real(self, *args, **kwargs)
 
-        monkeypatch.setattr(Path, "stat", refused)
+        monkeypatch.setattr(Path, method, refused)
     return refuse
 
 
@@ -608,14 +641,21 @@ def refused_gitfile(monkeypatch, _root: Path) -> None:
                  id="head-io-error"),
     pytest.param(refused_gitfile, cannot("spec/.git"), cannot("code/.git"),
                  PERMISSION_WHY, id="gitfile-read"),
+    pytest.param(refused_head(PermissionError(errno.EACCES, DENIED), "open"),
+                 head_line("spec"), head_line("code"), PERMISSION_WHY,
+                 id="head-open"),
+    pytest.param(refused_head(OSError(errno.EIO, IO_ERROR), "open"),
+                 head_line("spec", IO_ERROR), head_line("code", IO_ERROR),
+                 OTHER_WHY, id="head-open-io-error"),
 ])
 def test_a_leg_git_directory_refused_is_named_on_every_python(
         standard, project, monkeypatch, refuse, spec, code, why):
     """The `legs` and `placement` rows for legs whose gitfile cannot be
-    read, or whose git directory's `HEAD` cannot be `stat`ed (#1174), in
-    process: each row says the gate's line, no HEAD is read, the NEXT is
-    this doctor again with the advice for the cause, and no leg is drift.
-    The `leg shape files` row, which reads no git, compares the files."""
+    read, or whose git directory's `HEAD` cannot be `stat`ed (#1174) or
+    opened (#1222), in process: each row says the gate's line, no HEAD is
+    read, the NEXT is this doctor again with the advice for the cause, and
+    no leg is drift. The `leg shape files` row, which reads no git,
+    compares the files."""
     module, ctx = in_process(standard, project)
     refuse(monkeypatch, ctx.root)
     legs = module.check_legs(ctx)
@@ -631,33 +671,46 @@ def test_a_leg_git_directory_refused_is_named_on_every_python(
     assert placement.reason.endswith(f"{spec}; {code}"), placement.reason
 
 
+@pytest.mark.parametrize("method, spec, code", [
+    pytest.param("stat", cannot("spec/.git"), git_dir_line("code"),
+                 id="head-stat"),
+    pytest.param("open", cannot("spec/.git/HEAD"), head_line("code"),
+                 id="head-open"),
+])
 def test_a_git_directory_of_its_own_refused_is_not_the_roots(
-        standard, project, monkeypatch):
+        standard, project, monkeypatch, method, spec, code):
     """A leg whose `.git` is a directory of its own, whose `HEAD` cannot be
     `stat`ed: git, run in the leg, passed over it to the root's repository,
     and the row quoted the ROOT's HEAD as the leg's with a checkout over it
-    (#1174). It names the leg's `.git`, as the gate does."""
+    (#1174). It names the leg's `.git`, as the gate does; and a `HEAD` that
+    stats and cannot be opened is named itself, as the gate names it
+    (#1222)."""
     leg_with_its_own_git_directory(project)
     module, ctx = in_process(standard, project)
-    refused_head(PermissionError(errno.EACCES, DENIED))(monkeypatch, ctx.root)
+    refused_head(PermissionError(errno.EACCES, DENIED), method)(monkeypatch,
+                                                                ctx.root)
     legs = module.check_legs(ctx)
-    assert legs.reason == (f"{unread_mount(cannot('spec/.git'))}; "
-                           f"{unread_mount(git_dir_line('code'))}")
+    assert legs.reason == f"{unread_mount(spec)}; {unread_mount(code)}"
     assert [leg["head"] for leg in legs.detail["legs"]] == [None, None]
     assert legs.next_command == doctor_again(standard, project)
     assert module.drifted_reasons({"legs": legs}, {}) == []
 
 
+@pytest.mark.parametrize("method, named", [
+    pytest.param("stat", MEMBER_GIT_DIR, id="head-stat"),
+    pytest.param("open", f"{MEMBER_GIT_DIR}/HEAD", id="head-open"),
+])
 def test_a_member_git_directory_refused_is_named_on_every_python(
-        standard, holder, tmp_path, monkeypatch):
+        standard, holder, tmp_path, monkeypatch, method, named):
     """The `members` row for a member whose git directory's `HEAD` cannot
-    be `stat`ed (#1174): named after the member, no HEAD read, the advice,
-    and no drift."""
+    be `stat`ed (#1174), or opened (#1222): named after the member, no HEAD
+    read, the advice, and no drift."""
     root = holder_copy(holder, tmp_path)
     module, ctx = in_process(standard, root)
-    refused_head(PermissionError(errno.EACCES, DENIED))(monkeypatch, ctx.root)
+    refused_head(PermissionError(errno.EACCES, DENIED), method)(monkeypatch,
+                                                                ctx.root)
     members = module.check_members(ctx)
-    line = cannot(f"{MEMBER}: {MEMBER_GIT_DIR}")
+    line = cannot(f"{MEMBER}: {named}")
     assert members.reason == unread_mount(line)
     entry = members.detail["members"][0]
     assert entry["mount_cannot_be_read"] == line
@@ -677,15 +730,23 @@ def git_directory_moved_away(project: Path, aside: Path) -> None:
     (project / ".git" / "modules" / "spec").rename(aside)
 
 
+def head_moved_away(project: Path, aside: Path) -> None:
+    """The `HEAD` of the git directory `spec`'s gitfile names moved out of
+    the root (#1222): there is no `HEAD` to open."""
+    (project / ".git" / "modules" / "spec" / "HEAD").rename(aside)
+
+
 @pytest.mark.parametrize("unmake", [
     pytest.param(gitfile_naming_nothing, id="gitfile-names-none"),
     pytest.param(git_directory_moved_away, id="git-directory-gone"),
+    pytest.param(head_moved_away, id="head-gone"),
 ])
 def test_a_git_directory_that_is_not_there_is_left_to_git(
         standard, project, tmp_path, unmake):
-    """The controls: a gitfile that names no directory, and a git directory
-    that is not there, are no read this user was refused. They are left to
-    git, as the gate leaves them, and the row says what it said."""
+    """The controls: a gitfile that names no directory, a git directory
+    that is not there, and one with no `HEAD` (#1222), are no read this
+    user was refused. They are left to git, as the gate leaves them, and
+    the row says what it said."""
     unmake(project, tmp_path / "spec-git-directory-aside")
     module, ctx = in_process(standard, project)
     legs = module.check_legs(ctx)
@@ -741,6 +802,139 @@ def test_a_git_directory_is_named_as_the_gate_names_it_after_its_mount(
         named = f"spec: {tmp_path / 'elsewhere' / 'spec'}"
     assert sources.doctor.git_dir_named(root, rel, path) == named
     assert named.endswith(gate), (named, gate)
+
+
+#: What a git directory's `HEAD` holds where git can read it.
+HEAD_REF = b"ref: refs/heads/main\n"
+
+
+def a_leg_in(root: Path, own_directory: bool) -> tuple[Path, str, str]:
+    """A populated leg `spec` in `root`, its `.git` a directory of its own
+    or a gitfile naming `.git/modules/spec`, as the gate's cases write one
+    (#968): `(its git directory's HEAD, not made yet, the gate's name for
+    it, the doctor's)`. The doctor puts the leg's path in front of a git
+    directory outside the mount (#1174)."""
+    mount = root / "spec"
+    mount.mkdir(parents=True)
+    if own_directory:
+        gitdir = mount / ".git"
+        gate = doctor = "spec/.git/HEAD"
+    else:
+        gitdir = root / ".git" / "modules" / "spec"
+        gate = ".git/modules/spec/HEAD"
+        doctor = f"spec: {gate}"
+        (mount / ".git").write_bytes(b"gitdir: ../.git/modules/spec\n")
+    gitdir.mkdir(parents=True)
+    return gitdir / "HEAD", gate, doctor
+
+
+def gate_refusal(gate, root: Path, dotgit: Path) -> tuple | None:
+    """`(code, detail)` of the refusal the gate's #968 and #1222 check
+    raises for the leg whose `.git` is `dotgit`, or None where it raises
+    none and leaves the leg to git."""
+    try:
+        gate._refuse_an_unreadable_git_dir(root, dotgit)
+    except gate.Refusal as exc:
+        return exc.code, exc.detail
+    return None
+
+
+def never_opened(monkeypatch) -> None:
+    """An open of a file named `HEAD` fails the row, rather than waiting on
+    a FIFO for a writer that never comes."""
+    real = Path.open
+
+    def opened(self, *args, **kwargs):
+        if self.name == "HEAD":
+            raise AssertionError(f"{self} was opened")
+        return real(self, *args, **kwargs)
+
+    monkeypatch.setattr(Path, "open", opened)
+
+
+def head_written(head: Path, _monkeypatch) -> None:
+    """A `HEAD` git can read."""
+    head.write_bytes(HEAD_REF)
+
+
+def head_open_refused(error: OSError):
+    """A `HEAD` that is there and whose open is refused with `error`."""
+    def make(head: Path, monkeypatch) -> None:
+        head.write_bytes(HEAD_REF)
+        refusing(monkeypatch, "open", "HEAD", error)
+    return make
+
+
+def head_not_made(_head: Path, _monkeypatch) -> None:
+    """A git directory with no `HEAD`."""
+
+
+def head_no_regular_file(make):
+    """A `HEAD` that is no regular file, made by `make`, which no one may
+    open."""
+    def build(head: Path, monkeypatch) -> None:
+        make(head)
+        never_opened(monkeypatch)
+    return build
+
+
+#: `(how the HEAD is made, the mode it is set to or None, the reason both
+#: refuse it with or None)`: each `HEAD` the gate's #1222 rows ask about.
+HEAD_SHAPES = [
+    pytest.param(head_written, None, None, id="readable"),
+    pytest.param(head_written, 0, os.strerror(errno.EACCES), id="mode-000",
+                 marks=CANNOT_RUN_AS_ROOT),
+    pytest.param(head_open_refused(PermissionError(errno.EACCES, DENIED)),
+                 None, DENIED, id="open-refused"),
+    pytest.param(head_open_refused(OSError(errno.EIO, IO_ERROR)), None,
+                 IO_ERROR, id="open-io-error"),
+    pytest.param(head_open_refused(FileNotFoundError(
+        errno.ENOENT, os.strerror(errno.ENOENT))), None, None,
+        id="gone-at-open"),
+    pytest.param(head_not_made, None, None, id="no-head"),
+    pytest.param(head_no_regular_file(Path.mkdir), None, None,
+                 id="a-directory"),
+    pytest.param(head_no_regular_file(os.mkfifo), None, None, id="a-fifo",
+                 marks=pytest.mark.skipif(os.name == "nt",
+                                          reason="a FIFO needs os.mkfifo")),
+]
+
+
+@pytest.mark.parametrize("own_directory", [
+    pytest.param(False, id="gitfile-leg"),
+    pytest.param(True, id="git-directory-leg"),
+])
+@pytest.mark.parametrize("make, bits, reason", HEAD_SHAPES)
+def test_the_doctor_asks_a_head_as_the_gate_asks_it(
+        sources, tmp_path, monkeypatch, own_directory, make, bits, reason):
+    """The parity row for #1222: the doctor's `mount_read` and the gate's
+    `_refuse_an_unreadable_git_dir`, over the same leg, give one answer for
+    its git directory's `HEAD`. Where the gate refuses it,
+    `pin-submodule-unreadable` naming that `HEAD`, the doctor's line is the
+    gate's, after the leg's path where the `HEAD` is outside the mount;
+    where the gate leaves the leg to git (a readable `HEAD`, none, one gone
+    when it is opened, or one that is no regular file and is never opened),
+    the doctor reads the mount as a checkout of its own and refuses
+    nothing."""
+    root = tmp_path / "root"
+    head, gate_named, doctor_named = a_leg_in(root, own_directory)
+    make(head, monkeypatch)
+    moded = (mode_of(root, head.relative_to(root).as_posix(), bits)
+             if bits is not None else contextlib.nullcontext())
+    with moded:
+        gate = gate_refusal(sources.gate, root, root / "spec" / ".git")
+        doctor = sources.doctor.mount_read(root, "spec")
+    if reason is None:
+        assert gate is None, gate
+        assert doctor == (True, True, None)
+        return
+    assert gate == ("pin-submodule-unreadable", cannot(gate_named, reason))
+    line, error, listed = doctor[2]
+    assert doctor[:2] == (True, False)
+    assert line == cannot(doctor_named, reason)
+    assert line.endswith(gate[1]), (line, gate)
+    assert error.strerror == reason
+    assert listed is False
 
 
 def test_beside_a_checkout_line_the_unread_mount_gets_the_advice(
