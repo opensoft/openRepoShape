@@ -12338,17 +12338,18 @@ def cmd_check(args) -> int:
     _print_triad_advisory(source.path,
                           plan.source_commit or source.commit)
 
-    if plan.source_commit and source.commit != plan.source_commit:
-        # `commit:` is a plan value people and AIs edit: sliced first, so the
-        # spelling stays bounded, and `_shown`, so a real hash reads as it did
-        # and a line break or an ESC in it (#328) cannot leave the line.
-        findings.append(
-            f"FINDING plan-stale: the plan was written against "
-            f"{_shown(plan.source_commit[:12])} but "
-            f"{_spelled(source.branch)} is now at {source.commit[:12]}. "
-            "Re-run `plan`: a coverage check "
-            "against a tree that has moved proves nothing about the tree that "
-            "will be split.")
+    # THE PLAN AGAINST ITS SOURCE, FIRST OF WHAT IT LISTS (#1113): each
+    # problem of `_against_its_source`, the one list `execute` refuses the
+    # first of, in its order and in this command's words, before the split
+    # branch and the entries: another repository, a refused name and a moved
+    # source. An unanswered entry is listed with the entries, after them.
+    names = plan.names()
+    pins = set(plan.pins)
+    unmended = list(_against_its_source(plan, source, names, naming, pins))
+    for problem in unmended:
+        findings.extend(problem.found)
+    named = not {UNCLASSIFIED, ROLE_MISMATCH}.intersection(
+        problem.refusal.code for problem in unmended)
 
     # Before the entries (#320): the history scan their findings make reads
     # a split branch the source keeps, and the branch is named first.
@@ -12363,41 +12364,15 @@ def cmd_check(args) -> int:
     entry_findings, remediation, notes = _entry_findings(plan, source,
                                                          local_remote_dir)
     findings.extend(entry_findings)
-    remediation = taken_remediation + remediation
+    # What is printed once after the findings, in their order.
+    remediation = [fix for problem in unmended for fix in problem.fixes] + (
+        taken_remediation + remediation)
 
-    names = plan.names()
-    pins = set(plan.pins)
-    # The plan names the source, or `execute` acts on another repository
-    # (#499): said before the names' own findings, as `execute` refuses it.
-    another = _not_the_source(plan, source, names)
-    if another:
-        findings.append(f"FINDING {PLAN_NOT_THE_SOURCE}: {another}")
-        remediation.append(_own_name_remediation(
-            _held_repository(plan, source), naming, pins, ""))
-    # THE SOURCE IS HANDED TO `_check_names` WHERE `execute` HANDS IT (#716):
-    # when the plan does not name another repository, so that a refusal of
-    # the assembly root's own name says to rename it first, as `execute`
-    # says it on the same plan. Where the plan does name another,
-    # `execute` stops at `plan-not-the-source` and never asks the names, and
-    # a refusal of the plan's name is then about a name that is not the
-    # source's: `_own_name_remediation` has said what to do.
-    in_place = source.repository if not another else None
-    try:
-        _check_names(naming, names, pins, None if another else source)
+    if named:
         for role, name in names.items():
             found = naming.classify(name, role, pins)
             print(f"  {role:<9} {name:<28} {found.family}"
                   + (f"/{found.role}" if found.role else ""))
-    except Refusal as exc:
-        findings.append(f"FINDING {exc.code}: {exc.detail}")
-        # Only the rename-first remedy is printed, once after the findings:
-        # it is the one `check` was missing. `--project takes ...` is not,
-        # and `check` never printed it (#716). It says the rule its new name
-        # follows first, as `_check_names` says it (#902).
-        if in_place is not None and exc.remediation == _name_remedy(
-                exc.code, in_place):
-            remediation.append(exc.remediation)
-    else:
         # WHAT THE DISK OR GITHUB WILL NOT HOLD (#863): the names, the
         # organisation and the topic, `execute`'s one list, which it refuses
         # the first of before either leg exists, each a finding here under
@@ -12509,16 +12484,14 @@ def _refuse_an_unrunnable_plan(plan: Plan, source: Source) -> None:
     An unanswered question is never an implicit `root`, and a plan written
     against a tree that has since moved proves nothing about the tree that
     would be split — which is how a path goes missing.
+
+    THE MOVED SOURCE FIRST (#1113), as `_against_its_source` asks the two,
+    the last of its four problems: a moved source is mended by running
+    `plan` again, and the fresh plan takes back every answer given before,
+    so an answer given first to an entry of the stale one is lost. `check`
+    listed the moved source first, and `execute` refused the unanswered
+    entry first, so the two named different problems first.
     """
-    unresolved = [e for e in plan.entries if e.get("leg") is None]
-    if unresolved:
-        raise Refusal(
-            "plan-unresolved",
-            f"{len(unresolved)} path(s) still have `leg: null`: "
-            + _listed([str(e.get("path")) for e in unresolved[:8]]),
-            "Remediation: answer each entry's `question:` by setting `leg:` "
-            "and adding a `resolution:` line, then run `check`. An unanswered "
-            "question is never an implicit `root`.")
     if plan.source_commit and source.commit != plan.source_commit:
         # `commit:` is `_shown` as `check` shows it (#328).
         raise Refusal(
@@ -12529,6 +12502,125 @@ def _refuse_an_unrunnable_plan(plan: Plan, source: Source) -> None:
             "Remediation: re-run `plan`, re-answer anything new, then "
             "`check`. Splitting a tree the plan has not seen is how a path "
             "goes missing.")
+    unresolved = [e for e in plan.entries if e.get("leg") is None]
+    if unresolved:
+        raise Refusal(
+            "plan-unresolved",
+            f"{len(unresolved)} path(s) still have `leg: null`: "
+            + _listed([str(e.get("path")) for e in unresolved[:8]]),
+            "Remediation: answer each entry's `question:` by setting `leg:` "
+            "and adding a `resolution:` line, then run `check`. An unanswered "
+            "question is never an implicit `root`.")
+
+
+class _Unmended(NamedTuple):
+    """One problem of a plan against its source, as `_against_its_source`
+    yields it, in each command's own words: the `Refusal` `execute` refuses
+    it with, and the FINDING lines `check` lists it as and what `check`
+    prints once after its findings."""
+    refusal: Refusal
+    found: tuple = ()
+    fixes: tuple = ()
+
+
+def _against_its_source(plan: Plan, source: Source, names: dict,
+                        naming: NamingPolicy, pins: set[str]):
+    """Each problem of the plan against its source (`_Unmended`), in the
+    order a person mends them (#1113): a plan for another repository
+    (`plan-not-the-source`), a name the naming policy refuses
+    (`_check_names`), and then `_refuse_an_unrunnable_plan`'s two, a source
+    that has moved on since `plan` (`plan-stale`) and an unanswered entry
+    (`plan-unresolved`), of which it refuses the first.
+
+    ONE ORDER, TWO READERS (#1113). `execute` refuses the first problem,
+    once the work directory and the source are opened; `check` lists
+    each, in this order, before the split branch and the plan's entries.
+    Each command had an order of its own: `check` listed a moved source
+    first, then the entries, each unanswered one among them, then another
+    repository and then the names; `execute` refused another repository,
+    then a refused name, then an unanswered entry and then a moved source.
+    So for five of the six pairs of the four, `check`'s first finding was
+    not `execute`'s refusal: a moved source beside an unanswered entry,
+    another repository beside either, and a refused name beside either.
+    Read from here by both, it is. A plan with one of the four is named as
+    before by each command, in the same words.
+
+    IN THE ORDER A PERSON MENDS THEM. Each of the first three is mended by
+    running `plan` again, as its remediation says, and a fresh plan takes
+    back every answer given before, so the unanswered entry, mended by an
+    answer in the plan, is named last: an answer given first is lost. Of
+    the three:
+    - another repository first. Nothing in such a plan is this source's
+      own: it is mended by `plan` under the source's own name, or from the
+      source it is about (`_own_name_remediation`), and its commit and its
+      entries are of what it was written from. And `execute` asks the naming
+      policy nothing about the plan's names, and no remote anything, before
+      it refuses it (`_refuse_a_plan_for_another_repository`, #499): this
+      is a generator, so `execute` asks nothing after the first problem.
+    - then a refused name, as `execute` asked it: it is mended by `plan`
+      given another `--project`, or after the source is renamed on GitHub
+      (`_rename_first`), and that run reads the source as it is now, so it
+      mends a moved source too, where `plan` run again as it was for the
+      moved source would leave the name to mend.
+    - then a moved source, mended by `plan` run again as it was.
+
+    `check` SAYS EACH IN ITS OWN WORDS, as it did: another repository with
+    no plan path, and with `_own_name_remediation` saying nothing of legs,
+    which `check` never makes; a refused name with the rename-first remedy
+    only where the source is adopted in place under that name (#716); a
+    moved source as `check` said it; and an unanswered entry not here but
+    with the entries, each by its path (`_leg_findings`), after these.
+    The plan's `org:` and `id:` are asked before all four, by both
+    (`_checked_org_and_id`, #1020).
+    """
+    # The plan names the source, or `execute` acts on another repository
+    # (#499): said before the names' own findings, as `execute` refuses it.
+    another = None
+    try:
+        _refuse_a_plan_for_another_repository(plan, source, names, naming,
+                                              pins)
+    except Refusal as exc:
+        another = _not_the_source(plan, source, names)
+        yield _Unmended(exc, (f"FINDING {PLAN_NOT_THE_SOURCE}: {another}",),
+                        (_own_name_remediation(_held_repository(plan, source),
+                                               naming, pins, ""),))
+    # THE SOURCE IS HANDED TO `_check_names` WHERE `execute` HANDS IT (#716):
+    # when the plan does not name another repository, so that a refusal of
+    # the assembly root's own name says to rename it first, as `execute`
+    # says it on the same plan. Where the plan does name another,
+    # `execute` stops at `plan-not-the-source` and never asks the names, and
+    # a refusal of the plan's name is then about a name that is not the
+    # source's: `_own_name_remediation` has said what to do.
+    in_place = source.repository if not another else None
+    try:
+        _check_names(naming, names, pins, None if another else source)
+    except Refusal as exc:
+        # Only the rename-first remedy is printed by `check`, once after the
+        # findings: it is the one `check` was missing. `--project takes ...`
+        # is not, and `check` never printed it (#716). It says the rule its
+        # new name follows first, as `_check_names` says it (#902).
+        yield _Unmended(
+            exc, (f"FINDING {exc.code}: {exc.detail}",),
+            (exc.remediation,) if in_place is not None
+            and exc.remediation == _name_remedy(exc.code, in_place) else ())
+    try:
+        _refuse_an_unrunnable_plan(plan, source)
+    except Refusal as exc:
+        if exc.code != "plan-stale":
+            # Listed by `check` with the entries, each by its path.
+            yield _Unmended(exc)
+        else:
+            # `commit:` is a plan value people and AIs edit: sliced first,
+            # so the spelling stays bounded, and `_shown`, so a real hash
+            # reads as it did and a line break or an ESC in it (#328) cannot
+            # leave the line.
+            yield _Unmended(exc, (
+                f"FINDING plan-stale: the plan was written against "
+                f"{_shown(plan.source_commit[:12])} but "
+                f"{_spelled(source.branch)} is now at "
+                f"{source.commit[:12]}. Re-run `plan`: a coverage check "
+                "against a tree that has moved proves nothing about the tree "
+                "that will be split.",))
 
 
 #: The adoption's own ruleset hint (#177). `RULESET_HINT` is the scaffold's,
@@ -14980,9 +15072,15 @@ def cmd_execute(args) -> int:
     _require_filter_repo()
 
     pins = set(plan.pins)
-    _refuse_a_plan_for_another_repository(plan, source, names, naming, pins)
-    _check_names(naming, names, pins, source)
-    _refuse_an_unrunnable_plan(plan, source)
+    # THE PLAN AGAINST ITS SOURCE (#1113): the first problem of
+    # `_against_its_source`, which `check` lists first, in the order a person
+    # mends them: another repository, refused before the naming policy is
+    # asked about the plan's names or any remote anything (#499), then a
+    # refused name, a moved source and an unanswered entry.
+    unmended = next(_against_its_source(plan, source, names, naming, pins),
+                    None)
+    if unmended is not None:
+        raise unmended.refusal
 
     # THE PLAN IS UNTRUSTED INPUT. It is a file a human or an AI edited, and
     # every value below becomes an argument to `git` or `gh`, so each one is
