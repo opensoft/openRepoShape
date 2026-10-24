@@ -2443,20 +2443,25 @@ def env_commit(work: Path, message: str) -> None:
     locale with that mode off -- and git keeps the bytes it is given. An
     adoption's split message already carried an em dash, which reached git
     there as a cp1252 byte, and it names each entry path as the source spells
-    it: `Übersicht.md` would land as another byte that is not UTF-8, and
-    `文書.md` would raise `UnicodeEncodeError` after both legs are pushed.
+    it (a printable one; see below): `Übersicht.md` would land as another byte
+    that is not UTF-8, and `文書.md` would raise `UnicodeEncodeError` after
+    both legs are pushed.
     Every caller's message goes the same way: `scaffold-project.py`'s
     assembly commit, `scripts/family.py`'s holder commit, and each first
     commit `git_init_commit` makes (a scaffolded leg, a seeded one).
 
     `errors="replace"` works BOTH WAYS. Decoding, git's own output cannot
-    raise. Encoding, a character UTF-8 cannot carry is written as `?`: the
-    one such character a message can hold is a lone surrogate, the byte of a
-    name that is not UTF-8 as `Source.tree` keeps it. `adopt-project.py`
-    refuses one in a path it extracts (`entry_path_problem`), but a `root`
-    or `drop` entry holding one is listed in the split message, so there the
-    message names it with a `?` in place of that byte, a path that does not
-    exist, rather than raising after both legs are pushed.
+    raise. Encoding, a character UTF-8 cannot carry is written as `?`, and
+    nothing raises after both legs are pushed: the one such character a
+    message can hold is a lone surrogate, the byte of a name that is not
+    UTF-8 as `Source.tree` keeps it. `adopt-project.py` refuses one in a
+    path it extracts (`entry_path_problem`), and a `root` or `drop` entry
+    holding one is listed in the split message, but never raw: the message
+    names each path as `plan`'s report does (`_shown`, #900), so the byte
+    0xE9 reads as an escape with no surrogate in it, `` `caf\\udce9.md` ``,
+    the path the source holds. Written raw it would be a `?`, `caf?.md`, a
+    path that does not exist, which is what this function still writes for
+    a lone surrogate it is handed.
     """
     env = dict(os.environ)
     for key, fallback in (("GIT_AUTHOR_NAME", "openRepoShape scaffold"),
