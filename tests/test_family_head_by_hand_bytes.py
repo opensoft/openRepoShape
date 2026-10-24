@@ -35,9 +35,10 @@ from pathlib import Path
 
 import pytest
 
-from conftest import (IDENTITY_CONFIG, REPO, WINDOWS_SKIP,
-                      load_without_bytecode,
-                      skip_where_a_name_cannot_be_not_utf_8)
+from conftest import (A_BYTE_READ_AS_A_SURROGATE, IDENTITY_CONFIG, REPO,
+                      WINDOWS_SKIP, load_without_bytecode,
+                      skip_where_a_name_cannot_be_not_utf_8,
+                      skip_where_the_locale_does_not_spell_it_as_utf_8)
 
 SHELLS = [pytest.param(name, id=name)
           for name in ("sh", "dash", "bash", "zsh")]
@@ -277,4 +278,6 @@ def test_surrogateescape_reads_the_issues_branch_as_caf_and_u_dce9():
 
     assert branch == "caf" + chr(0xDCE9)
     if os.fsencode(chr(0xDCE9)) == b"\xe9":
+        skip_where_the_locale_does_not_spell_it_as_utf_8(
+            chr(0xDCE9), A_BYTE_READ_AS_A_SURROGATE)
         assert os.fsdecode(LATIN_1) == branch

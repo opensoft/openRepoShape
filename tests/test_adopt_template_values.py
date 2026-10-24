@@ -49,10 +49,12 @@ from pathlib import Path
 
 import pytest
 
-from conftest import (ADOPT, REPO, WINDOWS_SKIP, blank_unnamed_pin_sources,
+from conftest import (A_BYTE_READ_AS_A_SURROGATE, A_NAME_HELD_AS_UTF_8, ADOPT,
+                      REPO, WINDOWS_SKIP, blank_unnamed_pin_sources,
                       make_source_repo, resolve,
                       skip_where_a_name_cannot_be_not_utf_8,
-                      skip_where_the_environment_cannot_carry)
+                      skip_where_the_environment_cannot_carry,
+                      skip_where_the_locale_does_not_spell_it_as_utf_8)
 
 sys.path.insert(0, str(REPO / "scripts"))
 import shape_materialize  # noqa: E402
@@ -205,6 +207,9 @@ def test_plan_refuses_a_flag_no_file_can_hold(tmp_path, flag, value):
     asked first: `subprocess` cannot put it on `plan`'s command line there,
     and raised `UnicodeEncodeError` in the test, not in the tool."""
     skip_where_the_environment_cannot_carry(value)
+    if "\udce9" in value:
+        skip_where_the_locale_does_not_spell_it_as_utf_8(
+            value, A_BYTE_READ_AS_A_SURROGATE)
     source = make_source_repo(tmp_path / "Thing")
     runs = plan_check_execute(tmp_path, source, flag, value)
     assert_no_traceback_and_no_leg(tmp_path, runs)
@@ -454,6 +459,8 @@ def test_plan_and_check_say_the_same_sentence(tmp_path, answered):
     `elected_by` are one sentence about one value, each naming it as the
     person has it in front of them."""
     value = "Jos\udce9"
+    skip_where_the_locale_does_not_spell_it_as_utf_8(
+        value, A_BYTE_READ_AS_A_SURROGATE)
     flagged, by_hand = tmp_path / "flag", tmp_path / "edit"
     flagged.mkdir()
     by_hand.mkdir()
@@ -687,6 +694,8 @@ def test_a_utf8_source_directory_still_adopts_with_local_remotes(tmp_path):
     test."""
     parent = tmp_path / "caf\u00e9"
     skip_where_the_environment_cannot_carry(parent.name)
+    skip_where_the_locale_does_not_spell_it_as_utf_8(parent.name,
+                                                     A_NAME_HELD_AS_UTF_8)
     source = make_source_repo(parent / "Thing")
     runs = plan_check_execute(tmp_path, source)
     assert_no_traceback(runs)
