@@ -2076,11 +2076,26 @@ def _source_there(spec: str, candidate: Path, name: str | None) -> bool:
     (`acme/Atlas` beside an unsearchable `./acme`) was cloned from GitHub,
     where `source-ambiguous` refuses it once the path can be seen. Which of
     the two it names cannot be told, so neither is read, and the url is
-    offered for the repository, as `source-ambiguous` offers it."""
+    offered for the repository, as `source-ambiguous` offers it.
+
+    A NAME GITHUB CANNOT HOLD NAMES NO GITHUB REPOSITORY EITHER (#1003): an
+    owner over `GITHUB_OWNER_MAX` characters, or a repository over
+    `GITHUB_NAME_MAX`. It is refused as a path is, with no url, whatever
+    reason the operating system gave. `--source <300 a's>/Thing`, `File
+    name too long`, was "whether it names the path ... here, or only the
+    GitHub repository ..., cannot be told", and was offered
+    `https://github.com/<300 a's>/Thing`, which can never clone; and so was
+    `testorg/<300 a's>` beside a `./testorg` this user cannot search, whose
+    `stat` stops at `Permission denied` before it reaches the long part. The
+    name decides, never the reason: `testorg/Thing`, with `./testorg` a
+    symlink to a name too long, is `File name too long` as well, and names
+    a repository GitHub can hold, so its url is offered."""
     try:
         return _is_there(candidate)
     except OSError as exc:
-        if name is None:
+        owner, _, repo = (name or "").partition("/")
+        if (name is None or len(owner) > GITHUB_OWNER_MAX
+                or len(repo) > GITHUB_NAME_MAX):
             raise _source_unreadable(f"--source {spec!r}", exc,
                                      "whether a repository is there") from exc
         here = _spelled("./" + spec.rstrip("/"))

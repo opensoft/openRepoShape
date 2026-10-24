@@ -341,6 +341,240 @@ def test_an_org_repo_beside_an_unsearchable_directory_is_not_sent_to_github(
     assert not (tmp_path / "work" / "source-readonly").exists()
 
 
+# --- an `org/repo` spelling GitHub cannot hold (#1003) -----------------------
+
+#: A part of a spelling longer than a file system lets a file name be, and
+#: so longer than GitHub lets an owner or a repository be named
+#: (`GITHUB_OWNER_MAX`, `GITHUB_NAME_MAX`): `stat` is `File name too long`.
+LONG = "a" * 300
+TOO_LONG = f"cannot be read ({os.strerror(errno.ENAMETOOLONG)})"
+#: What GitHub keeps an owner's name and a repository's to, as
+#: tests/test_github_name_limits.py writes them.
+OWNER_MAX, NAME_MAX = 39, 100
+#: The end of `source-unreadable`'s remedy for a cause other than permission.
+OTHER_CURE = ("which no `chmod` puts right: put right what it names. Then run "
+              "the same command again")
+needs_a_name_too_long = pytest.mark.skipif(
+    sys.platform == "win32",
+    reason="`File name too long` (ENAMETOOLONG) is a POSIX `stat`'s answer "
+           "to a name over the file system's limit; Windows answers it with "
+           "errors of its own")
+
+
+def too_long_here(path: Path) -> None:
+    """`stat` of `path`, relative to the directory the test runs in, is
+    refused with `File name too long`, asserted so a file system that took
+    the name would not pass a test here for the wrong reason."""
+    with pytest.raises(OSError) as raised:
+        path.stat()
+    assert raised.value.errno == errno.ENAMETOOLONG, raised.value
+
+
+def refused_for(monkeypatch, code: int) -> None:
+    """`Path.stat` refused with `code` for every path, as the operating
+    system refuses it: `EACCES` is a `PermissionError`, `EIO` an `OSError`.
+    In-process, so it runs on every platform and as root."""
+    def refusing(self, *args, **kwargs):
+        raise OSError(code, os.strerror(code), str(self))
+
+    monkeypatch.setattr(Path, "stat", refusing)
+
+
+def assert_both_readings_and_the_url(adopter, spec: str, name: str) -> None:
+    """`--source spec`, its `stat` refused, names a repository GitHub can
+    hold: `source-unreadable` leaves both readings open and offers the url,
+    as `source-ambiguous` offers it (#430)."""
+    with pytest.raises(adopter.Refusal) as raised:
+        adopter._source_spec(spec)
+    refusal = raised.value
+    assert refusal.code == "source-unreadable"
+    assert (f"or only the GitHub repository `{name}`, cannot be told"
+            in refusal.detail), refusal.detail
+    assert (f"pass `https://github.com/{name}` to clone the repository from "
+            "GitHub.") in refusal.remediation, refusal.remediation
+
+
+@needs_a_name_too_long
+@pytest.mark.parametrize(("written", "holder", "names", "limit"), [
+    pytest.param("{}/" + PROJECT, None, "{}/" + PROJECT, OWNER_MAX,
+                 id="owner"),
+    pytest.param(ORG + "/{}", ORG, ORG + "/{}", NAME_MAX, id="repository"),
+    pytest.param("github.com/{}/" + PROJECT, "github.com", "{}/" + PROJECT,
+                 OWNER_MAX, id="bare-github-url"),
+    pytest.param("www.github.com/{}/" + PROJECT, "www.github.com",
+                 "{}/" + PROJECT, OWNER_MAX, id="www-github-url"),
+])
+def test_a_spelling_too_long_for_the_disk_is_offered_no_url(
+        adopter, monkeypatch, tmp_path, written, holder, names, limit):
+    """`--source <300 a's>/Thing` is `source-unreadable`, `File name too
+    long` (#430's slice H), and was told "whether it names the path ...
+    here, or only the GitHub repository ..., cannot be told", with
+    `https://github.com/<300 a's>/Thing` offered: a url that can never clone,
+    for a name GitHub gives no owner or repository (#1003). It is refused
+    as a path too long is, and offered no url. `written` spells the source
+    with `{}` for the long part, and `names` the GitHub repository it names;
+    `limit` is what GitHub keeps that part to. `holder` is the directory the
+    spelling's first part names here, made so the `stat` reaches the long
+    part."""
+    spec = written.format(LONG)
+    monkeypatch.chdir(tmp_path)
+    if holder is not None:
+        (tmp_path / holder).mkdir()
+    too_long_here(Path(spec))
+
+    with pytest.raises(adopter.Refusal) as raised:
+        adopter._source_spec(spec)
+
+    refusal = raised.value
+    assert refusal.code == "source-unreadable"
+    assert refusal.detail == (f"--source {spec!r}: {TOO_LONG}, so whether a "
+                              "repository is there cannot be told")
+    assert refusal.remediation.endswith(OTHER_CURE + "."), refusal.remediation
+    assert "https://" not in refusal.remediation
+
+    # The control: the part as long as GitHub lets it be, its `stat` refused
+    # for another reason (an I/O error), names a repository GitHub can hold,
+    # so both readings stay open and its url is offered.
+    refused_for(monkeypatch, errno.EIO)
+    assert_both_readings_and_the_url(adopter, written.format("a" * limit),
+                                     names.format("a" * limit))
+
+
+@pytest.mark.parametrize("code", [errno.EIO, errno.EACCES],
+                         ids=["EIO", "EACCES"])
+@pytest.mark.parametrize(("written", "names", "limit", "length"), [
+    pytest.param("{}/" + PROJECT, "{}/" + PROJECT, OWNER_MAX, OWNER_MAX + 1,
+                 id="owner-one-over"),
+    pytest.param("{}/" + PROJECT, "{}/" + PROJECT, OWNER_MAX, len(LONG),
+                 id="owner-too-long-for-the-disk"),
+    pytest.param(ORG + "/{}", ORG + "/{}", NAME_MAX, NAME_MAX + 1,
+                 id="repository-one-over"),
+    pytest.param(ORG + "/{}", ORG + "/{}", NAME_MAX, len(LONG),
+                 id="repository-too-long-for-the-disk"),
+    pytest.param("github.com/{}/" + PROJECT, "{}/" + PROJECT, OWNER_MAX,
+                 OWNER_MAX + 1, id="bare-github-url-owner-one-over"),
+])
+def test_a_name_github_cannot_hold_is_offered_no_url_whatever_the_reason(
+        adopter, monkeypatch, tmp_path, code, written, names, limit, length):
+    """An owner over 39 characters, or a repository over 100, is no name
+    GitHub holds (#1003), whatever the operating system refused the `stat`
+    for. #1122's first head read the reason, not the name: only `File name
+    too long` lost the url, so `testorg/<300 a's>` beside a `./testorg` this
+    user cannot search, which stops at `Permission denied` before the long
+    part, was offered `https://github.com/testorg/<300 a's>`, which can never
+    clone. Now it is refused as a path is, with the cure for its cause and
+    no url. The control: the part as long as GitHub lets it be, refused
+    alike, keeps both readings and its url."""
+    monkeypatch.chdir(tmp_path)
+    refused_for(monkeypatch, code)
+    spec = written.format("a" * length)
+
+    with pytest.raises(adopter.Refusal) as raised:
+        adopter._source_spec(spec)
+
+    refusal = raised.value
+    assert refusal.code == "source-unreadable"
+    assert refusal.detail == (f"--source {spec!r}: cannot be read "
+                              f"({os.strerror(code)}), so whether a "
+                              "repository is there cannot be told")
+    assert refusal.remediation.endswith(
+        (CURE if code == errno.EACCES else OTHER_CURE) + "."
+    ), refusal.remediation
+    assert "https://" not in refusal.remediation
+
+    assert_both_readings_and_the_url(adopter, written.format("a" * limit),
+                                     names.format("a" * limit))
+
+
+@needs_a_name_too_long
+def test_plan_of_a_spelling_too_long_for_the_disk_offers_no_url(tmp_path):
+    """The same, as `plan` is run: `source-unreadable`, exit 2, naming no
+    GitHub repository and offering no url; no plan is written, nothing is
+    made and `gh` is never asked."""
+    here = tmp_path / "here"
+    here.mkdir()
+    spec = f"{LONG}/{PROJECT}"
+    plan = tmp_path / "adoption-plan.yaml"
+    env, log = recording_gh(tmp_path / "gh-bin")
+
+    proc = run_script(ADOPT, "plan", "--source", spec, *PLANNED, "--out",
+                      str(plan), "--work-dir", str(tmp_path / "work"),
+                      cwd=here, env=env)
+
+    assert proc.returncode == 2, said(proc)
+    assert (f"{UNREADABLE}--source {spec!r}: {TOO_LONG}, so whether a "
+            "repository is there cannot be told\n") in proc.stderr
+    assert "GitHub repository" not in said(proc)
+    assert "https://" not in said(proc)
+    assert_no_false_answer(said(proc))
+    assert not plan.exists()
+    assert not (tmp_path / "work").exists()
+    assert log.read_bytes() == b""
+
+
+@needs_a_name_too_long
+@needs_a_symlink
+def test_a_name_github_can_hold_keeps_its_url_through_a_link_too_long(
+        adopter, monkeypatch, tmp_path):
+    """`testorg/Thing`, with `./testorg` a symlink to a name too long: the
+    `stat` is `File name too long`, from the link's destination and not from
+    the spelling, which names a repository GitHub can hold. #1122's first
+    head read the reason and refused it as a path, with no url; it names
+    both readings again, as main did, and offers
+    `https://github.com/testorg/Thing`."""
+    monkeypatch.chdir(tmp_path)
+    os.symlink(LONG, ORG)
+    too_long_here(Path(REPOSITORY))
+
+    with pytest.raises(adopter.Refusal) as raised:
+        adopter._source_spec(REPOSITORY)
+
+    refusal = raised.value
+    assert refusal.code == "source-unreadable"
+    assert refusal.detail == (
+        f"--source {REPOSITORY!r}: {TOO_LONG}, so whether it names the path "
+        f"`./{REPOSITORY}` here, or only the GitHub repository "
+        f"`{REPOSITORY}`, cannot be told")
+    assert refusal.remediation.endswith(
+        f"{OTHER_CURE}; or pass `{URL}` to clone the repository from GitHub."
+    ), refusal.remediation
+
+
+@needs_a_mode
+def test_plan_of_a_name_github_cannot_hold_in_an_unsearchable_place(
+        tmp_path):
+    """`plan --source testorg/<300 a's>` beside a `./testorg` at mode 000:
+    the `stat` stops at `Permission denied` before it reaches the long part,
+    and #1122's first head, which read the reason and not the name, offered
+    `https://github.com/testorg/<300 a's>`, a url that can never clone
+    (#1003). Now `source-unreadable` as a path is, with the cure for a
+    permission, naming no GitHub repository and offering no url; no plan is
+    written, nothing is made and `gh` is never asked."""
+    here = tmp_path / "here"
+    (here / ORG).mkdir(parents=True)
+    spec = f"{ORG}/{LONG}"
+    plan = tmp_path / "adoption-plan.yaml"
+    env, log = recording_gh(tmp_path / "gh-bin")
+
+    with unsearchable(here / ORG):
+        with pytest.raises(PermissionError):
+            (here / spec).stat()
+        proc = run_script(ADOPT, "plan", "--source", spec, *PLANNED, "--out",
+                          str(plan), "--work-dir", str(tmp_path / "work"),
+                          cwd=here, env=env)
+
+    assert proc.returncode == 2, said(proc)
+    assert (f"{UNREADABLE}--source {spec!r}: {DENIED}, so whether a "
+            "repository is there cannot be told\n") in proc.stderr
+    assert CURE in proc.stderr
+    assert "GitHub repository" not in said(proc)
+    assert "https://" not in said(proc)
+    assert_no_false_answer(said(proc))
+    assert not plan.exists()
+    assert not (tmp_path / "work").exists()
+    assert log.read_bytes() == b""
+
+
 # --- a recorded source this user cannot reach (:5735) ------------------------
 
 def test_a_recorded_clone_whose_stat_is_refused_is_not_cloned_again(
