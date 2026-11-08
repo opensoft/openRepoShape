@@ -58,7 +58,11 @@ Each row now names that `HEAD` as the gate does (`spec: .git/modules/spec/
 HEAD`, `spec/.git/HEAD`), and the verdict is the gate's INVALID. Only a
 regular file is opened: a FIFO's open would wait for a writer. A parity row
 holds the doctor's `mount_read` and the gate's `_refuse_an_unreadable_git_dir`
-to one answer for each `HEAD`.
+to one answer for each `HEAD`, and another the doctor's `root_git_read` and
+the gate's `_refuse_an_unreadable_root` for the root's own (rv1248's S1),
+each with a `HEAD` that links to a file at mode 000 and a `gitdir: ` line
+that holds a NUL (rv1248's N4); a third holds `regular_file_opens` to the
+gate's `_gitfile_opens`, answer for answer (rv1248's N3).
 
 NOT HERE: the `shape currency` row's `copy-missing` under 3.14 for a `scripts/`
 or a `.github/workflows/` this user cannot search comes from
@@ -887,6 +891,14 @@ def head_no_regular_file(make):
     return build
 
 
+def head_linked(head: Path, _monkeypatch) -> None:
+    """A `HEAD` that is a symbolic link to a readable file beside it
+    (rv1248's N4): its `stat` and its open follow the link, and so does
+    `mode_of`, which sets the mode of the file it leads to."""
+    head.with_name("HEAD-linked").write_bytes(HEAD_REF)
+    head.symlink_to("HEAD-linked")
+
+
 #: `(how the HEAD is made, the mode it is set to or None, the reason both
 #: refuse it with or None)`: each `HEAD` the gate's #1222 rows ask about.
 HEAD_SHAPES = [
@@ -905,6 +917,9 @@ HEAD_SHAPES = [
                  id="a-directory"),
     pytest.param(head_no_regular_file(made_fifo), None, None, id="a-fifo",
                  marks=POSIX_NODES),
+    pytest.param(head_linked, 0, os.strerror(errno.EACCES),
+                 id="link-to-mode-000",
+                 marks=[CANNOT_RUN_AS_ROOT, POSIX_NODES]),
 ]
 
 
@@ -943,6 +958,135 @@ def test_the_doctor_asks_a_head_as_the_gate_asks_it(
     assert line.endswith(gate[1]), (line, gate)
     assert error.strerror == reason
     assert listed is False
+
+
+def a_root_in(root: Path, layout: str) -> tuple[Path, Path, str]:
+    """A root whose own `.git` is a git directory, or a gitfile naming one
+    inside the root (`.gitdir`) or beside it (`../elsewhere`), as #1147's
+    cases write them (`moved_in`, `moved_out`): `(the root, resolved, that
+    git directory's HEAD, not made yet, the name the gate and the doctor
+    give it)`, relative to the root where it is inside it and whole where it
+    is not."""
+    root.mkdir(parents=True)
+    root = root.resolve()
+    if layout == "git-directory":
+        gitdir = root / ".git"
+    else:
+        name = ".gitdir" if layout == "gitfile-inside" else "../elsewhere"
+        gitdir = Path(os.path.normpath(root / name))
+        (root / ".git").write_bytes(f"gitdir: {name}\n".encode())
+    gitdir.mkdir()
+    head = gitdir / "HEAD"
+    try:
+        named = head.relative_to(root).as_posix()
+    except ValueError:
+        named = str(head)
+    return root, head, named
+
+
+def gate_root_refusal(gate, root: Path) -> tuple | None:
+    """`(code, detail)` of the refusal the gate's #1146 and #1222 check of
+    the root's own repository raises, or None where it raises none and
+    leaves the root to git."""
+    try:
+        gate._refuse_an_unreadable_root(root)
+    except gate.Refusal as exc:
+        return exc.code, exc.detail
+    return None
+
+
+@pytest.mark.parametrize("layout", [
+    pytest.param("git-directory", id="git-directory-root"),
+    pytest.param("gitfile-inside", id="gitfile-inside-root"),
+    pytest.param("gitfile-outside", id="gitfile-outside-root"),
+])
+@pytest.mark.parametrize("make, bits, reason", HEAD_SHAPES)
+def test_the_doctor_asks_the_roots_head_as_the_gate_asks_it(
+        sources, tmp_path, monkeypatch, layout, make, bits, reason):
+    """The parity row for rv1248's S1: the doctor's `root_git_read` and the
+    gate's `_refuse_an_unreadable_root`, over the same root, agree on
+    whether the root's own repository is refused and on the file named, for
+    each `HEAD` of the git directory its `.git` is or names. Where the gate
+    refuses it, `git-repo-unreadable` naming that `HEAD`, the doctor's line
+    is the gate's detail, word for word; where the gate leaves the root to
+    git (a readable `HEAD`, none, one gone when it is opened, or one that is
+    no regular file and is never opened), the doctor refuses nothing."""
+    root, head, named = a_root_in(tmp_path / "root", layout)
+    make(head, monkeypatch)
+    moded = (mode_of(head.parent, head.name, bits)
+             if bits is not None else contextlib.nullcontext())
+    with moded:
+        gate = gate_root_refusal(sources.gate, root)
+        doctor = sources.doctor.root_git_read(root)
+    if reason is None:
+        assert gate is None, gate
+        assert doctor is None, doctor
+        return
+    assert gate == ("git-repo-unreadable", cannot(named, reason))
+    assert doctor is not None, gate
+    line, error = doctor
+    assert line == gate[1]
+    assert error.strerror == reason
+
+
+#: A `gitdir: ` line holding a NUL, as #1239's gate case writes it: it names
+#: a git directory no system call can take.
+NUL_GITDIR = b"gitdir: ../m" + chr(0).encode("ascii") + b"x"
+
+
+@pytest.mark.parametrize("whose", [
+    pytest.param("leg", id="a-legs-gitfile"),
+    pytest.param("root", id="the-roots-gitfile"),
+])
+def test_a_gitdir_line_holding_a_nul_is_left_to_git_by_both(sources,
+                                                           tmp_path, whose):
+    """rv1248's N4, one row for each parity row: a gitfile whose `gitdir: `
+    line holds a NUL names a git directory whose `HEAD` is nothing there to
+    the doctor's `is_a` and to the gate's `_is_there`, which take a name no
+    system call can take for none. Neither opens anything, no `ValueError`
+    ends either, and both leave the `.git` to git, a leg's and the root's
+    alike."""
+    root = tmp_path / "root"
+    if whose == "leg":
+        (root / "spec").mkdir(parents=True)
+        dotgit = root / "spec" / ".git"
+        dotgit.write_bytes(NUL_GITDIR)
+        assert gate_refusal(sources.gate, root, dotgit) is None
+        assert sources.doctor.mount_read(root, "spec") == (True, True, None)
+    else:
+        root.mkdir()
+        (root / ".git").write_bytes(NUL_GITDIR)
+        assert gate_root_refusal(sources.gate, root) is None
+        assert sources.doctor.root_git_read(root) is None
+
+
+def opens(ask, path: Path):
+    """What `ask` answers of `path`, True or False, or `(the class, the
+    errno)` of the `OSError` it raises."""
+    try:
+        return ask(path)
+    except OSError as exc:
+        return type(exc), exc.errno
+
+
+@pytest.mark.parametrize("make, bits, reason", HEAD_SHAPES)
+def test_the_doctor_opens_a_file_as_the_gate_opens_a_gitfile(
+        sources, tmp_path, monkeypatch, make, bits, reason):
+    """rv1248's N3: `regular_file_opens` keeps its answer, though its two
+    callers ask it only for its raise, because it is the gate's
+    `_gitfile_opens`, whose answer the gate reads of a leg's gitfile
+    (#919). Over each shape of file, the two give one answer: the same True
+    or False, or the same refusal raised."""
+    path = tmp_path / "git" / "HEAD"
+    path.parent.mkdir()
+    make(path, monkeypatch)
+    moded = (mode_of(path.parent, path.name, bits)
+             if bits is not None else contextlib.nullcontext())
+    with moded:
+        doctor = opens(sources.doctor.regular_file_opens, path)
+        gate = opens(sources.gate._gitfile_opens, path)
+    assert doctor == gate
+    assert isinstance(doctor, bool) is (reason is None), doctor
 
 
 def test_beside_a_checkout_line_the_unread_mount_gets_the_advice(
