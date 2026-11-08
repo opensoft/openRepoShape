@@ -770,9 +770,20 @@ SHAPE_POINTER_LINE = ("Read AGENTS-shape.md first — the rules of this "
 ASSISTANT_INSTRUCTIONS = ("AGENTS.md", "CLAUDE.md")
 #: The make targets of the shape's own `Makefile` that a person runs. A root
 #: that kept the source's `Makefile` has none of them until the shape's copy
-#: is merged into it (#480), and the collision follow-up says so.
+#: is merged into it (#480); where the root also keeps a `GNUmakefile` or a
+#: `makefile`, which GNU make reads first, the merge alone brings them only
+#: where that file includes `Makefile` (#1048, #1105's review). The collision
+#: follow-up says what each root takes.
 #: `tests/test_adopt_e2e.py` holds this to the template's own targets.
 SHAPE_MAKE_TARGETS = ("bootstrap", "validate", "pins", "park", "resume")
+#: The names GNU make looks for when no `-f` is given, in its order: it reads
+#: the first it finds, and only that one. `collision_follow_up` names them
+#: (#1048), and so does the pinned `AGENTS-shape.md`, in this order.
+#: `adopt-project.py` keeps the same tuple under the same name for
+#: `_makefile_follow_up` (#977) and `_predict_collisions`, which picks the
+#: file `reads_first` names;
+#: `tests/test_adopt_collision_make_reads.py` holds the two tuples equal.
+GNU_MAKE_READS = ("GNUmakefile", "makefile", "Makefile")
 
 
 # ---------------------------------------------------------------------------
@@ -992,13 +1003,18 @@ def _tracked_at(target: Path, rel: str) -> str | None:
 
 def collision_follow_up(intended: str, actual: str,
                         beside: dict | None = None, *,
-                        attributes_link: bool = False) -> str:
+                        attributes_link: bool = False,
+                        reads_first: str | None = None) -> str:
     """The follow-up for ONE collision, in one place.
 
-    Both callers say it: `adopt-project.py plan` PREDICTS the collisions from
-    the plan's surviving root paths, and `execute` reports the ones that
-    actually happened. Two spellings of the same instruction is how the plan a
-    human approves stops matching the commit message they read afterwards.
+    `adopt-project.py plan` says it: `_predict_collisions` PREDICTS the
+    collisions from the plan's surviving root paths, the plan stores each
+    follow-up in `follow_ups:`, and `execute` carries those items into the
+    split commit's message, so the plan a human approves and the commit
+    message they read afterwards hold one spelling of each. `execute` names
+    the collisions that actually happened by path only: its `beside` lines,
+    and the split message's "WRITTEN BESIDE" list. `Materialized.follow_ups()`
+    would say this of them, and nothing calls it (#1105's review, NIT-4).
 
     A `.gitattributes` THAT IS A SYMLINK gets no block (`_append_eol_block`),
     so `attributes_link` says which of two things happened, and the follow-up
@@ -1007,15 +1023,37 @@ def collision_follow_up(intended: str, actual: str,
     its place needs (#471's review, SHOULD-2). `plan` knows it from the
     source tree's mode.
 
-    THE MAKEFILE'S MERGE IS WHAT BRINGS THE SHAPE'S MAKE TARGETS (#480). Until
-    it is made, `make bootstrap` in the root exits 2 with `No rule to make
-    target 'bootstrap'`, so the follow-up says that, and what runs meanwhile:
-    `python3 scripts/bootstrap.py`, unless that script went aside as well.
-    `beside` maps each shape file written beside one the source kept to where
-    it went, the whole list, and only the Makefile's follow-up reads it.
-    Where the root's `scripts/bootstrap.py` is the source's own, that command
-    runs the source's script and exits 0, so the follow-up names no command,
-    and says both merges come first (#493's review, F2).
+    THE MAKEFILE'S MERGE IS WHAT BRINGS THE SHAPE'S MAKE TARGETS (#480), WHERE
+    `make` READS THE MERGED FILE. Until it is made, `make bootstrap` in the
+    root exits 2 with `No rule to make target 'bootstrap'`, so the follow-up
+    says that, and what runs meanwhile: `python3 scripts/bootstrap.py`, unless
+    that script went aside as well. `beside` maps each shape file written
+    beside one the source kept to where it went, the whole list, and only the
+    Makefile's follow-up reads it. Where the root's `scripts/bootstrap.py` is
+    the source's own, that command runs the source's script and exits 0, so
+    the follow-up names no command, and says both merges come first (#493's
+    review, F2).
+
+    BUT GNU MAKE READS THE FIRST OF `GNUmakefile`, `makefile` AND `Makefile`
+    IT FINDS, AND ONLY THAT ONE (#1048, measured on #1046's review). Where
+    the root keeps a `GNUmakefile` or a `makefile` beside the source's own
+    `Makefile`, `make` reads that file, so the merge alone brings the targets
+    only where that file includes `Makefile`: after `cat shape/Makefile >>
+    Makefile`, `make -n bootstrap` at the root still exits 2 with the same
+    `No rule` where it does not, and exits 0 where it ends in `include
+    Makefile` (#1105's review, SHOULD-1). `reads_first` names that file, the
+    one `adopt-project.py`'s `_makefile_follow_up` names (#977), as its
+    caller reads it from the plan's root paths; the follow-up then says
+    `make` reads it, that the targets reach `make` there only once it has
+    them or includes a Makefile that does, and, as before, what runs
+    meanwhile, in the words `execute`'s NEXT uses (#1047). It says nothing of
+    the merge alone, which turns on that file's own lines. Where
+    `scripts/bootstrap.py` went aside as well, it says `python3
+    scripts/bootstrap.py` runs the shape's bootstrap once that script is
+    merged, and not that `make bootstrap` does. With none, the Makefile's
+    follow-up is what it was, byte for byte: a root whose only Makefile is
+    the source's is one where `make` reads the merged file. It is read by no
+    other collision.
 
     AND A PINNED COPY'S FOLLOW-UP SAYS WHAT HAPPENS TO ITS ROW (#502). The
     shape pin has a row for a copied file at the path it landed on, so once
@@ -1067,15 +1105,30 @@ def collision_follow_up(intended: str, actual: str,
         return merge
     targets = ", ".join(f"`{target}`" for target in SHAPE_MAKE_TARGETS)
     script = (beside or {}).get(BOOTSTRAP)
+    if reads_first is None:
+        arrive = (f"The shape's make targets ({targets}) arrive only with "
+                  "that merge")
+        joint = ", and"
+        meanwhile = ("`python3 scripts/bootstrap.py` is what `make "
+                     "bootstrap` runs")
+        until = "before both merges are made"
+    else:
+        listed = _listed([f"`{name}`" for name in GNU_MAKE_READS])
+        arrive = (
+            f"GNU make at the root reads the source's `{reads_first}`, the "
+            f"first of {listed} it finds, so the shape's make targets "
+            f"({targets}) reach `make` there only once `{reads_first}` has "
+            "them, or includes a Makefile that does")
+        joint = "; and"
+        meanwhile = ("`python3 scripts/bootstrap.py` is what the shape's "
+                     "`make bootstrap` runs")
+        until = f"until then, and then `python3 {BOOTSTRAP}` runs it"
     if script is None:
-        return (f"{merge}. The shape's make targets ({targets}) arrive only "
-                "with that merge; until then `python3 scripts/bootstrap.py` "
-                "is what `make bootstrap` runs")
-    return (f"{merge}. The shape's make targets ({targets}) arrive only with "
-            f"that merge, and the root's {BOOTSTRAP} is the source's "
+        return f"{merge}. {arrive}; until then {meanwhile}"
+    return (f"{merge}. {arrive}{joint} the root's {BOOTSTRAP} is the source's "
             f"own until {script} is merged into it as well, so neither `make "
             f"bootstrap` nor `python3 {BOOTSTRAP}` runs the shape's "
-            "bootstrap before both merges are made")
+            f"bootstrap {until}")
 
 
 def _attributes_link_follow_up(intended: str, actual: str,
@@ -1139,11 +1192,22 @@ def copy_in_the_way(target: Path, actual: str) -> str | None:
 
 
 def adopt_makefile_block(spec_path: str, code_path: str) -> str:
-    """What `adopt-project.py` appends to the assembly root's Makefile, and
-    nothing else does. A scaffolded project's legs are empty, so nothing reads
+    """What `adopt-project.py` appends to the shape's `Makefile`, and nothing
+    else does. A scaffolded project's legs are empty, so nothing reads
     across them yet; an ADOPTED project's code leg holds tooling that used to
     read `contracts/` from beside it and now reads it from the other leg
     through the root.
+
+    IT LANDS WHERE `place` WRITES THE SHAPE'S `Makefile`, WHICH IS NOT ALWAYS
+    THE ROOT'S (#906, #977, #1061). `execute` passes it as
+    `append={"Makefile": ...}`, and `_materialize` adds it to the template's
+    text before `place` writes that text: at the root's `Makefile`, or, where
+    the source keeps a `Makefile` of its own, at `shape/Makefile` (`place`
+    writes a copy to `collision_dir` when its name is taken, and a disk that
+    ignores case takes a kept `makefile` for it). The root's own `Makefile`
+    is then the source's, untouched, and the block waits in `shape/Makefile`
+    until a person merges the two. This said "the assembly root's Makefile"
+    and named only the first (#1135).
 
     RENDERED WITH THE PLAN'S MOUNT PATHS (#522). It was one constant naming
     `spec/contracts`, so a project adopted with `--spec-path legs/spec`
@@ -2445,20 +2509,25 @@ def env_commit(work: Path, message: str) -> None:
     locale with that mode off -- and git keeps the bytes it is given. An
     adoption's split message already carried an em dash, which reached git
     there as a cp1252 byte, and it names each entry path as the source spells
-    it: `Übersicht.md` would land as another byte that is not UTF-8, and
-    `文書.md` would raise `UnicodeEncodeError` after both legs are pushed.
+    it (a printable one; see below): `Übersicht.md` would land as another byte
+    that is not UTF-8, and `文書.md` would raise `UnicodeEncodeError` after
+    both legs are pushed.
     Every caller's message goes the same way: `scaffold-project.py`'s
     assembly commit, `scripts/family.py`'s holder commit, and each first
     commit `git_init_commit` makes (a scaffolded leg, a seeded one).
 
     `errors="replace"` works BOTH WAYS. Decoding, git's own output cannot
-    raise. Encoding, a character UTF-8 cannot carry is written as `?`: the
-    one such character a message can hold is a lone surrogate, the byte of a
-    name that is not UTF-8 as `Source.tree` keeps it. `adopt-project.py`
-    refuses one in a path it extracts (`entry_path_problem`), but a `root`
-    or `drop` entry holding one is listed in the split message, so there the
-    message names it with a `?` in place of that byte, a path that does not
-    exist, rather than raising after both legs are pushed.
+    raise. Encoding, a character UTF-8 cannot carry is written as `?`, and
+    nothing raises after both legs are pushed: the one such character a
+    message can hold is a lone surrogate, the byte of a name that is not
+    UTF-8 as `Source.tree` keeps it. `adopt-project.py` refuses one in a
+    path it extracts (`entry_path_problem`), and a `root` or `drop` entry
+    holding one is listed in the split message, but never raw: the message
+    names each path as `plan`'s report does (`_shown`, #900), so the byte
+    0xE9 reads as an escape with no surrogate in it, `` `caf\\udce9.md` ``,
+    the path the source holds. Written raw it would be a `?`, `caf?.md`, a
+    path that does not exist, which is what this function still writes for
+    a lone surrogate it is handed.
     """
     env = dict(os.environ)
     for key, fallback in (("GIT_AUTHOR_NAME", "openRepoShape scaffold"),
