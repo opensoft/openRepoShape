@@ -408,7 +408,14 @@ options:
                         refused as `pin-source-no-path`, and `.` means this
                         directory. A --pin's digest is read only at a clone's
                         top level, or a bare clone's: any other path is
-                        refused as `pin-source-not-a-clone`.
+                        refused as `pin-source-not-a-clone`. A partial clone
+                        (`git clone --filter`) is read where it holds the
+                        pinned commit and its trees. On a git that honours
+                        `GIT_NO_LAZY_FETCH` (2.45 or later, or a security
+                        release from 2.39.4 on), one git could read only by
+                        fetching what it lacks is `pin-source-unreadable`, and
+                        the scaffold fetches nothing into it; an older git
+                        fetches what it lacks into it.
   --work-dir WORK_DIR   where the working trees are built (default: a
                         temporary directory). An empty value is refused as
                         `work-dir-no-path`, and `.` means the directory the
@@ -642,6 +649,13 @@ options:
                         inside a repository, as `source-not-top-level`; and
                         one this user cannot reach, a clone `plan` made
                         included, as `source-unreadable`, never cloned again.
+                        Either source, where it is a partial clone (`git clone
+                        --filter`) that lacks an object its branches, tags or
+                        HEAD reach, is refused as `source-partial-clone`
+                        before anything reads it: git would fetch that object
+                        into it, and neither command fetches into the source.
+                        `git fetch --refetch --no-filter <remote>`, run in it,
+                        makes it whole.
   --local-remote-dir LOCAL_REMOTE_DIR
                         the directory `execute --local-remote-dir` will be
                         given (the TEST path): each relative submodule url the
@@ -701,6 +715,13 @@ options:
                         inside a repository, as `source-not-top-level`; and
                         one this user cannot reach, a clone `plan` made
                         included, as `source-unreadable`, never cloned again.
+                        Either source, where it is a partial clone (`git clone
+                        --filter`) that lacks an object its branches, tags or
+                        HEAD reach, is refused as `source-partial-clone`
+                        before anything reads it: git would fetch that object
+                        into it, and neither command fetches into the source.
+                        `git fetch --refetch --no-filter <remote>`, run in it,
+                        makes it whole.
   --local-remote-dir LOCAL_REMOTE_DIR
                         create the legs as bare repositories here instead of
                         calling `gh` (the TEST path). Both are asked about
