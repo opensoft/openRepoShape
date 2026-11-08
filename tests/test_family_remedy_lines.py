@@ -53,6 +53,10 @@ same way. Each was reached with no branch read, and named none:
 * `init`'s `family-holder-already-here`, whose `add` stands on the holder
   `init` made, on its tracking branch. It now comes after `init`'s own
   `switch -c family/add-<Project>`, and is `_cited` (N6).
+
+The branch each dry run's clause names is made from the row's `id:`, and
+not from its name: a row renamed by hand, whose name is not its id
+lowercased, tells the two apart (RV1264's NIT-2 on #1264).
 """
 
 from __future__ import annotations
@@ -393,6 +397,23 @@ def test_member_unknowns_add_names_the_owner_where_it_is_known(
 
 # --- N4: a row's name is one word --------------------------------------------
 
+def renamed_by_hand(holder: Path, project: str, name: str) -> None:
+    """Edit the `project:` of the row that pins `project` to `name` and
+    commit it, as a person editing `family.yaml` by hand would. The row
+    keeps its `id:`, which is `project` lowercased: every other row's id
+    is its name lowercased, so only a row like this tells the two apart."""
+    path = holder / "family.yaml"
+    text = path.read_text(encoding="utf-8")
+    edited = re.sub(rf'(?m)^(  - project: )"?{project}"?$', rf'\1"{name}"',
+                    text, count=1)
+    assert edited != text, "premise: the row's `project:` line"
+    path.write_text(edited, encoding="utf-8")
+    git("commit", "-q", "-m", "A row named by hand", "--", "family.yaml",
+        cwd=holder)
+    assert rows_of(holder)[name]["id"] == project.lower(), (
+        "premise: the row keeps its id")
+
+
 def test_a_rows_name_with_a_space_is_one_word_in_both_lines(
         family, offline, stand, tmp_path):
     """A row whose `project:` holds a space, edited by hand and committed:
@@ -403,16 +424,7 @@ def test_a_rows_name_with_a_space_is_one_word_in_both_lines(
     every other row's id is its name lowercased)."""
     env = isolated(offline, tmp_path)
     holder = on_tracking(family, tmp_path / "holders")
-    path = holder / "family.yaml"
-    text = path.read_text(encoding="utf-8")
-    edited = re.sub(rf'(?m)^(  - project: )"?{PINNED}"?$', r'\1"IR RS"',
-                    text, count=1)
-    assert edited != text, "premise: the row's `project:` line"
-    path.write_text(edited, encoding="utf-8")
-    git("commit", "-q", "-m", "A row named by hand", "--", "family.yaml",
-        cwd=holder)
-    assert rows_of(holder)["IR RS"]["id"] == PINNED.lower(), (
-        "premise: the row keeps its id")
+    renamed_by_hand(holder, PINNED, "IR RS")
     refused = add_present(family, holder, stand, env)
     assert refused.returncode == 2, refused.stdout + refused.stderr
     assert refused.stderr.startswith("REFUSED member-already-present: ")
@@ -557,6 +569,48 @@ def test_bump_dry_runs_duplicate_id_remove_runs_from_the_tracking_branch(
     assert rows_of(holder)[PINNED]["pin"]["commit"] == to
     assert git("status", "--porcelain", cwd=holder).stdout == ""
     assert validate(holder).returncode == 0
+
+
+def test_add_dry_runs_clause_branch_is_made_from_the_rows_id(
+        family, offline, stand, tmp_path):
+    """(a) The branch the clause names is the one `remove`'s own refusal
+    names, made from the row's `id:` and not from its name (RV1264's NIT-2
+    on #1264: every other row's id is its name lowercased). The row `IRRS`,
+    renamed by hand to `Orrs`, still pins id `irrs`, so `add --dry-run` of
+    `IRRS2` is refused `member-duplicate-id`, and the clause's `switch -c`
+    names `family/remove-irrs`, not `family/remove-orrs`."""
+    env = isolated(offline, tmp_path)
+    holder = on_tracking(family, tmp_path / "holders")
+    renamed_by_hand(holder, PINNED, "Orrs")
+    refused = add_renamed(holder, renamed_copy(family, tmp_path), stand, env,
+                          "--dry-run")
+    assert refused.returncode == 2, refused.stdout + refused.stderr
+    said, remedy = refusal(refused.stderr)
+    assert said.startswith("REFUSED member-duplicate-id: "), said
+    assert re.findall(r"`(git -C [^`]*)`", remedy) == [
+        switch_line(holder, f"family/remove-{PINNED.lower()}")]
+
+
+def test_bump_dry_runs_clause_branch_is_made_from_the_other_rows_id(
+        family, offline, stand, tmp_path):
+    """(b) The same for `bump --dry-run` of `IRRS` to a commit whose
+    `project.yaml` records the id of `IRSS`, the row the `remove` takes out
+    (RV1264's NIT-2 on #1264). `IRSS`, renamed by hand to `Osss`, still
+    pins id `irss`: the clause's `switch -c` names `family/remove-irss`,
+    not `family/remove-osss`."""
+    env = isolated(offline, tmp_path)
+    holder = on_tracking(family, tmp_path / "holders")
+    renamed_by_hand(holder, NEIGHBOUR, "Osss")
+    to = commit_in_mount(holder, env, lambda mount: records_the_neighbours_id(
+        mount / "project.yaml"))
+    refused = run_script(FAMILY, "bump", "--dry-run", "--family-root",
+                         str(holder), "--member", PINNED, "--to", to,
+                         cwd=stand, env=env)
+    assert refused.returncode == 2, refused.stdout + refused.stderr
+    said, remedy = refusal(refused.stderr)
+    assert said.startswith("REFUSED member-duplicate-id: "), said
+    assert re.findall(r"`(git -C [^`]*)`", remedy) == [
+        switch_line(holder, f"family/remove-{NEIGHBOUR.lower()}")]
 
 
 #: `init`'s arguments, but where it lands, for a family of its own.

@@ -2522,14 +2522,14 @@ def _landing(args, family: str) -> tuple[Path | None, Path]:
     # so under a folder named with a backtick the line is printed whole
     # (#1127, RV1117's N6).
     if into.name == family and os.path.isfile(into / family / MANIFEST):
+        clause = _branch_clause(_add_branch_switch(into / family),
+                                "`add` refuses")
         raise Refusal(
             "family-holder-already-here",
             f"{shown_path(into)} is already the {family} family folder and "
             f"its holder is at {shown_path(into / family)}, so there is "
             "nothing to init",
-            "Remediation: "
-            + _branch_clause(_add_branch_switch(into / family),
-                             "`add` refuses")
+            f"Remediation: {clause}"
             + _cited(_add_command(into / family, args.org))
             + " grows it, and `make siblings` in the holder puts each "
             "member's working clone beside it. There is no --force. "
