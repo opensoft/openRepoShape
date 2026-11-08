@@ -51,6 +51,28 @@ case. Measured with git 2.43, it holds both twins of a path git takes, each
 with its own blob, and `plan-path-git-refuses` names both twins of a path git
 refuses. This bench has no usable disk that ignores case, so the row that
 needs one skips here.
+
+#1136 followed, measured on bba168bd with git 2.43. In each case `check`
+said `plan ok`, and `execute` made both legs and stopped extracting the
+spec leg:
+
+* under a parent git's `-c core.protectHFS=true`, over a source path `.g` +
+  U+200C + `it/x` (`unable to checkout working tree`);
+* under a parent's failing required clean filter, named by the root's own
+  `.gitattributes` for itself;
+* under `GIT_ATTR_SOURCE=bogus` (`bad --attr-source or GIT_ATTR_SOURCE`).
+
+The rehearsal and `_stored_as_written` left out `GIT_CONFIG_PARAMETERS`,
+and every throwaway left out `GIT_ATTR_SOURCE`. Now the two take a parent's
+settings as they stand, in either form, an `attr.tree` among them, as the
+split's own checkout, `git rm` and `git add` take them; and both borrow the
+source's objects, so that a tree named by its object id is the tree the
+split's clones read (r1169's SHOULD-1). The rehearsal asks which files a
+rule reaches without `check-attr --cached`, which reads no `attr.tree`, so
+a file only that tree's rules reach is asked about too (r1169b's
+SHOULD-1). A `GIT_ATTR_SOURCE` is
+`adopt-git-unasked`, by name, before any question. And three of the
+throwaways read their environment before they are made.
 """
 
 from __future__ import annotations
@@ -1466,6 +1488,15 @@ def test_execute_refuses_a_setting_that_stops_its_clone_before_any_leg(
     assert not remotes.exists()
 
 
+#: The variables that name another repository, its objects, an index or a
+#: work tree, and a tree to read attributes from, and what each names below
+#: the test's directory: no throwaway takes one.
+ANOTHER_REPOSITORY = {
+    "GIT_DIR": "git-dir", "GIT_WORK_TREE": "work-tree",
+    "GIT_INDEX_FILE": "index", "GIT_COMMON_DIR": "common",
+    "GIT_OBJECT_DIRECTORY": "objects", "GIT_ATTR_SOURCE": "HEAD"}
+
+
 def test_the_clone_takes_a_parent_gits_settings_and_no_other_repository(
         adopter, monkeypatch, tmp_path):
     """`_split_clone_env()`: `_inherited_env()`, which keeps
@@ -1476,9 +1507,7 @@ def test_the_clone_takes_a_parent_gits_settings_and_no_other_repository(
     entries are appended after those the environment holds, as every test
     gives git a setting (`appended_to_command_scope`, #758), and the last
     entry `_split_clone_env()` keeps is the second (r1119b's MUST-1)."""
-    named = {"GIT_DIR": "git-dir", "GIT_WORK_TREE": "work-tree",
-             "GIT_INDEX_FILE": "index", "GIT_COMMON_DIR": "common",
-             "GIT_OBJECT_DIRECTORY": "objects", "GIT_ATTR_SOURCE": "HEAD"}
+    named = ANOTHER_REPOSITORY
     for name, value in named.items():
         monkeypatch.setenv(name, str(tmp_path / value))
     parameters = "'test.parentone'='one' 'core.hooksPath'='/nowhere'"
@@ -1624,12 +1653,22 @@ def test_a_parent_gits_url_rewrite_is_not_read_where_a_url_is_asked(
     pytest.param(lambda adopter, source: adopter._answers(["/x"], source),
                  id="answers"),
     pytest.param(lambda adopter, source: adopter._split_clone_asked(source),
-                 id="split-clone")])
+                 id="split-clone"),
+    pytest.param(lambda adopter, source: adopter._AttributesProbe(source),
+                 id="attributes-probe"),
+    pytest.param(lambda adopter, source: adopter._stored_as_written(
+        b"x\n", "100644", b"x\n", source), id="stored-as-written"),
+    pytest.param(lambda adopter, source: adopter._SplitRehearsal(source),
+                 id="split-rehearsal")])
 def test_an_environment_read_that_raises_leaves_no_throwaway(
         adopter, monkeypatch, tmp_path, asked):
     """r1119's NIT-3: each reads its environment before it makes its
     throwaway, so that a raise there leaves none in the work directory.
-    On bdcf9952 `_resolved` and `_answers` made it first. (By reading, a
+    On bdcf9952 `_resolved` and `_answers` made it first, and on bba168bd
+    `_AttributesProbe`, `_stored_as_written` and the rehearsal did (#1136):
+    each left its throwaway behind. The last two read
+    `_split_checkout_env()`, the others `_inherited_env()`, so both are
+    made to raise. (By reading, a
     `GIT_CONFIG_COUNT` of a superscript two raised in `_inherited_env()`,
     whose `isdigit()` is true and whose `int()` raises; measured, git
     refuses that count itself, `bogus count in GIT_CONFIG_COUNT`, at
@@ -1644,6 +1683,636 @@ def test_an_environment_read_that_raises_leaves_no_throwaway(
         raise RuntimeError("f1119: no environment")
 
     monkeypatch.setattr(adopter, "_inherited_env", unreadable)
+    monkeypatch.setattr(adopter, "_split_checkout_env", unreadable)
     with pytest.raises(RuntimeError, match="f1119: no environment"):
         asked(adopter, opened)
     assert list(work.iterdir()) == []
+
+
+# ---------------------------------------------------------------------------
+# #1136: a parent git's settings, and `GIT_ATTR_SOURCE`, in the throwaways
+# ---------------------------------------------------------------------------
+
+PARAMETERS = "GIT_CONFIG_PARAMETERS"
+REENCODED_ATTRIBUTES = "plan-attributes-reencoded"
+#: A path git takes on Linux and refuses under `core.protectHFS=true`: `.git`
+#: with a zero-width non-joiner in it, which HFS+ ignores in a name.
+HFS_PATH = ".g\u200cit/x"
+#: Its entry in the plan, and its name in `check`'s finding, as `_spelled`
+#: writes them.
+HFS_ENTRY = '".g\\u200cit/"'
+HFS_SAID = ".g\\u200cit/x"
+PROTECT_HFS = [("core.protectHFS", "true")]
+
+
+def the_index_holds(base: Path, path: str, env: dict) -> bool:
+    """Whether this machine's git, under `env` laid over this process's
+    environment, holds `path` in an index. `update-index --index-info` says
+    `Ignoring path` of one it refuses and still exits 0, so the index is
+    read back."""
+    repository = base / "index-asked"
+    git("init", "-q", str(repository), cwd=base)
+    laid = {**os.environ, **env}
+    blob = subprocess.run(["git", "hash-object", "-w", "--stdin"],
+                          cwd=str(repository), input=b"x\n",
+                          capture_output=True, check=True)
+    subprocess.run(["git", "update-index", "--add", "--index-info"],
+                   cwd=str(repository), env=laid, capture_output=True,
+                   input=f"100644 {blob.stdout.decode().strip()}\t{path}\n"
+                   .encode(), check=False)
+    held = subprocess.run(["git", "ls-files", "-z"], cwd=str(repository),
+                          env=laid, capture_output=True, check=True)
+    return path.encode() in held.stdout.split(b"\0")
+
+
+def hfs_plan(base: Path) -> Path:
+    """The plan for a source whose tree holds `HFS_PATH`, kept in the root."""
+    source = a_source(base)
+    with_paths(source, (HFS_PATH,))
+    return planned(source, base, {HFS_ENTRY: ROOT})
+
+
+def protect_hfs_handed(base: Path, handed) -> dict:
+    """`PROTECT_HFS` in the form `handed` gives it, or a skip where this
+    git still holds `HFS_PATH` under it."""
+    env = handed(base, PROTECT_HFS)
+    if the_index_holds(base, HFS_PATH, env):
+        pytest.skip("this git holds `.g` + U+200C + `it/x` in an index "
+                    "under `core.protectHFS=true`")
+    return env
+
+
+@pytest.mark.parametrize("handed", FROM_A_PARENT)
+def test_a_parent_gits_protect_hfs_is_asked_in_the_rehearsal(tmp_path,
+                                                             handed):
+    """`core.protectHFS=true`, handed down by a parent git, over a source
+    path `.g` + U+200C + `it/x`: the rehearsal takes the setting, as the
+    split's checkout does, and says the path is one git refuses. Measured
+    on bba168bd with git 2.43: under `git-config-parameters`, `check` said
+    `plan ok`, and `execute` made both legs and stopped extracting the spec
+    leg, `unable to checkout working tree`. Under `git-config-count` it was
+    this finding already."""
+    env = protect_hfs_handed(tmp_path, handed)
+    result = checked(hfs_plan(tmp_path), env)
+    assert "REFUSED" not in result.stderr, result.stderr
+    assert result.returncode == 1, result.stderr
+    assert finding_lines(result) == [
+        f"FINDING {PATH_GIT_REFUSES}: {one_refused(HFS_SAID)}"]
+
+
+def test_with_no_setting_git_takes_that_path(tmp_path):
+    """The control: with no `core.protectHFS`, git on Linux holds the path,
+    and `check` finds nothing in it."""
+    if not the_index_holds(tmp_path, HFS_PATH, {}):
+        pytest.skip("this git refuses `.g` + U+200C + `it/x` with no "
+                    "setting, as macOS's does by default")
+    assert findings(hfs_plan(tmp_path)) == []
+
+
+@pytest.mark.parametrize("handed", FROM_A_PARENT)
+def test_execute_refuses_a_path_a_parent_gits_setting_refuses_before_any_leg(
+        adopter, monkeypatch, tmp_path, handed):
+    env = protect_hfs_handed(tmp_path, handed)
+    plan = hfs_plan(tmp_path)
+    for name, value in env.items():
+        monkeypatch.setenv(name, value)
+    refusal = refused_before_any_leg(adopter, monkeypatch, plan, tmp_path)
+    assert refusal.code == PATH_GIT_REFUSES
+
+
+#: A filter git must run, whose clean step fails, and the root's own
+#: `.gitattributes`, which names it for itself.
+FAILING = "w1136"
+FAILING_FILTER = [(f"filter.{FAILING}.clean", "false"),
+                  (f"filter.{FAILING}.smudge", "cat"),
+                  (f"filter.{FAILING}.required", "true")]
+FILTERED_ROOT = f"/.gitattributes filter={FAILING}\n".encode()
+
+
+def filtered_root_plan(base: Path) -> Path:
+    return planned(a_source(base, files={ROOT_ATTRIBUTES: FILTERED_ROOT}),
+                   base, {})
+
+
+@pytest.mark.parametrize("handed", FROM_A_PARENT)
+def test_a_parent_gits_filter_is_asked_where_the_root_is_stored(tmp_path,
+                                                                handed):
+    """A failing clean filter, handed down by a parent git, that the root's
+    `.gitattributes` names for itself: `_stored_as_written` takes the
+    setting, as the split's `git add` does, and says the root is stored
+    otherwise. Measured on bba168bd with git 2.43: under
+    `git-config-parameters`, `check` said `plan ok`, and `execute` made
+    both legs and stopped extracting the spec leg, `clean filter 'w1136'
+    failed`. Under `git-config-count` it was this finding already."""
+    result = checked(filtered_root_plan(tmp_path),
+                     handed(tmp_path, FAILING_FILTER))
+    assert "REFUSED" not in result.stderr, result.stderr
+    assert result.returncode == 1, result.stderr
+    assert codes(result) == [REENCODED_ATTRIBUTES], result.stderr
+
+
+@pytest.mark.parametrize("handed", FROM_A_PARENT)
+def test_execute_refuses_a_parent_gits_filter_before_any_leg(
+        adopter, monkeypatch, tmp_path, handed):
+    plan = filtered_root_plan(tmp_path)
+    for name, value in handed(tmp_path, FAILING_FILTER).items():
+        monkeypatch.setenv(name, value)
+    refusal = refused_before_any_leg(adopter, monkeypatch, plan, tmp_path)
+    assert refusal.code == REENCODED_ATTRIBUTES
+
+
+def no_setting(_base: Path, _entries) -> dict:
+    return {}
+
+
+#: Where an `attr.tree` comes from: nowhere (the control), a global config,
+#: and the two forms a parent git hands it in.
+ATTR_TREE_HANDED = [pytest.param(no_setting, id="no-setting"), *EVERY_FORM]
+#: `execute` needs `git filter-repo` before it gets far enough to verify.
+NEEDS_FILTER_REPO = pytest.mark.skipif(
+    shutil.which("git-filter-repo") is None,
+    reason="git filter-repo is not installed: `execute` refuses without it")
+
+
+def empty_tree_plan(base: Path, handed) -> tuple[Path, dict]:
+    """The plan for a source whose root says `* text eol=lf` over a CRLF
+    file the plan keeps in the root, and `attr.tree` naming the empty tree
+    in the form `handed` gives it. The control: in the source, the setting
+    makes git read no `eol` for that file; where this git reads no
+    `attr.tree`, the forms are skipped."""
+    source = a_source(base, files={ROOT_ATTRIBUTES: TEXT_EOL_LF, NOTES: CRLF})
+    env = handed(base, [("attr.tree", mktree(source, []))])
+    read = subprocess.run(["git", "check-attr", "eol", "--", NOTES],
+                          cwd=str(source), env={**os.environ, **env},
+                          capture_output=True, text=True, check=True)
+    if env and read.stdout.strip() == f"{NOTES}: eol: lf":
+        pytest.skip("this git reads no `attr.tree`")
+    assert read.stdout.strip() == f"{NOTES}: eol: " + (
+        "unspecified" if env else "lf")
+    return planned(source, base, {NOTES: ROOT}), env
+
+
+@pytest.mark.parametrize("handed", ATTR_TREE_HANDED)
+def test_a_parent_gits_attr_tree_is_read_as_the_split_reads_it(tmp_path,
+                                                                handed):
+    """`attr.tree` naming the empty tree makes git read no rule, in the
+    split's checkout and `git add` too, which take this process's whole
+    environment: the CRLF file the plan keeps is stored as its blob there,
+    and `execute` verifies (the next row). The rehearsal takes the setting
+    in every form now, as it took a global config's already, and finds
+    nothing; with no setting it finds the file. Measured on b8e63bcf with
+    git 2.43, which left `attr.tree` out of both forms a parent hands it
+    in: `check` said `plan-file-reencoded` under each, and `execute`
+    refused a file its own git stores as its blob (r1169's SHOULD-1)."""
+    plan, env = empty_tree_plan(tmp_path, handed)
+    result = checked(plan, env)
+    assert "REFUSED" not in result.stderr, result.stderr
+    if env:
+        assert result.returncode == 0, result.stderr
+        assert "plan ok" in result.stdout
+    else:
+        assert result.returncode == 1, result.stderr
+        assert codes(result) == [REENCODED_FILES], result.stderr
+        assert KEPT_CRLF in finding_lines(result)[0]
+
+
+@NEEDS_FILTER_REPO
+@pytest.mark.parametrize("handed", ATTR_TREE_HANDED)
+def test_execute_reads_a_parent_gits_attr_tree_as_check_does(tmp_path,
+                                                             handed):
+    """`execute`, run as a person runs it, under the same settings: where
+    `check` says `plan ok`, its own git reads no rule either and it
+    verifies the adoption; with no setting it refuses the file `check`
+    finds, before any leg. On b8e63bcf it refused under each form a parent
+    hands `attr.tree` in."""
+    plan, env = empty_tree_plan(tmp_path, handed)
+    remotes = tmp_path / "remotes"
+    done = run_script(ADOPT, "execute", "--plan", str(plan), "--yes",
+                      "--local-remote-dir", str(remotes),
+                      "--work-dir", str(tmp_path / "work"), env=env)
+    if env:
+        assert done.returncode == 0, done.stderr
+        assert "adoption verified" in done.stdout, done.stdout
+    else:
+        assert done.returncode == 2, done.stderr
+        assert f"REFUSED {REENCODED_FILES}: " in done.stderr, done.stderr
+        assert not remotes.exists()
+
+
+#: A root `.gitattributes` that names no filter and none of the source's
+#: files, so that only a rule `attr.tree` names is read for the root's own.
+NEUTRAL_ROOT = b"*.png binary\n"
+
+
+def on_a_side_branch(source: Path, rules: bytes) -> str:
+    """The object id of a tree that holds only a root `.gitattributes` of
+    `rules`, committed on branch `side` of `source`, so that each clone of
+    the source the split makes holds it."""
+    blob = subprocess.run(["git", "hash-object", "-w", "--stdin"],
+                          cwd=str(source), input=rules, capture_output=True,
+                          check=True).stdout.decode().strip()
+    tree = mktree(source, [f"100644 blob {blob}\t{ROOT_ATTRIBUTES}"])
+    side = git("commit-tree", tree, "-m", "Side", cwd=source).stdout.strip()
+    git("update-ref", "refs/heads/side", side, cwd=source)
+    return tree
+
+
+def side_tree_handed(base: Path, handed,
+                     root: bytes = NEUTRAL_ROOT) -> tuple[Path, dict]:
+    """The plan for a source whose root keeps `root`, and which holds, on a
+    side branch, a tree whose `.gitattributes` names the failing filter for
+    the root's own (`FILTERED_ROOT`); and `FAILING_FILTER`, with
+    `attr.tree` naming that tree by its object id, in the form `handed`
+    gives them. The control: in the source, git reads that filter for
+    `.gitattributes`; where this git reads no `attr.tree`, the form is
+    skipped."""
+    source = a_source(base, files={ROOT_ATTRIBUTES: root})
+    env = handed(base, [*FAILING_FILTER,
+                        ("attr.tree", on_a_side_branch(source,
+                                                       FILTERED_ROOT))])
+    read = subprocess.run(["git", "check-attr", "filter", "--",
+                           ROOT_ATTRIBUTES], cwd=str(source),
+                          env={**os.environ, **env}, capture_output=True,
+                          text=True, check=True)
+    if read.stdout.strip() == f"{ROOT_ATTRIBUTES}: filter: unspecified":
+        pytest.skip("this git reads no `attr.tree`")
+    assert read.stdout.strip() == f"{ROOT_ATTRIBUTES}: filter: {FAILING}"
+    return planned(source, base, {}), env
+
+
+@pytest.mark.parametrize("handed", EVERY_FORM)
+def test_a_parent_gits_attr_tree_is_read_where_the_root_is_stored(tmp_path,
+                                                                  handed):
+    """`attr.tree` naming a tree the source holds, whose `.gitattributes`
+    names a failing required clean filter for the root's own: the split's
+    clones hold that tree, and its `git add` of the root runs the filter.
+    `_stored_as_written` takes the setting in every form and borrows the
+    source's objects, so it reads that tree too, and says the root is
+    stored otherwise, in git's words. Measured on b8e63bcf with git 2.43:
+    under each form `check` said `plan ok`, and `execute` made both legs
+    and stopped in the spec leg, `fatal: .gitattributes: clean filter
+    'w1136' failed`, with nothing rolled back (r1169's SHOULD-1). The
+    global config's was `plan ok` too: the throwaway held no such tree."""
+    plan, env = side_tree_handed(tmp_path, handed)
+    result = checked(plan, env)
+    assert "REFUSED" not in result.stderr, result.stderr
+    assert result.returncode == 1, result.stderr
+    assert codes(result) == [REENCODED_ATTRIBUTES], result.stderr
+    assert f"clean filter '{FAILING}' failed" in finding_lines(result)[0]
+
+
+def test_the_failing_filter_alone_is_read_for_no_file(tmp_path):
+    """The control: the same filter with no `attr.tree`, which no rule of
+    the source names, is `plan ok`."""
+    source = a_source(tmp_path, files={ROOT_ATTRIBUTES: NEUTRAL_ROOT})
+    result = checked(planned(source, tmp_path, {}),
+                     with_parameters(tmp_path, FAILING_FILTER))
+    assert result.returncode == 0, result.stderr
+    assert "plan ok" in result.stdout
+
+
+@pytest.mark.parametrize("handed", EVERY_FORM)
+def test_execute_refuses_a_parent_gits_attr_tree_filter_before_any_leg(
+        adopter, monkeypatch, tmp_path, handed):
+    plan, env = side_tree_handed(tmp_path, handed)
+    for name, value in env.items():
+        monkeypatch.setenv(name, value)
+    refusal = refused_before_any_leg(adopter, monkeypatch, plan, tmp_path)
+    assert refusal.code == REENCODED_ATTRIBUTES
+
+
+#: A root rule of the source's own that reaches a Markdown file it holds,
+#: `specs/001-feature/spec.md`, which is stored as its blob under it.
+OWN_TEXT_ROOT = b"*.md text\n"
+
+
+@pytest.mark.parametrize("handed", EVERY_FORM)
+def test_a_parent_gits_attr_tree_filter_is_one_finding_over_an_own_rule(
+        tmp_path, handed):
+    """#1192's case (r1169b's P7): the side tree of the rows above over a
+    root `*.md text` of the source's own, which the split's git does not
+    read under `attr.tree`. Measured on 25805102 with git 2.43: `check`
+    said the right `plan-attributes-reencoded`, and also `plan-file-
+    reencoded` naming `specs/001-feature/spec.md`, which the split stores
+    as its blob: the rehearsal chose the files to ask about with
+    `check-attr --cached`, which read that `*.md text` and no `attr.tree`.
+    Now the one finding."""
+    plan, env = side_tree_handed(tmp_path, handed, OWN_TEXT_ROOT)
+    result = checked(plan, env)
+    assert "REFUSED" not in result.stderr, result.stderr
+    assert result.returncode == 1, result.stderr
+    assert codes(result) == [REENCODED_ATTRIBUTES], result.stderr
+    assert f"clean filter '{FAILING}' failed" in finding_lines(result)[0]
+
+
+#: A clean filter that stores a file as other bytes, and two rules for the
+#: pinned copies the split writes under `scripts/`: the source's own root's,
+#: and a side tree's.
+COPY_UPPER = "w1136upper"
+COPY_UPPER_CLEAN = [(f"filter.{COPY_UPPER}.clean", "tr a-z A-Z")]
+OWN_COPY_RULE = b"/scripts/*.py ident\n"
+TREE_COPY_RULE = f"/scripts/*.py filter={COPY_UPPER}\n".encode()
+COPIES = ("validate-pins.py", "validate-manifest.py", "bootstrap.py",
+          "repo_shape.py", "validate-repository-naming.py")
+
+
+@pytest.mark.parametrize("handed", EVERY_FORM)
+def test_a_pinned_copy_under_a_parent_gits_attr_tree_unsets_the_trees_rule(
+        tmp_path, handed):
+    """A parent's `attr.tree` names a side tree that says `/scripts/*.py
+    filter=<an upper-casing clean>`, over a source root that says
+    `/scripts/*.py ident`. The split's `git add` of the pinned copies reads
+    the tree's `filter` and not the root's `ident`, so the copies finding
+    names `-filter` for each copy, and no `-ident`. `_rules_reaching` asks
+    the split's root without `--cached`; with it there (M3) each line said
+    `-ident`, as on 25805102."""
+    source = a_source(tmp_path, files={ROOT_ATTRIBUTES: OWN_COPY_RULE})
+    env = handed(tmp_path, [*COPY_UPPER_CLEAN,
+                            ("attr.tree",
+                             on_a_side_branch(source, TREE_COPY_RULE))])
+    read = subprocess.run(["git", "check-attr", "filter", "ident", "--",
+                           "scripts/bootstrap.py"], cwd=str(source),
+                          env={**os.environ, **env}, capture_output=True,
+                          text=True, check=True)
+    if "filter: unspecified" in read.stdout:
+        pytest.skip("this git reads no `attr.tree`")
+    assert read.stdout.splitlines() == [
+        f"scripts/bootstrap.py: filter: {COPY_UPPER}",
+        "scripts/bootstrap.py: ident: unspecified"]
+    result = checked(planned(source, tmp_path, {}), env)
+    assert result.returncode == 1, result.stderr
+    assert codes(result) == [REENCODED_FILES], result.stderr
+    line = finding_lines(result)[0]
+    assert "store 5 pinned shape copies" in line, line
+    for name in COPIES:
+        assert f"`/scripts/{name} -filter`" in line, line
+    assert "-ident" not in line, line
+
+
+#: How `plan-file-reencoded` begins for the one CRLF file the plan sends to
+#: a leg.
+SENT_CRLF = ("the plan sends 1 file to a leg or drops it, and this "
+             "machine's `git add` would store it as other bytes than its "
+             "blob")
+#: Where the plan puts a CRLF `notes.txt` that no rule of the source's own
+#: reaches (r1169b's P3 and P5), and how the finding about it begins: sent
+#: to the spec leg, where the shape's root rule is not read for it; or kept,
+#: under a root `.gitattributes` of the source's own that reaches none of
+#: its files, which the split keeps in place of the shape's.
+ONLY_ATTR_TREE_REACHES = [
+    pytest.param({}, "spec", SENT_CRLF, id="sent-to-a-leg"),
+    pytest.param({ROOT_ATTRIBUTES: NEUTRAL_ROOT}, ROOT, KEPT_CRLF,
+                 id="kept-under-its-own-root")]
+
+
+def text_tree_handed(base: Path, handed, files: dict,
+                     leg: str) -> tuple[Path, dict]:
+    """The plan for a source holding `files` and a CRLF `notes.txt`, which
+    `leg` takes; and `attr.tree` naming by its object id a tree on a side
+    branch whose `.gitattributes` says `* text eol=lf`, in the form
+    `handed` gives it. The control: in the source, git reads `eol: lf` for
+    that file under the setting, and none with no setting; where this git
+    reads no `attr.tree`, the form is skipped."""
+    source = a_source(base, files={**files, NOTES: CRLF})
+    env = handed(base, [("attr.tree", on_a_side_branch(source,
+                                                       TEXT_EOL_LF))])
+    read = subprocess.run(["git", "check-attr", "eol", "--", NOTES],
+                          cwd=str(source), env={**os.environ, **env},
+                          capture_output=True, text=True, check=True)
+    if env and read.stdout.strip() == f"{NOTES}: eol: unspecified":
+        pytest.skip("this git reads no `attr.tree`")
+    assert read.stdout.strip() == f"{NOTES}: eol: " + (
+        "lf" if env else "unspecified")
+    return planned(source, base, {NOTES: leg}), env
+
+
+@pytest.mark.parametrize(("files", "leg", "opens"), ONLY_ATTR_TREE_REACHES)
+@pytest.mark.parametrize("handed", ATTR_TREE_HANDED)
+def test_a_file_only_a_parent_gits_attr_tree_reaches_is_asked_about(
+        tmp_path, handed, files, leg, opens):
+    """A CRLF file no rule of the source's own reaches, under `attr.tree`
+    naming a tree whose `.gitattributes` says `* text eol=lf`: the split's
+    checkout and `git add` read that tree, so the file is stored as other
+    bytes than its blob, and the rehearsal now asks about it and finds it.
+    Measured on 25805102 with git 2.43, in each form: `check` said `plan
+    ok`; sent to a leg, `execute` stopped mounting the legs, `the following
+    file has local modifications`; kept, it reported `adopt-lost` for it;
+    both legs were pushed. The rehearsal chose the files to ask about with
+    `check-attr --cached`, which reads no `attr.tree` (r1169b's SHOULD-1).
+    With no setting the file is stored as its blob, and it is `plan ok`."""
+    plan, env = text_tree_handed(tmp_path, handed, files, leg)
+    result = checked(plan, env)
+    assert "REFUSED" not in result.stderr, result.stderr
+    if env:
+        assert result.returncode == 1, result.stderr
+        assert codes(result) == [REENCODED_FILES], result.stderr
+        found = finding_lines(result)[0]
+        assert opens in found and f"`{NOTES}`" in found, found
+    else:
+        assert result.returncode == 0, result.stderr
+        assert "plan ok" in result.stdout
+
+
+@pytest.mark.parametrize(("files", "leg", "opens"), ONLY_ATTR_TREE_REACHES)
+@pytest.mark.parametrize("handed", EVERY_FORM)
+def test_execute_refuses_a_file_only_a_parent_gits_attr_tree_reaches(
+        adopter, monkeypatch, tmp_path, handed, files, leg, opens):
+    plan, env = text_tree_handed(tmp_path, handed, files, leg)
+    for name, value in env.items():
+        monkeypatch.setenv(name, value)
+    refusal = refused_before_any_leg(adopter, monkeypatch, plan, tmp_path)
+    assert refusal.code == REENCODED_FILES
+    assert opens in refusal.detail, refusal.detail
+
+
+#: The forms `core.hooksPath` and `core.fsmonitor` reach `check` in.
+COUNTERS_HANDED = [pytest.param(with_global_config, id="global-config"),
+                   *FROM_A_PARENT]
+
+
+@pytest.mark.parametrize("handed", COUNTERS_HANDED)
+def test_no_hook_or_fsmonitor_runs_where_the_rehearsal_asks(tmp_path,
+                                                            handed):
+    """The rehearsal and `_stored_as_written` take a parent git's settings
+    now, and their own `-c core.hooksPath` and `core.fsmonitor=false` come
+    after them: git takes a key's last value, so neither the counting
+    hooks nor the counting fsmonitor run. The source keeps its own root
+    `.gitattributes`, so both are asked. The control: the same settings
+    run both for a `git add` in a repository of their own."""
+    plan = planned(a_source(tmp_path, files={ROOT_ATTRIBUTES: b"*.md text\n"}),
+                   tmp_path, {})
+    hooks, hook_log = counting_hooks(tmp_path)
+    program, fsmonitor_log = counting_fsmonitor(tmp_path)
+    env = handed(tmp_path, [("core.hooksPath", hooks.as_posix()),
+                            ("core.fsmonitor", program.as_posix())])
+    result = checked(plan, env)
+    assert result.returncode == 0, result.stderr
+    assert (runs(hook_log), runs(fsmonitor_log)) == ([], [])
+    repository = tmp_path / "ordinary"
+    git("init", "-q", str(repository), cwd=tmp_path)
+    (repository / "a").write_bytes(b"a\n")
+    subprocess.run(["git", "add", "a"], cwd=str(repository), check=True,
+                   env={**os.environ, **env})
+    assert runs(hook_log) == ["post-index-change"]
+    assert runs(fsmonitor_log) != []
+
+
+def a_source_with_no_code(base: Path) -> Path:
+    """A source holding a spec and no code, whose code leg `execute` seeds
+    with no commit under `--allow-empty-leg code`."""
+    path = base / "Thing"
+    path.mkdir(parents=True)
+    git("init", "-q", "-b", "main", ".", cwd=path)
+    for name in ("README.md", "specs/001-feature/spec.md"):
+        (path / name).parent.mkdir(parents=True, exist_ok=True)
+        (path / name).write_bytes(b"# Thing\n")
+    git("add", "-A", cwd=path)
+    git("commit", "-qm", "Initial import", cwd=path)
+    return path
+
+
+def tree_of(source: Path, *flags: str) -> str:
+    return git("rev-parse", *flags, "HEAD^{tree}", cwd=source).stdout.strip()
+
+
+#: What `adopt-git-unasked` says of a `GIT_ATTR_SOURCE`, after its value.
+ATTR_SOURCE_WHY = (
+    ", and every git command the split runs would read attributes from the "
+    "tree it names in place of the files it writes, in each repository it "
+    "makes, and stop in any of them where it names no tree; the legs `git "
+    "filter-repo` rewrites and a leg seeded with no commit are not made "
+    "yet, so no throwaway repository can answer for them")
+#: How it ends, in place of the words every other cause of
+#: `adopt-git-unasked` ends with (`UNASKED_ENDS`), which send the person to
+#: another `--work-dir` that cannot help (r1169's NIT-3).
+ATTR_SOURCE_ENDS = (
+    ". `execute` refuses it too, whatever it names, before it makes either "
+    "leg. Unset `GIT_ATTR_SOURCE`, which a `git --attr-source` running this "
+    "tool also sets, and run `check` again.")
+
+
+def unasked_attr_source(work: Path, value: str) -> str:
+    """`adopt-git-unasked` for `GIT_ATTR_SOURCE` set to `value` in `work`."""
+    return (f"FINDING {UNASKED}: "
+            + UNASKED_OPENS.format(os.path.realpath(work))
+            + "`GIT_ATTR_SOURCE` is set in its environment, "
+            + (f"to `{value}`" if value else "empty") + ATTR_SOURCE_WHY
+            + ATTR_SOURCE_ENDS)
+
+
+#: `(what GIT_ATTR_SOURCE names, from the source; whether the source holds
+#: no code, its code leg seeded empty)`. Measured on bba168bd with git
+#: 2.43, `check` said `plan ok` under each. `execute` made both legs and
+#: stopped under the first four: at extracting the spec leg, at seeding the
+#: code leg, and at pushing the spec leg. It took the next two to `adoption
+#: verified`, and refusing them too is #1136's known limit. The last two
+#: were params of three older rows, which found the file the throwaway was
+#: asked about while every throwaway left the variable out:
+#: `test_adopt_nested_attributes.py`'s
+#: `test_no_tree_this_machine_names_steers_the_question` and its split
+#: question's row, and `test_adopt_reencoded_files.py`'s row (the last two
+#: are `test_a_tree_this_machine_names_steers_...` now).
+ATTR_SOURCES = [
+    pytest.param(lambda _source: "bogus", False, id="bogus"),
+    pytest.param(lambda _source: "", False, id="empty"),
+    pytest.param(lambda _source: "HEAD", True,
+                 id="head-over-a-code-leg-seeded-empty"),
+    pytest.param(lambda source: tree_of(source, "--short=12"), True,
+                 id="the-tree-abbreviated-over-a-code-leg-seeded-empty"),
+    pytest.param(lambda _source: "HEAD", False, id="head"),
+    pytest.param(tree_of, False, id="the-tree"),
+    pytest.param(lambda source: mktree(source, []), False,
+                 id="the-empty-tree"),
+]
+
+
+def attr_source_plan(base: Path, named, no_code: bool) -> tuple[Path, str]:
+    """The plan, and the value `named` gives `GIT_ATTR_SOURCE`."""
+    source = a_source_with_no_code(base) if no_code else a_source(base)
+    return planned(source, base, {}), named(source)
+
+
+@pytest.mark.parametrize(("named", "no_code"), ATTR_SOURCES)
+def test_git_attr_source_is_one_finding_that_names_it(tmp_path, named,
+                                                      no_code):
+    """Whatever it names, `GIT_ATTR_SOURCE` is one `adopt-git-unasked` that
+    names it, before any question, so nothing is made in the work
+    directory."""
+    plan, value = attr_source_plan(tmp_path, named, no_code)
+    work = tmp_path / "work"
+    result = checked(plan, {"GIT_ATTR_SOURCE": value}, "--work-dir",
+                     str(work))
+    assert "REFUSED" not in result.stderr, result.stderr
+    assert result.returncode == 1, result.stderr
+    assert finding_lines(result) == [unasked_attr_source(work, value)]
+    assert list(work.iterdir()) == []
+
+
+@pytest.mark.parametrize(("named", "no_code"), ATTR_SOURCES[:3])
+def test_execute_refuses_git_attr_source_before_any_leg(
+        adopter, monkeypatch, tmp_path, named, no_code):
+    """On bba168bd each made both legs first (`ATTR_SOURCES`)."""
+    plan, value = attr_source_plan(tmp_path, named, no_code)
+    monkeypatch.setenv("GIT_ATTR_SOURCE", value)
+    monkeypatch.setattr(adopter, "_require_filter_repo", lambda: None)
+    remotes = tmp_path / "remotes"
+    with pytest.raises(adopter.Refusal) as caught:
+        adopter.cmd_execute(Namespace(
+            plan=str(plan), source=None, local_remote_dir=remotes,
+            allow_empty_leg=["code"] if no_code else [], yes=True,
+            work_dir=tmp_path / "work"))
+    assert caught.value.code == UNASKED
+    assert "`GIT_ATTR_SOURCE` is set in its environment" in \
+        caught.value.detail
+    assert caught.value.detail.endswith(ATTR_SOURCE_ENDS[2:])
+    assert "no leg repository was created" in caught.value.remediation
+    assert not remotes.exists()
+
+
+def test_git_attr_source_is_refused_before_the_splits_own_clone_is_asked(
+        adopter, monkeypatch, tmp_path):
+    """r1169's NIT-1: under `GIT_ATTR_SOURCE`, `execute` refuses with
+    `adopt-git-unasked` before `check`'s first question, the split's own
+    clone, is asked, and nothing is made in the work directory. Asked
+    first, that clone would answer and remove itself, as it takes no
+    `GIT_ATTR_SOURCE` (`_inherited_env()`), so the finding alone does not
+    say which came first."""
+    plan = planned(a_source(tmp_path), tmp_path, {})
+    asked = []
+    monkeypatch.setattr(adopter, "_split_clone_asked", asked.append)
+    monkeypatch.setenv("GIT_ATTR_SOURCE", "HEAD")
+    monkeypatch.setattr(adopter, "_require_filter_repo", lambda: None)
+    work, remotes = tmp_path / "work", tmp_path / "remotes"
+    with pytest.raises(adopter.Refusal) as caught:
+        adopter.cmd_execute(Namespace(
+            plan=str(plan), source=None, local_remote_dir=remotes,
+            allow_empty_leg=[], yes=True, work_dir=work))
+    assert caught.value.code == UNASKED
+    assert asked == []
+    assert list(work.iterdir()) == []
+    assert not remotes.exists()
+
+
+def test_the_checkout_questions_take_the_settings_and_no_attr_source(
+        adopter, monkeypatch, tmp_path):
+    """`_split_checkout_env()`: this process's environment, a parent git's
+    settings in both forms as they stand among it, `attr.tree` too, as
+    the split's checkout, `git rm` and `git add` take them; and none of
+    the variables that name another repository, its objects, an index or
+    a work tree, nor `GIT_ATTR_SOURCE`, which is refused before any
+    question. With no `GIT_CONFIG_PARAMETERS` there is none."""
+    for name, value in ANOTHER_REPOSITORY.items():
+        monkeypatch.setenv(name, str(tmp_path / value))
+    parameters = "'attr.tree'='HEAD' 'core.protectHFS'='true'"
+    monkeypatch.setenv(PARAMETERS, parameters)
+    scope = appended_to_command_scope(
+        os.environ, [("attr.tree", "HEAD"), ("test.heldone", "one")])
+    for name, value in scope.items():
+        monkeypatch.setenv(name, value)
+    env = adopter._split_checkout_env()
+    assert env[PARAMETERS] == parameters
+    assert {name: env.get(name) for name in scope} == scope
+    assert env == {name: value for name, value in os.environ.items()
+                   if name not in ANOTHER_REPOSITORY}
+    monkeypatch.delenv(PARAMETERS)
+    assert PARAMETERS not in adopter._split_checkout_env()

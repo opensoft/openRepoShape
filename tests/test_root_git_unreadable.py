@@ -784,6 +784,30 @@ def test_a_git_directory_of_the_legs_own_keeps_its_own_line(
          module.GITLINK_UNREAD: line}]
 
 
+def test_a_mount_that_cannot_be_listed_keeps_its_own_line(
+        standard, project, monkeypatch):
+    """The control for a mount, in process (rv1147c's S1): every `HEAD`
+    refused, and the spec mount's listing refused too, as a mount this user
+    can search and not list (mode 0100 or 0300) is. `read_through_the_root`
+    still reads its `.git`, since the mount can be searched, but mending the
+    root's `.git` does not mend a mount that cannot be listed: it keeps
+    `mount_read`'s line, `spec: cannot be listed`, and only the code leg is
+    given the root's line."""
+    module, ctx = in_process(standard, project)
+    every_head_refused(monkeypatch)
+    refusing(monkeypatch, "iterdir", "spec",
+             PermissionError(errno.EACCES, DENIED))
+    line = cannot(".git")
+    listed = f"spec: cannot be listed ({DENIED})"
+    placement = module.check_placement(ctx)
+    assert placement.status == module.NA
+    assert placement.detail["legs"] == [
+        {"role": "spec", "path": "spec", "state": listed,
+         module.MOUNT_UNREAD: listed},
+        {"role": "code", "path": "code", "state": line,
+         module.GITLINK_UNREAD: line}]
+
+
 def test_a_leg_whose_gitlink_cannot_be_read_is_never_drift(standard,
                                                            project):
     """`drifted_reasons` counts no leg that carries `gitlink_cannot_be_read`
