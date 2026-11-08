@@ -205,8 +205,10 @@ from shape_materialize import SHAPE_PIN  # noqa: E402
 # which other changes extend, are not lines two of them both rewrite.
 from shape_materialize import readable_branch  # noqa: E402
 
-#: `owner/repo`, the only remote spelling `--upstream` accepts.
-REPOSITORY_RE = re.compile(r"^[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+$")
+#: `owner/repo`, the only remote spelling `--upstream` accepts, and the
+#: shape pin's `source_repository:` where no `--upstream` is passed. `\Z`,
+#: NEVER `$` (#1139): `$` also matches just before a trailing line feed.
+REPOSITORY_RE = re.compile(r"^[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+\Z")
 
 #: How `--branch` may be spelled: the alphabet `checked_value` already
 #: allowed it, less the `~` git refuses anyway, and a FIRST character that is
@@ -640,8 +642,9 @@ def unreadable_upstream(said: str, proc: subprocess.CompletedProcess
         "openRepoShape.")
 
 
-def open_upstream(spec: str) -> Upstream:
-    """`--upstream` as a repository this tool can read.
+def open_upstream(spec: str, pin_path: Path | None = None) -> Upstream:
+    """`--upstream` as a repository this tool can read, or the shape pin's
+    `source_repository:` where none was passed, read from `pin_path`.
 
     A PATH IS USED IN PLACE AND THIS TOOL FETCHES NOTHING INTO IT. That is
     deliberate: it is what lets the tests run with no network, and it is
@@ -665,6 +668,14 @@ def open_upstream(spec: str) -> Upstream:
     machine nor an `owner/repo` name", and a relative `a/b` spelling was
     then cloned from github.com; a checkout it cannot search was
     `update-upstream-not-a-repo`.
+
+    A VALUE THE PIN HOLDS IS REFUSED IN THE PIN'S NAME (#1139). The pin's
+    `source_repository:` read as `opensoft/openRepoShape` and a line feed
+    passed `REPOSITORY_RE`, whose `$` took the line feed, and was refused
+    by `checked_value` as `unsafe-value` of `--upstream`, a flag nobody had
+    passed. The pattern takes no line feed now, so the value is
+    `update-upstream-unresolvable`, and that refusal and `checked_value`'s
+    name the pin and its field.
     """
     candidate = Path(spec).expanduser()
     if _is_a(candidate, _anything):
@@ -678,13 +689,23 @@ def open_upstream(spec: str) -> Upstream:
                 "`--upstream opensoft/openRepoShape` to clone one.")
         return Upstream(path, str(path))
     if not REPOSITORY_RE.match(spec):
+        if pin_path is not None:
+            raise Refusal(
+                "update-upstream-unresolvable",
+                f"{pin_path}: `source_repository:` is {spec!r}, which is "
+                "neither a path on this machine nor an `owner/repo` name",
+                "Remediation: write `source_repository:` in the pin as the "
+                "`owner/repo` its shape was copied from, "
+                f"`{SHAPE_REPOSITORY}` for this standard's, or pass "
+                "`--upstream` a path to a clone of openRepoShape.")
         raise Refusal(
             "update-upstream-unresolvable",
             f"--upstream {spec!r} is neither a path on this machine nor an "
             "`owner/repo` name",
             "Remediation: pass a path to a clone of openRepoShape, or "
             "`--upstream opensoft/openRepoShape`.")
-    checked_value("--upstream", spec)
+    checked_value("--upstream" if pin_path is None
+                  else f"{pin_path}: `source_repository:`", spec)
     temporary = Path(tempfile.mkdtemp(prefix="openreposhape-upstream-"))
     url = f"https://github.com/{spec}.git"
     args = ["git", "clone", "--quiet", "--bare", url, str(temporary / "shape.git")]
@@ -2398,7 +2419,8 @@ def prepare(args) -> tuple[Path, dict, list[Row], list[Addition], Upstream,
         raise rewrite_link_refusal([linked])
     pinned = str(pin["commit"]).lower()
     declared = str(pin.get("source_repository") or SHAPE_REPOSITORY)
-    upstream = open_upstream(str(args.upstream or declared))
+    upstream = open_upstream(str(args.upstream or declared),
+                             None if args.upstream else root / SHAPE_PIN)
     upstream.repository = declared
     try:
         target = upstream.resolve(checked_value("--at", args.at)
@@ -2605,7 +2627,7 @@ def run_validator(root: Path, script: str) -> int:
     ONE THIS USER CANNOT READ IS REFUSED, never skipped (#430). On 3.14 a
     refused `stat` read as "absent; SKIPPED", so the gate this run exists to
     leave green was not run; on 3.12 it was raised out of `apply` after the
-    writes, which only a `Refusal` rolls back. It is `update-unreadable`,
+    writes, which only a `Refusal` rolled back. It is `update-unreadable`,
     a `Refusal`, so `cmd_apply` puts back every byte written before it."""
     try:
         there = _is_a(root / script, stat.S_ISREG)
@@ -3181,7 +3203,7 @@ class Rollback:
         path and the error (#285).
 
         A WRITE THAT FAILS IS A REFUSAL, NEVER A TRACEBACK, for the reason
-        `_rewrite_readme` gives for its own: `cmd_apply` rolls back on
+        `_rewrite_readme` gives for its own: `cmd_apply` rolled back on
         `Refusal` and `CommandFailed` and on nothing else. A directory this
         process cannot write, a file where `--add` has to make a directory,
         a read-only pin, a disk that filled — each escaped as a traceback
@@ -5170,9 +5192,11 @@ def _rewrite_readme(readme: ReadmeShapeLine, ledger: Rollback) -> None:
     way of failing to READ this file into one of those readings, so what is
     left here is the write itself — a disk that filled, a permission that
     changed under the run — and this phase runs AFTER the copies and the pin.
-    An `OSError` escaping would leave that tree behind, because `cmd_apply`
-    rolls back on `Refusal` and `CommandFailed` and on nothing else (Copilot,
-    PR #152). Named as a refusal, the arm that already exists puts every byte
+    An `OSError` escaping left that tree behind, because `cmd_apply` rolled
+    back on `Refusal` and `CommandFailed` and on nothing else (Copilot, PR
+    #152); it puts the bytes back under any `OSError` now (#1173), but
+    one it cannot name is still a traceback, which names no step and no
+    remedy. Named as a refusal, the arm that already exists puts every byte
     back — and says so itself, listing what it put back under this detail
     (`_rolled_back`, #202), so the detail does not claim it a second time.
     """
@@ -5352,9 +5376,11 @@ def cmd_apply(args) -> int:
         # A READ REFUSED AFTER `prepare` (#430), the first write included:
         # this arm is the rollback, and it answers a `Refusal`, so a refused
         # read is made one, `update-unreadable`, and every byte goes back
-        # under it. Any other `OSError` is raised as it was.
+        # under it. Any other `OSError` is raised as it was, once every byte
+        # is back (#1173).
         refusal = unreadable_refusal(root, exc)
         if refusal is None:
+            _roll_back_before_raising(ledger)
             raise
         return _rolled_back(refusal, ledger)
     finally:
@@ -5394,6 +5420,36 @@ def _rolled_back(exc: Exception, ledger: Rollback) -> int:
         return 2
     print(f"{exc.loudly(ledger.step)}\n{undone}", file=sys.stderr)
     return 2
+
+
+def _roll_back_before_raising(ledger: Rollback) -> None:
+    """`apply`'s answer to an `OSError` no refusal can name, before
+    `cmd_apply` raises it as it was (#1173): undo what `ledger` holds, and
+    say what was put back on stderr, as `_rolled_back` says it under a
+    failed git command.
+
+    NO NAME, AND STILL A ROLLBACK. `unreadable_refusal` names a read the
+    system refused, and nothing else: a file gone between its `stat` and
+    its read, an interpreter gone when a validator starts, or an error that
+    names no path -- a `BrokenPipeError` from a flush into a pipe nobody
+    reads any more, an `EIO` -- has no refusal to be. Each was raised with
+    every copy, the pin and the manifest left written and the root's own
+    validators undecided: the traceback over a half-written tree that
+    `Rollback.writing` and `_rewrite_readme` exist to prevent. The traceback
+    stays, as the tool's answer to an error it cannot name, and the tree is
+    as it was under it. Nothing to put back says nothing: an `OSError`
+    before the first write, or after the commit landed, is raised exactly
+    as it always was.
+
+    STDOUT IS FLUSHED FIRST, for `_rolled_back`'s reason, and a flush that
+    fails is let go: the error this answers may be stdout's own, a pipe
+    nobody reads, and what was put back must still reach stderr."""
+    undone = ledger.undo()
+    if undone is None:
+        return
+    with contextlib.suppress(OSError):
+        sys.stdout.flush()
+    print(undone, file=sys.stderr)
 
 
 class LandingIncomplete(Exception):
