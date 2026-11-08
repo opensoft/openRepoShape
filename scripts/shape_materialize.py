@@ -36,10 +36,12 @@ from __future__ import annotations
 
 import argparse
 import codecs
+import contextlib
 import datetime as _dt
 import json
 import os
 import re
+import shlex
 import shutil
 import stat
 import subprocess
@@ -774,9 +776,20 @@ SHAPE_POINTER_LINE = ("Read AGENTS-shape.md first — the rules of this "
 ASSISTANT_INSTRUCTIONS = ("AGENTS.md", "CLAUDE.md")
 #: The make targets of the shape's own `Makefile` that a person runs. A root
 #: that kept the source's `Makefile` has none of them until the shape's copy
-#: is merged into it (#480), and the collision follow-up says so.
+#: is merged into it (#480); where the root also keeps a `GNUmakefile` or a
+#: `makefile`, which GNU make reads first, the merge alone brings them only
+#: where that file includes `Makefile` (#1048, #1105's review). The collision
+#: follow-up says what each root takes.
 #: `tests/test_adopt_e2e.py` holds this to the template's own targets.
 SHAPE_MAKE_TARGETS = ("bootstrap", "validate", "pins", "park", "resume")
+#: The names GNU make looks for when no `-f` is given, in its order: it reads
+#: the first it finds, and only that one. `collision_follow_up` names them
+#: (#1048), and so does the pinned `AGENTS-shape.md`, in this order.
+#: `adopt-project.py` keeps the same tuple under the same name for
+#: `_makefile_follow_up` (#977) and `_predict_collisions`, which picks the
+#: file `reads_first` names;
+#: `tests/test_adopt_collision_make_reads.py` holds the two tuples equal.
+GNU_MAKE_READS = ("GNUmakefile", "makefile", "Makefile")
 
 
 # ---------------------------------------------------------------------------
@@ -996,7 +1009,8 @@ def _tracked_at(target: Path, rel: str) -> str | None:
 
 def collision_follow_up(intended: str, actual: str,
                         beside: dict | None = None, *,
-                        attributes_link: bool = False) -> str:
+                        attributes_link: bool = False,
+                        reads_first: str | None = None) -> str:
     """The follow-up for ONE collision, in one place.
 
     `adopt-project.py plan` says it: `_predict_collisions` PREDICTS the
@@ -1005,8 +1019,8 @@ def collision_follow_up(intended: str, actual: str,
     split commit's message, so the plan a human approves and the commit
     message they read afterwards hold one spelling of each. `execute` names
     the collisions that actually happened by path only: its `beside` lines,
-    and the split message's "WRITTEN BESIDE" list. This said "both callers
-    say it", and `execute` calls it nowhere (#1105's review, NIT-4).
+    and the split message's "WRITTEN BESIDE" list. `Materialized.follow_ups()`
+    would say this of them, and nothing calls it (#1105's review, NIT-4).
 
     A `.gitattributes` THAT IS A SYMLINK gets no block (`_append_eol_block`),
     so `attributes_link` says which of two things happened, and the follow-up
@@ -1015,23 +1029,45 @@ def collision_follow_up(intended: str, actual: str,
     its place needs (#471's review, SHOULD-2). `plan` knows it from the
     source tree's mode.
 
-    THE MAKEFILE'S MERGE IS WHAT BRINGS THE SHAPE'S MAKE TARGETS (#480). Until
-    it is made, `make bootstrap` in the root exits 2 with `No rule to make
-    target 'bootstrap'`, so the follow-up says that, and what runs meanwhile:
-    `python3 scripts/bootstrap.py`, unless that script went aside as well.
-    It names that command as the template's `scripts/bootstrap.py` does,
-    `python` on Windows as well (`BOOTSTRAP_COMMAND`, #1132). `beside` maps
-    each shape file written beside one the source kept to where it went, the
-    whole list, and only the Makefile's follow-up reads it. Where the root's
-    `scripts/bootstrap.py` is the source's own, that command runs the
-    source's script and exits 0, so the follow-up names no command to run
-    meanwhile (#493's review, F2): it says that command runs the shape's
-    bootstrap once the script is merged, and `make bootstrap` once both
-    merges are made. It said neither runs it "before both merges are made",
-    which is untrue of `python3 scripts/bootstrap.py`: the script's merge
-    alone lets it run the shape's, while `make bootstrap` still exits 2
-    (#1105's second review, NIT-2, measured in a root that keeps only
-    `Makefile`).
+    THE MAKEFILE'S MERGE IS WHAT BRINGS THE SHAPE'S MAKE TARGETS (#480), WHERE
+    `make` READS THE MERGED FILE. Until it is made, `make bootstrap` in the
+    root exits 2 with `No rule to make target 'bootstrap'`, so the follow-up
+    says that, and what runs meanwhile: `python3 scripts/bootstrap.py`, unless
+    that script went aside as well. It names that command as the template's
+    `scripts/bootstrap.py` does, `python` on Windows as well
+    (`BOOTSTRAP_COMMAND`, #1132). `beside` maps each shape file written
+    beside one the source kept to where it went, the whole list, and only the
+    Makefile's follow-up reads it. Where the root's `scripts/bootstrap.py` is
+    the source's own, that command runs the source's script and exits 0, so
+    the follow-up names no command to run meanwhile (#493's review, F2): it
+    says that command runs the shape's bootstrap once the script is merged,
+    and `make bootstrap` once both merges are made. It said neither runs it
+    "before both merges are made", which is untrue of `python3
+    scripts/bootstrap.py`: the script's merge alone lets it run the shape's,
+    while `make bootstrap` still exits 2 (#1105's second review, NIT-2,
+    measured in a root that keeps only `Makefile`).
+
+    BUT GNU MAKE READS THE FIRST OF `GNUmakefile`, `makefile` AND `Makefile`
+    IT FINDS, AND ONLY THAT ONE (#1048, measured on #1046's review). Where
+    the root keeps a `GNUmakefile` or a `makefile` beside the source's own
+    `Makefile`, `make` reads that file, so the merge alone brings the targets
+    only where that file includes `Makefile`: after `cat shape/Makefile >>
+    Makefile`, `make -n bootstrap` at the root still exits 2 with the same
+    `No rule` where it does not, and exits 0 where it ends in `include
+    Makefile` (#1105's review, SHOULD-1). `reads_first` names that file, the
+    one `adopt-project.py`'s `_makefile_follow_up` names (#977), as its
+    caller reads it from the plan's root paths; the follow-up then says
+    `make` reads it, that the targets reach `make` there only once it has
+    them or includes a Makefile that does, and, as before, what runs
+    meanwhile, in the words `execute`'s NEXT uses (#1047). It says nothing of
+    the merge alone, which turns on that file's own lines. Where
+    `scripts/bootstrap.py` went aside as well, it says `python3
+    scripts/bootstrap.py` runs the shape's bootstrap once that script is
+    merged, and not that `make bootstrap` does. Both name that command as
+    `BOOTSTRAP_COMMAND` does, `python` on Windows as well (#1132). With none,
+    the Makefile's follow-up is what it was, byte for byte: a root whose only
+    Makefile is the source's is one where `make` reads the merged file. It is
+    read by no other collision.
 
     AND A PINNED COPY'S FOLLOW-UP SAYS WHAT HAPPENS TO ITS ROW (#502). The
     shape pin has a row for a copied file at the path it landed on, so once
@@ -1083,15 +1119,31 @@ def collision_follow_up(intended: str, actual: str,
         return merge
     targets = ", ".join(f"`{target}`" for target in SHAPE_MAKE_TARGETS)
     script = (beside or {}).get(BOOTSTRAP)
+    if reads_first is None:
+        arrive = (f"The shape's make targets ({targets}) arrive only with "
+                  "that merge")
+        joint = ", and"
+        meanwhile = f"{BOOTSTRAP_COMMAND} is what `make bootstrap` runs"
+        then = (f"{BOOTSTRAP_COMMAND} runs the shape's bootstrap once the "
+                "script is merged, and `make bootstrap` once both merges are "
+                "made")
+    else:
+        listed = _listed([f"`{name}`" for name in GNU_MAKE_READS])
+        arrive = (
+            f"GNU make at the root reads the source's `{reads_first}`, the "
+            f"first of {listed} it finds, so the shape's make targets "
+            f"({targets}) reach `make` there only once `{reads_first}` has "
+            "them, or includes a Makefile that does")
+        joint = "; and"
+        meanwhile = (f"{BOOTSTRAP_COMMAND} is what the shape's `make "
+                     "bootstrap` runs")
+        then = (f"neither `make bootstrap` nor `python3 {BOOTSTRAP}` runs the "
+                f"shape's bootstrap until then, and then {BOOTSTRAP_COMMAND} "
+                "runs it")
     if script is None:
-        return (f"{merge}. The shape's make targets ({targets}) arrive only "
-                f"with that merge; until then {BOOTSTRAP_COMMAND} is what "
-                "`make bootstrap` runs")
-    return (f"{merge}. The shape's make targets ({targets}) arrive only with "
-            f"that merge, and the root's {BOOTSTRAP} is the source's "
-            f"own until {script} is merged into it as well, so "
-            f"{BOOTSTRAP_COMMAND} runs the shape's bootstrap once the script "
-            "is merged, and `make bootstrap` once both merges are made")
+        return f"{merge}. {arrive}; until then {meanwhile}"
+    return (f"{merge}. {arrive}{joint} the root's {BOOTSTRAP} is the source's "
+            f"own until {script} is merged into it as well, so {then}")
 
 
 def _attributes_link_follow_up(intended: str, actual: str,
@@ -1155,11 +1207,22 @@ def copy_in_the_way(target: Path, actual: str) -> str | None:
 
 
 def adopt_makefile_block(spec_path: str, code_path: str) -> str:
-    """What `adopt-project.py` appends to the assembly root's Makefile, and
-    nothing else does. A scaffolded project's legs are empty, so nothing reads
+    """What `adopt-project.py` appends to the shape's `Makefile`, and nothing
+    else does. A scaffolded project's legs are empty, so nothing reads
     across them yet; an ADOPTED project's code leg holds tooling that used to
     read `contracts/` from beside it and now reads it from the other leg
     through the root.
+
+    IT LANDS WHERE `place` WRITES THE SHAPE'S `Makefile`, WHICH IS NOT ALWAYS
+    THE ROOT'S (#906, #977, #1061). `execute` passes it as
+    `append={"Makefile": ...}`, and `_materialize` adds it to the template's
+    text before `place` writes that text: at the root's `Makefile`, or, where
+    the source keeps a `Makefile` of its own, at `shape/Makefile` (`place`
+    writes a copy to `collision_dir` when its name is taken, and a disk that
+    ignores case takes a kept `makefile` for it). The root's own `Makefile`
+    is then the source's, untouched, and the block waits in `shape/Makefile`
+    until a person merges the two. This said "the assembly root's Makefile"
+    and named only the first (#1135).
 
     RENDERED WITH THE PLAN'S MOUNT PATHS (#522). It was one constant naming
     `spec/contracts`, so a project adopted with `--spec-path legs/spec`
@@ -2461,20 +2524,25 @@ def env_commit(work: Path, message: str) -> None:
     locale with that mode off -- and git keeps the bytes it is given. An
     adoption's split message already carried an em dash, which reached git
     there as a cp1252 byte, and it names each entry path as the source spells
-    it: `Übersicht.md` would land as another byte that is not UTF-8, and
-    `文書.md` would raise `UnicodeEncodeError` after both legs are pushed.
+    it (a printable one; see below): `Übersicht.md` would land as another byte
+    that is not UTF-8, and `文書.md` would raise `UnicodeEncodeError` after
+    both legs are pushed.
     Every caller's message goes the same way: `scaffold-project.py`'s
     assembly commit, `scripts/family.py`'s holder commit, and each first
     commit `git_init_commit` makes (a scaffolded leg, a seeded one).
 
     `errors="replace"` works BOTH WAYS. Decoding, git's own output cannot
-    raise. Encoding, a character UTF-8 cannot carry is written as `?`: the
-    one such character a message can hold is a lone surrogate, the byte of a
-    name that is not UTF-8 as `Source.tree` keeps it. `adopt-project.py`
-    refuses one in a path it extracts (`entry_path_problem`), but a `root`
-    or `drop` entry holding one is listed in the split message, so there the
-    message names it with a `?` in place of that byte, a path that does not
-    exist, rather than raising after both legs are pushed.
+    raise. Encoding, a character UTF-8 cannot carry is written as `?`, and
+    nothing raises after both legs are pushed: the one such character a
+    message can hold is a lone surrogate, the byte of a name that is not
+    UTF-8 as `Source.tree` keeps it. `adopt-project.py` refuses one in a
+    path it extracts (`entry_path_problem`), and a `root` or `drop` entry
+    holding one is listed in the split message, but never raw: the message
+    names each path as `plan`'s report does (`_shown`, #900), so the byte
+    0xE9 reads as an escape with no surrogate in it, `` `caf\\udce9.md` ``,
+    the path the source holds. Written raw it would be a `?`, `caf?.md`, a
+    path that does not exist, which is what this function still writes for
+    a lone surrogate it is handed.
     """
     env = dict(os.environ)
     for key, fallback in (("GIT_AUTHOR_NAME", "openRepoShape scaffold"),
@@ -3664,14 +3732,18 @@ def pin_digest_from_source(source: Path, commit: str, repository: str) -> str:
         why = (exc.detail if isinstance(exc, Refusal)
                else exc.strerror or str(exc))
         named = shown_source(source)
-        raise Refusal(
+        refusal = Refusal(
             "pin-source-unreadable",
             f"{named} could not answer for {repository} @ {commit}: "
             f"{why.replace(str(source), named)}",
             "Remediation: point --pin-source at a clone of that repository "
             "that HAS the pinned commit (`git fetch --all` first), or drop "
             "--pin-source and let `gh api` read the forge.",
-        ) from exc
+        )
+        # The commit it could not read, which a partial clone's cure fetches
+        # by its id (`pin_values_unfetched`, #1182).
+        refusal.commit = commit
+        raise refusal from exc
 
 
 def scaffold_link_remedies(chain) -> dict[str, str]:
@@ -4182,6 +4254,189 @@ def _pinned_commit(args, raw: str, repository: str, typed: str) -> str:
         print(f"--pin {repository} @ {typed[:12]} is an annotated tag; it "
               f"names commit {commit[:12]}, which is what the pin records")
     return commit
+
+
+# ---------------------------------------------------------------------------
+# A partial-clone `--pin-source` is read, and never fetched into (#1182)
+# ---------------------------------------------------------------------------
+#
+# `declared_pin_values` reads a pin in its `--pin-source` with git: `git
+# cat-file -t` of the commit (`commit_in_clone`), then `git ls-tree -r` of
+# it (`tree_digest`). In a partial clone (`git clone --filter`) git fetches
+# an object the clone lacks from its promisor remote on any read that needs
+# it. Measured through `scaffold-project.py` on 961640c6 with git 2.43, the
+# real run and `--dry-run` alike: a `--filter=tree:0` clone, which holds the
+# pinned commit and lacks its trees, and a `--filter=blob:none` clone that
+# lacks the pinned commit, each ran the clone's `upload-pack` once and
+# gained a promisor pack (`.promisor` 1 -> 2) before the digest was read,
+# and the run went on to exit 0. A `blob:none` clone that holds the commit
+# holds its trees, which is all a digest reads, and ran none.
+#
+# `pin_values_unfetched` is that read under `lazy_fetch_off`: a read of an
+# object the clone lacks fails where it fetched, and the reader's own
+# `pin-source-unreadable` then says that the clone is a partial one, and
+# what makes it whole. The scaffold reads its pins through it.
+# `adopt-project.py plan` reads the same pins through `declared_pin_values`,
+# and is not changed here (#1162).
+
+#: The variable git reads to leave out the fetch a partial clone makes for an
+#: object it lacks: `shape-doctor.py`'s `NO_LAZY_FETCH` (#787). Read when
+#: `lazy_fetch_off` is entered.
+NO_LAZY_FETCH = "GIT_NO_LAZY_FETCH"
+#: The refusal `pin_digest_from_source` gives a `--pin-source` that cannot
+#: answer for a pin (#339).
+PIN_SOURCE_UNREADABLE = "pin-source-unreadable"
+#: The config keys `promisor_remotes` reads: git's, in `promisor-remote.c`,
+#: as the doctor's `PROMISOR_KEYS` (#683).
+PROMISOR_KEYS = (r"^(remote\..*\.(promisor|partialclonefilter)"
+                 r"|extensions\.partialclone)$")
+
+
+@contextlib.contextmanager
+def lazy_fetch_off():
+    """This process's environment with `GIT_NO_LAZY_FETCH=1` for as long as
+    it runs, and as it was afterwards: the doctor's `lazy_fetch_off` (#787),
+    around a pin's read (#1182).
+
+    EVERY GIT STARTED INSIDE IT inherits it, and every git those start. A
+    read of an object a partial clone lacks then fails where it fetched
+    (measured with git 2.43: `warning: lazy fetching disabled`, exit 128,
+    and no `upload-pack` ran), and the readers here already answer a read
+    that failed. The variable is put back on the way out, a value it had
+    restored and one it did not have removed, for a caller that goes on in
+    this process.
+
+    WHICH GIT HONOURS IT: git 2.45.0 and later, and the security releases of
+    2024-05-14 back to 2.39.4, whose fix for CVE-2024-32465 made
+    `promisor-remote.c` read it, as distributions' own builds of those do
+    (Ubuntu's 2.43.0-1ubuntu7.1 and later). An older git ignores it, and
+    fetches what the clone lacks, as before #1182."""
+    name = NO_LAZY_FETCH
+    before = os.environ.get(name)
+    os.environ[name] = "1"
+    try:
+        yield
+    finally:
+        if before is None:
+            os.environ.pop(name, None)
+        else:
+            os.environ[name] = before
+
+
+def _config_listed(clone: Path, *asked: str) -> bytes:
+    """What `git config -z <asked>` lists in `clone`, as bytes; nothing
+    where it lists nothing (exit 1) or cannot run. Config only: no object
+    is read, so nothing is fetched."""
+    try:
+        listed = subprocess.run(["git", "config", "-z", *asked],
+                                cwd=str(clone), capture_output=True,
+                                check=False)
+    except OSError:
+        return b""
+    return listed.stdout if listed.returncode == 0 else b""
+
+
+def promisor_remotes(clone: Path) -> list[str]:
+    """The remotes git fetches an object the clone at `clone` lacks from, by
+    the rule git 2.43's `promisor-remote.c` reads its config with, the
+    doctor's `promisor_remotes` (#683): a remote whose `promisor` is true,
+    a remote with a `partialclonefilter`, and the remote
+    `extensions.partialclone` names, that one last, as git asks them; each
+    name once, in the config's order. `promisor = false` alone is not one.
+    A name is decoded as `sys.argv` holds one (`os.fsdecode`)."""
+    true = _config_listed(clone, "--type=bool", "--get-regexp",
+                          r"^remote\..*\.promisor$")
+    promised = {key for key, _newline, value in (
+        record.partition(b"\n") for record in true.split(b"\0"))
+        if value == b"true"}
+    names: list[str] = []
+    named = None
+    for record in _config_listed(clone, "--get-regexp",
+                                 PROMISOR_KEYS).split(b"\0"):
+        key, _newline, value = record.partition(b"\n")
+        if key == b"extensions.partialclone":
+            named = value
+        elif key.endswith(b".partialclonefilter") or key in promised:
+            names.append(os.fsdecode(key[len(b"remote."):key.rindex(b".")]))
+    last = [] if named is None else [os.fsdecode(named)]
+    return [name for name in dict.fromkeys(names) if name not in last] + last
+
+
+def _remote_named(remote: str) -> str:
+    """A remote's name as a refusal names it: between backticks where it is
+    printable and holds none, and otherwise as Python's `repr` spells it."""
+    if remote.isprintable() and "`" not in remote:
+        return f"`{remote}`"
+    return repr(remote)
+
+
+def refetch_command(remote: str, commit: str) -> str:
+    """The command that fetches `commit` from `remote` by its id, with every
+    object it reaches and no filter, as a person pastes it: the name quoted,
+    where it is printable, holds no backtick and is no option; otherwise the
+    step in words. `commit` is a pin's, 40 hex digits, which pastes as it
+    is."""
+    if (remote.isprintable() and "`" not in remote
+            and not remote.startswith("-")):
+        return (f"`git fetch --refetch --no-filter {shlex.quote(remote)} "
+                f"{commit}`")
+    return (f"a `git fetch --refetch --no-filter` of {commit} from the "
+            f"remote named {_remote_named(remote)}")
+
+
+def pin_values_unfetched(args, *, reader: str,
+                         nothing_made: str) -> dict[str, dict[str, str]]:
+    """`declared_pin_values(args)`, read under `lazy_fetch_off` (#1182). A
+    `--pin-source` that is a partial clone (`promisor_remotes`) and cannot
+    answer for a pin without fetching keeps the reader's own
+    `pin-source-unreadable` and its words, and the refusal says that the
+    clone is a partial one, which `reader` never fetches into, and how to
+    make it whole. `reader` names the tool, and `nothing_made` begins the
+    remediation in its own words, as for `refuse_an_unread_pin_source`.
+
+    ONLY A READ THAT FAILED IS ASKED ABOUT. A partial clone that holds the
+    pinned commit and its trees answers as any clone does, and a clone that
+    is no partial one keeps the reader's refusal as it was. Whether it is
+    one is read from its config alone, which reads no object.
+
+    THE CURE IS `git fetch --refetch --no-filter <remote> <commit>`, the
+    commit the reader could not read, and not the reader's `git fetch
+    --all`. That one keeps the clone's filter: it fetches a commit the clone
+    lacks, where a branch it fetches holds it, but names no cause for a
+    `tree:0` clone that holds the commit and lacks its trees. Named by its
+    id, the commit comes with every tree and blob it reaches, from a remote
+    that serves an object by id as a lazy fetch asks for one; with no
+    commit named, the refetch fetched only what the clone's branches hold,
+    and a `blob:none` clone of `main` pinned on another branch stayed
+    `pin-source-unreadable` after it (found in review of #1223)."""
+    try:
+        with lazy_fetch_off():
+            return declared_pin_values(args)
+    except Refusal as exc:
+        # Only `pin_digest_from_source` gives this code, and only for a
+        # `--pin-source`, so the clone is there to ask.
+        if exc.code != PIN_SOURCE_UNREADABLE:
+            raise
+        clone = _resolved_pin_source(args.pin_source)
+        remotes = promisor_remotes(clone)
+        if not remotes:
+            raise
+        cures = ", then ".join(refetch_command(remote, exc.commit)
+                               for remote in remotes)
+        raise Refusal(
+            exc.code,
+            f"{exc.detail}. That clone is a partial clone (`git clone "
+            "--filter`), whose git fetches an object it lacks from its "
+            f"promisor remote ({', '.join(map(_remote_named, remotes))}) on "
+            f"any read that needs it, and {reader} never fetches into a "
+            "--pin-source",
+            f"Remediation: {nothing_made} Make that clone hold the pinned "
+            f"commit and its trees, then run {reader} again: in "
+            f"{shown_source(clone)}, run {cures}, which fetches that commit "
+            "and every object it reaches, with no filter (git 2.36 or "
+            "later). Or point --pin-source at a full clone (`git clone` "
+            "with no `--filter`) that has the pinned commit, or drop "
+            "--pin-source and let `gh api` read the forge.") from exc
 
 
 def declared_pin_products(args) -> dict[str, None]:
