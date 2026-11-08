@@ -5333,7 +5333,7 @@ def _checked_plan_inputs(args, source: Source,
             [(_flag_named(ELECTED_BY_KEY, flags_given), args.elected_by,
               ROOT_MANIFEST_AND_README)])
     names = _names(args.project)
-    pins = _as_planned(declared_pin_values(args), args.pin_source)
+    pins = _as_planned(_pins_read_unfetched(args), args.pin_source)
     _check_names(naming, names, set(pins), source)
     # LAST here, over every value as the plan will record it: `execute`
     # writes them into the project's own YAML. The project's own validator
@@ -6218,6 +6218,120 @@ def _write_the_plan(args, out: Path, text: str) -> None:
         ) from None
 
 
+# ---------------------------------------------------------------------------
+# `plan` never fetches into a partial clone either (#1162)
+# ---------------------------------------------------------------------------
+#
+# `plan` reads its `--source` with git, as `check` does, and each pin's
+# digest in its `--pin-source` with `git ls-tree -r`
+# (`pin_digest_from_source`). In a partial clone (`git clone --filter`)
+# either read fetched what the clone lacked from its promisor remote, as
+# #1145 found `check` and `execute` did. Measured with git 2.43 on #1145's
+# head 2c8082a2: a `--filter=blob:none --no-checkout` `--source` ran its
+# promisor's `upload-pack` 26 times and took its `.promisor` files from 1
+# to 27; a `--filter=tree:0` `--pin-source`, and a `--filter=blob:none` one
+# that lacked the pinned commit, each ran it once and gained a promisor
+# pack before the digest was read. So `plan` runs under `_lazy_fetch_off`,
+# as `check` and `execute` do, and:
+#
+# - its `--source` is refused by `_refuse_a_partial_clone_short` as soon
+#   as it is opened, as theirs is: the partial clone `check` would refuse,
+#   before git reads an object of it, on every git;
+# - its `--pin-source` is NOT refused for being a partial clone. A digest
+#   is read from the pinned commit's trees, and a `--filter=blob:none`
+#   clone that holds the commit holds them: measured, it records the digest
+#   a full clone does and runs no `upload-pack`, checked out or not. Where
+#   git stops at an object such a clone lacks, the refusal keeps the
+#   reader's own `pin-source-unreadable` and says that the clone is a
+#   partial one and how to make it whole (`_pins_read_unfetched`): the
+#   reader's remediation, a clone that HAS the pinned commit, named no
+#   cause for a `tree:0` clone that holds the commit and lacks its trees.
+
+#: The variable git reads to leave out the fetch a partial clone makes for an
+#: object it lacks: `shape-doctor.py`'s `NO_LAZY_FETCH` (#787, #1145).
+NO_LAZY_FETCH = "GIT_NO_LAZY_FETCH"
+#: The refusal `pin_digest_from_source` gives a `--pin-source` that cannot
+#: answer for a pin (#339): `plan`'s own, not `check`'s
+#: `PIN_SOURCE_UNREADABLE` finding.
+PIN_SOURCE_REFUSED = "pin-source-unreadable"
+
+
+@contextlib.contextmanager
+def _lazy_fetch_off():
+    """This process's environment with `GIT_NO_LAZY_FETCH=1` for as long as
+    it runs, and as it was afterwards: the doctor's `lazy_fetch_off` (#787),
+    over `check` and `execute` (#1145), and over `plan` (#1162).
+
+    EVERY GIT THE COMMAND STARTS inherits it, and every git those start:
+    each read of the source, `plan`'s of its `--pin-source`, the throwaway
+    repositories `check` makes, the clones and `git filter-repo` of
+    `execute`. A read of an object a partial clone lacks then fails, as one
+    fails where the clone's remote is out of reach (measured with git 2.43:
+    exit 128, and no `upload-pack` ran), and each reader here already
+    answers a read that failed. Nothing printed for a person's own shell
+    carries it.
+
+    WHICH GIT HONOURS IT: git 2.45.0 and later, and the security releases of
+    2024-05-14 back to 2.39.4, whose fix for CVE-2024-32465 made
+    `promisor-remote.c` read it, as distributions' own builds of those do
+    (Ubuntu's 2.43.0-1ubuntu7.1 and later). An older git ignores it, and
+    there `_refuse_a_partial_clone_short` is what keeps the source whole,
+    but for the read `_not_a_whole_clone` makes before it, of the commit a
+    `source.cloned: true` plan names; a partial `--pin-source` short of the
+    pinned commit or its trees is fetched into there, as before #1162."""
+    before = os.environ.get(NO_LAZY_FETCH)
+    os.environ[NO_LAZY_FETCH] = "1"
+    try:
+        yield
+    finally:
+        if before is None:
+            os.environ.pop(NO_LAZY_FETCH, None)
+        else:
+            os.environ[NO_LAZY_FETCH] = before
+
+
+def _pins_read_unfetched(args) -> dict[str, dict[str, str]]:
+    """`declared_pin_values(args)`, read under `plan`'s `_lazy_fetch_off`
+    (#1162). A `--pin-source` that is a partial clone (`_promisor_remotes`)
+    and cannot answer for a pin without fetching keeps the reader's own
+    `pin-source-unreadable` and its words, and the refusal says that the
+    clone is a partial one, which `plan` never fetches into, how to make it
+    whole, and, as the source's refusal does, that a later fetch stays
+    filtered while the clone's `partialclonefilter` is set: a later pin to
+    a newer commit in a `tree:0` clone lacks its trees again.
+
+    ONLY A READ THAT FAILED IS ASKED ABOUT. A partial clone that holds the
+    pinned commit and its trees answers as any clone does, and a clone that
+    is no partial one keeps the reader's refusal as it was. Whether it is
+    one is read from its config alone, which reads no object."""
+    try:
+        return declared_pin_values(args)
+    except Refusal as exc:
+        clone = args.pin_source
+        remotes = ([] if exc.code != PIN_SOURCE_REFUSED or clone is None
+                   else _promisor_remotes(clone))
+        if not remotes:
+            raise
+        raise Refusal(
+            exc.code,
+            f"{exc.detail}. That clone is a partial clone (`git clone "
+            "--filter`), whose git fetches an object it lacks from its "
+            f"promisor remote ({', '.join(map(_spelled, remotes))}) on any "
+            "read that needs it, and `plan` never fetches into a "
+            "--pin-source",
+            f"Remediation: {PLAN_NOT_WRITTEN} Make that clone whole, then "
+            f"run `plan` again: in {shown_path(clone)}, run "
+            f"{', then '.join(map(_refetch, remotes))}, which fetches every "
+            "object again with no filter (git 2.36 or later) where a branch "
+            "it fetches holds the pinned commit. Or point --pin-source at a "
+            "full clone (`git clone` with no `--filter`) that has the "
+            "pinned commit, or drop --pin-source and let `gh api` read the "
+            "forge. Later fetches stay filtered while "
+            f"{' or '.join(map(_filter_key, remotes))} is set, so the clone "
+            "can lack objects again.") from exc
+
+
+@_lazy_fetch_off()
 def cmd_plan(args) -> int:
     # A `--pin-source` that names no path, `''`, which as a `Path` is the
     # directory this runs in, one no `--pin` will read, and one `plan` cannot
@@ -6284,6 +6398,10 @@ def cmd_plan(args) -> int:
     source = Source.of(named, work_root, unwritable,
                        getattr(args, "clones", None),
                        instead=args.tracking_branch)
+    # As soon as it is opened, as `check` and `execute` ask it (#1162): the
+    # partial clone they would refuse is refused before git reads an object
+    # of it, which would fetch what it lacks, and before the plan exists.
+    _refuse_a_partial_clone_short(source)
     policy = PathPolicy.load(args.path_policy or PATH_POLICY)
 
     # The project's own validator is asked inside, before #181's question.
@@ -9464,7 +9582,8 @@ def _entry_findings(plan: Plan, source: Source,
     The first is the split's own `git clone` of the source (#1083), asked as
     `execute` makes it, so that one this git will not make is said before
     any leg exists, and `_resolved` and `_answers` make the submodule urls'
-    own there (#1083).
+    own there (#1083). Before any of them, a `GIT_ATTR_SOURCE` in the
+    environment is `adopt-git-unasked`, by name (#1136).
     Each but #183's symlink probe is made with the source's object format
     and runs no hook of this machine's; where git cannot make or ask one,
     `adopt-git-unasked` says why, once, in the place of the questions asked
@@ -9517,14 +9636,16 @@ def _entry_findings(plan: Plan, source: Source,
     """
     tree = source.tree()
     targets = symlink_targets(source, tree)
-    # The split's own `git clone` of the source, asked first, in the work
-    # directory, as `execute` makes it after both legs exist (#1083); then
-    # which of the source's paths git holds at all, in a throwaway
-    # repository of its own: one it refuses is a fact of the source, said
-    # with the others (#910). Where either cannot be made or asked, none of
-    # the others `check` makes in the same work directory is asked, and
-    # `_Unasked.said` says why, once, in their place below.
+    # A `GIT_ATTR_SOURCE` in the environment first, which no throwaway can
+    # answer for (#1136); then the split's own `git clone` of the source, in
+    # the work directory, as `execute` makes it after both legs exist
+    # (#1083); then which of the source's paths git holds at all, in a
+    # throwaway repository of its own: one it refuses is a fact of the
+    # source, said with the others (#910). Where any cannot be made or
+    # asked, none of the others `check` makes in the same work directory is
+    # asked, and `_Unasked.said` says why, once, in their place below.
     try:
+        _attr_source_unasked(source)
         _split_clone_asked(source)
         refused, unasked = _paths_git_refuses(source, tree), None
     except _Unasked as exc:
@@ -11412,6 +11533,18 @@ def _refuse_symlinks_checked_out_as_files(plan: Plan, source: Source,
 #   in `TMPDIR` stopped `check` with "a git or gh command failed" under
 #   either setting, and `_resolved`'s `update-index` ran this machine's
 #   `post-index-change` hook.
+# * A PARENT GIT'S SETTINGS, AND `GIT_ATTR_SOURCE` (#1136). Measured with git
+#   2.43 on bba168bd: `check` said `plan ok`, and `execute` stopped after
+#   both legs existed, under a parent's `-c core.protectHFS=true` over a
+#   source path `.g` + U+200C + `it/x`, which `GIT_CONFIG_COUNT` gave as
+#   `plan-path-git-refuses`, and under `GIT_ATTR_SOURCE=bogus`, which
+#   `_inherited_env()` leaves out. The rehearsal and `_stored_as_written`
+#   now take a parent's `-c` settings as they stand, an `attr.tree` among
+#   them, and borrow the source's objects (`_split_checkout_env`,
+#   `_objects_borrowed`), and a `GIT_ATTR_SOURCE` is refused by name
+#   before any question (`_attr_source_unasked`). Each throwaway reads its
+#   environment before it is made, so that nothing raised reading it
+#   leaves one behind, as `_resolved` and `_answers` read theirs.
 
 #: `check`'s finding, and the code of `execute`'s refusal, for the paths of
 #: the source commit that this machine's git will not hold in an index, and
@@ -11429,7 +11562,8 @@ PATH_GIT_REFUSES_REMEDIATION = (
     "`plan-stale` once the source has moved.")
 #: `check`'s finding, and the code of `execute`'s refusal, where a throwaway
 #: repository cannot be made in the work directory, or git there fails a
-#: step it is asked, so that the question goes unasked (#910).
+#: step it is asked, so that the question goes unasked (#910); and where
+#: `GIT_ATTR_SOURCE` names a tree no throwaway can answer for (#1136).
 UNASKED = "adopt-git-unasked"
 #: The empty directory beside each throwaway repository: its `--template`, so
 #: `git init` copies nothing in, and its `core.hooksPath`, so no hook runs.
@@ -11447,18 +11581,22 @@ class _Unasked(Refusal):
     repository in `where`, and why (#910). A `Refusal` under `UNASKED`, so
     that one nothing makes a finding of still says why, and never as
     `git-failed`; `_entry_findings` makes it the finding, or the NOTE
-    `said` gives."""
+    `said` gives. `ending`, where given, says what `execute` does and the
+    way out in place of the words every other cause shares (#1136)."""
 
-    def __init__(self, where: Path, why: str, unmade: bool = False) -> None:
+    def __init__(self, where: Path, why: str, unmade: bool = False,
+                 ending: str | None = None) -> None:
         super().__init__(
             UNASKED,
             "`check` asks this machine's git what the split will make of the "
             f"source in throwaway repositories in {_spelled(str(where))}, the "
             "work directory, where `execute` builds the split, and it could "
-            f"not: {why}. `execute` asks the same in its own work directory "
-            "before it makes either leg, and refuses while git cannot answer "
-            "there. Fix what that names -- a git setting, the disk or the "
-            "directory -- or pass another --work-dir, and run `check` again.")
+            f"not: {why}. " + (ending or (
+                "`execute` asks the same in its own work directory before it "
+                "makes either leg, and refuses while git cannot answer there. "
+                "Fix what that names -- a git setting, the disk or the "
+                "directory -- or pass another --work-dir, and run `check` "
+                "again.")))
         self.where, self.why = where, why
         #: No directory could be made in `where` at all: what
         #: `_unwritable_work_dir` asks of a `--work-dir`, the same way, and
@@ -11585,8 +11723,10 @@ def _throwaway_git(scratch: Path, hooks_off: list[str], args: list,
 
 #: The `-c` settings a parent git hands each command it runs, in git's own
 #: quoted form: `git -c <key>=<value>` running an alias, or a hook, that
-#: runs `adopt-project.py`. `_inherited_env()` leaves it out, and only the
-#: split's own clone takes it back (`_split_clone_env`).
+#: runs `adopt-project.py`. `_inherited_env()` leaves it out. The split's
+#: own clone, and the questions a checkout, `git rm` or `git add`
+#: answers, take it back as it stands (`_split_clone_env`,
+#: `_split_checkout_env`, #1136).
 CONFIG_PARAMETERS = "GIT_CONFIG_PARAMETERS"
 
 
@@ -11605,9 +11745,9 @@ def _split_clone_env() -> dict:
     config file or in `GIT_CONFIG_COUNT` was `adopt-git-unasked` already. A
     parent's `-c core.hooksPath` runs no hook in the clone: git reads the
     command's own `-c` after the parent's, and takes a key's last value.
-    An `attr.tree` among them, which is why `_inherited_env()` leaves them
-    out of the questions a checkout answers, changes nothing in a clone
-    that checks nothing out (`attr.tree=bogus` measured: it clones).
+    An `attr.tree` among them, which the questions a checkout answers take
+    too (`_split_checkout_env`), changes nothing in a clone that checks
+    nothing out (`attr.tree=bogus` measured: it clones).
 
     NOTHING ELSE `_inherited_env()` LEAVES OUT. Each of those names another
     repository, its objects, an index or a work tree, and the clone would
@@ -11619,6 +11759,116 @@ def _split_clone_env() -> dict:
     if parameters is not None:
         env[CONFIG_PARAMETERS] = parameters
     return env
+
+
+def _split_checkout_env() -> dict:
+    """The environment the questions a checkout, `git rm` or `git add`
+    answers are asked in, by the rehearsal (`_SplitRehearsal`) and
+    `_stored_as_written` (#1136): this process's, but for what
+    `_NOT_INHERITED` names other than `CONFIG_PARAMETERS`. So the `-c`
+    settings a parent git hands this process, in `CONFIG_PARAMETERS` and in
+    `GIT_CONFIG_COUNT`, are taken as they stand, an `attr.tree` among them,
+    as `execute`'s checkout, `git rm` and `git add` take them in the whole
+    environment.
+
+    THOSE SETTINGS, SO THAT A THROWAWAY ANSWERS AS THE SPLIT DOES. Measured
+    with git 2.43 on bba168bd, where `CONFIG_PARAMETERS` was left out: under
+    a parent's `-c core.protectHFS=true` and a source path `.g` + U+200C +
+    `it/x`, `check` said `plan ok`, and `execute` made both legs and stopped
+    extracting the spec leg, `unable to checkout working tree`; under a
+    parent's `filter.<name>.clean=false` and `filter.<name>.required=true`,
+    over a root `.gitattributes` that names that filter for itself, it
+    stopped there too, `clean filter '<name>' failed`. The same settings in
+    `GIT_CONFIG_COUNT` were `plan-path-git-refuses` and
+    `plan-attributes-reencoded`. A throwaway's own `-c` still wins: git
+    reads a command's own `-c` after the parent's, and takes a key's last
+    value, so a parent's `core.hooksPath` or `core.fsmonitor` runs nothing
+    there.
+
+    `attr.tree` TOO (r1169's SHOULD-1). Measured with git 2.43 on
+    b8e63bcf, which left it out of both forms: over a CRLF file the plan
+    keeps under `* text eol=lf`, a parent's `attr.tree` naming the empty
+    tree made `check` say `plan-file-reencoded`, where `execute`'s own git
+    read no rule either and said `adoption verified`; naming a tree the
+    source holds, whose `.gitattributes` names a failing required filter
+    for the root's own, `check` said `plan ok`, where the split's `git add`
+    of that file fails. Each throwaway borrows the source's objects
+    (`_objects_borrowed`), so an object id names there the tree it names in
+    the split's clones, and the rehearsal asks which files a rule reaches as
+    the split's `git add` reads them, not with `--cached`, which reads no
+    `attr.tree` (`_SplitRehearsal.reached`, r1169b's SHOULD-1). A name such
+    as `HEAD` names nothing in a throwaway, which holds no ref, and git
+    there reads the files' own rules, as with no setting (#1136's known
+    limit).
+
+    NOT `GIT_ATTR_SOURCE`: it is refused before any question is asked
+    (`_attr_source_unasked`)."""
+    return {name: value for name, value in os.environ.items()
+            if name.upper() == CONFIG_PARAMETERS
+            or name.upper() not in _NOT_INHERITED}
+
+
+def _objects_borrowed(repository: Path, source: Source, env: dict) -> None:
+    """`repository`, a throwaway's, borrows `source`'s objects
+    (`objects/info/alternates`), the path to them asked of git in the
+    source, in `env`. Nothing is copied, and no byte of the source changes,
+    though where a question stores a blob the source holds, git's object
+    freshening sets the modification time of the source's file that holds
+    it to now. So an object id names in the throwaway what it names in the
+    split's clones (#654, #1136)."""
+    objects = git_out(["rev-parse", "--path-format=absolute", "--git-path",
+                       "objects"], cwd=source.path, binary=True,
+                      env=env).strip()
+    info = repository / ".git" / "objects" / "info"
+    info.mkdir(parents=True, exist_ok=True)
+    (info / "alternates").write_bytes(objects + b"\n")
+
+
+#: The variable that names a tree for git to read attributes from, in place
+#: of the work tree, in every repository a command runs in. A `git
+#: --attr-source=<tree>` sets it for each command it runs, an alias's too.
+ATTR_SOURCE = "GIT_ATTR_SOURCE"
+
+
+def _attr_source_unasked(source: Source) -> None:
+    """The `_Unasked` that refuses a `GIT_ATTR_SOURCE` in this process's
+    environment, whatever it names, before any throwaway is made (#1136);
+    nothing where there is none.
+
+    `execute`'s git reads it in every repository the split makes: the
+    source's clones, the legs `git filter-repo` rewrites, a leg seeded with
+    no commit. git stops in any of them where it names no tree, and those
+    are not made yet when `check` asks. Measured with git 2.43 on
+    bba168bd, which left it out of every throwaway, each `check` said `plan
+    ok`, and `execute` stopped after both legs existed, `fatal: bad
+    --attr-source or GIT_ATTR_SOURCE`: under `bogus`, and the empty value,
+    extracting the spec leg; under `HEAD`, seeding the code leg of a source
+    with no code; under the source tree's object id, abbreviated, pushing
+    the spec leg, which `git filter-repo` had rewritten.
+
+    NO THROWAWAY ANSWERS FOR THOSE. Handed the variable, one that borrows
+    the source's objects, as the rehearsal does, takes that abbreviated id
+    (measured: `check-attr` exits 0), and one that does not refuses it. So
+    it is refused by name, before every question of `check`'s, and
+    `execute` refuses it before either leg. `HEAD` with both legs
+    extracted, and the full object id, each took `execute` to `adoption
+    verified` there: those runs are refused too, for a variable the split
+    has no use for, and the way out is to run without it."""
+    value = os.environ.get(ATTR_SOURCE)
+    if value is None:
+        return
+    raise _Unasked(source.work_root or Path(tempfile.gettempdir()), (
+        f"`{ATTR_SOURCE}` is set in its environment, "
+        + (f"to {_spelled(value)}" if value else "empty")
+        + ", and every git command the split runs would read attributes "
+        "from the tree it names in place of the files it writes, in each "
+        "repository it makes, and stop in any of them where it names no "
+        "tree; the legs `git filter-repo` rewrites and a leg seeded with no "
+        "commit are not made yet, so no throwaway repository can answer for "
+        "them"), ending=(
+            "`execute` refuses it too, whatever it names, before it makes "
+            f"either leg. Unset `{ATTR_SOURCE}`, which a `git --attr-source` "
+            "running this tool also sets, and run `check` again."))
 
 
 def _split_clone_asked(source: Source) -> None:
@@ -11833,8 +12083,10 @@ CRLF_BY_CONFIG = "by config"
 #: What a question to `git check-attr` must not inherit: a repository, an
 #: index or a work tree named for another one; a tree to read attributes
 #: from instead of the work tree (`GIT_ATTR_SOURCE`); and a parent git's
-#: `-c` settings, whose quoted form is not read here and none of which the
-#: question needs (`GIT_CONFIG_PARAMETERS`).
+#: `-c` settings, none of which the question needs (`GIT_CONFIG_PARAMETERS`).
+#: The rehearsal and `_stored_as_written` take those settings back, and
+#: the command scope's `attr.tree` too (`_split_checkout_env`, #1136), and a
+#: `GIT_ATTR_SOURCE` is refused before any question (`_attr_source_unasked`).
 _NOT_INHERITED = ("GIT_DIR", "GIT_WORK_TREE", "GIT_INDEX_FILE",
                   "GIT_COMMON_DIR", "GIT_OBJECT_DIRECTORY", "GIT_ATTR_SOURCE",
                   "GIT_CONFIG_PARAMETERS")
@@ -11867,15 +12119,14 @@ def _inherited_env() -> dict:
     return env
 
 
-def _probe_env(nothing: Path) -> dict:
-    """The environment `git check-attr` is asked in: `_inherited_env()`,
-    with no system config and the empty file `nothing` as the global
-    config. Each could steer the answer here and holds nothing on another
-    machine, as `attr.tree` from either did."""
-    env = _inherited_env()
-    env.update(GIT_ATTR_NOSYSTEM="1", GIT_CONFIG_NOSYSTEM="1",
-               GIT_CONFIG_GLOBAL=str(nothing))
-    return env
+def _probe_env(nothing: Path, inherited: dict) -> dict:
+    """The environment `git check-attr` is asked in: `inherited`, which is
+    `_inherited_env()` read before the throwaway was made (#1136), with no
+    system config and the empty file `nothing` as the global config. Each
+    could steer the answer here and holds nothing on another machine, as
+    `attr.tree` from either did."""
+    return {**inherited, "GIT_ATTR_NOSYSTEM": "1", "GIT_CONFIG_NOSYSTEM": "1",
+            "GIT_CONFIG_GLOBAL": str(nothing)}
 
 
 def checked_out_as(values: dict) -> str:
@@ -11903,16 +12154,21 @@ class _AttributesProbe:
     `.gitattributes` files are written into a work tree of their own, which
     holds nothing else. Made as `check` makes each of its own (#910): in the
     work directory `source` was opened in, with its object format and no
-    hook; and removed on leaving the `with`."""
+    hook; and removed on leaving the `with`. Its environment is read before
+    the throwaway is made, so that nothing raised reading it leaves one
+    behind (#1136), as `_resolved` reads its own. A parent git's `-c`
+    settings are not taken: the question is what a clone on another
+    machine reads, and that clone has none of them."""
 
     def __init__(self, source: Source | None = None) -> None:
         self._source = source
+        inherited = _inherited_env()
         self._scratch = _throwaway("openreposhape-attributes-", source)
         self._asked = 0
         #: An empty file, read in place of the person's own global config
         #: and `core.attributesFile`.
         self._nothing = self._scratch / "nothing"
-        self._env = _probe_env(self._nothing)
+        self._env = _probe_env(self._nothing, inherited)
         self._git_dir = self._scratch / "repository" / ".git"
         #: The `-c` every git command here takes (`_throwaway_made`).
         self._hooks_off: list[str] = []
@@ -12210,12 +12466,15 @@ def _nested_attributes_findings(plan: Plan, source: Source, tree: list,
 # so the blob's own bytes get the same answer. UNLIKE THE NESTED QUESTION,
 # THIS MACHINE'S SETTINGS ARE READ: the split's `git add` runs here, with
 # this machine's config and attributes (`core.autocrlf`, `core.safecrlf`, a
-# `filter` driver, `core.attributesFile`), so only `_inherited_env` is taken
-# from them: no other repository, and no tree to read attributes from
-# (`GIT_ATTR_SOURCE`, `attr.tree`), of which the throwaway repository has
-# none. What `git add` refuses there -- `core.safecrlf=true` over such a
-# CRLF, or a `working-tree-encoding` the bytes are not in -- would stop the
-# split committing after both legs exist, and is found too, in git's words.
+# `filter` driver, `core.attributesFile`), a parent git's `-c` settings
+# among them, `attr.tree` too (#1136), so only `_split_checkout_env` is
+# taken from them: no other repository (a `GIT_ATTR_SOURCE` is refused
+# before any question). The throwaway borrows the source's objects, as the
+# rehearsal does, so that an `attr.tree` naming a tree by its object id
+# names there the tree the split's clones read. What `git add` refuses there --
+# `core.safecrlf=true` over such a CRLF, or a `working-tree-encoding` the
+# bytes are not in -- would stop the split committing after both legs
+# exist, and is found too, in git's words.
 #
 # A FINDING, as the nested one is: the fix is the source's, a commit of the
 # file as git stores it, and `execute` refuses it before any leg exists. A
@@ -12243,9 +12502,14 @@ def _stored_as_written(blob: bytes, mode: str, written: bytes,
     Asked in a throwaway repository made as `check` makes each of its own
     (#910), in the work directory `source` was opened in, with its object
     format and no hook, and removed afterwards; `_Unasked` where git cannot
-    be asked there."""
+    be asked there. Its environment is `_split_checkout_env()`, a parent
+    git's `-c` settings among it, `attr.tree` too, as the split's `git add`
+    takes them, read before the throwaway is made, so that nothing raised
+    reading it leaves one behind; and it borrows the source's objects
+    (`_objects_borrowed`), so that an object id names there the tree it
+    names in the split's clones (#1136)."""
+    env = _split_checkout_env()
     scratch = _throwaway("openreposhape-attributes-", source)
-    env = _inherited_env()
     # No fsmonitor daemon is started for a repository that is about to go.
     git = ["-c", "core.fsmonitor=false"]
     repository = scratch / "repository"
@@ -12259,6 +12523,8 @@ def _stored_as_written(blob: bytes, mode: str, written: bytes,
     try:
         git += _throwaway_made(scratch, repository, source, env)
         with _asked_there(scratch.parent):
+            if source is not None:
+                _objects_borrowed(repository, source, env)
             git_out([*git, "update-index", "--add", "--cacheinfo",
                      f"{mode},{raw_oid(blob, 'held', '-w')},{ATTRIBUTES}"],
                     cwd=repository, env=env)
@@ -12382,8 +12648,9 @@ def _reencoded_attributes_findings(plan: Plan, source: Source,
 # source holds, git's object freshening sets the modification time of the
 # source's pack or loose object file that holds it to now) and runs with this
 # machine's config, as `_stored_as_written` does, with git-lfs's smudge
-# skipped. First, which rules reach which path: `git
-# check-attr --cached` of `BYTE_ATTRIBUTES`, over indexes `read-tree` makes of
+# skipped. First, which rules reach which path: `git check-attr` of
+# `BYTE_ATTRIBUTES`, never with `--cached`, which reads the index alone and no
+# `attr.tree` (`_SplitRehearsal.reached`), over indexes `read-tree` makes of
 # the commit, once as the source holds its rules and once as the split's root
 # will (what goes to a leg or is dropped gone, the root's `.gitattributes` as
 # the split writes it, the shape's own beside it). Only the files a rule
@@ -12490,33 +12757,30 @@ class _SplitRehearsal:
     machine's git what the split's checkout, `git rm` and `git add` make of
     them. Made as `check` makes each of its own (#910): in the work directory
     the source was opened in, with its object format and no hook; and removed
-    on leaving the `with`. `_Unasked` where git cannot be asked there."""
+    on leaving the `with`. `_Unasked` where git cannot be asked there. Its
+    environment is `_split_checkout_env()`, a parent git's `-c` settings
+    among it, `attr.tree` too, as the split's own commands take them, read
+    before the throwaway is made, so that nothing raised reading it leaves
+    one behind (#1136)."""
 
     def __init__(self, source: Source) -> None:
         self._source = source
-        self._scratch = _throwaway("openreposhape-reencoded-", source)
-        self.work = self._scratch / "repository"
         # git-lfs's smudge is skipped: each LFS file is checked out as its
         # pointer, which git-lfs's clean stores as it is, so no LFS object is
         # read, linked or fetched, and a blob under `filter=lfs` that is not
         # a pointer is still stored otherwise and found.
-        self._env = {**_inherited_env(), "GIT_LFS_SKIP_SMUDGE": "1"}
+        self._env = {**_split_checkout_env(), "GIT_LFS_SKIP_SMUDGE": "1"}
+        self._scratch = _throwaway("openreposhape-reencoded-", source)
+        self.work = self._scratch / "repository"
         #: The `-c` every git command here takes (`_throwaway_made`).
         self._hooks_off: list[str] = []
 
     def __enter__(self) -> "_SplitRehearsal":
         try:
-            with _asked_there(self._scratch.parent):
-                objects = git_out(["rev-parse", "--path-format=absolute",
-                                   "--git-path", "objects"],
-                                  cwd=self._source.path, binary=True,
-                                  env=self._env).strip()
             self._hooks_off = _throwaway_made(self._scratch, self.work,
                                               self._source, self._env)
             with _asked_there(self._scratch.parent):
-                info = self.work / ".git" / "objects" / "info"
-                info.mkdir(parents=True, exist_ok=True)
-                (info / "alternates").write_bytes(objects + b"\n")
+                _objects_borrowed(self.work, self._source, self._env)
         except BaseException:
             self.__exit__()
             raise
@@ -12596,10 +12860,18 @@ class _SplitRehearsal:
     def reached(self, index: str,
                 paths: list[str]) -> dict[str, dict[str, str]]:
         """`{path: {attribute: value}}` for each of `paths` one of
-        `BYTE_ATTRIBUTES` reaches, with the rules `index` holds."""
+        `BYTE_ATTRIBUTES` reaches, with the rules `index` holds, or those of
+        the tree an `attr.tree` names, as the split's checkout and `git add`
+        read them. Not `check-attr --cached`, which reads the index alone
+        and no `attr.tree` (git 2.43): a file only that tree's rules reach
+        was never asked about, `check` said `plan ok`, and `execute` stopped
+        after both legs were pushed (r1169b's SHOULD-1). Without it, git's
+        check-in direction reads a work-tree `.gitattributes` first;
+        `_rules_reaching` asks before any checkout or `place()` writes one,
+        so git falls back to the index."""
         if not paths:
             return {}
-        fields = self.asked(["check-attr", "--cached", "-z", "--stdin",
+        fields = self.asked(["check-attr", "-z", "--stdin",
                              *BYTE_ATTRIBUTES], index,
                             b"".join(map(_nul, paths))).split(b"\0")
         said: dict[str, dict[str, str]] = {}
@@ -12925,7 +13197,8 @@ def _grouped_findings(stored: list[str], taken: list[str], copies: list[str],
 # command. So there are two layers, as the doctor has them (#683, #754,
 # #787):
 #
-# - `_lazy_fetch_off`, over the whole of both commands: with
+# - `_lazy_fetch_off`, over the whole of both commands, and of `plan`
+#   since #1162, which defines it: with
 #   `GIT_NO_LAZY_FETCH=1`, a read of an object the source lacks fails where
 #   it fetched, whatever reads it and whichever commit it reads, a commit
 #   the plan names included;
@@ -12941,12 +13214,9 @@ def _grouped_findings(stored: list[str], taken: list[str], copies: list[str],
 # `protocol.file.allow=always` outranks it, and the lazy fetch ran. NOR AN
 # EMPTY `GIT_ALLOW_PROTOCOL` over the whole command, which stops that fetch
 # too: `check` and `execute` need their transports, for the clone of the
-# source, `ls-remote` and the pushes. And `plan`, which reads its source
-# the same way, is not changed here.
+# source, `ls-remote` and the pushes. `plan`, which reads its source the
+# same way, is under both layers since #1162.
 
-#: The variable git reads to leave out the fetch a partial clone makes for an
-#: object it lacks: `shape-doctor.py`'s `NO_LAZY_FETCH` (#787, #1145).
-NO_LAZY_FETCH = "GIT_NO_LAZY_FETCH"
 #: Refused: a source that is a partial clone and lacks an object its branches,
 #: tags or HEAD reach (#1145).
 SOURCE_PARTIAL_CLONE = "source-partial-clone"
@@ -12972,38 +13242,6 @@ LACKING_WALK = ("rev-list", "--objects", "--missing=print", "--branches",
 #: and under the variable it exits 1, as an unborn HEAD does. `HEAD` prints
 #: the id of a commit the clone lacks and runs nothing.
 HEAD_ID = ("rev-parse", "--verify", "-q", "HEAD")
-
-
-@contextlib.contextmanager
-def _lazy_fetch_off():
-    """This process's environment with `GIT_NO_LAZY_FETCH=1` for as long as
-    it runs, and as it was afterwards: the doctor's `lazy_fetch_off` (#787),
-    over `check` and `execute` (#1145).
-
-    EVERY GIT THE COMMAND STARTS inherits it, and every git those start:
-    each read of the source, the throwaway repositories `check` makes, the
-    clones and `git filter-repo` of `execute`. A read of an object a partial
-    clone lacks then fails, as one fails where the clone's remote is out of
-    reach (measured with git 2.43: exit 128, and no `upload-pack` ran), and
-    each reader here already answers a read that failed. Nothing printed for
-    a person's own shell carries it.
-
-    WHICH GIT HONOURS IT: git 2.45.0 and later, and the security releases of
-    2024-05-14 back to 2.39.4, whose fix for CVE-2024-32465 made
-    `promisor-remote.c` read it, as distributions' own builds of those do
-    (Ubuntu's 2.43.0-1ubuntu7.1 and later). An older git ignores it, and
-    there `_refuse_a_partial_clone_short` is what keeps the source whole,
-    but for the read `_not_a_whole_clone` makes before it, of the commit a
-    `source.cloned: true` plan names."""
-    before = os.environ.get(NO_LAZY_FETCH)
-    os.environ[NO_LAZY_FETCH] = "1"
-    try:
-        yield
-    finally:
-        if before is None:
-            os.environ.pop(NO_LAZY_FETCH, None)
-        else:
-            os.environ[NO_LAZY_FETCH] = before
 
 
 def _config_listed(path: Path, *args: str) -> bytes:
@@ -13122,7 +13360,7 @@ def _refuse_a_partial_clone_short(source: Source) -> None:
     (`_promisor_remotes`) and lacks an object its branches, tags or HEAD
     reach (`_objects_lacking`), or whose branches, tags and HEAD git cannot
     walk; asked by `check` and `execute` as soon as the source is opened,
-    before anything else reads it (#1145).
+    before anything else reads it (#1145), and by `plan` (#1162).
 
     ONLY WHAT IS LACKING IS REFUSED. A partial clone given every object
     again (`git fetch --refetch --no-filter`) keeps its promisor config, and
@@ -13192,11 +13430,11 @@ def _refuse_a_partial_clone_short(source: Source) -> None:
         f"the source {where} is a partial clone (`git clone --filter`) "
         f"{short}. Git fetches an object a partial clone lacks from its "
         f"promisor remote ({', '.join(map(_spelled, remotes))}) on any read "
-        "that needs it, and `check` and `execute` never fetch into the "
-        "source: `execute`'s clone of it checks out its HEAD, and its `git "
-        "filter-repo` reads every branch and tag, and a partial clone short "
-        "of one of their blobs failed it after both leg repositories were "
-        "made",
+        "that needs it, and `plan`, `check` and `execute` never fetch into "
+        "the source: `execute`'s clone of it checks out its HEAD, and its "
+        "`git filter-repo` reads every branch and tag, and a partial clone "
+        "short of one of their blobs failed it after both leg repositories "
+        "were made",
         remediation)
 
 
@@ -18096,7 +18334,14 @@ def main(argv: list[str] | None = None) -> int:
                            "user cannot reach (under a directory it may not "
                            "search, or one it may not enter), which is never "
                            "read as one that is not there, nor cloned as an "
-                           "`org/repo`.")
+                           "`org/repo`. A partial clone (`git clone "
+                           "--filter`) short of an object its branches, "
+                           "tags or HEAD reach is refused as "
+                           "`source-partial-clone`, as `check` refuses it, "
+                           "before anything reads it: git would fetch that "
+                           "object into it, and `plan` never fetches into "
+                           "the source. Run `git fetch --refetch "
+                           "--no-filter <remote>` in it to make it whole.")
     plan.add_argument("--project", required=True,
                       help="the assembly-root name; for an in-place adoption "
                            "it is the source repository's own name. "
@@ -18187,7 +18432,15 @@ def main(argv: list[str] | None = None) -> int:
                            "means this directory. `pin-source-not-a-clone` "
                            "refuses any other path than a clone's top level, "
                            "or a bare clone's, where a --pin's digest is "
-                           "read.")
+                           "read. A partial clone (`git clone --filter`) is "
+                           "read where it holds the pinned commit and its "
+                           "trees. On a git that honours `GIT_NO_LAZY_FETCH` "
+                           "(2.45 or later, or a security release from "
+                           "2.39.4 on), one git could read only by fetching "
+                           "what it lacks is refused as "
+                           "`pin-source-unreadable`, and nothing is fetched "
+                           "into it; an older git fetches what it lacks into "
+                           "it.")
     plan.add_argument("--allow-empty-leg", action="append", default=[],
                       choices=EXTRACTED_LEGS,
                       help="record in the plan that this leg having NO path "
