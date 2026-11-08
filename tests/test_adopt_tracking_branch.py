@@ -607,10 +607,13 @@ def refs_at(directory: Path, mode: int):
 
 
 def refs_refused(source: Path, part: str, untold: str,
-                 reason: str = DENIED) -> str:
+                 reason: str = DENIED, *, common: Path | None = None) -> str:
     """The detail `source-unreadable` names `part` of the refs in the
-    source's `.git` with, and the directory whole."""
-    whole = os.path.join(os.path.realpath(source), ".git", *part.split("/"))
+    source's `.git` with, and the directory whole; in `common`, the git
+    directory git names, where that is not the source's `.git`."""
+    home = (os.path.join(os.path.realpath(source), ".git") if common is None
+            else os.path.realpath(common))
+    whole = os.path.join(home, *part.split("/"))
     return (f"the source's `{part}`, {spelled(whole)}: {reason}, so "
             f"{untold} cannot be told")
 
@@ -1282,3 +1285,113 @@ def test_a_linked_worktree_is_asked_in_its_common_git_directory(
     assert raised.value.code == "source-unreadable"
     assert raised.value.detail == refs_refused(source, "refs/heads/adopt",
                                                BRANCHES_UNTOLD)
+
+
+# --- the disk's guess at the common git directory, and git asked past it ----
+#
+# `_common_dir_on_disk` only GUESSES where the refs are, and
+# `_refuse_unlisted_refs_if_seen` acts on the guess only by asking git
+# (`_refuse_unlisted_refs`), so a guess that is wrong or missing costs a
+# miss or one more `git rev-parse`, never a refusal of its own (#1265's
+# review, N2). Each row builds a source in one shape, makes the common git
+# directory's `refs/heads/adopt` a directory this process cannot list, and
+# asks `_branches_at` for the split branch: the refusal names that
+# directory as git names it.
+
+#: Shapes the disk reads where git reads them, and shapes it leaves to git.
+DISK_READS = ["submodule", "crlf-gitfile"]
+GIT_IS_ASKED = ["git-dir-set", "git-common-dir-set", "nul-gitfile",
+                "nul-commondir"]
+#: The variable each `*-set` shape tells git its directory with.
+TOLD_BY = {"git-dir-set": "GIT_DIR", "git-common-dir-set": "GIT_COMMON_DIR"}
+
+
+def a_source_in_shape(monkeypatch, tmp_path: Path, shape: str
+                      ) -> tuple[Path, Path, Path]:
+    """`(clone, path, common)`: a clone, the source `shape` makes of it or
+    in it, and the common git directory git names for that source, which is
+    in the clone's `.git`.
+
+    - `submodule`: `sub`, whose `.git` file names its git directory
+      relative to itself, `gitdir: ../.git/modules/sub`;
+    - `crlf-gitfile`, `nul-gitfile`, `nul-commondir`: a linked worktree
+      whose `.git` file ends in CR LF, or in a NUL and more, or whose git
+      directory's `commondir` file holds a NUL (git reads each of the last
+      two up to the NUL);
+    - `git-dir-set`, `git-common-dir-set`: the clone itself, with git told
+      its git directory by the environment."""
+    clone = a_clone(tmp_path)
+    path, common = clone, clone / ".git"
+    if shape == "submodule":
+        inside = make_source_repo(tmp_path / "inside", tree=TREE, edits=())
+        git(*FILE_PROTOCOL, "submodule", "add", "-q", str(inside), "sub",
+            cwd=clone)
+        path, common = clone / "sub", common / "modules" / "sub"
+        assert (path / ".git").read_bytes().startswith(b"gitdir: ../")
+    elif shape.endswith(("gitfile", "commondir")):
+        path = tmp_path / "worktree"
+        git("worktree", "add", "-q", "-b", "elsewhere", str(path), cwd=clone)
+        gitfile = path / ".git"
+        named = gitfile.read_bytes().rstrip(b"\n")
+        if shape == "crlf-gitfile":
+            gitfile.write_bytes(named + b"\r\n")
+        elif shape == "nul-gitfile":
+            gitfile.write_bytes(named + b"\0junk\n")
+        else:
+            (common / "worktrees" / path.name / "commondir").write_bytes(
+                b"../..\0junk\n")
+    answered = git("rev-parse", "--path-format=absolute", "--git-common-dir",
+                   cwd=path).stdout.rstrip("\n")
+    assert os.path.realpath(answered) == os.path.realpath(common), shape
+    if shape in TOLD_BY:
+        monkeypatch.setenv(TOLD_BY[shape], str(common))
+    return clone, path, common
+
+
+def split_branch_asked_of(adopter, monkeypatch, clone: Path, path: Path,
+                          common: Path) -> None:
+    """`_branches_at` of `path` for the split branch, with `common`'s
+    `refs/heads/adopt` a directory the system will not list: it is
+    `source-unreadable`, naming that directory in the git directory git
+    names, `common`."""
+    part = "/".join([*common.relative_to(clone / ".git").parts,
+                     "refs", "heads", "adopt"])
+    split_directory_unlisted_here(adopter, monkeypatch, clone, part)
+
+    with pytest.raises(adopter.Refusal) as raised:
+        adopter._branches_at(str(path), path, SPLIT_BRANCH)
+
+    assert raised.value.code == "source-unreadable"
+    assert raised.value.detail == refs_refused(
+        clone, "refs/heads/adopt", BRANCHES_UNTOLD, common=common)
+
+
+@pytest.mark.parametrize("shape", DISK_READS)
+def test_the_disk_places_a_relative_or_crlf_git_file_where_git_does(
+        adopter, monkeypatch, tmp_path, shape):
+    """A submodule's `.git` file names its git directory relative to the
+    file's own folder, not to where the process runs, and a `.git` file
+    that ends in CR LF names the directory without the CR, as git reads
+    both. The refusal is then git's, `source-unreadable` naming the
+    directory in the clone's `.git`."""
+    clone, path, common = a_source_in_shape(monkeypatch, tmp_path, shape)
+    monkeypatch.chdir(tmp_path)
+
+    found = adopter._common_dir_on_disk(path)
+
+    assert found is not None
+    assert os.path.realpath(found) == os.path.realpath(common)
+    split_branch_asked_of(adopter, monkeypatch, clone, path, common)
+
+
+@pytest.mark.parametrize("shape", GIT_IS_ASKED)
+def test_a_source_the_disk_will_not_place_is_asked_of_git_and_refused(
+        adopter, monkeypatch, tmp_path, shape):
+    """Where git is told its directory, or a `.git` file or a `commondir`
+    holds a NUL, the disk says nothing, and git is asked all the same: the
+    refusal is not skipped, and it is not a traceback from a path with a
+    NUL in it."""
+    clone, path, common = a_source_in_shape(monkeypatch, tmp_path, shape)
+
+    assert adopter._common_dir_on_disk(path) is None
+    split_branch_asked_of(adopter, monkeypatch, clone, path, common)

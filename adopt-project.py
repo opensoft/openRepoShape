@@ -9926,8 +9926,9 @@ def _common_dir_on_disk(path: Path) -> Path | None:
     joined to `path`, and otherwise `path` itself; then the one its
     `commondir` file names, joined to it, where it has that file. None
     where git is told another (`GIT_DIR` or `GIT_COMMON_DIR` set), where
-    either file holds what git would not read so (no `gitdir: `, a NUL),
-    or where the disk refuses a read: `_refuse_unlisted_refs_if_seen` asks
+    the `.git` file does not begin `gitdir: `, where either file holds a
+    NUL (git reads such a file up to the NUL; this declines to guess), or
+    where the disk refuses a read: `_refuse_unlisted_refs_if_seen` asks
     git then."""
     if "GIT_DIR" in os.environ or "GIT_COMMON_DIR" in os.environ:
         return None
