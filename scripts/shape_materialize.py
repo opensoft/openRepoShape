@@ -36,10 +36,12 @@ from __future__ import annotations
 
 import argparse
 import codecs
+import contextlib
 import datetime as _dt
 import json
 import os
 import re
+import shlex
 import shutil
 import stat
 import subprocess
@@ -1190,11 +1192,22 @@ def copy_in_the_way(target: Path, actual: str) -> str | None:
 
 
 def adopt_makefile_block(spec_path: str, code_path: str) -> str:
-    """What `adopt-project.py` appends to the assembly root's Makefile, and
-    nothing else does. A scaffolded project's legs are empty, so nothing reads
+    """What `adopt-project.py` appends to the shape's `Makefile`, and nothing
+    else does. A scaffolded project's legs are empty, so nothing reads
     across them yet; an ADOPTED project's code leg holds tooling that used to
     read `contracts/` from beside it and now reads it from the other leg
     through the root.
+
+    IT LANDS WHERE `place` WRITES THE SHAPE'S `Makefile`, WHICH IS NOT ALWAYS
+    THE ROOT'S (#906, #977, #1061). `execute` passes it as
+    `append={"Makefile": ...}`, and `_materialize` adds it to the template's
+    text before `place` writes that text: at the root's `Makefile`, or, where
+    the source keeps a `Makefile` of its own, at `shape/Makefile` (`place`
+    writes a copy to `collision_dir` when its name is taken, and a disk that
+    ignores case takes a kept `makefile` for it). The root's own `Makefile`
+    is then the source's, untouched, and the block waits in `shape/Makefile`
+    until a person merges the two. This said "the assembly root's Makefile"
+    and named only the first (#1135).
 
     RENDERED WITH THE PLAN'S MOUNT PATHS (#522). It was one constant naming
     `spec/contracts`, so a project adopted with `--spec-path legs/spec`
@@ -1750,13 +1763,55 @@ def gives_a_branch_another_name(source: str, destination: str) -> bool:
     the fetch exited 128 ("Cannot fetch both refs/heads/x and
     refs/heads/release/x to refs/remotes/origin/x") where the repository's
     own `git fetch origin`, which has no such first refspec, exits 0
-    (measured, git 2.43, each). A source not under `refs/heads/` names no
-    branch, and is not asked here.
+    (measured, git 2.43, each).
+
+    A PATTERN WHOSE PART BEFORE THE `*` IS A START OF `refs/heads/` NAMES
+    BRANCHES TOO (#1100), as `can_name_a_tag` reads one for tags: git
+    matches a pattern against each ref's whole name, so `refs/heads*` takes
+    every branch, its `*` standing for the `/` and the branch's name. As
+    the `*` takes what the pattern leaves of `refs/heads/` too, no
+    destination under `refs/remotes/origin/` gives a branch the name the
+    first refspec gives it. So such a refspec puts a branch under another
+    name: `+refs/heads*:refs/remotes/origin/h*` put `x` on `h/x`, and
+    clashed wherever the remote has `x` and `h/x`, 128 where the
+    repository's own fetch exits 0, until #1100. Or, where the part before
+    the `*` is all of `refs/heads` and the destination's `*` comes right
+    after a `/` (`+refs/heads*:refs/remotes/origin/h/*`), git refuses the
+    name it gives each branch, `h//x` ("Ignoring funny ref", exit 0), and
+    writes no branch at all (each measured, git 2.43 and 2.47.1). Either
+    way it brings no branch the first refspec does not bring, but its
+    pattern also takes the refs of another namespace it matches, such as
+    `refs/heads-archive/old` for `refs/heads*`, and `origin_fetch_refspecs`
+    says what leaving those out costs (BUT A COMMIT ONLY A REF THAT IS NO
+    BRANCH REACHES). A shorter start, such as `refs/*` or `*`, can name a
+    tag, and that clause has left it out first. ANY OTHER SOURCE NAMES NO
+    BRANCH, though a refspec from one can still put a ref on a branch's
+    name: `origin_fetch_refspecs` says where (WHAT CAN STILL CLASH).
     """
+    fixed, star, _ = source.partition("*")
     if not source.startswith(HEADS_PREFIX):
-        return False
+        return bool(star) and HEADS_PREFIX.startswith(fixed)
     return destination != ORIGIN_BRANCH_NAMES.replace(
         "*", source[len(HEADS_PREFIX):])
+
+
+def _left_out(source: str, destination: str) -> bool:
+    """Whether one of the four clauses of `origin_fetch_refspecs` leaves out
+    the positive refspec from `source` to `destination`, asked in that
+    function's order; its docstring says why each does. The chain is its
+    own function so that the next clause has room under the cognitive
+    complexity the analysis allows (#1100)."""
+    if not destination.startswith("refs/remotes/origin/"):
+        return True  # it writes outside where both tools read branches
+    if can_name_a_tag(source):
+        return True  # a tag is not a branch (RV946's S1, #1009, #1037)
+    if destination == ORIGIN_BRANCH_NAMES:
+        return True  # it lands on the branches' own names (U183, #1066)
+    # the first refspec brings each branch it takes, under its own name
+    # (#1066); a ref that is no branch, which a pattern takes too, no
+    # longer answers for one, so a commit only it reaches is refused, as
+    # one only a tag reaches is (#1100)
+    return gives_a_branch_another_name(source, destination)
 
 
 def origin_fetch_refspecs(configured: list[str]) -> list[str]:
@@ -1777,7 +1832,7 @@ def origin_fetch_refspecs(configured: list[str]) -> list[str]:
     FOUR CLAUSES LEAVE A REFSPEC OUT, asked in this order, and the first
     that matches is the one that leaves it out: a destination OUTSIDE
     `refs/remotes/origin/`, A SOURCE THAT CAN NAME A TAG, THE BRANCHES'
-    GLOB, and A BRANCH UNDER ANOTHER NAME.
+    GLOB, and A BRANCH UNDER ANOTHER NAME. `_left_out` asks them.
 
     A DESTINATION OUTSIDE `refs/remotes/origin/`, a mirror's `+refs/*:refs/*`
     or `+refs/heads/*:refs/heads/*`, is never carried, so no refspec the
@@ -1834,30 +1889,66 @@ def origin_fetch_refspecs(configured: list[str]) -> list[str]:
     branches' own glob is the first refspec.
 
     A BRANCH UNDER ANOTHER NAME IS LEFT OUT (#1066): a source under
-    `refs/heads/` whose destination is not the name the first refspec gives
-    each branch it takes, such as one branch onto another's
+    `refs/heads/`, or a pattern whose part before the `*` is a start of it
+    (`refs/heads*`, #1100), whose destination is not the name the first
+    refspec gives each branch it takes, such as one branch onto another's
     (`+refs/heads/release/x:refs/remotes/origin/x`) or every branch into a
     folder (`+refs/heads/*:refs/remotes/origin/all/*`, `x` onto `all/x`).
     `gives_a_branch_another_name` says which, and how each clashed. One
     that gives each branch its own name, a branch or a folder of them,
     still rides along.
 
-    LEFT OUT BY EITHER OF THE LAST TWO, NOTHING IS LOST TO THE ANSWER: the
-    first refspec brings every branch under its own name, so a commit a
+    LEFT OUT BY EITHER OF THE LAST TWO, NO BRANCH IS LOST TO THE ANSWER:
+    the first refspec brings every branch under its own name, so a commit a
     branch of the remote reaches is reached there, and the fetch works.
     What the repository kept under another name is pruned, or holds the
     branch of that name, until its own next `git fetch origin` writes it
-    back, as for a tag refspec left out; there a refspec written without
-    its `+` is refused as non-fast-forward where the two commits are not in
-    line, as one of the tags onto the branches' names has been since #905
-    (measured, git 2.43).
+    back, as for a tag refspec left out.
 
-    WHAT CAN STILL CLASH is a refspec carried into a folder of its own from
-    another namespace, such as the pull requests in `origin/pr/`, where the
-    remote has a branch whose name falls in that folder (`pr/7` beside pull
-    request 7). The repository's own fetch clashes there too wherever it
-    has the branches' glob, as a clone's default refspec is; left out, what
-    it keeps would be pruned on every run, which is why #686 carries it.
+    BUT A COMMIT ONLY A REF THAT IS NO BRANCH REACHES IS REFUSED where the
+    refspec left out is the one that took that ref, as a commit only a tag
+    reaches is: the pull requests onto the branches' names
+    (`+refs/pull/*/head:refs/remotes/origin/*`, #946), and, since #1100, a
+    ref of another namespace that a pattern by a start of `refs/heads/`
+    takes beside the branches, git matching it against every ref's whole
+    name: `refs/heads-archive/old` by `+refs/heads*:refs/remotes/origin/h*`
+    (onto `origin/h-archive/old`), and `refs/hidden/1` by
+    `+refs/h*:refs/remotes/origin/hh/*`. Carried, such a pattern kept that
+    ref under `origin/`, where it answered for a branch, so both tools
+    pinned the commit until #1100. Left out, the prune drops the ref, the
+    repository's own next `git fetch origin` writes it back, and every run
+    of either tool refuses the commit alike, the dry run and the real run.
+    A refspec whose source is that namespace itself
+    (`+refs/heads-archive/*:refs/remotes/origin/h-archive/*`) is no such
+    pattern: it is carried, and the commit is pinned through it (each
+    measured, git 2.43 and 2.47.1).
+
+    THE COST, ACCEPTED (#1100): where that refspec was written without its
+    `+`, and the commit it keeps under a branch's name does not descend
+    from that branch's own, the repository's next `git fetch origin` is
+    refused as non-fast-forward, exit 1 ("! [rejected] release/x -> origin/x
+    (non-fast-forward)"), and so is every one after it, until `git fetch
+    --force origin` writes the ref back (exit 0, and a plain fetch exits 0
+    after it, until either tool runs again). Carried, the refspec clashed in
+    those very states, so the tools' fetch exited 128 and left that ref
+    alone. No commit is lost: the remote keeps it, and where it is a
+    branch's, the first refspec keeps it under that branch's own name. The
+    tags onto the branches' names, unforced
+    (`refs/tags/*:refs/remotes/origin/*`), have cost the same since #905
+    (each measured, git 2.43 and 2.47.1).
+
+    WHAT CAN STILL CLASH is a refspec carried whose source names no branch,
+    wherever a name it writes is a branch's (#1100): one into a folder of
+    its own from another namespace, such as the pull requests in
+    `origin/pr/`, where the remote has a branch whose name falls in that
+    folder (`pr/7` beside pull request 7), and one onto a single name, such
+    as `+refs/pull/7/head:refs/remotes/origin/main` where the remote has a
+    branch `main`. The repository's own fetch clashes there too wherever it
+    has the branches' glob, as a clone's default refspec is; where it has
+    not, it exits 0 and this fetch 128 (measured, git 2.43 and 2.47.1).
+    Which names the remote's branches have is not known from its refspecs,
+    and left out, what such a refspec keeps would be pruned on every run,
+    which is why #686 carries it.
     """
     refspecs = [ORIGIN_BRANCHES]
     for spec in (value.strip() for value in configured):
@@ -1865,14 +1956,8 @@ def origin_fetch_refspecs(configured: list[str]) -> list[str]:
             continue  # a narrowing refspec never decides reachability (p07)
         spec = spec if spec.startswith("+") else "+" + spec
         source, _, destination = spec[1:].partition(":")
-        if not destination.startswith("refs/remotes/origin/"):
-            continue
-        if can_name_a_tag(source):
-            continue  # a tag is not a branch (RV946's S1, #1009, #1037)
-        if destination == ORIGIN_BRANCH_NAMES:
-            continue  # it lands on the branches' own names (U183, #1066)
-        if gives_a_branch_another_name(source, destination):
-            continue  # the first refspec brings that branch already (#1066)
+        if _left_out(source, destination):
+            continue  # one of the four clauses above leaves it out
         if spec not in refspecs:
             refspecs.append(spec)
     return refspecs
@@ -2424,20 +2509,25 @@ def env_commit(work: Path, message: str) -> None:
     locale with that mode off -- and git keeps the bytes it is given. An
     adoption's split message already carried an em dash, which reached git
     there as a cp1252 byte, and it names each entry path as the source spells
-    it: `Übersicht.md` would land as another byte that is not UTF-8, and
-    `文書.md` would raise `UnicodeEncodeError` after both legs are pushed.
+    it (a printable one; see below): `Übersicht.md` would land as another byte
+    that is not UTF-8, and `文書.md` would raise `UnicodeEncodeError` after
+    both legs are pushed.
     Every caller's message goes the same way: `scaffold-project.py`'s
     assembly commit, `scripts/family.py`'s holder commit, and each first
     commit `git_init_commit` makes (a scaffolded leg, a seeded one).
 
     `errors="replace"` works BOTH WAYS. Decoding, git's own output cannot
-    raise. Encoding, a character UTF-8 cannot carry is written as `?`: the
-    one such character a message can hold is a lone surrogate, the byte of a
-    name that is not UTF-8 as `Source.tree` keeps it. `adopt-project.py`
-    refuses one in a path it extracts (`entry_path_problem`), but a `root`
-    or `drop` entry holding one is listed in the split message, so there the
-    message names it with a `?` in place of that byte, a path that does not
-    exist, rather than raising after both legs are pushed.
+    raise. Encoding, a character UTF-8 cannot carry is written as `?`, and
+    nothing raises after both legs are pushed: the one such character a
+    message can hold is a lone surrogate, the byte of a name that is not
+    UTF-8 as `Source.tree` keeps it. `adopt-project.py` refuses one in a
+    path it extracts (`entry_path_problem`), and a `root` or `drop` entry
+    holding one is listed in the split message, but never raw: the message
+    names each path as `plan`'s report does (`_shown`, #900), so the byte
+    0xE9 reads as an escape with no surrogate in it, `` `caf\\udce9.md` ``,
+    the path the source holds. Written raw it would be a `?`, `caf?.md`, a
+    path that does not exist, which is what this function still writes for
+    a lone surrogate it is handed.
     """
     env = dict(os.environ)
     for key, fallback in (("GIT_AUTHOR_NAME", "openRepoShape scaffold"),
@@ -3627,14 +3717,18 @@ def pin_digest_from_source(source: Path, commit: str, repository: str) -> str:
         why = (exc.detail if isinstance(exc, Refusal)
                else exc.strerror or str(exc))
         named = shown_source(source)
-        raise Refusal(
+        refusal = Refusal(
             "pin-source-unreadable",
             f"{named} could not answer for {repository} @ {commit}: "
             f"{why.replace(str(source), named)}",
             "Remediation: point --pin-source at a clone of that repository "
             "that HAS the pinned commit (`git fetch --all` first), or drop "
             "--pin-source and let `gh api` read the forge.",
-        ) from exc
+        )
+        # The commit it could not read, which a partial clone's cure fetches
+        # by its id (`pin_values_unfetched`, #1182).
+        refusal.commit = commit
+        raise refusal from exc
 
 
 def scaffold_link_remedies(chain) -> dict[str, str]:
@@ -4145,6 +4239,189 @@ def _pinned_commit(args, raw: str, repository: str, typed: str) -> str:
         print(f"--pin {repository} @ {typed[:12]} is an annotated tag; it "
               f"names commit {commit[:12]}, which is what the pin records")
     return commit
+
+
+# ---------------------------------------------------------------------------
+# A partial-clone `--pin-source` is read, and never fetched into (#1182)
+# ---------------------------------------------------------------------------
+#
+# `declared_pin_values` reads a pin in its `--pin-source` with git: `git
+# cat-file -t` of the commit (`commit_in_clone`), then `git ls-tree -r` of
+# it (`tree_digest`). In a partial clone (`git clone --filter`) git fetches
+# an object the clone lacks from its promisor remote on any read that needs
+# it. Measured through `scaffold-project.py` on 961640c6 with git 2.43, the
+# real run and `--dry-run` alike: a `--filter=tree:0` clone, which holds the
+# pinned commit and lacks its trees, and a `--filter=blob:none` clone that
+# lacks the pinned commit, each ran the clone's `upload-pack` once and
+# gained a promisor pack (`.promisor` 1 -> 2) before the digest was read,
+# and the run went on to exit 0. A `blob:none` clone that holds the commit
+# holds its trees, which is all a digest reads, and ran none.
+#
+# `pin_values_unfetched` is that read under `lazy_fetch_off`: a read of an
+# object the clone lacks fails where it fetched, and the reader's own
+# `pin-source-unreadable` then says that the clone is a partial one, and
+# what makes it whole. The scaffold reads its pins through it.
+# `adopt-project.py plan` reads the same pins through `declared_pin_values`,
+# and is not changed here (#1162).
+
+#: The variable git reads to leave out the fetch a partial clone makes for an
+#: object it lacks: `shape-doctor.py`'s `NO_LAZY_FETCH` (#787). Read when
+#: `lazy_fetch_off` is entered.
+NO_LAZY_FETCH = "GIT_NO_LAZY_FETCH"
+#: The refusal `pin_digest_from_source` gives a `--pin-source` that cannot
+#: answer for a pin (#339).
+PIN_SOURCE_UNREADABLE = "pin-source-unreadable"
+#: The config keys `promisor_remotes` reads: git's, in `promisor-remote.c`,
+#: as the doctor's `PROMISOR_KEYS` (#683).
+PROMISOR_KEYS = (r"^(remote\..*\.(promisor|partialclonefilter)"
+                 r"|extensions\.partialclone)$")
+
+
+@contextlib.contextmanager
+def lazy_fetch_off():
+    """This process's environment with `GIT_NO_LAZY_FETCH=1` for as long as
+    it runs, and as it was afterwards: the doctor's `lazy_fetch_off` (#787),
+    around a pin's read (#1182).
+
+    EVERY GIT STARTED INSIDE IT inherits it, and every git those start. A
+    read of an object a partial clone lacks then fails where it fetched
+    (measured with git 2.43: `warning: lazy fetching disabled`, exit 128,
+    and no `upload-pack` ran), and the readers here already answer a read
+    that failed. The variable is put back on the way out, a value it had
+    restored and one it did not have removed, for a caller that goes on in
+    this process.
+
+    WHICH GIT HONOURS IT: git 2.45.0 and later, and the security releases of
+    2024-05-14 back to 2.39.4, whose fix for CVE-2024-32465 made
+    `promisor-remote.c` read it, as distributions' own builds of those do
+    (Ubuntu's 2.43.0-1ubuntu7.1 and later). An older git ignores it, and
+    fetches what the clone lacks, as before #1182."""
+    name = NO_LAZY_FETCH
+    before = os.environ.get(name)
+    os.environ[name] = "1"
+    try:
+        yield
+    finally:
+        if before is None:
+            os.environ.pop(name, None)
+        else:
+            os.environ[name] = before
+
+
+def _config_listed(clone: Path, *asked: str) -> bytes:
+    """What `git config -z <asked>` lists in `clone`, as bytes; nothing
+    where it lists nothing (exit 1) or cannot run. Config only: no object
+    is read, so nothing is fetched."""
+    try:
+        listed = subprocess.run(["git", "config", "-z", *asked],
+                                cwd=str(clone), capture_output=True,
+                                check=False)
+    except OSError:
+        return b""
+    return listed.stdout if listed.returncode == 0 else b""
+
+
+def promisor_remotes(clone: Path) -> list[str]:
+    """The remotes git fetches an object the clone at `clone` lacks from, by
+    the rule git 2.43's `promisor-remote.c` reads its config with, the
+    doctor's `promisor_remotes` (#683): a remote whose `promisor` is true,
+    a remote with a `partialclonefilter`, and the remote
+    `extensions.partialclone` names, that one last, as git asks them; each
+    name once, in the config's order. `promisor = false` alone is not one.
+    A name is decoded as `sys.argv` holds one (`os.fsdecode`)."""
+    true = _config_listed(clone, "--type=bool", "--get-regexp",
+                          r"^remote\..*\.promisor$")
+    promised = {key for key, _newline, value in (
+        record.partition(b"\n") for record in true.split(b"\0"))
+        if value == b"true"}
+    names: list[str] = []
+    named = None
+    for record in _config_listed(clone, "--get-regexp",
+                                 PROMISOR_KEYS).split(b"\0"):
+        key, _newline, value = record.partition(b"\n")
+        if key == b"extensions.partialclone":
+            named = value
+        elif key.endswith(b".partialclonefilter") or key in promised:
+            names.append(os.fsdecode(key[len(b"remote."):key.rindex(b".")]))
+    last = [] if named is None else [os.fsdecode(named)]
+    return [name for name in dict.fromkeys(names) if name not in last] + last
+
+
+def _remote_named(remote: str) -> str:
+    """A remote's name as a refusal names it: between backticks where it is
+    printable and holds none, and otherwise as Python's `repr` spells it."""
+    if remote.isprintable() and "`" not in remote:
+        return f"`{remote}`"
+    return repr(remote)
+
+
+def refetch_command(remote: str, commit: str) -> str:
+    """The command that fetches `commit` from `remote` by its id, with every
+    object it reaches and no filter, as a person pastes it: the name quoted,
+    where it is printable, holds no backtick and is no option; otherwise the
+    step in words. `commit` is a pin's, 40 hex digits, which pastes as it
+    is."""
+    if (remote.isprintable() and "`" not in remote
+            and not remote.startswith("-")):
+        return (f"`git fetch --refetch --no-filter {shlex.quote(remote)} "
+                f"{commit}`")
+    return (f"a `git fetch --refetch --no-filter` of {commit} from the "
+            f"remote named {_remote_named(remote)}")
+
+
+def pin_values_unfetched(args, *, reader: str,
+                         nothing_made: str) -> dict[str, dict[str, str]]:
+    """`declared_pin_values(args)`, read under `lazy_fetch_off` (#1182). A
+    `--pin-source` that is a partial clone (`promisor_remotes`) and cannot
+    answer for a pin without fetching keeps the reader's own
+    `pin-source-unreadable` and its words, and the refusal says that the
+    clone is a partial one, which `reader` never fetches into, and how to
+    make it whole. `reader` names the tool, and `nothing_made` begins the
+    remediation in its own words, as for `refuse_an_unread_pin_source`.
+
+    ONLY A READ THAT FAILED IS ASKED ABOUT. A partial clone that holds the
+    pinned commit and its trees answers as any clone does, and a clone that
+    is no partial one keeps the reader's refusal as it was. Whether it is
+    one is read from its config alone, which reads no object.
+
+    THE CURE IS `git fetch --refetch --no-filter <remote> <commit>`, the
+    commit the reader could not read, and not the reader's `git fetch
+    --all`. That one keeps the clone's filter: it fetches a commit the clone
+    lacks, where a branch it fetches holds it, but names no cause for a
+    `tree:0` clone that holds the commit and lacks its trees. Named by its
+    id, the commit comes with every tree and blob it reaches, from a remote
+    that serves an object by id as a lazy fetch asks for one; with no
+    commit named, the refetch fetched only what the clone's branches hold,
+    and a `blob:none` clone of `main` pinned on another branch stayed
+    `pin-source-unreadable` after it (found in review of #1223)."""
+    try:
+        with lazy_fetch_off():
+            return declared_pin_values(args)
+    except Refusal as exc:
+        # Only `pin_digest_from_source` gives this code, and only for a
+        # `--pin-source`, so the clone is there to ask.
+        if exc.code != PIN_SOURCE_UNREADABLE:
+            raise
+        clone = _resolved_pin_source(args.pin_source)
+        remotes = promisor_remotes(clone)
+        if not remotes:
+            raise
+        cures = ", then ".join(refetch_command(remote, exc.commit)
+                               for remote in remotes)
+        raise Refusal(
+            exc.code,
+            f"{exc.detail}. That clone is a partial clone (`git clone "
+            "--filter`), whose git fetches an object it lacks from its "
+            f"promisor remote ({', '.join(map(_remote_named, remotes))}) on "
+            f"any read that needs it, and {reader} never fetches into a "
+            "--pin-source",
+            f"Remediation: {nothing_made} Make that clone hold the pinned "
+            f"commit and its trees, then run {reader} again: in "
+            f"{shown_source(clone)}, run {cures}, which fetches that commit "
+            "and every object it reaches, with no filter (git 2.36 or "
+            "later). Or point --pin-source at a full clone (`git clone` "
+            "with no `--filter`) that has the pinned commit, or drop "
+            "--pin-source and let `gh api` read the forge.") from exc
 
 
 def declared_pin_products(args) -> dict[str, None]:
