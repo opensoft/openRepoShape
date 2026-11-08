@@ -30,7 +30,10 @@ WHAT IS PINNED HERE
     own;
   * run through the real tools against local bare remotes that refuse like a
     ruleset, each of the six places prints its tool's text after a push to
-    the tracking branch was really refused;
+    the tracking branch was really refused, and the scaffold's is the last
+    thing it prints there: the prompts its re-run can still wait at are said
+    after it on GitHub alone (#1108, `test_scaffold_reuse_seeded_legs.py`),
+    as `--local-remote-dir` reads paths on disk, where none can come;
   * THE EXIT IT OFFERS IS TAKEN, with the ruleset off standing in for the
     operator's bypass, and it FINISHES: the scaffold re-run pushes all three
     repositories, a leg the first run had pushed kept at its commit (the
@@ -397,6 +400,9 @@ def test_the_hint_names_one_exit_and_taking_it_finishes_the_run(
     start = result.stderr.index("If the organisation applies a ruleset")
     block = result.stderr[start:]
     assert block.startswith(text_for(name, repository, tracking) + "\n"), block
+    if case.startswith("scaffold"):
+        # Nothing after it on disk (#1108): no prompt can come there.
+        assert block == text_for(name, repository, tracking) + "\n\n", block
     if tracking != "main":
         assert "main" not in block, "the default branch is not this run's"
 
