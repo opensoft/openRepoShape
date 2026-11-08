@@ -232,6 +232,28 @@ FIRST = {
         f"submodule.{ROW}.update\n    {STAGE}"),
 }
 
+#: A third value git dies on, in another key of OTHER's section: a
+#: `fetchRecurseSubmodules` that is neither a boolean nor `on-demand`.
+NOT_A_BOOLEAN = b"\tfetchRecurseSubmodules = sometimes\n"
+
+#: What git takes for each key a value is given for, as the finding says it.
+UPDATE_TAKES = "one of `none`, `checkout`, `rebase` or `merge`"
+FETCH_TAKES = "a boolean or `on-demand`"
+
+
+def staged_again(key: str, value: str, takes: str) -> str:
+    """What `gitmodules-value-refused` says of the value `value` that the
+    work tree's file alone gives OTHER's `key` (as git spells it) when a
+    line printed above stages the file: `STAGED_ABOVE`, and the stage line
+    last. `takes` is what git takes for that key."""
+    full = f"submodule.{OTHER_ROW}.{key}"
+    return ("FINDING gitmodules-value-refused: .gitmodules gives "
+            f"`{full}` the value `{value}` in the work tree, not in HEAD, "
+            f"and git dies reading a file that does, {DIES_HERE}. Git "
+            f"takes {takes} for that key. {STAGED_ABOVE} Take the key out "
+            "by hand, in a POSIX shell, then stage .gitmodules:\n    git "
+            f"config -f .gitmodules --unset-all {full}\n    {STAGE}")
+
 
 @pytest.mark.parametrize("first", FIRST)
 def test_a_value_the_work_tree_alone_gives_after_a_staging_one_stages_again(
@@ -259,15 +281,8 @@ def test_a_value_the_work_tree_alone_gives_after_a_staging_one_stages_again(
 
     found = found_alike(holder, *MODES)
 
-    assert found == [
-        FIRST[first],
-        "FINDING gitmodules-value-refused: .gitmodules gives "
-        f"`submodule.{OTHER_ROW}.update` the value `!false` in the work "
-        f"tree, not in HEAD, and git dies reading a file that does, "
-        f"{DIES_HERE}. Git takes one of `none`, `checkout`, `rebase` or "
-        f"`merge` for that key. {STAGED_ABOVE} Take the key out by hand, in "
-        "a POSIX shell, then stage .gitmodules:\n    git config -f "
-        f".gitmodules --unset-all submodule.{OTHER_ROW}.update\n    {STAGE}"]
+    assert found == [FIRST[first],
+                     staged_again("update", "!false", UPDATE_TAKES)]
     typed_in_order(holder, env, validate(holder, "--no-members"))
     committed_as_staged(holder, env)
     assert head_bytes(holder, env) == data
@@ -275,17 +290,98 @@ def test_a_value_the_work_tree_alone_gives_after_a_staging_one_stages_again(
     ends_well(holder, env, family, tmp_path)
 
 
-def test_another_value_the_index_s_file_gives_the_key_is_named(
+def test_every_later_value_the_work_tree_alone_gives_stages_again(
         family, holder, offline, tmp_path):
+    """rv1227c's S1 on #1227, its p2a, with three values: `update = !true`
+    in MEMBER's section staged, then `update = !false` and
+    `fetchRecurseSubmodules = sometimes` in OTHER's, given in the work
+    tree's file alone. The first finding's `git add -- .gitmodules` stages
+    both of OTHER's values, so each later finding ends staging the file
+    again, not only the next one: a script that carried the stage line one
+    finding on (rv1227c's K6) left the third at its `--unset-all`, and
+    typed in order, then a plain `git commit`, HEAD gave OTHER
+    `fetchRecurseSubmodules = sometimes`, which the next run named in HEAD.
+    Typed, then a plain `git commit`: HEAD gives no value, and the gate and
+    a plain clone pass."""
+    env = cloning(offline, tmp_path, family)
+    data = head_bytes(holder, env)
+    given = valued(data, ROW, NOT_RUN)
+    (holder / GITMODULES).write_bytes(given)
+    raw(holder, env, "add", "--", GITMODULES)
+    (holder / GITMODULES).write_bytes(valued(
+        given, OTHER_ROW, NOT_RUN_EITHER + NOT_A_BOOLEAN))
+
+    found = found_alike(holder, *MODES)
+
+    assert found == [
+        FIRST["staged"],
+        staged_again("update", "!false", UPDATE_TAKES),
+        staged_again("fetchrecursesubmodules", "sometimes", FETCH_TAKES)]
+    typed_in_order(holder, env, validate(holder, "--no-members"))
+    committed_as_staged(holder, env)
+    assert head_bytes(holder, env) == data
+    assert raw(holder, env, "status", "--porcelain").stdout == b""
+    ends_well(holder, env, family, tmp_path)
+
+
+def test_a_committed_value_the_index_lacks_stages_the_later_ones_again(
+        family, holder, offline, tmp_path):
+    """rv1227c's S1 on #1227, its p8: `update = !true` in MEMBER's section
+    committed, the index's file then staged without it, and the work tree's
+    file giving MEMBER `!true` again and OTHER `update = !false`. MEMBER's
+    finding is committed and not staged, and its `git add -- .gitmodules`
+    stages OTHER's value all the same, so OTHER's ends staging the file
+    again: a script that carried the stage line only past a finding the
+    index's file gives (rv1227c's K8) left it at its `--unset-all`, and
+    typed in order, then a plain `git commit`, HEAD gave OTHER `!false`.
+    Typed, then a plain `git commit`: HEAD is as it was before the value
+    was committed, and the gate and a plain clone pass."""
+    env = cloning(offline, tmp_path, family)
+    data = head_bytes(holder, env)
+    given = valued(data, ROW, NOT_RUN)
+    committed_gitmodules(holder, env, given)
+    (holder / GITMODULES).write_bytes(data)
+    raw(holder, env, "add", "--", GITMODULES)
+    (holder / GITMODULES).write_bytes(valued(given, OTHER_ROW,
+                                             NOT_RUN_EITHER))
+
+    found = found_alike(holder, *MODES)
+
+    assert found == [FIRST["committed"],
+                     staged_again("update", "!false", UPDATE_TAKES)]
+    typed_in_order(holder, env, validate(holder, "--no-members"))
+    committed_as_staged(holder, env)
+    assert head_bytes(holder, env) == data
+    assert raw(holder, env, "status", "--porcelain").stdout == b""
+    ends_well(holder, env, family, tmp_path)
+
+
+#: What the index's file gives MEMBER's `update` beside a work tree's file
+#: that gives `!true`, and how the finding names it: another value, or this
+#: one and another (rv1227c's p3c, its K11).
+INDEX_GIVES_THE_KEY = {
+    "another-value": (NOT_RUN_EITHER, "the value `!false`"),
+    "this-value-and-another": (
+        NOT_RUN + NOT_RUN_EITHER, "the value `!true` and the value `!false`"),
+}
+
+
+@pytest.mark.parametrize("in_index, said", INDEX_GIVES_THE_KEY.values(),
+                         ids=INDEX_GIVES_THE_KEY)
+def test_another_value_the_index_s_file_gives_the_key_is_named(
+        family, holder, offline, tmp_path, in_index, said):
     """rv1227's N4 on #1227, its e4c: the index's file gives MEMBER's
     section `update = !false`, the work tree's, on disk, `update = !true`,
     and HEAD's neither. The finding said the index's file "gives it too",
     of a value it does not give. It names the index's value now. Typed,
     then a plain `git commit`: HEAD is as it was, and the gate and a plain
-    clone pass."""
+    clone pass. rv1227c's p3c, the same row with the index's file giving
+    `!true` and `!false`: a script that said "gives it too" wherever the
+    index's file gives the work tree's value and another (rv1227c's K11)
+    left the other value unnamed; it names both."""
     env = cloning(offline, tmp_path, family)
     data = head_bytes(holder, env)
-    (holder / GITMODULES).write_bytes(valued(data, ROW, NOT_RUN_EITHER))
+    (holder / GITMODULES).write_bytes(valued(data, ROW, in_index))
     raw(holder, env, "add", "--", GITMODULES)
     (holder / GITMODULES).write_bytes(valued(data, ROW, NOT_RUN))
 
@@ -295,8 +391,8 @@ def test_another_value_the_index_s_file_gives_the_key_is_named(
         VALUE_SAID.format(where="in the work tree, not in HEAD",
                           dies=DIES_HERE)
         + "The index's file, which a plain `git commit` records, gives it "
-        "the value `!false`. Take the key out by hand, in a POSIX shell, "
-        "then stage .gitmodules:\n    git config -f .gitmodules "
+        f"{said}. Take the key out by hand, in a POSIX shell, then stage "
+        ".gitmodules:\n    git config -f .gitmodules "
         f"--unset-all submodule.{ROW}.update\n    {STAGE}"]
     typed_in_order(holder, env, validate(holder, "--no-members"))
     committed_as_staged(holder, env)
