@@ -98,18 +98,21 @@ person's. A project's own runs pass neither.
 Every `--link-source` and `--link-remedy` value and path this prints, and
 the path of a `SHAPE_PIN_SOURCE_<PRODUCT>` or of a checkout beside the
 project it names, is named as it is, or as Python's `repr` spells it where a
-character in it is not printable (`_shown`). A caller's FLAG and the words
-it offers for a link, a chain link's name, and the `--project` and
-`--policy` paths are printed as given.
-Every repository name this prints is `repo_shape.spelled` (#1267): in the
+character in it is not printable (`_shown`). A caller's FLAG and the
+`--project` and `--policy` paths are printed as given.
+Every name this classifies or refuses is `repo_shape.spelled` (#1267): in the
 plain listing, in `--explain`, in the `naming-unclassified` and role
 findings, and in a WARNING, a broken-chain finding or an `--explain` line
-whose sentence quotes it. A line feed, an ESC or another control in a name is
-written as the escape Python spells it (`Atlas\\n`), so a name stays on its
-line, a listing holds one row per name with its columns where a plain name's
-are, and a finding for `Atlas` plus a line feed cannot read as one for
-`Atlas`. A name with no such character prints as it did. `spelled` is in
-every `scripts/repo_shape.py` this file can meet, unlike `shown_path`.
+whose sentence quotes it. A sentence that quotes a name is spelled WHOLE, so
+a chain link or the words a caller offers for one (`--link-remedy`) inside it
+is spelled too. A chain link that stands outside such a sentence is printed
+as given: in the `CHAIN` line, in `link-source-unreadable` and in the NOTEs
+that name one. A line feed, an ESC or another control in a name is written as
+the escape Python spells it (`Atlas\\n`), so a name stays on its line, a
+listing holds one row per name with its columns where a plain name's are, and
+a finding for `Atlas` plus a line feed cannot read as one for `Atlas`. A name
+with no such character prints as it did. `spelled` is in every
+`scripts/repo_shape.py` this file can meet, unlike `shown_path`.
 
 EXIT CODES, the same three in every validator this standard ships:
     0  every name classified (and, with `--project`, every declared role and

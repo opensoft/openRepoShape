@@ -28,12 +28,16 @@ did. Ten places print a name or a sentence that quotes it, and each has a row:
 - the `naming-unclassified` finding.
 
 THE ROWS. The shipped contract classifies none of the three names (#1202), so
-the table, the `--explain` header and the finding are asked of it. The other
-sites print a CLASSIFIED name, which only a fork whose patterns take an ESC
-and a line feed can have, so those rows read the shipped contract with its
-character classes widened (`loosened`). A descendant name ends in its product,
-which the direct pin reads, so the control is in its stem; the three kinds are
-asked wherever the name's end is free.
+the table, the `--explain` header and the finding are asked of it. Two more
+names, asked of the table and the finding, pin `spelled` ITSELF and not only
+that the gate calls it: a name with a CR, which a gate that escaped just a line
+feed and an ESC would print raw, and a name with a backslash, which prints as
+it is and which `repr` would double. The other sites print a CLASSIFIED name,
+which only a fork whose patterns take an ESC and a line feed can have, so
+those rows read the shipped contract with its character classes widened
+(`loosened`). A descendant name ends in its product, which the direct pin
+reads, so the control is in its stem; the three kinds are asked wherever the
+name's end is free.
 
 No network and no GitHub: the policy is read in process by a script that runs
 offline.
@@ -48,9 +52,10 @@ from test_value_pattern_line_break import findings
 
 VALIDATOR = REPO / "scripts" / "validate-repository-naming.py"
 POLICY_PATH = REPO / "contracts" / "repository-naming.yaml"
-#: A line feed and an ESC, as the shell would hand them to argv.
+#: A line feed, an ESC and a CR, as the shell would hand them to argv.
 LF = chr(10)
 ESC = chr(27)
+CR = chr(13)
 #: The arrow the chain sentences join links with.
 ARROW = chr(0x2192)
 
@@ -61,6 +66,16 @@ WITH_ESC = ("At" + ESC + "[31mlas", "At\\x1b[31mlas")
 NAMES = [pytest.param(*ENDS_IN_LF, id="ends-in-lf"),
          pytest.param(*INNER_LF, id="inner-lf"),
          pytest.param(*WITH_ESC, id="esc")]
+
+#: Two names that pin `spelled` itself. A gate that escaped only a line feed
+#: and an ESC would print the CR raw, and one that spelled with `repr` would
+#: double the backslash: `spelled` writes a CR as `\r` and leaves a backslash
+#: as it is (the line feed beside it is still `\n`), so the name holding it
+#: is not doubled.
+ENDS_IN_CR = ("Atlas" + CR, "Atlas\\r")
+WITH_BACKSLASH = ("At\\las" + LF, "At\\las\\n")
+SPELLED_ITSELF = [pytest.param(*ENDS_IN_CR, id="ends-in-cr"),
+                  pytest.param(*WITH_BACKSLASH, id="backslash")]
 
 
 def spelled_of(raw: str) -> str:
@@ -115,19 +130,20 @@ def loose(tmp_path_factory) -> str:
 
 # --- the shipped contract: the table, the header and the finding --------------
 
-@pytest.mark.parametrize("raw, said", NAMES)
+@pytest.mark.parametrize("raw, said", NAMES + SPELLED_ITSELF)
 def test_the_finding_prints_the_spelled_name_on_one_line(raw, said,
                                                          unclassified_tail):
     """THE ISSUE'S ROW: on 09697e9c5 `Atlas` plus a line feed gave a blank
     line after `FINDING naming-unclassified: Atlas`, and an ESC reached the
-    terminal."""
+    terminal. The last two names pin what `spelled` writes: `\\r`, and a
+    backslash as it is."""
     result = run_script(VALIDATOR, raw)
     assert result.returncode == 1, result.stdout + result.stderr
     assert result.stderr.splitlines() == [
         f"FINDING naming-unclassified: {said}", *unclassified_tail]
 
 
-@pytest.mark.parametrize("raw, said", NAMES)
+@pytest.mark.parametrize("raw, said", NAMES + SPELLED_ITSELF)
 def test_the_table_has_one_row_for_the_name_with_its_label_in_place(raw, said):
     """The row is `  <name padded to 32> NO FAMILY`, the width worked out
     from the SPELLED name: the escape is longer than the byte it writes, so a
