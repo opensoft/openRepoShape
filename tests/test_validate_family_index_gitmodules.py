@@ -152,9 +152,11 @@ def test_1077_path_twice_records_its_put_back_for_the_next_finding(
     recorded (`_file_put_back`), so `gitmodules-path-unnamed` after it
     puts nothing back. Unrecorded, that finding printed the put-back
     again, and typed in order it put the file back over the hand edit:
-    the commit then kept `second` and `members/Old` in HEAD. Typed in
-    order as printed, then a plain `git commit`: HEAD loses both, and the
-    gate passes in every mode."""
+    the commit then kept `second` and `members/Old` in HEAD. It names
+    whose file it puts back too, #1181's PT7: the index's where the work
+    tree's file is deleted, HEAD's, as the index holds none, where its
+    deletion is staged. Typed in order as printed, then a plain `git
+    commit`: HEAD loses both, and the gate passes in every mode."""
     env = cloning(offline, tmp_path, family)
     committed_gitmodules(holder, env,
                          head_bytes(holder, env) + SECOND + STALE)
@@ -167,6 +169,8 @@ def test_1077_path_twice_records_its_put_back_for_the_next_finding(
     twice, unnamed = found
     put_back = GONE[how][1]
     assert f"`{put_back}`" in twice, twice
+    assert (f"back first from {GONE[how][0]}, `{put_back}`, so that every "
+            "other section stays") in twice, twice
     assert put_back not in unnamed, unnamed
     type_line(holder, env, put_back)
     for key in ("path", "url"):
@@ -267,6 +271,45 @@ def test_1077_a_value_head_alone_gives_says_to_commit_the_index_s_file(
     committed_as_staged(holder, env)
     assert head_bytes(holder, env) == data
     raw(holder, env, "checkout", "--", GITMODULES)
+    ends_well(holder, env, family, tmp_path)
+
+
+def test_1077_a_value_head_gives_where_the_deletion_is_staged_puts_head_s_back(
+        family, holder, offline, tmp_path):
+    """#1181's S1c, NIT 2 of RV1124b: `update = !true` committed in MEMBER's
+    section, and the deletion of `.gitmodules` staged, so the index holds
+    no file and git reads HEAD's, which gives the value (`git submodule
+    status`, exit 128). The value is in the file git reads and in HEAD's,
+    one and the same: the finding says `here and in HEAD, which a clone
+    reads`, and its first line puts back HEAD's file, as the index holds
+    none. A check that read the index's file alone, with no fallback to
+    HEAD's, found nothing in it and said to commit the index's file, with
+    no line, over a deletion a plain `git commit` records. Typed in order,
+    staged and committed: HEAD's file holds no value, both members stay,
+    nothing is left, and the gate and a plain clone pass."""
+    env = cloning(offline, tmp_path, family)
+    committed_gitmodules(holder, env, valued(
+        head_bytes(holder, env), ROW, b"\tupdate = !true\n"))
+    gone(holder, env, "deletion-staged")
+    status = raw(holder, env, "submodule", "status", check=False)
+    assert status.returncode == 128, "premise: git dies reading it"
+
+    found = found_alike(holder, *MODES)
+
+    assert found == [
+        VALUE_SAID.format(where="here and in HEAD, which a clone reads",
+                          dies=DIES_HERE)
+        + "The work tree holds no .gitmodules, so the first line below puts "
+        "back HEAD's, as the index holds none. Take the key out by hand, in "
+        "a POSIX shell, then stage and commit .gitmodules:\n    git "
+        "checkout HEAD -- .gitmodules\n    git config -f .gitmodules "
+        f"--unset-all submodule.{ROW}.update"]
+    typed_in_order(holder, env, validate(holder, "--no-members"))
+    raw(holder, env, "add", "--", GITMODULES)
+    committed_as_staged(holder, env)
+    assert b"!true" not in head_bytes(holder, env)
+    assert head_paths(holder, env) == {ROW, OTHER_ROW}
+    assert raw(holder, env, "status", "--porcelain").stdout == b""
     ends_well(holder, env, family, tmp_path)
 
 
