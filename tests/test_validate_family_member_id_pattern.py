@@ -234,6 +234,22 @@ def test_a_row_id_that_reads_as_a_number_is_its_digits(holder):
     assert result.returncode == 0, result.stdout + result.stderr
 
 
+def test_a_row_spelled_as_an_earlier_one_is_member_duplicates_alone(holder):
+    """THE ROWS ASKED ARE `_check_member_ids_unique`'s: a second row spelled
+    `IRRS`, its `id:` malformed, is `member-duplicate`'s, as the members
+    loop never reaches it either. One finding for one fault; whichever row
+    stays is asked on the next run."""
+    family_root = family_module().Family.open(holder)
+    rows = family_root.members
+    irrs = next(row for row in rows if row["project"] == "IRRS")
+    family_root.write_members([*rows, {**irrs, "id": "irrs" + LF}])
+    result = validate(holder, "--no-members")
+    assert result.returncode == 1, result.stdout + result.stderr
+    assert findings(result.stderr) == [
+        "FINDING member-duplicate: IRRS appears more than once in "
+        "`members:`"], result.stderr
+
+
 @pytest.mark.parametrize("spelled", ["null", None], ids=["null", "no-id"])
 def test_a_row_with_no_id_is_still_member_id_absent_alone(holder, spelled):
     """`id: null` reads as no `id:`, and a row with none is
