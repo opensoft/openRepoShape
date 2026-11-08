@@ -9246,14 +9246,19 @@ def audit_leg(adopt, policy, patterns: list, role: str, rel: str,
         entry["state"] = escaped
         return entry, [], [], [], []
     populated, own_git, unread = mount_read(root, rel)
-    if (unread is not None and root_line is not None
+    if (unread is not None and populated and root_line is not None
             and read_through_the_root(root, rel)):
         # THE ROOT'S LINE COMES FIRST (#1146 over #1174): this leg's git
         # directory is inside the root's own, so it cannot be read because
         # the root's `.git` cannot, and what mends the root's mends it.
         # `mount_read`'s `<leg>: .git/modules/<leg>: cannot be read` would
         # name that symptom once per leg, and `placement` could not say the
-        # root's line once, as the `legs` row does.
+        # root's line once, as the `legs` row does. That holds only where
+        # `mount_read` got as far as the mount's `.git` (`populated`): a
+        # mount it could not stat or list is refused for its own reason,
+        # which the root's `.git` does not mend. One this user can search and
+        # not list (mode 0100 or 0300) has a `.git` that
+        # `read_through_the_root` still reads, and keeps its own line below.
         entry["state"] = entry[GITLINK_UNREAD] = root_line
         return entry, [], [], [], []
     if unread is not None:
