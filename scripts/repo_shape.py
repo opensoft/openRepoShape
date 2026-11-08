@@ -220,11 +220,12 @@ class YamlError(Exception):
 # it was accepted and never read, and no tool writes one, so it is refused
 # rather than read: see `_refuse_indentation_indicator`.
 #
-# A PLAIN NUMBER THIS PYTHON CANNOT MAKE IS REFUSED BY ITS LINE (#1212): an
+# A PLAIN NUMBER THIS READER CANNOT MAKE IS REFUSED BY ITS LINE (#1212): an
 # integer of more digits than `int()` takes (`sys.get_int_max_str_digits()`,
 # 4300 by default), which ended every tool in a `ValueError` traceback, and
-# a decimal too large to be finite, which was read as the float `inf`, a
-# number this reader reads no plain scalar as (`inf` is text). See `_scalar`.
+# a decimal too large for a 64-bit float to hold, which was read as the float
+# `inf`, a number this reader reads no plain scalar as (`inf` is text). See
+# `_scalar`.
 #
 # A BLOCK SCALAR'S BODY IS READ AS YAML READS IT, OR REFUSED BY ITS LINE
 # (#1004). `+` keeps the empty lines at the block's end, where it was read
@@ -613,10 +614,12 @@ def _scalar(raw: str) -> Any:
     A PLAIN NUMBER IT CANNOT MAKE IS REFUSED, WITH A REMEDY (#1212): an
     integer of more digits than `int()` converts, which raises `ValueError`
     past whatever `sys.set_int_max_str_digits` allows (4300 by default), and
-    a decimal too large to be finite, which `float()` makes `inf`. The first
-    was a traceback out of every tool, and the second "the number inf". The
-    value can be thousands of characters long, so the refusal says how many
-    digits it holds, and `load_yaml` names its line.
+    a decimal too large to be finite, which `float()` makes `inf` (that
+    limit is the 64-bit float's, not this Python's, so its refusal does not
+    say "this Python"). The first was a traceback out of every tool, and the
+    second "the number inf". The value can be thousands of characters long,
+    so the refusal says how many digits it holds, and `load_yaml` names its
+    line.
     """
     text = raw.strip(_YAML_WHITE)
     if text == "" or text in ("null", "~", "Null", "NULL"):
@@ -642,9 +645,9 @@ def _scalar(raw: str) -> Any:
         number = float(text)
         if math.isinf(number):
             raise YamlError(f"a plain decimal of {len(text.lstrip('-')) - 1} "
-                            "digits is too large for this Python to read as a "
-                            "number: it would be infinite",
-                            _UNMADE_NUMBER_REMEDY)
+                            "digits is too large to read as a number: a "
+                            "64-bit float cannot hold it, so it would be "
+                            "infinite", _UNMADE_NUMBER_REMEDY)
         return number
     return text
 

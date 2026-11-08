@@ -69,8 +69,8 @@ def too_long(digits: int) -> str:
 
 
 def too_large(digits: int) -> str:
-    return (f"a plain decimal of {digits} digits is too large for this Python "
-            "to read as a number: it would be infinite")
+    return (f"a plain decimal of {digits} digits is too large to read as a "
+            "number: a 64-bit float cannot hold it, so it would be infinite")
 
 
 needs_the_setting = pytest.mark.skipif(
@@ -143,8 +143,11 @@ def test_a_number_the_reader_cannot_make_is_refused_by_its_line(
 #: `(the file, what the reader makes of `k:`)`, by test id: the controls.
 #: The longest integer this Python reads, the largest decimal that is
 #: finite, and the long integer written as text, are each read as before.
+#: `None` is the longest integer, which the row makes itself: `int(LONGEST)`
+#: here would raise at import on a host whose limit is below 4300, and the
+#: file would not collect.
 MADE = {
-    "integer-at-the-limit": (f"k: {LONGEST}\n", int(LONGEST)),
+    "integer-at-the-limit": (f"k: {LONGEST}\n", None),
     "integer-quoted": (f'k: "{LONG}"\n', LONG),
     "decimal-at-the-largest": (f"k: 1{'0' * 308}.0\n", 1e308),
     "decimal-quoted": (f'k: "{INFINITE}"\n', INFINITE),
@@ -154,6 +157,8 @@ MADE = {
 @pytest.mark.parametrize("case", sorted(MADE))
 def test_a_number_the_reader_can_make_reads_as_it_did(default_digits, case):
     text, value = MADE[case]
+    if value is None:
+        value = int(LONGEST)
     assert parse_yaml(text) == {"k": value}
 
 
@@ -209,9 +214,11 @@ def test_a_float_is_said_in_digits_the_reader_reads_back(adopter, case):
     value, digits = FLOATS[case]
     said = adopter._read_as(value)
     assert said == f"the number {digits}", said
-    assert "e" not in digits and "inf" not in digits
+    assert "e" not in digits
+    assert "inf" not in digits
     read = parse_yaml(f"k: {digits}\n")["k"]
-    assert isinstance(read, float) and repr(read) == repr(value), read
+    assert isinstance(read, float), read
+    assert repr(read) == repr(value), read
 
 
 def test_an_integer_and_a_boolean_are_said_as_before(adopter, default_digits):
@@ -318,7 +325,8 @@ def test_a_float_commit_is_said_without_an_exponent(answered, tmp_path,
         f"FINDING plan-pin-malformed: {ENTRY_NAMED} records `commit:` as the "
         f"number {digits}, which is not text. {FROM}, and nothing else: "), (
         found[:400])
-    assert "e+" not in found and "e-0" not in found, found[:400]
+    assert "e+" not in found, found[:400]
+    assert "e-0" not in found, found[:400]
 
 
 @needs_filter_repo
@@ -335,7 +343,8 @@ def test_a_float_follow_up_is_said_without_an_exponent(answered, tmp_path):
         "FINDING plan-bad-follow-ups: item 1 of `follow_ups:` is the number "
         f"1{'0' * 300}.0, not text: `execute` writes each item into the "
         "split commit's message as one line of text"], checked.stderr[:2000]
-    assert checked.returncode == 1 and executed.returncode == 2
+    assert checked.returncode == 1, checked.stderr[:2000]
+    assert executed.returncode == 2, executed.stderr[:2000]
     assert f"  {found[0]}" in executed.stderr.splitlines(), (
         executed.stderr[:2000])
     assert asked == "", asked
