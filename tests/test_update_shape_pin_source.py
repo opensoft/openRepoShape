@@ -244,6 +244,24 @@ def test_a_tilde_user_who_is_not_there_is_refused_in_the_pins_name(
 
 
 @pytest.mark.parametrize("passed", ROUTES)
+def test_a_tilde_user_who_is_not_there_is_looked_up_as_the_bare_path(
+        root, upstream_and_project, tmp_path, passed):
+    """The bare path is kept, as `expanduser` could not expand it: a folder
+    of that very name where the command runs, holding no repository, is
+    `update-upstream-not-a-repo` as any folder the value names is."""
+    here = tmp_path / "here"
+    (here / NO_SUCH_HOME).mkdir(parents=True)
+    written_as(root, NO_SUCH_HOME)
+    result = run(root, "check",
+                 *(upstream_of(upstream_and_project) if passed else ()),
+                 cwd=here)
+    assert result.returncode == 2, result.stdout + result.stderr
+    assert result.stderr.splitlines() == refused(
+        root, "update-upstream-not-a-repo", f"'{NO_SUCH_HOME}'",
+        NOT_A_REPO), result.stderr
+
+
+@pytest.mark.parametrize("passed", ROUTES)
 def test_a_name_too_long_for_a_path_is_nothing_there_and_is_named_as_the_pins(
         root, upstream_and_project, passed):
     """A value whose first part is over 255 bytes, and no `owner/repo`
