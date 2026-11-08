@@ -494,12 +494,13 @@ options:
   --org ORG             the organisation the source repository is in, which
                         the plan records as `org:` (default: the organisation
                         of an `org/repo` --source, or the one a local source's
-                        `origin` url names). A source whose `origin` is a
-                        path, or that has none, names no organisation: `plan`
-                        refuses it as `adopt-no-org` unless --org is given.
-                        `execute` refuses one over 39 characters without
-                        --local-remote-dir, GitHub's limit on an
-                        organisation's name.
+                        `origin` url names, or, where it has no `origin`, its
+                        only remote's). A source whose `origin` is a path, or
+                        that has none and not one other remote, names no
+                        organisation: `plan` refuses it as `adopt-no-org`
+                        unless --org is given. `execute` refuses one over 39
+                        characters without --local-remote-dir, GitHub's limit
+                        on an organisation's name.
   --id ID               lowercase project id (default: --project lowercased).
                         `execute` refuses one over 39 characters without
                         --local-remote-dir: GitHub keeps a topic to 50, and
