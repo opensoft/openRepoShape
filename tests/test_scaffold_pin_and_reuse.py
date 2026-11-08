@@ -763,10 +763,14 @@ MISREAD_BARE = {
 }
 #: Names that begin with a letter, `_` or `.` and that it reads back bare as
 #: the same text, so each is written bare, as main wrote it: the plain
-#: names, and those that only look like a number or a word to a reader
-#: other than the project's.
+#: names.
 READ_BARE = ("openGlass", "Openglass", "open-glass", "open_glass",
-             "openGlass2", "_x", "x.y", ".5", ".inf", "yes", "off")
+             "openGlass2", "_x", "x.y")
+#: Names it reads back bare as the same text, but that only look like a
+#: number or a word to a reader other than the project's: YAML 1.1 or 1.2's
+#: core schema reads each as a float or a bool, as PyYAML's `safe_load`
+#: does. They were written bare until #912; each is double-quoted now.
+STOCK_MISREAD = (".5", ".inf", "yes", "off")
 #: Names it reads back bare as the same text, but that begin with a digit
 #: or `-`, so `adopt-project.py`'s `y` quotes them in a plan's `product:`.
 #: The scaffold wrote them bare until #924, and a standard YAML reader took
@@ -795,13 +799,16 @@ def listed(entries: str) -> object:
       for kind, names in MISREAD_BARE.items() for name in names),
     *(pytest.param(name, id=f"bare-{name}") for name in READ_BARE),
     *(pytest.param(name, id=f"quoted-by-y-{name}") for name in QUOTED_BY_Y),
+    *(pytest.param(name, id=f"stock-misread-{name}")
+      for name in STOCK_MISREAD),
 ])
 def test_each_entry_reads_back_as_the_product(scaffolder, product):
     """Every product reads back as its text. A name that begins with a
     letter, `_` or `.` and that the reader reads back bare is written bare,
-    so a root's `openGlass` line does not move by a byte; every other is
-    double-quoted, as `adopt-project.py` writes it (#924), which the reader
-    always reads back."""
+    so a root's `openGlass` line does not move by a byte, unless YAML 1.1
+    or 1.2 reads it as no text (#912); every other is double-quoted, as
+    `adopt-project.py` writes it (#924), which the reader always reads
+    back."""
     entries = scaffolder._neutral_product_pins([product])
     assert listed(entries) == [product]
     spelled = product if product in READ_BARE else double_quoted(product)
@@ -812,7 +819,7 @@ def test_every_entry_together_reads_back_in_the_order_given(scaffolder):
     """All of them in one list, as many `--pin`s write it: one line each, in
     the order the pins were given, as the scaffold has always listed them."""
     every = [*(name for names in MISREAD_BARE.values() for name in names),
-             *READ_BARE, *QUOTED_BY_Y]
+             *READ_BARE, *QUOTED_BY_Y, *STOCK_MISREAD]
     entries = scaffolder._neutral_product_pins(every)
     assert entries.count("\n") == len(every)
     assert listed(entries) == every

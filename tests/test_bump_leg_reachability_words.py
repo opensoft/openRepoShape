@@ -17,6 +17,10 @@ THE STATES #795 FIXED IN `family.py bump` (#686), IN `bump-leg.py`'S TWINS:
   the network or the credential". The note, `bump-leg-commit-local-only` and
   `bump-leg-commit-not-on-remote` now say it has no remote named `origin`,
   and to give it back; a leg config git cannot read is git's failure, quoted.
+  A tag the leg holds without its commit is told that the leg holds the tag
+  and not the commit, not that the id is missing from the store (#1103); a
+  tag through a tag the leg lacks is told which tag, and a tag of a tree or
+  a blob the leg lacks is refused by name, as one of a held tree or blob is.
 - A BRANCH DELETED ON THE REMOTE SINCE THE LAST FETCH. Its stale
   remote-tracking ref counted, so a commit no ref of the remote keeps was
   pinned. The fetch now prunes, with `--no-prune-tags`: a ref under
@@ -38,6 +42,7 @@ session's spec remote, beside the root; the leg's `origin` points at it.
 
 from __future__ import annotations
 
+import subprocess
 import sys
 from pathlib import Path
 
@@ -81,12 +86,13 @@ def runner(project: Path, remotes: Path, via: str):
         *extra)
 
 
-def made_in_the_leg(project: Path, name: str) -> str:
-    """A commit made inside the leg's mount, adding `<name>.md`, with the leg
-    put back where it stood, detached at the pin. Returns the commit."""
+def made_in_the_leg(project: Path, name: str, on: str = "HEAD") -> str:
+    """A commit made inside the leg's mount, adding `<name>.md`, on top of
+    `on` (the pin unless a commit is named), with the leg put back where it
+    stood, detached at the pin. Returns the commit."""
     leg = project / "spec"
     pinned = git("rev-parse", "HEAD", cwd=leg).stdout.strip()
-    git("checkout", "-q", "--detach", cwd=leg)
+    git("checkout", "-q", "--detach", on, cwd=leg)
     (leg / f"{name}.md").write_text(f"{name}\n", encoding="utf-8")
     git("add", "--", f"{name}.md", cwd=leg)
     git("commit", "-qm", name, cwd=leg)
@@ -135,6 +141,22 @@ def local_only(commit: str) -> tuple[str, str]:
         "of the world cannot bootstrap.")
 
 
+def only_a_tag_reaches(project: Path, remotes: Path, via: str,
+                       made: str):
+    """The premises of a commit `made` only a tag of the leg's remote
+    reaches, then the root branched: returns `(run, before)`, the runner
+    through `via` and the root's snapshot. `test_bump_leg_fetch_refspecs.py`
+    asks it too (#1068's review, NIT 3)."""
+    assert not contains(bare_of(remotes), made, "refs/heads/"), (
+        "premise: no branch of the leg's remote reaches it")
+    assert contains(bare_of(remotes), made, "refs/tags/"), (
+        "premise: a tag of the leg's remote does")
+    assert not contains(project / "spec", made, "refs/remotes/"), (
+        "premise: no remote-tracking ref of the leg does")
+    branched(project)
+    return runner(project, remotes, via), snapshot(project)
+
+
 def tag_reaches(commit: str) -> tuple[str, str]:
     """`bump-leg-commit-local-only`'s two lines where a tag of the leg's
     remote reaches `commit` and no branch does (#898): no claim that nobody
@@ -166,15 +188,7 @@ def test_a_commit_only_a_tag_of_the_remote_reaches_is_told_so(
     made = made_in_the_leg(project, "RELEASE")
     tag = tagged(leg, "v-release-w898", made)
     pushed(project, "refs/tags/v-release-w898", "refs/tags/v-release-w898")
-    assert not contains(bare_of(remotes), made, "refs/heads/"), (
-        "premise: no branch of the leg's remote reaches it")
-    assert contains(bare_of(remotes), made, "refs/tags/"), (
-        "premise: a tag of the leg's remote does")
-    assert not contains(leg, made, "refs/remotes/"), (
-        "premise: no remote-tracking ref of the leg does")
-    branched(project)
-    run = runner(project, remotes, via)
-    before = snapshot(project)
+    run, before = only_a_tag_reaches(project, remotes, via, made)
 
     stderr = assert_one_refusal(project, run,
                                 made if typed == "commit" else tag,
@@ -325,6 +339,96 @@ def test_a_tag_of_a_tag_the_two_share_reaches_it(project, scaffolded, via):
     assert refusal(stderr) == tag_reaches(made)
 
 
+@pytest.mark.parametrize("kinds", [
+    ("annotated", "annotated"), ("lightweight", "annotated"),
+    ("annotated", "lightweight")],
+    ids=["both-annotated-made-apart", "leg-lightweight-remote-annotated",
+         "leg-annotated-remote-lightweight"])
+@pytest.mark.parametrize("via", VIA)
+def test_a_tag_at_a_descendant_of_the_commit_reaches_it(
+        project, scaffolded, via, kinds):
+    """#1019. A TAG AT A DESCENDANT OF THE COMMIT REACHES IT, as a tag at the
+    commit does: the leg's tags are listed with `for-each-ref --contains`, a
+    tag at the commit or at any commit made on top of it, where `--points-at`
+    lists only a tag AT the commit. A commit on no branch of the leg's remote
+    and a commit made on top of it, on none either; the leg and the remote
+    each tag the DESCENDANT `v1`, made apart (the reviewer's case J of #988).
+    Both runs refuse the commit `bump-leg-commit-local-only` in the tag
+    words, through the leg's `origin` and through `--local-remote-dir`, with
+    nothing moved and the leg's own `v1` as it was. No row before this one
+    tags a descendant of the commit: the tags in them are at the commit itself
+    or below it, so `--points-at` in place of `--contains`, the mutant M9 of
+    #988's review, survived every row of this file."""
+    leg_kind, remote_kind = kinds
+    remotes = private_remote(project, scaffolded)
+    bare = bare_of(remotes)
+    leg = project / "spec"
+    made = made_in_the_leg(project, "BELOW")
+    above = made_in_the_leg(project, "ABOVE", on=made)
+    remote_tag = tag_as(leg, remote_kind, "v1-w1019", above, "the remote's")
+    pushed(project, "refs/tags/v1-w1019", "refs/tags/v1-w1019")
+    git("tag", "-d", "v1-w1019", cwd=leg)
+    leg_tag = tag_as(leg, leg_kind, "v1-w1019", above, "the leg's")
+    assert git("rev-parse", f"{above}^", cwd=leg).stdout.strip() == made, (
+        "premise: the commit is the parent of the one the tags name")
+    assert leg_tag != remote_tag, "premise: the two tags are two objects"
+    for work in (leg, bare):
+        assert git("rev-parse", "refs/tags/v1-w1019^{}", cwd=work
+                   ).stdout.strip() == above, (
+            "premise: both tags name the descendant")
+        assert git("for-each-ref", "--points-at", made, "refs/tags/",
+                   cwd=work).stdout == "", (
+            "premise: no tag is AT the commit")
+    run, before = only_a_tag_reaches(project, remotes, via, made)
+
+    stderr = assert_one_refusal(project, run, made,
+                                "bump-leg-commit-local-only", before)
+
+    assert refusal(stderr) == tag_reaches(made)
+    assert "cannot fetch" not in stderr
+    assert git("rev-parse", "v1-w1019", cwd=leg).stdout.strip() == leg_tag, (
+        "the leg's own tag is as it was")
+
+
+@pytest.mark.parametrize("via", VIA)
+def test_a_tag_at_an_ancestor_of_the_commit_alone_keeps_the_plain_words(
+        project, scaffolded, via):
+    """#1019's CONTROL, the row above turned over. The commit the run names is
+    the CHILD here, which the leg's remote does not hold, and the leg and the
+    remote both tag its PARENT, which only a tag reaches. A tag at an
+    ancestor does not reach a commit made on top of it: `for-each-ref
+    --contains` lists the tags at the commit and above it, never below it. So
+    both runs keep the plain words, "a pin the rest of the world cannot
+    fetch" included, which are true of the child, through `origin` and
+    through `--local-remote-dir`. A check that read the tags the other way
+    round (`--merged`) would tell the tag words here."""
+    remotes = private_remote(project, scaffolded)
+    bare = bare_of(remotes)
+    leg = project / "spec"
+    parent = made_in_the_leg(project, "PARENT")
+    child = made_in_the_leg(project, "CHILD", on=parent)
+    tag_as(leg, "annotated", "v-below-w1019", parent, "the parent's")
+    pushed(project, "refs/tags/v-below-w1019", "refs/tags/v-below-w1019")
+    assert git("rev-parse", f"{child}^", cwd=leg).stdout.strip() == parent, (
+        "premise: the commit named is the child of the one tagged")
+    assert contains(bare, parent, "refs/tags/"), (
+        "premise: a tag of the leg's remote reaches the parent")
+    assert git("cat-file", "-e", child, cwd=bare, check=False
+               ).returncode != 0, "premise: the remote does not hold the child"
+    assert not contains(leg, child, "refs/tags/"), (
+        "premise: no tag of the leg reaches the child")
+    assert not contains(leg, child, "refs/remotes/"), (
+        "premise: no remote-tracking ref of the leg does")
+    branched(project)
+    run = runner(project, remotes, via)
+    before = snapshot(project)
+
+    stderr = assert_one_refusal(project, run, child,
+                                "bump-leg-commit-local-only", before)
+
+    assert refusal(stderr) == local_only(child)
+
+
 # --- R613 p10: a leg with no remote named `origin` --------------------------
 
 #: The note both runs print first when the leg has no remote named `origin`.
@@ -432,6 +536,188 @@ def test_an_id_a_leg_with_no_origin_lacks_is_not_put_down_to_the_network(
         "Remediation: check the commit — it belongs to the LEG, not to the "
         "assembly root — and push it to a branch of the leg first if it is "
         f"not pushed yet; {origin_back(project)}.")
+
+
+def pushed_nowhere(project: Path, remotes: Path) -> tuple[Path, str]:
+    """`(work, commit)`: a clone of the leg's remote beside the root, and a
+    commit made in it and pushed nowhere, adding `HELD.md`, so its tree and
+    that file's blob are pushed nowhere either."""
+    work = cloned_just_pushed(bare_of(remotes), project.parent / "tag-work",
+                              recurse=False)
+    git("checkout", "-q", "--detach", cwd=work)
+    (work / "HELD.md").write_text("held by a tag alone\n", encoding="utf-8")
+    git("add", "--", "HELD.md", cwd=work)
+    git("commit", "-qm", "A commit pushed nowhere", cwd=work)
+    return work, git("rev-parse", "HEAD", cwd=work).stdout.strip()
+
+
+def written_into_the_leg(project: Path, work: Path, *tags: str) -> None:
+    """Each of `tags`, a tag object of `work`, written into the leg from its
+    own bytes, and nothing it names."""
+    for tag in tags:
+        raw = subprocess.run(["git", "cat-file", "tag", tag], cwd=work,
+                             capture_output=True, check=True).stdout
+        made = subprocess.run(["git", "hash-object", "-t", "tag", "-w",
+                               "--stdin"], cwd=project / "spec", input=raw,
+                              capture_output=True, check=True)
+        assert made.stdout.decode().strip() == tag
+
+
+def held_without_its_commit(project: Path, remotes: Path) -> tuple[str, str]:
+    """`(tag, commit)`: an annotated tag of a commit pushed nowhere, whose
+    object alone is written into the leg. No fetch brings the commit: the
+    remote has neither."""
+    work, commit = pushed_nowhere(project, remotes)
+    tag = tagged(work, "held-w1103", commit)
+    written_into_the_leg(project, work, tag)
+    return tag, commit
+
+
+def test_a_tag_a_leg_with_no_origin_holds_alone_is_told_it_is_held(
+        project, scaffolded):
+    """#1103, rv1090's NIT on #1090. A tag id the leg holds without the
+    commit it names, in a leg with no `origin`: `peeled_target` cannot peel
+    it there, so it reaches this verdict as typed (#912), and both runs
+    said it "is not in the leg's own object store", which the tag is. They
+    now say the leg holds the tag and not the commit it names, under the
+    same code, and to push that commit and give the leg its `origin` back."""
+    remotes = private_remote(project, scaffolded)
+    tag, commit = held_without_its_commit(project, remotes)
+    leg = project / "spec"
+    assert git("cat-file", "-t", tag, cwd=leg).stdout.strip() == "tag", (
+        "premise: the leg holds the tag")
+    assert git("cat-file", "-e", commit, cwd=leg,
+               check=False).returncode != 0, "premise: and not its commit"
+    without_origin(project, "renamed")
+    branched(project)
+    run = runner(project, remotes, "origin")
+    before = snapshot(project)
+
+    stderr = assert_one_refusal(project, run, tag,
+                                "bump-leg-commit-not-on-remote", before)
+
+    assert told_no_origin(stderr) == (
+        f"REFUSED bump-leg-commit-not-on-remote: {tag} is an annotated tag "
+        "the leg's own object store holds without the commit it names, and "
+        f"the leg's mount, {project.resolve() / 'spec'}, has no remote named "
+        "`origin` to fetch that commit from, so whether a branch of "
+        f"{REPOSITORY} reaches it is not known",
+        "Remediation: check the tag — the commit it names belongs to the "
+        "LEG, not to the assembly root — and push that commit to a branch of "
+        f"the leg first if it is not pushed yet; {origin_back(project)}.")
+    assert "is not in the leg's own object store" not in stderr
+
+
+@pytest.mark.parametrize("end", ["held", "missing"],
+                         ids=["commit-held", "commit-missing"])
+def test_a_tag_through_a_tag_the_leg_lacks_is_told_which_tag_it_lacks(
+        project, scaffolded, end):
+    """#1131's review, NIT 1 (a). A tag of a tag of a commit, of which the
+    leg holds the outer tag and not the inner one, in a leg with no
+    `origin`; the commit is the leg's own pin, or one pushed nowhere.
+    `peeled_target` cannot peel it there, and both runs said the leg holds
+    it "without the commit it names", which is untrue where the leg holds
+    that commit. The tags' own headers say it is a tag the leg lacks: both
+    runs now name that tag, under the same code, say that what it names is
+    not known there, and say to push the tags and give the leg its `origin`
+    back."""
+    remotes = private_remote(project, scaffolded)
+    leg = project / "spec"
+    work, made = pushed_nowhere(project, remotes)
+    commit = (git("rev-parse", "HEAD", cwd=leg).stdout.strip()
+              if end == "held" else made)
+    inner = tagged(work, "inner-w1131", commit)
+    outer = tagged(work, "outer-w1131", inner)
+    written_into_the_leg(project, work, outer)
+    assert git("cat-file", "-e", inner, cwd=leg,
+               check=False).returncode != 0, "premise: the leg lacks `inner`"
+    holds = git("cat-file", "-e", commit, cwd=leg, check=False).returncode
+    assert (holds == 0) == (end == "held"), "premise: the commit, as `end`"
+    without_origin(project, "renamed")
+    branched(project)
+    run = runner(project, remotes, "origin")
+    before = snapshot(project)
+
+    stderr = assert_one_refusal(project, run, outer,
+                                "bump-leg-commit-not-on-remote", before)
+
+    assert told_no_origin(stderr) == (
+        f"REFUSED bump-leg-commit-not-on-remote: {outer} is an annotated tag "
+        "the leg's own object store holds without a tag it leads through, "
+        f"{inner}, and the leg's mount, {project.resolve() / 'spec'}, has no "
+        "remote named `origin` to fetch that tag from, so what that tag "
+        f"names, and whether a branch of {REPOSITORY} reaches it, are not "
+        "known",
+        "Remediation: check the tag — the tags it leads through, and what "
+        "they name, belong to the LEG, not to the assembly root — and push "
+        "them to the leg first if they are not pushed yet, and any commit "
+        f"they name to a branch of it; {origin_back(project)}.")
+    assert "without the commit it names" not in stderr
+
+
+#: `bump-leg-target-not-a-commit`'s remediation, for a tree, a blob or a tag
+#: of either.
+NOT_A_COMMIT_REMEDIATION = (
+    "Remediation: pass a commit — `git log --format=%H` in the leg lists "
+    "them — or an annotated tag of one, whose own id is peeled to the "
+    "commit it names, as `family.py add --at` peels one. A tree's or a "
+    "blob's id is part of a commit and never one, and a pin is a commit or "
+    "it is nothing.")
+
+#: A tag the leg holds without what it names: what that is, and how many tags
+#: lead to it, every one of them held.
+TAGS_OF_NO_COMMIT = {"tag of a tree": ("tree", 1),
+                     "tag of a blob": ("blob", 1),
+                     "tag of a tag of a tree": ("tree", 2),
+                     "tag of a tag of a tag of a tree": ("tree", 3)}
+
+
+@pytest.mark.parametrize("gone", ["kept", "renamed"],
+                         ids=["origin", "no-origin"])
+@pytest.mark.parametrize("kind", TAGS_OF_NO_COMMIT)
+def test_a_tag_of_a_tree_or_a_blob_the_leg_lacks_is_refused_by_name(
+        project, scaffolded, kind, gone):
+    """#1131's review, NIT 1 (b). A tag of a tree or of a blob, or a tag of
+    a tag, or of a tag of a tag, of a tree with every tag held, that the leg
+    holds without the tree or the blob, both pushed nowhere, so no fetch
+    brings them. Its peel cannot be read there, so it went on, as typed, to
+    the reachability verdict: with no `origin` the leg was said to hold it
+    "without the commit it names" and told to "push that commit", and with
+    one that no branch contains it, of a tag that names no commit at all.
+    The tags' own headers say what it names: both runs now refuse it
+    `bump-leg-target-not-a-commit`, in the words a tag of a tree or a blob
+    the leg holds has (`NOT_COMMITS`, `test_bump_leg_dry_run_truth.py`),
+    since no fetch makes either a commit. The chain of three tags is a kind
+    of its own (rc1131's NIT 2): the walk that reads each header in turn
+    must not stop at the second."""
+    remotes = private_remote(project, scaffolded)
+    leg = project / "spec"
+    work, made = pushed_nowhere(project, remotes)
+    what, depth = TAGS_OF_NO_COMMIT[kind]
+    named = git("rev-parse", f"{made}:HELD.md" if what == "blob"
+                else f"{made}^{{tree}}", cwd=work).stdout.strip()
+    tags = [tagged(work, "named-w1131", named)]
+    for step in range(depth - 1):
+        tags.insert(0, tagged(work, f"outer{step + 1}-w1131", tags[0]))
+    written_into_the_leg(project, work, *tags)
+    assert git("cat-file", "-e", named, cwd=leg,
+               check=False).returncode != 0, f"premise: no {what} in the leg"
+    if gone == "renamed":
+        without_origin(project, gone)
+    branched(project)
+    run = runner(project, remotes, "origin")
+    before = snapshot(project)
+
+    stderr = assert_one_refusal(project, run, tags[0],
+                                "bump-leg-target-not-a-commit", before)
+
+    said = told_no_origin(stderr) if gone == "renamed" else refusal(stderr)
+    assert said == (
+        f"REFUSED bump-leg-target-not-a-commit: --to {tags[0]} is an "
+        f"annotated tag of a {what} in the leg ({REPOSITORY}), not a commit",
+        NOT_A_COMMIT_REMEDIATION)
+    assert git("cat-file", "-e", named, cwd=leg,
+               check=False).returncode != 0, "the fetch did not bring it"
 
 
 #: A `url` with no value under the leg's `[remote "origin"]`. Git's config
