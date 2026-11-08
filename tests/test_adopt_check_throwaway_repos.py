@@ -2494,3 +2494,38 @@ def test_a_compare_git_refuses_is_named_where_the_root_is_not_laid_out(
     assert codes(result) == ["plan-root-blocks-shape-copy",
                              REENCODED_FILES], result.stderr
     assert finding_lines(result)[1] == compare_refused(NOTES)
+
+
+def test_a_gitattributes_the_mount_removes_is_still_compared(tmp_path):
+    """Only the `.gitattributes` the mount's `git rm` leaves are marked
+    unchanged in its compare: one the plan sends to a leg, committed with
+    CRLF under the root's `* text eol=lf`, is compared and named, as on
+    93d29314."""
+    files = {ROOT_ATTRIBUTES: TEXT_EOL_LF, "docs/.gitattributes":
+             b"*.md text\r\n", "docs/a.md": b"# a\n"}
+    plan = planned(a_source(tmp_path, files=files), tmp_path,
+                   {"docs/": "spec"})
+    result = checked(plan)
+    assert result.returncode == 1, result.stderr
+    assert codes(result) == [REENCODED_FILES], result.stderr
+    found = finding_lines(result)[0]
+    assert SENT_CRLF in found and ": `docs/.gitattributes`." in found, found
+
+
+def test_each_refusal_is_named_in_the_groups_order(tmp_path):
+    """A filter that fails for every Markdown file: the split's `git add`
+    refuses the kept `README.md`, the mount's compare the spec it sends to
+    the spec leg, and the split's store the pinned `AGENTS-shape.md`, in
+    the order of the groups, what the root keeps first. On 93d29314 the
+    compare's was the list `diff-files` gave, first."""
+    source = a_source(tmp_path, files={
+        ROOT_ATTRIBUTES: f"*.md filter={FAILING}\n".encode()})
+    result = checked(planned(source, tmp_path, {}),
+                     with_parameters(tmp_path, FAILING_FILTER))
+    assert result.returncode == 1, result.stderr
+    assert codes(result) == [REENCODED_FILES] * 3, result.stderr
+    store, compare, copies = finding_lines(result)
+    assert "to store again what the plan keeps in the assembly root" in store
+    assert "`fatal: README.md: clean filter" in store, store
+    assert compare == compare_refused(SPEC_MD)
+    assert "to store the pinned shape copies the split writes" in copies
