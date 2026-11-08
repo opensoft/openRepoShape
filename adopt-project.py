@@ -3718,8 +3718,10 @@ def contracts_from_code_leg(spec_path, code_path, spec_leg_paths,
     NO PATH, so no hand edit of either can contradict it, and it leaves the
     path itself to the two mounts printed beside it. That path is the one
     #522's review (auA-13) showed a person gets wrong for nested legs by
-    hand, and `CONTRACTS_DIR` is the root Makefile's alone. So it is printed
-    where the mounts are, computed from the values the surface itself prints:
+    hand, and `CONTRACTS_DIR` is the shape's Makefile's alone: the root's
+    `Makefile`, or, where the source keeps a `Makefile` of its own,
+    `shape/Makefile` (#906, #977, #1061). So it is printed where the mounts
+    are, computed from the values the surface itself prints:
     `check`'s `mount the legs at X/ and Y/`, from the plan as it stands, and
     the split message's `mounted back here at X/ and Y/`, from the mounts
     `execute` made. It is never stored in `follow_ups:`, so it cannot go stale
@@ -11178,6 +11180,14 @@ def _root_symlink_findings(plan: Plan, source: Source, tree: list,
     `_shape_blocks` reports the same way, and is not said again either; nor
     is a symlink AT a declared pin's file or AT the shape's own pin, #273's
     `plan-root-holds-pin` (`_links_at_a_pin`, #524).
+
+    A link AT a copy or AT a pin's file whose target `plan-empty-symlink`
+    or `plan-bad-symlink-target` names one by one is the exception to both
+    (#979): `_root_shape_findings` and `_kept_pin_findings` leave it out,
+    and it is named once, by its own finding alone, as a link AT
+    `project.yaml` is. A link those two findings only count, past the
+    twenty each names, is still #262's or #273's to say
+    (`_named_symlinks`).
 
     A walk that stops at a symlink with an empty target, or one that begins
     with a NUL byte (#388), is #303's to say: `plan-empty-symlink` names
