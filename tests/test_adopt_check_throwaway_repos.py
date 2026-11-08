@@ -2375,9 +2375,10 @@ def compare_refused(path: str) -> str:
             "compare what the plan sends to a leg or drops with its blob, "
             "as the mount's `git rm` does (git said `fatal: "
             f"{path}: clean filter '{FAILING}' failed`), so `execute` would "
-            "stop after the leg repositories exist, at its first clone of "
-            "the source. Change the rule or the setting git names, and "
-            "re-run `plan`.")
+            "stop after the leg repositories exist, at the first step that "
+            "reads that file again: extracting the spec leg, extracting the "
+            "code leg once the spec leg is pushed, or mounting the legs. "
+            "Change the rule or the setting git names, and re-run `plan`.")
 
 
 @pytest.mark.parametrize("handed", EVERY_FORM)
@@ -2446,37 +2447,20 @@ def test_a_compare_git_refuses_is_that_finding_in_gits_words(tmp_path, leg):
     assert finding_lines(result) == [compare_refused(NOTES)]
 
 
-@NEEDS_FILTER_REPO
 @pytest.mark.parametrize("leg", SENT_OR_DROPPED)
-def test_execute_stops_at_its_first_clone_where_that_compare_is_refused(
-        adopter, monkeypatch, capsys, tmp_path, leg):
-    """The measurement behind where the finding says `execute` stops. With
-    `check`'s refusal patched out, `execute` makes both leg repositories
-    and stops extracting the spec leg, whose `git checkout -B` meets the
-    filter, wherever the plan sends the file. Unpatched, it refuses before
-    any leg."""
+def test_execute_refuses_a_compare_git_refuses_before_any_leg(
+        adopter, monkeypatch, tmp_path, leg):
+    """With the check patched out, `execute` made both leg repositories and
+    stopped at the first step that read the file again (measured with git
+    2.43, `STOPS_AT_A_READ`): which step that is, the clock decides, so no
+    row here leans on it. Unpatched, it refuses before any leg."""
     plan = planned(a_source(tmp_path, files=FILTERED_NOTES), tmp_path,
                    {NOTES: leg})
     for name, value in with_parameters(tmp_path, FAILING_FILTER).items():
         monkeypatch.setenv(name, value)
-    if leg == "spec":
-        refusal = refused_before_any_leg(adopter, monkeypatch, plan,
-                                         tmp_path)
-        assert refusal.code == REENCODED_FILES
-        capsys.readouterr()
-    monkeypatch.setattr(adopter, "_require_filter_repo", lambda: None)
-    monkeypatch.setattr(adopter, "_refuse_what_check_finds",
-                        lambda *args, **kwargs: None)
-    remotes = tmp_path / "patched-remotes"
-    assert adopter.cmd_execute(Namespace(
-        plan=str(plan), source=None, local_remote_dir=remotes,
-        allow_empty_leg=[], yes=True,
-        work_dir=tmp_path / "patched-work")) == 2
-    said = capsys.readouterr().err
-    assert "REFUSED extracting the spec leg." in said, said
-    assert f"fatal: {NOTES}: clean filter '{FAILING}' failed" in said, said
-    assert sorted(path.name for path in remotes.iterdir()) == [
-        "Northwind-code.git", "Northwind-spec.git"]
+    refusal = refused_before_any_leg(adopter, monkeypatch, plan, tmp_path)
+    assert refusal.code == REENCODED_FILES
+    assert refusal.detail.splitlines()[1:] == [f"  {compare_refused(NOTES)}"]
 
 
 def test_a_compare_git_refuses_is_named_where_the_root_is_not_laid_out(

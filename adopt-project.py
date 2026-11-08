@@ -12600,9 +12600,7 @@ READ_AGAIN = ("each one git reads again (every file of a small source; of a "
 #: refusal's own fixtures and the check that refuses them patched out (#906).
 #: A clone of the source meets the rule that refuses a checkout the first
 #: time `execute` makes one: extracting a leg (`REFUSED extracting the spec
-#: leg`, where both legs are extracted, before either is pushed); so does a
-#: filter that fails for a file the mount's `git rm` compares, wherever the
-#: plan sends it, in that leg's `git checkout -B` (#1192). The split's
+#: leg`, where both legs are extracted, before either is pushed). The split's
 #: `git add -A` stops it at `REFUSED committing the split`, a step the push
 #: of the split branch follows, unless a step before it meets the same rule:
 #: the extraction, on a filter that fails; the seeding of a leg, which runs
@@ -12614,6 +12612,18 @@ STOPS_AT_THE_SPLIT = (
     "no later than committing the split, and sooner where a step before it "
     "meets the same rule: extracting or seeding a leg, or mounting the legs, "
     "where the rule reaches the `.gitmodules` it writes")
+#: Where it stops for a filter that fails for a file the mount's `git rm`
+#: compares (#1192): at the first step that reads that file again, which
+#: the clock decides (`READ_AGAIN`). Measured with git 2.43, under a failing
+#: required clean filter for a `notes.txt` sent to either leg or dropped,
+#: with the check patched out: in 47 of 48 runs, extracting the spec leg,
+#: whose `git checkout -B` in a clone of the whole source read it; in one,
+#: extracting the code leg, the same way, once the spec leg was pushed. The
+#: mount's own `git rm`, which the compare asks as, comes after both.
+STOPS_AT_A_READ = (
+    "at the first step that reads that file again: extracting the spec leg, "
+    "extracting the code leg once the spec leg is pushed, or mounting the "
+    "legs")
 
 #: What git refused, where `execute` would stop, and the way out, for each
 #: step a refusal can stop.
@@ -12624,7 +12634,7 @@ CHECKOUT_REFUSED = (
 COMPARE_REFUSED = (
     "to compare what the plan sends to a leg or drops with its blob, as the "
     "mount's `git rm` does",
-    STOPS_AT_A_CLONE,
+    STOPS_AT_A_READ,
     "Change the rule or the setting git names, and re-run `plan`.")
 STORE_REFUSED = (
     "to store again what the plan keeps in the assembly root, as the split's "
