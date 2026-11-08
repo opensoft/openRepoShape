@@ -61,7 +61,8 @@ def adopter():
 #: The command NEXT prints wherever `make bootstrap` at the root does not
 #: reach the shape's Makefile.
 PYTHON = "    python3 scripts/bootstrap.py"
-#: #480's NOTE, for a root that keeps only its own `Makefile`: unchanged.
+#: #480's NOTE, for a root that keeps only its own `Makefile`, which names
+#: `python` on Windows too since #1132.
 OWN_MAKEFILE_NOTE = (
     "NOTE the root keeps its own Makefile and the shape's is shape/Makefile, "
     "so `make bootstrap` and the shape's other make targets arrive only once "
