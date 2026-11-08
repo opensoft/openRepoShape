@@ -21,6 +21,18 @@ makes each of the clone's remote-tracking branches a branch first, so it
 rewrites every branch of the source as before, and the legs are the ones
 main made.
 
+THE UNSET NAMES THE CLONE'S OWN CONFIG FILE (`--file`), and goes on from a
+clone that has no url to unset. Without `--file`, `GIT_CONFIG` in the
+environment names the file `git config` writes, and the unset took
+`remote.origin.url` out of a file of the person's, outside the clone
+(RV1251's SHOULD-1); `--local` is no way round it, since git 2.43 exits 129
+with `GIT_CONFIG` set. And a global `clone.defaultRemoteName` gives the clone
+a remote that is not `origin`, so there is no url and git exits 5: the unset
+goes on from that exit and from no other, so that `execute` fails where main
+fails (`mounting the legs`, `No such remote 'origin'`, both legs pushed), not
+earlier and with no words (RV1251's NIT-1). That setting is its own defect,
+not this file's.
+
 WHY NO TEST ELSEWHERE SAW IT. CI and the bench run UTF-8, where the decode
 replaces nothing. And `test_adopt_template_values.py`'s
 `test_a_utf8_source_directory_still_adopts_with_local_remotes` runs every
@@ -79,6 +91,12 @@ BESIDE = "beside"
 ORIGIN_URL = "remote.origin.url"
 #: How filter-repo begins the line that printed the url.
 REMOVING_ORIGIN = "Removing 'origin' remote"
+#: What `git config --unset` exits with when the key is not there.
+KEY_ABSENT = 5
+#: A remote name other than `origin`, for a global `clone.defaultRemoteName`.
+ELSEWHERE = "upstream"
+#: The leg repository `extract_the_code_leg` pushes to.
+CODE_LEG = f"{PROJECT}-code.git"
 
 #: The locale #1247 names, as `LC_ALL` names the one built here.
 LATIN1_NAME = "en_US.ISO-8859-1"
@@ -172,6 +190,64 @@ def said(run: subprocess.CompletedProcess) -> str:
     return (run.stdout + run.stderr).decode("utf-8", "backslashreplace")
 
 
+def config_lines(path: Path, *lines: str) -> bytes:
+    """A git config file written to `path` from `lines`, one per line, with
+    a tab before the ones that are not a section: the bytes written."""
+    body = (chr(10).join(
+        line if line.startswith("[") else chr(9) + line for line in lines)
+        + chr(10)).encode("ascii")
+    path.write_bytes(body)
+    return body
+
+
+def extract_the_code_leg(adopter, tmp_path, origin) -> tuple:
+    """`_extract_leg` itself for the code leg of `origin` (its `src/`), pushed
+    to a bare repository made beside it: (the clone, the leg)."""
+    head = git("rev-parse", "HEAD", cwd=origin).stdout.strip()
+    leg = tmp_path / CODE_LEG
+    git("init", "-q", "--bare", "-b", "main", str(leg), cwd=tmp_path)
+    work = tmp_path / WORK
+    adopter._extract_leg(
+        "code", SimpleNamespace(path=origin, commit=head), work, ["src/"],
+        tmp_path / "code-paths.txt", "adopt", str(leg), "main",
+        f"testorg/{PROJECT}-code")
+    return work, leg
+
+
+def adopt_each_step(tmp_path, source, locale: dict,
+                    executing: dict | None = None) -> dict:
+    """`plan`, the plan answered, `check` and `execute` with local remotes
+    for `source`, each as `adopted` runs it in `locale`, and `execute` with
+    `executing` added to its environment: each run there was, by name."""
+    plan, work = tmp_path / PLAN_FILE, tmp_path / WORK
+    runs = {"plan": adopted(locale, "plan", "--source", str(source),
+                            "--project", PROJECT, "--org", "testorg",
+                            "--elected-by", "Test Human",
+                            "--elected-on", "2026-09-02", "--out", str(plan),
+                            "--work-dir", str(work))}
+    assert runs["plan"].returncode == 0, said(runs["plan"])
+    for path, leg in ANSWERS:
+        resolve(plan, path, leg)
+    runs["check"] = adopted(locale, "check", "--plan", str(plan),
+                            "--work-dir", str(work))
+    runs["execute"] = adopted({**locale, **(executing or {})}, "execute",
+                              "--plan", str(plan), "--yes",
+                              "--local-remote-dir", str(tmp_path / REMOTES),
+                              "--work-dir", str(work))
+    return runs
+
+
+def assert_adopted(runs: dict) -> None:
+    """No run raised a traceback, `check` and `execute` exited 0, and
+    `execute` said `adoption verified`."""
+    for name, run in runs.items():
+        assert TRACEBACK not in run.stderr, f"{name}:{os.linesep}{said(run)}"
+    assert runs["check"].returncode == 0, said(runs["check"])
+    done = runs["execute"]
+    assert done.returncode == 0, said(done)
+    assert VERIFIED in done.stdout, said(done)
+
+
 @needs_filter_repo
 def test_filter_repo_starts_with_no_origin_url_and_every_branch(
         adopter, tmp_path, monkeypatch):
@@ -187,9 +263,6 @@ def test_filter_repo_starts_with_no_origin_url_and_every_branch(
     (origin / "src" / "app" / "util.py").write_text("VALUE = 2", "utf-8")
     git("commit", "-q", "-am", "Raise the value", cwd=origin)
     git("switch", "-q", "main", cwd=origin)
-    head = git("rev-parse", "HEAD", cwd=origin).stdout.strip()
-    leg = tmp_path / f"{PROJECT}-code.git"
-    git("init", "-q", "--bare", "-b", "main", str(leg), cwd=tmp_path)
     real_run = adopter.run
     started = []
 
@@ -206,11 +279,7 @@ def test_filter_repo_starts_with_no_origin_url_and_every_branch(
         return started[-1]["said"]
 
     monkeypatch.setattr(adopter, "run", spied)
-    work = tmp_path / "work"
-    adopter._extract_leg(
-        "code", SimpleNamespace(path=origin, commit=head), work, ["src/"],
-        tmp_path / "code-paths.txt", "adopt", str(leg), "main",
-        f"testorg/{PROJECT}-code")
+    work, leg = extract_the_code_leg(adopter, tmp_path, origin)
 
     assert len(started) == 1, started
     assert started[0]["url"] == "", started[0]
@@ -240,23 +309,81 @@ def test_execute_adopts_a_source_named_in_latin1_under_latin1(tmp_path,
     parent = Path(os.fsdecode(os.fsencode(tmp_path / "caf")
                               + bytes([0xE9])))
     source = make_source_repo(parent / "Thing")
-    plan, work = tmp_path / PLAN_FILE, tmp_path / WORK
-    runs = {"plan": adopted(latin1, "plan", "--source", str(source),
-                            "--project", PROJECT, "--org", "testorg",
-                            "--elected-by", "Test Human",
-                            "--elected-on", "2026-09-02", "--out", str(plan),
-                            "--work-dir", str(work))}
-    assert runs["plan"].returncode == 0, said(runs["plan"])
-    for path, leg in ANSWERS:
-        resolve(plan, path, leg)
-    runs["check"] = adopted(latin1, "check", "--plan", str(plan),
-                            "--work-dir", str(work))
-    runs["execute"] = adopted(latin1, "execute", "--plan", str(plan), "--yes",
-                              "--local-remote-dir", str(tmp_path / REMOTES),
-                              "--work-dir", str(work))
-    for name, run in runs.items():
-        assert TRACEBACK not in run.stderr, f"{name}:{os.linesep}{said(run)}"
-    assert runs["check"].returncode == 0, said(runs["check"])
-    done = runs["execute"]
-    assert done.returncode == 0, said(done)
-    assert VERIFIED in done.stdout, said(done)
+    assert_adopted(adopt_each_step(tmp_path, source, latin1))
+
+
+@needs_filter_repo
+def test_execute_leaves_the_file_git_config_names_alone(tmp_path):
+    """`GIT_CONFIG` in the environment names the file a bare `git config`
+    writes, and the unset named no file: `execute` took the url out of the
+    person's file, outside the clone, and refused. Now the unset names the
+    clone's own config, so with `GIT_CONFIG` naming a file that holds a
+    `[remote "origin"]` url, `execute` says `adoption verified` and that
+    file is byte for byte as it was. `adopted` hands the child none of the
+    gate's locale variables, so the row runs alike under a UTF-8 gate and a
+    Latin-1 one."""
+    kept = tmp_path / "kept.gitconfig"
+    body = config_lines(kept, '[remote "origin"]',
+                        "url = https://example.invalid/keep-me.git")
+    source = make_source_repo(tmp_path / "Thing")
+    runs = adopt_each_step(tmp_path, source, {}, {"GIT_CONFIG": str(kept)})
+    assert kept.read_bytes() == body, said(runs["execute"])
+    assert_adopted(runs)
+
+
+@needs_filter_repo
+def test_a_clone_with_no_origin_url_goes_on_to_filter_repo(
+        adopter, tmp_path, monkeypatch):
+    """A global `clone.defaultRemoteName` gives the clone a remote that is
+    not `origin`, so `git config --unset remote.origin.url` has no key and
+    exits 5. `_extract_leg` goes on from that, as main went on, and the leg
+    is made and pushed: `execute` then fails where main fails, at `mounting
+    the legs`, not here before any leg is pushed, with nothing said. The
+    unset's exit is recorded as it is raised, so that the row says what it
+    saw: 5, and the url of the other remote."""
+    origin = make_source_repo(tmp_path / "Thing")
+    config_lines(tmp_path / "global.gitconfig", "[clone]",
+                 f"defaultRemoteName = {ELSEWHERE}")
+    monkeypatch.setenv("GIT_CONFIG_GLOBAL", str(tmp_path / "global.gitconfig"))
+    real_run = adopter.run
+    exits = []
+
+    def spied(args, *rest, **keywords):
+        try:
+            return real_run(args, *rest, **keywords)
+        except adopter.CommandFailed as exc:
+            if "--unset" in args:
+                exits.append(exc.code)
+            raise
+
+    monkeypatch.setattr(adopter, "run", spied)
+    work, leg = extract_the_code_leg(adopter, tmp_path, origin)
+
+    assert exits == [KEY_ABSENT], exits
+    assert git("config", "--get", f"remote.{ELSEWHERE}.url",
+               cwd=work).stdout.strip() == str(origin)
+    assert git("rev-parse", "main", cwd=leg).stdout.strip() == git(
+        "rev-parse", "HEAD", cwd=work).stdout.strip()
+
+
+def test_an_unset_that_fails_for_any_other_reason_stops_the_leg(
+        adopter, tmp_path, monkeypatch):
+    """Only exit 5 is gone on from. Another exit of the unset is refused as
+    any failed command is, before `git filter-repo` runs and before anything
+    is pushed: here a `config.lock` in the clone, which git cannot take
+    (exit 255)."""
+    origin = make_source_repo(tmp_path / "Thing")
+    real_run = adopter.run
+
+    def locked(args, *rest, **keywords):
+        if "--unset" in args:
+            (Path(keywords["cwd"]) / ".git" / "config.lock").write_bytes(b"")
+        return real_run(args, *rest, **keywords)
+
+    monkeypatch.setattr(adopter, "run", locked)
+    with pytest.raises(adopter.CommandFailed) as refused:
+        extract_the_code_leg(adopter, tmp_path, origin)
+
+    assert "--unset" in refused.value.args_list, refused.value.args_list
+    assert refused.value.code not in (0, KEY_ABSENT), refused.value.code
+    assert git("for-each-ref", cwd=tmp_path / CODE_LEG).stdout == ""

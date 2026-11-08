@@ -1269,6 +1269,10 @@ SUBMODULE_KEY_RE = re.compile(r"submodule\.(?P<name>.*)\.(?P<key>path|url)")
 #: The `git` subcommand that reads and writes a config file: a source's
 #: `.gitmodules`, a leg mount's url, the elector's name.
 GIT_CONFIG = "config"
+#: What `git config --unset` exits with when the key is not there (git 2.43).
+#: Every other failure of it is a different number (255 for a file it cannot
+#: lock, 129 for a usage it refuses), which `_extract_leg` does not go on from.
+GIT_CONFIG_KEY_ABSENT = 5
 #: The `git` subcommand that prints one object: a source's `.gitmodules`
 #: and the target of a symlink it keeps in the root, and in the split commit
 #: a symlink's target and the shape pin. With `--batch`, it prints the
@@ -14414,7 +14418,24 @@ def _extract_leg(role: str, source: Source, work: Path, paths: list[str],
     # branch holds a `cherry-pick -x` of a commit only another branch reaches
     # then kept that commit's old id in its message, where this one rewrites
     # it: a different leg (git 2.43, filter-repo 2.47.0).
-    run(["git", GIT_CONFIG, "--unset", "remote.origin.url"], cwd=work)
+    # THE CLONE'S OWN CONFIG FILE IS NAMED, with `--file`. `GIT_CONFIG` in the
+    # environment (a legacy variable git still reads) names the file `git
+    # config` writes otherwise, and the unset took `remote.origin.url` out of
+    # a file of the person's, outside this clone, and `execute` then refused
+    # with both legs made. `--local` is no way round that: with `GIT_CONFIG`
+    # set, git 2.43 exits 129. `.git` is a directory, made by the `git clone`
+    # above, and `work` is an absolute path (`_work_root`).
+    # A CLONE WITH NO `origin` URL IS NOT A FAILURE (git exits 5): a global
+    # `clone.defaultRemoteName` gives the clone another remote, and `execute`
+    # then fails where main fails, at `mounting the legs`, not here with no
+    # words and before any leg is pushed. That setting is its own defect.
+    # Every other exit is refused.
+    try:
+        run(["git", GIT_CONFIG, "--file", str(work / ".git" / "config"),
+             "--unset", "remote.origin.url"], cwd=work)
+    except CommandFailed as exc:
+        if exc.code != GIT_CONFIG_KEY_ABSENT:
+            raise
     # LF, on every platform. `git filter-repo --paths-from-file` matches a
     # line against a path, and a CRLF-terminated line ends in a character no
     # path contains - so on Windows every pattern would match nothing, the
