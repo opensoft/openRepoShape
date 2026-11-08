@@ -3353,8 +3353,9 @@ def refusals_ahead(ctx: Context, us) -> dict | None:
     args = argparse.Namespace(root=str(ctx.root), upstream=str(ctx.shape),
                               at=None)
     try:
+        # `ask_source=False`, as `check_shape_currency` asks it (#1203).
         root, _pin, rows, _added, upstream, _pinned, _target, kind = \
-            us.prepare(args)
+            us.prepare(args, ask_source=False)
     except Refusal:
         return None
     try:
@@ -6312,8 +6313,14 @@ def check_shape_currency(ctx: Context) -> Row:
     if partial is not None:
         return partial
     try:
+        # THE PIN'S `source_repository:` IS NOT ASKED HERE (#1203). A
+        # `Refusal` out of `prepare` is this checkout unable to answer
+        # (below), and that field is the root's: asked here, a hand edit of
+        # it was CANNOT ANSWER with a `fetch --all` that mends nothing.
+        # `update-shape.py check`, this row's NEXT where the root is behind,
+        # asks it, in the pin's name.
         _root, _pin, rows, additions, upstream, pinned, target, _kind = \
-            us.prepare(args)
+            us.prepare(args, ask_source=False)
     except Refusal as exc:
         if exc.code == us.UPSTREAM_UNREADABLE:
             # A READ THAT FAILED, NOT A COMMIT THAT IS NOT HERE (#683), so
