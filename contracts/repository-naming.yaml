@@ -116,6 +116,14 @@ kind: repository-naming-policy
 # where an unsuffixed name lands. What it does NOT admit is a name with a
 # hyphen, an underscore, a dot or a space — those match nothing and are
 # refused, which is the check that actually earns its keep.
+#
+# A PATTERN IS READ AGAINST THE WHOLE NAME. The reader asks every `pattern:`
+# and `split_pattern:` below with `fullmatch` (#1202), as a reader of the
+# `topic:` block's must, so a name that ends in a line feed matches none of
+# them, where `$` alone would take it as the name without it. The patterns
+# here begin with `^` and end with `$`, which `fullmatch` does not need and
+# does not mind. A fork's pattern with no `$` is read as the whole name too,
+# not as a prefix of it: write the pattern for the entire name.
 # ===========================================================================
 
 families:
