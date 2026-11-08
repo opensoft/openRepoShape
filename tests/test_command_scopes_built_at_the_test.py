@@ -30,7 +30,8 @@ from test_adopt_nested_attributes import EMPTY_TREE
 #: test, its parameter, and the entry each param that names one holds.
 SITES = {
     "attr-tree": (reencoded,
-                  "test_no_tree_this_machine_names_steers_the_question",
+                  "test_a_tree_this_machine_names_steers_the_question_as_it_"
+                  "steers_the_split",
                   "steer",
                   {"attr-tree-in-the-command-scope":
                    f"attr.tree={EMPTY_TREE}"}),
