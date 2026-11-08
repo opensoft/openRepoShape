@@ -44,6 +44,7 @@ made, and skip where none can (`symlink`).
 
 from __future__ import annotations
 
+import os
 import subprocess
 import sys
 from pathlib import Path
@@ -84,25 +85,37 @@ OUT_WHY = (f"{AGENTS}: a symlink out of the commit, so whether this is a leg "
 #: The `AGENTS.md` link to `docs/AGENTS.md`, the shape of every case here
 #: that leads inside the repository.
 DOCS_LEG = Path("docs", AGENTS)
+#: The spec leg's `AGENTS.md`, for the controls whose link must NOT reach it.
+SPEC_LEG = rendered_leg_agents("spec")
 
 
-def linked_clone(tmp_path: Path, target: Path, files: dict | None = None,
-                 links: dict | None = None,
+def linked_clone(tmp_path: Path, target: Path | str,
+                 files: dict | None = None, links: dict | None = None,
                  name: str = "renamed-clone") -> Path:
     """`<tmp>/<name>`, a repository with no `origin` whose `AGENTS.md` is a
-    symlink to `target`, beside `files` (`{relative path: text}`) and
-    `links` (`{relative path: target}`), all of it committed: a clone whose
-    own name and files alone say what it is."""
+    symlink to `target`, beside `files` (`{relative path: text or bytes}`)
+    and `links` (`{relative path: target}`), all of it committed: a clone
+    whose own name and files alone say what it is.
+
+    A `str` target is linked AS SPELLED, which the link is checked to hold:
+    a `Path` would fold `./docs/AGENTS.md`, `docs/./AGENTS.md` and
+    `.//docs/AGENTS.md` into `docs/AGENTS.md`, and the row would test
+    nothing."""
     root = tmp_path / name
     root.mkdir()
     git("init", "-q", "-b", "main", ".", cwd=root)
     (root / "README.md").write_text("# here\n", encoding="utf-8")
     for rel, text in (files or {}).items():
         (root / rel).parent.mkdir(parents=True, exist_ok=True)
-        (root / rel).write_text(text, encoding="utf-8")
+        if isinstance(text, bytes):
+            (root / rel).write_bytes(text)
+        else:
+            (root / rel).write_text(text, encoding="utf-8")
     for rel, to in (links or {}).items():
         symlink(root / rel, to)
     symlink(root / AGENTS, target)
+    if isinstance(target, str):
+        assert os.readlink(root / AGENTS) == target
     commit_all(root, "Initial import")
     return root
 
@@ -156,20 +169,32 @@ def told_nothing(said: list[str]) -> None:
 
 # --- a link to the leg's own file, in the commit -----------------------------
 
-@pytest.mark.parametrize("role, leg_at, links", [
-    pytest.param("spec", "docs/AGENTS.md", {}, id="beside"),
-    pytest.param("code", ".agents/AGENTS.md", {"docs": Path(".agents")},
-                 id="through-a-linked-folder"),
+@pytest.mark.parametrize("role, target, leg_at, links", [
+    pytest.param("spec", DOCS_LEG, "docs/AGENTS.md", {}, id="beside"),
+    pytest.param("spec", "./docs/AGENTS.md", "docs/AGENTS.md", {},
+                 id="dot-slash"),
+    pytest.param("spec", "docs/./AGENTS.md", "docs/AGENTS.md", {},
+                 id="dot-in-the-middle"),
+    pytest.param("spec", ".//docs/AGENTS.md", "docs/AGENTS.md", {},
+                 id="dot-and-a-double-slash"),
+    pytest.param("code", DOCS_LEG, ".agents/AGENTS.md",
+                 {"docs": Path(".agents")}, id="through-a-linked-folder"),
 ])
 def test_a_leg_agents_md_linked_to_its_own_file_is_the_leg_in_the_commit(
-        tmp_path, role, leg_at, links):
+        tmp_path, role, target, leg_at, links):
     """The issue's case. The doctor reads the disk's `AGENTS.md` through its
     link and calls the clone the leg. On the base the commit's link was read
     as the path it holds, so `plan` and `check` printed the advisory over
     the leg. Now the link is followed inside the commit -- through a linked
     folder too (`docs -> .agents`), as git follows it -- and both print the
-    leg's NOTE, as over a leg whose `AGENTS.md` is a regular file."""
-    root = linked_clone(tmp_path, DOCS_LEG,
+    leg's NOTE, as over a leg whose `AGENTS.md` is a regular file.
+
+    SPELLED WITH A `.` SEGMENT (`./docs/AGENTS.md`, `docs/./AGENTS.md`,
+    `.//docs/AGENTS.md`), git 2.43 answers the follow `dangling`, and the
+    first cut of this fix advised as on the base. The link's own target is
+    now asked again with its `.` segments dropped, and the commit names
+    the leg the disk does."""
+    root = linked_clone(tmp_path, target,
                         {leg_at: rendered_leg_agents(role)}, links)
     env = no_workspace(tmp_path)
     reading = committed(root, env)
@@ -243,20 +268,30 @@ def test_the_commits_linked_leg_file_is_read_when_the_disks_is_refused(
 
 # --- a link out of the commit ------------------------------------------------
 
-@pytest.mark.parametrize("how", ["relative", "absolute", "dangling"])
+@pytest.mark.parametrize("how", ["relative", "relative-after-a-dot",
+                                 "absolute", "dangling"])
 def test_a_leg_agents_md_linked_out_of_the_commit_is_not_answered(tmp_path,
                                                                   how):
     """A link that leads out of the commit: `../locked/AGENTS.md`, the same
-    file by its absolute path, or `../nowhere/AGENTS.md`. No commit holds
-    what it reaches, so whether this is a leg is not known in the commit:
-    `not-answered`, with its line in `why` and nothing `refused`, and `plan`
-    and `check` print neither the advisory nor a leg's NOTE. On the base
-    each printed the advisory. The doctor reads the disk, which the commit
-    cannot: the leg where the link reaches its file, and the advisory where
-    it reaches nothing, as for any dangling link -- silence in the commit is
-    the one answer that is false of neither."""
+    spelled `./../locked/AGENTS.md`, the same file by its absolute path, or
+    `../nowhere/AGENTS.md`. No commit holds what it reaches, so whether this
+    is a leg is not known in the commit: `not-answered`, with its line in
+    `why` and nothing `refused`, and `plan` and `check` print neither the
+    advisory nor a leg's NOTE. On the base each printed the advisory. The
+    doctor reads the disk, which the commit cannot: the leg where the link
+    reaches its file, and the advisory where it reaches nothing, as for any
+    dangling link -- silence in the commit is the one answer that is false
+    of neither.
+
+    git 2.43 answers `./../locked/AGENTS.md` `dangling`, for its `.`
+    segment. Without it the target begins with `..`, past the root, which
+    git answers `symlink`; and git is never asked `../locked/AGENTS.md`
+    itself, which it reads from the working directory, and refuses as
+    outside the repository: its `Refusal` would name a `why` of its own."""
     leg = locked_leg(tmp_path)
-    target = {"relative": Path("..", "locked", AGENTS), "absolute": leg,
+    target = {"relative": Path("..", "locked", AGENTS),
+              "relative-after-a-dot": "./../locked/AGENTS.md",
+              "absolute": leg,
               "dangling": Path("..", "nowhere", AGENTS)}[how]
     root = linked_clone(tmp_path, target)
     env = no_workspace(tmp_path)
@@ -335,6 +370,14 @@ def test_a_git_that_cannot_follow_the_link_is_silence_not_advice(
     pytest.param(Path("README.md", AGENTS), {}, id="through-a-file"),
     pytest.param(DOCS_LEG, {"docs/AGENTS.md": "# agents\n"},
                  id="another-file"),
+    pytest.param("./docs/AGENTS.md/.", {"docs/AGENTS.md": SPEC_LEG},
+                 id="dot-then-through-the-legs-file"),
+    pytest.param("./docs/AGENTS.md/", {"docs/AGENTS.md": SPEC_LEG},
+                 id="dot-then-a-slash-after-the-legs-file"),
+    pytest.param("./docs/AGENTS.md\nx", {"docs/AGENTS.md": SPEC_LEG},
+                 id="dot-and-a-line-break"),
+    pytest.param("./docs/x blob", {"docs/x": SPEC_LEG},
+                 id="dot-to-nothing-spelled-like-an-answer"),
 ])
 def test_an_agents_md_linked_to_no_legs_file_is_advised_by_both_readers(
         tmp_path, target, files):
@@ -343,7 +386,17 @@ def test_an_agents_md_linked_to_no_legs_file_is_advised_by_both_readers(
     file, or to a file that is no leg's, is no leg's file, on the disk
     (#430's rule) and in the commit alike, and both readers advise. They
     hold the follow to the disk's answers, rather than to "a link is not
-    known", which only a link out of the commit is."""
+    known", which only a link out of the commit is.
+
+    THE `.` CONTROLS hold the second ask of a target spelled with a `.`
+    segment to the disk's answer where the leg's file is near. A LAST `.`
+    or `/` is kept, so `./docs/AGENTS.md/.` and `./docs/AGENTS.md/` still
+    run through the file (ENOTDIR), and never become it. A target with a
+    line break is not asked again: git's batch input would take its first
+    line, `docs/AGENTS.md`, for the name. And `docs/x blob` is not there:
+    git's line for it begins with the name it was asked, `<commit>:docs/x`,
+    then `blob`, and only a line that begins with an object's name is a
+    blob to read."""
     root = linked_clone(tmp_path, target, files)
     env = no_workspace(tmp_path)
     assert committed(root, env).state == shape_advisory.ADVISE

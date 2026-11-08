@@ -406,6 +406,36 @@ def _is_a(path: Path, kind) -> bool:
 #: PATH it leads to, not a file's text (`Tree.is_link`).
 LINK_MODE = "120000"
 
+#: A full object name, SHA-1 or SHA-256, as `git cat-file --batch-check`
+#: begins the line for an object it found. Only such a line names a blob to
+#: read: the line for a name it did not find begins with the name it was
+#: asked, which a link's target spells (`Tree.text_through`).
+OBJECT_NAME_RE = re.compile(rb"[0-9a-f]{40}(?:[0-9a-f]{24})?")
+
+
+def _dot_segments_dropped(target: bytes) -> bytes | None:
+    """A committed link's own `target` with every `.` segment before its
+    last one dropped, or None where there is none to drop (#1163).
+
+    git 2.43's `cat-file --follow-symlinks` looks a `.` segment up as a
+    name, which no tree holds, so it answers `dangling` for
+    `./docs/AGENTS.md`, `docs/./AGENTS.md` and `.//docs/AGENTS.md`, where
+    the operating system reads the file. A `.` names the folder it is in, so
+    the path without it is the one the operating system follows. A LAST `.`
+    OR `/` IS KEPT: `docs/AGENTS.md/.` and `docs/AGENTS.md/` run through a
+    file, ENOTDIR on the disk and `notdir` in git, and must not become the
+    file. None, too, for an absolute target, which git answers `symlink`
+    before it reads a segment, and for one with a line break, a carriage
+    return or a NUL in it, which git's batch input would cut into another
+    name."""
+    if target.startswith(b"/") or any(ch in target
+                                      for ch in (b"\n", b"\r", b"\0")):
+        return None
+    *inner, last = target.split(b"/")
+    if b"." not in inner:
+        return None
+    return b"/".join([part for part in inner if part != b"."] + [last])
+
 
 class OutOfTheCommit(Exception):
     """A symlink in the commit being read that leads OUT of it (#1163): to
@@ -485,28 +515,56 @@ class Tree:
             return False
         return entry.startswith(f"{LINK_MODE} ")
 
+    def _follow(self, name: bytes) -> list[bytes]:
+        """The first line of `git cat-file --batch-check --follow-symlinks`'s
+        answer for `<commit>:<name>`, split at its spaces. A git that cannot
+        answer is a `Refusal`, as one that cannot give a blob is."""
+        asked = ["cat-file", "--batch-check", "--follow-symlinks"]
+        found = subprocess.run(["git", *asked], cwd=str(self.root),
+                               input=(self.commit.encode("utf-8") + b":"
+                                      + name + b"\n"),
+                               capture_output=True, check=False)
+        if found.returncode != 0:
+            raise Refusal("git-failed", f"`git {' '.join(asked)}` exited "
+                                        f"{found.returncode}")
+        return found.stdout.split(b"\n", 1)[0].split()
+
     def text_through(self, rel: str) -> str | None:
         """The text of the file the symlink at `rel` leads to INSIDE the
         commit, followed as git follows it there (`git cat-file
-        --batch-check --follow-symlinks`): from the directory each link is
-        in, through every link on the way, as a checkout's `open()` does.
+        --batch-check --follow-symlinks`): each link from the directory it is
+        in, through a linked folder too, up to 40 links. `rel` is a name at
+        the root, as `AGENTS.md` is.
+
+        GIT 2.43 FOLLOWS NO `.` SEGMENT (#1163), so it is not quite a
+        checkout's `open()`: it answers `dangling` for a link spelled
+        `./docs/AGENTS.md`. Where it says `dangling`, the link's own target
+        is read, and one that holds a `.` segment before its last is asked
+        again with those dropped (`_dot_segments_dropped`). One that then
+        begins with `..` climbs past the root, out of the commit, as git
+        answers `../x`; git is never asked a name that begins `../`, which
+        it takes as relative to the working directory, or refuses. Only the
+        link at `rel` is read so: a `.` segment in a link further on is still
+        `dangling`.
 
         NOTHING THAT IS A FILE IS NONE, as on the disk: a link that dangles,
         loops or runs through a file (#430's ENOENT, ELOOP and ENOTDIR), and
         one that leads to a directory or a submodule. A link that leads OUT
         of the commit raises `OutOfTheCommit`. A git that cannot follow it
         is a `Refusal`, as one that cannot give a blob is."""
-        asked = ["cat-file", "--batch-check", "--follow-symlinks"]
-        found = subprocess.run(["git", *asked], cwd=str(self.root),
-                               input=f"{self.commit}:{rel}\n".encode("utf-8"),
-                               capture_output=True, check=False)
-        if found.returncode != 0:
-            raise Refusal("git-failed", f"`git {' '.join(asked)}` exited "
-                                        f"{found.returncode}")
-        header = found.stdout.split(b"\n", 1)[0].split()
+        header = self._follow(rel.encode("utf-8"))
+        if header[:1] == [b"dangling"]:
+            target = _dot_segments_dropped(git_out(
+                ["cat-file", "blob", f"{self.commit}:{rel}"], cwd=self.root,
+                binary=True))
+            if target is not None and target.split(b"/", 1)[0] == b"..":
+                raise OutOfTheCommit(f"{rel} leads out of the commit")
+            if target is not None:
+                header = self._follow(target)
         if header[:1] == [b"symlink"]:
             raise OutOfTheCommit(f"{rel} leads out of the commit")
-        if header[1:2] != [b"blob"]:
+        if (len(header) != 3 or header[1] != b"blob"
+                or not OBJECT_NAME_RE.fullmatch(header[0])):
             return None
         return git_out(["cat-file", "blob", header[0].decode("ascii")],
                        cwd=self.root, binary=True).decode("utf-8")
