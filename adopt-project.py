@@ -14422,7 +14422,11 @@ def _split_case_twins(held: list[str],
     holds (`_index_paths`, `_case_twin_sets`), that has a path at or under
     one of `removed`, the paths `_mount_the_legs` takes out of the root: a
     set the plan sends into different repositories, or drops a path of
-    (#1183).
+    (#1183); and a set it keeps whole in one leg, which reaches the mount
+    only as one of one blob in one mode, the NOTE `check` prints for it
+    (`_one_blob_twins`), every other being `plan-case-twins`. The paths of
+    such a set are removed from the root with `-f` too, and none is written
+    back, since the root keeps none of them (#1237's review, NIT 1).
 
     A DISK THAT IGNORES CASE HOLDS EACH SUCH SET AS ONE FILE. Measured for
     #1183 with git 2.43, on a FUSE disk that ignores case and keeps it: the
