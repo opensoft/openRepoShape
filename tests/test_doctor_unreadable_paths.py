@@ -111,8 +111,11 @@ from test_shape_doctor import (  # noqa: F401
     standard,
 )
 #: A leg whose `.git` is a git directory of its own, from the file that owns
-#: the gate's cases for one (#968).
-from test_validate_pins_spelled_and_named import leg_with_its_own_git_directory
+#: the gate's cases for one (#968), and the makers of a directory or a FIFO
+#: where a file should be, with their skip, from the same file (#919).
+from test_validate_pins_spelled_and_named import (
+    POSIX_NODES, leg_with_its_own_git_directory, made_directory, made_fifo,
+)
 #: The one skip for a mode that root reads through and Windows ignores.
 from test_validate_pins_unreadable_workflow import CANNOT_RUN_AS_ROOT
 #: A mode for the block and the old one back after it.
@@ -892,11 +895,10 @@ HEAD_SHAPES = [
         errno.ENOENT, os.strerror(errno.ENOENT))), None, None,
         id="gone-at-open"),
     pytest.param(head_not_made, None, None, id="no-head"),
-    pytest.param(head_no_regular_file(Path.mkdir), None, None,
+    pytest.param(head_no_regular_file(made_directory), None, None,
                  id="a-directory"),
-    pytest.param(head_no_regular_file(os.mkfifo), None, None, id="a-fifo",
-                 marks=pytest.mark.skipif(os.name == "nt",
-                                          reason="a FIFO needs os.mkfifo")),
+    pytest.param(head_no_regular_file(made_fifo), None, None, id="a-fifo",
+                 marks=POSIX_NODES),
 ]
 
 
@@ -929,8 +931,8 @@ def test_the_doctor_asks_a_head_as_the_gate_asks_it(
         assert doctor == (True, True, None)
         return
     assert gate == ("pin-submodule-unreadable", cannot(gate_named, reason))
+    assert doctor[:2] == (True, False), doctor
     line, error, listed = doctor[2]
-    assert doctor[:2] == (True, False)
     assert line == cannot(doctor_named, reason)
     assert line.endswith(gate[1]), (line, gate)
     assert error.strerror == reason
