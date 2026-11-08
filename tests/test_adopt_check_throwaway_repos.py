@@ -540,8 +540,8 @@ def twins_kept(sets: str, where: str, paths: str, named: str) -> str:
             "does by default, holds each set as one name: a clone made there "
             "checks out only one path of each set, and `execute` could stop "
             "there before any leg exists, at git's `will not add file "
-            "alias`, or after both legs are pushed, as `adopt-lost` or at "
-            "`git rm` mounting the legs, so `execute` refuses them on every "
+            "alias`, or, for a set in the assembly root, after both legs are "
+            "pushed, as `adopt-lost`, so `execute` refuses them on every "
             "disk.")
 
 

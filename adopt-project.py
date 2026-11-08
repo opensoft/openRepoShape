@@ -9286,7 +9286,14 @@ def _unsafe_path_findings(plan: Plan) -> tuple[list[str], list[str]]:
 # set kept as it was in the repository made. Twins in the code leg were
 # adopted so in 2 runs, and in 3 others, for #1189's review, `execute`
 # stopped after both legs were pushed, mounting them, at `git rm -r` ("the
-# following files have local modifications").
+# following files have local modifications"), until #1183. Measured again
+# for #1237's review with this finding taken out, 1 run each: twins kept in
+# one leg (`A` and `a` in the code leg, and in the spec leg; `D/x` and
+# `d/x`; `F/x` and `f`; `src/A` and `src/a`) were adopted; in the root,
+# `A` and `a` were adopted, `F/x` beside `f` was still `adopt-lost` after
+# both legs were pushed, and `D/x` beside `d/x` met `will not add file
+# alias` in `check` (`plan-file-reencoded`). So the finding names the
+# root's `adopt-lost`, and no `git rm`.
 #
 # So `check` names them, on every disk, as #520 names a branch in another
 # case: one plan is then not good on one machine and lost on another.
@@ -9436,8 +9443,8 @@ def _case_twin_findings(plan: Plan, tree: list,
             "macOS or Windows disk does by default, holds each set as one "
             "name: a clone made there checks out only one path of each set, "
             "and `execute` could stop there before any leg exists, at git's "
-            "`will not add file alias`, or after both legs are pushed, as "
-            "`adopt-lost` or at `git rm` mounting the legs, so `execute` "
+            "`will not add file alias`, or, for a set in the assembly root, "
+            "after both legs are pushed, as `adopt-lost`, so `execute` "
             "refuses them on every disk.")
     return found, [CASE_TWINS_REMEDIATION] if found else [], notes
 
