@@ -370,6 +370,9 @@ def test_a_git_that_cannot_follow_the_link_is_silence_not_advice(
     pytest.param(Path("README.md", AGENTS), {}, id="through-a-file"),
     pytest.param(DOCS_LEG, {"docs/AGENTS.md": "# agents\n"},
                  id="another-file"),
+    pytest.param(DOCS_LEG,
+                 {"docs/AGENTS.md": SPEC_LEG.encode("utf-8") + b"\xff"},
+                 id="not-utf-8"),
     pytest.param("./docs/AGENTS.md/.", {"docs/AGENTS.md": SPEC_LEG},
                  id="dot-then-through-the-legs-file"),
     pytest.param("./docs/AGENTS.md/", {"docs/AGENTS.md": SPEC_LEG},
@@ -387,6 +390,12 @@ def test_an_agents_md_linked_to_no_legs_file_is_advised_by_both_readers(
     (#430's rule) and in the commit alike, and both readers advise. They
     hold the follow to the disk's answers, rather than to "a link is not
     known", which only a link out of the commit is.
+
+    `[not-utf-8]` leads to the leg's own text and one byte 0xff after it. A
+    file that is read and is not UTF-8 declares no leg
+    (`_leg_by_agents_md`), and the followed blob is held to that rule as
+    the disk's bytes are: decoded with `errors="replace"`, the commit
+    would name the leg the disk does not.
 
     THE `.` CONTROLS hold the second ask of a target spelled with a `.`
     segment to the disk's answer where the leg's file is near. A LAST `.`
