@@ -1246,6 +1246,17 @@ def malformed(glass) -> dict:
                                                digest=digest[:12]),
                          f"{entry} `tree_sha256: '{digest[:12]}'`, which is "
                          "not 64 hex"),
+        # `$` matched just before a trailing line feed (#1017), so the
+        # double-quoted `\n` after the hex, which the plan's reader reads
+        # as a line feed, was a well formed commit and a well formed digest.
+        "commit-line-break": ("pins:\n" + pin_entry(commit=commit + "\\n",
+                                                   digest=digest),
+                              f"{entry} `commit: '{commit}\\n'`, which is "
+                              "not 40 hex"),
+        "digest-line-break": ("pins:\n" + pin_entry(commit=commit,
+                                                   digest=digest + "\\n"),
+                              f"{entry} `tree_sha256: '{digest}\\n'`, which "
+                              "is not 64 hex"),
         "another-product": ("pins:\n" + pin_entry(
                                 repository="opensoft/openPane",
                                 commit=commit, digest=digest),
@@ -1354,9 +1365,9 @@ CASE_IDS = [("plan-pin-unrecorded", name) for name in (
     "old-plan-forged")]
 CASE_IDS += [("plan-pin-malformed", name) for name in (
     "not-a-list", "a-number", "short-commit", "short-digest",
-    "another-product", "no-owner", "no-source", "source-line-break",
-    "source-bare-path", "source-no-space", "source-by-hand",
-    "source-clone-nul", "a-number-commit")]
+    "commit-line-break", "digest-line-break", "another-product", "no-owner",
+    "no-source", "source-line-break", "source-bare-path", "source-no-space",
+    "source-by-hand", "source-clone-nul", "a-number-commit")]
 CASE_IDS += [("plan-pin-collides", name)
              for name in ("case-pair", "shape", "variable-pair")]
 
