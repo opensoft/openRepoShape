@@ -50,7 +50,7 @@ from test_family import (  # noqa: F401
     ORG, SPARE, family, family_module, holder, manifest, validate,
 )
 from test_family_tracking_branch import on_main  # noqa: F401
-from test_validate_family_branch_step import BRANCH_LEFT
+from test_validate_family_branch_step import BRANCH_LEFT, switch_argv
 from test_value_pattern_line_break import (
     ID_PATTERN, a_member_whose_id_is, findings, rewritten,
 )
@@ -340,6 +340,7 @@ def test_the_rows_remedy_runs_as_printed_from_the_tracking_branch(on_main):
                               1)[1].splitlines()[0]
     assert line.endswith(". " + BRANCH_LEFT), line
     switch, bump = commands(line)
+    assert shlex.split(switch) == switch_argv(holder, "bump", "irrs" + LF)
     argv = shlex.split(bump)
     assert argv[:3] == [PYTHON, "scripts/family.py", "bump"], bump
     assert argv[argv.index("--member") + 1] == "IRRS", bump
@@ -368,6 +369,9 @@ def test_the_members_remedy_pins_the_mended_commit_as_printed(
         f"FINDING member-id-malformed: members/{SPARE}/project.yaml: ",
         1)[1].splitlines()[0]
     switch, bump = commands(line)
+    words = shlex.split(switch)
+    assert words[-2:] == ["-c", "family/bump-member"], switch
+    assert os.path.samefile(words[2], holder), switch
     work = tmp_path / "edit"
     rewritten(work / "project.yaml", 'id: "irqs\\n"\n', 'id: "irqs"\n')
     git("-c", "user.name=t", "-c", "user.email=t@t", "commit", "-qam",
