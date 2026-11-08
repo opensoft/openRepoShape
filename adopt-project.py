@@ -12543,13 +12543,17 @@ def _reencoded_attributes_findings(plan: Plan, source: Source,
 # and every `.gitattributes` are checked out with the source's rules, as the
 # split's clone writes them; the mount's side is asked as `git rm` asks it, a
 # content compare (`update-index --refresh`) in which a conversion git cannot
-# make is no change (a file sent to a leg that its encoding refuses adopted);
-# the split's side as `git add` stores it, a plain `git add -u` (never
-# `--renormalize`, which skips git's protection of a blob that already holds
-# CRLF, and so re-stored files `core.autocrlf=true` leaves alone), once the
-# moved `.gitattributes` are gone and the root's is written as the split
-# writes it; and then each pinned copy, its own bytes where `_pinned_landings`
-# lands it. What git refuses on the way is a finding in git's own words.
+# make is no change (a file sent to a leg that its encoding refuses adopted),
+# of what it removes alone: each `.gitattributes` it leaves is held for its
+# rules and marked unchanged, so a filter that fails for one, which `git rm`
+# never runs, no longer stops the compare there and leaves every file after
+# it listed as changed (#1192); the split's side as `git add` stores it, a
+# plain `git add -u` (never `--renormalize`, which skips git's protection of
+# a blob that already holds CRLF, and so re-stored files `core.autocrlf=true`
+# leaves alone), once the moved `.gitattributes` are gone and the root's is
+# written as the split writes it; and then each pinned copy, its own bytes
+# where `_pinned_landings` lands it. What git refuses on the way is a finding
+# in git's own words.
 #
 # ONE FINDING PER GROUP, each naming `NAMED_PATHS` paths in the tree's order
 # and counting the rest: what the root keeps, what goes to a leg or is
@@ -12596,7 +12600,9 @@ READ_AGAIN = ("each one git reads again (every file of a small source; of a "
 #: refusal's own fixtures and the check that refuses them patched out (#906).
 #: A clone of the source meets the rule that refuses a checkout the first
 #: time `execute` makes one: extracting a leg (`REFUSED extracting the spec
-#: leg`, where both legs are extracted, before either is pushed). The split's
+#: leg`, where both legs are extracted, before either is pushed); so does a
+#: filter that fails for a file the mount's `git rm` compares, wherever the
+#: plan sends it, in that leg's `git checkout -B` (#1192). The split's
 #: `git add -A` stops it at `REFUSED committing the split`, a step the push
 #: of the split branch follows, unless a step before it meets the same rule:
 #: the extraction, on a filter that fails; the seeding of a leg, which runs
@@ -12613,6 +12619,11 @@ STOPS_AT_THE_SPLIT = (
 #: step a refusal can stop.
 CHECKOUT_REFUSED = (
     "to check the source's commit out as the split's clone does",
+    STOPS_AT_A_CLONE,
+    "Change the rule or the setting git names, and re-run `plan`.")
+COMPARE_REFUSED = (
+    "to compare what the plan sends to a leg or drops with its blob, as the "
+    "mount's `git rm` does",
     STOPS_AT_A_CLONE,
     "Change the rule or the setting git names, and re-run `plan`.")
 STORE_REFUSED = (
@@ -13014,17 +13025,29 @@ def _reencoded_files_findings(plan: Plan, source: Source, tree: list,
         said = asked.checkout(CHECKED_OUT)
         if said is not None:
             return [_refused_finding(CHECKOUT_REFUSED, said)]
-        # The mount's side: `git rm`'s own compare, which writes nothing.
+        # The mount's side: `git rm`'s own compare, which writes nothing, of
+        # what it removes alone. Each `.gitattributes` it leaves is marked
+        # unchanged: a filter that failed for one stopped the refresh there,
+        # exit 128, and `diff-files` then listed each file it had not
+        # reached as changed (#1192). Where git refuses the compare, that is
+        # the finding, in git's words, and no list is read.
         moved = {row[0] for row in wanted if row[0] not in kept}
         asked.hold(TAKEN, {*[row for row in wanted if row[0] in moved],
                            *rules})
-        asked.git(["update-index", "-q", "--refresh"], TAKEN)
-        taken = [path for path in asked.listed(
-            ["diff-files", "--name-only", "-z"], TAKEN) if path in moved]
+        asked.asked(["update-index", "-z", "--assume-unchanged", "--stdin"],
+                    TAKEN, b"".join(_nul(path) for path, _, _ in rules
+                                    if path not in moved))
+        compare_said = asked.refused(["update-index", "-q", "--refresh"],
+                                     TAKEN)
+        taken = [] if compare_said is not None else [
+            path for path in asked.listed(
+                ["diff-files", "--name-only", "-z"], TAKEN) if path in moved]
         # The split's side: its `git add`, over the root it writes.
         try:
             _as_the_split_writes(asked, rules, kept, own, written, landings)
         except OSError:
+            if compare_said is not None:
+                return [_refused_finding(COMPARE_REFUSED, compare_said)]
             return [_moved_finding(taken)] if taken else []
         held = {*[row for row in wanted if row[0] in kept],
                 *[row for row in rules
@@ -13039,7 +13062,8 @@ def _reencoded_files_findings(plan: Plan, source: Source, tree: list,
     return _grouped_findings(
         sorted(stored, key=order.get), sorted(taken, key=order.get),
         copies, at_the_root,
-        ((STORE_REFUSED, stored_said), (COPY_REFUSED, copies_said)))
+        ((STORE_REFUSED, stored_said), (COMPARE_REFUSED, compare_said),
+         (COPY_REFUSED, copies_said)))
 
 
 def _grouped_findings(stored: list[str], taken: list[str], copies: list[str],

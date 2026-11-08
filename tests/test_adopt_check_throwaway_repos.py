@@ -73,6 +73,15 @@ a file only that tree's rules reach is asked about too (r1169b's
 SHOULD-1). A `GIT_ATTR_SOURCE` is
 `adopt-git-unasked`, by name, before any question. And three of the
 throwaways read their environment before they are made.
+
+#1192 followed, measured on 93d29314 with git 2.43. Under a filter that
+fails for a `.gitattributes` the mount's `git rm` leaves, the rehearsal's
+compare of what it removes (`update-index -q --refresh`) stopped there,
+exit 128, which nothing read, and `diff-files` then listed every file it
+had not reached: `check` also said `plan-file-reencoded` for a file the
+split stores as its blob. Now the rules `git rm` leaves are marked
+unchanged in that compare, and a compare git refuses is the finding, in
+git's words.
 """
 
 from __future__ import annotations
@@ -2316,3 +2325,172 @@ def test_the_checkout_questions_take_the_settings_and_no_attr_source(
                    if name not in ANOTHER_REPOSITORY}
     monkeypatch.delenv(PARAMETERS)
     assert PARAMETERS not in adopter._split_checkout_env()
+
+
+# ---------------------------------------------------------------------------
+# #1192: the mount's compare, under a filter that fails
+# ---------------------------------------------------------------------------
+
+SPEC_MD = "specs/001-feature/spec.md"
+#: A side tree's rules: the failing filter for the root's own
+#: `.gitattributes`, and `*.md text`, which reaches `SPEC_MD`.
+FILTER_AND_TEXT = FILTERED_ROOT + OWN_TEXT_ROOT
+#: The rule of the source's own root that gives `notes.txt` alone the
+#: failing filter, and that file.
+FILTERED_NOTES = {ROOT_ATTRIBUTES: f"/{NOTES} filter={FAILING}\n".encode(),
+                  NOTES: b"notes\n"}
+#: Where the plan sends `notes.txt`: each place the mount's `git rm` takes
+#: it from.
+SENT_OR_DROPPED = ["spec", "code", "drop"]
+
+
+def spec_under_a_side_tree(base: Path, handed, rules: bytes, entries=(),
+                           spec: bytes | None = None) -> tuple[Path, dict]:
+    """The plan for a source whose own root says `NEUTRAL_ROOT`, with
+    `SPEC_MD` committed as `spec` byte for byte where it is given, and which
+    holds on a side branch a tree whose `.gitattributes` says `rules`; and
+    `entries`, with `attr.tree` naming that tree by its object id, in the
+    form `handed` gives them. The control: in the source, git reads `text`
+    for `SPEC_MD` under them; where this git reads no `attr.tree`, the form
+    is skipped."""
+    files = {ROOT_ATTRIBUTES: NEUTRAL_ROOT}
+    if spec is not None:
+        files[SPEC_MD] = spec
+    source = a_source(base, files=files)
+    env = handed(base, [*entries,
+                        ("attr.tree", on_a_side_branch(source, rules))])
+    read = subprocess.run(["git", "check-attr", "text", "--", SPEC_MD],
+                          cwd=str(source), env={**os.environ, **env},
+                          capture_output=True, text=True, check=True)
+    if read.stdout.strip() == f"{SPEC_MD}: text: unspecified":
+        pytest.skip("this git reads no `attr.tree`")
+    assert read.stdout.strip() == f"{SPEC_MD}: text: set"
+    return planned(source, base, {}), env
+
+
+def compare_refused(path: str) -> str:
+    """`plan-file-reencoded` for the mount's compare, which git refuses at
+    `path`, whose clean filter `FAILING` fails."""
+    return (f"FINDING {REENCODED_FILES}: this machine's git refuses to "
+            "compare what the plan sends to a leg or drops with its blob, "
+            "as the mount's `git rm` does (git said `fatal: "
+            f"{path}: clean filter '{FAILING}' failed`), so `execute` would "
+            "stop after the leg repositories exist, at its first clone of "
+            "the source. Change the rule or the setting git names, and "
+            "re-run `plan`.")
+
+
+@pytest.mark.parametrize("handed", EVERY_FORM)
+def test_a_side_trees_failing_filter_over_its_text_rule_is_one_finding(
+        tmp_path, handed):
+    """#1192: the side tree `attr.tree` names says `/.gitattributes
+    filter=w1136`, that filter failing, and `*.md text`. Measured on
+    93d29314 with git 2.43, in each form: `check` said the right
+    `plan-attributes-reencoded`, and also `plan-file-reencoded` naming
+    `specs/001-feature/spec.md`, which the split stores as its blob (the
+    control below). The rehearsal's `update-index -q --refresh` died at the
+    root's `.gitattributes`, exit 128, which nothing read, and `diff-files`
+    then listed each file it had not reached. The mount's `git rm` compares
+    only what it removes, so the rules it leaves are marked unchanged now,
+    and the filter's failure is the one finding."""
+    plan, env = spec_under_a_side_tree(tmp_path, handed, FILTER_AND_TEXT,
+                                       FAILING_FILTER)
+    result = checked(plan, env)
+    assert "REFUSED" not in result.stderr, result.stderr
+    assert result.returncode == 1, result.stderr
+    assert codes(result) == [REENCODED_ATTRIBUTES], result.stderr
+    assert f"clean filter '{FAILING}' failed" in finding_lines(result)[0]
+
+
+@pytest.mark.parametrize("handed", EVERY_FORM)
+def test_a_file_the_compare_reaches_is_still_named_beside_that_filter(
+        tmp_path, handed):
+    """The control where the compare runs to its end: the same side tree
+    and filter, over a spec committed with CRLF, which `*.md text` stores
+    as LF. The filter's failure is named, and so is the spec, which the
+    mount's `git rm` would refuse, as on 93d29314."""
+    plan, env = spec_under_a_side_tree(tmp_path, handed, FILTER_AND_TEXT,
+                                       FAILING_FILTER, b"# The feature\r\n")
+    result = checked(plan, env)
+    assert "REFUSED" not in result.stderr, result.stderr
+    assert result.returncode == 1, result.stderr
+    assert codes(result) == [REENCODED_ATTRIBUTES, REENCODED_FILES], \
+        result.stderr
+    found = finding_lines(result)[1]
+    assert SENT_CRLF in found and f": `{SPEC_MD}`." in found, found
+
+
+@pytest.mark.parametrize("handed", EVERY_FORM)
+def test_the_side_trees_text_rule_alone_is_plan_ok(tmp_path, handed):
+    """The control: the tree's `*.md text` alone, with no filter. Git
+    stores `specs/001-feature/spec.md` (`# The feature`, LF only) as its
+    blob, and `check` says `plan ok`, as on 93d29314."""
+    plan, env = spec_under_a_side_tree(tmp_path, handed, OWN_TEXT_ROOT)
+    result = checked(plan, env)
+    assert result.returncode == 0, result.stderr
+    assert "plan ok" in result.stdout
+
+
+@pytest.mark.parametrize("leg", SENT_OR_DROPPED)
+def test_a_compare_git_refuses_is_that_finding_in_gits_words(tmp_path, leg):
+    """A filter that fails for a file the plan sends to a leg or drops: the
+    mount's compare stops at it, exit 128, and that is the finding. Measured
+    on 93d29314 with git 2.43: `check` said the file was stored as other
+    bytes than its blob, from the list `diff-files` gave of the files the
+    compare had not reached."""
+    plan = planned(a_source(tmp_path, files=FILTERED_NOTES), tmp_path,
+                   {NOTES: leg})
+    result = checked(plan, with_parameters(tmp_path, FAILING_FILTER))
+    assert "REFUSED" not in result.stderr, result.stderr
+    assert result.returncode == 1, result.stderr
+    assert finding_lines(result) == [compare_refused(NOTES)]
+
+
+@NEEDS_FILTER_REPO
+@pytest.mark.parametrize("leg", SENT_OR_DROPPED)
+def test_execute_stops_at_its_first_clone_where_that_compare_is_refused(
+        adopter, monkeypatch, capsys, tmp_path, leg):
+    """The measurement behind where the finding says `execute` stops. With
+    `check`'s refusal patched out, `execute` makes both leg repositories
+    and stops extracting the spec leg, whose `git checkout -B` meets the
+    filter, wherever the plan sends the file. Unpatched, it refuses before
+    any leg."""
+    plan = planned(a_source(tmp_path, files=FILTERED_NOTES), tmp_path,
+                   {NOTES: leg})
+    for name, value in with_parameters(tmp_path, FAILING_FILTER).items():
+        monkeypatch.setenv(name, value)
+    if leg == "spec":
+        refusal = refused_before_any_leg(adopter, monkeypatch, plan,
+                                         tmp_path)
+        assert refusal.code == REENCODED_FILES
+        capsys.readouterr()
+    monkeypatch.setattr(adopter, "_require_filter_repo", lambda: None)
+    monkeypatch.setattr(adopter, "_refuse_what_check_finds",
+                        lambda *args, **kwargs: None)
+    remotes = tmp_path / "patched-remotes"
+    assert adopter.cmd_execute(Namespace(
+        plan=str(plan), source=None, local_remote_dir=remotes,
+        allow_empty_leg=[], yes=True,
+        work_dir=tmp_path / "patched-work")) == 2
+    said = capsys.readouterr().err
+    assert "REFUSED extracting the spec leg." in said, said
+    assert f"fatal: {NOTES}: clean filter '{FAILING}' failed" in said, said
+    assert sorted(path.name for path in remotes.iterdir()) == [
+        "Northwind-code.git", "Northwind-spec.git"]
+
+
+def test_a_compare_git_refuses_is_named_where_the_root_is_not_laid_out(
+        tmp_path):
+    """The root keeps a FILE named `shape`, where the shape's own
+    `shape/.gitattributes` would go (`plan-root-blocks-shape-copy`, #262),
+    so the rehearsal cannot write the split's root, and asks nothing after
+    the mount's compare: a compare git refuses is still named."""
+    files = {**FILTERED_NOTES, "shape": b"a file\n",
+             ROOT_ATTRIBUTES: TEXT_EOL_LF + FILTERED_NOTES[ROOT_ATTRIBUTES]}
+    plan = planned(a_source(tmp_path, files=files), tmp_path,
+                   {"shape": ROOT, NOTES: "spec"})
+    result = checked(plan, with_parameters(tmp_path, FAILING_FILTER))
+    assert result.returncode == 1, result.stderr
+    assert codes(result) == ["plan-root-blocks-shape-copy",
+                             REENCODED_FILES], result.stderr
+    assert finding_lines(result)[1] == compare_refused(NOTES)
