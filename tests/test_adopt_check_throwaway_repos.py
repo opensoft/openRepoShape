@@ -2377,7 +2377,8 @@ def compare_refused(path: str) -> str:
             f"{path}: clean filter '{FAILING}' failed`), so `execute` would "
             "stop after the leg repositories exist, at the first step that "
             "reads that file again: extracting the spec leg, extracting the "
-            "code leg once the spec leg is pushed, or mounting the legs. "
+            "code leg once the spec leg is pushed, or, once both legs are "
+            "pushed, cloning the source for the split or mounting the legs. "
             "Change the rule or the setting git names, and re-run `plan`.")
 
 

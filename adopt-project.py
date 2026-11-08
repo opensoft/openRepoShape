@@ -12600,13 +12600,14 @@ READ_AGAIN = ("each one git reads again (every file of a small source; of a "
 #: refusal's own fixtures and the check that refuses them patched out (#906).
 #: A clone of the source meets the rule that refuses a checkout the first
 #: time `execute` makes one: extracting a leg (`REFUSED extracting the spec
-#: leg`, where both legs are extracted, before either is pushed). The split's
-#: `git add -A` stops it at `REFUSED committing the split`, a step the push
-#: of the split branch follows, unless a step before it meets the same rule:
-#: the extraction, on a filter that fails; the seeding of a leg, which runs
-#: a `git add -A` of its own (`REFUSED seeding the code leg`); or the mount,
-#: where a rule over every file reaches the `.gitmodules` it writes
-#: (`REFUSED mounting the legs`, `failed to encode '.gitmodules'`).
+#: leg`, before either is pushed: each leg is extracted and then pushed in
+#: turn, the spec leg first). The split's `git add -A` stops it at `REFUSED
+#: committing the split`, a step the push of the split branch follows,
+#: unless a step before it meets the same rule: the extraction, on a filter
+#: that fails; the seeding of a leg, which runs a `git add -A` of its own
+#: (`REFUSED seeding the code leg`); or the mount, where a rule over every
+#: file reaches the `.gitmodules` it writes (`REFUSED mounting the legs`,
+#: `failed to encode '.gitmodules'`).
 STOPS_AT_A_CLONE = "at its first clone of the source"
 STOPS_AT_THE_SPLIT = (
     "no later than committing the split, and sooner where a step before it "
@@ -12614,16 +12615,19 @@ STOPS_AT_THE_SPLIT = (
     "where the rule reaches the `.gitmodules` it writes")
 #: Where it stops for a filter that fails for a file the mount's `git rm`
 #: compares (#1192): at the first step that reads that file again, which
-#: the clock decides (`READ_AGAIN`). Measured with git 2.43, under a failing
-#: required clean filter for a `notes.txt` sent to either leg or dropped,
-#: with the check patched out: in 47 of 48 runs, extracting the spec leg,
-#: whose `git checkout -B` in a clone of the whole source read it; in one,
-#: extracting the code leg, the same way, once the spec leg was pushed. The
-#: mount's own `git rm`, which the compare asks as, comes after both.
+#: the clock decides (`READ_AGAIN`). Each leg's extraction, and then the
+#: split's own clone once both legs are pushed, clones the whole source and
+#: runs `git checkout -q -B` in it, which can read the file; the mount's own
+#: `git rm`, which the compare asks as, comes after all three. Measured with
+#: git 2.43, under a failing required clean filter for a `notes.txt` sent to
+#: either leg or dropped, with the check patched out: in 47 of 48 runs,
+#: extracting the spec leg; in one, extracting the code leg, once the spec
+#: leg was pushed; and with the filter kept out of both extractions, in 24
+#: of 24, cloning the source for the split (#1253's review).
 STOPS_AT_A_READ = (
     "at the first step that reads that file again: extracting the spec leg, "
-    "extracting the code leg once the spec leg is pushed, or mounting the "
-    "legs")
+    "extracting the code leg once the spec leg is pushed, or, once both legs "
+    "are pushed, cloning the source for the split or mounting the legs")
 
 #: What git refused, where `execute` would stop, and the way out, for each
 #: step a refusal can stop.
