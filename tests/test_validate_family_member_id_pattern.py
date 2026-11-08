@@ -104,14 +104,16 @@ def row_of(holder, project: str) -> dict:
                 if row["project"] == project)
 
 
-def mounted_as_add_wrote_it(family, holder, tmp_path, row_id: str) -> None:
-    """IRQS mounted from a copy of its remote whose `project.yaml` reads `id:
-    "irqs\\n"` (`a_member_whose_id_is`, which leaves its work clone at
-    `tmp_path / "edit"`), and its row written as a `family.py add` older
-    than #1166 wrote it, with its `id:` spelled `row_id` (#1166 refuses that
-    member now, so the row is written by hand). Committed, the pin and the
-    digest those of the mount: the id is the only thing wrong."""
-    remotes = a_member_whose_id_is(family, tmp_path, 'id: "irqs\\n"\n')
+def mounted_as_add_wrote_it(family, holder, tmp_path, row_id: str,
+                            own: str = 'id: "irqs\\n"\n') -> None:
+    """IRQS mounted from a copy of its remote whose `project.yaml` writes
+    its `id:` as `own`, `id: "irqs\\n"` unless said (`a_member_whose_id_is`,
+    which leaves its work clone at `tmp_path / "edit"`), and its row written
+    as a `family.py add` older than #1166 wrote it, with its `id:` spelled
+    `row_id` (#1166 refuses that member now, so the row is written by
+    hand). Committed, the pin and the digest those of the mount: the id is
+    the only thing wrong."""
+    remotes = a_member_whose_id_is(family, tmp_path, own)
     git("-c", "protocol.file.allow=always", "submodule", "add", "-q", "--",
         str(remotes / f"{SPARE}.git"), f"members/{SPARE}", cwd=holder)
     mounted = holder / "members" / SPARE
@@ -301,6 +303,21 @@ def test_a_mounted_member_whose_own_id_is_malformed_is_found(
     assert own[0].endswith(". " + BRANCH_LEFT), own[0]
     assert "member-id-mismatch" not in result.stderr
     assert len(found) == (2 if row_id != "irqs" else 1), result.stderr
+
+
+def test_the_members_own_id_is_asked_as_add_asks_it(family, holder, tmp_path):
+    """`add` reads the member's own `id:` as `str(id or "")`
+    (`_read_member_project`), so a `project.yaml` whose `id:` reads as the
+    number 0 is `member-bad-id`, and the member's own `validate-manifest.py`
+    refuses it too, as no string. The gate asks it the same way: a row
+    spelling it `"0"`, which compared equal as text and was `family ok`, is
+    refused by the member's own finding, and only that."""
+    mounted_as_add_wrote_it(family, holder, tmp_path, '"0"', own="id: 0\n")
+    result = validate(holder)
+    assert result.returncode == 1, result.stdout + result.stderr
+    found = findings(result.stderr)
+    assert len(found) == 1, result.stderr
+    assert found[0].startswith(source_finding(SPARE, 0) + " "), found[0]
 
 
 # --- the remedies, typed as printed ------------------------------------------
