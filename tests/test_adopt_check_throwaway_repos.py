@@ -2455,8 +2455,9 @@ def test_execute_refuses_a_compare_git_refuses_before_any_leg(
         adopter, monkeypatch, tmp_path, leg):
     """With the check patched out, `execute` made both leg repositories and
     stopped at the first step that read the file again (measured with git
-    2.43, `STOPS_AT_A_READ`): which step that is, the clock decides, so no
-    row here leans on it. Unpatched, it refuses before any leg."""
+    2.43, `STOPS_AT_A_READ`): which step that is, the clock decides, so the
+    row below asks only that it is one the finding names. Unpatched, it
+    refuses before any leg."""
     plan = planned(a_source(tmp_path, files=FILTERED_NOTES), tmp_path,
                    {NOTES: leg})
     for name, value in with_parameters(tmp_path, FAILING_FILTER).items():
@@ -2464,6 +2465,82 @@ def test_execute_refuses_a_compare_git_refuses_before_any_leg(
     refusal = refused_before_any_leg(adopter, monkeypatch, plan, tmp_path)
     assert refusal.code == REENCODED_FILES
     assert refusal.detail.splitlines()[1:] == [f"  {compare_refused(NOTES)}"]
+
+
+#: Each step `execute` can stop at for a compare git refuses: how the
+#: finding names it, and which legs `execute`'s notice says are pushed.
+READ_AGAIN_STOPS = {
+    "extracting the spec leg": ("extracting the spec leg,",
+                                "neither leg is pushed"),
+    "extracting the code leg": (
+        "extracting the code leg once the spec leg is pushed,",
+        "the spec leg is pushed"),
+    "cloning the source for the split": (
+        "once both legs are pushed, cloning the source for the split",
+        "both legs are pushed"),
+    "mounting the legs": (
+        "once both legs are pushed, cloning the source for the split or "
+        "mounting the legs.", "both legs are pushed"),
+}
+#: How the extractions run: as they are, or as if each trusted the file's
+#: stat data and never read it, the filter out of the environment while
+#: each runs (r1253's probe), which leaves the steps after both legs.
+EXTRACTIONS = [pytest.param(False, id="as-they-run"),
+               pytest.param(True, id="as-if-trusting-the-stat")]
+
+
+@NEEDS_FILTER_REPO
+@pytest.mark.parametrize("trusting", EXTRACTIONS)
+@pytest.mark.parametrize("leg", SENT_OR_DROPPED)
+def test_execute_stops_at_a_step_the_refused_compare_names(
+        adopter, monkeypatch, capsys, tmp_path, leg, trusting):
+    """The measurement behind `STOPS_AT_A_READ` (r1253's SHOULD-1): with
+    `check`'s refusal patched out, `execute` makes both leg repositories and
+    stops at a step the finding names, with the legs pushed that it names
+    for that step. Which step, the clock decides (`READ_AGAIN`): here,
+    nearly always extracting the spec leg, so no step in particular is
+    asked for. Where neither extraction reads the file, the split's own
+    clone did, in 24 of 24 runs on 18c2aaef (r1253), a step the finding
+    left out. Where no step read the file again, nothing stopped for it,
+    as the finding warns, and the row is skipped."""
+    plan = planned(a_source(tmp_path, files=FILTERED_NOTES), tmp_path,
+                   {NOTES: leg})
+    for name, value in with_parameters(tmp_path, FAILING_FILTER).items():
+        monkeypatch.setenv(name, value)
+    ((code, detail),) = findings(plan)
+    assert code == REENCODED_FILES
+    monkeypatch.setattr(adopter, "_refuse_what_check_finds",
+                        lambda *args, **kwargs: None)
+    if trusting:
+        extract = adopter._extract_leg
+
+        def without_the_filter(*args, **kwargs):
+            saved = os.environ.pop(PARAMETERS)
+            try:
+                return extract(*args, **kwargs)
+            finally:
+                os.environ[PARAMETERS] = saved
+        monkeypatch.setattr(adopter, "_extract_leg", without_the_filter)
+    args = Namespace(plan=str(plan), source=None,
+                     local_remote_dir=tmp_path / "remotes",
+                     allow_empty_leg=[], yes=True, work_dir=tmp_path / "work")
+    stopped = adopter.cmd_execute(args)
+    said = capsys.readouterr().err
+    if stopped == 0:
+        pytest.skip(f"no step read `{NOTES}` again in this run (READ_AGAIN)")
+    assert stopped == 2, said
+    (refused,) = [line for line in said.splitlines()
+                  if line.startswith("REFUSED ")]
+    step = refused[len("REFUSED "):].split(". THE EXACT COMMAND WAS:")[0]
+    assert step in READ_AGAIN_STOPS, said
+    named, pushed = READ_AGAIN_STOPS[step]
+    assert named in detail, detail
+    assert f"fatal: {NOTES}: clean filter '{FAILING}' failed" in said, said
+    assert f", and {pushed}. " in said, said
+    if trusting:
+        assert pushed == "both legs are pushed", said
+    assert (tmp_path / "remotes" / "Northwind-spec.git").is_dir()
+    assert (tmp_path / "remotes" / "Northwind-code.git").is_dir()
 
 
 def test_a_compare_git_refuses_is_named_where_the_root_is_not_laid_out(
