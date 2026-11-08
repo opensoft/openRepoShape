@@ -39,10 +39,17 @@ it had, where no `--upstream` was passed.
 
 LEFT AS THEY ARE, AND WHY:
 
-- The argv readers of `PROJECT_ID_RE` (`--id` in `scaffold-project.py`,
-  `family.py init` and `adopt-project.py`): each holds the id to
-  `checked_value` after the pattern, which refuses a line feed as
-  `unsafe-value` naming `--id` (`tests/test_derived_id_refusals.py`).
+- The argv readers of `PROJECT_ID_RE` in `scaffold-project.py` and
+  `family.py init` (`--id`): each holds the id to `checked_value` after the
+  pattern, which refuses a line feed as `unsafe-value` naming `--id`
+  (`tests/test_derived_id_refusals.py`, whose `TOOLS` are those two).
+- `adopt-project.py`'s argv `--id` is NOT held to `checked_value`: `plan`
+  asks the id it takes, passed or derived from `--project`, with `match`,
+  and calls `checked_value` on `--project` but never on the id, so
+  `northwind\\n` passes the pattern. The project's own `validate-manifest.py`
+  refuses it instead: `adopt-manifest-invalid` naming `--id`, in
+  `manifest-id`'s words, exit 2, and no plan is written (the row below,
+  measured for `plan` only).
 - `adopt-project.py`'s reading of a plan's `id:`: `check` and `execute` hold
   the plan's values to the project's own `validate-manifest.py`, which
   refused it on main in the topic's words and names the id now (the row
@@ -55,9 +62,13 @@ LEFT AS THEY ARE, AND WHY:
   refused the line feed on main; its row is the pattern's alone.
 
 A NEW READER of `PROJECT_ID_RE` is held to the same rule by
-`test_every_reader_of_the_id_pattern_is_in_the_table`: it asks with
-`fullmatch`, or it is listed in `ID_READERS` with the reason a line feed
-cannot reach it.
+`test_every_reader_of_the_id_pattern_is_in_the_table`: it is listed in
+`ID_READERS`, `fullmatch` included, with the reason a line feed cannot reach
+it, or that test fails. The table is exact both ways, so a reader taken away
+loses its row too. The test reads spellings and stops there: it counts a call
+whose receiver is the name `PROJECT_ID_RE` or an attribute of that name, and
+not an alias (`_ID = PROJECT_ID_RE` then `_ID.match(value)`, or `from
+repo_shape import PROJECT_ID_RE as X`).
 
 No network and no GitHub: the projects and the family are the offline ones
 of `conftest.py` and `test_family.py`, and every `update-shape.py` row is
@@ -72,7 +83,7 @@ from pathlib import Path
 
 import pytest
 
-from conftest import REPO, cloned_just_pushed, git, run_script
+from conftest import REPO, cloned_just_pushed, git, run_script, write_plan
 from test_adopt_values_as_typed import check as adopt_check
 from test_adopt_values_as_typed import planned
 from test_family import ORG, SPARE, family, validate  # noqa: F401
@@ -147,7 +158,8 @@ def test_every_spelling_of_a_value_pattern_is_in_the_table():
 #: `{(module, method): (calls, why it is safe)}`: every call of a method of
 #: `repo_shape.PROJECT_ID_RE` in a tracked module outside `tests/`. The
 #: pattern keeps its `$`, so `match` takes a trailing line feed and
-#: `fullmatch` does not.
+#: `fullmatch` does not. A reader added later needs its row whichever method
+#: it calls, with the reason that holds for that module and no other's.
 ID_READERS = {
     ("templates/assembly-root/scripts/validate-manifest.py", "fullmatch"): (
         1, "the manifest's `id:`"),
@@ -160,10 +172,13 @@ ID_READERS = {
     ("scaffold-project.py", "match"): (
         1, "argv `--id`: `checked_value` refuses a line feed after it"),
     ("adopt-project.py", "match"): (
-        3, "argv `--id`, as above; and the plan's `id:` and the id derived "
-           "from `legs.assembly`, which a line feed never passes (the id is "
-           "refused by the project's own validate-manifest.py, the "
-           "derived one as `unsafe-value`)"),
+        3, "argv `--id`, which `plan` asks with `match` and never holds to "
+           "`checked_value`: a line feed after it passes the pattern, and "
+           "the project's own validate-manifest.py refuses it as "
+           "`adopt-manifest-invalid` naming `--id` (the row below); and the "
+           "plan's `id:` and the id derived from `legs.assembly`, which a "
+           "line feed never passes (the id is refused by the project's own "
+           "validate-manifest.py, the derived one as `unsafe-value`)"),
 }
 
 
@@ -194,10 +209,18 @@ def id_pattern_calls() -> dict[tuple[str, str], int]:
 
 def test_every_reader_of_the_id_pattern_is_in_the_table():
     """A reader written later that asks `PROJECT_ID_RE` with `match` (or
-    `search`) takes `"atlas\\n"`: it is read with `fullmatch`, or it is in
-    `ID_READERS` with the reason a line feed cannot reach it, or this fails."""
+    `search`) takes `"atlas\\n"`, so it is listed in `ID_READERS` with the
+    reason a line feed cannot reach it, or this fails. A `fullmatch` reader
+    is listed too: the table is exact in both directions, so a reader added
+    needs its row, and one taken away loses its row. This reads spellings,
+    not meaning: an alias of the pattern is outside it."""
     expected = {key: calls for key, (calls, _) in ID_READERS.items()}
-    assert id_pattern_calls() == expected
+    assert id_pattern_calls() == expected, (
+        "`ID_READERS` lists every call of a method of `PROJECT_ID_RE` outside "
+        "`tests/`, `fullmatch` included, by module and method. Add, change "
+        "or drop the row of the module and method the diff below shows, and "
+        "give a `match` or `search` reader the reason a line feed cannot "
+        "reach it.")
 
 
 @pytest.mark.parametrize("path, name, value", PATTERNS)
@@ -261,6 +284,23 @@ def test_adopt_check_names_a_plan_id_that_ends_in_a_line_break_as_an_id(
         "FINDING plan-manifest-invalid: id is 'northwind\\n', which the "
         "project's own validate-manifest.py refuses: manifest-id: id is "
         f"'northwind\\n'; it must match {ID_PATTERN}."], result.stderr
+
+
+def test_adopt_plan_names_a_passed_id_that_ends_in_a_line_break_as_an_id(
+        source_repo, tmp_path):
+    """The `ID_READERS` row of `adopt-project.py`'s argv `--id`: `plan` asks it
+    with `match` and never calls `checked_value` on it, so `northwind\\n`
+    passes the pattern, and the project's own `validate-manifest.py` is the
+    door that refuses it: `adopt-manifest-invalid` naming `--id`, exit 2, and
+    no plan written."""
+    out = tmp_path / "adoption-plan.yaml"
+    result = write_plan(source_repo, out, extra=("--id", "northwind" + LF))
+    assert result.returncode == 2, result.stdout + result.stderr
+    assert result.stderr.splitlines()[0] == (
+        "REFUSED adopt-manifest-invalid: --id is 'northwind\\n', which the "
+        "project's own validate-manifest.py refuses: manifest-id: id is "
+        f"'northwind\\n'; it must match {ID_PATTERN}."), result.stderr
+    assert not out.exists()
 
 
 # --- validate-family.py ------------------------------------------------------
