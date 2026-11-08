@@ -43,8 +43,15 @@ A MEMBER'S `.git` AND THE GIT DIRECTORY IT NAMES (#1221), asked by
 each passed the `stat` and were refused `member-commit-unresolvable`, which
 says the pinned commit is missing. Each is `member-unreadable` now, naming
 the part, and a parity row holds `_member_git_dir` to the gate's
-`_leg_git_dir`. A `HEAD` file itself at mode 000 is not asked, since the
-gate does not ask it either.
+`_leg_git_dir`.
+
+A MEMBER GIT DIRECTORY'S `HEAD` THIS USER CANNOT OPEN (#1256), as #1222
+found of a leg's in the gate: a `HEAD` at mode 000, under `.git/modules/`
+or in a `.git` directory, stats, so #1221's `stat` of it passed, and git,
+which could not read it, ended the run in `member-commit-unresolvable`
+with a fetch. It is opened as the gate opens a leg's, only where it is a
+regular file, and refused `member-unreadable`, naming that `HEAD`; a
+parity row holds the name to the gate's.
 
 WHAT IS ON DISK IS ASKED ONLY WHERE IT IS SAID (round 2, r956's SHOULD 1
 on #956): `_forced` and `_staged_over` ask git first, and where HEAD
@@ -942,6 +949,107 @@ def test_a_member_git_directory_with_no_head_is_left_to_git(
     assert code == 0, capsys.readouterr().err
 
 
+# --- #1256: a member git directory's `HEAD` this user cannot open -----------
+
+#: `(the state, its member git directory's `HEAD`)`: a gitfile member's,
+#: under `.git/modules/`, and a `.git` directory's (#1256). Each `HEAD` is
+#: the path the gate names, relative to the holder.
+HEADS = [
+    pytest.param(as_made, f"{MEMBER_GIT_DIR}/HEAD", id="gitfile-member"),
+    pytest.param(own_git_directory, f"{ROW}/.git/HEAD",
+                 id="git-directory-member"),
+]
+
+
+def worktree_head(holder: Path) -> str:
+    """The `HEAD` of the git directory `a_worktree`'s gitfile names, outside
+    the holder, as the gate names it: whole."""
+    line = (holder / ROW / ".git").read_bytes().decode().strip()
+    return os.path.join(os.path.normpath(line[len("gitdir: "):]), "HEAD")
+
+
+@needs_a_mode
+@pytest.mark.parametrize("made,head", HEADS)
+def test_a_member_git_directory_head_this_user_cannot_open_is_refused(
+        holder, request, made, head):
+    """THE ISSUE'S CELLS (#1256), on this Python: the `HEAD` of the member's
+    git directory at mode 000. It stats, so #1221's `stat` of it passed,
+    and git, which could not read it, ended the run in
+    `member-commit-unresolvable`, "the pinned commit ... is not in that
+    member's object store", with a fetch. It is `member-unreadable`, exit
+    2, naming that `HEAD` with the `chmod` cure, and with the mode back the
+    gate passes, so the cure is the whole of it."""
+    extra = made(holder, request)
+    with mode_of(holder / head, 0):
+        result = validate(holder, *extra)
+    assert_refused(result.returncode, result.stderr, MEMBER_UNREADABLE, head)
+    assert "member-commit-unresolvable" not in result.stderr
+    again = validate(holder, *extra)
+    assert again.returncode == 0, again.stderr
+
+
+@needs_a_mode
+def test_a_linked_worktree_head_this_user_cannot_open_is_named_whole(
+        holder, request):
+    """The same for a linked worktree's `HEAD`, in the git directory its
+    gitfile names outside the holder: named whole, as the gate names that
+    directory (#1221)."""
+    a_worktree(holder, request)
+    head = worktree_head(holder)
+    with mode_of(Path(head), 0):
+        result = validate(holder)
+    assert_refused(result.returncode, result.stderr, MEMBER_UNREADABLE, head)
+    assert "member-commit-unresolvable" not in result.stderr
+    assert validate(holder).returncode == 0
+
+
+@pytest.mark.parametrize("error", CAUSES)
+@pytest.mark.parametrize("made,head", HEADS)
+def test_a_member_git_directory_head_whose_open_is_refused_is_refused(
+        holder, request, monkeypatch, capsys, error, made, head):
+    """The same in-process, so on every platform and as root: the open of
+    the `HEAD` refused, each cause with its own cure (`assert_refused`)."""
+    extra = made(holder, request)
+    module = gate(holder, monkeypatch)
+    failing(monkeypatch, "open", "HEAD", error)
+    code = module.main(["--root", str(holder), *extra])
+    err = capsys.readouterr().err
+    assert_refused(code, err, MEMBER_UNREADABLE, head, error.strerror)
+    assert "member-commit-unresolvable" not in err
+
+
+def test_the_member_tree_asked_alone_names_a_head_whole_outside(
+        holder, request, monkeypatch):
+    """`_check_member_tree` asked alone, the open of the `HEAD` refused: it
+    is named relative to the holder, and whole where its git directory is
+    outside the holder, a linked worktree's."""
+    module = gate(holder, monkeypatch)
+    failing(monkeypatch, "open", "HEAD",
+            PermissionError(errno.EACCES, "Permission denied"))
+    args = (holder / ROW, {}, ROW, "0" * 40, "IRRS", module.Report(), "")
+    refusal = refusal_of(module, module._check_member_tree, *args)
+    assert refusal.code == MEMBER_UNREADABLE
+    assert refusal.detail == (f"{MEMBER_GIT_DIR}/HEAD: cannot be read "
+                              "(Permission denied)")
+    a_worktree(holder, request)
+    refusal = refusal_of(module, module._check_member_tree, *args)
+    assert refusal.detail == (f"{module.spelled(worktree_head(holder))}: "
+                              "cannot be read (Permission denied)")
+
+
+def test_a_member_head_gone_when_it_is_opened_is_left_to_git(
+        holder, monkeypatch, capsys):
+    """Asked as `_is_a` asks a `stat`: an open of the `HEAD` that finds
+    nothing at the name is a git directory with no `HEAD`, which git answers
+    for, and not a file this user cannot read. Here git reads it, so the run
+    passes."""
+    module = gate(holder, monkeypatch)
+    failing(monkeypatch, "open", "HEAD",
+            FileNotFoundError(errno.ENOENT, "No such file or directory"))
+    code = module.main(["--root", str(holder)])
+    assert code == 0, capsys.readouterr().err
+
+
 @pytest.fixture(scope="module")
 def sources():
     """This working tree's `validate-family.py` and the gate it copies, each
@@ -1014,3 +1122,90 @@ def test_a_member_git_is_opened_as_the_gate_opens_a_leg_s(
         failing(monkeypatch, "open", ".git", OSError(errno.EIO, "opened"))
     assert sources.family._gitfile_opens(dotgit) is True
     assert sources.gate._gitfile_opens(dotgit) is True
+
+
+def member_git_directory(tmp_path: Path, own_directory: bool) -> Path:
+    """A member checkout at `ROW` under `tmp_path`, the holder, and its git
+    directory, which holds a `HEAD`: its own `.git` directory, or the one
+    under `.git/modules/` its gitfile names, as `family.py add` writes it.
+    Returns the git directory."""
+    checkout = tmp_path / ROW
+    checkout.mkdir(parents=True)
+    if own_directory:
+        gitdir = checkout / ".git"
+        gitdir.mkdir()
+    else:
+        gitdir = tmp_path / MEMBER_GIT_DIR
+        gitdir.mkdir(parents=True)
+        (checkout / ".git").write_bytes(
+            b"gitdir: ../../" + MEMBER_GIT_DIR.encode() + b"\n")
+    (gitdir / "HEAD").write_bytes(b"ref: refs/heads/main\n")
+    return gitdir
+
+
+#: Each shape of member git directory `member_git_directory` makes.
+OWN_DIRECTORY = [
+    pytest.param(False, id="gitfile-member"),
+    pytest.param(True, id="git-directory-member"),
+]
+
+
+@pytest.mark.parametrize("error", CAUSES)
+@pytest.mark.parametrize("own_directory", OWN_DIRECTORY)
+def test_a_member_head_is_named_as_the_gate_names_a_leg_s(
+        sources, tmp_path, monkeypatch, own_directory, error):
+    """PARITY (#1256): the open of the `HEAD` refused, the family gate's
+    line is the leg gate's (#1222), naming the same `HEAD` relative to the
+    holder, `.git/modules/members/IRRS/HEAD` or `members/IRRS/.git/HEAD`,
+    with the system's reason. Each code and remedy is its own."""
+    gitdir = member_git_directory(tmp_path, own_directory)
+    failing(monkeypatch, "open", "HEAD", error)
+    family_refusal = refusal_of(
+        sources.family, sources.family._refuse_an_unreadable_git_dir,
+        tmp_path / ROW, ROW)
+    gate_refusal = refusal_of(
+        sources.gate, sources.gate._refuse_an_unreadable_git_dir, tmp_path,
+        tmp_path / ROW / ".git")
+    head = (gitdir / "HEAD").relative_to(tmp_path).as_posix()
+    assert family_refusal.code == MEMBER_UNREADABLE
+    assert family_refusal.detail == (
+        f"{head}: cannot be read ({error.strerror})")
+    assert gate_refusal.detail == family_refusal.detail
+
+
+@pytest.mark.parametrize("own_directory", OWN_DIRECTORY)
+@pytest.mark.parametrize("make", [
+    pytest.param(lambda head: head.mkdir(), id="directory"),
+    pytest.param(lambda head: os.mkfifo(head), id="fifo",
+                 marks=pytest.mark.skipif(not hasattr(os, "mkfifo"),
+                                          reason="no FIFO on this platform")),
+])
+def test_a_member_head_that_is_no_regular_file_is_not_opened(
+        sources, tmp_path, monkeypatch, own_directory, make):
+    """Only a `HEAD` that is a regular file is opened (#1256), in the family
+    gate as in the leg gate (#1222): one that is anything else is git's to
+    answer for, and the open of a FIFO would wait for a writer. An open of
+    either fails the row rather than hanging it."""
+    gitdir = member_git_directory(tmp_path, own_directory)
+    head = gitdir / "HEAD"
+    head.rename(gitdir / "HEAD-aside")
+    make(head)
+    failing(monkeypatch, "open", "HEAD", OSError(errno.EIO, "opened"))
+    assert sources.family._refuse_an_unreadable_git_dir(tmp_path / ROW,
+                                                        ROW) is None
+    assert sources.gate._refuse_an_unreadable_git_dir(
+        tmp_path, tmp_path / ROW / ".git") is None
+
+
+def test_a_member_head_no_system_call_can_name_is_left_to_git(sources,
+                                                              tmp_path):
+    """A `gitdir: ` line that holds a NUL names a git directory no system
+    call can take, so its `HEAD` is nothing there, as `_is_a` answers a
+    name the system cannot take: nothing is opened, no `ValueError` ends
+    the run, and git refuses the gitfile as it always did (#1256, as the
+    gate's #1222 row asks a leg's)."""
+    dotgit = tmp_path / ROW / ".git"
+    dotgit.parent.mkdir(parents=True)
+    dotgit.write_bytes(b"gitdir: ../m" + chr(0).encode("ascii") + b"x")
+    assert sources.family._refuse_an_unreadable_git_dir(tmp_path / ROW,
+                                                        ROW) is None
