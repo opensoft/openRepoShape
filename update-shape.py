@@ -205,8 +205,10 @@ from shape_materialize import SHAPE_PIN  # noqa: E402
 # which other changes extend, are not lines two of them both rewrite.
 from shape_materialize import readable_branch  # noqa: E402
 
-#: `owner/repo`, the only remote spelling `--upstream` accepts.
-REPOSITORY_RE = re.compile(r"^[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+$")
+#: `owner/repo`, the only remote spelling `--upstream` accepts, and the
+#: shape pin's `source_repository:` where no `--upstream` is passed. `\Z`,
+#: NEVER `$` (#1139): `$` also matches just before a trailing line feed.
+REPOSITORY_RE = re.compile(r"^[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+\Z")
 
 #: How `--branch` may be spelled: the alphabet `checked_value` already
 #: allowed it, less the `~` git refuses anyway, and a FIRST character that is
@@ -640,8 +642,9 @@ def unreadable_upstream(said: str, proc: subprocess.CompletedProcess
         "openRepoShape.")
 
 
-def open_upstream(spec: str) -> Upstream:
-    """`--upstream` as a repository this tool can read.
+def open_upstream(spec: str, pin_path: Path | None = None) -> Upstream:
+    """`--upstream` as a repository this tool can read, or the shape pin's
+    `source_repository:` where none was passed, read from `pin_path`.
 
     A PATH IS USED IN PLACE AND THIS TOOL FETCHES NOTHING INTO IT. That is
     deliberate: it is what lets the tests run with no network, and it is
@@ -665,6 +668,14 @@ def open_upstream(spec: str) -> Upstream:
     machine nor an `owner/repo` name", and a relative `a/b` spelling was
     then cloned from github.com; a checkout it cannot search was
     `update-upstream-not-a-repo`.
+
+    A VALUE THE PIN HOLDS IS REFUSED IN THE PIN'S NAME (#1139). The pin's
+    `source_repository:` read as `opensoft/openRepoShape` and a line feed
+    passed `REPOSITORY_RE`, whose `$` took the line feed, and was refused
+    by `checked_value` as `unsafe-value` of `--upstream`, a flag nobody had
+    passed. The pattern takes no line feed now, so the value is
+    `update-upstream-unresolvable`, and that refusal and `checked_value`'s
+    name the pin and its field.
     """
     candidate = Path(spec).expanduser()
     if _is_a(candidate, _anything):
@@ -678,13 +689,23 @@ def open_upstream(spec: str) -> Upstream:
                 "`--upstream opensoft/openRepoShape` to clone one.")
         return Upstream(path, str(path))
     if not REPOSITORY_RE.match(spec):
+        if pin_path is not None:
+            raise Refusal(
+                "update-upstream-unresolvable",
+                f"{pin_path}: `source_repository:` is {spec!r}, which is "
+                "neither a path on this machine nor an `owner/repo` name",
+                "Remediation: write `source_repository:` in the pin as the "
+                "`owner/repo` its shape was copied from, "
+                f"`{SHAPE_REPOSITORY}` for this standard's, or pass "
+                "`--upstream` a path to a clone of openRepoShape.")
         raise Refusal(
             "update-upstream-unresolvable",
             f"--upstream {spec!r} is neither a path on this machine nor an "
             "`owner/repo` name",
             "Remediation: pass a path to a clone of openRepoShape, or "
             "`--upstream opensoft/openRepoShape`.")
-    checked_value("--upstream", spec)
+    checked_value("--upstream" if pin_path is None
+                  else f"{pin_path}: `source_repository:`", spec)
     temporary = Path(tempfile.mkdtemp(prefix="openreposhape-upstream-"))
     url = f"https://github.com/{spec}.git"
     args = ["git", "clone", "--quiet", "--bare", url, str(temporary / "shape.git")]
@@ -2398,7 +2419,8 @@ def prepare(args) -> tuple[Path, dict, list[Row], list[Addition], Upstream,
         raise rewrite_link_refusal([linked])
     pinned = str(pin["commit"]).lower()
     declared = str(pin.get("source_repository") or SHAPE_REPOSITORY)
-    upstream = open_upstream(str(args.upstream or declared))
+    upstream = open_upstream(str(args.upstream or declared),
+                             None if args.upstream else root / SHAPE_PIN)
     upstream.repository = declared
     try:
         target = upstream.resolve(checked_value("--at", args.at)
