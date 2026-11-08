@@ -2760,12 +2760,18 @@ def naming_script_refusal(shape: Path, whole: str) -> Refusal | None:
     file: a project whose own path holds this checkout's, a flag, the
     `project.yaml` the script was asked to read -- each is about what the
     script was asked, and is not this.
+
+    IN EITHER SPELLING (#1168): `load_yaml` and `policy-unreadable` name the
+    file as `shown_path` does, `repr`'d where this checkout's path holds a
+    character that is not printable, and `policy-wrong-kind` names it raw.
+    For a printable path the two are one.
     """
     policy = f"{shape / NAMING_COPY}: "
+    spelt = f"{shown_path(shape / NAMING_COPY)}: "
     for line in (line.strip() for line in whole.splitlines()):
         if line.startswith("REFUSED "):
             code, _, detail = line.removeprefix("REFUSED ").partition(": ")
-            if detail.startswith(policy):
+            if detail.startswith((policy, spelt)):
                 return Refusal(code, detail)
     return None
 
@@ -4248,6 +4254,18 @@ def taking_out(ctx: Context, names: list, states: dict, judged: list,
     return command, ". ".join([*said, *ways])
 
 
+def less_the_path(detail: str, path: Path) -> str:
+    """`detail`, a `load_yaml` refusal's, less the `<path>: ` it opens with,
+    in either spelling (#1168): as `shown_path` names the path, `repr`'d
+    where it holds a character that is not printable, which `load_yaml`
+    gives since #1168, or raw, as a `repo_shape.py` older than that gave.
+    For a printable path the two are one."""
+    for opening in (f"{shown_path(path)}: ", f"{path}: "):
+        if detail.startswith(opening):
+            return detail[len(opening):]
+    return detail
+
+
 def check_manifest_kinds(ctx: Context) -> Row:
     """Every `kind:`-bearing manifest in this root, against the registry.
 
@@ -4383,7 +4401,7 @@ def check_manifest_kinds(ctx: Context) -> Row:
                 continue
             unreadable.append(rel)
             refusals[rel] = {"code": exc.code,
-                             "detail": exc.detail.removeprefix(f"{path}: ")}
+                             "detail": less_the_path(exc.detail, path)}
             continue
         if not isinstance(data, dict):
             unreadable.append(rel)

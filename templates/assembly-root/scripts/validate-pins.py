@@ -650,18 +650,27 @@ def _load(root: Path, path: Path):
     start named relative to the root. Asked of the refusal and not of new
     words in `repo_shape`, so a root whose `scripts/repo_shape.py` is older
     than this file names the file the same way (#370, #610): `load_yaml`
-    has raised its refusal `from` the `OSError` since it was written."""
+    has raised its refusal `from` the `OSError` since it was written.
+
+    THE PATH AT ITS START IS LOOKED FOR IN BOTH SPELLINGS (#1168). Since
+    #1168 `load_yaml` names the file as `shown_path` names it, which is
+    `repr` for a path that is not printable (a root under a folder whose
+    name holds an ESC or a line feed), and before it, raw. A root re-copies
+    its pinned files one row at a time, so this file may meet either: the
+    raw prefix and `_shown`'s are both asked, and either is named relative
+    to the root. For a printable path the two are one."""
     try:
         return load_yaml(path)
     except Refusal as exc:
         if isinstance(exc.__cause__, OSError):
             raise _unreadable_file("yaml-unreadable", _named(root, path),
                                    exc.__cause__) from exc.__cause__
-        absolute = f"{path}: "
-        if not exc.detail.startswith(absolute):
-            raise
-        raise Refusal(exc.code, _named(root, path) + ": "
-                      + exc.detail[len(absolute):], exc.remediation) from exc
+        for absolute in (f"{path}: ", f"{_shown(str(path))}: "):
+            if exc.detail.startswith(absolute):
+                raise Refusal(exc.code, _named(root, path) + ": "
+                              + exc.detail[len(absolute):],
+                              exc.remediation) from exc
+        raise
 
 
 def _workflows_unlistable(root: Path, workflows: Path,
