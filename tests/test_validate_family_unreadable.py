@@ -897,6 +897,24 @@ def test_the_member_tree_asked_alone_names_a_git_directory_whole_outside(
                               "(Permission denied)")
 
 
+def test_a_gitfile_that_opens_and_cannot_be_read_is_named_at_its_own(
+        holder, monkeypatch, capsys):
+    """The name a refusal falls back on (#1221): the gitfile OPENS, so
+    `_gitfile_opens` passes it, and its read is then refused, which only an
+    I/O error or a race does. `_member_git_dir` raises before it has found
+    a git directory to name, so the part named is the `.git` itself,
+    `<path>/.git`, and not the member's folder, with the cure for a reason
+    that is no permission."""
+    module = gate(holder, monkeypatch)
+    failing(monkeypatch, "read_bytes", ".git",
+            OSError(errno.EIO, "Input/output error"))
+    code = module.main(["--root", str(holder)])
+    err = capsys.readouterr().err
+    assert_refused(code, err, MEMBER_UNREADABLE, f"{ROW}/.git",
+                   "Input/output error")
+    assert "member-commit-unresolvable" not in err
+
+
 def test_a_gitfile_gone_when_it_is_opened_is_a_member_not_checked_out(
         holder, monkeypatch, capsys):
     """Asked as `_is_a` asks a `stat`: an open that finds nothing at the
