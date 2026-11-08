@@ -36,6 +36,16 @@ be is refused, never "none there"), `_names_store`, `_on_disk` and
 rm` is said to refuse a staged gitlink, and `_hand_cached` and
 `_cached_left` (#936), which decide whether it is `git rm --cached`.
 
+A MEMBER'S `.git` AND THE GIT DIRECTORY IT NAMES (#1221), asked by
+`_check_member_tree` before git is, as `validate-pins.py` asks a leg's
+(#919, #968): a gitfile this user cannot open, a `.git` directory at mode
+000 or r--, and the directory a readable gitfile names at mode 000 or r--
+each passed the `stat` and were refused `member-commit-unresolvable`, which
+says the pinned commit is missing. Each is `member-unreadable` now, naming
+the part, and a parity row holds `_member_git_dir` to the gate's
+`_leg_git_dir`. A `HEAD` file itself at mode 000 is not asked, since the
+gate does not ask it either.
+
 WHAT IS ON DISK IS ASKED ONLY WHERE IT IS SAID (round 2, r956's SHOULD 1
 on #956): `_forced` and `_staged_over` ask git first, and where HEAD
 records a gitlink at the index's own commit, the disk under it is never
@@ -56,15 +66,17 @@ from __future__ import annotations
 
 import contextlib
 import errno
+import os
 import re
 import shutil
+import stat
 import sys
 from pathlib import Path
 from types import SimpleNamespace
 
 import pytest
 
-from conftest import git, load_without_bytecode
+from conftest import REPO, git, load_without_bytecode
 from test_bump_leg_unopenable import (
     made_unopenable, needs_a_mode, refusal_of, refused_stat,
 )
@@ -712,3 +724,293 @@ def test_a_file_behind_a_folder_this_user_cannot_search_is_named(
     assert result.stderr.splitlines()[0].startswith(first), result.stderr
     assert "Traceback" not in result.stderr
     assert validate(holder).returncode == 0
+
+
+# --- #1221: a member's `.git` and the git directory it names ----------------
+
+#: Where IRRS's git directory is, as the gitfile `family.py add` wrote names
+#: it, relative to the holder.
+MEMBER_GIT_DIR = f".git/modules/{ROW}"
+
+#: The template this file's holder copies, and the gate whose helpers it
+#: copies (#919, #968).
+FAMILY_TEMPLATE = (REPO / "templates" / "family-root" / "scripts"
+                   / "validate-family.py")
+GATE = REPO / "templates" / "assembly-root" / "scripts" / "validate-pins.py"
+
+#: The causes a refused open or `stat` is told by, as `assert_refused`
+#: checks each cure.
+CAUSES = [
+    pytest.param(PermissionError(errno.EACCES, "Permission denied"),
+                 id="permission"),
+    pytest.param(OSError(errno.EIO, "Input/output error"), id="io-error"),
+]
+
+
+def own_git_directory(holder: Path, request) -> tuple[str, ...]:
+    """IRRS's git directory moved from `.git/modules/members/IRRS` into the
+    checkout as its own `.git`, where a checkout git has not absorbed keeps
+    it, its `worktree` line dropped, since the checkout is that directory's
+    own work tree now. As the gate's rows make a leg's: the file is edited
+    as text, and no `git config` is run."""
+    dotgit = holder / ROW / ".git"
+    dotgit.unlink()
+    (holder / MEMBER_GIT_DIR).rename(dotgit)
+    config = dotgit / "config"
+    lines = config.read_bytes().split(b"\n")
+    config.write_bytes(b"\n".join(
+        line for line in lines if not line.strip().startswith(b"worktree")))
+    return ()
+
+
+def a_worktree(holder: Path, request) -> tuple[str, ...]:
+    """IRRS checked out at the commit the holder records as a linked
+    worktree of a clone outside the holder, its checkout moved aside: its
+    `.git` is a gitfile naming `<clone>/.git/worktrees/IRRS`, a git
+    directory outside the holder."""
+    tmp_path = request.getfixturevalue("tmp_path")
+    remotes = request.getfixturevalue("family")["remotes"]
+    commit = git("rev-parse", f"HEAD:{ROW}", cwd=holder).stdout.strip()
+    clone = tmp_path / "IRRS-clone"
+    git("clone", "-q", str(remotes / "IRRS.git"), str(clone), cwd=tmp_path)
+    shutil.move(str(holder / ROW), str(tmp_path / "IRRS-aside"))
+    git("worktree", "add", "-q", "--detach", str(holder / ROW), commit,
+        cwd=clone)
+    return ()
+
+
+def failing(monkeypatch, method: str, name: str, error: OSError) -> None:
+    """`Path.<method>` failing with `error` for every path called `name`."""
+    real = getattr(Path, method)
+
+    def refused(self, *args, **kwargs):
+        if self.name == name:
+            raise type(error)(error.errno, error.strerror, str(self))
+        return real(self, *args, **kwargs)
+
+    monkeypatch.setattr(Path, method, refused)
+
+
+@contextlib.contextmanager
+def mode_of(path: Path, mode: int):
+    """`path` at `mode`, its own mode given back in `finally`."""
+    kept = stat.S_IMODE(path.stat().st_mode)
+    path.chmod(mode)
+    try:
+        yield
+    finally:
+        path.chmod(kept)
+
+
+@pytest.mark.parametrize("made", [
+    pytest.param(as_made, id="gitfile"),
+    pytest.param(own_git_directory, id="git-directory"),
+    pytest.param(a_worktree, id="worktree"),
+])
+def test_a_member_whose_git_can_be_read_passes_as_it_did(holder, request,
+                                                         made):
+    """THE CONTROLS (#1221): a member whose `.git` is a gitfile naming its
+    git directory under `.git/modules/`, its own `.git` directory, or a
+    gitfile naming a linked worktree's outside the holder, each readable:
+    the gate passes, as it did."""
+    result = validate(holder, *made(holder, request))
+    assert result.returncode == 0, result.stderr + result.stdout
+    assert result.stderr == "", result.stderr
+
+
+@needs_a_mode
+@pytest.mark.parametrize("made,target,mode,named", [
+    pytest.param(as_made, f"{ROW}/.git", 0, f"{ROW}/.git",
+                 id="gitfile-000"),
+    pytest.param(pins_alone, f"{ROW}/.git", 0, f"{ROW}/.git",
+                 id="gitfile-000-pins"),
+    pytest.param(own_git_directory, f"{ROW}/.git", 0, f"{ROW}/.git",
+                 id="git-directory-000"),
+    pytest.param(own_git_directory, f"{ROW}/.git", 0o444, f"{ROW}/.git",
+                 id="git-directory-444"),
+    pytest.param(as_made, MEMBER_GIT_DIR, 0, MEMBER_GIT_DIR,
+                 id="named-git-directory-000"),
+    pytest.param(as_made, MEMBER_GIT_DIR, 0o444, MEMBER_GIT_DIR,
+                 id="named-git-directory-444"),
+])
+def test_a_member_git_this_user_cannot_read_is_refused_by_name(
+        holder, request, made, target, mode, named):
+    """THE ISSUE'S CELLS (#1221), on this Python: a gitfile this user cannot
+    open, a `.git` directory it cannot search, which git passes over for
+    the holder's own repository, and the git directory a readable gitfile
+    names, which git calls `not a git repository`. Each passed the `stat`
+    of the `.git` and was `member-commit-unresolvable`, "the pinned commit
+    ... is not in that member's object store", with a fetch. Each is
+    `member-unreadable`, exit 2, naming the part with the `chmod` cure, and
+    with the mode back the gate passes, so the cure is the whole of it."""
+    extra = made(holder, request)
+    with mode_of(holder / target, mode):
+        result = validate(holder, *extra)
+    assert_refused(result.returncode, result.stderr, MEMBER_UNREADABLE,
+                   named)
+    assert "member-commit-unresolvable" not in result.stderr
+    again = validate(holder, *extra)
+    assert again.returncode == 0, again.stderr
+
+
+@pytest.mark.parametrize("error", CAUSES)
+@pytest.mark.parametrize("made,method,name,named", [
+    pytest.param(as_made, "open", ".git", f"{ROW}/.git", id="gitfile"),
+    pytest.param(own_git_directory, "stat", "HEAD", f"{ROW}/.git",
+                 id="git-directory"),
+    pytest.param(as_made, "stat", "HEAD", MEMBER_GIT_DIR,
+                 id="named-git-directory"),
+])
+def test_a_member_git_refused_is_refused_by_name_on_every_python(
+        holder, request, monkeypatch, capsys, error, made, method, name,
+        named):
+    """The same in-process, so on every platform and as root: the open of
+    the gitfile, or the `stat` of the `HEAD` in the git directory, refused,
+    each cause with its own cure (`assert_refused`)."""
+    extra = made(holder, request)
+    module = gate(holder, monkeypatch)
+    failing(monkeypatch, method, name, error)
+    code = module.main(["--root", str(holder), *extra])
+    err = capsys.readouterr().err
+    assert_refused(code, err, MEMBER_UNREADABLE, named, error.strerror)
+    assert "member-commit-unresolvable" not in err
+
+
+def test_the_member_tree_asked_alone_names_a_git_directory_whole_outside(
+        holder, request, monkeypatch):
+    """`_check_member_tree` asked alone: the git directory a gitfile names
+    is named relative to the holder, as the gate names a leg's, and whole
+    where it is outside the holder, a linked worktree's."""
+    module = gate(holder, monkeypatch)
+    failing(monkeypatch, "stat", "HEAD",
+            PermissionError(errno.EACCES, "Permission denied"))
+    args = (holder / ROW, {}, ROW, "0" * 40, "IRRS", module.Report(), "")
+    refusal = refusal_of(module, module._check_member_tree, *args)
+    assert refusal.code == MEMBER_UNREADABLE
+    assert refusal.detail == (f"{MEMBER_GIT_DIR}: cannot be read "
+                              "(Permission denied)")
+    a_worktree(holder, request)
+    line = (holder / ROW / ".git").read_bytes().decode().strip()
+    outside = os.path.normpath(line[len("gitdir: "):])
+    refusal = refusal_of(module, module._check_member_tree, *args)
+    assert refusal.detail == (f"{module.spelled(outside)}: cannot be read "
+                              "(Permission denied)")
+
+
+def test_a_gitfile_that_opens_and_cannot_be_read_is_named_at_its_own(
+        holder, monkeypatch, capsys):
+    """The name a refusal falls back on (#1221): the gitfile OPENS, so
+    `_gitfile_opens` passes it, and its read is then refused, which only an
+    I/O error or a race does. `_member_git_dir` raises before it has found
+    a git directory to name, so the part named is the `.git` itself,
+    `<path>/.git`, and not the member's folder, with the cure for a reason
+    that is no permission."""
+    module = gate(holder, monkeypatch)
+    failing(monkeypatch, "read_bytes", ".git",
+            OSError(errno.EIO, "Input/output error"))
+    code = module.main(["--root", str(holder)])
+    err = capsys.readouterr().err
+    assert_refused(code, err, MEMBER_UNREADABLE, f"{ROW}/.git",
+                   "Input/output error")
+    assert "member-commit-unresolvable" not in err
+
+
+def test_a_gitfile_gone_when_it_is_opened_is_a_member_not_checked_out(
+        holder, monkeypatch, capsys):
+    """Asked as `_is_a` asks a `stat`: an open that finds nothing at the
+    name is the member with no `.git`, `member-uninitialized`, and not a
+    file this user cannot read."""
+    module = gate(holder, monkeypatch)
+    failing(monkeypatch, "open", ".git",
+            FileNotFoundError(errno.ENOENT, "No such file or directory"))
+    code = module.main(["--root", str(holder)])
+    err = capsys.readouterr().err
+    assert code == 2, err
+    assert err.startswith(f"REFUSED member-uninitialized: {ROW} is not an "
+                          "initialized submodule checkout"), err
+
+
+def test_a_member_git_directory_with_no_head_is_left_to_git(
+        holder, monkeypatch, capsys):
+    """A `HEAD` that is not there is no refusal of this check's: git answers
+    for that git directory, as it always did, and here git reads it, so the
+    run passes."""
+    module = gate(holder, monkeypatch)
+    failing(monkeypatch, "stat", "HEAD",
+            FileNotFoundError(errno.ENOENT, "No such file or directory"))
+    code = module.main(["--root", str(holder)])
+    assert code == 0, capsys.readouterr().err
+
+
+@pytest.fixture(scope="module")
+def sources():
+    """This working tree's `validate-family.py` and the gate it copies, each
+    loaded by path with no bytecode written beside it, and `sys.path` put
+    back after."""
+    with pytest.MonkeyPatch.context() as patch:
+        patch.setattr(sys, "path", list(sys.path))
+        return SimpleNamespace(
+            family=load_without_bytecode(FAMILY_TEMPLATE,
+                                         "validate_family_git_dir_parity"),
+            gate=load_without_bytecode(GATE, "gate_git_dir_parity"))
+
+
+#: What a `.git` may hold, as the gate's own rows write a leg's (#968), and
+#: more: a blank before the line end, which git keeps, an empty file and a
+#: line naming a directory whole.
+GITFILES = [
+    pytest.param(b"gitdir: ../../.git/modules/" + ROW.encode() + b"\n",
+                 id="relative"),
+    pytest.param(b"gitdir: ../m\r\n", id="cr-lf"),
+    pytest.param(b"gitdir: ../m", id="no-line-end"),
+    pytest.param(b"gitdir: ../m\n\n", id="blank-line-after"),
+    pytest.param(b"gitdir: ../m \n", id="blank-before-line-end"),
+    pytest.param(b"not a gitfile\n", id="names-none"),
+    pytest.param(b"", id="empty"),
+    pytest.param("absolute", id="absolute"),
+    pytest.param(None, id="a-directory"),
+]
+
+
+@pytest.mark.parametrize("written", GITFILES)
+def test_a_member_git_directory_is_found_as_the_gate_finds_a_leg_s(
+        sources, tmp_path, written):
+    """PARITY (#1221): `_member_git_dir` is the gate's `_leg_git_dir`
+    (#968), copied, not imported, since the two roots are separate
+    templates: the same directory, or None, for each gitfile and for a
+    `.git` that is a directory, so the family gate asks the `HEAD` the leg
+    gate asks."""
+    dotgit = tmp_path / "member" / ".git"
+    if written is None:
+        dotgit.mkdir(parents=True)
+    else:
+        dotgit.parent.mkdir()
+        if written == "absolute":
+            written = (b"gitdir: " + os.fsencode(str(tmp_path / "elsewhere"))
+                       + b"\n")
+        dotgit.write_bytes(written)
+    assert sources.family._member_git_dir(dotgit) == \
+        sources.gate._leg_git_dir(dotgit)
+
+
+@pytest.mark.parametrize("make", [
+    pytest.param(lambda dotgit: dotgit.write_bytes(b"gitdir: ../m\n"),
+                 id="gitfile"),
+    pytest.param(lambda dotgit: dotgit.mkdir(), id="directory"),
+    pytest.param(lambda dotgit: os.mkfifo(dotgit), id="fifo",
+                 marks=pytest.mark.skipif(not hasattr(os, "mkfifo"),
+                                          reason="no FIFO on this platform")),
+])
+def test_a_member_git_is_opened_as_the_gate_opens_a_leg_s(
+        sources, tmp_path, monkeypatch, make):
+    """PARITY (#1221): `_gitfile_opens` answers as the gate's (#919), and
+    only a regular file is opened: a checkout's own `.git` directory is
+    git's to read, and the open of a FIFO would wait for a writer, so an
+    open of either fails the row rather than hanging it."""
+    dotgit = tmp_path / "member" / ".git"
+    dotgit.parent.mkdir()
+    make(dotgit)
+    if not stat.S_ISREG(dotgit.stat().st_mode):
+        failing(monkeypatch, "open", ".git", OSError(errno.EIO, "opened"))
+    assert sources.family._gitfile_opens(dotgit) is True
+    assert sources.gate._gitfile_opens(dotgit) is True
