@@ -426,8 +426,12 @@ def _dot_segments_dropped(target: bytes) -> bytes | None:
     file, ENOTDIR on the disk and `notdir` in git, and must not become the
     file. None, too, for an absolute target, which git answers `symlink`
     before it reads a segment, and for one with a line break, a carriage
-    return or a NUL in it, which git's batch input would cut into another
-    name."""
+    return or a NUL in it, which git 2.43's batch input does not take as the
+    one name asked: an LF splits it into two requests, git removes a
+    trailing CR (it keeps an inner one, which this check leaves out too),
+    and git cuts the name at a NUL. Such a target is left as git first
+    answered it, so a leg's file named so is advised while the disk reads
+    the leg, a known limit of #1163."""
     if target.startswith(b"/") or any(ch in target
                                       for ch in (b"\n", b"\r", b"\0")):
         return None

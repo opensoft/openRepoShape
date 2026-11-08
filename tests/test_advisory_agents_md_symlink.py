@@ -268,29 +268,39 @@ def test_the_commits_linked_leg_file_is_read_when_the_disks_is_refused(
 
 # --- a link out of the commit ------------------------------------------------
 
-@pytest.mark.parametrize("how", ["relative", "relative-after-a-dot",
-                                 "absolute", "dangling"])
+@pytest.mark.parametrize("how", [
+    "relative", "relative-after-a-dot",
+    "relative-after-a-dot-and-a-double-slash", "absolute", "dangling"])
 def test_a_leg_agents_md_linked_out_of_the_commit_is_not_answered(tmp_path,
                                                                   how):
     """A link that leads out of the commit: `../locked/AGENTS.md`, the same
-    spelled `./../locked/AGENTS.md`, the same file by its absolute path, or
-    `../nowhere/AGENTS.md`. No commit holds what it reaches, so whether this
-    is a leg is not known in the commit: `not-answered`, with its line in
-    `why` and nothing `refused`, and `plan` and `check` print neither the
-    advisory nor a leg's NOTE. On the base each printed the advisory. The
-    doctor reads the disk, which the commit cannot: the leg where the link
-    reaches its file, and the advisory where it reaches nothing, as for any
-    dangling link -- silence in the commit is the one answer that is false
-    of neither.
+    spelled `./../locked/AGENTS.md` or `.//../locked/AGENTS.md`, the same
+    file by its absolute path, or `../nowhere/AGENTS.md`. No commit holds
+    what it reaches, so whether this is a leg is not known in the commit:
+    `not-answered`, with its line in `why` and nothing `refused`, and `plan`
+    and `check` print neither the advisory nor a leg's NOTE. On the base
+    each printed the advisory. The doctor reads the disk, which the commit
+    cannot: the leg where the link reaches its file, and the advisory where
+    it reaches nothing, as for any dangling link -- silence in the commit
+    is the one answer that is false of neither.
 
     git 2.43 answers `./../locked/AGENTS.md` `dangling`, for its `.`
     segment. Without it the target begins with `..`, past the root, which
     git answers `symlink`; and git is never asked `../locked/AGENTS.md`
     itself, which it reads from the working directory, and refuses as
-    outside the repository: its `Refusal` would name a `why` of its own."""
+    outside the repository: its `Refusal` would name a `why` of its own.
+
+    `.//../locked/AGENTS.md` is the second kind of case. With its `.`
+    dropped it is `/../locked/AGENTS.md`, which does not begin with `..`,
+    so git IS asked it, and answers `symlink`: that second answer is what
+    leaves the commit. Taken as a file's absence, or kept only when it is a
+    blob, it leaves the first answer, `dangling`, and the clone is advised
+    over a leg the doctor reads."""
     leg = locked_leg(tmp_path)
     target = {"relative": Path("..", "locked", AGENTS),
               "relative-after-a-dot": "./../locked/AGENTS.md",
+              "relative-after-a-dot-and-a-double-slash":
+                  ".//../locked/AGENTS.md",
               "absolute": leg,
               "dangling": Path("..", "nowhere", AGENTS)}[how]
     root = linked_clone(tmp_path, target)
@@ -379,6 +389,8 @@ def test_a_git_that_cannot_follow_the_link_is_silence_not_advice(
                  id="dot-then-a-slash-after-the-legs-file"),
     pytest.param("./docs/AGENTS.md\nx", {"docs/AGENTS.md": SPEC_LEG},
                  id="dot-and-a-line-break"),
+    pytest.param("./docs/AGENTS.md\r", {"docs/AGENTS.md": SPEC_LEG},
+                 id="dot-and-a-carriage-return"),
     pytest.param("./docs/x blob", {"docs/x": SPEC_LEG},
                  id="dot-to-nothing-spelled-like-an-answer"),
 ])
@@ -402,7 +414,10 @@ def test_an_agents_md_linked_to_no_legs_file_is_advised_by_both_readers(
     or `/` is kept, so `./docs/AGENTS.md/.` and `./docs/AGENTS.md/` still
     run through the file (ENOTDIR), and never become it. A target with a
     line break is not asked again: git's batch input would take its first
-    line, `docs/AGENTS.md`, for the name. And `docs/x blob` is not there:
+    line, `docs/AGENTS.md`, for the name, and the rest for another request.
+    Nor is one that ends in a carriage return: git removes a trailing CR
+    from the name, so it would answer for `docs/AGENTS.md`, where the disk
+    has no file called `docs/AGENTS.md<CR>`. And `docs/x blob` is not there:
     git's line for it begins with the name it was asked, `<commit>:docs/x`,
     then `blob`, and only a line that begins with an object's name is a
     blob to read."""
