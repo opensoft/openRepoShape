@@ -33,23 +33,43 @@ WHAT THIS HOLDS, so that no new guard brings the old answer back:
     `os.path.isfile`, `isdir`, `exists`, `lexists` or `islink`, fails
     unless it is on `BENIGN`, a reasoned allowlist keyed by file, enclosing
     function and the call's own text, never by line, as often as the
-    function makes it. That covers a call wrapped over lines, the module
+    function makes it. That covers a call wrapped over lines; the module
     reached as `os.path`, `posixpath` and the like, through `import os as
-    o`, `import os.path as p`, `from os import path` or `p = os.path`, a
-    test imported from it by name, and a guard passed as a function; it
-    does not cover a guard named by a string (`getattr`). One inside a stat
-    helper fails too: the helper asks `stat` and nothing else. The failure
-    names the file and line and says what to do.
+    o`, `o = os`, `import os.path as p`, `from os import path` or `*`, `p =
+    os.path`, or `importlib` or `sys.modules` by a constant name; a name
+    bound to it by tuple unpacking, a walrus, a `for` or `with` target, a
+    default parameter or a class or instance attribute; a test imported
+    from it by name or by `*`; a guard bound to a name, and each later call
+    by that name; and a guard passed as a function. `_os_path_names` says
+    what it does not cover (a guard named by a string, `getattr`, among
+    them). One inside a stat helper fails too: the helper asks `stat` and
+    nothing else. The failure names the file and line and says what to do.
   * `BENIGN` holds the sites the plan left out on purpose, each tagged with
-    the plan's reason (`TAGS`). `KNOWN_OPEN` holds the real sites this slice
-    found and did not fix, each with the follow-up that will. An entry that
-    names no guard any more fails too, so neither list outlives its site.
+    the plan's reason, or `MODEL` for a guard's name on what is no path
+    (`TAGS`). `KNOWN_OPEN` holds the real sites this slice found and did
+    not fix, each left to the follow-up, #1110, whose body mirrors it site
+    for site. An entry that names no guard any more fails too, so neither
+    list outlives its site.
   * THE PARITY TEST. Each helper's absent errnos and Windows errors are read
     out of the AST, through the module constants and the functions it calls,
-    and must be the one set above. On that path a helper may catch only
-    `OSError` and `ValueError`, its `except OSError` must hold a bare
-    `raise`, and `errno` and `winerror` may be read only as `in <set>`. A
-    class or an `async def` by a helper's name is refused.
+    and must be the one set above. On the way from its `stat` to its answer
+    (each `try` that makes a call), a helper may catch only `OSError`,
+    `ValueError`, `FileNotFoundError` and `NotADirectoryError`, and its
+    `except OSError` must re-raise (`raise`, or `raise exc` of what it
+    caught); `errno` and `winerror` may be read only as `in` or `not in
+    <set>`. A class or an `async def` by a helper's name is refused.
+  * THE BEHAVIOUR TEST. Each helper is loaded by its AST, with nothing of
+    its module run but the statements it reads, and ASKED, for a file and
+    for a folder, of a path whose `stat` raises: each absent errno and
+    Windows error must answer False, and every other errno (EACCES, EPERM,
+    EIO, EINVAL and ESTALE among them) and Windows' 5 and 32 must come back
+    raised, the same exception, also where only the `stat` of a link to
+    nothing is refused and its `lstat` answers. That holds what the parity
+    test cannot read: a branch, a handler, a method or a lambda its walk
+    does not follow, a constant changed after it is set (an errno it adds
+    is named whichever it is, a Windows error only if it is 5 or 32, and a
+    top-level `+=` on the constants is refused outright), the helper's name
+    bound to another function.
 
 ONE SITE THIS SLICE FIXED: `shape-doctor.py`'s `Context.__init__`, where a
 `project.yaml` that is a link into a folder this user cannot search was a
@@ -61,14 +81,18 @@ tests at the end hold that.
 
 from __future__ import annotations
 
+import __future__
 import ast
 import errno
+import inspect
 import json
 import os
 import re
+import stat
 import subprocess
 import sys
 from collections import Counter
+from collections.abc import Callable
 from pathlib import Path
 from typing import NamedTuple
 
@@ -101,7 +125,8 @@ ABSENT_ERRNOS = frozenset({"ENOENT", "ENOTDIR", "EBADF", "ELOOP"})
 ABSENT_WINERRORS = frozenset({21, 123, 1921})
 
 #: Where each slice put its helper. Each must still be there, and every
-#: helper found (these, and any added later) is held to the one set.
+#: helper found (these, and any added later) is held to the one set, and
+#: asked by the behaviour test, which loads each by its AST.
 HELPERS = {
     "adopt-project.py": "_is_a",
     "update-shape.py": "_is_a",
@@ -119,7 +144,10 @@ HELPERS = {
 
 #: The follow-up issue the sites in `KNOWN_OPEN` are left to, filed by lane 1
 #: after this slice; it is not in v1.2.0 (Brett Heap, 2026-10-21T10:32Z,
-#: "leave the follow-ups out of v1.2.0").
+#: "leave the follow-ups out of v1.2.0"). #1110's body mirrors `KNOWN_OPEN`
+#: site for site, by function, call and effect: a site added to or taken
+#: from `KNOWN_OPEN` is added to or taken from that body too. The module
+#: docstring names the issue as well, and the two must agree (r1111b's Z11).
 FOLLOW_UP = "#1110"
 
 #: Why a bare guard may stay: the plan's own reasons for leaving a site out
@@ -141,6 +169,10 @@ TAGS = {
             "or a clone, which then fails by name",
     "PINNED": "`scripts/repo_shape.py`'s `find_repo_root`, a shape copy, "
               "left by the plan (pinned, low)",
+    # r1111c's NIT 1: not a path the tool owns, as `OWN` says, but no path
+    # at all; the scan flags any `.is_dir()` by its name alone.
+    "MODEL": "not a filesystem call at all: a method of the run's own model "
+             "in memory that shares a guard's name and asks no `stat`",
 }
 
 
@@ -183,11 +215,11 @@ BENIGN = _entries({
         "`_occupied_clone_target` or the clone names it (#652)"),
     (AP, "_PlannedRoot._into_git",
      'self._git().is_dir(here.rpartition("/")[0])'): (
-        "OWN", "not the disk: `_CloneGit`, the run's own model in memory of "
-        "the names git makes in the clone's `.git` (#904), a set lookup "
-        "with no `stat` in it"),
+        "MODEL", "`_CloneGit.is_dir`, the run's own model in memory of the "
+        "names git makes in the clone's `.git` (#904): a set lookup with "
+        "no `stat` in it"),
     (AP, "_PlannedRoot._no_directory", "self._git().is_dir(here)"): (
-        "OWN", "the same model of the clone's `.git`, not the disk"),
+        "MODEL", "the same `_CloneGit.is_dir`, not the disk"),
     (AP, "_PlannedRoot._over", "os.path.isdir(walk.landed)"): (
         "DELIBERATE", "words a refusal, `a directory` or `a file`, for a "
         "path a symlink leads to outside the source tree"),
@@ -681,66 +713,210 @@ def _dotted(node: ast.AST) -> str | None:
     return None
 
 
-def _os_path_names(tree: ast.Module) -> tuple[set[str], set[str]]:
-    """`(each expression the os.path module is reached through, each name
-    bound to one of its tests)`. The module: `os.path`, `posixpath`,
-    `ntpath` and `genericpath` as written, `o.path` after `import os as o`,
-    `p` after `import os.path as p`, `from os import path [as p]` or `p =
-    os.path` (to any depth of such names). The tests: `from os.path import
-    exists [as e]`. Not caught, and in no shipped tool today: a guard asked
-    by its name as a string (`getattr`, `operator.methodcaller`), and the
-    other questions of the same kind (`ismount`, `is_fifo`, `os.access`
-    with `F_OK`, a hand-written `stat` whose `OSError` is False)."""
-    modules = set(OS_PATH_MODULES)
-    tests: set[str] = set()
+#: What the scan follows a name to: the `os` module, the `os.path` module
+#: (or `posixpath` and its twins), or a guard (one of its tests, or a
+#: `Path` method of `GUARD_METHODS`).
+OS, MODULE, GUARD = "os", "os.path", "guard"
+#: The calls that look a module up by its name.
+LOOKUPS = frozenset({"importlib.import_module", "import_module",
+                     "__import__", "sys.modules.get"})
+
+
+class Reach(NamedTuple):
+    """What the scan knows each name of a file can be: `names`, by kind
+    (`OS`, `MODULE`, `GUARD`), the names bound to one, and `attrs` the
+    attribute names bound to one on any object (`class C: p = os.path`,
+    `self.p = os.path`)."""
+    names: dict[str, set[str]]
+    attrs: dict[str, set[str]]
+
+
+def _looked_up(node: ast.AST) -> set[str]:
+    """`{OS}` or `{MODULE}` where `node` looks the module up by a constant
+    name: `importlib.import_module("os.path")`, `__import__("os")` (which
+    gives `os` for `"os.path"` too), `sys.modules["os.path"]` or
+    `sys.modules.get(...)`; else nothing."""
+    if (isinstance(node, ast.Subscript)
+            and _dotted(node.value) == "sys.modules"):
+        name = node.slice
+    elif (isinstance(node, ast.Call) and node.args
+          and _dotted(node.func) in LOOKUPS):
+        name = node.args[0]
+    else:
+        return set()
+    if not (isinstance(name, ast.Constant) and isinstance(name.value, str)):
+        return set()
+    module = name.value
+    if isinstance(node, ast.Call) and _dotted(node.func) == "__import__":
+        module = module.split(".")[0]
+    return ({OS} if module == "os"
+            else {MODULE} if module in OS_PATH_MODULES else set())
+
+
+def _reached(node: ast.AST, reach: Reach) -> set[str]:
+    """Which of `OS`, `MODULE` and `GUARD` the expression `node` can be: a
+    name or an attribute bound to one, `<os>.path`, `<os.path>.<test>`, any
+    `.is_file` and the like, or the module looked up by its name."""
+    if isinstance(node, ast.NamedExpr):
+        return _reached(node.value, reach)
+    if isinstance(node, ast.Name):
+        return {kind for kind, names in reach.names.items()
+                if node.id in names}
+    if not isinstance(node, ast.Attribute):
+        return _looked_up(node)
+    inner = _reached(node.value, reach)
+    found = {kind for kind, attrs in reach.attrs.items() if node.attr in attrs}
+    if OS in inner and node.attr == "path":
+        found.add(MODULE)
+    if node.attr in GUARD_METHODS or (MODULE in inner
+                                      and node.attr in OS_PATH_GUARDS):
+        found.add(GUARD)
+    return found
+
+
+def _paired(target: ast.expr, value: ast.expr) -> list[tuple]:
+    """`(target, value)` for each name a binding of `value` to `target`
+    binds, a tuple unpacked element by element (`p, q = os.path, 1`)."""
+    if (isinstance(target, (ast.Tuple, ast.List))
+            and isinstance(value, (ast.Tuple, ast.List))
+            and len(target.elts) == len(value.elts)):
+        return [pair for inner, given in zip(target.elts, value.elts)
+                for pair in _paired(inner, given)]
+    return [(target, value)]
+
+
+def _bindings(tree: ast.Module) -> list[tuple]:
+    """`(target, value)` for each binding in the file whose value the scan
+    can see: an assignment (unpacked too), an annotated one, a walrus, a
+    `for` over a literal (each element), a `with` (its value, and each
+    argument of the call that makes it), a default parameter, and a class
+    attribute, as an attribute of any object."""
+    found = []
+    for node in ast.walk(tree):
+        if isinstance(node, ast.Assign):
+            found += [pair for target in node.targets
+                      for pair in _paired(target, node.value)]
+        elif (isinstance(node, (ast.AnnAssign, ast.NamedExpr))
+              and node.value is not None):
+            found.append((node.target, node.value))
+        elif isinstance(node, (ast.For, ast.AsyncFor, ast.comprehension)):
+            if isinstance(node.iter, (ast.Tuple, ast.List, ast.Set)):
+                found += [pair for given in node.iter.elts
+                          for pair in _paired(node.target, given)]
+        elif isinstance(node, (ast.With, ast.AsyncWith)):
+            for item in node.items:
+                made = item.context_expr
+                given = ([made, *made.args, *(k.value for k in made.keywords)]
+                         if isinstance(made, ast.Call) else [made])
+                if item.optional_vars is not None:
+                    found += [(item.optional_vars, value) for value in given]
+        elif isinstance(node, ast.arguments):
+            positional = [*node.posonlyargs, *node.args]
+            defaulted = [*zip(positional[len(positional)
+                                         - len(node.defaults):],
+                              node.defaults),
+                         *zip(node.kwonlyargs, node.kw_defaults)]
+            found += [(ast.Name(arg.arg, ast.Store()), value)
+                      for arg, value in defaulted if value is not None]
+        elif isinstance(node, ast.ClassDef):
+            found += [(ast.Attribute(ast.Name(node.name, ast.Load()),
+                                     target.id, ast.Store()), statement.value)
+                      for statement in node.body
+                      if isinstance(statement, (ast.Assign, ast.AnnAssign))
+                      and statement.value is not None
+                      for target in (statement.targets
+                                     if isinstance(statement, ast.Assign)
+                                     else [statement.target])
+                      if isinstance(target, ast.Name)]
+    return found
+
+
+def _os_path_names(tree: ast.Module) -> Reach:
+    """What each name of the file can be (`Reach`), so that every way the
+    module and its tests are reached is a guard. `OS`: `os`, and `o` after
+    `import os as o`. `MODULE`: `posixpath`, `ntpath` and `genericpath`,
+    `<os>.path`, `p` after `import os.path as p` or `from os import path
+    [as p]`, `path` after `from os import *`, and the module looked up by
+    its name (`importlib.import_module`, `__import__`, `sys.modules`).
+    `GUARD`: `e` after `from os.path import exists [as e]`, each test after
+    `from os.path import *`, and a name bound to a guard (`EX =
+    os.path.exists`, `IS_DIR = Path.is_dir`), so that each later call of it
+    is a guard of its own. And every binding `_bindings` sees, to any
+    depth of such names: `o = os`, `p = os.path`, tuple unpacking, a
+    walrus, a `for` or `with` target, a default parameter, a class or
+    instance attribute. A name is never dropped: one bound to the module
+    once is the module everywhere in the file, which flags too much rather
+    than too little.
+
+    Not caught: a guard asked by its name as a string (`getattr`,
+    `operator.methodcaller`); the module looked up by a name that is not a
+    constant, or through an alias of `importlib` or `sys`; a binding
+    through a `for` over anything but a literal, `*`-unpacking, `globals()`,
+    `setattr` or a function's return; and the other questions of the same
+    kind (`ismount`, `isjunction`, `is_fifo`, `os.access` with `F_OK`, a
+    hand-written `stat` whose `OSError` is False). Of the first and the
+    last kind but the hand-written `stat`, which no scan tells from a
+    reasoned one, the shipped tools hold three today (r1111b's SHOULD 1):
+    `getattr(os.path, "isjunction", lambda _: False)`, Windows only, in
+    `shape-doctor.py`'s `unclonable` and `siblings.py`'s `not_a_clone` and
+    `family_link`, each beside an allowlisted `is_symlink()` or
+    `os.path.islink`."""
+    reach = Reach({OS: {"os"}, GUARD: set(),
+                   MODULE: {name for name in OS_PATH_MODULES
+                            if "." not in name}},
+                  {OS: set(), MODULE: set(), GUARD: set()})
     for node in ast.walk(tree):
         if isinstance(node, ast.Import):
             for alias in node.names:
                 if alias.name == "os" and alias.asname:
-                    modules.add(f"{alias.asname}.path")
+                    reach.names[OS].add(alias.asname)
                 elif alias.name in OS_PATH_MODULES and alias.asname:
-                    modules.add(alias.asname)
+                    reach.names[MODULE].add(alias.asname)
         elif isinstance(node, ast.ImportFrom) and node.level == 0:
             for alias in node.names:
-                if node.module == "os" and alias.name == "path":
-                    modules.add(alias.asname or "path")
+                if node.module == "os" and alias.name in ("path", "*"):
+                    reach.names[MODULE].add(alias.asname or "path")
+                elif node.module in OS_PATH_MODULES and alias.name == "*":
+                    reach.names[GUARD].update(OS_PATH_GUARDS)
                 elif (node.module in OS_PATH_MODULES
                       and alias.name in OS_PATH_GUARDS):
-                    tests.add(alias.asname or alias.name)
-    bound = [(node.targets if isinstance(node, ast.Assign)
-              else [node.target], node.value)
-             for node in ast.walk(tree)
-             if isinstance(node, (ast.Assign, ast.AnnAssign))
-             and node.value is not None]
+                    reach.names[GUARD].add(alias.asname or alias.name)
+    bound = _bindings(tree)
     grown = True
     while grown:
         grown = False
-        for targets, value in bound:
-            if _dotted(value) not in modules:
+        for target, value in bound:
+            if isinstance(target, ast.Name):
+                table, name = reach.names, target.id
+            elif isinstance(target, ast.Attribute):
+                table, name = reach.attrs, target.attr
+            else:
                 continue
-            for target in targets:
-                if isinstance(target, ast.Name) and target.id not in modules:
-                    modules.add(target.id)
+            for kind in _reached(value, reach):
+                if name not in table[kind]:
+                    table[kind].add(name)
                     grown = True
-    return modules, tests
+    return reach
 
 
 def guards_in(text: str, file: str) -> list[Site]:
     """Every bare guard in the source `text`: a call, or a reference passed
     as a function, with the function and class it is in."""
     tree = ast.parse(text)
-    modules, tests = _os_path_names(tree)
+    reach = _os_path_names(tree)
     calls = {id(node.func): node for node in ast.walk(tree)
              if isinstance(node, ast.Call)}
 
     def is_guard(node: ast.AST) -> bool:
         if isinstance(node, ast.Name):
-            return node.id in tests and isinstance(node.ctx, ast.Load)
+            return (node.id in reach.names[GUARD]
+                    and isinstance(node.ctx, ast.Load))
         if not isinstance(node, ast.Attribute):
             return False
-        if node.attr in GUARD_METHODS:
+        if node.attr in GUARD_METHODS or node.attr in reach.attrs[GUARD]:
             return True
-        return node.attr in OS_PATH_GUARDS and _dotted(node.value) in modules
+        return (node.attr in OS_PATH_GUARDS
+                and MODULE in _reached(node.value, reach))
 
     found: list[Site] = []
 
@@ -859,19 +1035,70 @@ def test_every_allowlist_entry_names_a_guard_that_is_there(scanned):
         + "\n".join(stale))
 
 
+def entry_problems(benign: dict, known_open: dict, follow_up: str = FOLLOW_UP,
+                   doc: str = __doc__) -> list[str]:
+    """What is wrong with the allowlists' own entries: a `follow_up` that
+    is no issue number, or that the module docstring `doc` does not name
+    as the follow-up; a `benign` tag that is not in `TAGS`, a `known_open`
+    owner that is not `follow_up`, a reason left empty, a count under one,
+    a site on both lists, or one in a stat helper."""
+    problems = []
+    if not re.fullmatch(r"#\d+", follow_up):
+        problems.append(f"FOLLOW_UP {follow_up!r} is no issue number")
+    if f"the follow-up, {follow_up}," not in " ".join(doc.split()):
+        problems.append(f"the module docstring does not name {follow_up} "
+                        "as the follow-up")
+    problems += [f"{key!r} is on both lists"
+                 for key in sorted(set(benign) & set(known_open))]
+    for table, owners in ((benign, TAGS), (known_open, {follow_up})):
+        for key, (owner, reason, count) in table.items():
+            if owner not in owners:
+                problems.append(f"{key!r}: {owner!r} is none of "
+                                f"{sorted(owners)}")
+            if not reason.strip() or count < 1:
+                problems.append(f"{key!r}: no reason, or a count under one")
+            if in_a_helper(Site(key[0], 0, key[1], key[2])):
+                problems.append(f"{key!r} is in a stat helper")
+    return problems
+
+
 def test_every_allowlist_entry_is_tagged_and_reasoned():
-    """Each BENIGN entry carries one of the plan's reasons (`TAGS`) and a
-    line of its own, and each KNOWN_OPEN entry the follow-up that owns it.
-    No site is on both, and none is in a stat helper."""
-    assert not set(BENIGN) & set(KNOWN_OPEN)
-    for key, (tag, reason, count) in BENIGN.items():
-        assert tag in TAGS, key
-        assert reason.strip() and count >= 1, key
-    for key, (owner, reason, count) in KNOWN_OPEN.items():
-        assert owner == FOLLOW_UP, key
-        assert reason.strip() and count >= 1, key
-    for file, scope, said in {**BENIGN, **KNOWN_OPEN}:
-        assert not in_a_helper(Site(file, 0, scope, said)), (file, scope)
+    """Each BENIGN entry carries a tag of `TAGS` and a line of its own, and
+    each KNOWN_OPEN entry the follow-up that owns it, an issue the module
+    docstring names too (r1111b's NIT 5). No site is on both, and none is
+    in a stat helper."""
+    assert entry_problems(BENIGN, KNOWN_OPEN) == []
+
+
+def test_each_wrong_allowlist_entry_is_named():
+    """The entries' own proof (r1111b's NIT 5, T6 and Z11): a tag that is
+    not in `TAGS`, an owner that is not `FOLLOW_UP`, an empty reason, a
+    count of none, a site on both lists or one in a stat helper is each
+    named, and so is a `FOLLOW_UP` that is no issue number or that the
+    module docstring does not name."""
+    good = ("a.py", "f", "p.exists()")
+    benign = {good: ("OWN", "a reason", 1),
+              ("a.py", "g", "p.exists()"): ("MINE", "a reason", 1),
+              ("a.py", "h", "p.exists()"): ("OWN", " ", 1),
+              ("a.py", "_is_a", "p.exists()"): ("OWN", "a reason", 1)}
+    known_open = {good: (FOLLOW_UP, "a reason", 1),
+                  ("a.py", "k", "p.exists()"): ("#1101", "a reason", 1),
+                  ("a.py", "m", "p.exists()"): (FOLLOW_UP, "a reason", 0)}
+    assert entry_problems(benign, known_open) == [
+        f"{good!r} is on both lists",
+        f"{('a.py', 'g', 'p.exists()')!r}: 'MINE' is none of "
+        f"{sorted(TAGS)}",
+        f"{('a.py', 'h', 'p.exists()')!r}: no reason, or a count under one",
+        f"{('a.py', '_is_a', 'p.exists()')!r} is in a stat helper",
+        f"{('a.py', 'k', 'p.exists()')!r}: '#1101' is none of "
+        f"['{FOLLOW_UP}']",
+        f"{('a.py', 'm', 'p.exists()')!r}: no reason, or a count under one",
+    ]
+    # r1111b's Z11: a typo in `FOLLOW_UP`, or a value that is no issue.
+    assert entry_problems({}, {}, "#1101") == [
+        "the module docstring does not name #1101 as the follow-up"]
+    assert entry_problems({}, {}, "1110", "the follow-up, 1110, ...") == [
+        "FOLLOW_UP '1110' is no issue number"]
 
 
 #: Each way a guard can be written, and the key the scan gives it.
@@ -882,8 +1109,12 @@ import os.path as osp
 from os import path as ospath
 from os.path import lexists, isdir as is_directory
 from pathlib import Path
+from typing import Any
 held = os.path
 again = held
+late = early
+early = os.path
+typed: Any = os.path
 
 def _is_a(path, kind):
     return path.is_file()
@@ -894,6 +1125,7 @@ def asks(here: Path):
     os.path.lexists(here); os.path.islink(here)
     osp.exists(here); ospath.isfile(here); lexists(here)
     is_directory(here); system.path.isfile(here); again.islink(here)
+    late.isdir(here); typed.lexists(here)
     list(filter(os.path.exists, [here])); list(map(Path.is_dir, [here]))
     os.stat(here); here.stat(); here.lstat(); system.stat(here)
 
@@ -908,7 +1140,9 @@ def test_the_scan_finds_every_spelling_and_nothing_else():
     """The scan's own proof, independent of the tree: each spelling of a
     guard it covers is found, wrapped or not, imported or bound under any
     name or passed as a function; a `stat` is not; and the one inside
-    `_is_a` is refused as a guard in the helper (r1111's X4)."""
+    `_is_a` is refused as a guard in the helper (r1111's X4). `late` is
+    bound before `early` is, so only a second pass of the alias fixpoint
+    finds it (r1111b's R2), and `typed` by an annotated assignment (R3)."""
     sites = guards_in(SPELLINGS, "spellings.py")
     assert [(site.scope, site.snippet) for site in sites] == [
         ("_is_a", "path.is_file()"),
@@ -919,22 +1153,112 @@ def test_the_scan_finds_every_spelling_and_nothing_else():
         ("asks", "os.path.islink(here)"), ("asks", "osp.exists(here)"),
         ("asks", "ospath.isfile(here)"), ("asks", "lexists(here)"),
         ("asks", "is_directory(here)"), ("asks", "system.path.isfile(here)"),
-        ("asks", "again.islink(here)"), ("asks", "os.path.exists"),
+        ("asks", "again.islink(here)"), ("asks", "late.isdir(here)"),
+        ("asks", "typed.lexists(here)"), ("asks", "os.path.exists"),
         ("asks", "Path.is_dir"),
         ("Holder.method", '(self.root / "x").exists()'),
     ]
     messages = unlisted(sites, has_helper=True)
-    assert len(messages) == len(sites) == 19
+    assert len(messages) == len(sites) == 21
     assert messages[0] == (
-        "spellings.py:12, in `_is_a`: `path.is_file()` is a bare guard "
+        "spellings.py:16, in `_is_a`: `path.is_file()` is a bare guard "
         "inside the stat helper itself. The helper must ask `stat` and "
         "nothing else: a guard there answers as Python 3.14 does, False to "
         "any OSError, for every caller (#430).")
-    assert messages[1].startswith("spellings.py:15, in `asks`: "
+    assert messages[1].startswith("spellings.py:19, in `asks`: "
                                   "`here.is_file()` is a bare guard.")
     assert "this file's own `_is_a(" in messages[1]
     assert "a local `_is_a`, copied from validate-pins.py's" in unlisted(
         sites, has_helper=False)[1]
+
+
+#: r1111b's NIT 2: each way of reaching a guard the scan did not follow,
+#: planted in a file of its own, and every guard the scan must find there.
+PLANTED = {
+    "o-is-os": ("import os\no = os\n\ndef f(x):\n"
+                "    return o.path.isfile(x)\n", [("f", "o.path.isfile(x)")]),
+    "star-from-os-path": ("from os.path import *\n\ndef f(x):\n"
+                          "    return isfile(x)\n", [("f", "isfile(x)")]),
+    "star-from-os": ("from os import *\n\ndef f(x):\n"
+                     "    return path.isfile(x)\n", [("f", "path.isfile(x)")]),
+    "tuple-unpacking": ("import os\np, q = os.path, 1\n\ndef f(x):\n"
+                        "    return p.isfile(x)\n", [("f", "p.isfile(x)")]),
+    "walrus": ("import os\n\ndef f(x):\n"
+               "    return (q := os.path).isfile(x) or q.isdir(x)\n",
+               [("f", "(q := os.path).isfile(x)"), ("f", "q.isdir(x)")]),
+    "for-target": ("import os\n\ndef f(x):\n    for q in (os.path,):\n"
+                   "        return q.isfile(x)\n", [("f", "q.isfile(x)")]),
+    "with-target": ("import contextlib\nimport os\n\ndef f(x):\n"
+                    "    with contextlib.nullcontext(os.path) as q:\n"
+                    "        return q.isfile(x)\n", [("f", "q.isfile(x)")]),
+    "default-parameter": ("import os\n\ndef f(x, q=os.path):\n"
+                          "    return q.isfile(x)\n", [("f", "q.isfile(x)")]),
+    "class-attribute": ("import os\n\nclass C:\n    p = os.path\n\n"
+                        "    def f(self, x):\n"
+                        "        return self.p.isfile(x)\n",
+                        [("C.f", "self.p.isfile(x)")]),
+    "instance-attribute": ("import os\n\nclass C:\n    def __init__(self):\n"
+                           "        self.p = os.path\n\n    def f(self, x):\n"
+                           "        return self.p.isfile(x)\n",
+                           [("C.f", "self.p.isfile(x)")]),
+    "guard-bound-once": ("import os\nEX = os.path.exists\n\ndef f(x):\n"
+                         "    return EX(x)\n\ndef g(x):\n    return EX(x)\n",
+                         [("<module>", "os.path.exists"), ("f", "EX(x)"),
+                          ("g", "EX(x)")]),
+    "test-bound-again": ("from os.path import isfile\nchk = isfile\n\n"
+                         "def f(x):\n    return chk(x)\n",
+                         [("<module>", "isfile"), ("f", "chk(x)")]),
+    "method-bound-once": ("from pathlib import Path\nIS_DIR = Path.is_dir\n\n"
+                          "def f(x):\n    return IS_DIR(x)\n",
+                          [("<module>", "Path.is_dir"), ("f", "IS_DIR(x)")]),
+    "guard-as-attribute": ("import os\n\nclass C:\n    ex = os.path.exists\n\n"
+                           "    def f(self, x):\n        return self.ex(x)\n",
+                           [("C", "os.path.exists"), ("C.f", "self.ex(x)")]),
+    "importlib": ("import importlib\nP = importlib.import_module('os.path')\n"
+                  "\ndef f(x):\n    return P.isfile(x)\n",
+                  [("f", "P.isfile(x)")]),
+    "dunder-import": ("o = __import__('os.path')\n\ndef f(x):\n"
+                      "    return o.path.isfile(x)\n",
+                      [("f", "o.path.isfile(x)")]),
+    "sys-modules": ("import sys\n\ndef f(x):\n"
+                    "    return sys.modules['posixpath'].isfile(x)\n",
+                    [("f", "sys.modules['posixpath'].isfile(x)")]),
+    "sys-modules-get": ("import sys\nP = sys.modules.get('os')\n\ndef f(x):\n"
+                        "    return P.path.isfile(x)\n",
+                        [("f", "P.path.isfile(x)")]),
+    # r1149's NIT 3: one planted file for each binding no row held.
+    "nested-tuple": ("import os\n(a, (p, q)) = (1, (os.path, 2))\n\n"
+                     "def f(x):\n    return p.isfile(x)\n",
+                     [("f", "p.isfile(x)")]),
+    "comprehension-target": ("import os\n\ndef f(x):\n"
+                             "    return [q.isfile(x) for q in (os.path,)]\n",
+                             [("f", "q.isfile(x)")]),
+    "keyword-only-default": ("import os\n\ndef f(x, *, q=os.path):\n"
+                             "    return q.isfile(x)\n",
+                             [("f", "q.isfile(x)")]),
+    "annotated-class-attribute": ("import os\n\nclass C:\n"
+                                  "    p: object = os.path\n\n"
+                                  "    def f(self, x):\n"
+                                  "        return self.p.isfile(x)\n",
+                                  [("C.f", "self.p.isfile(x)")]),
+    "bare-os-path-twins": ("import genericpath\nimport ntpath\n"
+                           "import posixpath\n\ndef f(x):\n"
+                           "    return (posixpath.isfile(x) or ntpath.isdir(x)"
+                           "\n            or genericpath.exists(x))\n",
+                           [("f", "posixpath.isfile(x)"),
+                            ("f", "ntpath.isdir(x)"),
+                            ("f", "genericpath.exists(x)")]),
+}
+
+
+@pytest.mark.parametrize("planted", PLANTED)
+def test_the_scan_follows_each_planted_binding(planted):
+    """r1111b's NIT 2 (and its Z6 and Z7): each binding the scan did not
+    follow is followed now, and finds the guard planted behind it, and
+    nothing else in that file."""
+    text, found = PLANTED[planted]
+    assert [(site.scope, site.snippet)
+            for site in guards_in(text, "planted.py")] == found
 
 
 #: A function that makes one call twice, for the count's own proof.
@@ -965,9 +1289,15 @@ def test_an_entry_allows_as_many_calls_as_it_counts_and_no_more():
 
 # --- the parity test --------------------------------------------------------
 
-#: The handlers a helper may hold: `OSError`, which re-raises what is not
-#: absent, and `ValueError`, a name no system can take (a NUL in it).
-HANDLERS = frozenset({"OSError", "ValueError"})
+#: The handlers a helper may hold on the way from its `stat` to its answer:
+#: `OSError`, which re-raises what is not absent; `ValueError`, a name no
+#: system can take (a NUL in it); and `FileNotFoundError` and
+#: `NotADirectoryError`, which are ENOENT and ENOTDIR, two absent errnos.
+HANDLERS = frozenset({"OSError", "ValueError", "FileNotFoundError",
+                      "NotADirectoryError"})
+#: Each kind of `try`, `except*` too where this Python has it.
+TRIES = tuple(getattr(ast, name) for name in ("Try", "TryStar")
+              if hasattr(ast, name))
 
 
 class AbsentSets(NamedTuple):
@@ -992,26 +1322,42 @@ def _constants(tree: ast.Module) -> dict[str, ast.expr]:
     return found
 
 
-def _members(expr: ast.expr, constants: dict) -> frozenset:
+def _errno_names(tree: ast.Module) -> frozenset:
+    """The names the file binds the `errno` module to: `errno`, and `E`
+    after `import errno as E`."""
+    return frozenset(alias.asname or alias.name for node in ast.walk(tree)
+                     if isinstance(node, ast.Import) for alias in node.names
+                     if alias.name == "errno")
+
+
+def _members(expr: ast.expr, constants: dict, errnos: frozenset) -> frozenset:
     """The values of a set the helper compares with: a module constant or a
-    literal, each element `errno.<NAME>` (by name) or a number. Anything
-    else is refused, rather than guessed at."""
+    literal, bare or in `frozenset(...)` or `set(...)`, each element
+    `errno.<NAME>` (by name, through any of `errnos`, the names the file
+    binds the module to) or a number. Anything else is refused, rather
+    than guessed at, and named as the source writes it (`ast.unparse`):
+    `ast.dump` leaves out `ctx=Load()` and the other defaults from Python
+    3.13, so a message built from it reads differently on each Python."""
     if isinstance(expr, ast.Name):
         if expr.id not in constants:
             raise LookupError(f"`{expr.id}` is no constant of the module")
         expr = constants[expr.id]
+    if (isinstance(expr, ast.Call) and isinstance(expr.func, ast.Name)
+            and expr.func.id in ("frozenset", "set")
+            and len(expr.args) == 1 and not expr.keywords):
+        expr = expr.args[0]
     if not isinstance(expr, (ast.Tuple, ast.List, ast.Set)):
-        raise ValueError(f"`{ast.dump(expr)}` is no literal set")
+        raise ValueError(f"`{ast.unparse(expr)}` is no literal set")
     members = set()
     for element in expr.elts:
         if (isinstance(element, ast.Attribute)
                 and isinstance(element.value, ast.Name)
-                and element.value.id == "errno"):
+                and element.value.id in errnos):
             members.add(element.attr)
         elif isinstance(element, ast.Constant) and type(element.value) is int:
             members.add(element.value)
         else:
-            raise ValueError(f"`{ast.dump(element)}` is neither "
+            raise ValueError(f"`{ast.unparse(element)}` is neither "
                              "`errno.<NAME>` nor a number")
     return frozenset(members)
 
@@ -1022,7 +1368,7 @@ def _caught(handler: ast.ExceptHandler) -> list[str]:
         return ["BaseException"]
     names = (handler.type.elts if isinstance(handler.type, ast.Tuple)
              else [handler.type])
-    return [_dotted(name) or ast.dump(name) for name in names]
+    return [_dotted(name) or ast.unparse(name) for name in names]
 
 
 def _asked(node: ast.AST) -> str | None:
@@ -1039,17 +1385,44 @@ def _asked(node: ast.AST) -> str | None:
     return None
 
 
+def _calls_out(nodes: list, functions: dict, followed: tuple = ()) -> bool:
+    """Whether `nodes` make a call that could reach a `stat`: any call but
+    one of a function of the module that makes none itself."""
+    for node in (inner for outer in nodes for inner in ast.walk(outer)):
+        if not isinstance(node, ast.Call):
+            continue
+        name = node.func.id if isinstance(node.func, ast.Name) else None
+        if name not in functions:
+            return True
+        if name not in followed and _calls_out(
+                functions[name].body, functions, (*followed, name)):
+            return True
+    return False
+
+
+def _reraises(node: ast.AST, handler: ast.ExceptHandler) -> bool:
+    """Whether `node` raises again what `handler` caught: a bare `raise`,
+    or `raise exc` of the name it caught it as."""
+    return isinstance(node, ast.Raise) and node.cause is None and (
+        node.exc is None or (isinstance(node.exc, ast.Name)
+                             and node.exc.id == handler.name))
+
+
 def absent_sets(text: str, helper: str) -> AbsentSets:
     """The helper's sets, read through every function of the module it
     calls (`_absent`, `_mode_of`, `_says_absent`, `refused_read`): each
-    `<exc>.errno in <set>` and `getattr(<exc>, "winerror", None) in <set>`.
+    `<exc>.errno in <set>` and `getattr(<exc>, "winerror", None) in <set>`,
+    or `not in <set>`.
 
-    `refused` names, on that path (r1111's S1): a handler for anything but
-    `OSError` and `ValueError` (`PermissionError`, `Exception`, `except:`),
-    which would answer before the set is asked; an `except OSError` with no
-    bare `raise` in it; and an `errno` or `winerror` read any other way
-    than `in <set>` (`== errno.EACCES`), which would put another errno
-    beside the set."""
+    `refused` names, on that path (r1111's S1), which is each `try` that
+    makes a call (`_calls_out`; one that calls nothing, a dict's
+    `KeyError` say, cannot catch a refused `stat`): a handler for anything
+    but `HANDLERS` (`PermissionError`, `Exception`, `except:`), which would
+    answer before the set is asked; an `except OSError` that does not
+    re-raise (`_reraises`); and, anywhere in those functions, an `errno`
+    or `winerror` read any other way than `in` or `not in <set>` (`==
+    errno.EACCES`), which would put another errno beside the set. The
+    behaviour test asks what this cannot read."""
     tree = ast.parse(text)
     defined = {node.name: node for node in tree.body
                if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef,
@@ -1062,7 +1435,7 @@ def absent_sets(text: str, helper: str) -> AbsentSets:
         raise LookupError(f"`{helper}` is {kind}, not a plain function")
     functions = {name: node for name, node in defined.items()
                  if isinstance(node, ast.FunctionDef)}
-    constants = _constants(tree)
+    constants, names = _constants(tree), _errno_names(tree)
     seen, queue = [], [helper]
     while queue:
         name = queue.pop(0)
@@ -1075,29 +1448,30 @@ def absent_sets(text: str, helper: str) -> AbsentSets:
     errnos, winerrors, refused, approved = [], [], [], set()
     for name in seen:
         for node in ast.walk(functions[name]):
-            if isinstance(node, ast.ExceptHandler):
-                caught = _caught(node)
+            for handler in (node.handlers if isinstance(node, TRIES)
+                            and _calls_out(node.body, functions) else []):
+                caught = _caught(handler)
                 if not set(caught) <= HANDLERS:
                     refused.append(f"`{name}` catches "
                                    f"{', '.join(caught)}, which answers "
                                    "before the set is asked")
                 elif "OSError" in caught and not any(
-                        isinstance(inner, ast.Raise) and inner.exc is None
-                        for inner in ast.walk(node)):
+                        _reraises(inner, handler)
+                        for inner in ast.walk(handler)):
                     refused.append(f"`{name}`'s `except OSError` does not "
                                    "re-raise what is not absent")
             if not (isinstance(node, ast.Compare) and len(node.ops) == 1
-                    and isinstance(node.ops[0], ast.In)):
+                    and isinstance(node.ops[0], (ast.In, ast.NotIn))):
                 continue
             kind = _asked(node.left)
             if kind is None or _asked(node.comparators[0]) is not None:
                 continue
             approved.add(id(node.left))
             (errnos if kind == "errno" else winerrors).append(
-                _members(node.comparators[0], constants))
+                _members(node.comparators[0], constants, names))
         refused += [f"`{name}` reads "
                     f"`{ast.get_source_segment(text, node)}` other than "
-                    "as `in <set>`"
+                    "as `in` or `not in <set>`"
                     for node in ast.walk(functions[name])
                     if _asked(node) and id(node) not in approved]
     return AbsentSets(errnos, winerrors, refused)
@@ -1141,35 +1515,112 @@ def test_each_slices_helper_is_still_there(scanned):
 def test_every_stat_helper_holds_the_one_errno_set(scanned):
     """Every `_is_a` (and the doctor's `is_a`), the twelve and any added
     later, reads ENOENT, ENOTDIR, EBADF and ELOOP, and Windows' 21, 123 and
-    1921, as absent, asks `errno` and `winerror` only as `in` those sets,
-    catches nothing but `OSError` and `ValueError` on the way, and re-raises
-    in its `except OSError`."""
+    1921, as absent, asks `errno` and `winerror` only as `in` or `not in`
+    those sets, catches nothing on the way from its `stat` to its answer
+    but `OSError`, `ValueError` and the two absent subclasses,
+    `FileNotFoundError` and `NotADirectoryError`, and re-raises in its
+    `except OSError`, by `raise` or by `raise exc` of the name it caught."""
     problems = [f"{file}'s `{helper}`: {problem}"
                 for file, helper in _helpers(scanned)
                 for problem in parity_problems(scanned[file][0], helper)]
     assert not problems, "\n".join(problems)
 
 
+def _augmented(tree: ast.Module) -> list[str]:
+    """The `*ABSENT_ERRNOS` and `*ABSENT_WINERRORS` constants a top-level
+    augmented assignment (`+=`, `|=`) changes after they are set: the one
+    change `_constants`, which keeps each name's last plain assignment,
+    never sees (r1149's S1). The behaviour test asks every errno, but only
+    two Windows errors; this holds the rest."""
+    return [node.target.id for node in tree.body
+            if isinstance(node, ast.AugAssign)
+            and isinstance(node.target, ast.Name)
+            and node.target.id.endswith(("ABSENT_ERRNOS",
+                                         "ABSENT_WINERRORS"))]
+
+
+def absent_constant_problems(text: str, file: str) -> tuple[int, list[str]]:
+    """How many `*ABSENT_ERRNOS` and `*ABSENT_WINERRORS` constants `text`
+    holds, and which are wrong: not the one set, or changed by a top-level
+    augmented assignment after it is set."""
+    tree = ast.parse(text)
+    wrong = [f"{file}: {name} is changed by an augmented assignment"
+             for name in _augmented(tree)]
+    seen = 0
+    for name, value in _constants(tree).items():
+        expected = (ABSENT_ERRNOS if name.endswith("ABSENT_ERRNOS")
+                    else ABSENT_WINERRORS
+                    if name.endswith("ABSENT_WINERRORS") else None)
+        if expected is None:
+            continue
+        seen += 1
+        if _members(value, {}, _errno_names(tree)) != expected:
+            wrong.append(f"{file}: {name}")
+    return seen, wrong
+
+
 def test_every_absent_constant_is_the_one_set(scanned):
     """Each module constant named `*ABSENT_ERRNOS` or `*ABSENT_WINERRORS`
     is the one set, where a helper reads it or not (`validate-pins.py`'s
-    `_digest_from_source` reads `_ABSENT_ERRNOS` inline)."""
+    `_digest_from_source` reads `_ABSENT_ERRNOS` inline), and none is
+    changed by a top-level `+=` after it is set."""
     wrong, seen = [], 0
     for file, (text, _) in scanned.items():
-        for name, value in _constants(ast.parse(text)).items():
-            expected = (ABSENT_ERRNOS if name.endswith("ABSENT_ERRNOS")
-                        else ABSENT_WINERRORS
-                        if name.endswith("ABSENT_WINERRORS") else None)
-            if expected is None:
-                continue
-            seen += 1
-            if _members(value, {}) != expected:
-                wrong.append(f"{file}: {name}")
+        more, bad = absent_constant_problems(text, file)
+        seen += more
+        wrong += bad
     assert seen >= 2 * len(HELPERS), seen
     assert not wrong, wrong
 
 
-#: A helper as slice A wrote it, and the variants the parity test refuses.
+def test_a_wrong_or_augmented_absent_constant_is_named():
+    """The constants check's own proof (r1149's S1): the right sets are
+    taken; a wrong set is named; a top-level `+=` or `|=` on either
+    constant is named, one on another name is not, and neither is one
+    inside a function."""
+    sets = ("import errno\n_ABSENT_ERRNOS = (errno.ENOENT, errno.ENOTDIR, "
+            "errno.EBADF, errno.ELOOP)\n_ABSENT_WINERRORS = (21, 123, 1921)"
+            "\n")
+    assert absent_constant_problems(sets, "a.py") == (2, [])
+    assert absent_constant_problems(
+        sets.replace("errno.ELOOP", "errno.EACCES"), "a.py") == (
+        2, ["a.py: _ABSENT_ERRNOS"])
+    assert absent_constant_problems(
+        sets + "_ABSENT_ERRNOS += (errno.ESTALE,)\n_ABSENT_WINERRORS |= {5}\n"
+        "ABSENT_ERRNOS += (errno.EIO,)\n_OTHER = (1,)\n_OTHER += (2,)\n\n"
+        "def f():\n    _ABSENT_ERRNOS = ()\n    _ABSENT_ERRNOS += (1,)\n",
+        "a.py") == (2, [
+            "a.py: _ABSENT_ERRNOS is changed by an augmented assignment",
+            "a.py: _ABSENT_WINERRORS is changed by an augmented assignment",
+            "a.py: ABSENT_ERRNOS is changed by an augmented assignment"])
+
+
+@pytest.mark.parametrize("spelled, wanted", [
+    ("frozenset({errno.ENOENT, 2})", {"ENOENT", 2}),
+    ("set([errno.EBADF])", {"EBADF"}),
+    ("sorted((errno.ENOENT, 2))", ValueError),
+    ("tuple({errno.ENOENT})", ValueError),
+], ids=["frozenset", "set", "sorted", "tuple"])
+def test_members_unwrap_a_frozenset_or_a_set_and_no_other_call(spelled,
+                                                               wanted):
+    """r1149's V15: `_members` takes a literal bare or in `frozenset(...)`
+    or `set(...)`, as the parity test's twin table has it, and refuses a
+    literal in any other call, which could change it (`sorted`, `tuple`),
+    naming it as the source writes it."""
+    expr = ast.parse(spelled, mode="eval").body
+    if wanted is ValueError:
+        with pytest.raises(ValueError) as refused:
+            _members(expr, {}, frozenset({"errno"}))
+        assert str(refused.value) == f"`{spelled}` is no literal set"
+    else:
+        assert _members(expr, {}, frozenset({"errno"})) == wanted
+
+
+#: A helper in `adopt-project.py`'s and `scripts/family.py`'s shape (slices
+#: H and G), without their docstrings and annotations: its two sets module
+#: constants, asked in an `_absent` of its own. Slice A's
+#: `scripts/bump-leg.py` asks the same sets inline, with no `_absent`. And
+#: the variants the parity test refuses.
 HELPER = '''
 import errno
 _ABSENT_ERRNOS = (errno.ENOENT, errno.ENOTDIR, errno.EBADF, errno.ELOOP)
@@ -1214,22 +1665,655 @@ LAST = "    except ValueError:\n        return False\n"
      "asked"),
     (("in _ABSENT_WINERRORS)",
       "in _ABSENT_WINERRORS\n            or exc.errno == errno.EACCES)"),
-     "`_absent` reads `exc.errno` other than as `in <set>`"),
+     "`_absent` reads `exc.errno` other than as `in` or `not in <set>`"),
     (("def _is_a(path, kind):", "async def _is_a(path, kind):"),
      "its sets cannot be read: `_is_a` is an async def, not a plain "
      "function"),
     (("def _is_a(path, kind):",
       "class _is_a:\n    pass\n\ndef _is_b(path, kind):"),
      "its sets cannot be read: `_is_a` is a class, not a plain function"),
+    # r1111b's R13: an element it cannot read is refused, never skipped.
+    (("errno.ELOOP)", "errno.ELOOP, EACCES)"),
+     "its sets cannot be read: `EACCES` is neither `errno.<NAME>` nor a "
+     "number"),
+    # The row above once said `Name(id='EACCES', ctx=Load())`, which is what
+    # `ast.dump` prints up to 3.12; from 3.13 it leaves `ctx=Load()` out, and
+    # CI's first run of this file, on 3.14, failed on it. Each message that
+    # names a piece of the helper writes it as the source does now, and these
+    # two rows pin the other two ways it is built (`_members`, `_caught`).
+    (("in _ABSENT_ERRNOS", "in sorted(_ABSENT_ERRNOS)"),
+     "its sets cannot be read: `sorted(_ABSENT_ERRNOS)` is no literal set"),
+    ((ANSWERS, "    except errors():\n        return False\n" + ANSWERS),
+     "`_is_a` catches errors(), which answers before the set is asked"),
 ])
 def test_the_parity_test_refuses_another_set(change, said):
-    """The parity test's own proof: slice A's helper passes, and each
-    one-line change to its set, its handlers, its `errno` question or its
-    kind is named (r1111's X5, X6, X15 and X18 among them)."""
+    """The parity test's own proof: the `HELPER` passes, and each one-line
+    change to its set, its handlers, its `errno` question or its kind is
+    named (r1111's X5, X6, X15 and X18 among them, and r1111b's R13). A
+    message that names a piece of the helper names it as the source writes
+    it (`ast.unparse`), the same on every Python."""
     assert parity_problems(HELPER, "_is_a") == []
     old, new = change
     assert HELPER.count(old) == 1
     assert said in parity_problems(HELPER.replace(old, new), "_is_a")
+
+
+def _changed(text: str, changes: list) -> str:
+    """`text` with each `(old, new)` of `changes` made in turn, each `old`
+    found exactly once, so that no change is silently a no-op."""
+    for old, new in changes:
+        assert text.count(old) == 1, old
+        text = text.replace(old, new)
+    return text
+
+
+#: The `HELPER`'s set, as it spells it.
+SET = "(errno.ENOENT, errno.ENOTDIR, errno.EBADF, errno.ELOOP)"
+#: `_absent`, spelled with `not in`.
+NOT_IN = ('    return (exc.errno in _ABSENT_ERRNOS\n'
+          '            or getattr(exc, "winerror", None) in '
+          '_ABSENT_WINERRORS)',
+          '    return not (exc.errno not in _ABSENT_ERRNOS\n'
+          '                and getattr(exc, "winerror", None)\n'
+          '                not in _ABSENT_WINERRORS)')
+#: A function the helper calls, with a `try` of its own.
+NOTE = ("def _note(x):\n    try:\n        return {}\n    except {}:\n"
+        "        return None\n\ndef _is_a(path, kind):\n    _note(path)\n")
+IS_A = "def _is_a(path, kind):\n"
+
+
+@pytest.mark.parametrize("right, wrong, said", [
+    ([NOT_IN], [NOT_IN, ("not in _ABSENT_ERRNOS",
+                         "not in (errno.ENOENT, errno.EACCES)")],
+     "its errnos are ['EACCES', 'ENOENT']"),
+    ([("        raise\n", "        raise exc\n")],
+     [("        raise\n",
+       "        raise FileNotFoundError(errno.ENOENT, str(exc))\n")],
+     "`_is_a`'s `except OSError` does not re-raise what is not absent"),
+    # r1149's V22: another name is not what the handler caught.
+    ([("        raise\n", "        raise exc\n")],
+     [("        raise\n", "        other = FileNotFoundError(errno.ENOENT, "
+       "str(exc))\n        raise other\n")],
+     "`_is_a`'s `except OSError` does not re-raise what is not absent"),
+    ([(SET, f"frozenset({{{SET[1:-1]}}})")],
+     [(SET, f"frozenset({{{SET[1:-1]}}}) | {{errno.EACCES}}")],
+     f"`frozenset({{{SET[1:-1]}}}) | {{errno.EACCES}}` is no literal set"),
+    ([("import errno\n", "import errno as E\n"),
+      (SET, SET.replace("errno.", "E."))],
+     [("import errno\n", "import errno\n\nclass E:\n"
+       "    ENOENT = ENOTDIR = EBADF = ELOOP = errno.EACCES\n"),
+      (SET, SET.replace("errno.", "E."))],
+     "`E.ENOENT` is neither `errno.<NAME>` nor a number"),
+    ([(ANSWERS, "    except (FileNotFoundError, NotADirectoryError):\n"
+       "        return False\n" + ANSWERS)],
+     [(ANSWERS, "    except (FileNotFoundError, PermissionError):\n"
+       "        return False\n" + ANSWERS)],
+     "`_is_a` catches FileNotFoundError, PermissionError, which answers "
+     "before the set is asked"),
+    ([(IS_A, NOTE.format("{}[x]", "KeyError"))],
+     [(IS_A, NOTE.format("x.stat()", "PermissionError"))],
+     "`_note` catches PermissionError, which answers before the set is "
+     "asked"),
+], ids=["not-in", "raise-exc", "raise-other-name", "frozenset", "errno-as",
+        "absent-handlers", "unrelated-handler"])
+def test_the_parity_test_takes_a_correct_spelling_and_refuses_its_twin(
+        right, wrong, said, tmp_path):
+    """r1111b's NIT 3: each correct spelling the parity test refused is
+    taken now (`errno not in`, `raise exc`, a `frozenset({...})`, `import
+    errno as E`, `except (FileNotFoundError, NotADirectoryError)`, an
+    unrelated `except KeyError` in a function the helper calls), and the
+    nearest wrong one beside it is still refused, by name. The behaviour
+    test agrees: the first answers as it should, and the twin does not."""
+    assert parity_problems(_changed(HELPER, right), "_is_a") == []
+    assert behaviour_problems(_changed(HELPER, right), "_is_a",
+                              tmp_path) == []
+    refused = parity_problems(_changed(HELPER, wrong), "_is_a")
+    assert any(said in problem for problem in refused), refused
+    assert behaviour_problems(_changed(HELPER, wrong), "_is_a", tmp_path)
+
+
+def test_a_class_or_an_async_def_by_a_helpers_name_is_held_to_parity():
+    """`_helpers` lists a class and an `async def` by a helper's name, so
+    that the parity test refuses them (r1111b's R7), and no other name."""
+    found = _helpers({
+        "a.py": ("class _is_a:\n    pass\n", []),
+        "b.py": ("async def is_a(path, kind):\n    pass\n", []),
+        "c.py": ("def is_b(path, kind):\n    pass\n\n\nclass Holder:\n"
+                 "    def _is_a(self):\n        pass\n", []),
+    })
+    assert found == [("a.py", "_is_a"), ("b.py", "is_a")]
+
+
+# --- the behaviour test -----------------------------------------------------
+
+#: What a function, class, lambda or comprehension keeps to itself.
+SCOPES = (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef, ast.Lambda,
+          ast.ListComp, ast.SetComp, ast.DictComp, ast.GeneratorExp)
+#: `loaded_helper` compiles as `from __future__ import annotations` does,
+#: so no annotation is ever evaluated, and none needs its import.
+ANNOTATIONS = __future__.annotations.compiler_flag
+#: The name whose `stat` the behaviour test refuses.
+ASKED = "asked-by-the-behaviour-test"
+#: How many problems a failing run prints, so that a helper wrong for every
+#: errno does not print a page of them.
+SHOWN = 20
+#: The errnos a helper must raise back: every errno there is but the absent
+#: ones, `EACCES`, `EPERM`, `EIO`, `EINVAL` and `ESTALE` among them, so that a
+#: set widened after it is set (`_ABSENT_ERRNOS += (errno.ESTALE,)`) is
+#: named whichever errno it adds (r1149's S1).
+REFUSED_ERRNOS = tuple(sorted(
+    name for code, name in errno.errorcode.items()
+    if code not in {getattr(errno, absent) for absent in ABSENT_ERRNOS}))
+#: Windows' "access denied" and "sharing violation", as it raises them: errno
+#: `EACCES` with `winerror` set. A refusal as much as `EACCES` alone is.
+REFUSED_WINERRORS = (5, 32)
+
+
+def _stored(nodes: list) -> set[str]:
+    """The names `nodes` bind in their own scope: assigned, deleted,
+    defined, imported, or caught as (`except ... as`); not those a
+    function, class, lambda or comprehension among them binds inside."""
+    names, stack = set(), list(nodes)
+    while stack:
+        node = stack.pop()
+        if isinstance(node, ast.Name) and not isinstance(node.ctx, ast.Load):
+            names.add(node.id)
+        elif isinstance(node, (ast.Import, ast.ImportFrom)):
+            names.update((alias.asname or alias.name).split(".")[0]
+                         for alias in node.names)
+        elif isinstance(node, ast.ExceptHandler) and node.name:
+            names.add(node.name)
+        if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef,
+                             ast.ClassDef)):
+            names.add(node.name)
+        if not isinstance(node, SCOPES):
+            stack.extend(ast.iter_child_nodes(node))
+    return names
+
+
+def _reads(nodes: list) -> set[str]:
+    """The names `nodes` read from the scope around them, annotations left
+    out: a function's parameters and locals are its own, unless `global`."""
+    names = set()
+    for node in nodes:
+        if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef,
+                             ast.Lambda)):
+            given = node.args
+            body = node.body if isinstance(node.body, list) else [node.body]
+            own = {arg.arg for arg in (*given.posonlyargs, *given.args,
+                                       *given.kwonlyargs, given.vararg,
+                                       given.kwarg) if arg}
+            shared = {name for statement in body
+                      for inner in ast.walk(statement)
+                      if isinstance(inner, ast.Global)
+                      for name in inner.names}
+            names |= _reads(body) - ((own | _stored(body)) - shared)
+            names |= _reads([*getattr(node, "decorator_list", []),
+                             *given.defaults,
+                             *(value for value in given.kw_defaults
+                               if value is not None)])
+        elif isinstance(node, ast.Name):
+            if isinstance(node.ctx, ast.Load):
+                names.add(node.id)
+        else:
+            names |= _reads([child for field, value in ast.iter_fields(node)
+                             if field not in ("annotation", "returns")
+                             for child in (value if isinstance(value, list)
+                                           else [value])
+                             if isinstance(child, ast.AST)])
+    return names
+
+
+def _slice(tree: ast.Module, helper: str) -> list[ast.stmt]:
+    """The module's top-level statements that bind `helper`, or a name one
+    of them reads, to any depth, in the module's own order: the `def`, any
+    later binding of its name (`_is_a = _lenient`), the functions and
+    classes it calls, its constants and every statement that changes one
+    (`_ABSENT_ERRNOS += ...`), and the imports they need. No `__future__`
+    import: `ANNOTATIONS` stands for it."""
+    wanted, chosen = {helper}, set()
+    grown = True
+    while grown:
+        grown = False
+        for index, statement in enumerate(tree.body):
+            if index not in chosen and _stored([statement]) & wanted:
+                chosen.add(index)
+                wanted |= _reads([statement])
+                grown = True
+    return [statement for index, statement in enumerate(tree.body)
+            if index in chosen and not (isinstance(statement, ast.ImportFrom)
+                                        and statement.module == "__future__")]
+
+
+def loaded_helper(text: str, helper: str,
+                  filename: str = "<helper>") -> Callable:
+    """`helper` from the source `text`, loaded by its AST, as each of the
+    twelve is: of the module, only `_slice` runs. No shipped tool is
+    imported by its path, because none of the twelve is free of what its
+    import does: each puts its own folder on `sys.path` and imports
+    `repo_shape` and the like from there (`siblings.py` the holder's
+    `bootstrap` too), and the copies of `repo_shape` in `scripts/` and in
+    each template's `scripts/` would meet in `sys.modules`. Every import
+    the slice makes is the standard library's, or it is refused: a helper
+    keeps its own copy (#370, #610)."""
+    statements = _slice(ast.parse(text), helper)
+    if not statements:
+        raise LookupError(f"nothing in the module binds `{helper}`")
+    for node in (inner for outer in statements for inner in ast.walk(outer)):
+        if isinstance(node, (ast.Import, ast.ImportFrom)):
+            for module in ([alias.name for alias in node.names]
+                           if isinstance(node, ast.Import)
+                           else [node.module or "." * node.level]):
+                if module.split(".")[0] not in sys.stdlib_module_names:
+                    raise LookupError(
+                        f"`{helper}` needs `{module}`, which is no module "
+                        "of the standard library: a helper keeps its own "
+                        "copy of what it asks (#370, #610)")
+    namespace = {"__name__": f"loaded {helper}", "__file__": filename}
+    exec(compile(ast.Module(statements, type_ignores=[]), filename, "exec",
+                 flags=ANNOTATIONS, dont_inherit=True), namespace)
+    return namespace[helper]
+
+
+def _refusing(real: Callable, asked: str, error: OSError,
+              follows: bool = False) -> Callable:
+    """`os.stat` or `os.lstat`, raising `error` for `asked` alone; with
+    `follows`, only for a `stat` that follows a link, so that the link's own
+    `lstat` answers (`os.lstat`, `Path.lstat`, `os.stat(...,
+    follow_symlinks=False)`, which `Path.lstat` is on Python 3.12)."""
+    def ask(path, *args, **kwargs):
+        if (not isinstance(path, int) and os.fspath(path) == asked
+                and (kwargs.get("follow_symlinks", True) or not follows)):
+            raise error
+        return real(path, *args, **kwargs)
+    return ask
+
+
+def _answer(asks: Callable, *args, **kwargs) -> tuple[str, object]:
+    """`("answers", what it returned)` or `("raises", what it raised)`."""
+    try:
+        return "answers", asks(*args, **kwargs)
+    except Exception as exc:  # noqa: BLE001 -- what it raises is its answer
+        return "raises", exc
+
+
+def _dangling_link(where: Path) -> Path | None:
+    """A link in `where` to `nothing`, which `lstat` answers and `stat`
+    cannot; None where this system makes no links."""
+    link = where / f"{ASKED}-link"
+    if not link.is_symlink():
+        try:
+            link.symlink_to(where / "nothing")
+        except (OSError, NotImplementedError):
+            return None
+    return link
+
+
+def behaviour_problems(text: str, helper: str, where: Path,
+                       filename: str = "<helper>") -> list[str]:
+    """What `helper`, loaded by `loaded_helper`, answers wrongly. Asked of
+    a file, a folder and nothing, in the folder `where`, it must answer as
+    the disk does. Asked, with `S_ISREG` and with `S_ISDIR`, of a name whose
+    `stat` raises (`os.stat` and `os.lstat` refused for it, which `Path.stat`
+    and `lstat` call): each absent errno, and each absent Windows error
+    beside `EINVAL`, an errno that is not absent, must answer False; every
+    other errno (`REFUSED_ERRNOS`), and EACCES with Windows' 5 and 32
+    (`REFUSED_WINERRORS`), must come back raised, the very exception the
+    `stat` raised. Each of them is asked again of a link to nothing, whose
+    `stat` alone is refused and whose `lstat` answers a link: a helper that
+    answers the refusal from that `lstat` is wrong (skipped where no link
+    can be made). A keyword-only flag with a default (`link=False`) is asked
+    both ways, the link only without it, for the flag may ask `lstat`."""
+    try:
+        asks = loaded_helper(text, helper, filename)
+    except Exception as exc:  # noqa: BLE001 -- a module that cannot load
+        return [f"`{helper}` cannot be loaded: {type(exc).__name__}: {exc}"]
+    try:
+        flags = [{}] + [{name: not parameter.default} for name, parameter
+                        in inspect.signature(asks).parameters.items()
+                        if parameter.kind is parameter.KEYWORD_ONLY
+                        and isinstance(parameter.default, bool)]
+    except (TypeError, ValueError):
+        flags = [{}]
+    (where / "a-file").write_text("", encoding="utf-8")
+    link = _dangling_link(where)
+    asked, problems = str(where / ASKED), []
+    # `(errno name, winerror, whether it means nothing is there)`
+    cases = ([(name, None, True) for name in sorted(ABSENT_ERRNOS)]
+             + [("EINVAL", code, True) for code in sorted(ABSENT_WINERRORS)]
+             + [(name, None, False) for name in REFUSED_ERRNOS]
+             + [("EACCES", code, False) for code in REFUSED_WINERRORS])
+    for flag in flags:
+        called = f"`{helper}`" + "".join(f" with {name}={value}"
+                                         for name, value in flag.items())
+        for path, kind, want in (
+                (where / "a-file", stat.S_ISREG, True),
+                (where, stat.S_ISDIR, True),
+                (where / "a-file", stat.S_ISDIR, False),
+                (where / "nothing", stat.S_ISREG, False)):
+            got = _answer(asks, path, kind, **flag)
+            if got != ("answers", want):
+                problems.append(f"{called} {got[0]} {got[1]!r} for "
+                                f"{path.name}, {kind.__name__}, where the "
+                                f"disk says {want}")
+        # `(what is asked, the calls refused, only a following one, how
+        # the problem names it)`
+        targets = [(Path(asked), ("stat", "lstat"), False, "its `stat`")]
+        if link is not None and not flag:
+            targets.append((link, ("stat",), True,
+                            "only the `stat` of a link"))
+        for errno_name, winerror, absent in cases:
+            code = getattr(errno, errno_name)
+            error = OSError(code, os.strerror(code), asked)
+            said = f"errno {errno_name}"
+            if winerror is not None:
+                error.winerror = winerror
+                said += f" with winerror {winerror}"
+            for path, refused, follows, what in targets:
+                for kind in (stat.S_ISREG, stat.S_ISDIR):
+                    with pytest.MonkeyPatch.context() as patch:
+                        for name in refused:
+                            patch.setattr(os, name, _refusing(
+                                getattr(os, name), str(path), error, follows))
+                        got = _answer(asks, path, kind, **flag)
+                    asking = (f"{called} {got[0]} {got[1]!r} for "
+                              f"{kind.__name__} where {what} raises {said}")
+                    if absent and got != ("answers", False):
+                        problems.append(f"{asking}: nothing is at the name, "
+                                        "so the answer is False")
+                    elif not absent and (got[0] != "raises"
+                                         or got[1] is not error):
+                        problems.append(
+                            f"{asking}: the operating system refused it, so "
+                            "that very exception comes back raised (#430)")
+    return problems
+
+
+def asked_problems(scanned: dict, where: Path) -> list[str]:
+    """What the behaviour test says of every helper `_helpers` finds in
+    `scanned`, the twelve and any added later (r1149's V18), each problem
+    led by its file."""
+    return [f"{file}: {problem}" for file, helper in _helpers(scanned)
+            for problem in behaviour_problems(
+                scanned[file][0], helper, where, str(REPO / file))]
+
+
+def _shown(problems: list[str]) -> str:
+    """The first `SHOWN` of `problems`, and how many more there are."""
+    more = len(problems) - SHOWN
+    return "\n".join(problems[:SHOWN]) + (f"\n... and {more} more"
+                                         if more > 0 else "")
+
+
+def test_every_stat_helper_answers_absent_false_and_raises_a_refusal(
+        scanned, tmp_path):
+    """r1111b's NIT 1: every helper found, the twelve and any added later,
+    loaded by its AST (`loaded_helper`) and ASKED, with `S_ISREG` and with
+    `S_ISDIR`, answers False to each absent errno and Windows error, raises
+    every other errno back (EACCES with Windows' 5 and 32 among them), the
+    same exception, also for a link whose `stat` alone is refused, and
+    answers a file, a folder and nothing as the disk does. The parity test
+    reads the sets; this asks them, so that a route its walk cannot see
+    fails here: `or isinstance(exc, PermissionError)`, a dead `return
+    False` before the `raise`, `_ABSENT_ERRNOS += (errno.EACCES,)` or any
+    other errno, `exc.args[0] ==`, `exc.strerror ==`,
+    `contextlib.suppress(PermissionError)`, a method or a lambda,
+    `_is_a = _lenient`, a branch on the kind, or an answer from the link's
+    own `lstat`."""
+    assert set(HELPERS.items()) <= set(_helpers(scanned))
+    problems = asked_problems(scanned, tmp_path)
+    assert not problems, _shown(problems)
+
+
+def test_a_long_list_of_problems_is_cut_and_counted():
+    """A helper wrong for every errno gives hundreds of problems; a failing
+    run prints the first `SHOWN` and says how many more there are."""
+    assert _shown(["p"] * SHOWN) == "\n".join(["p"] * SHOWN)
+    assert _shown(["p"] * (SHOWN + 3)) == (
+        "\n".join(["p"] * SHOWN) + "\n... and 3 more")
+
+
+def test_a_helper_added_later_is_asked_like_the_twelve(tmp_path):
+    """r1149's V18: a file `HELPERS` does not name, with a helper in it, is
+    asked all the same: a right one passes, a wrong one is named by its
+    file, and only that one."""
+    wrong = _changed(HELPER, [("        raise\n", "        return False\n")])
+    scanned = {"a-tool.py": (HELPER, []), "new-tool.py": (wrong, [])}
+    problems = asked_problems(scanned, tmp_path)
+    assert problems
+    assert all(problem.startswith("new-tool.py: `_is_a` answers False for ")
+               for problem in problems), problems
+
+
+#: r1111b's NIT 1: routes from a refused `stat` to False that the parity
+#: test does not read, each made in the `HELPER`, and an error it shows;
+#: and two the parity test does read, which this must name all the same.
+ROUTES = {
+    "winerror-dropped": ([('"winerror", None) in _ABSENT_WINERRORS)',
+                           '"winerror", None) in (21, 123))')],
+                         "EINVAL with winerror 1921"),
+    "flag-branch": ([(IS_A, "def _is_a(path, kind, *, link=False):\n"),
+                     ("        if _absent(exc):",
+                      "        if link or _absent(exc):")], "EACCES"),
+    "isinstance": ([("in _ABSENT_WINERRORS)", "in _ABSENT_WINERRORS\n"
+                     "            or isinstance(exc, PermissionError))")],
+                   "EACCES"),
+    "dead-return": ([("        raise\n", "        return False\n"
+                      "        raise\n")], "EIO"),
+    "augmented-constant": ([("_ABSENT_WINERRORS = (21, 123, 1921)\n",
+                             "_ABSENT_WINERRORS = (21, 123, 1921)\n"
+                             "_ABSENT_ERRNOS += (errno.EACCES,)\n")],
+                           "EACCES"),
+    "args": ([("in _ABSENT_WINERRORS)", "in _ABSENT_WINERRORS\n"
+               "            or exc.args[0] == errno.EIO)")], "EIO"),
+    "strerror": ([("import errno\n", "import errno\nimport os\n"),
+                  ("in _ABSENT_WINERRORS)", "in _ABSENT_WINERRORS\n"
+                   "            or exc.strerror == "
+                   "os.strerror(errno.EPERM))")], "EPERM"),
+    "suppress": ([("import errno\n", "import contextlib\nimport errno\n"),
+                  ("        raise\n", "        with contextlib.suppress("
+                   "PermissionError):\n            raise\n"
+                   "        return False\n")], "EPERM"),
+    "method": ([("        if _absent(exc):",
+                 "        if _absent(exc) or _POLICY.lenient(exc):"),
+                (IS_A, "class _Policy:\n    def lenient(self, exc):\n"
+                 "        return exc.errno == errno.EACCES\n\n"
+                 "_POLICY = _Policy()\n\n" + IS_A)], "EACCES"),
+    "lambda": ([("def _absent(exc):\n    return (",
+                 "_lenient = lambda exc: exc.errno == errno.EPERM\n\n"
+                 "def _absent(exc):\n    return _lenient(exc) or (")],
+               "EPERM"),
+    "rebound": ([(LAST + "    return kind(mode)\n",
+                  LAST + "    return kind(mode)\n\ndef _lenient(path, kind):\n"
+                  "    try:\n        return kind(path.stat().st_mode)\n"
+                  "    except OSError:\n        return False\n\n"
+                  "_is_a = _lenient\n")], "EIO"),
+    "inverted": ([("        if _absent(exc):",
+                   "        if not _absent(exc):")], "ENOENT"),
+    # r1149's S1: a set widened after it is set, by any errno or by the
+    # Windows errors of a refusal, which come with EACCES.
+    "augmented-other-errno": ([("_ABSENT_WINERRORS = (21, 123, 1921)\n",
+                                "_ABSENT_WINERRORS = (21, 123, 1921)\n"
+                                "_ABSENT_ERRNOS += (errno.ESTALE,)\n")],
+                              "ESTALE"),
+    "augmented-einval": ([("_ABSENT_WINERRORS = (21, 123, 1921)\n",
+                           "_ABSENT_WINERRORS = (21, 123, 1921)\n"
+                           "_ABSENT_ERRNOS += (errno.EINVAL,)\n")], "EINVAL"),
+    "winerror-5": ([("_ABSENT_WINERRORS = (21, 123, 1921)\n",
+                     "_ABSENT_WINERRORS = (21, 123, 1921)\n"
+                     "_ABSENT_WINERRORS += (5,)\n")],
+                   "EACCES with winerror 5"),
+    "winerror-32": ([("_ABSENT_WINERRORS = (21, 123, 1921)\n",
+                      "_ABSENT_WINERRORS = (21, 123, 1921)\n"
+                      "_ABSENT_WINERRORS += (32,)\n")],
+                    "EACCES with winerror 32"),
+    # r1149's S2: a refusal read as absent only for one kind, each.
+    "kind-branch": ([("import errno\n", "import errno\nimport stat\n"),
+                     ("        if _absent(exc):",
+                      "        if _absent(exc) or (kind is stat.S_ISDIR\n"
+                      "                            and isinstance(exc, "
+                      "PermissionError)):")], "EACCES"),
+    "kind-branch-file": ([("import errno\n", "import errno\nimport stat\n"),
+                          ("        if _absent(exc):",
+                           "        if _absent(exc) or (kind is stat.S_ISREG\n"
+                           "                            and isinstance(exc, "
+                           "PermissionError)):")], "EPERM"),
+}
+
+#: The routes made for one kind (r1149's S2), and the kind each is wrong for.
+KIND_ROUTES = {"kind-branch": "S_ISDIR", "kind-branch-file": "S_ISREG"}
+
+#: r1149's S2: routes only a link shows, whose `stat` alone is refused, so
+#: that its `lstat` answers a link: the helper answers the refusal from
+#: that `lstat`, however it asks for it, or reads a link to nothing as
+#: there. Where the name is not there both raise, and these pass; each is
+#: named for the link alone, by the errno it is wrong for.
+FALLBACK = ("        raise\n",
+            "        try:\n            mode = {}.st_mode\n"
+            "        except FileNotFoundError:\n            raise exc\n")
+LINK_ROUTES = {
+    "os-lstat": ([("import errno\n", "import errno\nimport os\n"),
+                  (FALLBACK[0], FALLBACK[1].format("os.lstat(path)"))],
+                 "EACCES"),
+    "path-lstat": ([(FALLBACK[0], FALLBACK[1].format("path.lstat()"))],
+                   "EACCES"),
+    "stat-no-follow": ([("import errno\n", "import errno\nimport os\n"),
+                        (FALLBACK[0], FALLBACK[1].format(
+                            "os.stat(path, follow_symlinks=False)"))],
+                       "EACCES"),
+    "link-is-there": ([("        if _absent(exc):\n            return False\n",
+                        "        if _absent(exc):\n"
+                        "            return path.is_symlink()\n")], "ENOENT"),
+}
+
+
+@pytest.mark.parametrize("route", ROUTES)
+def test_the_behaviour_test_names_each_route_to_false(route, tmp_path):
+    """The behaviour test's own proof: the `HELPER` answers as it should,
+    and each route in `ROUTES` is named, by the errno it answers wrongly.
+    A route made for one kind is named for that kind and no other."""
+    assert behaviour_problems(HELPER, "_is_a", tmp_path) == []
+    changes, said = ROUTES[route]
+    problems = behaviour_problems(_changed(HELPER, changes), "_is_a",
+                                  tmp_path)
+    assert any(f"where its `stat` raises errno {said}:" in problem
+               for problem in problems), problems
+    if route in KIND_ROUTES:
+        assert all(f"for {KIND_ROUTES[route]} where" in problem
+                   for problem in problems), problems
+
+
+def test_the_dangling_link_is_a_link_to_nothing(tmp_path):
+    """r1149's S2: the link the behaviour test refuses the `stat` of is a
+    link, which `lstat` answers, to a name nothing is at, which `stat`
+    cannot. Links are made everywhere but on Windows without the right."""
+    (tmp_path / "a-file").write_text("", encoding="utf-8")
+    link = _dangling_link(tmp_path)
+    if link is None and os.name == "nt":
+        pytest.skip("no symlink here")
+    assert link is not None
+    assert stat.S_ISLNK(os.lstat(link).st_mode)
+    with pytest.raises(FileNotFoundError):
+        os.stat(link)
+    assert _dangling_link(tmp_path) == link
+
+
+@pytest.mark.parametrize("route", LINK_ROUTES)
+def test_the_behaviour_test_names_a_wrong_answer_for_a_link_to_nothing(
+        route, tmp_path):
+    """r1149's S2 (its U3, G4 and G5): a helper that falls back to the
+    link's own `lstat` where its `stat` is refused, or reads a link to
+    nothing as there, is right for a name nothing is at and wrong for a
+    link to nothing: named for the link, and for that alone."""
+    if _dangling_link(tmp_path) is None:
+        pytest.skip("no symlink here")
+    assert behaviour_problems(HELPER, "_is_a", tmp_path) == []
+    changes, said = LINK_ROUTES[route]
+    problems = behaviour_problems(_changed(HELPER, changes), "_is_a",
+                                  tmp_path)
+    assert any(f"where only the `stat` of a link raises errno {said}:"
+               in problem for problem in problems), problems
+    assert all("where only the `stat` of a link raises" in problem
+               for problem in problems), problems
+
+
+@pytest.mark.parametrize("spelled", [
+    "os.stat(path).st_mode", "os.stat(path, follow_symlinks=True).st_mode"])
+def test_a_helper_that_stats_through_os_stat_is_right_for_a_link_too(
+        spelled, tmp_path):
+    """r1149's S2: the link's `stat` is refused only where it follows the
+    link, as `os.stat` does with no argument or with `follow_symlinks=True`,
+    so a helper that asks `os.stat` itself, and is right, passes."""
+    assert behaviour_problems(_changed(HELPER, [
+        ("import errno\n", "import errno\nimport os\n"),
+        ("path.stat().st_mode", spelled)]), "_is_a", tmp_path) == []
+
+
+def test_the_behaviour_test_asks_the_disk_too(tmp_path):
+    """A helper whose `stat` is never refused but whose answer is the wrong
+    way round is named by the disk's own answers; so is one right only for
+    the names the test refuses (r1149's V16), by `nothing` alone."""
+    assert behaviour_problems(_changed(HELPER, [(
+        "    return kind(mode)\n", "    return not kind(mode)\n")]),
+        "_is_a", tmp_path) == [
+        "`_is_a` answers False for a-file, S_ISREG, where the disk says True",
+        f"`_is_a` answers False for {tmp_path.name}, S_ISDIR, where the "
+        "disk says True",
+        "`_is_a` answers True for a-file, S_ISDIR, where the disk says False"]
+    assert behaviour_problems(_changed(HELPER, [(
+        "        if _absent(exc):\n            return False\n",
+        "        if _absent(exc):\n"
+        f"            return not path.name.startswith({ASKED!r})\n")]),
+        "_is_a", tmp_path) == [
+        "`_is_a` answers True for nothing, S_ISREG, where the disk says "
+        "False"]
+
+
+def test_the_behaviour_test_loads_only_what_the_helper_reads(tmp_path):
+    """`loaded_helper` runs the statements the helper reads and no other:
+    not a module's `sys.path.insert`, its sibling imports or its `main`;
+    and a helper that needs a module outside the standard library is
+    refused by name, as one that is not there is."""
+    text = ("import sys\nsys.path.insert(0, 'nowhere')\n"
+            "from repo_shape import load_yaml\n" + HELPER
+            + "\nif __name__ == '__main__':\n    raise SystemExit(1)\n")
+    before = list(sys.path)
+    assert behaviour_problems(text, "_is_a", tmp_path) == []
+    assert sys.path == before
+    assert [type(node).__name__ for node in _slice(ast.parse(text), "_is_a")
+            ] == ["Import", "Assign", "Assign", "FunctionDef", "FunctionDef"]
+    needs = text.replace("def _absent(exc):\n",
+                         "def _absent(exc):\n    load_yaml(exc)\n")
+    refused = [
+        "`_is_a` cannot be loaded: LookupError: `_is_a` needs `repo_shape`, "
+        "which is no module of the standard library: a helper keeps its "
+        "own copy of what it asks (#370, #610)"]
+    assert behaviour_problems(needs, "_is_a", tmp_path) == refused
+    # r1149's V19: `import x` is held to the same rule as `from x import`.
+    plain = needs.replace("from repo_shape import load_yaml",
+                          "import repo_shape").replace(
+        "    load_yaml(exc)\n", "    repo_shape.load_yaml(exc)\n")
+    assert behaviour_problems(plain, "_is_a", tmp_path) == refused
+    assert behaviour_problems(text, "_is_b", tmp_path) == [
+        "`_is_b` cannot be loaded: LookupError: nothing in the module "
+        "binds `_is_b`"]
+
+
+@pytest.mark.parametrize("module, kept", [
+    ("COUNT = 0\n\ndef _is_a(path, kind):\n    global COUNT\n"
+     "    COUNT = COUNT + 1\n    return kind(path)\n",
+     ["COUNT = 0", "def _is_a(path, kind):"]),
+    ("COUNT = 0\n\ndef _is_a(path, kind):\n    COUNT = 1\n"
+     "    COUNT = COUNT + 1\n    return kind(path)\n",
+     ["def _is_a(path, kind):"]),
+], ids=["global", "local"])
+def test_the_slice_reads_a_global_a_function_changes_and_not_a_local(
+        module, kept):
+    """r1149's V7: a function that changes a module name it declares
+    `global` reads it, so its statement is kept; the same name made local
+    is the function's own, and its statement is not."""
+    assert [ast.unparse(node).splitlines()[0]
+            for node in _slice(ast.parse(module), "_is_a")] == kept
 
 
 # --- the site this slice fixed: the doctor's own manifest -------------------

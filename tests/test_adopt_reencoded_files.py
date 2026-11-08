@@ -470,7 +470,9 @@ def test_a_link_the_checkout_writes_is_never_written_through(monkeypatch,
                                                              tmp_path):
     """The source keeps a root `.gitattributes` that is a symlink out of it,
     `../../../victim.txt`, which leads to the same file from the source and
-    from the throwaway repository in `TMPDIR`. `plan-root-symlink` names it
+    from the throwaway repository `check` makes in the work directory
+    (#910), as from one in `TMPDIR`, where it was made before: both are as
+    deep below `tmp_path`. `plan-root-symlink` names it
     alone: the question writes the shape's `.gitattributes` in the link's
     place, never through it (at 0224f96a `check` overwrote that file), and
     does not ask about the link it replaced."""
