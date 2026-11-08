@@ -2985,17 +2985,28 @@ def _default_branch(path: Path, instead: str | None = None) -> str:
     `--tracking-branch`, or the branch a plan records reading it at, for
     `check` and `execute`. Otherwise it is refused by name, with the ways
     through (`_no_branch_of_its_own`), and never read at HEAD's branch or
-    any other in its place."""
-    named = _symbolic_ref(path, ORIGIN_HEAD)
+    any other in its place.
+
+    WHAT GIT COULD NOT READ IS NOT READ AS NOT THERE (#1219). git passes
+    over a directory of the source's refs it cannot list, and says "No such
+    ref" of a ref it cannot reach. So on main a clone whose `.git/refs/heads`
+    was at mode 000 or `--x`, or its `.git/refs` at `--x`, was refused as
+    having no branch of its own, "(its branches: none)", with a `git branch`
+    to run in place of the `chmod` that is the cure; and one whose
+    `refs/remotes/origin` was at mode 000 was read at HEAD's branch, its
+    `origin/HEAD` passed over. Each is `source-unreadable` now, naming the
+    directory (`_symbolic_ref`, `_branch_names`), and asked only where git's
+    answer is none, so a source git reads whole costs nothing new."""
+    named = _symbolic_ref(path, ORIGIN_HEAD, ORIGIN_BRANCHES)
     origins = _branch_under(named, ORIGIN_BRANCHES)
     if named is not None and origins is None:
         print(f"NOTE the source's `origin/HEAD` names {_spelled(named)}, "
               "which is no branch of its remote `origin`, so it is passed "
               "over, and the branch its HEAD is on is read instead.")
-    head = None if origins else _branch_under(_symbolic_ref(path, "HEAD"),
-                                              BRANCH_REFS)
+    head = None if origins else _branch_under(
+        _symbolic_ref(path, "HEAD", BRANCH_REFS), BRANCH_REFS)
     branch = origins or head or "main"
-    branches = _branch_names(path, BRANCH_REFS)
+    branches = _branch_names(path, BRANCH_REFS, branch)
     if branch in branches:
         return branch
     if instead in branches:
@@ -3051,8 +3062,14 @@ def _from_the_remote(path: Path, branch: str) -> str:
     printed with the name in it only where the name is printable, which a
     lone surrogate never is: a name holding U+0085 or U+2028 broke the line,
     and #425's `caf\\udce9` printed a command git refuses. Otherwise the name
-    is `_spelled` and the step said in words."""
-    if branch not in _branch_names(path, ORIGIN_BRANCHES):
+    is `_spelled` and the step said in words.
+
+    `origin` IS ASKED AGAIN ONLY WHERE GIT COULD LIST ITS BRANCHES
+    (`_branch_names`, #1219): with the source's `refs/remotes/origin` at
+    mode `--x`, its `origin/HEAD` read and the branch it names fetched, main
+    said `origin` "has no branch ... either" and to ask it again, which
+    changes nothing; that is `source-unreadable` now, naming the directory."""
+    if branch not in _branch_names(path, ORIGIN_BRANCHES, branch):
         return ("Remediation: its remote `origin` has no branch "
                 f"{_spelled(branch)} either, as the source last fetched it: "
                 "ask `origin` for its default branch again, `git remote "
@@ -3067,18 +3084,34 @@ def _from_the_remote(path: Path, branch: str) -> str:
             "origin --auto` first.")
 
 
-def _symbolic_ref(path: Path, ref: str) -> str | None:
+def _symbolic_ref(path: Path, ref: str, holding: str) -> str | None:
     """The full name of the ref the symbolic ref `ref` names; None where
     `ref` is no symbolic ref.
 
     Read as bytes and decoded as #425 decodes them, with only git's line end
     taken off first, from the bytes: `str.strip` after decoding took U+00A0,
-    which a branch's name may end in, for white space (#797)."""
-    try:
-        full = git_out(["symbolic-ref", "-q", ref], cwd=path, binary=True)
-    except Refusal:
-        return None
-    return full.removesuffix(b"\n").decode("utf-8", "surrogateescape")
+    which a branch's name may end in, for white space (#797).
+
+    A REF GIT COULD NOT REACH IS ASKED ABOUT BEFORE IT IS NONE (#1219). `git
+    symbolic-ref -q` exits 1, saying nothing, where `ref` is not there or is
+    no symbolic ref, and 128, "No such ref", where git could not read it or
+    the ref it names; both were None here. So with the source's
+    `refs/remotes/origin` at mode 000 its `origin/HEAD` was passed over and
+    the source read at HEAD's branch, and with `refs/heads/feature` at mode
+    000 a HEAD on `feature/x` was read as detached and the source read at
+    `main`: each a branch nobody named. Any other exit than 0 and 1 now asks
+    whether git could list `holding`, the refs `ref` names one of
+    (`_refuse_unlisted_refs`); where it could, the answer is None, as
+    before. git is run here, not through `git_out`, because its exit is the
+    answer, and a git that cannot be started raises as there."""
+    read = subprocess.run(["git", "symbolic-ref", "-q", ref], cwd=str(path),
+                          capture_output=True, check=False)
+    if read.returncode == 0:
+        return read.stdout.removesuffix(b"\n").decode("utf-8",
+                                                      "surrogateescape")
+    if read.returncode != 1:
+        _refuse_unlisted_refs(path, holding)
+    return None
 
 
 def _branch_under(name: str | None, prefix: str) -> str | None:
@@ -3090,15 +3123,104 @@ def _branch_under(name: str | None, prefix: str) -> str | None:
     return None
 
 
-def _branch_names(path: Path, prefix: str) -> list[str]:
+def _branch_names(path: Path, prefix: str, wanted: str | None) -> list[str]:
     """The names of the source's refs under `prefix` (`BRANCH_REFS`, its own
     branches; `ORIGIN_BRANCHES`, its remote's as it last fetched them), each
     as `Source.tree` reads a path, so a byte that is not UTF-8 is kept
-    rather than refused."""
+    rather than refused.
+
+    A LIST WITHOUT `wanted`, THE BRANCH THE CALLER LOOKS FOR, IS ASKED ABOUT
+    BEFORE IT IS BELIEVED (#1219). `git for-each-ref` passes over a
+    directory it cannot list without a word, and exits 0: with the source's
+    `.git/refs/heads` at mode 000, on main a clone `plan` made was refused
+    `source-default-branch-not-local`, "(its branches: none)", by `plan`,
+    `check` and `execute` alike. So where `wanted` is not among them,
+    whether git could list each directory it reads them from is asked
+    first (`_refuse_unlisted_refs`); where it is, or is None, nothing more
+    is asked."""
     raw = git_out(["for-each-ref", "--format=%(refname)", prefix], cwd=path,
                   binary=True)
-    return sorted(ref[len(prefix):]
-                  for ref in map(_git_path, raw.splitlines()))
+    names = sorted(ref[len(prefix):]
+                   for ref in map(_git_path, raw.splitlines()))
+    if wanted is not None and wanted not in names:
+        _refuse_unlisted_refs(path, prefix)
+    return names
+
+
+#: What `source-unreadable` cannot tell of a source whose refs git could not
+#: list (#1219), by the refs it was asked for.
+BRANCHES_UNTOLD = "the source's branches"
+ORIGIN_BRANCHES_UNTOLD = "the branches of the source's remote `origin`"
+
+
+def _refuse_unlisted_refs(path: Path, *prefixes: str) -> None:
+    """Raises `source-unreadable` where git, asked in the source at `path`
+    for its refs under one of `prefixes` (`BRANCH_REFS`, `ORIGIN_BRANCHES`),
+    could not list a directory it reads them from
+    (`_unlisted_ref_directory`): the directory named, as a part of the
+    source's refs and whole, with the operating system's reason and the
+    `chmod` cure (`_source_unreadable`). Returns where git could list each
+    one. Asked only where git's answer was none, so it costs a source git
+    reads whole nothing."""
+    common = Path(os.fsdecode(git_out(
+        ["rev-parse", "--path-format=absolute", "--git-common-dir"],
+        cwd=path, binary=True).rstrip(b"\n")))
+    for prefix in prefixes:
+        found = _unlisted_ref_directory(common, prefix)
+        if found is not None:
+            part, exc = found
+            raise _source_unreadable(
+                f"the source's {_spelled(part.as_posix())}, "
+                f"{_spelled(str(common.joinpath(*part.parts)))}", exc,
+                BRANCHES_UNTOLD if prefix == BRANCH_REFS
+                else ORIGIN_BRANCHES_UNTOLD)
+
+
+def _unlisted_ref_directory(common: Path, prefix: str
+                            ) -> tuple[PurePosixPath, OSError] | None:
+    """The first directory, in the common git directory `common`, that git
+    lists to answer `git for-each-ref <prefix>` and this user cannot list,
+    with the operating system's refusal; None where it can list each one,
+    or one is not there, which git reads as holding no refs.
+
+    ASKED AS GIT 2.43'S FILES BACKEND LISTS THEM (`loose_fill_ref_dir`): BY
+    LISTING, NOT BY A SEARCH. A directory at mode `--x` can be searched and
+    not listed, and git lists nothing in it. git lists `refs` to find
+    `heads` in it (with `refs` at `--x`, `for-each-ref refs/heads/` printed
+    nothing), so each directory above `prefix` is listed, and then `prefix`
+    and every directory under it, a branch `feature/x` being kept in
+    `refs/heads/feature`. Each entry on the way is `stat`ed to know a
+    directory, as git's `get_dtype` follows a link, so a directory listed
+    and not searched (mode `r--`), whose refs git cannot open, is named too.
+    Under a reftable `refs/heads` is a file, and nothing is listed."""
+    target = PurePosixPath(prefix)
+    at = PurePosixPath(target.parts[0])
+    pending = [at]
+    try:
+        while pending:
+            at = pending.pop()
+            for name in _listed_names(common.joinpath(*at.parts)) or ():
+                below = at / name
+                if (below == target or below in target.parents
+                        or target in below.parents) and _is_a(
+                            common.joinpath(*below.parts), stat.S_ISDIR):
+                    pending.append(below)
+    except OSError as exc:
+        return at, exc
+    return None
+
+
+def _listed_names(directory: Path) -> list[str] | None:
+    """The names `directory` holds, listed as git's `opendir` lists them;
+    None where nothing is there or it is no directory (`_absent`), and any
+    other refusal raised."""
+    try:
+        with os.scandir(directory) as entries:
+            return [entry.name for entry in entries]
+    except OSError as exc:
+        if _absent(exc):
+            return None
+        raise
 
 
 # ---------------------------------------------------------------------------
@@ -4922,10 +5044,17 @@ def _tracking_branch_problem(source: Source, what: str,
     """Why `tracking`, named as `what`, cannot be this adoption's tracking
     branch, as a sentence; None when it is a branch of the source as
     `_branches_of` reads them. ONE TEST, asked by `plan` as a NOTE and by
-    `check` and `execute` as `plan-tracking-branch-missing`."""
+    `check` and `execute` as `plan-tracking-branch-missing`.
+
+    A BRANCH GIT COULD NOT LIST IS NOT ONE THE SOURCE LACKS (#1219): before
+    it is said, whether git could list each directory of both kinds of refs
+    `_branches_of` reads is asked (`_refuse_unlisted_refs`). On main, with
+    the source's `refs/remotes/origin` at mode `--x`, a branch `origin` has
+    was "no branch of the source", read from its own branches instead."""
     whose, branches = _branches_of(source)
     if tracking in branches:
         return None
+    _refuse_unlisted_refs(source.path, ORIGIN_BRANCHES, BRANCH_REFS)
     return (f"{what} is {_spelled(tracking)}, which is no branch of {whose} "
             f"(its branches: {_branches_named(branches)}; the source's "
             f"default branch is {_spelled(source.branch)}). `execute` pushes "
@@ -10385,9 +10514,13 @@ def _split_branch_of(plan: Plan) -> str | None:
 def _cloned_branch(source: Source) -> str | None:
     """The branch `git clone` checks out in a clone of `source`: the one
     its HEAD is on. None where HEAD is on no branch the source holds, so
-    that git guesses one, or checks none out."""
-    head = _branch_under(_symbolic_ref(source.path, "HEAD"), BRANCH_REFS)
-    return head if head in _branch_names(source.path, BRANCH_REFS) else None
+    that git guesses one, or checks none out. A HEAD or a branch git could
+    not read is `source-unreadable` (`_symbolic_ref`, `_branch_names`,
+    #1219), never a HEAD on no branch."""
+    head = _branch_under(_symbolic_ref(source.path, "HEAD", BRANCH_REFS),
+                         BRANCH_REFS)
+    return head if head in _branch_names(source.path, BRANCH_REFS,
+                                         head) else None
 
 
 def _absolute_here(target: str) -> bool:
