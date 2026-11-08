@@ -1884,12 +1884,13 @@ def _is_there(path: Path) -> bool:
     return _is_a(path, lambda _mode: True)
 
 
-def _is_a_symlink(path: str | bytes) -> bool:
-    """Whether `path` is itself a symlink, asked with `os.lstat`, which
-    follows none, as `_is_a` asks `stat` (#430): nothing there is False,
-    and the `OSError` of an `lstat` the operating system REFUSED is raised,
-    never read as nothing there. NOT `Path.is_symlink()`, which from 3.14
-    answers False to ANY `OSError`. `path` is a `str` or the bytes
+def _is_itself_a(path: str | bytes, kind: Callable[[int], bool]) -> bool:
+    """Whether `path` is itself there and of `kind` (`stat.S_ISLNK`,
+    `stat.S_ISDIR`), asked with `os.lstat`, which follows no symlink, as
+    `_is_a` asks `stat` (#430): nothing there is False, and the `OSError`
+    of an `lstat` the operating system REFUSED is raised, never read as
+    nothing there. NOT `Path.is_symlink()` or `is_dir()`, which from 3.14
+    answer False to ANY `OSError`. `path` is a `str` or the bytes
     `_path_argument` hands git, so that no locale is in the way (#527)."""
     try:
         mode = os.lstat(path).st_mode
@@ -1900,7 +1901,12 @@ def _is_a_symlink(path: str | bytes) -> bool:
     except ValueError:
         # a name the operating system cannot take at all (a NUL in it)
         return False
-    return stat.S_ISLNK(mode)
+    return kind(mode)
+
+
+def _is_a_symlink(path: str | bytes) -> bool:
+    """Whether `path` is itself a symlink (`_is_itself_a`)."""
+    return _is_itself_a(path, stat.S_ISLNK)
 
 
 def _os_reason(exc: OSError) -> str:
@@ -14363,12 +14369,17 @@ GIT_RM = ("git", "--literal-pathspecs", "rm", "-r", "-q", "--")
 #: disk still holds what the index holds, and that question was also what
 #: kept git from removing a file through a symlink: given a path beyond a
 #: symlink the disk holds on the way to it, `git rm -f` unlinks the file
-#: the symlink leads to, wherever that is (r1237). So it is never given
-#: one: `_taken_beyond_a_symlink` takes each such path first.
+#: the symlink leads to, wherever that is (r1237). The path itself counts
+#: too where the index holds a gitlink there: git removes the folder at a
+#: gitlink's path with all it holds, and follows a symlink there, so `git
+#: rm -f` of a gitlink whose path is a symlink empties the folder it leads
+#: to (r1237b). So it is never given either: `_taken_beyond_a_symlink`
+#: takes each such path first.
 GIT_RM_FORCED = ("git", "--literal-pathspecs", "rm", "-r", "-q", "-f", "--")
 #: `GIT_RM` with `--cached`, for a path the index holds beyond a symlink
-#: the disk holds on the way to it: git takes it out of the index and
-#: touches no file on the disk (r1237). See `_taken_beyond_a_symlink`.
+#: the disk holds on the way to it, or a gitlink whose path the disk holds
+#: as no folder: git takes it out of the index and touches nothing on the
+#: disk (r1237, r1237b). See `_taken_beyond_a_symlink`.
 GIT_RM_CACHED = ("git", "--literal-pathspecs", "rm", "-r", "-q", "--cached",
                  "--")
 
@@ -14379,7 +14390,8 @@ def _git_rm(assembly: Path, path: str, forced: bool = False,
     assembly: what `run` does, with `path` handed to git as the bytes the
     tree holds (`_path_argument`, #527). `forced` is `GIT_RM_FORCED`, for a
     path a case twin is at or under (#1183), and `cached` `GIT_RM_CACHED`,
-    for one the index holds beyond a symlink (r1237).
+    for one the index holds beyond a symlink (r1237), or a gitlink whose
+    path the disk holds as no folder (r1237b).
 
     `run` takes only text (`check_program`), so this asks `check_program` of
     the command as the person reads it, and a git that refuses raises
@@ -14409,17 +14421,23 @@ def _at_or_under(path: str, top: str) -> bool:
     return path == top or path.startswith(top + "/")
 
 
-def _index_paths(assembly: Path) -> list[str]:
+def _index_modes(assembly: Path) -> dict[str, str]:
     """Each path the assembly's index holds, in its order, as `_git_path`
-    spells it: `git ls-files -z`, which writes nothing."""
-    raw = git_out(["ls-files", "-z"], cwd=assembly, binary=True)
-    return [_git_path(record) for record in raw.split(b"\x00") if record]
+    spells it, and its mode (`GITLINK_MODE` for a gitlink): `git ls-files
+    -s -z`, which writes nothing, read as `_index_entries` reads it."""
+    raw = git_out(["ls-files", "-s", "-z"], cwd=assembly, binary=True)
+    modes = {}
+    for record in raw.split(b"\x00"):
+        head, _, name = record.partition(b"\t")
+        if name:
+            modes[_git_path(name)] = head.split()[0].decode("ascii")
+    return modes
 
 
 def _split_case_twins(held: list[str],
                       removed: list[str]) -> list[list[str]]:
     """Each set of case twins of `held`, the paths the assembly's index
-    holds (`_index_paths`, `_case_twin_sets`), that has a path at or under
+    holds (`_index_modes`, `_case_twin_sets`), that has a path at or under
     one of `removed`, the paths `_mount_the_legs` takes out of the root: a
     set the plan sends into different repositories, or drops a path of
     (#1183); and a set it keeps whole in one leg, which reaches the mount
@@ -14458,32 +14476,44 @@ def _split_case_twins(held: list[str],
                    for twin in named for top in removed)]
 
 
+def _on_the_disk(assembly: Path, path: str) -> str | bytes:
+    """`path`, as git spells it, in the assembly, as `os.lstat` is handed
+    it: the bytes the tree holds (`_path_argument`), so that no locale is
+    in the way (#527), or the text on Windows."""
+    here = _path_argument(path)
+    return (os.path.join(os.fsencode(assembly), here)
+            if isinstance(here, bytes) else os.path.join(assembly, here))
+
+
 def _beyond_a_symlink(assembly: Path, path: str) -> str | None:
     """The first folder on the way to `path`, a path the assembly's index
     holds, from the top, that the disk holds as a symlink, as git spells
     it; None where there is none (r1237). Each folder is asked with
-    `lstat` (`_is_a_symlink`), handed as the bytes the tree holds
-    (`_path_argument`). `path` itself is not asked: `git rm` of a symlink
-    unlinks the symlink, never what it leads to."""
+    `lstat` (`_is_a_symlink`, `_on_the_disk`), and none beyond the first
+    symlink, which would be asked in the folder it leads to. `path` itself
+    is not asked here: `git rm` of a file's or a symlink's entry unlinks
+    what is at the path, never what a symlink there leads to. A gitlink's
+    entry is another matter, and `_taken_beyond_a_symlink` asks a
+    gitlink's own path (r1237b)."""
     parts = path.split("/")
     for end in range(1, len(parts)):
         above = "/".join(parts[:end])
-        here = _path_argument(above)
-        if _is_a_symlink(os.path.join(os.fsencode(assembly), here)
-                         if isinstance(here, bytes)
-                         else os.path.join(assembly, here)):
+        if _is_a_symlink(_on_the_disk(assembly, above)):
             return above
     return None
 
 
 def _taken_beyond_a_symlink(assembly: Path, top: str,
-                            held: list[str]) -> bool:
+                            held: dict[str, str]) -> bool:
     """`git rm --cached` (`GIT_RM_CACHED`) of each path of `held`, the
-    paths the assembly's index holds, at or under `top` that the disk holds
-    beyond a symlink (`_beyond_a_symlink`), asked before `top` is removed
-    with `-f`: of the symlink's own path where that is at or under `top`,
-    which takes each path beyond it at once, else of the path. Whether that
-    took every path `held` at or under `top`, leaving none for `-f`.
+    paths the assembly's index holds and their modes (`_index_modes`), at
+    or under `top` that the disk holds beyond a symlink
+    (`_beyond_a_symlink`), asked before `top` is removed with `-f`: of the
+    symlink's own path where that is at or under `top`, which takes each
+    path beyond it at once, else of the path; and of each gitlink there
+    whose own path the disk holds as no folder (`_is_itself_a`): a
+    symlink, a file, or nothing. Whether that took every path `held` at or
+    under `top`, leaving none for `-f`.
 
     WHERE A FOLDER ON THE WAY IS A SYMLINK (#1237's review, r1237). A disk
     that ignores case holds a folder `D/` and a symlink `d` as one name,
@@ -14503,6 +14533,24 @@ def _taken_beyond_a_symlink(assembly: Path, top: str,
     keeps, written back from the index. The root's tree is the plan's, as
     is each leg's, which `git filter-repo` made from the objects.
 
+    WHERE THE INDEX HOLDS A GITLINK (#1237's second review, r1237b). `git
+    rm` of a gitlink's entry is no unlink: git removes the folder at its
+    path with everything in it, and opens that path as a folder, following
+    a symlink there. Measured with git 2.43, for a gitlink `D` the disk
+    holds as a symlink to a folder outside, `git rm -f -- D` emptied that
+    folder and then said `fatal: could not remove 'D'`; on a FUSE disk that
+    ignores case, for a plan that drops the gitlink `D` and `.gitmodules`
+    and keeps `d`, a symlink, in the root (or drops the folder `M/` that
+    holds both), `check` printed `plan ok` and `execute` emptied the folder
+    `d` leads to after both legs were pushed. For a gitlink the disk holds
+    as a file, or below one (`M` a file, `M/D` the gitlink), `git rm -f`
+    stopped at the same `could not remove`, and deleted nothing. So the
+    gitlink's own path is asked too, once no folder on the way is a
+    symlink, and where it is no folder it is taken out of the index alone:
+    `git rm --cached` touched nothing there in each case. A folder there,
+    the empty one a clone writes for a gitlink, is removed with `-f` as
+    before.
+
     REFUSING THERE WAS REJECTED: it would come after both legs are pushed,
     for a plan that is good on every disk, and a re-run then meets
     `leg-remote-exists`."""
@@ -14514,8 +14562,13 @@ def _taken_beyond_a_symlink(assembly: Path, top: str,
         link = _beyond_a_symlink(assembly, path)
         if link is not None:
             gone = link if _at_or_under(link, top) else path
-            _git_rm(assembly, gone, cached=True)
-            taken.append(gone)
+        elif held[path] == GITLINK_MODE and not _is_itself_a(
+                _on_the_disk(assembly, path), stat.S_ISDIR):
+            gone = path
+        else:
+            continue
+        _git_rm(assembly, gone, cached=True)
+        taken.append(gone)
     return bool(taken) and all(any(_at_or_under(path, gone)
                                    for gone in taken) for path in under)
 
@@ -14555,16 +14608,17 @@ def _mount_the_legs(assembly: Path, work_root: Path, names: dict, urls: dict,
     is removed with `-f`, and each twin the root keeps is written back from
     the index after the last `git rm` (`_split_case_twins`), so that a disk
     that ignores case loses none of them. Before that `-f`, each path the
-    index holds at or under it beyond a symlink the disk holds on the way
-    is taken out of the index alone (`_taken_beyond_a_symlink`, r1237), so
-    that `-f` removes no file through a symlink.
+    index holds at or under it beyond a symlink the disk holds on the way,
+    and each gitlink there whose own path the disk holds as no folder, is
+    taken out of the index alone (`_taken_beyond_a_symlink`, r1237,
+    r1237b), so that `-f` removes nothing through a symlink.
     """
     removed = sorted((p.rstrip("/") for p in (paths_for["spec"]
                                               + paths_for["code"]
                                               + paths_for["drop"])),
                      key=lambda p: (p != GITMODULES, p))
-    held = _index_paths(assembly)
-    split = [twin for named in _split_case_twins(held, removed)
+    held = _index_modes(assembly)
+    split = [twin for named in _split_case_twins(list(held), removed)
              for twin in named]
     for path in removed:
         forced = any(_at_or_under(twin, path) for twin in split)

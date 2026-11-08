@@ -1383,6 +1383,156 @@ def test_a_folder_on_the_way_nobody_may_search_is_raised_not_read_as_none(
     assert issubclass(PermissionError, adopter.LATE_FAILURES)
 
 
+# ---------------------------------------------------------------------------
+# r1237b: a gitlink whose case twin is a symlink
+# ---------------------------------------------------------------------------
+
+#: A path's kind in `with_kinds`: a symlink leading to `{victim}`, a folder
+#: outside the assembly, and a gitlink.
+LINK_OUT = ("link", "{victim}")
+GITLINK = ("gitlink", None)
+
+
+def with_kinds(kinds: dict):
+    """An `add` for `an_assembly`: each of `paths` goes into the source
+    commit with a blob of its own, as `with_paths` writes it, but a path
+    `kinds` gives `("link", target)` is a symlink leading to `target`, and
+    one it gives `GITLINK` a gitlink to the source's first commit, which
+    the clone checks out as an empty folder."""
+    def add(repository: Path, paths: tuple[str, ...],
+            own_blobs: bool = True) -> None:
+        assert own_blobs
+        first = git("rev-parse", "HEAD", cwd=repository).stdout.strip()
+        for path in paths:
+            kind, target = kinds.get(path, ("file", None))
+            if kind == "gitlink":
+                mode, oid = "160000", first
+            else:
+                mode, data = (("120000", target.encode()) if kind == "link"
+                              else ("100644", (path + "\n").encode()))
+                oid = blob_of(repository, data)
+            git("update-index", "--add", "--cacheinfo",
+                f"{mode},{oid},{path}", cwd=repository)
+        git("commit", "-qm", "Add paths", cwd=repository)
+    return add
+
+
+def as_the_twin(assembly: Path, at: str, twin: str) -> None:
+    """What a clone on a disk that ignores case leaves at `at`, a folder
+    (a gitlink's empty one among them), beside its twin `twin`, which
+    sorts after it: `twin` alone, which both names reach, as r1237 and
+    r1237b measured. Made on a disk that keeps case: the folder gives way
+    to a symlink leading where `twin` leads, or to a hard link of `twin`'s
+    file. Where the clone's own disk ignores case, git did this itself,
+    and nothing is done."""
+    if git("config", "--get", "core.ignorecase", cwd=assembly,
+           check=False).stdout.strip() == "true":
+        return
+    shutil.rmtree(assembly / at)
+    if (assembly / twin).is_symlink():
+        os.symlink(os.readlink(assembly / twin), assembly / at)
+    else:
+        os.link(assembly / twin, assembly / at)
+
+
+def outside_the_assembly(base: Path) -> Path:
+    """`base/victim`, a folder outside the assembly holding `x` and
+    `keep`."""
+    victim = base / "victim"
+    victim.mkdir()
+    (victim / "x").write_bytes(b"victim\n")
+    (victim / "keep").write_bytes(b"keep\n")
+    return victim
+
+
+#: `(the paths a source commit gains, the kind of each that is no file
+#: (`with_kinds`), each `(at, twin)` the clone left as `twin` alone
+#: (`as_the_twin`), the paths the plan sends to a leg or drops, the `git
+#: rm` and `git checkout-index` the mount runs)`. On 63c52718 the mount
+#: ran `git rm -f` of the gitlink `D` (or of `M`), which emptied the folder
+#: the symlink leads to and stopped at `fatal: could not remove 'D'`
+#: (`'M/D'`), or stopped there where the gitlink was a file or below one.
+AT_A_GITLINK_OR_BEYOND_A_LINK = [
+    pytest.param(("D", "d"), {"D": GITLINK, "d": LINK_OUT}, (("D", "d"),),
+                 {"drop": ["D"]},
+                 [([*CACHED_AS, "D"], None), (WRITTEN_AS, b"d\0")],
+                 id="a-gitlink-the-clone-left-the-link-dropped"),
+    pytest.param(("D", "d"), {"D": GITLINK, "d": LINK_OUT}, (("D", "d"),),
+                 {"code": ["D"]},
+                 [([*CACHED_AS, "D"], None), (WRITTEN_AS, b"d\0")],
+                 id="a-gitlink-the-clone-left-the-link-sent-to-a-leg"),
+    pytest.param(("M/D", "M/d", "M/z"), {"M/D": GITLINK, "M/d": LINK_OUT},
+                 (("M/D", "M/d"),), {"drop": ["M/"]},
+                 [([*CACHED_AS, "M/D"], None), ([*FORCED_AS, "M"], None)],
+                 id="a-gitlink-the-clone-left-the-link-in-a-dropped-folder"),
+    pytest.param(("D", "d"), {"D": GITLINK}, (("D", "d"),), {"drop": ["D"]},
+                 [([*CACHED_AS, "D"], None), (WRITTEN_AS, b"d\0")],
+                 id="a-gitlink-the-clone-left-a-file"),
+    pytest.param(("M/D", "m"), {"M/D": GITLINK}, (("M", "m"),),
+                 {"drop": ["M/"]},
+                 [([*CACHED_AS, "M/D"], None), (WRITTEN_AS, b"m\0")],
+                 id="a-gitlink-below-a-file-the-clone-left"),
+]
+
+
+@pytest.mark.parametrize(("paths", "kinds", "made", "moved", "commands"),
+                         AT_A_GITLINK_OR_BEYOND_A_LINK)
+def test_nothing_is_removed_through_a_symlink_at_a_gitlink_or_beyond(
+        adopter, monkeypatch, tmp_path, paths, kinds, made, moved, commands):
+    """`git rm` of a gitlink's entry removes the folder at its path with
+    all it holds, and follows a symlink there: on 63c52718, where the clone
+    left the gitlink `D` the symlink `d`, the mount's `git rm -f -- D`
+    emptied the folder `d` leads to, outside the assembly, and stopped
+    after both legs were pushed (r1237b). Now a gitlink whose own path the
+    disk holds as no folder leaves the index alone, `git rm --cached`, as
+    each path beyond a symlink on the way does; the folder holds what it
+    held, and the root's index holds each path the plan keeps there with
+    its own blob, and none that goes."""
+    victim = outside_the_assembly(tmp_path)
+    assembly, blobs = an_assembly(tmp_path, paths, with_kinds(
+        {path: (kind, target and target.format(victim=victim))
+         for path, (kind, target) in kinds.items()}))
+    for at, twin in made:
+        as_the_twin(assembly, at, twin)
+    ran = git_commands_of_the_mount(adopter, monkeypatch, tmp_path,
+                                    assembly, moved)
+    assert what_it_holds(victim) == {"x": b"victim\n", "keep": b"keep\n"}
+    assert ran == commands
+    removed = [path.rstrip("/") for leg in moved.values() for path in leg]
+    left = staged(assembly)
+    # A disk that keeps case holds what was made at `at` beside `twin`, and
+    # `git add -A` adds it there; on a disk that ignores case the two are
+    # one, `twin`'s own.
+    for at, twin in made:
+        assert left.pop(at, blobs[twin]) == blobs[twin]
+    assert left == {path: oid for path, oid in blobs.items()
+                    if not any(at_or_under(path, top) for top in removed)}
+
+
+def test_a_gitlink_the_disk_holds_a_folder_at_is_still_removed_with_f(
+        adopter, monkeypatch, tmp_path):
+    """The control: the gitlink `D` is dropped and `d`, a symlink to a
+    folder outside the assembly, stays in the root, on a disk that keeps
+    case, where `D` is the empty folder the clone wrote for the gitlink.
+    `D` is removed with `-f`, as on 63c52718: the folder is gone, the
+    folder `d` leads to holds what it held, and `d` is written back."""
+    victim = outside_the_assembly(tmp_path)
+    assembly, blobs = an_assembly(tmp_path, ("D", "d"), with_kinds(
+        {"D": GITLINK, "d": ("link", str(victim))}))
+    if git("config", "--get", "core.ignorecase", cwd=assembly,
+           check=False).stdout.strip() == "true":
+        pytest.skip("on a disk that ignores case the clone leaves `D` the "
+                    "symlink `d`: the rows above")
+    assert [child.name for child in (assembly / "D").iterdir()] == []
+    ran = git_commands_of_the_mount(adopter, monkeypatch, tmp_path,
+                                    assembly, {"drop": ["D"]})
+    assert ran == [([*FORCED_AS, "D"], None), (WRITTEN_AS, b"d\0")]
+    assert not os.path.lexists(assembly / "D")
+    assert what_it_holds(victim) == {"x": b"victim\n", "keep": b"keep\n"}
+    assert staged(assembly) == {path: oid for path, oid in blobs.items()
+                                if path != "D"}
+
+
 needs_filter_repo = pytest.mark.skipif(
     shutil.which("git-filter-repo") is None,
     reason="git filter-repo is not installed: `pip install git-filter-repo`")
