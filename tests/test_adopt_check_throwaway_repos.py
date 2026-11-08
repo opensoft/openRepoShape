@@ -62,9 +62,11 @@ skip on a disk that keeps case, but for one control.
 from __future__ import annotations
 
 import importlib.util
+import json
 import os
 import shutil
 import subprocess
+import sys
 import tempfile
 from argparse import Namespace
 from pathlib import Path
@@ -83,6 +85,9 @@ from test_adopt_root_symlinks import (GITHUB, OUTSIDE_CI, WORKFLOW, climbs,
 from test_adopt_root_symlinks import links_as_links  # noqa: F401
 from test_adopt_root_symlinks import unwritable_work  # noqa: F401
 from test_adopt_root_symlinks import planned as planned_with_links
+#: #527's child, `_mount_the_legs` under `LC_ALL=C PYTHONUTF8=0`, and the
+#: environment it runs in.
+from test_adopt_git_rm_bytes import MOUNT_IN_THE_C_LOCALE, c_locale_or_skip
 #: The one skip for a mode that root reads through and Windows ignores.
 from test_validate_pins_unreadable_workflow import CANNOT_RUN_AS_ROOT
 
@@ -1333,11 +1338,14 @@ def test_a_folder_that_is_no_symlink_is_still_removed_with_f(
 
 #: `(what the disk holds, each folder or symlink by its path, a path the
 #: index holds, the folder `_beyond_a_symlink` names)`. A symlink leads to
-#: `elsewhere`, a folder beside them.
+#: `elsewhere`, a folder beside them; one made beyond a symlink is made in
+#: the folder that symlink leads to.
 ON_THE_WAY = [
     pytest.param({"D": "link"}, "D/x", "D", id="the-folder-a-symlink"),
     pytest.param({"D": "folder", "D/E": "link"}, "D/E/x", "D/E",
                  id="a-folder-below-it-a-symlink"),
+    pytest.param({"D": "link", "D/E": "link"}, "D/E/x", "D",
+                 id="a-symlink-beyond-the-first-symlink"),
     pytest.param({"D": "folder"}, "D/x", None, id="a-folder"),
     pytest.param({"d": "link"}, "d", None, id="the-path-itself-a-symlink"),
     pytest.param({}, "nowhere/D/x", None, id="nothing-there"),
@@ -1349,9 +1357,11 @@ ON_THE_WAY = [
 def test_the_first_symlink_on_the_way_is_named_and_nothing_else(
         adopter, tmp_path, layout, path, named):
     """Each folder on the way to the path is asked with `lstat`, from the
-    top: the first that is a symlink is named; the path itself, which `git
-    rm` unlinks as the symlink it is, is not asked, and a folder that is
-    not there, or a file, is no symlink."""
+    top: the first that is a symlink is named, and not a symlink beyond
+    it; the path itself, which `git rm` of a file's or a symlink's entry
+    unlinks as what it is, is not asked here (a gitlink's is, by
+    `_taken_beyond_a_symlink`: the rows under r1237b below), and a folder
+    that is not there, or a file, is no symlink."""
     (tmp_path / "elsewhere").mkdir()
     assembly = tmp_path / "assembly"
     assembly.mkdir()
@@ -1383,8 +1393,27 @@ def test_a_folder_on_the_way_nobody_may_search_is_raised_not_read_as_none(
     assert issubclass(PermissionError, adopter.LATE_FAILURES)
 
 
+@CANNOT_RUN_AS_ROOT
+def test_nothing_beyond_the_first_symlink_on_the_way_is_asked(adopter,
+                                                              tmp_path):
+    """`D` is a symlink to `elsewhere`, a folder this user may not search:
+    `D` is named, and nothing in `elsewhere` is asked. Asked past the first
+    symlink, `lstat` of `D/E` is refused there, and the `PermissionError`
+    would stop the mount after both legs are pushed (r1237b's R02)."""
+    elsewhere = tmp_path / "elsewhere"
+    (elsewhere / "E").mkdir(parents=True)
+    assembly = tmp_path / "assembly"
+    assembly.mkdir()
+    os.symlink(elsewhere, assembly / "D")
+    elsewhere.chmod(0)
+    try:
+        assert adopter._beyond_a_symlink(assembly, "D/E/x") == "D"
+    finally:
+        elsewhere.chmod(0o755)
+
+
 # ---------------------------------------------------------------------------
-# r1237b: a gitlink whose case twin is a symlink
+# r1237b: a gitlink whose case twin is a symlink, and every path held asked
 # ---------------------------------------------------------------------------
 
 #: A path's kind in `with_kinds`: a symlink leading to `{victim}`, a folder
@@ -1452,6 +1481,10 @@ def outside_the_assembly(base: Path) -> Path:
 #: ran `git rm -f` of the gitlink `D` (or of `M`), which emptied the folder
 #: the symlink leads to and stopped at `fatal: could not remove 'D'`
 #: (`'M/D'`), or stopped there where the gitlink was a file or below one.
+#: The last two shapes pin what 63c52718 already ran: every path the index
+#: holds under a removed path is asked, not only the twins (r1237b's
+#: SHOULD 1), and a path under one is the path or below it after a `/`
+#: (its NIT 1).
 AT_A_GITLINK_OR_BEYOND_A_LINK = [
     pytest.param(("D", "d"), {"D": GITLINK, "d": LINK_OUT}, (("D", "d"),),
                  {"drop": ["D"]},
@@ -1472,6 +1505,17 @@ AT_A_GITLINK_OR_BEYOND_A_LINK = [
                  {"drop": ["M/"]},
                  [([*CACHED_AS, "M/D"], None), (WRITTEN_AS, b"m\0")],
                  id="a-gitlink-below-a-file-the-clone-left"),
+    pytest.param(("S/D/x", "S/z", "s/d"), {"s/d": LINK_OUT},
+                 (("S/D", "s/d"),), {"code": ["S/"]},
+                 [([*CACHED_AS, "S/D"], None), ([*FORCED_AS, "S"], None),
+                  (WRITTEN_AS, b"s/d\0")],
+                 id="a-file-beside-the-folder-the-clone-left-the-link"),
+    pytest.param(("D/x", "DD/y", "d", "dd"),
+                 {"d": LINK_OUT, "dd": LINK_OUT}, (("D", "d"), ("DD", "dd")),
+                 {"code": ["D/", "DD/"]},
+                 [([*CACHED_AS, "D"], None), ([*CACHED_AS, "DD"], None),
+                  (WRITTEN_AS, b"d\0dd\0")],
+                 id="two-folders-one-name-a-prefix-of-the-other"),
 ]
 
 
@@ -1531,6 +1575,37 @@ def test_a_gitlink_the_disk_holds_a_folder_at_is_still_removed_with_f(
     assert what_it_holds(victim) == {"x": b"victim\n", "keep": b"keep\n"}
     assert staged(assembly) == {path: oid for path, oid in blobs.items()
                                 if path != "D"}
+
+
+def test_the_folder_on_the_way_is_asked_as_bytes_under_a_c_locale(tmp_path):
+    """`Ü/x` goes to the code leg and `ü`, a symlink to a folder
+    outside the assembly, stays in the root, the clone having left
+    `Ü` that symlink; `_mount_the_legs` runs in a child under
+    `LC_ALL=C PYTHONUTF8=0`, whose file names are ASCII. `lstat` is handed
+    the bytes the tree holds, so `Ü` is the symlink and `Ü/x`
+    leaves the index alone. Handed the text, `lstat` raises
+    `UnicodeEncodeError`, a `ValueError` `_is_itself_a` reads as nothing
+    there, and `git rm -f` unlinks `x` in the folder the symlink leads to
+    (r1237b's R03)."""
+    env = c_locale_or_skip()
+    victim = outside_the_assembly(tmp_path)
+    folder, link = "Ü", "ü"
+    assembly, _ = an_assembly(tmp_path, (f"{folder}/x", link), with_kinds(
+        {link: ("link", str(victim))}))
+    as_the_twin(assembly, folder, link)
+    child = subprocess.run(
+        [sys.executable, "-c", MOUNT_IN_THE_C_LOCALE,
+         os.fsencode(ADOPT).hex(), os.fsencode(assembly).hex(),
+         os.fsencode(tmp_path / "work").hex(),
+         json.dumps({"spec": [], "code": [f"{folder}/"], "drop": []})],
+        capture_output=True, env=env, stdin=subprocess.DEVNULL, check=False)
+    assert child.returncode == 0, child.stderr.decode("utf-8", "replace")
+    answer = json.loads(child.stdout.decode("ascii"))
+    assert what_it_holds(victim) == {"x": b"victim\n", "keep": b"keep\n"}
+    assert "raised" not in answer, answer
+    held = z_rows(assembly, "ls-files", "-z")
+    assert f"{folder}/x" not in held
+    assert link in held
 
 
 needs_filter_repo = pytest.mark.skipif(
