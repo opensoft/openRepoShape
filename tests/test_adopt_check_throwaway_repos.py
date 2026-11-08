@@ -57,6 +57,16 @@ were pushed. Now the mount removes such a path with `-f` and writes each
 twin the root keeps back from the index. The rows that drive the mount make
 that one file on any disk, as hard links; the rows that run `execute` whole
 skip on a disk that keeps case, but for one control.
+
+`-f` also skipped what kept git from removing through a symlink. Where the
+clone left a folder as its twin, a symlink to a folder outside the work
+directory, `git rm -f` unlinked the file in that folder (r1237); where it
+left a gitlink so, `git rm -f`, which removes the folder at a gitlink's
+path with all it holds, emptied that folder (r1237b). Now each path the
+index holds beyond a symlink on the way, and each gitlink whose own path
+the disk holds as no folder (a symlink, a file, or nothing), leaves the
+index alone (`git rm --cached`), and nothing on the disk is touched. The
+rows make that symlink, or that file, by hand on a disk that keeps case.
 """
 
 from __future__ import annotations
