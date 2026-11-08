@@ -1884,6 +1884,25 @@ def _is_there(path: Path) -> bool:
     return _is_a(path, lambda _mode: True)
 
 
+def _is_a_symlink(path: str | bytes) -> bool:
+    """Whether `path` is itself a symlink, asked with `os.lstat`, which
+    follows none, as `_is_a` asks `stat` (#430): nothing there is False,
+    and the `OSError` of an `lstat` the operating system REFUSED is raised,
+    never read as nothing there. NOT `Path.is_symlink()`, which from 3.14
+    answers False to ANY `OSError`. `path` is a `str` or the bytes
+    `_path_argument` hands git, so that no locale is in the way (#527)."""
+    try:
+        mode = os.lstat(path).st_mode
+    except OSError as exc:
+        if _absent(exc):
+            return False
+        raise
+    except ValueError:
+        # a name the operating system cannot take at all (a NUL in it)
+        return False
+    return stat.S_ISLNK(mode)
+
+
 def _os_reason(exc: OSError) -> str:
     """The operating system's own words for `exc` (`Permission denied`), or
     the exception's name where it gave none, as `validate-pins.py`'s
@@ -14333,23 +14352,35 @@ def _refuse_an_unmountable_path(assembly: Path, path: str) -> None:
 #: magic -- `git rm -- ':!keep.md'` removes every other path in the tree.
 GIT_RM = ("git", "--literal-pathspecs", "rm", "-r", "-q", "--")
 #: `GIT_RM` with `-f`, for a path at or above a case twin (#1183): see
-#: `_split_case_twins`. `-f` skips only git's question whether the file
-#: on the disk still holds what the index holds.
+#: `_split_case_twins`. `-f` skips git's question whether the file on the
+#: disk still holds what the index holds, and that question was also what
+#: kept git from removing a file through a symlink: given a path beyond a
+#: symlink the disk holds on the way to it, `git rm -f` unlinks the file
+#: the symlink leads to, wherever that is (r1237). So it is never given
+#: one: `_taken_beyond_a_symlink` takes each such path first.
 GIT_RM_FORCED = ("git", "--literal-pathspecs", "rm", "-r", "-q", "-f", "--")
+#: `GIT_RM` with `--cached`, for a path the index holds beyond a symlink
+#: the disk holds on the way to it: git takes it out of the index and
+#: touches no file on the disk (r1237). See `_taken_beyond_a_symlink`.
+GIT_RM_CACHED = ("git", "--literal-pathspecs", "rm", "-r", "-q", "--cached",
+                 "--")
 
 
-def _git_rm(assembly: Path, path: str, forced: bool = False) -> None:
+def _git_rm(assembly: Path, path: str, forced: bool = False,
+            cached: bool = False) -> None:
     """`git rm` of `path`, an entry's path as the plan holds it, in the
     assembly: what `run` does, with `path` handed to git as the bytes the
     tree holds (`_path_argument`, #527). `forced` is `GIT_RM_FORCED`, for a
-    path a case twin is at or under (#1183).
+    path a case twin is at or under (#1183), and `cached` `GIT_RM_CACHED`,
+    for one the index holds beyond a symlink (r1237).
 
     `run` takes only text (`check_program`), so this asks `check_program` of
     the command as the person reads it, and a git that refuses raises
     `CommandFailed` with that command, as `run` raises it: what `execute`
     reports after both legs exist is unchanged.
     """
-    removal = GIT_RM_FORCED if forced else GIT_RM
+    removal = GIT_RM_CACHED if cached else GIT_RM_FORCED if forced \
+        else GIT_RM
     command = [*removal, path]
     check_program(command)
     proc = subprocess.run([*removal, _path_argument(path)],
@@ -14371,12 +14402,20 @@ def _at_or_under(path: str, top: str) -> bool:
     return path == top or path.startswith(top + "/")
 
 
-def _split_case_twins(assembly: Path,
+def _index_paths(assembly: Path) -> list[str]:
+    """Each path the assembly's index holds, in its order, as `_git_path`
+    spells it: `git ls-files -z`, which writes nothing."""
+    raw = git_out(["ls-files", "-z"], cwd=assembly, binary=True)
+    return [_git_path(record) for record in raw.split(b"\x00") if record]
+
+
+def _split_case_twins(held: list[str],
                       removed: list[str]) -> list[list[str]]:
-    """Each set of case twins the assembly's index holds (`_case_twin_sets`)
-    that has a path at or under one of `removed`, the paths `_mount_the_legs`
-    takes out of the root: a set the plan sends into different repositories,
-    or drops a path of (#1183).
+    """Each set of case twins of `held`, the paths the assembly's index
+    holds (`_index_paths`, `_case_twin_sets`), that has a path at or under
+    one of `removed`, the paths `_mount_the_legs` takes out of the root: a
+    set the plan sends into different repositories, or drops a path of
+    (#1183).
 
     A DISK THAT IGNORES CASE HOLDS EACH SUCH SET AS ONE FILE. Measured for
     #1183 with git 2.43, on a FUSE disk that ignores case and keeps it: the
@@ -14401,13 +14440,73 @@ def _split_case_twins(assembly: Path,
     once, and on every disk: on a disk that keeps case, the same commands
     rewrite the bytes each kept twin already holds. A source with no such
     set, as nearly every one is, gets the `git rm` of each path it always
-    got and nothing written back: this listing, which writes nothing, is
+    got and nothing written back: that listing, which writes nothing, is
     the one command added."""
-    raw = git_out(["ls-files", "-z"], cwd=assembly, binary=True)
-    paths = [_git_path(record) for record in raw.split(b"\x00") if record]
-    return [named for named in _case_twin_sets(paths)
+    return [named for named in _case_twin_sets(held)
             if any(_at_or_under(twin, top)
                    for twin in named for top in removed)]
+
+
+def _beyond_a_symlink(assembly: Path, path: str) -> str | None:
+    """The first folder on the way to `path`, a path the assembly's index
+    holds, from the top, that the disk holds as a symlink, as git spells
+    it; None where there is none (r1237). Each folder is asked with
+    `lstat` (`_is_a_symlink`), handed as the bytes the tree holds
+    (`_path_argument`). `path` itself is not asked: `git rm` of a symlink
+    unlinks the symlink, never what it leads to."""
+    parts = path.split("/")
+    for end in range(1, len(parts)):
+        above = "/".join(parts[:end])
+        here = _path_argument(above)
+        if _is_a_symlink(os.path.join(os.fsencode(assembly), here)
+                         if isinstance(here, bytes)
+                         else os.path.join(assembly, here)):
+            return above
+    return None
+
+
+def _taken_beyond_a_symlink(assembly: Path, top: str,
+                            held: list[str]) -> bool:
+    """`git rm --cached` (`GIT_RM_CACHED`) of each path of `held`, the
+    paths the assembly's index holds, at or under `top` that the disk holds
+    beyond a symlink (`_beyond_a_symlink`), asked before `top` is removed
+    with `-f`: of the symlink's own path where that is at or under `top`,
+    which takes each path beyond it at once, else of the path. Whether that
+    took every path `held` at or under `top`, leaving none for `-f`.
+
+    WHERE A FOLDER ON THE WAY IS A SYMLINK (#1237's review, r1237). A disk
+    that ignores case holds a folder `D/` and a symlink `d` as one name,
+    and the split's clone writes `d` last, so `D` is that symlink. Measured
+    with git 2.43 on a FUSE disk that ignores case, for a plan that sends
+    `D/` to the code leg, or drops it, and keeps `d` in the root, `check`
+    printing `plan ok`: `git rm -f -- D` unlinked `D/x` through the
+    symlink, the file `x` in the folder it leads to, outside the work
+    directory for `d` leading to an absolute path or to `../../victim`,
+    and `execute` printed `adoption verified`; for `d` leading to `E`, a
+    folder the root keeps, `E/x` was gone, and `execute` stopped as
+    `adopt-lost` after both legs and the split were pushed. Without `-f`,
+    git refused `D/x` as a local modification. So such a path is taken out
+    of the index alone, and no file on the disk is touched: git counts a
+    path beyond a symlink as gone from the work tree, `git add -A` does not
+    follow a symlink into a folder, and the symlink is the twin the root
+    keeps, written back from the index. The root's tree is the plan's, as
+    is each leg's, which `git filter-repo` made from the objects.
+
+    REFUSING THERE WAS REJECTED: it would come after both legs are pushed,
+    for a plan that is good on every disk, and a re-run then meets
+    `leg-remote-exists`."""
+    under = [path for path in held if _at_or_under(path, top)]
+    taken: list[str] = []
+    for path in under:
+        if any(_at_or_under(path, gone) for gone in taken):
+            continue
+        link = _beyond_a_symlink(assembly, path)
+        if link is not None:
+            gone = link if _at_or_under(link, top) else path
+            _git_rm(assembly, gone, cached=True)
+            taken.append(gone)
+    return bool(taken) and all(any(_at_or_under(path, gone)
+                                   for gone in taken) for path in under)
 
 
 def _write_from_the_index(assembly: Path, paths: list[str]) -> None:
@@ -14444,17 +14543,22 @@ def _mount_the_legs(assembly: Path, work_root: Path, names: dict, urls: dict,
     CASE TWINS THE PLAN SPLITS (#1183): a path with a twin at or under it
     is removed with `-f`, and each twin the root keeps is written back from
     the index after the last `git rm` (`_split_case_twins`), so that a disk
-    that ignores case loses none of them.
+    that ignores case loses none of them. Before that `-f`, each path the
+    index holds at or under it beyond a symlink the disk holds on the way
+    is taken out of the index alone (`_taken_beyond_a_symlink`, r1237), so
+    that `-f` removes no file through a symlink.
     """
     removed = sorted((p.rstrip("/") for p in (paths_for["spec"]
                                               + paths_for["code"]
                                               + paths_for["drop"])),
                      key=lambda p: (p != GITMODULES, p))
-    split = [twin for named in _split_case_twins(assembly, removed)
+    held = _index_paths(assembly)
+    split = [twin for named in _split_case_twins(held, removed)
              for twin in named]
     for path in removed:
-        _git_rm(assembly, path,
-                any(_at_or_under(twin, path) for twin in split))
+        forced = any(_at_or_under(twin, path) for twin in split)
+        if not (forced and _taken_beyond_a_symlink(assembly, path, held)):
+            _git_rm(assembly, path, forced)
     kept = [twin for twin in split
             if not any(_at_or_under(twin, path) for path in removed)]
     if kept:

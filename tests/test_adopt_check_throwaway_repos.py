@@ -83,6 +83,8 @@ from test_adopt_root_symlinks import (GITHUB, OUTSIDE_CI, WORKFLOW, climbs,
 from test_adopt_root_symlinks import links_as_links  # noqa: F401
 from test_adopt_root_symlinks import unwritable_work  # noqa: F401
 from test_adopt_root_symlinks import planned as planned_with_links
+#: The one skip for a mode that root reads through and Windows ignores.
+from test_validate_pins_unreadable_workflow import CANNOT_RUN_AS_ROOT
 
 #: The two findings #910 adds, and the codes of `execute`'s refusals.
 PATH_GIT_REFUSES = "plan-path-git-refuses"
@@ -1188,6 +1190,197 @@ def test_twins_whose_names_are_not_utf_8_keep_their_own_blobs(
     assert kept in blobs
     assert staged(assembly) == {path: oid for path, oid in blobs.items()
                                 if path != moved}
+
+
+#: `git rm` of one path from the index alone, as the mount takes a path the
+#: disk holds beyond a symlink (r1237).
+CACHED_AS = ["git", "--literal-pathspecs", "rm", "-r", "-q", "--cached",
+             "--"]
+
+
+def with_a_link(target: str):
+    """An `add` for `an_assembly`: each of `paths` goes into the source
+    commit with a blob of its own, as `with_paths` writes it, but a path
+    whose last name is `d`, which is a symlink leading to `target`."""
+    def add(repository: Path, paths: tuple[str, ...],
+            own_blobs: bool = True) -> None:
+        assert own_blobs
+        for path in paths:
+            mode, data = (("120000", target.encode()) if path.split("/")[-1]
+                          == "d" else ("100644", f"{path}\n".encode()))
+            git("update-index", "--add", "--cacheinfo",
+                f"{mode},{blob_of(repository, data)},{path}", cwd=repository)
+        git("commit", "-qm", "Add paths", cwd=repository)
+    return add
+
+
+def as_the_link(assembly: Path, folder: str, link: str) -> None:
+    """What a clone on a disk that ignores case checks out of the folder
+    `folder` and its twin `link`, a symlink that sorts after it: the
+    symlink alone, which both names reach, as r1237 measured. Made on a
+    disk that keeps case: the folder gives way to a symlink leading where
+    `link` leads. Where the clone's own disk ignores case, git did this
+    itself, and nothing is done."""
+    if git("config", "--get", "core.ignorecase", cwd=assembly,
+           check=False).stdout.strip() == "true":
+        return
+    for child in (assembly / folder).iterdir():
+        child.unlink()
+    (assembly / folder).rmdir()
+    os.symlink(os.readlink(assembly / link), assembly / folder)
+
+
+def what_it_holds(folder: Path) -> dict:
+    return {child.name: child.read_bytes() for child in folder.iterdir()}
+
+
+#: `(the paths a source commit gains, a path named `d` among them the
+#: symlink, where it leads, `{victim}` being a folder outside the assembly,
+#: the paths the plan sends to a leg or drops, the `git rm` and `git
+#: checkout-index` the mount runs)`. On c9f0cc18 the mount ran `git rm -f`
+#: of the folder `D` (or `src`) and unlinked `x` in the folder the symlink
+#: leads to.
+BEYOND_A_LINK = [
+    pytest.param(("D/x", "d"), "{victim}", {"code": ["D/"]},
+                 [([*CACHED_AS, "D"], None), (WRITTEN_AS, b"d\0")],
+                 id="a-link-out-of-the-assembly"),
+    pytest.param(("D/x", "d"), "../../victim", {"code": ["D/"]},
+                 [([*CACHED_AS, "D"], None), (WRITTEN_AS, b"d\0")],
+                 id="a-relative-link-out-of-the-assembly"),
+    pytest.param(("D/x", "d"), "{victim}", {"drop": ["D/"]},
+                 [([*CACHED_AS, "D"], None), (WRITTEN_AS, b"d\0")],
+                 id="the-folder-dropped"),
+    pytest.param(("D/x", "E/x", "d"), "E", {"code": ["D/"]},
+                 [([*CACHED_AS, "D"], None), (WRITTEN_AS, b"d\0")],
+                 id="a-link-to-a-folder-the-root-keeps"),
+    pytest.param(("src/D/x", "src/d"), "{victim}", {"drop": ["src/"]},
+                 [([*CACHED_AS, "src/D"], None), ([*FORCED_AS, "src"], None)],
+                 id="both-in-a-dropped-folder-beside-other-files"),
+    pytest.param(("D/x", "D/y", "d"), "{victim}", {"code": ["D/"]},
+                 [([*CACHED_AS, "D"], None), (WRITTEN_AS, b"d\0")],
+                 id="two-files-beyond-the-link-taken-at-once"),
+    pytest.param(("D/x", "D/y", "d"), "{victim}",
+                 {"code": ["D/x"], "drop": ["D/y"]},
+                 [([*CACHED_AS, "D/x"], None), ([*CACHED_AS, "D/y"], None),
+                  (WRITTEN_AS, b"d\0")],
+                 id="entries-below-the-link-taken-path-by-path"),
+]
+
+
+@pytest.mark.parametrize(("paths", "target", "moved", "commands"),
+                         BEYOND_A_LINK)
+def test_no_file_is_removed_through_a_symlink_a_case_twin_left(
+        adopter, monkeypatch, tmp_path, paths, target, moved, commands):
+    """`D/x` goes, `d`, a symlink to a folder, stays in the root (or goes
+    with it), and the clone left `D` as that symlink, as on a disk that
+    ignores case. On c9f0cc18 the mount's `git rm -f -- D` unlinked `x` in
+    the folder the symlink leads to, outside the work directory where it
+    leads there, and `execute` printed `adoption verified` (r1237); without
+    `-f`, git refused it. Now each path beyond the symlink leaves the index
+    alone, `git rm --cached`, and the folder holds what it held; `git add
+    -A` stages nothing beyond the symlink, and the root's index holds each
+    path the plan keeps there with its own blob."""
+    victim = tmp_path / "victim"
+    victim.mkdir()
+    (victim / "x").write_bytes(b"victim\n")
+    (victim / "keep").write_bytes(b"keep\n")
+    assembly, blobs = an_assembly(
+        tmp_path, paths, with_a_link(target.format(victim=victim)))
+    link = next(path for path in paths if path.split("/")[-1] == "d")
+    folder = link[:-1] + "D"
+    leads_to = assembly / target if target == "E" else victim
+    held = what_it_holds(leads_to)
+    as_the_link(assembly, folder, link)
+    ran = git_commands_of_the_mount(adopter, monkeypatch, tmp_path,
+                                    assembly, moved)
+    assert what_it_holds(leads_to) == held
+    assert ran == commands
+    removed = [path.rstrip("/") for leg in moved.values() for path in leg]
+    left = staged(assembly)
+    # A disk that keeps case holds the symlink made in `folder`'s place
+    # beside `link`, and `git add -A` adds it there; on a disk that
+    # ignores case the two are one, `link`'s own.
+    assert left.pop(folder, blobs[link]) == blobs[link]
+    assert left == {path: oid for path, oid in blobs.items()
+                    if not any(at_or_under(path, top) for top in removed)}
+
+
+def test_a_folder_that_is_no_symlink_is_still_removed_with_f(
+        adopter, monkeypatch, tmp_path):
+    """The control: `D/x` goes and `d`, a symlink to a folder outside the
+    assembly, stays in the root, on a disk that keeps case, where `D` is
+    the folder the clone wrote. `D` is removed with `-f`, as on c9f0cc18:
+    `D/x` is gone from the disk and the index, the folder `d` leads to
+    holds what it held, and `d` is written back from the index."""
+    victim = tmp_path / "victim"
+    victim.mkdir()
+    (victim / "x").write_bytes(b"victim\n")
+    assembly, blobs = an_assembly(tmp_path, ("D/x", "d"),
+                                  with_a_link(str(victim)))
+    if git("config", "--get", "core.ignorecase", cwd=assembly,
+           check=False).stdout.strip() == "true":
+        pytest.skip("on a disk that ignores case the clone leaves `D` the "
+                    "symlink `d`: the rows above")
+    assert (assembly / "D" / "x").read_bytes() == b"D/x\n"
+    ran = git_commands_of_the_mount(adopter, monkeypatch, tmp_path,
+                                    assembly, {"code": ["D/"]})
+    assert ran == [([*FORCED_AS, "D"], None), (WRITTEN_AS, b"d\0")]
+    assert not os.path.lexists(assembly / "D")
+    assert what_it_holds(victim) == {"x": b"victim\n"}
+    assert staged(assembly) == {path: oid for path, oid in blobs.items()
+                                if path != "D/x"}
+
+
+#: `(what the disk holds, each folder or symlink by its path, a path the
+#: index holds, the folder `_beyond_a_symlink` names)`. A symlink leads to
+#: `elsewhere`, a folder beside them.
+ON_THE_WAY = [
+    pytest.param({"D": "link"}, "D/x", "D", id="the-folder-a-symlink"),
+    pytest.param({"D": "folder", "D/E": "link"}, "D/E/x", "D/E",
+                 id="a-folder-below-it-a-symlink"),
+    pytest.param({"D": "folder"}, "D/x", None, id="a-folder"),
+    pytest.param({"d": "link"}, "d", None, id="the-path-itself-a-symlink"),
+    pytest.param({}, "nowhere/D/x", None, id="nothing-there"),
+    pytest.param({"F": "file"}, "F/G/x", None, id="a-file-on-the-way"),
+]
+
+
+@pytest.mark.parametrize(("layout", "path", "named"), ON_THE_WAY)
+def test_the_first_symlink_on_the_way_is_named_and_nothing_else(
+        adopter, tmp_path, layout, path, named):
+    """Each folder on the way to the path is asked with `lstat`, from the
+    top: the first that is a symlink is named; the path itself, which `git
+    rm` unlinks as the symlink it is, is not asked, and a folder that is
+    not there, or a file, is no symlink."""
+    (tmp_path / "elsewhere").mkdir()
+    assembly = tmp_path / "assembly"
+    assembly.mkdir()
+    for where, what in layout.items():
+        if what == "link":
+            os.symlink(tmp_path / "elsewhere", assembly / where)
+        elif what == "folder":
+            (assembly / where).mkdir()
+        else:
+            (assembly / where).write_bytes(b"F\n")
+    assert adopter._beyond_a_symlink(assembly, path) == named
+
+
+@CANNOT_RUN_AS_ROOT
+def test_a_folder_on_the_way_nobody_may_search_is_raised_not_read_as_none(
+        adopter, tmp_path):
+    """A folder on the way that this user may not search: its `lstat` is
+    refused, and the `PermissionError` is raised, one of `LATE_FAILURES`,
+    so `execute` names it, as `_is_a` raises a refused `stat` (#430). Read
+    as no symlink, the path would be removed with `-f` unasked."""
+    assembly = tmp_path / "assembly"
+    (assembly / "D" / "E").mkdir(parents=True)
+    (assembly / "D").chmod(0)
+    try:
+        with pytest.raises(PermissionError):
+            adopter._beyond_a_symlink(assembly, "D/E/x")
+    finally:
+        (assembly / "D").chmod(0o755)
+    assert issubclass(PermissionError, adopter.LATE_FAILURES)
 
 
 needs_filter_repo = pytest.mark.skipif(
