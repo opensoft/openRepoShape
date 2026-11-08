@@ -30,7 +30,9 @@ reaches the leg's object store through that fetch, from the
 `--local-remote-dir` bare repository and from the leg's own `origin` alike
 (both are run below). A tag whose commit is on no branch is NOT brought, and
 neither is its commit: it is `bump-leg-commit-not-on-remote` in both runs, and
-one test holds that. The peel is therefore asked AFTER the fetch.
+one test holds that. The peel is therefore asked AFTER the fetch. A tag the
+leg holds WITHOUT its commit cannot be peeled there, and gets the same verdict
+(#912), not `bump-leg-target-not-a-commit`; one test holds that too.
 
 Every case here runs the dry run AND the real run over the same root and
 asserts that they give one answer. The leg's remote is a PRIVATE bare copy of
@@ -43,6 +45,7 @@ every OS the suite runs on.
 from __future__ import annotations
 
 import re
+import subprocess
 import sys
 from pathlib import Path
 
@@ -391,6 +394,57 @@ def test_a_tag_the_fetch_never_brings_is_not_on_the_remote_in_both_runs(
     assert not holds(project, tag_only["tag"]), "the fetch did not bring it"
     assert not holds(project, tag_only["commit"])
     assert "no branch containing" in stderr
+
+
+@pytest.fixture(scope="module")
+def unpushed_tag(leg_remote, tmp_path_factory) -> dict:
+    """An annotated tag of a commit pushed NOWHERE, and the tag's own bytes:
+    a tag the remote does not advertise, so no fetch brings it or its
+    commit. (A tag the remote does advertise is fetched with its commit
+    once its object is in the leg: git 2.43 follows a tag whose object it
+    holds, measured for #912.)"""
+    work = private_work(leg_remote, tmp_path_factory, "unpushed-tag")
+    git("checkout", "-q", "--detach", cwd=work)
+    (work / "UNPUSHED.md").write_text("# pushed nowhere\n")
+    git("add", "--", "UNPUSHED.md", cwd=work)
+    git("commit", "-qm", "A commit pushed nowhere", cwd=work)
+    commit = git("rev-parse", "HEAD", cwd=work).stdout.strip()
+    tag = tagged(work, "unpushed-w912", commit)
+    raw = subprocess.run(["git", "cat-file", "tag", tag], cwd=work,
+                         capture_output=True, check=True).stdout
+    return {"commit": commit, "tag": tag, "raw": raw}
+
+
+@pytest.mark.parametrize("via", VIA)
+def test_a_tag_the_leg_holds_without_its_commit_is_not_on_the_remote(
+        project, leg_remote, unpushed_tag, via):
+    """#912. The tag object is in the leg's own store and the commit it names
+    is not, so its peel cannot be read there (git: "missing object
+    referenced by" the tag). On main 6c861635 `peeled_target` refused it
+    `bump-leg-target-not-a-commit`, "an annotated tag that names no
+    commit", which no tag of a commit is. The leg cannot say what such a tag
+    names, so its id goes on as typed to the reachability verdict, as an id
+    the leg does not hold does: `bump-leg-commit-not-on-remote`, from both
+    runs, with nothing written."""
+    tag, commit = unpushed_tag["tag"], unpushed_tag["commit"]
+    made = subprocess.run(["git", "hash-object", "-t", "tag", "-w",
+                           "--stdin"], cwd=project / "spec",
+                          input=unpushed_tag["raw"], capture_output=True,
+                          check=True)
+    assert made.stdout.decode().strip() == tag
+    assert holds(project, tag), "premise: the leg holds the tag"
+    assert not holds(project, commit), "and not its commit"
+    branched(project)
+    run = runner(project, leg_remote, via)
+    before = snapshot(project)
+
+    stderr = assert_one_refusal(project, run, tag,
+                                "bump-leg-commit-not-on-remote", before)
+
+    assert f"has no branch containing {tag}" in stderr, stderr
+    assert "bump-leg-target-not-a-commit" not in stderr
+    assert "annotated tag" not in stderr
+    assert not holds(project, commit), "the fetch did not bring it"
 
 
 # --- the branch a tag's id names, on the tracking branch --------------------
