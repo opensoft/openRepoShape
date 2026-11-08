@@ -403,7 +403,7 @@ def _is_a(path: Path, kind) -> bool:
 
 
 #: The mode `git ls-tree` gives an entry that is a symlink: its blob holds the
-#: PATH it leads to, not a file's text.
+#: PATH it leads to, not a file's text (`Tree.is_link`).
 LINK_MODE = "120000"
 
 
@@ -437,10 +437,10 @@ class Tree:
     record's as a reason it silences nothing, a leg's `AGENTS.md`'s as a
     question this directory cannot answer (`_leg_by_agents_md`, #1110).
 
-    `text(rel, follow=True)` reads a symlink at `rel` in a commit as the
-    disk's is read, through it (#1163): see `_followed`. On the disk the
-    operating system follows it either way, and without `follow` a link in a
-    commit is read as the blob it is, the PATH it holds, as before.
+    `text()` reads a symlink in a commit as the blob it is, the PATH it
+    holds, as before. `text_through()` reads it as the disk's is read,
+    through it (#1163), where `is_link()` says it is one; only a leg's
+    `AGENTS.md` is read so (`_leg_by_agents_md`).
     """
 
     def __init__(self, root: Path, commit: str | None = None):
@@ -461,9 +461,7 @@ class Tree:
         # A tree, or a gitlink (`commit`), is there and is not a file.
         return "file" if found == "blob" else "dir"
 
-    def text(self, rel: str, follow: bool = False) -> str | None:
-        if follow and self.commit is not None and self._link(rel):
-            return self._followed(rel)
+    def text(self, rel: str) -> str | None:
         if self.kind(rel) != "file":
             return None
         if self.commit is None:
@@ -473,10 +471,13 @@ class Tree:
                           cwd=self.root, binary=True)
         return raw.decode("utf-8")
 
-    def _link(self, rel: str) -> bool:
-        """Whether `rel` is a symlink in the commit: its `git ls-tree` entry
-        has `LINK_MODE`. A git that cannot say makes it no link, and `text`
-        reads `rel` as it did before #1163."""
+    def is_link(self, rel: str) -> bool:
+        """Whether `rel` is a symlink IN THE COMMIT: its `git ls-tree` entry
+        has `LINK_MODE` (#1163). Never on the disk, where the operating
+        system reads through a link whoever asks. A git that cannot say
+        makes it no link, and `rel` is read as it was before."""
+        if self.commit is None:
+            return False
         try:
             entry = git_out(["ls-tree", "--full-tree", self.commit, "--",
                              rel], cwd=self.root)
@@ -484,7 +485,7 @@ class Tree:
             return False
         return entry.startswith(f"{LINK_MODE} ")
 
-    def _followed(self, rel: str) -> str | None:
+    def text_through(self, rel: str) -> str | None:
         """The text of the file the symlink at `rel` leads to INSIDE the
         commit, followed as git follows it there (`git cat-file
         --batch-check --follow-symlinks`): from the directory each link is
@@ -680,15 +681,17 @@ def _leg_by_agents_md(tree: Tree) -> dict | None:
     is what the doctor reads. A commit's link is a blob holding the PATH it
     leads to, and read as text that was no leg's file, so `adopt-project.py
     plan` and `check` called a leg whose `AGENTS.md` is a link a single
-    repository, where the doctor called the same checkout the leg. Now
-    `Tree.text` follows it inside the commit (`follow`): to a file, which is
-    read, out of the commit's objects as any file there is; to nothing that
-    is a file, which is no leg's file, as on the disk. A link that leads out
-    of the commit raises `OutOfTheCommit`, for `_read` to answer as a file
-    this user cannot read: no commit says what is there.
+    repository, where the doctor called the same checkout the leg. Now a
+    link in the commit (`Tree.is_link`) is followed inside it
+    (`Tree.text_through`): to a file, which is read, out of the commit's
+    objects as any file there is; to nothing that is a file, which is no
+    leg's file, as on the disk. A link that leads out of the commit raises
+    `OutOfTheCommit`, for `_read` to answer as a file this user cannot read:
+    no commit says what is there.
     """
     try:
-        text = tree.text(AGENTS_MD, follow=True)
+        text = (tree.text_through(AGENTS_MD) if tree.is_link(AGENTS_MD)
+                else tree.text(AGENTS_MD))
     except UnicodeDecodeError:
         return None
     except OSError as exc:
