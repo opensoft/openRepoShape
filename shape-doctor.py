@@ -255,19 +255,24 @@ question. Beside a submodule of its leg it stays the question it was, since
 no section registers that submodule: the leg's entry names each under
 `unregistered_submodules`, and the row says how to register it or remove it.
 So it does for a submodule beside a `.gitmodules` whose sections register
-other paths, and for one in a leg whose index tracks no `.gitmodules`
-(#1080), where the leg's entry says which under `unregistered_beside`. There
-git reads the one on this disk, untracked, or else HEAD's copy, and so does
-the doctor: a submodule that copy registers is not named. A recursive clone
-of the leg leaves each empty. The doctor names nothing, though `git
-submodule status` counts the submodule unregistered (exit 128), in these
-states: beside a `.gitmodules` the index tracks and this disk lacks, where
-git reads the index's copy, `git add .gitmodules` would stage the file's
-deletion, and no section can be written in it until it is restored (#1093);
-for a submodule whose path is not UTF-8 or holds a control character
-(`UNWRITABLE_IN_A_PLAN`); beside a `.gitmodules` that is unmerged; and
-beside a `.gitmodules` git refuses, or one on this disk that is not a
-regular file: a link, which git reads through, or a directory.
+other paths, for one in a leg whose index tracks no `.gitmodules` (#1080),
+and for one beside a `.gitmodules` the index tracks and this disk lacks
+(#1093), where the leg's entry says which under `unregistered_beside`. In a
+leg whose index tracks none, git reads the one on this disk, untracked, or
+else HEAD's copy; beside one this disk lacks, the index's copy; and so does
+the doctor: a submodule that copy registers is not named. Beside one this
+disk lacks, the way out restores it first (`git restore .gitmodules`),
+since `git add .gitmodules` would stage its deletion; where the index marks
+that file skip-worktree, as a sparse checkout does (family.py's
+`gitmodules-sparse`), the submodule is named but that first step exits 1, a
+limit. A recursive clone of the leg leaves each empty. The doctor names
+nothing, though `git submodule status` counts the submodule unregistered
+(exit 128), in these states: for a submodule whose path is not UTF-8 or
+holds a control character (`UNWRITABLE_IN_A_PLAN`); beside a `.gitmodules`
+that is unmerged, while its copy on this disk is the conflict, registers
+the submodule or is not there, since git reads no copy then; and beside a
+`.gitmodules` git refuses, or one on this disk that is not a regular file:
+a link, which git reads through, or a directory.
 
 A SUBMODULE MOVED OR REMOVED SINCE THE ADOPTION (#525). Its row is a
 person's to change, by hand, in the pull request that bumps the pins; no
@@ -659,12 +664,14 @@ EMPTY_GITMODULES = "empty_gitmodules"
 #: The key of a leg's entry naming each submodule it holds beside a
 #: `.gitmodules` that holds no section, so that nothing registers it (#914),
 #: or beside one whose sections register other paths, or in a leg whose
-#: index tracks none (#1080); present only on a leg that has one.
+#: index tracks none (#1080), or beside one its index tracks and this disk
+#: lacks (#1093); present only on a leg that has one.
 UNREGISTERED_SUBMODULES = "unregistered_submodules"
 #: The key of a leg's entry saying what its `unregistered_submodules` sit
-#: beside where that is not a `.gitmodules` with no section (#1080): one
-#: of the two values below. Absent beside one with no section, so that the
-#: entry #914 gives stays as it was; present only on a leg that has one.
+#: beside where that is not a `.gitmodules` on this disk with no section
+#: (#1080): one of the three values below. Absent beside one with no
+#: section, so that the entry #914 gives stays as it was; present only on a
+#: leg that has one.
 UNREGISTERED_BESIDE = "unregistered_beside"
 #: A `.gitmodules` with sections, none of which registers the submodule.
 BESIDE_OTHER_SECTIONS = "other_sections"
@@ -672,6 +679,10 @@ BESIDE_OTHER_SECTIONS = "other_sections"
 #: untracked on this disk or else HEAD's, does not register the submodule,
 #: or there is none.
 BESIDE_NO_GITMODULES = "no_gitmodules"
+#: The leg's index tracks a `.gitmodules` this disk lacks, and the index's
+#: copy, which git reads then, does not register the submodule, whether it
+#: holds no section or sections for other paths (#1093).
+BESIDE_INDEX_COPY = "index_copy"
 #: The key of a leg's entry naming each `answered_paths:` row for that leg
 #: whose path is a directory of it written without its `/` (#655); present
 #: only on a leg that has one.
@@ -3450,17 +3461,54 @@ def cannot_be_listed(named: str, exc: OSError) -> str:
 
 
 #: The key of a leg's or a member's `--json` entry that holds the gate's line
-#: for a mount this user cannot reach (#430), beside a leg's `cannot_be_read`,
-#: which is its PIN's (#847).
+#: for a mount this user cannot reach (#430), or whose git directory it
+#: cannot read (#1174), beside a leg's `cannot_be_read`, which is its PIN's
+#: (#847).
 MOUNT_UNREAD = "mount_cannot_be_read"
 
 
-def mount_read(root: Path, rel: str) -> tuple:
+def git_dir_of(dotgit: Path) -> Path | None:
+    """The git directory of a mount whose `.git` is `dotgit`, found as
+    `validate-pins.py`'s `_leg_git_dir` finds it (#968, #1174): `dotgit`
+    itself where it is no regular file (a checkout's own directory); the
+    directory a gitfile's `gitdir: ` line names, joined to the gitfile's own
+    directory as git joins it, its `..` left for the system to follow; and
+    None where the gitfile names none, which is left to git, as the gate
+    leaves it. Raises the `OSError` of a `stat` or a read the operating
+    system refused."""
+    if not is_a(dotgit, stat.S_ISREG):
+        return dotgit
+    data = dotgit.read_bytes()
+    if not data.startswith(b"gitdir: "):
+        return None
+    return dotgit.parent / os.fsdecode(data[len(b"gitdir: "):].rstrip(b"\r\n"))
+
+
+def git_dir_named(root: Path, rel: str, gitdir: Path) -> str:
+    """`gitdir` as the gate names it (`_named`, #968): normalized, from the
+    root and POSIX (`.git/modules/spec`), or whole where it is not under the
+    root. Where it is not under the mount at `rel`, the mount's path goes
+    first (`spec: .git/modules/spec`), so the line of every row that reads
+    the mount starts with that mount, as `leg_shape_summary`,
+    `leg_audit_summary` and `member_problem` print it (#1174)."""
+    path = Path(os.path.normpath(gitdir))
+    try:
+        named = path.relative_to(root).as_posix()
+    except ValueError:
+        named = str(path)
+    mount = root / rel
+    if path == mount or mount in path.parents:
+        return named
+    return f"{rel}: {named}"
+
+
+def mount_read(root: Path, rel: str, git_dir: bool = True) -> tuple:
     """`(populated, own_git, refused)` for the leg or member mounted at `rel`:
     whether a directory with anything in it is there, whether it holds a
     `.git` of its own, and None, or `(the gate's line, the OSError, whether it
     was the listing)` where the operating system refused the mount's `stat`,
-    its listing or its `.git`'s `stat` (#430).
+    its listing or its `.git`'s `stat` (#430), or a read of its git
+    directory (#1174).
 
     ONE QUESTION FOR THE FOUR ROWS THAT READ A MOUNT -- `legs`, `leg shape
     files`, `placement` and `members` -- each of which asked `mount.is_dir()
@@ -3481,6 +3529,29 @@ def mount_read(root: Path, rel: str) -> tuple:
     is asked only of a mount with something in it, which is the answer
     `(mount / ".git").exists()` gave an empty, absent or non-folder mount. A
     listing that fails because nothing is there any more is nothing there.
+
+    ITS GIT DIRECTORY IS ASKED AS THE GATE ASKS IT (#1174, the gate's
+    `_refuse_an_unreadable_git_dir`, #968): the `.git` itself where it is no
+    regular file, else the directory its gitfile's `gitdir: ` line names
+    (`git_dir_of`), and then the `stat` of that directory's `HEAD`. Git run
+    in a mount whose git directory this user cannot search failed, so the
+    `legs` and `members` rows read no HEAD and counted a leg or a member at
+    its pin as one off it, and `placement` said "it is not a git
+    repository"; and a `.git` DIRECTORY this user cannot search was passed
+    over by git, which read the ROOT's HEAD as the leg's and named a
+    checkout over it. A refused read of the gitfile is `<rel>/.git: cannot
+    be read (<reason>)`, and a refused `stat` of the `HEAD` names the git
+    directory as the gate names it (`git_dir_named`): `<rel>/.git`, or
+    `<rel>: .git/modules/<rel>` for one outside the mount. A gitfile that
+    names no directory, or a git directory with no `HEAD`, is not a read
+    this user was refused: it is left to git, which answers for it as it
+    always did.
+
+    `git_dir=False` ASKS NO GIT DIRECTORY, for the `leg shape files` row,
+    which compares a leg's files on disk and runs no git: a git directory
+    this user cannot search keeps no file in the mount from being read, so
+    that row compares them as it always did, and the `legs` row names the
+    directory and gives its advice (#1174).
     """
     mount = root / rel
     try:
@@ -3496,11 +3567,18 @@ def mount_read(root: Path, rel: str) -> tuple:
         return False, False, (cannot_be_listed(rel, exc), exc, True)
     if not populated:
         return False, False, None
+    dotgit = mount / ".git"
+    named = (Path(rel) / ".git").as_posix()
     try:
-        return True, is_a(mount / ".git", lambda _mode: True), None
+        if not is_a(dotgit, lambda _mode: True):
+            return True, False, None
+        gitdir = git_dir_of(dotgit) if git_dir else None
+        if gitdir is not None:
+            named = git_dir_named(root, rel, gitdir)
+            is_a(gitdir / "HEAD", lambda _mode: True)
     except OSError as exc:
-        return True, False, (cannot_be_read((Path(rel) / ".git").as_posix(),
-                                            exc), exc, False)
+        return True, False, (cannot_be_read(named, exc), exc, False)
+    return True, True, None
 
 
 def mount_unread_said(line: str) -> str:
@@ -7694,8 +7772,9 @@ def copy_command(source, target, platform: str | None = None) -> str:
 LABEL_LEG_SHAPE_FILES = "leg shape files"
 
 
-def shape_file_state(here: Path, there: Path, name: str) -> str:
-    """What ONE leg shape file is, against the template's copy of it.
+def shape_file_state(here: Path, there: Path, name: str) -> tuple:
+    """`(what ONE leg shape file is, against the template's copy of it, the
+    `OSError` of a read the operating system refused or None)`.
 
     The five answers this returns are the whole vocabulary of the row above,
     and they are five because a byte comparison is only meaningful for two of
@@ -7714,31 +7793,36 @@ def shape_file_state(here: Path, there: Path, name: str) -> str:
     `stat` or read the operating system refuses (#430). It was `absent` on
     Python 3.14, with a `cp` of the template over a file that is there, and
     up to 3.13 the row `could not be run`. `there` is the standard's own copy.
+
+    ITS ERROR IS KEPT BESIDE IT (#1175): the words carry only the reason, and
+    the row's `why` is the gate's advice for the cause (`cannot_read_why`),
+    which a permission and an I/O error are told apart by.
     """
     try:
         if not is_a(here, stat.S_ISREG):
-            return "absent"
+            return "absent", None
     except OSError as exc:
-        return f"cannot be read ({os_reason(exc)})"
+        return f"cannot be read ({os_reason(exc)})", exc
     if name in LEG_RENDERED:
-        return "rendered"
+        return "rendered", None
     if not there.is_file():
-        return "present (the template has none)"
+        return "present (the template has none)", None
     try:
         mine = here.read_bytes()
     except OSError as exc:
-        return f"cannot be read ({os_reason(exc)})"
+        return f"cannot be read ({os_reason(exc)})", exc
     if mine == there.read_bytes():
-        return "identical"
-    return "differs"
+        return "identical", None
+    return "differs", None
 
 
 def leg_shape_comparison(ctx: Context, role: str, rel: str) -> tuple:
     """ONE leg's shape files, and the ones that are not there at all.
 
-    Returns the `--json` entry for the leg and the `(role, leg, file)` triples
-    the row names as missing, so that the caller adds them up rather than
-    being handed a half-built dictionary to finish.
+    Returns the `--json` entry for the leg, the `(role, leg, file)` triples
+    the row names as missing and the `OSError` of each file this user cannot
+    read (#1175), so that the caller adds them up rather than being handed a
+    half-built dictionary to finish.
 
     EVERY EARLY RETURN IS A LEG THERE IS NOTHING TO COMPARE, and neither of
     them is a fault of the repository's: a leg nobody has bootstrapped has no
@@ -7747,27 +7831,34 @@ def leg_shape_comparison(ctx: Context, role: str, rel: str) -> tuple:
     which they are, in the `state` the row prints. A leg this user cannot
     reach is a third, and its `state` is the gate's line for it, kept under
     `mount_cannot_be_read` as the `legs` row keeps it (`mount_read`, #430).
+    A leg whose git directory this user cannot read is not: no file here is
+    read through git, so its files are compared (#1174).
 
     Split out of `check_leg_shape_files` for #134.
     """
     mount = ctx.root / rel
     template = ctx.shape / "templates" / f"{role}-root"
-    populated, _own_git, unread = mount_read(ctx.root, rel)
+    populated, _own_git, unread = mount_read(ctx.root, rel, git_dir=False)
     if unread is not None:
-        return {"role": role, "state": unread[0], MOUNT_UNREAD: unread[0]}, []
+        return ({"role": role, "state": unread[0], MOUNT_UNREAD: unread[0]},
+                [], [])
     if not populated:
-        return {"role": role, "state": "not populated"}, []
+        return {"role": role, "state": "not populated"}, [], []
     if not template.is_dir():
         return {"role": role,
-                "state": f"no templates/{role}-root/ to compare against"}, []
+                "state": f"no templates/{role}-root/ to compare against"}, [], []
     files: dict[str, str] = {}
     absent: list[tuple[str, str, str]] = []
+    refused: list[OSError] = []
     for name in LEG_SHAPE_FILES:
-        state = shape_file_state(mount / name, template / name, name)
+        state, exc = shape_file_state(mount / name, template / name, name)
         files[name] = state
         if state == "absent":
             absent.append((role, rel, name))
-    return {"role": role, "state": "compared", "files": files}, absent
+        if exc is not None:
+            refused.append(exc)
+    return ({"role": role, "state": "compared", "files": files}, absent,
+            refused)
 
 
 def leg_shape_summary(rel: str, entry: dict) -> str:
@@ -7848,6 +7939,15 @@ def check_leg_shape_files(ctx: Context) -> Row:
     is a `note`, because what is missing is a read, the `legs` row asserts
     the mount, and "compared" is not a claim to make about a file nobody
     read. It offers no copy: the file is there.
+
+    A FILE THIS USER CANNOT READ IS TOLD THE CURE (#1175): the note's `why`
+    is the gate's advice for the cause (`cannot_read_why`), as every other
+    path this doctor cannot read is told it, and beside a missing file's
+    copy it follows what that line's `why` says. A mount is not: the `legs`
+    row names it and gives its advice. The NEXT stays None and the row stays
+    a note, so the verdict is what it was: no leg file gates anything, so a
+    file nobody could read cannot change it, and the advice ends by saying
+    to run this doctor again.
     """
     needs = "there are no legs to compare"
     waiting = (waiting_row(ctx, "leg-shape-files", LABEL_LEG_SHAPE_FILES,
@@ -7862,15 +7962,19 @@ def check_leg_shape_files(ctx: Context) -> Row:
                    "no legs to compare", None, {"legs": []})
     per_leg: dict[str, dict] = {}
     missing: list[tuple[str, str, str]] = []
+    #: The `OSError` of each leg file this user cannot read (#1175).
+    refused: list[OSError] = []
     for leg in legs:
         role = str(leg.get("role") or "?")
         rel = str(leg.get("path") or role)
-        entry, absent = leg_shape_comparison(ctx, role, rel)
+        entry, absent, unread_files = leg_shape_comparison(ctx, role, rel)
         per_leg[rel] = entry
         missing.extend(absent)
+        refused.extend(unread_files)
     detail = {"legs": per_leg, "compared": list(LEG_SHAPE_FILES)}
     summary = "; ".join(leg_shape_summary(rel, entry)
                         for rel, entry in per_leg.items())
+    advice = cannot_read_why(refused) if refused else None
     if missing:
         named = ", ".join(f"{leg}/{file}" for _, leg, file in missing)
         # `note`, NOT `FINDING`. This is the row that printed `INVALID`
@@ -7882,14 +7986,14 @@ def check_leg_shape_files(ctx: Context) -> Row:
         # rule this standard never made. The difference is worth a reader's
         # eye and is not a verdict.
         fix, why = missing_shape_file_fix(ctx, missing)
+        # A file this user cannot read beside it: its advice follows (#1175).
+        why = ". ".join(said for said in (why, advice) if said) or None
         return Row("leg-shape-files", LABEL_LEG_SHAPE_FILES, NOTE,
                    f"{summary}  (missing: {named})", fix, detail, why=why)
-    unread = any(MOUNT_UNREAD in entry
-                 or any(state.startswith("cannot be read")
-                        for state in (entry.get("files") or {}).values())
-                 for entry in per_leg.values())
+    unread = bool(refused) or any(MOUNT_UNREAD in entry
+                                  for entry in per_leg.values())
     return Row("leg-shape-files", LABEL_LEG_SHAPE_FILES,
-               NOTE if unread else OK, summary, None, detail)
+               NOTE if unread else OK, summary, None, detail, why=advice)
 
 
 # ---------------------------------------------------------------------------
@@ -8153,6 +8257,7 @@ def held_clauses(detail: dict) -> str:
                unregistered_clause(legs),
                other_sections_clause(legs),
                no_gitmodules_clause(legs),
+               index_copy_clause(legs),
                answers_clause(detail.get(ANSWERED_PATHS) or []),
                unslashed_clause(legs),
                slashed_clause(legs),
@@ -8231,9 +8336,10 @@ def unregistered_clause(legs: list) -> str:
     the leg does not know.
 
     ONLY THE LEGS WHOSE ENTRY GIVES NO `unregistered_beside` (#1080): a
-    submodule beside other sections, or in a leg whose index tracks no
-    `.gitmodules`, has its own clause (`other_sections_clause`,
-    `no_gitmodules_clause`).
+    submodule beside other sections, in a leg whose index tracks no
+    `.gitmodules`, or beside one its index tracks and this disk lacks
+    (#1093), has its own clause (`other_sections_clause`,
+    `no_gitmodules_clause`, `index_copy_clause`).
     """
     held = unregistered_beside(legs, None)
     if not held:
@@ -8308,6 +8414,59 @@ def no_gitmodules_clause(legs: list) -> str:
             "each a section with its `path` and `url` in a `.gitmodules` "
             "added to its leg, or remove its gitlink with `git rm --cached "
             "<its path in the leg>` in its leg")
+
+
+def index_copy_clause(legs: list) -> str:
+    """The clause naming each submodule a leg holds beside a `.gitmodules`
+    its index tracks and this disk lacks, where the index's copy does not
+    register it (`unregistered_gitlinks`), or "" where there is none
+    (#1093).
+
+    SAID, as `unregistered_clause` is: git reads the index's copy there,
+    so `git submodule status` exits 128, and a recursive clone of a commit
+    of that index leaves the submodule empty (measured, git 2.43).
+
+    THE FILE GOES BACK FIRST. `git add .gitmodules`, typed where the file
+    is gone, stages its deletion and takes every other submodule's section
+    out of the index with it, and no section can be written in a file
+    that is not there. `git restore .gitmodules` puts the index's copy
+    back on this disk, and then each way out is typed as printed: a
+    section written in it gives `git submodule status` 0; `git add
+    .gitmodules`, which stages nothing once the file is restored, then
+    `git rm --cached` each exit 0, and the gitlink leaves the index while
+    the index's copy keeps every section it held (measured, git 2.43).
+    The `git add .gitmodules` step stays because a person may do both:
+    once a section is written for one submodule, `git rm --cached` of
+    another exits 128 with `please stage your changes to .gitmodules`
+    until the file is staged (measured).
+
+    ONE STATE TAKES MORE. Where the index's copy holds a line git refuses,
+    git reads it only up to that line, and once restored it is a file on
+    this disk that git refuses whole: `git submodule status` exits 128
+    with `bad config line` (measured), and the doctor names nothing, as
+    beside any file git refuses. The removal still holds as printed; a
+    section holds once that line is mended too.
+
+    AND ONE IS A LIMIT: a `.gitmodules` the index marks skip-worktree, as a
+    sparse checkout leaves it (`S` in `git ls-files -t`; family.py's
+    `gitmodules-sparse`). git reads the index's copy there too, and the
+    submodule is named, but `git restore .gitmodules` exits 1 (`pathspec
+    '.gitmodules' did not match any file(s) known to git`), as `git
+    checkout -- .gitmodules` does (measured, git 2.43): the clause's first
+    step is not true until the mark is cleared.
+    """
+    held = unregistered_beside(legs, BESIDE_INDEX_COPY)
+    if not held:
+        return ""
+    return (f"{len(held)} submodule(s) sit beside a `.gitmodules` their "
+            "leg's index tracks and this disk lacks, whose copy in the "
+            "index, which git reads, has no section for them, so nothing "
+            "registers them and a recursive clone of the leg leaves each "
+            f"empty (#1093): {first_three(held)}; first restore that "
+            "`.gitmodules` in its leg (`git restore .gitmodules`), then give "
+            "each a section with its `path` and `url` in it, or, once it is "
+            "staged (`git add .gitmodules`), remove its gitlink with `git rm "
+            "--cached <its path in the leg>` in its leg")
 
 
 def slashed_clause(legs: list) -> str:
@@ -8790,9 +8949,10 @@ def unregistered_gitlinks(adopt, mount: Path, rel: str, tracked: list,
     """Each submodule `held` that no section of the leg's `.gitmodules`
     registers, as its path in the row, and what it sits beside, or `([],
     None)` (#1080): a `.gitmodules` whose sections register other paths
-    (`BESIDE_OTHER_SECTIONS`), or no `.gitmodules` in the leg's index
-    (`BESIDE_NO_GITMODULES`). `tracked` is every path the leg's index
-    lists, `paths` its files.
+    (`BESIDE_OTHER_SECTIONS`), no `.gitmodules` in the leg's index
+    (`BESIDE_NO_GITMODULES`), or one the leg's index tracks and this disk
+    lacks (`BESIDE_INDEX_COPY`, #1093). `tracked` is every path the leg's
+    index lists, `paths` its files.
 
     WHERE THE INDEX TRACKS NO `.gitmodules`, the copy git reads instead is
     read (`registered_unindexed`): the untracked file on this disk, or else
@@ -8800,11 +8960,14 @@ def unregistered_gitlinks(adopt, mount: Path, rel: str, tracked: list,
     status` finds its mapping there and exits 0; one it does not, or every
     one where there is no copy at all, is named beside none.
 
-    NOT WHERE THE INDEX TRACKS A `.gitmodules` THIS DISK LACKS (#1093). git
-    reads the index's copy there, and `git submodule status` exits 128
-    beside one with no section for the submodule, but this names nothing:
-    `git add .gitmodules` would stage the file's deletion, and no section
-    can be written in a file that is not there until it is restored.
+    WHERE THE INDEX TRACKS A `.gitmodules` THIS DISK LACKS (#1093), git
+    reads the index's copy, and so does this (`registered_in_the_index`):
+    a submodule it registers is not named, and one it does not is named
+    beside it, whether it holds no section or sections for other paths.
+    Its clause (`index_copy_clause`) has the file restored first: `git add
+    .gitmodules` would stage the file's deletion, and no section can be
+    written in a file that is not there. Not while it is unmerged: git
+    reads no copy then, and this names nothing.
 
     ASKED ONLY WHERE `empty_gitmodules` NAMED NONE: beside a `.gitmodules`
     that holds no section, #914's clause names each, and the entry #914
@@ -8812,17 +8975,24 @@ def unregistered_gitlinks(adopt, mount: Path, rel: str, tracked: list,
 
     IN EACH STATE A RECURSIVE CLONE OF THE LEG exits 0 and leaves the
     submodule's directory empty, and `git submodule status` there exits 128
-    with `no submodule mapping found in .gitmodules` (measured, git 2.43).
-    A `.gitmodules` the doctor cannot read as git does (`registered_paths`)
-    names nothing, as `holds_no_section` calls no such file empty: one that
-    is unmerged, that git refuses, or that is not a regular file here (a
-    link, which git reads through, or a directory).
+    with `no submodule mapping found in .gitmodules` (measured, git 2.43),
+    or, where the copy holds a line git refuses, both exit 128 with `bad
+    config line`. A `.gitmodules` the doctor cannot read as git does
+    (`registered_paths`) names nothing, as `holds_no_section` calls no such
+    file empty: one that is unmerged, while its copy on this disk is the
+    conflict, registers the submodule or is not there; one that git
+    refuses; or one that is not a regular file here (a link, which git
+    reads through, or a directory).
     """
     if not held:
         return [], None
     if adopt.GITMODULES not in tracked:
         registered = registered_unindexed(adopt, mount)
         beside = BESIDE_NO_GITMODULES
+    elif (adopt.GITMODULES in paths
+          and not os.path.lexists(mount / adopt.GITMODULES)):
+        registered = registered_in_the_index(adopt, mount)
+        beside = BESIDE_INDEX_COPY
     else:
         registered = (registered_paths(mount / adopt.GITMODULES)
                       if adopt.GITMODULES in paths else None)
@@ -8858,7 +9028,43 @@ def registered_unindexed(adopt, mount: Path) -> set | None:
     head = f"HEAD:{adopt.GITMODULES}"
     if git_answer(["rev-parse", "-q", "--verify", head], mount) is None:
         return set()
-    listing = gitmodules_listing(mount, ["--blob", head], partial=True)
+    return registered_in_blob(mount, head)
+
+
+def registered_in_the_index(adopt, mount: Path) -> set | None:
+    """The paths registered by the index's copy of `.gitmodules`, in a leg
+    whose index tracks one and whose disk lacks it, or None where git reads
+    no copy, or refuses that one whole (#1093).
+
+    WHERE GIT READS IT, in the order `gitmodules_entry` reads in (#668):
+    with no file on this disk, git's `config_from_gitmodules` reads the
+    index's copy, `:.gitmodules`, before HEAD's, and reads it up to its
+    first bad line (`registered_in_blob`). Measured, git 2.43: `git
+    submodule status` exits 0 beside an index copy with a section for the
+    submodule, whatever HEAD's holds, and 128 beside one that holds no
+    section, or only sections for other paths, though HEAD's register it.
+
+    NONE WHILE THE FILE IS UNMERGED: the index holds it only at stages 1,
+    2 and 3, so `rev-parse --verify` finds no `:.gitmodules` and git reads
+    no copy at all (`is_gitmodules_unmerged`). `git submodule status`
+    exits 128 there, but this names nothing, as for an unmerged file whose
+    copy on this disk holds the conflict: reading no copy as one with no
+    section would name a submodule whose section the merge's result may
+    hold.
+    """
+    index = f":{adopt.GITMODULES}"
+    if git_answer(["rev-parse", "-q", "--verify", index], mount) is None:
+        return None
+    return registered_in_blob(mount, index)
+
+
+def registered_in_blob(mount: Path, blob: str) -> set | None:
+    """The paths registered by the copy of `.gitmodules` at `blob`, HEAD's
+    or the index's, or None where git refuses it whole (#1080, #1093).
+    Read as `gitmodules_entry` reads a copy that is not the working tree's:
+    up to its first bad line, keeping every key before it (`submodule_keys`,
+    #733)."""
+    listing = gitmodules_listing(mount, ["--blob", blob], partial=True)
     keys = (None if listing is None
             else submodule_keys(listing, working_tree=False))
     return None if keys is None else registered_by(keys)
@@ -8998,8 +9204,9 @@ def audit_leg(adopt, policy, patterns: list, role: str, rel: str,
     registers its submodules, could never read `ok`. One that holds no
     section, in a leg that holds no submodule, asks nothing at all
     (`empty_gitmodules`, #655, #914). A submodule no section registers is
-    named, beside sections, or in a leg whose index tracks no `.gitmodules`,
-    too (`unregistered_gitlinks`, #1080).
+    named, beside sections, in a leg whose index tracks no `.gitmodules`, or
+    beside one its index tracks and this disk lacks, too
+    (`unregistered_gitlinks`, #1080, #1093).
 
     AND `answered_paths:` IS READ FOR THE QUESTIONS AND FOR THE PATHS IN THE
     WRONG LEG ALIKE (#525, #655): `answered_questions` takes from each those

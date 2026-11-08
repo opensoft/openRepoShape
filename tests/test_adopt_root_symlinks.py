@@ -62,7 +62,7 @@ from types import SimpleNamespace
 
 import pytest
 
-from conftest import (ADOPT, REPO, appended_to_command_scope,
+from conftest import (ADOPT, REPO, WINDOWS_SKIP, appended_to_command_scope,
                       clear_ambient_pin_sources, cloned_just_pushed, git,
                       make_source_repo, run_script, write_plan)
 
@@ -1170,6 +1170,40 @@ def test_the_shapes_own_pin_the_root_keeps_through_a_link_is_refused_too(
     no_leg_was_created(tmp_path)
 
 
+def test_a_directory_at_a_pins_file_through_a_link_names_what_it_reaches(
+        adopter, no_filter_repo_probe, links_as_links, tmp_path):
+    """A directory the root keeps where the walk reaches the pin's file,
+    `governance/openglass-pin.yaml/`, is `plan-root-holds-pin` too: the
+    finding names the first file kept in it (`README.md`, which sorts
+    before `notes.md`), inside the pin's file, and its fix renames the
+    directory the walk reaches, not that file (rv1091's NIT 4 on #1091).
+    Before #1091 `check` passed it (measured on main 823624d9). The
+    directory holds two files, so that the first is not the last
+    (rv1140's NIT 1)."""
+    files, legs = THROUGH_GOVERNANCE
+    held = f"{GOVERNANCE_PIN}/{README}"
+    later = f"{GOVERNANCE_PIN}/notes.md"
+    _, plan = planned(tmp_path, {**files, later: "# notes\n",
+                                 held: "# readme\n"},
+                      {CONTRACTS: GOVERNANCE}, legs)
+    declare(plan, A_PIN)
+    checked = check(plan)
+    assert checked.returncode == 1, checked.stderr + checked.stdout
+    assert symlink_findings(checked) == [], checked.stderr
+    line = (f"FINDING {ROOT_HOLDS_PIN}: the plan keeps the file "
+            f"{ticked(held)} in the assembly root under the entry "
+            f"`governance/`, inside {ticked(PIN_FILE)} through the symlink "
+            f"{ticked(CONTRACTS)} to `governance`, where `execute` writes "
+            f"{DECLARED_HELD}: send {ticked(CONTRACTS)} to a leg or `drop` "
+            f"it, or rename {ticked(GOVERNANCE_PIN)} in the source and "
+            "re-run `plan`.")
+    assert held_pins(checked) == [line], checked.stderr
+    refusal = refused_by(adopter, execute_args(tmp_path, plan))
+    assert refusal.code == ROOT_HOLDS_PIN
+    assert f"  {line}" in refusal.detail.splitlines()
+    no_leg_was_created(tmp_path)
+
+
 def test_a_pins_file_through_a_link_to_where_nothing_is_kept_is_no_finding(
         links_as_links, tmp_path):
     """The control: nothing is kept at `governance/openglass-pin.yaml`, so
@@ -2067,14 +2101,44 @@ def test_a_ref_probe_in_a_work_directory_it_cannot_write_gives_no_note(
     assert probe.notes() == []
 
 
+def refusing_the_ref_probe(base: Path) -> dict:
+    """The environment of a git that will not make the ref probe's
+    repository: a stub first on PATH fails each `git init` of a
+    `refs-probe-*` directory as `GIT_DEFAULT_HASH=bogus` fails it
+    (`UNKNOWN_HASH`, exit 128), and hands any other command to the real
+    git."""
+    stubs = base / "ref-probe-stubs"
+    stubs.mkdir()
+    stub = stubs / "git"
+    stub.write_bytes("\n".join([
+        "#!/bin/sh",
+        'for arg in "$@"; do',
+        '  [ "$arg" = init ] || continue',
+        '  for word in "$@"; do',
+        '    case "$word" in */refs-probe-*) ;; *) continue ;; esac',
+        f'    echo "{UNKNOWN_HASH}" >&2',
+        "    exit 128",
+        "  done",
+        "done",
+        'exec "$REAL_GIT" "$@"', ""]).encode("ascii"))
+    stub.chmod(0o755)
+    return {"PATH": str(stubs) + os.pathsep + os.environ["PATH"],
+            "REAL_GIT": shutil.which("git")}
+
+
+@WINDOWS_SKIP  # a `#!` stub named `git` first on PATH
 def test_check_says_where_git_would_not_make_the_ref_probe(
         links_as_links, tmp_path, monkeypatch):
-    """`GIT_DEFAULT_HASH=bogus` fails the ref probe's `git init`, and not
-    `check`'s throwaway repositories, which name the source's format:
-    `check` passes a link to `.git/HEAD`, as git's defaults hold it, and
-    says why it took them."""
+    """A git that will not make the ref probe's repository, and makes every
+    other: `check` passes a link to `.git/HEAD`, as git's defaults hold it,
+    and says why it took them, in git's words. The probe's `git init` is
+    failed by a stub, as `GIT_DEFAULT_HASH=bogus` failed it here before
+    #1083: that variable now stops the split's own `git clone` of the
+    source too, which `check` makes first and names `adopt-git-unasked`,
+    so it would no longer reach the probe (r1119b's MUST-2)."""
     _, plan = planned(tmp_path, {}, {CLAUDE: GIT_HEAD}, {CLAUDE: ROOT})
-    monkeypatch.setenv("GIT_DEFAULT_HASH", "bogus")
+    for name, value in refusing_the_ref_probe(tmp_path).items():
+        monkeypatch.setenv(name, value)
     checked = check(plan)
     assert checked.returncode == 0, checked.stderr + checked.stdout
     assert NO_REF_PROBE_NOTE in checked.stdout, checked.stdout
