@@ -3341,8 +3341,9 @@ def refusals_ahead(ctx: Context, us) -> dict | None:
     NONE WHERE THE QUESTION CANNOT BE ASKED: the pin does not read, the
     checkout of the standard is a partial clone short of what the
     comparison reads, where `prepare` would fetch (`partial_clone_row`,
-    #683), or `prepare` refuses. The `shape currency` row says which, and
-    the `pins` row keeps its gate.
+    #683), or `prepare` refuses, the root's own `source_repository:` among
+    its reasons (#1203). The `shape currency` row says which of the others,
+    and the `pins` row keeps its gate.
     """
     try:
         pin, _rows = us.read_pin(ctx.root)
@@ -3353,9 +3354,15 @@ def refusals_ahead(ctx: Context, us) -> dict | None:
     args = argparse.Namespace(root=str(ctx.root), upstream=str(ctx.shape),
                               at=None)
     try:
-        # `ask_source=False`, as `check_shape_currency` asks it (#1203).
+        # THE PIN'S `source_repository:` IS ASKED HERE, unlike in
+        # `check_shape_currency` (#1203, the review of PR #1269, S2): the
+        # `pins` row says `update-shape.py check` reports the copies
+        # `merged-away` and the `apply` it prints drops their rows, and for
+        # a root whose field that `check` refuses it exits 2 and does
+        # neither. A refusal here is "cannot ask", below, and the row keeps
+        # the gate's finding.
         root, _pin, rows, _added, upstream, _pinned, _target, kind = \
-            us.prepare(args, ask_source=False)
+            us.prepare(args)
     except Refusal:
         return None
     try:

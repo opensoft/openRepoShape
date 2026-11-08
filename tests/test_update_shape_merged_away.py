@@ -522,6 +522,50 @@ def test_the_pins_row_keeps_the_gate_where_check_refuses_the_standard(
         rows_of(doctor(stranger, root, "--json"))["pins"])
 
 
+def test_the_pins_row_keeps_the_gate_where_check_refuses_the_pins_source(
+        standard, root):
+    """Run over two collision copies merged away AND a pin whose
+    `source_repository:` is a hand edit (#1203, the review of PR #1269, S2).
+    `update-shape.py check` asks that field before it classifies a row and
+    refuses `update-upstream-unresolvable`, exit 2, in the pin's name: it
+    reports no copy `merged-away`, and the `apply` that would drop their
+    rows never starts. So `refusals_ahead` cannot ask its question here, as
+    where `check` refuses the standard, and the `pins` row keeps its gate.
+    With the field left unasked there (`ask_source=False`) the row said that
+    `check` reports them `merged-away` and that the `apply` it prints drops
+    their pin rows, and its NEXT was that `check`.
+
+    The `shape currency` row does not ask the field, and answers as it did:
+    it counts the two rows `merged-away`, exit 1 for the verdict, with no
+    CANNOT ANSWER. The scaffolded value, with the same two copies, is
+    `test_a_merged_away_copys_row_goes_and_the_project_is_green_again`: the
+    `pins` row names `check` and `merged_away` there."""
+    merge_away(root, *MERGED.values())
+    pin = root / SHAPE_PIN
+    text = pin.read_text(encoding="utf-8")
+    edited, edits = re.subn(r"(?m)^source_repository: .*$",
+                            'source_repository: "has space/x"', text)
+    assert edits == 1, text
+    pin.write_bytes(edited.encode("utf-8"))
+    git("-c", "user.name=t", "-c", "user.email=t@t", "commit", "-q", "-m",
+        "The pin's source, as a hand edit wrote it", "--", SHAPE_PIN,
+        cwd=root)
+    checked = update_shape(standard, root, "check")
+    assert checked.returncode == 2, checked.stdout + checked.stderr
+    assert checked.stderr.startswith(
+        "REFUSED update-upstream-unresolvable: "), checked.stderr
+    assert "merged-away" not in checked.stdout, checked.stdout
+
+    result = doctor(standard, root, "--json")
+    rows = rows_of(result)
+    assert_the_pins_row_is_the_gate(rows["pins"])
+    currency = rows["shape-currency"]
+    assert currency["status"] == "FINDING", currency
+    assert "environment" not in currency["detail"], currency
+    assert currency["detail"]["counts"]["merged-away"] == 2, currency
+    assert result.returncode == 1, result.stdout + result.stderr
+
+
 #: The pinned copy the `both` and `upstream-removed` cases move upstream,
 #: and the file the `unmapped` case pins that no upstream path maps to.
 MOVED_COPY = "AGENTS-shape.md"
