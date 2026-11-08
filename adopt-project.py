@@ -1934,18 +1934,62 @@ def _recorded_spelling(recorded: str) -> tuple[str, str]:
     locale's encoding, which cannot spell the text: a plan written under
     another locale of one byte to a character, Latin-1 say, recorded
     other bytes. A surrogate no byte is read as cannot be those bytes
-    either, and no name on the disk holds it: it is asked as written."""
+    either, and no name on the disk holds it: it is asked as written.
+    Where this locale spells the text otherwise than its UTF-8, as Latin-1
+    spells `\\u00e9` as one byte, `_recorded_path` asks those bytes too
+    (#1078)."""
     try:
         os.fsencode(recorded)
         return recorded, ""
     except UnicodeEncodeError:
         pass
-    try:
-        spelling = os.fsdecode(recorded.encode("utf-8", "surrogateescape"))
-    except UnicodeEncodeError:
+    spelling = _utf8_spelling(recorded)
+    if spelling is None:
         return recorded, ""
     return spelling, (f" as UTF-8 spells it (this locale's file names, "
                       f"{sys.getfilesystemencoding()}, cannot spell it)")
+
+
+def _utf8_spelling(recorded: str) -> str | None:
+    """`recorded`'s UTF-8 bytes, a byte that is not UTF-8 as its surrogate
+    (`surrogateescape`), as `os.fsdecode` spells them in this locale: the
+    name a plan written in UTF-8 records (#918, #1078). None for a surrogate
+    no byte is read as, which no name on the disk holds, and on Windows for
+    a byte that is not UTF-8, which `os.fsdecode` refuses there."""
+    try:
+        return os.fsdecode(recorded.encode("utf-8", "surrogateescape"))
+    except UnicodeError:
+        return None
+
+
+def _recorded_path(recorded: str) -> tuple[Path, bool, str]:
+    """`(path, there, said)`: `recorded`, a path a plan records as text, as
+    `_recorded_spelling` spells it, `~` expanded; whether anything is there,
+    asked as `_is_there` asks it, so a `stat` the operating system refused
+    is raised (#430); and `_recorded_spelling`'s `said`.
+
+    WHERE THAT NAMES NOTHING, THE PLAN'S UTF-8 BYTES ARE ASKED TOO (#1078).
+    Under a locale of one byte to a character, Latin-1 say, `os.fsencode`
+    spells `Thing\\u00e9` as written, its last character as the one byte
+    0xE9, so `_recorded_spelling` asks it as written; but a plan written in
+    UTF-8 holds the name `plan` read there, whose bytes are 0xC3 0xA9, and
+    `check` refused `plan-source-gone`, "names nothing that exists", of a
+    source that is there. The spelling as written is asked FIRST, so a plan
+    written under that locale, which records the name as that locale read
+    it, reads as it did. Where neither names anything, the path is the
+    spelling as written, and every word of a refusal is as before. Under a
+    UTF-8 locale, and for text that is all ASCII, the two are one name,
+    asked once."""
+    spelling, said = _recorded_spelling(recorded)
+    path = Path(os.path.expanduser(spelling))
+    if _is_there(path):
+        return path, True, said
+    utf8 = _utf8_spelling(recorded)
+    if utf8 is not None and utf8 != spelling:
+        other = Path(os.path.expanduser(utf8))
+        if _is_there(other):
+            return other, True, said
+    return path, False, said
 
 
 # ---------------------------------------------------------------------------
@@ -6726,13 +6770,12 @@ class Plan:
         the plan's source again, as the clone `_recorded_source` makes there
         is. On main `check` removed it, and the next run cloned it once
         more. The record is spelled as `_recorded_source` asks the disk for
-        it (`_recorded_spelling`, #918)."""
+        it (`_recorded_path`, #918, #1078)."""
         record = self.source.get("local_path")
         if not (made and record):
             return
         try:
-            at = os.path.realpath(os.path.expanduser(
-                _recorded_spelling(str(record))[0]))
+            at = os.path.realpath(_recorded_path(str(record))[0])
         except (OSError, ValueError):
             return
         made[:] = [claim for claim in made
@@ -6810,9 +6853,10 @@ class Plan:
         (`_recorded_spelling`, #918): a plan written in UTF-8 mode for
         `Thing\\u00e9` and checked under `LC_ALL=C PYTHONUTF8=0` was
         `plan-source-gone`, "names nothing that exists", of a source that is
-        there. It is named as the plan records it."""
-        spelling, said = _recorded_spelling(local_path)
-        path = Path(os.path.expanduser(spelling))
+        there. It is named as the plan records it. A path this locale
+        spells otherwise than UTF-8, as Latin-1 does, is asked as written
+        and, where that names nothing, as the plan's UTF-8 bytes too
+        (`_recorded_path`, #1078): it was `plan-source-gone` too."""
         named = f"the plan's `source.local_path`, {_spelled(local_path)}"
 
         def unreadable(exc: OSError) -> Refusal:
@@ -6825,7 +6869,7 @@ class Plan:
                 "plan's `commit:`")
 
         try:
-            there = _is_there(path)
+            path, there, said = _recorded_path(local_path)
         except OSError as exc:
             raise unreadable(exc) from exc
         if self.source.get("cloned") is not True:
@@ -17962,6 +18006,14 @@ def _unmade_work_dir(work_dir: Path, root: Path,
     `os.path.realpath` stops at a loop on a path the person may never have
     typed.
 
+    A `--work-dir` the system finds no symlink at, which `os.path.realpath`
+    reads as the link in the loop itself, is named as read (#1074):
+    `<A>/nothere/../self`, where `nothere` is missing, is no entry to the
+    system, and `os.path.realpath` takes its `..` as spelled and reads it as
+    `<A>/self`, a link to itself. So the reason says that, read as
+    `<A>/self`, it is a symbolic link that leads round a loop, and not that
+    the way to it does; the way out still names `<A>/self`.
+
     A DANGLING SYMLINK IS NO LOOP: `os.path.realpath` reads it as the path
     it leads to, which `_made_0755` makes, and only where that fails does
     it get here. That failure, and every other, a file at the `--work-dir`
@@ -17972,7 +18024,10 @@ def _unmade_work_dir(work_dir: Path, root: Path,
     looped = (_the_loop_in(root)
               if exc.errno in (errno.EEXIST, errno.ELOOP) else None)
     if looped is not None:
-        if link is None:
+        if link is None and looped == root:
+            why = f"read as {_spelled(str(root))}, {SYMLINK_LOOP}"
+            link = looped
+        elif link is None:
             why = ("the way to it leads round a loop, at the symbolic link "
                    f"{_spelled(str(looped))}")
             link = looped
@@ -17993,21 +18048,47 @@ def _unmade_work_dir(work_dir: Path, root: Path,
             "without one, each run makes a new one.")
 
 
+#: Windows' "cannot resolve" (`ERROR_CANT_RESOLVE_FILENAME`), the last of
+#: `_ABSENT_WINERRORS`: what `os.stat` of a symlink round a loop raises
+#: there, with an errno that is not ELOOP, as the gate's `_what_stands`
+#: reads it (`templates/assembly-root/scripts/validate-pins.py`). Not
+#: measured on Windows (#1074).
+CANNOT_RESOLVE_WINERROR = 1921
+
+
 def _the_loop_in(root: Path) -> Path | None:
     """The symlink in `root`, a `--work-dir` as `os.path.realpath` read it,
     that leads round a loop; None where there is none (#978).
     `os.path.realpath` follows every symlink but one it meets again before
-    it has resolved it, which it leaves in the path as it found it, with
-    the rest of the path unread after it. So the first symlink in `root`,
-    from `/` down, is that one, and the system is asked whether following
-    it loops (ELOOP), so that nothing else is called a loop."""
+    it has resolved it, which it leaves in the path as it found it. So each
+    symlink left in `root` is asked, from `/` down, whether following it
+    loops (ELOOP, or Windows' `CANNOT_RESOLVE_WINERROR`), and the first
+    that does is that one, so that nothing else is called a loop. One that
+    fails otherwise, a dangling link, ends the walk: nothing is below it.
+
+    A SYMLINK THAT DOES NOT LOOP IS PASSED OVER, and does not end the walk
+    (#1074). Up to Python 3.12, `os.path.realpath` leaves the rest of the
+    path unread after the loop, and `abspath` folds a `..` in it, which can
+    take the loop out of the path and leave a link that does not loop
+    before one that does: `w -> loop/../d/self2`, with `loop -> loop`, `d
+    -> realdir` and `realdir/self2 -> self2`, reads as `<A>/d/self2`, and
+    the walk ended at `d`, so `w` was called a link to what is no
+    directory. Python 3.13 and later read on past a loop and give
+    `<A>/realdir/self2`, which holds no other link.
+
+    ELOOP also means more than 40 links on the way (Linux's limit), so where
+    `abspath` folds a loop out of the path and leaves it more than 40 links,
+    the walk can name a link that does not itself loop, the one the limit is
+    reached at; the way out still names the `--work-dir`."""
     for part in (*reversed(root.parents), root):
         if os.path.islink(part):
             try:
                 os.stat(part)
             except OSError as exc:
-                return part if exc.errno == errno.ELOOP else None
-            return None
+                loops = (exc.errno == errno.ELOOP
+                         or getattr(exc, "winerror", None)
+                         == CANNOT_RESOLVE_WINERROR)
+                return part if loops else None
     return None
 
 
