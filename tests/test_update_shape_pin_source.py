@@ -44,7 +44,9 @@ refuses (`tests/test_update_shape_merged_away.py`).
 THE REVIEW OF PR #1269 (rv1269) added: `~<user>` for a user nobody has is
 nothing there, not a traceback (S1); so is a name over 255 bytes, which
 `stat` refuses `ENAMETOOLONG` (N1); the `pins` row asks the field (S2); the
-remedy for a value that names a folder here says where to run (N2).
+remedy for a value that names a folder here says where to run (N2). The
+second review (rv1269b) added: a raw NUL byte after the `~` is nothing there
+too, as `ValueError` is caught beside `RuntimeError` (NIT A).
 
 No network and no GitHub: every `--upstream` is a local clone, the A -> B
 upstream of `test_update_shape.py`, and the one run with no `--upstream`
@@ -259,6 +261,34 @@ def test_a_tilde_user_who_is_not_there_is_looked_up_as_the_bare_path(
     assert result.stderr.splitlines() == refused(
         root, "update-upstream-not-a-repo", f"'{NO_SUCH_HOME}'",
         NOT_A_REPO), result.stderr
+
+
+#: A raw NUL byte after a `~`, as a pin hand-edited in a binary editor holds
+#: one: `Path.expanduser` raises `ValueError` (`embedded null byte`) on it,
+#: not the `RuntimeError` it raises for a user nobody has (NIT A of the
+#: second review of PR #1269). Built with `chr`, so no escape is in the file.
+NUL_AFTER_TILDE = "~a" + chr(0) + "b/x"
+
+
+@pytest.mark.parametrize("passed", ROUTES)
+def test_a_nul_byte_after_a_tilde_is_refused_in_the_pins_name(
+        root, upstream_and_project, passed):
+    """A pin whose value has a raw NUL byte after the `~`: `expanduser`
+    raised `ValueError: embedded null byte`, which `_named_here` did not
+    catch, so `check` ended in a traceback, exit 1, the code it uses for
+    "behind" (NIT A of the second review of PR #1269). With no `--upstream`
+    main did the same; with one passed, main never asked the value and
+    exited 1 with a report. It is nothing there as `~<user>` nobody has is:
+    the bare path is looked up, nothing is at it, and the name question
+    refuses it, exit 2, in the pin's name."""
+    written_as(root, NUL_AFTER_TILDE)
+    result = run(root, "check",
+                 *(upstream_of(upstream_and_project) if passed else ()))
+    assert result.returncode == 2, result.stdout + result.stderr
+    assert result.stderr.splitlines() == refused(
+        root, "update-upstream-unresolvable", repr(NUL_AFTER_TILDE),
+        NOT_A_NAME), result.stderr
+    assert result.stdout == "", result.stdout
 
 
 @pytest.mark.parametrize("passed", ROUTES)

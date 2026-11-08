@@ -750,14 +750,16 @@ def _named_here(declared: str) -> Path | None:
     (the review of PR #1269, S1 and N1):
     - `~<user>/...` for a user the machine has not got: `expanduser`
       raises `RuntimeError`, and the bare path is looked up instead, which
-      names nothing;
+      names nothing. So does a NUL byte after the `~`: `expanduser` raises
+      `ValueError` (`embedded null byte`), and the bare path, which no file
+      has the name of, names nothing either (NIT A of the second review);
     - a name over the limit a path component may have (`ENAMETOOLONG`):
       `stat` cannot open what no file system can hold, as it cannot open
       what is not there.
     Every other `OSError` of the `stat` is raised, as `_is_a` raises it."""
     try:
         candidate = Path(declared).expanduser()
-    except RuntimeError:
+    except (RuntimeError, ValueError):
         candidate = Path(declared)
     try:
         return candidate if _is_a(candidate, _anything) else None
@@ -789,8 +791,9 @@ def pin_source(pin: dict, pin_path: Path) -> str:
       is no git repository: `update-upstream-not-a-repo`. The pin gets the
       same answer whether or not `--upstream` is passed. An `owner/repo`
       spelling that IS a repository here is taken, as it was, and with no
-      `--upstream` it is opened in place. A `~<user>` nobody has, and a
-      name too long for a path, are nothing there (`_named_here`).
+      `--upstream` it is opened in place. A `~<user>` nobody has (a NUL
+      byte after the `~` too), and a name too long for a path, are nothing
+      there (`_named_here`).
     - a value `REPOSITORY_RE` does not take WHOLE:
       `update-upstream-unresolvable`. A path that is not spelled
       `owner/repo` (`/srv/shape`, `~/shape`, `shape`) is refused here,

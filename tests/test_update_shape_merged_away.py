@@ -42,7 +42,7 @@ import pytest
 from conftest import REPO, WINDOWS_SKIP, clone_just_pushed, git, \
     make_source_repo, run_script
 from test_shape_doctor import (  # noqa: F401
-    commit_all, doctor, keep_as_committed_link, rows_of, standard,
+    DOCTOR, commit_all, doctor, keep_as_committed_link, rows_of, standard,
     standard_ahead, standard_of_another_history, verdict_line,
 )
 #: A partial clone of the standard one commit on, from the file that owns
@@ -61,6 +61,13 @@ pytestmark = pytest.mark.skipif(
 
 PROJECT = "Medx"
 SHAPE_PIN = "contracts/shape-pin.yaml"
+
+#: A mode that refuses the owner is a POSIX mode, and root reads through every
+#: one (the mark of `tests/test_bump_leg_unopenable.py`).
+needs_a_mode = pytest.mark.skipif(
+    sys.platform == "win32" or (hasattr(os, "geteuid") and os.geteuid() == 0),
+    reason="a mode that refuses the owner is a POSIX mode, and root reads "
+           "through every one (tests/test_bump_leg_unopenable.py)")
 
 #: The issue's own source, with a `Makefile` beside its `.gitignore`: two
 #: names the shape copies too, so the adoption writes both of its copies
@@ -506,6 +513,20 @@ def assert_the_pins_row_is_the_gate(pins_row: dict) -> None:
     assert "update-shape.py" not in pins_row["next"], pins_row["next"]
 
 
+def source_written_as(root: Path, value: str) -> None:
+    """The pin's `source_repository:` written double-quoted as `value`, as
+    a hand edit makes it, and committed (#1203)."""
+    pin = root / SHAPE_PIN
+    text = pin.read_text(encoding="utf-8")
+    edited, edits = re.subn(r"(?m)^source_repository: .*$",
+                            f'source_repository: "{value}"', text)
+    assert edits == 1, text
+    pin.write_bytes(edited.encode("utf-8"))
+    git("-c", "user.name=t", "-c", "user.email=t@t", "commit", "-q", "-m",
+        "The pin's source, as a hand edit wrote it", "--", SHAPE_PIN,
+        cwd=root)
+
+
 def test_the_pins_row_keeps_the_gate_where_check_refuses_the_standard(
         standard, root, tmp_path):
     """Run from a standard of another history, which does not carry the
@@ -541,15 +562,7 @@ def test_the_pins_row_keeps_the_gate_where_check_refuses_the_pins_source(
     `test_a_merged_away_copys_row_goes_and_the_project_is_green_again`: the
     `pins` row names `check` and `merged_away` there."""
     merge_away(root, *MERGED.values())
-    pin = root / SHAPE_PIN
-    text = pin.read_text(encoding="utf-8")
-    edited, edits = re.subn(r"(?m)^source_repository: .*$",
-                            'source_repository: "has space/x"', text)
-    assert edits == 1, text
-    pin.write_bytes(edited.encode("utf-8"))
-    git("-c", "user.name=t", "-c", "user.email=t@t", "commit", "-q", "-m",
-        "The pin's source, as a hand edit wrote it", "--", SHAPE_PIN,
-        cwd=root)
+    source_written_as(root, "has space/x")
     checked = update_shape(standard, root, "check")
     assert checked.returncode == 2, checked.stdout + checked.stderr
     assert checked.stderr.startswith(
@@ -558,6 +571,55 @@ def test_the_pins_row_keeps_the_gate_where_check_refuses_the_pins_source(
 
     result = doctor(standard, root, "--json")
     rows = rows_of(result)
+    assert_the_pins_row_is_the_gate(rows["pins"])
+    currency = rows["shape-currency"]
+    assert currency["status"] == "FINDING", currency
+    assert "environment" not in currency["detail"], currency
+    assert currency["detail"]["counts"]["merged-away"] == 2, currency
+    assert result.returncode == 1, result.stdout + result.stderr
+
+
+@needs_a_mode
+def test_the_pins_row_keeps_the_gate_where_the_pins_source_cannot_be_read(
+        standard, root, tmp_path):
+    """Run over two collision copies merged away AND a pin whose
+    `source_repository:` is `locked/x`, a folder of the directory the doctor
+    runs in that this user may not search (NIT B of the second review of PR
+    #1269). `pin_source` stats the value as a path, the stat is refused
+    `Permission denied`, and the `OSError` is raised out of `prepare`:
+    `update-shape.py check` names it `update-unreadable`, exit 2, and
+    reports no copy `merged-away`. `refusals_ahead` caught `Refusal` only,
+    so the error left it and the `pins` row read `could not be run: [Errno
+    13] ...`, where it kept the gate's finding before the field was asked.
+    It cannot ask its question here, as where `check` refuses the field in
+    the pin's name, and the `pins` row keeps its gate.
+
+    The `shape currency` row does not ask the field, and answers as it did:
+    it counts the two rows `merged-away`, with no CANNOT ANSWER. The mode is
+    given back in a `finally`."""
+    merge_away(root, *MERGED.values())
+    source_written_as(root, "locked/x")
+    here = tmp_path / "here"
+    locked = here / "locked"
+    locked.mkdir(parents=True)
+    locked.chmod(0)
+    try:
+        checked = run_script(standard / "update-shape.py", "check", "--root",
+                             str(root), "--upstream", str(standard),
+                             cwd=here)
+        result = run_script(standard / DOCTOR, "--root", str(root), "--json",
+                            cwd=here)
+    finally:
+        locked.chmod(0o755)
+    assert checked.returncode == 2, checked.stdout + checked.stderr
+    assert checked.stderr.startswith(
+        "REFUSED update-unreadable: locked/x: cannot be read "), \
+        checked.stderr
+    assert "merged-away" not in checked.stdout, checked.stdout
+
+    rows = rows_of(result)
+    assert "could not be run" not in rows["pins"]["reason"], rows["pins"]
+    assert "shape-copy-missing" in rows["pins"]["reason"], rows["pins"]
     assert_the_pins_row_is_the_gate(rows["pins"])
     currency = rows["shape-currency"]
     assert currency["status"] == "FINDING", currency
