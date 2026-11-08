@@ -35,10 +35,9 @@ from pathlib import Path
 
 import pytest
 
-from conftest import (A_BYTE_READ_AS_A_SURROGATE, IDENTITY_CONFIG, REPO,
-                      WINDOWS_SKIP, load_without_bytecode,
-                      skip_where_a_name_cannot_be_not_utf_8,
-                      skip_where_the_locale_does_not_spell_it_as_utf_8)
+from conftest import (IDENTITY_CONFIG, REPO, WINDOWS_SKIP,
+                      load_without_bytecode,
+                      skip_where_a_name_cannot_be_not_utf_8)
 
 SHELLS = [pytest.param(name, id=name)
           for name in ("sh", "dash", "bash", "zsh")]
@@ -277,7 +276,9 @@ def test_surrogateescape_reads_the_issues_branch_as_caf_and_u_dce9():
     branch = read_as_the_module_does(LATIN_1)
 
     assert branch == "caf" + chr(0xDCE9)
-    if os.fsencode(chr(0xDCE9)) == b"\xe9":
-        skip_where_the_locale_does_not_spell_it_as_utf_8(
-            chr(0xDCE9), A_BYTE_READ_AS_A_SURROGATE)
+    # `os.fsdecode` agrees only where the locale reads the byte E9 as U+DCE9
+    # (UTF-8, ASCII); a one-byte locale such as Latin-1 reads it as U+00E9
+    # (#1214). The assertion above holds in every locale.
+    if (os.fsencode(chr(0xDCE9)) == b"\xe9"
+            and os.fsdecode(b"\xe9") == chr(0xDCE9)):
         assert os.fsdecode(LATIN_1) == branch

@@ -49,9 +49,8 @@ from pathlib import Path
 
 import pytest
 
-from conftest import (A_BYTE_READ_AS_A_SURROGATE, A_NAME_HELD_AS_UTF_8, ADOPT,
-                      REPO, WINDOWS_SKIP, blank_unnamed_pin_sources,
-                      make_source_repo, resolve,
+from conftest import (A_BYTE_READ_AS_A_SURROGATE, ADOPT, REPO, WINDOWS_SKIP,
+                      blank_unnamed_pin_sources, make_source_repo, resolve,
                       skip_where_a_name_cannot_be_not_utf_8,
                       skip_where_the_environment_cannot_carry,
                       skip_where_the_locale_does_not_spell_it_as_utf_8)
@@ -694,8 +693,6 @@ def test_a_utf8_source_directory_still_adopts_with_local_remotes(tmp_path):
     test."""
     parent = tmp_path / "caf\u00e9"
     skip_where_the_environment_cannot_carry(parent.name)
-    skip_where_the_locale_does_not_spell_it_as_utf_8(parent.name,
-                                                     A_NAME_HELD_AS_UTF_8)
     source = make_source_repo(parent / "Thing")
     runs = plan_check_execute(tmp_path, source)
     assert_no_traceback(runs)
