@@ -3450,17 +3450,54 @@ def cannot_be_listed(named: str, exc: OSError) -> str:
 
 
 #: The key of a leg's or a member's `--json` entry that holds the gate's line
-#: for a mount this user cannot reach (#430), beside a leg's `cannot_be_read`,
-#: which is its PIN's (#847).
+#: for a mount this user cannot reach (#430), or whose git directory it
+#: cannot read (#1174), beside a leg's `cannot_be_read`, which is its PIN's
+#: (#847).
 MOUNT_UNREAD = "mount_cannot_be_read"
 
 
-def mount_read(root: Path, rel: str) -> tuple:
+def git_dir_of(dotgit: Path) -> Path | None:
+    """The git directory of a mount whose `.git` is `dotgit`, found as
+    `validate-pins.py`'s `_leg_git_dir` finds it (#968, #1174): `dotgit`
+    itself where it is no regular file (a checkout's own directory); the
+    directory a gitfile's `gitdir: ` line names, joined to the gitfile's own
+    directory as git joins it, its `..` left for the system to follow; and
+    None where the gitfile names none, which is left to git, as the gate
+    leaves it. Raises the `OSError` of a `stat` or a read the operating
+    system refused."""
+    if not is_a(dotgit, stat.S_ISREG):
+        return dotgit
+    data = dotgit.read_bytes()
+    if not data.startswith(b"gitdir: "):
+        return None
+    return dotgit.parent / os.fsdecode(data[len(b"gitdir: "):].rstrip(b"\r\n"))
+
+
+def git_dir_named(root: Path, rel: str, gitdir: Path) -> str:
+    """`gitdir` as the gate names it (`_named`, #968): normalized, from the
+    root and POSIX (`.git/modules/spec`), or whole where it is not under the
+    root. Where it is not under the mount at `rel`, the mount's path goes
+    first (`spec: .git/modules/spec`), so the line of every row that reads
+    the mount starts with that mount, as `leg_shape_summary`,
+    `leg_audit_summary` and `member_problem` print it (#1174)."""
+    path = Path(os.path.normpath(gitdir))
+    try:
+        named = path.relative_to(root).as_posix()
+    except ValueError:
+        named = str(path)
+    mount = root / rel
+    if path == mount or mount in path.parents:
+        return named
+    return f"{rel}: {named}"
+
+
+def mount_read(root: Path, rel: str, git_dir: bool = True) -> tuple:
     """`(populated, own_git, refused)` for the leg or member mounted at `rel`:
     whether a directory with anything in it is there, whether it holds a
     `.git` of its own, and None, or `(the gate's line, the OSError, whether it
     was the listing)` where the operating system refused the mount's `stat`,
-    its listing or its `.git`'s `stat` (#430).
+    its listing or its `.git`'s `stat` (#430), or a read of its git
+    directory (#1174).
 
     ONE QUESTION FOR THE FOUR ROWS THAT READ A MOUNT -- `legs`, `leg shape
     files`, `placement` and `members` -- each of which asked `mount.is_dir()
@@ -3481,6 +3518,29 @@ def mount_read(root: Path, rel: str) -> tuple:
     is asked only of a mount with something in it, which is the answer
     `(mount / ".git").exists()` gave an empty, absent or non-folder mount. A
     listing that fails because nothing is there any more is nothing there.
+
+    ITS GIT DIRECTORY IS ASKED AS THE GATE ASKS IT (#1174, the gate's
+    `_refuse_an_unreadable_git_dir`, #968): the `.git` itself where it is no
+    regular file, else the directory its gitfile's `gitdir: ` line names
+    (`git_dir_of`), and then the `stat` of that directory's `HEAD`. Git run
+    in a mount whose git directory this user cannot search failed, so the
+    `legs` and `members` rows read no HEAD and counted a leg or a member at
+    its pin as one off it, and `placement` said "it is not a git
+    repository"; and a `.git` DIRECTORY this user cannot search was passed
+    over by git, which read the ROOT's HEAD as the leg's and named a
+    checkout over it. A refused read of the gitfile is `<rel>/.git: cannot
+    be read (<reason>)`, and a refused `stat` of the `HEAD` names the git
+    directory as the gate names it (`git_dir_named`): `<rel>/.git`, or
+    `<rel>: .git/modules/<rel>` for one outside the mount. A gitfile that
+    names no directory, or a git directory with no `HEAD`, is not a read
+    this user was refused: it is left to git, which answers for it as it
+    always did.
+
+    `git_dir=False` ASKS NO GIT DIRECTORY, for the `leg shape files` row,
+    which compares a leg's files on disk and runs no git: a git directory
+    this user cannot search keeps no file in the mount from being read, so
+    that row compares them as it always did, and the `legs` row names the
+    directory and gives its advice (#1174).
     """
     mount = root / rel
     try:
@@ -3496,11 +3556,18 @@ def mount_read(root: Path, rel: str) -> tuple:
         return False, False, (cannot_be_listed(rel, exc), exc, True)
     if not populated:
         return False, False, None
+    dotgit = mount / ".git"
+    named = (Path(rel) / ".git").as_posix()
     try:
-        return True, is_a(mount / ".git", lambda _mode: True), None
+        if not is_a(dotgit, lambda _mode: True):
+            return True, False, None
+        gitdir = git_dir_of(dotgit) if git_dir else None
+        if gitdir is not None:
+            named = git_dir_named(root, rel, gitdir)
+            is_a(gitdir / "HEAD", lambda _mode: True)
     except OSError as exc:
-        return True, False, (cannot_be_read((Path(rel) / ".git").as_posix(),
-                                            exc), exc, False)
+        return True, False, (cannot_be_read(named, exc), exc, False)
+    return True, True, None
 
 
 def mount_unread_said(line: str) -> str:
@@ -7753,12 +7820,14 @@ def leg_shape_comparison(ctx: Context, role: str, rel: str) -> tuple:
     which they are, in the `state` the row prints. A leg this user cannot
     reach is a third, and its `state` is the gate's line for it, kept under
     `mount_cannot_be_read` as the `legs` row keeps it (`mount_read`, #430).
+    A leg whose git directory this user cannot read is not: no file here is
+    read through git, so its files are compared (#1174).
 
     Split out of `check_leg_shape_files` for #134.
     """
     mount = ctx.root / rel
     template = ctx.shape / "templates" / f"{role}-root"
-    populated, _own_git, unread = mount_read(ctx.root, rel)
+    populated, _own_git, unread = mount_read(ctx.root, rel, git_dir=False)
     if unread is not None:
         return ({"role": role, "state": unread[0], MOUNT_UNREAD: unread[0]},
                 [], [])
