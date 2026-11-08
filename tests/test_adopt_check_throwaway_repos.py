@@ -81,7 +81,9 @@ exit 128, which nothing read, and `diff-files` then listed every file it
 had not reached: `check` also said `plan-file-reencoded` for a file the
 split stores as its blob. Now the rules `git rm` leaves are marked
 unchanged in that compare, and a compare git refuses is the finding, in
-git's words.
+git's words. So a `.gitattributes` the plan keeps under `.github/`, whose
+filter fails, is the split's store's refusal alone, its folder named in
+UTF-8 or not (r1253's SHOULD-2).
 """
 
 from __future__ import annotations
@@ -99,7 +101,7 @@ import pytest
 
 from conftest import (ADOPT, WINDOWS_SKIP, appended_to_command_scope,
                       findings, git, planned, refused_before_any_leg,
-                      run_script)
+                      run_script, skip_where_a_name_cannot_be_not_utf_8)
 from test_adopt_nested_attributes import (KEEP_GITHUB, ROOT, ROOT_ATTRIBUTES,
                                           SOURCE, YML_CRLF, adoption_plan,
                                           committed_raw, github)
@@ -2495,6 +2497,80 @@ def test_a_gitattributes_the_mount_removes_is_still_compared(tmp_path):
     assert codes(result) == [REENCODED_FILES], result.stderr
     found = finding_lines(result)[0]
     assert SENT_CRLF in found and ": `docs/.gitattributes`." in found, found
+
+
+#: `caf` and the byte 0xE9, a folder name that is not UTF-8, as
+#: `Source.tree` keeps it (`os.fsdecode(b"caf\xe9")` on POSIX). Built with
+#: `chr`, as `NOT_UTF_8_BRANCH` is, so this module imports everywhere.
+NOT_UTF_8_FOLDER = "caf" + chr(0xDCE9)
+#: The root's rules that name the failing filter for a `.gitattributes` one
+#: folder under `.github/`, beside `*.md text`, which reaches `SPEC_MD`.
+FILTERED_UNDER_GITHUB = (f".github/*/.gitattributes filter={FAILING}\n"
+                         .encode() + OWN_TEXT_ROOT)
+#: A `.gitattributes` the plan keeps under `.github/`, whose filter fails:
+#: `(its folder, the folder as `plan` asks about it, the root's rules, the
+#: kept file's own)`. The root's rules name the filter for it, in a folder
+#: named in UTF-8 or not; or the kept file's own rule does, beside the
+#: root's `*.md text`.
+KEPT_UNDER_GITHUB = [
+    pytest.param(".github/kept/", ".github/kept/", FILTERED_UNDER_GITHUB,
+                 b"*.yml text\n", id="the-roots-rule"),
+    pytest.param(f".github/{NOT_UTF_8_FOLDER}/", '".github/caf\\udce9/"',
+                 FILTERED_UNDER_GITHUB, b"*.yml text\n",
+                 id="the-roots-rule-not-utf-8"),
+    pytest.param(".github/kept/", ".github/kept/", OWN_TEXT_ROOT,
+                 f".gitattributes filter={FAILING}\n".encode(),
+                 id="its-own-rule"),
+]
+
+
+def store_refused(path: str) -> str:
+    """`plan-file-reencoded` for the split's `git add`, which git refuses at
+    `path`, whose clean filter `FAILING` fails."""
+    return (f"FINDING {REENCODED_FILES}: this machine's git refuses to store "
+            "again what the plan keeps in the assembly root, as the split's "
+            f"`git add -A` does (git said `fatal: {path}: clean filter "
+            f"'{FAILING}' failed`), so `execute` would stop after the leg "
+            "repositories exist, no later than committing the split, and "
+            "sooner where a step before it meets the same rule: extracting "
+            "or seeding a leg, or mounting the legs, where the rule reaches "
+            "the `.gitmodules` it writes. Commit the file git names in the "
+            "source as git stores it, or change the rule or the setting that "
+            "refuses it, and re-run `plan`.")
+
+
+@pytest.mark.parametrize(("folder", "asked", "root", "kept"),
+                         KEPT_UNDER_GITHUB)
+def test_a_kept_nested_gitattributes_whose_filter_fails_is_the_stores_alone(
+        tmp_path, folder, asked, root, kept):
+    """A `.gitattributes` the plan keeps under `.github/`, whose filter
+    fails, beside `SPEC_MD`, which `*.md text` reaches and the split stores
+    as its blob. The mount's `git rm` leaves it, so the compare marks it
+    unchanged, by the bytes the tree holds (`_nul`), and the split's `git
+    add` refuses it: that is the one finding (r1253's SHOULD-2). Measured
+    on 93d29314 with git 2.43, in each row: `check` also said
+    `plan-file-reencoded` naming `SPEC_MD`, a second form of #1192. Where
+    only the root's own `.gitattributes` was marked, the compare refused the
+    kept file too; where the marked paths were encoded as strict UTF-8, the
+    folder that is not UTF-8 raised `UnicodeEncodeError`. git's words are
+    decoded with `replace` (`_SplitRehearsal.refused`), so that folder's
+    name in them is not held here."""
+    if not folder.isascii():
+        skip_where_a_name_cannot_be_not_utf_8(tmp_path)
+    source = a_source(tmp_path, files={ROOT_ATTRIBUTES: root,
+                                       f"{folder}.gitattributes": kept})
+    plan = planned(source, tmp_path, {asked: ROOT})
+    result = checked(plan, with_parameters(tmp_path, FAILING_FILTER))
+    assert "REFUSED" not in result.stderr, result.stderr
+    assert result.returncode == 1, result.stderr
+    assert codes(result) == [REENCODED_FILES], result.stderr
+    (found,) = finding_lines(result)
+    named = f"{folder}.gitattributes"
+    if folder.isascii():
+        assert found == store_refused(named)
+    else:
+        before, after = store_refused(named).split(named)
+        assert found.startswith(before) and found.endswith(after), found
 
 
 def test_each_refusal_is_named_in_the_groups_order(tmp_path):
