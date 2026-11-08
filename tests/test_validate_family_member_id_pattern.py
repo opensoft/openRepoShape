@@ -38,6 +38,7 @@ from __future__ import annotations
 import os
 import re
 import shlex
+import shutil
 
 import pytest
 
@@ -224,14 +225,31 @@ def test_a_row_id_whose_text_is_no_id_is_found(holder, spelled):
     assert found[0].startswith(row_finding("IRRS", value)), found[0]
 
 
-def test_a_row_id_that_reads_as_a_number_is_its_digits(holder):
+@pytest.mark.parametrize("number", [2026, 0], ids=["2026", "zero"])
+def test_a_row_id_that_reads_as_a_number_is_its_digits(holder, number):
     """A holder written before #259 keeps `id: 2026` for a member scaffolded
     with `--id 2026`, which the reader reads as a number; `family.py`'s
-    `_member_id` says the validator passes it, and it still does."""
-    with_row_id(holder, "2026")
-    assert row_of(holder, "IRRS")["id"] == 2026
+    `_member_id` says the validator passes it, and it still does. A bare
+    `id: 0` is the one number the two readings could part on: `add` asks the
+    member's own `id:` as `str(id or "")`, which makes `0` no id, and the row
+    is asked as `str()` alone, so `0` is the id `"0"`, an id the pattern
+    takes. Under `--no-members` it is `family ok`; with the members checked
+    it is the one `member-id-mismatch`, of a well-formed id that is not the
+    member's, with the number named as the reader read it."""
+    with_row_id(holder, str(number))
+    value = row_of(holder, "IRRS")["id"]
+    assert repr(value) == str(number), value
     result = validate(holder, "--no-members")
     assert result.returncode == 0, result.stdout + result.stderr
+    assert result.stdout.splitlines()[-1].startswith("family ok: "), \
+        result.stdout
+    result = validate(holder)
+    assert result.returncode == 1, result.stdout + result.stderr
+    assert findings(result.stderr) == [
+        "FINDING member-id-mismatch: members/IRRS: project.yaml declares id "
+        f"'irrs' but family.yaml records {number} for IRRS. The project's "
+        "own manifest is the source; this row is a pin of it."], \
+        result.stderr
 
 
 def test_a_row_spelled_as_an_earlier_one_is_member_duplicates_alone(holder):
@@ -266,6 +284,35 @@ def test_a_row_with_no_id_is_still_member_id_absent_alone(holder, spelled):
         "FINDING member-id-absent: IRRS: the row records no `id:`, so nothing "
         "checks that the tree mounted here is the project this row claims"], \
         result.stderr
+
+
+# --- the remedy for a pin that is no commit ---------------------------------
+
+def test_a_pin_that_is_no_commit_is_named_to_commit(holder):
+    """The remedy's `--to` is the commit the row pins, and where the row
+    pins none (`abc` here, not 40 hex) it is the placeholder `<commit>`, the
+    literal word: `bump` refuses `--to abc` as `member-to-not-a-commit`, so
+    printing the pin would print a line that cannot run. With the members
+    checked, `member-pin-commit` refuses the run first, so the row's finding
+    follows once the pin is mended."""
+    pinned = row_of(holder, "IRRS")["pin"]["commit"]
+    with_row_id(holder, double_quoted("irrs" + LF))
+    rewritten(holder / "family.yaml", f'      commit: "{pinned}"\n',
+              '      commit: "abc"\n')
+    result = validate(holder, "--no-members")
+    assert result.returncode == 1, result.stdout + result.stderr
+    found = findings(result.stderr)
+    assert len(found) == 1, result.stderr
+    assert found[0].startswith(row_finding("IRRS", "irrs" + LF) + " "), \
+        found[0]
+    argv = shlex.split(commands(found[0])[1])
+    assert argv[:3] == [PYTHON, "scripts/family.py", "bump"], argv
+    assert argv[argv.index("--member") + 1:] == ["IRRS", "--to", "<commit>"]
+    refused = validate(holder)
+    assert refused.returncode == 2, refused.stdout + refused.stderr
+    assert refused.stderr.startswith("REFUSED member-pin-commit: IRRS: "), \
+        refused.stderr
+    assert "member-id-malformed" not in refused.stderr
 
 
 # --- a mounted member's own `id:` --------------------------------------------
@@ -338,14 +385,24 @@ def test_the_members_own_id_is_asked_as_add_asks_it(family, holder, tmp_path):
 
 # --- the remedies, typed as printed ------------------------------------------
 
-def test_the_rows_remedy_runs_as_printed_from_the_tracking_branch(on_main):
+@pytest.mark.parametrize("where", [None, "it's a holder"],
+                         ids=["plain", "space-and-apostrophe"])
+def test_the_rows_remedy_runs_as_printed_from_the_tracking_branch(
+        on_main, tmp_path, where):
     """A row `id:` written by hand and committed, on the tracking branch,
     where a person stands after `init`. The finding's two commands, typed as
     printed from a checkout of openRepoShape: the switch makes a branch,
     and the `bump` to the commit the row pins writes the row's `id:` from
     the member's own `project.yaml`, the pin where it was. The gate is
-    green after it, in every mode."""
+    green after it, in every mode. The holder is also run from a path that
+    holds a space and an apostrophe, as `test_validate_family_branch_step.py`
+    does for `_switch_line`: the `bump` line quotes it for the reader's
+    shell, or what is typed is not what is printed."""
     holder = on_main
+    if where is not None:
+        target = tmp_path / where
+        shutil.move(str(on_main), str(target))
+        holder = target.resolve()
     with_row_id(holder, double_quoted("irrs" + LF))
     git("-c", "user.name=t", "-c", "user.email=t@t", "commit", "-qam",
         "A row id written by hand", cwd=holder)

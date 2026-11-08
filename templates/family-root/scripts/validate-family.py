@@ -1979,8 +1979,9 @@ def _check_member_ids_well_formed(root: Path, members: list,
     not run (measured for #1204); and `add` would clone the member again
     and move the pin to its tip without an `--at`. `bump` needs the member
     checked out, and its own `member-uninitialized` names the line that
-    checks it out. A pin that is no 40-hex commit is named `--to <commit>`,
-    with `member-pin-commit` beside it where members are checked.
+    checks it out. A pin that is no 40-hex commit is named `--to <commit>`;
+    where members are checked, `member-pin-commit` refuses the run first, and
+    this finding follows once the pin is mended.
     """
     projects: set[str] = set()
     for row in members:
