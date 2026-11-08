@@ -19,6 +19,13 @@ Now `check` reads the source, `plan ok`, under Latin-1 as under C and
 POSIX. The spelling as written is still asked first, and where neither
 names anything the refusal is word for word as before.
 
+ON 504a1dd6 (2026-10-22), #1112: such a plan recording a clone `plan` made
+in the work directory `<tmp>/Thing\\u00e9`, the clone since taken by a temp
+cleaner, was cloned again by every `check --work-dir <tmp>/Thing\\u00e9`
+under Latin-1. The clone made at the work directory's UTF-8 bytes, which
+are the record, was compared with the spelling as written alone, so it was
+removed when `check` ended. Now it is kept, and the next `check` reads it.
+
 THE LOCALE IS BUILT HERE, in the module's temporary directory, from a
 charmap and a locale source this file writes, so it needs only `localedef`
 and a C library that reads `LOCPATH` (glibc): a host without the `locales`
@@ -33,6 +40,7 @@ from __future__ import annotations
 import codecs
 import json
 import os
+import shlex
 import shutil
 import subprocess
 import sys
@@ -40,12 +48,16 @@ from pathlib import Path
 
 import pytest
 
-from conftest import ADOPT, blank_unnamed_pin_sources, spelled
+from conftest import (ADOPT, blank_unnamed_pin_sources, git,
+                      make_source_repo, spelled)
+from test_adopt_c_locale_bytes import in_the_locale
 from test_adopt_git_rm_bytes import C_LOCALE, LOCALE_KEYS, c_locale_or_skip
-from test_adopt_temp_work_roots import recorded
+from test_adopt_temp_work_roots import (PROJECT, REPOSITORY, SMALL_TREE,
+                                        recorded)
 from test_adopt_unenterable_source_and_locale import (
-    ACCENTED, kept_clones, written_in_utf8_mode,
+    ACCENTED, UTF8_MODE, kept_clones, written_in_utf8_mode,
 )
+from test_adopt_unsearchable_source import URL, planned_locally, recording_gh
 
 #: The locale #1078 names, as `LC_ALL` names the one built here.
 LATIN1_NAME = "en_US.ISO-8859-1"
@@ -73,6 +85,12 @@ path, there, said = adopter._recorded_path(json.loads(sys.argv[2]))
 print(json.dumps({"path": os.fsencode(path).hex(), "there": there,
                   "said": said, "encoding": sys.getfilesystemencoding()}))
 """
+#: The NOTE's words where the plan's clone is gone and is cloned again.
+CLONED_AGAIN = (f"no longer exists, so its `source.repository`, {REPOSITORY}, "
+                "is cloned again from GitHub")
+#: The NOTE's words where a file is where the plan's clone was.
+NOT_A_CLONE = ("is a clone `plan` made that is no longer whole (it is not a "
+               "directory), so its `source.repository`")
 
 
 def charmap() -> str:
@@ -240,3 +258,121 @@ def test_the_clone_at_the_record_is_kept_under_a_one_byte_locale(
     assert spells is True, "premise: Latin-1 spells the record"
     assert left == [elsewhere], (
         f"the clone at the record is not taken off: {left}")
+
+
+def cloning_gh(directory: Path, origin: Path) -> tuple[dict, Path]:
+    """`recording_gh`, whose `gh repo clone testorg/Thing <path>` clones
+    `origin`, a repository on disk, to `<path>` and points its `origin` at
+    GitHub, as `gh` does; any other call is refused: `(the environment a
+    child is run with, the log)`."""
+    env, log = recording_gh(directory)
+    (directory / "gh").write_bytes((
+        "#!/bin/sh\n"
+        f"printf '%s\\n' \"$*\" >> {shlex.quote(str(log))}\n"
+        f'[ "$1 $2 $3" = "repo clone {REPOSITORY}" ] || exit 4\n'
+        f'git clone -q --no-local {shlex.quote(str(origin))} "$4" || exit 4\n'
+        f'exec git -C "$4" remote set-url origin {URL}.git\n'
+    ).encode("utf-8"))
+    return env, log
+
+
+def a_taken_clone(monkeypatch, tmp_path: Path) -> tuple[Path, Path, dict]:
+    """A plan written in UTF-8 mode recording a clone `plan` made of
+    `testorg/Thing` in the work directory `<tmp>/Thing\\u00e9`, which a temp
+    cleaner has since taken, and a `gh` that clones it again: `(plan, gh
+    log, gh environment)`."""
+    in_the_locale(monkeypatch, UTF8_MODE)
+    origin = make_source_repo(tmp_path / "github" / PROJECT, tree=SMALL_TREE,
+                              edits=())
+    clone = tmp_path / ACCENTED / "source-readonly" / PROJECT
+    clone.parent.mkdir(parents=True)
+    git("clone", "-q", "--no-local", str(origin), str(clone), cwd=tmp_path)
+    git("remote", "set-url", "origin", f"{URL}.git", cwd=clone)
+    plan = planned_locally(tmp_path, clone, cloned=True)
+    assert recorded(plan)["local_path"].endswith(
+        f"/{ACCENTED}/source-readonly/{PROJECT}"), "premise: `plan`'s clone"
+    clone.rename(tmp_path / "taken")
+    env, log = cloning_gh(tmp_path / "gh-bin", origin)
+    return plan, log, env
+
+
+def test_a_clone_made_again_at_the_record_is_kept_under_a_one_byte_locale(
+        latin1, monkeypatch, tmp_path):
+    """#1112's measurement: on 504a1dd6, under Latin-1, `check --work-dir
+    <tmp>/Thing\\u00e9` cloned that plan's repository again at the work
+    directory's UTF-8 bytes, which are the record, but compared the clone
+    with the spelling as written alone (the byte 0xE9): it was removed when
+    `check` ended, and the next `check` cloned it once more, `gh` asked each
+    run. Now the first `check` keeps it, and the second reads it there,
+    `plan ok`, with no NOTE and no `gh`."""
+    plan, log, env = a_taken_clone(monkeypatch, tmp_path)
+
+    first, second = [checked(plan, tmp_path, ACCENTED, {**env, **latin1})
+                     for _ in range(2)]
+
+    assert first.returncode == 0, said(first)
+    assert CLONED_AGAIN in first.stdout
+    assert second.returncode == 0, said(second)
+    assert "plan ok" in second.stdout
+    assert "cloned again" not in said(second)
+    assert len(log.read_bytes().splitlines()) == 1, log.read_bytes()
+    assert (tmp_path / ACCENTED / "source-readonly" / PROJECT / ".git"
+            ).is_dir()
+
+
+def test_a_clone_made_again_beside_the_spelling_as_written_is_not_kept(
+        latin1, monkeypatch, tmp_path):
+    """Where the spelling as written, the byte 0xE9, holds a file where the
+    clone was, that is the record `_recorded_path` reads, and the clone made
+    again at the work directory's UTF-8 bytes is not: it is removed when
+    `check` ends, and the next `check` clones again, as on 504a1dd6. Kept,
+    the next `check` would read the spelling as written first, and be
+    refused `adopt-work-dir-occupied` at the clone it kept."""
+    plan, log, env = a_taken_clone(monkeypatch, tmp_path)
+    beside = os.path.join(os.fsencode(tmp_path), ACCENTED.encode(LATIN1),
+                          b"source-readonly")
+    os.makedirs(beside)
+    with open(os.path.join(beside, PROJECT.encode()), "wb") as handle:
+        handle.write(b"not a clone\n")
+
+    runs = [checked(plan, tmp_path, ACCENTED, {**env, **latin1})
+            for _ in range(2)]
+
+    for proc in runs:
+        assert proc.returncode == 0, said(proc)
+        assert "plan ok" in proc.stdout
+        assert NOT_A_CLONE in proc.stdout
+    assert len(log.read_bytes().splitlines()) == 2, log.read_bytes()
+    assert not os.path.lexists(tmp_path / ACCENTED / "source-readonly"
+                               / PROJECT)
+
+
+def test_a_clone_made_again_at_the_spelling_asked_first_is_kept(
+        latin1, monkeypatch, tmp_path):
+    """The reverse of the test above (#1153's review, N1): the plan's UTF-8
+    bytes hold a file where the clone was, so they are the record
+    `_recorded_path` reads, no longer whole, and `--work-dir` names the
+    spelling as written, the byte 0xE9, which is free. On 590ab96e the clone
+    made again there was compared with the UTF-8 bytes alone: it was removed
+    when `check` ended, and the next `check` cloned it once more, `gh` asked
+    each run. `_recorded_path` asks the spelling as written first, so now
+    the first `check` keeps it, and the second reads it there, `plan ok`,
+    with no NOTE and no `gh`."""
+    plan, log, env = a_taken_clone(monkeypatch, tmp_path)
+    (tmp_path / ACCENTED / "source-readonly" / PROJECT).write_bytes(
+        b"not a clone\n")
+    one_byte = ACCENTED.encode(LATIN1)
+
+    first, second = [checked(plan, tmp_path, os.fsdecode(one_byte),
+                             {**env, **latin1})
+                     for _ in range(2)]
+
+    assert first.returncode == 0, said(first)
+    assert NOT_A_CLONE in first.stdout
+    assert second.returncode == 0, said(second)
+    assert "plan ok" in second.stdout
+    assert "cloned again" not in said(second)
+    assert len(log.read_bytes().splitlines()) == 1, log.read_bytes()
+    assert os.path.isdir(os.path.join(os.fsencode(tmp_path), one_byte,
+                                      b"source-readonly", PROJECT.encode(),
+                                      b".git"))
