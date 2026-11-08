@@ -14395,6 +14395,26 @@ def _extract_leg(role: str, source: Source, work: Path, paths: list[str],
     """
     run(["git", *FILE_PROTOCOL, "clone", "-q", str(source.path), str(work)])
     run(["git", "checkout", "-q", "-B", branch, source.commit], cwd=work)
+    # THE CLONE'S `origin` URL GOES FIRST (#1247). It is the source's path,
+    # byte for byte, and `git filter-repo` prints it as it removes `origin`
+    # (`NOTICE: Removing 'origin' remote ... (was <url>)`), decoded as UTF-8
+    # with `errors='replace'`. Under a Latin-1 locale a directory `caf` plus
+    # U+00E9 is the byte 0xE9, which that decode makes U+FFFD, and a Latin-1
+    # stdout cannot hold U+FFFD: filter-repo raised `UnicodeEncodeError` and
+    # `execute` stopped after both legs existed. No variable reaches every
+    # install: a launcher that runs it with `python -E`, as #1247's pipx one
+    # did, drops `PYTHONIOENCODING` and `PYTHONUTF8`, and an `LC_ALL` for the
+    # child names a locale the host may not have. With no url, filter-repo
+    # prints nothing of `origin` and leaves the remote alone, and nothing reads
+    # that remote again: `_push_the_leg` pushes to the leg's url, and
+    # `_mount_the_legs` mounts this clone by its path. ONLY THE URL: the
+    # remote-tracking branches stay, and filter-repo still makes each a branch
+    # before it asks for the url, so it rewrites every branch of the source as
+    # before. `git remote remove` took them with it, and a leg whose tracking
+    # branch holds a `cherry-pick -x` of a commit only another branch reaches
+    # then kept that commit's old id in its message, where this one rewrites
+    # it: a different leg (git 2.43, filter-repo 2.47.0).
+    run(["git", GIT_CONFIG, "--unset", "remote.origin.url"], cwd=work)
     # LF, on every platform. `git filter-repo --paths-from-file` matches a
     # line against a path, and a CRLF-terminated line ends in a character no
     # path contains - so on Windows every pattern would match nothing, the
