@@ -98,7 +98,7 @@ from test_family_head_lost_gitmodules import (
 )
 from test_family_member_path import MEMBER, OTHER, raw
 from test_family_tracking_branch import on_main  # noqa: F401
-from test_validate_family_typed_states import ROW, removal_staged
+from test_validate_family_typed_states import GONE, ROW, removal_staged
 from test_validate_family_unnamed_mounts import commands, findings
 
 #: The issue's table, `update = None` first, then `branch` with no value:
@@ -185,17 +185,20 @@ def said(key: str, value: str | None, where: str) -> str:
 
 
 def taken_out(key: str, value: str | None, *, back: str | None = None,
-              where: str = HERE_AND_HEAD, put_back: bool = False) -> str:
+              where: str = HERE_AND_HEAD, put_back: str = "") -> str:
     """`gitmodules-value-refused` WHOLE, with the commands that take the key
-    out of the work tree's file, after the one that puts HEAD's back where
-    `put_back`, and write `back` in where it is given."""
-    lines = (["git checkout HEAD -- .gitmodules"] if put_back else []) + [
+    out of the work tree's file, after the one that puts back the file git
+    reads in its place where the work tree's is gone as `put_back`
+    (`GONE`) says, the index's, or HEAD's where the index holds none
+    (#1077), and write `back` in where it is given."""
+    whose, line = GONE[put_back] if put_back else ("", "")
+    lines = ([line] if put_back else []) + [
         f"git config -f .gitmodules --unset-all {full(key)}"]
     if back is not None:
         lines.append(f"git config -f .gitmodules {full(key)} {back}")
     return (said(key, value, where)
             + ("The work tree holds no .gitmodules, so the first line below "
-               "puts HEAD's back. " if put_back else "")
+               f"puts back {whose}. " if put_back else "")
             + "Take the key out"
             + (f" and write its {key} back" if back is not None else "")
             + " by hand, in a POSIX shell"
@@ -1094,10 +1097,11 @@ def test_a_value_git_dies_on_in_the_index_s_file_is_named_and_mended(
         family, holder, offline, tmp_path):
     """`update = None` committed, and the work tree's file lost, not
     committed: git reads the index's and dies all the same, and bootstrap
-    names it. The gate reads HEAD's, and, the work tree holding none, its
-    first line puts HEAD's back before the key is taken out. Typed as
-    printed and committed, the same run checks both members out and the
-    gate passes in every mode."""
+    names it. The gate reads the index's too, as git reads it, and HEAD's,
+    which both give it, and, the work tree holding none, its first line
+    puts the index's back before the key is taken out, not HEAD's (#1077).
+    Typed as printed and committed, the same run checks both members out
+    and the gate passes in every mode."""
     env = fetching(isolated(offline, tmp_path))
     clone, _ = edited_clone(holder, env, family, tmp_path,
                             with_line("update = None"))
@@ -1113,16 +1117,18 @@ def test_a_value_git_dies_on_in_the_index_s_file_is_named_and_mended(
         failed_on(MEMBER, OTHER)], result.stderr
     found_in_every_mode_and_typed(
         clone, env,
-        taken_out("update", "None", where=HEAD_ONLY, put_back=True))
+        taken_out("update", "None", put_back="deleted"))
     assert_a_good_holder_s_run(clone, env)
 
 
-def test_two_keys_with_no_gitmodules_in_the_work_tree_put_head_s_back_once(
+def test_two_keys_with_no_gitmodules_in_the_work_tree_put_it_back_once(
         holder, offline, tmp_path):
     """Two values git dies on committed, and the work tree's file lost: one
-    finding for each key, and only the first puts HEAD's back, since a
-    second `git checkout` would put back the key the first took out. Typed
-    as printed and committed, the holder passes in every mode."""
+    finding for each key, and only the first puts the index's back, the
+    file git reads, which gives both, as HEAD's does (#1077: it put HEAD's
+    back), since a second `git checkout` would put back the key the first
+    took out. Typed as printed and committed, the holder passes in every
+    mode."""
     env = isolated(offline, tmp_path)
     data = raw(holder, env, "show", f"HEAD:{GITMODULES}").stdout
     # Each line goes in right after the url, so `update` comes first.
@@ -1134,8 +1140,8 @@ def test_two_keys_with_no_gitmodules_in_the_work_tree_put_head_s_back_once(
 
     assert result.returncode == 1, result.stdout + result.stderr
     assert findings(result) == [
-        taken_out("update", "None", where=HEAD_ONLY, put_back=True),
-        taken_out("shallow", "maybe", where=HEAD_ONLY)]
+        taken_out("update", "None", put_back="deleted"),
+        taken_out("shallow", "maybe")]
     for finding in findings(result):
         for command in commands(finding):
             type_line(holder, env, command)
