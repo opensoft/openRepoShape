@@ -79,11 +79,17 @@ ruled and measured on the MedxEHR conversion: `contracts/` moved to the spec
 leg, and the code leg's tooling now takes `CONTRACTS_DIR` from the environment
 rather than each script guessing at `../`. Where this root was ADOPTED, the
 shape's Makefile exports `CONTRACTS_DIR` once, as the `contracts/` of the spec
-leg at the path `project.yaml` mounts it, and `make contracts-dir` prints it.
-Where the source kept a Makefile of its own, that block waits in
-`shape/Makefile` until the two are merged. A SCAFFOLDED root's Makefile exports
-none: its legs start from the scaffold's seed, with no `contracts/`, so
-nothing reads across them yet.
+leg at the path `project.yaml` mounts it, and `make contracts-dir` prints it
+wherever `make` reads that Makefile. GNU make reads the first of `GNUmakefile`,
+`makefile` and `Makefile` it finds, and only that one. Where the source kept a
+Makefile of its own, that block waits in `shape/Makefile` until the two are
+merged. Where the source kept a `GNUmakefile` or a `makefile`, beside a
+`Makefile` or instead of one, `make` at the root reads the first of them, and
+not the shape's Makefile unless that file includes it, so `make contracts-dir`
+has no rule there until that file holds the block, or includes a Makefile that
+does. A SCAFFOLDED
+root's Makefile exports none: its legs start from the scaffold's seed, with no
+`contracts/`, so nothing reads across them yet.
 
 ## The five commands
 

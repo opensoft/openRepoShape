@@ -1928,7 +1928,8 @@ def test_the_validator_finds_two_sections_for_one_path(family, holder,
             "path, `members/IRRS`) and take each other out by hand, `git "
             "config -f .gitmodules --unset-all submodule.<name>.<key>` for "
             "every key that section holds, so a submodule later given its "
-            "name inherits none of them, then commit .gitmodules."], extra
+            "name inherits none of them, then stage and commit "
+            ".gitmodules."], extra
 
 
 def test_a_gitmodules_git_cannot_read_is_a_refusal_not_a_pass(holder):
