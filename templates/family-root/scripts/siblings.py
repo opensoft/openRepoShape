@@ -174,7 +174,9 @@ EXIT CODES
        `scripts/bootstrap.py` or `Makefile`, whose `stat` the operating
        system refused, as it does in a folder this user cannot search. That
        member is refused by name, with the cure, and the others are still
-       tried. An unanswerable question is never an implicit pass.
+       tried. So is the holder's own `.git`, before any member is
+       (`git-repo-unreadable`, #1148). An unanswerable question is never an
+       implicit pass.
 """
 
 from __future__ import annotations
@@ -332,8 +334,8 @@ def _anything(mode: int) -> bool:
 
 
 def member_unreadable(named: str, exc: OSError, what: str,
-                      then: str = "Then run the same command again."
-                      ) -> Refusal:
+                      then: str = "Then run the same command again.",
+                      code: str = "member-unreadable") -> Refusal:
     """`member-unreadable`: `<named>: cannot be read (<the system's
     reason>)`, `validate-pins.py`'s `_cannot_read` line (#430), for a path
     of a member's that this command must ask about and the operating system
@@ -347,17 +349,68 @@ def member_unreadable(named: str, exc: OSError, what: str,
     the cure. THE ADVICE FOLLOWS THE CAUSE, in `validate-pins.py`'s words: a
     permission (`PermissionError`, which is `EACCES` and `EPERM`) is put
     right by the mode or the owner, and any other cause is `OTHER_REASON`,
-    which is not told to `chmod`."""
+    which is not told to `chmod`. `code` is the refusal's:
+    `git-repo-unreadable` for the holder's own `.git`
+    (`_refuse_an_unreadable_root`, #1148)."""
     advice = (
         "Make what this user may not open readable by this user: `chmod u+r` "
         "on a file, `chmod u+rx` on a directory (and on every directory above "
         "it), or fix who owns it. "
         if isinstance(exc, PermissionError) else OTHER_REASON)
     return Refusal(
-        "member-unreadable",
+        code,
         f"{named}: cannot be read ({exc.strerror or type(exc).__name__})",
         f"Remediation: {what} A path this command cannot read is a question "
         f"it cannot answer, never a pass. {advice}{then}")
+
+
+#: The refusal of a holder whose own `.git` this user cannot reach (#1148),
+#: the code `validate-family.py` and `bootstrap.py` refuse it by, and what
+#: was not done.
+ROOT_UNREADABLE = "git-repo-unreadable"
+ROOT_UNDONE = ("The holder's `.git` is how this command finds the holder, and "
+               "it could not be asked, so nothing was cloned, fetched or "
+               "run.")
+
+
+def _refuse_an_unreadable_root(start: Path) -> None:
+    """`git-repo-unreadable`, by name, exit 2, where this user cannot `stat`
+    a `.git` that `find_repo_root` would ask, at `start` or above it, before
+    the first that is there (#1148).
+
+    `find_repo_root` ASKS `exists()`, AND IS A SHAPE COPY THIS FILE MAY NOT
+    RELY ON BEING NEWER THAN ITSELF (#370, #610), so each `.git` it would ask
+    is asked here first, with `_is_a`, in the same order. A holder whose
+    `.git` is a link into a folder this user cannot search ended `make
+    siblings`, `make park` and `make resume` in a `PermissionError`
+    traceback on Python 3.12, exit 1, a FINDING's code; from 3.14 `exists()`
+    answers False, and the run refused `not-a-git-repo` (`no .git found`)
+    about a holder that has one. A `.git` that answers absent (nothing
+    there, a link that leads nowhere or to itself) is passed over, as
+    `exists()` passes it. It is named relative to where the walk starts, or
+    whole where it is not under it.
+
+    ONLY THE `stat` THAT `exists()` ASKS, as `validate-manifest.py` asks
+    its root's (#1146). This command reads the holder's files, and
+    `.gitmodules` as a file, and runs git in the holder only for the branch
+    its layout table shows: with a `.git` directory at mode 000 it still
+    places every member beside the holder, and shows that branch as `?`
+    (measured). What git reads inside the holder's repository is
+    `validate-family.py`'s question and `make bootstrap`'s, and each asks
+    it."""
+    path = Path(start).resolve()
+    for candidate in [path, *path.parents]:
+        dotgit = candidate / ".git"
+        try:
+            if _is_a(dotgit, _anything):
+                return
+        except OSError as exc:
+            try:
+                shown = dotgit.relative_to(path).as_posix()
+            except ValueError:
+                shown = str(dotgit)
+            raise member_unreadable(spelled(shown), exc, ROOT_UNDONE,
+                                    code=ROOT_UNREADABLE) from exc
 
 
 # ---------------------------------------------------------------------------
@@ -1552,7 +1605,10 @@ def _load_family(args: argparse.Namespace) -> tuple[Path, str, list[dict],
     Split from `main` for #137. Raises `Refusal` exactly as `main` always
     caught it — no `family.yaml`, or one that is not a mapping.
     """
-    root = find_repo_root(args.root or Path(__file__).resolve().parents[1])
+    start = args.root or Path(__file__).resolve().parents[1]
+    # A `.git` this user cannot read is refused by name first (#1148).
+    _refuse_an_unreadable_root(start)
+    root = find_repo_root(start)
     # `members_of` is `bootstrap.py`'s reading of the rows and stays the
     # only one; the manifest is then read again for the two fields the
     # LAYOUT needs and bootstrap has no use for.

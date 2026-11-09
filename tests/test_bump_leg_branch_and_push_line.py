@@ -57,9 +57,11 @@ from pathlib import Path
 
 import pytest
 
-from conftest import (FILE_PROTOCOL, NOT_UTF_8_BRANCH_NAMED, PROJECT, REPO,
+from conftest import (A_NAME_HELD_AS_UTF_8, FILE_PROTOCOL,
+                      NOT_UTF_8_BRANCH_NAMED, PROJECT, REPO,
                       cloned_just_pushed, git, held_by_git,
-                      on_a_branch_that_is_not_utf_8)
+                      on_a_branch_that_is_not_utf_8,
+                      skip_where_the_locale_does_not_spell_it_as_utf_8)
 #: The names no line may print raw, and how a line spells them (#766).
 from conftest import (POSIX_NAMES, SHOWN_NAMES, UNSAFE_NAMES,
                       assert_shown_safe, copied_under, named_as,
@@ -262,6 +264,8 @@ def test_a_branch_ending_in_a_no_break_space_is_pushed_as_itself(
     commit, leaving origin's neighbour where it was."""
     root, remote = make_root("plain")
     name = neighbour + chr(0xA0)
+    skip_where_the_locale_does_not_spell_it_as_utf_8(name,
+                                                     A_NAME_HELD_AS_UTF_8)
     if neighbour != "main":
         git("branch", neighbour, cwd=root)
     was = head_of(remote, f"refs/heads/{neighbour}")
