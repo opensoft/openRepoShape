@@ -6769,8 +6769,8 @@ class Plan:
         self.path = path
         self.data = data
         if data.get("kind") != PLAN_KIND:
-            detail = (f"{path}: kind is {data.get('kind')!r}, expected "
-                      f"{PLAN_KIND!r}")
+            detail = (f"{_shown(str(path))}: kind is "
+                      f"{data.get('kind')!r}, expected {PLAN_KIND!r}")
             if data.get("kind") == PLACEMENT_PLAN_KIND:
                 # A REFUSAL THAT SAYS WHERE THE FILE GOES INSTEAD. This one is
                 # reachable by an honest mistake -- the two files look alike,
@@ -6790,8 +6790,8 @@ class Plan:
         if data.get("mode") != "in-place":
             raise Refusal(
                 "plan-unsupported-mode",
-                f"{path}: mode is {data.get('mode')!r}; v0.2 implements "
-                "`in-place` only",
+                f"{_shown(str(path))}: mode is {data.get('mode')!r}; "
+                "v0.2 implements `in-place` only",
                 "Remediation: re-run `plan`, which writes `mode: in-place`. "
                 "A `new-root` mode is described in the tool's own docstring "
                 "and is not implemented.")
@@ -6811,7 +6811,8 @@ class Plan:
     def load(cls, path: Path) -> "Plan":
         data = load_yaml(path)
         if not isinstance(data, dict):
-            raise Refusal("plan-unreadable", f"{path}: not a mapping")
+            raise Refusal("plan-unreadable",
+                          f"{_shown(str(path))}: not a mapping")
         return cls(path, data)
 
     @property
@@ -6874,8 +6875,8 @@ class Plan:
         repository = self._recorded_repository()
         if repository is None:
             raise Refusal("plan-no-source",
-                          f"{self.path}: `source:` names neither a local path "
-                          "nor a repository")
+                          f"{_shown(str(self.path))}: `source:` names "
+                          "neither a local path nor a repository")
         return Source.clone(repository, work_root, unwritable, made,
                             done=done, instead=self.read_at)
 
@@ -7125,19 +7126,21 @@ class Plan:
             if not PROJECT_ID_RE.match(project_id):
                 raise Refusal(
                     "plan-bad-id",
-                    f"{self.path}: {DERIVED_ID} is {project_id!r}, which "
-                    f"must match {pattern}", DERIVED_PLAN_ID_REMEDIATION)
+                    f"{_shown(str(self.path))}: {DERIVED_ID} is "
+                    f"{project_id!r}, which must match {pattern}",
+                    DERIVED_PLAN_ID_REMEDIATION)
             return project_id
         if _a_number_or_boolean(set_id):
             raise Refusal("plan-bad-id",
-                          f"{self.path}: {_not_text('id', set_id)}",
+                          f"{_shown(str(self.path))}: "
+                          f"{_not_text('id', set_id)}",
                           NOT_TEXT_REMEDIATION)
         project_id = str(set_id)
         if not PROJECT_ID_RE.match(project_id):
             raise Refusal(
                 "plan-bad-id",
-                f"{self.path}: `id:` is {project_id!r} and must match "
-                f"{pattern}", PLAN_ID_REMEDIATION)
+                f"{_shown(str(self.path))}: `id:` is {project_id!r} and "
+                f"must match {pattern}", PLAN_ID_REMEDIATION)
         return project_id
 
     def get(self, key, default=None):
@@ -9112,7 +9115,8 @@ def _refuse_a_mistyped_plan(plan: Plan) -> None:
         return
     # `FINDING <code>: <detail>` is the one shape every finding is written in.
     code = findings[0].split()[1].rstrip(":")
-    lines = [f"{len(findings)} finding(s) in {plan.path}, as `check` prints "
+    lines = [f"{len(findings)} finding(s) in {_shown(str(plan.path))}, as "
+             "`check` prints "
              "them:"]
     lines += [f"  {finding}" for finding in findings[:REFUSED_FINDINGS_SHOWN]]
     if len(findings) > REFUSED_FINDINGS_SHOWN:
@@ -10424,7 +10428,7 @@ def _refuse_a_branch_in_the_split_branchs_way(
     found = _split_branch_findings(branch, places)
     if found:
         raise Refusal(SPLIT_BRANCH_TAKEN, "\n".join(
-            [f"{len(found)} finding(s) in {plan.path}:",
+            [f"{len(found)} finding(s) in {_shown(str(plan.path))}:",
              *(f"  {finding}" for finding in found)]),
             SPLIT_BRANCH_TAKEN_REMEDIATION)
 
@@ -13724,7 +13728,8 @@ def cmd_check(args) -> int:
     if mistyped:
         for line in [*mistyped, *mistyped_remediation]:
             print(line, file=sys.stderr)
-        print(f"\n{len(mistyped)} finding(s) in {plan.path}", file=sys.stderr)
+        print(f"\n{len(mistyped)} finding(s) in {_shown(str(plan.path))}",
+              file=sys.stderr)
         return 1
     # THE PLAN'S THREE REPOSITORY NAMES, THEN ITS `org:` AND `id:`, right
     # after the plan's keys and before anything else is read, made or opened,
@@ -13872,7 +13877,8 @@ def cmd_check(args) -> int:
     for line in [*findings, *remediation]:
         print(line, file=sys.stderr)
     if findings:
-        print(f"\n{len(findings)} finding(s) in {plan.path}", file=sys.stderr)
+        print(f"\n{len(findings)} finding(s) in {_shown(str(plan.path))}",
+              file=sys.stderr)
         return 1
     print("\nplan ok")
     return 0
@@ -14900,14 +14906,14 @@ def _create_leg_remote(plan: Plan, names: dict, repositories: dict,
     # Asked before either leg was made (#798); one there now was made since.
     if bare.exists():
         raise Refusal(
-            LEG_REMOTE_EXISTS, f"{bare} already exists",
+            LEG_REMOTE_EXISTS, f"{_shown(str(bare))} already exists",
             "Remediation: choose an empty --local-remote-dir, and a "
             "--work-dir the run that made it did not clone into (a fresh "
             "one, or none): `git clone` refuses a directory it already "
             "cloned into. There is no --force: re-running over a live leg "
             "is not an adoption.")
     run(["git", "init", "-q", "--bare", "-b", tracking, str(bare)])
-    print(f"  bare  {bare}")
+    print(f"  bare  {_shown(str(bare))}")
 
 
 def _extract_leg(role: str, source: Source, work: Path, paths: list[str],
@@ -14979,7 +14985,7 @@ def _extract_leg(role: str, source: Source, work: Path, paths: list[str],
     digest = tree_digest(work, head)
     _push_the_leg(f"pushing the {role} leg", work, url, tracking, repository)
     print(f"  {role:<5} {len(paths):>3} path(s) -> {head[:12]} "
-          f"({count} commits kept) -> {url}")
+          f"({count} commits kept) -> {_shown(url)}")
     return head, digest
 
 
@@ -15022,7 +15028,7 @@ def _seed_leg(role: str, work: Path, values: dict, branch: str, url: str,
     _push_the_leg(f"pushing the seeded {role} leg", work, url, tracking,
                   repository)
     print(f"  {role:<5}   0 path(s) -> {commit[:12]} (SEEDED from "
-          f"{SEED_TEMPLATE[role]}/) -> {url}")
+          f"{SEED_TEMPLATE[role]}/) -> {_shown(url)}")
     return commit, digest
 
 
@@ -15447,11 +15453,12 @@ def _what_cannot_be_held(plan: Plan, names: dict, org: str, local: bool,
     the manifest's values, means the two cannot disagree again. It is a
     generator, so `execute` asks nothing after the first refusal."""
     asked = [lambda: _refuse_a_root_no_disk_holds(
-                 names["assembly"], f"{plan.path}: `legs.assembly`",
+                 names["assembly"],
+                 f"{_shown(str(plan.path))}: `legs.assembly`",
                  "no repository was created."),
              lambda: _refuse_names_nothing_keeps(names, org, local)]
     if not local:
-        named = f"{plan.path}: `org:`"
+        named = f"{_shown(str(plan.path))}: `org:`"
         asked += [
             lambda: refuse_an_owner_github_cannot_have(
                 "adopt-org-too-long", org, named, ORG_REMEDIATION),
@@ -15570,7 +15577,7 @@ def _refuse_a_topic_github_cannot_set(plan: Plan, topic: str) -> None:
     named = "`id:`" if plan.get("id") is not None else DERIVED_ID
     refuse_a_topic_github_cannot_set(
         "adopt-topic-too-long", topic, plan.project_id,
-        f"{plan.path}: {named}", TOPIC_REMEDIATION)
+        f"{_shown(str(plan.path))}: {named}", TOPIC_REMEDIATION)
 
 
 def _remote_urls(org: str, names: dict, local_remote_dir: Path | None,
@@ -15704,7 +15711,8 @@ def _refuse_what_check_finds(plan: Plan, source: Source,
         return
     # `FINDING <code>: <detail>` is the one shape both functions write.
     code = findings[0].split()[1].rstrip(":")
-    lines = [f"{len(findings)} finding(s) in {plan.path}, as `check` prints "
+    lines = [f"{len(findings)} finding(s) in {_shown(str(plan.path))}, as "
+             "`check` prints "
              f"them{_as_resolved_here(findings, local_remote_dir)}:"]
     lines += [f"  {finding}" for finding in findings[:REFUSED_FINDINGS_SHOWN]]
     if len(findings) > REFUSED_FINDINGS_SHOWN:
@@ -16420,7 +16428,8 @@ def _commit_the_split(plan: Plan, source: Source, assembly: Path,
             urls, list(leg_commits), work_root, names,
             interrupted=_interrupted(exc), source=source))
         raise
-    print(f"\n  split {split_commit[:12]} on {branch} -> {urls['assembly']}")
+    print(f"\n  split {split_commit[:12]} on {branch} -> "
+          f"{_shown(urls['assembly'])}")
     return split_commit, message, materialized.collisions
 
 
@@ -18137,7 +18146,7 @@ def _refuse_a_plan_for_another_repository(
     detail = _not_the_source(plan, source, names)
     if detail:
         raise Refusal(
-            PLAN_NOT_THE_SOURCE, f"{plan.path}: {detail}",
+            PLAN_NOT_THE_SOURCE, f"{_shown(str(plan.path))}: {detail}",
             _own_name_remediation(
                 _held_repository(plan, source), naming, pins,
                 "no leg repository was created and nothing was pushed. "))
