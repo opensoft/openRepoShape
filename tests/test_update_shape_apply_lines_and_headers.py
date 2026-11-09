@@ -59,8 +59,10 @@ from pathlib import Path
 
 import pytest
 
-from conftest import (NOT_UTF_8_BRANCH_NAMED, REPO, WINDOWS_SKIP, git,
-                      held_by_git, on_a_branch_that_is_not_utf_8, run_script)
+from conftest import (A_NAME_HELD_AS_UTF_8, NOT_UTF_8_BRANCH_NAMED, REPO,
+                      WINDOWS_SKIP, git, held_by_git,
+                      on_a_branch_that_is_not_utf_8, run_script,
+                      skip_where_the_locale_does_not_spell_it_as_utf_8)
 from test_pin_rewrite_layout import MANIFEST as MANIFEST_TEXT
 from test_pin_rewrite_layout import (NEW_COMMIT, NEW_ROWS, NEW_TREE,
                                      OLD_COMMIT, OLD_ROWS, OLD_TREE, make_pin,
@@ -695,6 +697,8 @@ def test_a_branch_ending_in_a_no_break_space_is_not_taken_for_its_neighbour(
     branch HEAD is on, with both where they were and nothing pushed."""
     remote = own_remote(root, tmp_path)
     name = "feat" + chr(0xA0)
+    skip_where_the_locale_does_not_spell_it_as_utf_8(name,
+                                                     A_NAME_HELD_AS_UTF_8)
     git("branch", "feat", cwd=root)
     git("switch", "-q", "-c", name, cwd=root)
     before = held_by_git(root)
