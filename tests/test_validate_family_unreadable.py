@@ -48,8 +48,12 @@ CODE HAS ONE TEXT (r956's SHOULD 2): a member's `project.yaml` that cannot
 be opened says what one whose `stat` is refused says.
 
 A refused `stat` of `.git` refuses the holder's own `.git` too, which the
-pinned `repo_shape.find_repo_root` asks; #430's plan leaves that function
-out, so the gate run in-process is given the holder as its root (`gate`).
+pinned `repo_shape.find_repo_root` asks, and `_refuse_an_unreadable_root`
+asks first (#1148); #430's plan leaves both out, so the gate run
+in-process is given the holder as its root (`gate`), and a row's refused
+`.git` is a member's alone. The holder's own is held by
+`tests/test_pinned_root_git_unreadable.py`, and the mode rows below run
+the whole gate, that check included.
 """
 
 from __future__ import annotations
@@ -93,12 +97,17 @@ UPDATE = f"git submodule update --init --recursive -- {ROW}"
 
 def gate(holder: Path, monkeypatch):
     """The holder's own `scripts/validate-family.py`, the template's bytes
-    (`family.py init` copies it verbatim), loaded in-process with
-    `find_repo_root` answering the holder; `sys.path`, which the module
+    (`family.py init` copies it verbatim), loaded in-process with the
+    holder given as its root: `find_repo_root` answers it, and
+    `_refuse_an_unreadable_root`, which asks the same `.git` first
+    (#1148), asks nothing, since `refused_stat` refuses each `.git` by
+    name, the holder's with the member's; `sys.path`, which the module
     extends, is put back afterwards."""
     monkeypatch.setattr(sys, "path", list(sys.path))
     module = load_without_bytecode(holder / "scripts" / "validate-family.py",
                                    "validate_family_unreadable")
+    monkeypatch.setattr(module, "_refuse_an_unreadable_root",
+                        lambda start: None)
     monkeypatch.setattr(module, "find_repo_root", lambda start: holder)
     return module
 
