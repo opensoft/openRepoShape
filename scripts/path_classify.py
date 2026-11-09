@@ -42,7 +42,7 @@ import sys
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
-from repo_shape import Refusal, load_yaml  # noqa: E402
+from repo_shape import Refusal, load_yaml, shown_path  # noqa: E402
 
 LEGS = ("spec", "code", "root", "ambiguous")
 #: The answers a rule that asks may name as its `default:` (#528). `drop`
@@ -182,11 +182,12 @@ class PathPolicy:
     def load(cls, path: Path) -> "PathPolicy":
         data = load_yaml(path)
         if not isinstance(data, dict):
-            raise Refusal("path-policy-unreadable", f"{path}: not a mapping")
+            raise Refusal("path-policy-unreadable",
+                          f"{shown_path(path)}: not a mapping")
         if data.get("kind") != "path-classification-policy":
             raise Refusal(
                 "path-policy-wrong-kind",
-                f"{path}: kind is {data.get('kind')!r}, expected "
+                f"{shown_path(path)}: kind is {data.get('kind')!r}, expected "
                 "'path-classification-policy'")
         return cls(data)
 

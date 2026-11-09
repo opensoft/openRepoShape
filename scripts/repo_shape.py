@@ -2251,7 +2251,7 @@ class NamingPolicy:
         if data.get("kind") != "repository-naming-policy":
             raise Refusal(
                 "policy-wrong-kind",
-                f"{path}: kind is {data.get('kind')!r}, expected "
+                f"{shown_path(path)}: kind is {data.get('kind')!r}, expected "
                 "'repository-naming-policy'",
             )
         return cls(data)

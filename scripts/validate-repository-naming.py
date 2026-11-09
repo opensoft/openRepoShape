@@ -1137,7 +1137,7 @@ def _project_manifest(path: Path) -> dict:
     """The `project.yaml` mapping `--project` names, or a `Refusal`."""
     data = load_yaml(path)
     if not isinstance(data, dict):
-        raise Refusal("manifest-unreadable", f"{path}: not a mapping")
+        raise Refusal("manifest-unreadable", f"{_shown(path)}: not a mapping")
     return data
 
 

@@ -234,7 +234,7 @@ class Project:
         data = load_yaml(path)
         if not isinstance(data, dict):
             raise Refusal("bump-leg-manifest-unreadable",
-                          f"{path}: not a mapping")
+                          f"{shown_path(path)}: not a mapping")
         if data.get("kind") != "project-manifest":
             raise Refusal(
                 "bump-leg-wrong-kind",

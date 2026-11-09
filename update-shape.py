@@ -182,6 +182,10 @@ from repo_shape import _split_key, _strip_comment  # noqa: E402
 # as `parse_yaml` does, and put it back (#933). On a line of its own, for the
 # reason the branch rule's import below gives.
 from repo_shape import BYTE_ORDER_MARK  # noqa: E402
+# How a refusal names a path it was handed (#1279): as it is, or as `repr`
+# spells it where a character in it is not printable, as `load_yaml` names
+# the same pin since #1168. On a line of its own, as the two above are.
+from repo_shape import shown_path  # noqa: E402
 from shape_materialize import (  # noqa: E402
     ATTRIBUTES, COPIED_FROM_SHAPE, COPIED_VERBATIM, FAMILY_COPIED_FROM_SHAPE,
     FAMILY_COPIED_VERBATIM, SHAPE_REPOSITORY, CommandFailed, check_program,
@@ -838,7 +842,8 @@ def check_pin(pin, pin_path, root: Path) -> tuple[dict, list[Row]]:
     whose history a refusal's `git log` reads (#290).
     """
     if not isinstance(pin, dict):
-        raise Refusal("update-pin-unreadable", f"{pin_path}: not a mapping")
+        raise Refusal("update-pin-unreadable",
+                      f"{shown_path(pin_path)}: not a mapping")
     commit = str(pin.get("commit") or "").lower()
     if not COMMIT_RE.match(commit):
         raise Refusal(

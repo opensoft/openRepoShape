@@ -1435,7 +1435,8 @@ def main(argv: list[str] | None = None) -> int:
             )
         manifest = _load(root, manifest_path)
         if not isinstance(manifest, dict):
-            raise Refusal("manifest-unreadable", f"{manifest_path}: not a mapping")
+            raise Refusal("manifest-unreadable",
+                          f"{_shown(manifest_path)}: not a mapping")
         policy_path = args.policy or (root / "contracts" / "repository-naming.yaml")
         policy = _load(root, policy_path, NamingPolicy.load)
         # Inside the `try`: a declared referent's pin file this user cannot
