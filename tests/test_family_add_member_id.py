@@ -71,7 +71,8 @@ DUPLICATE_ID = (
 
 DUPLICATE_ID_REMEDIATION = (
     f"Remediation: a family pins each project once. If {ORG}/{{who}} is "
-    f"{ORG}/{PINNED} renamed at the forge, `family.py remove --member "
+    f"{ORG}/{PINNED} renamed at the forge, `family.py remove --family-root "
+    "{holder} --member "
     f"{PINNED}` takes the old row out and this `add` then pins it under the "
     "new name; `family.py bump --family-root {holder} --member "
     f"{PINNED} --to <commit>` moves the row that is there instead. Two "
@@ -81,8 +82,8 @@ DUPLICATE_ID_REMEDIATION = (
 
 def duplicate_id_remediation(who: str, holder: Path) -> str:
     """What `add` tells the human to do about `member-duplicate-id`: the
-    `bump` it names carries `--family-root` and the holder, as `bump`
-    requires (#927)."""
+    `remove` and the `bump` it names each carry `--family-root` and the
+    holder, as both verbs require (#927, #1005)."""
     return DUPLICATE_ID_REMEDIATION.format(
         who=who, holder=shell_quoted(holder.resolve()))
 
@@ -168,8 +169,8 @@ def test_each_command_the_refusal_names_runs_on_the_row_it_names(
     for `<commit>`, `remove` takes the old row out and the refused `add` then
     pins the project under its new name, and `bump` moves the row that is
     there; the gate is green after either, with one row recording id `irrs`.
-    `bump` is run exactly as printed, its own `--family-root` and all
-    (#927); `remove` is still given the `--family-root` it does not name."""
+    Each is run exactly as printed, its own `--family-root` and all (#927,
+    #1005)."""
     remotes = renamed_copy(family, tmp_path)
     refused = offline.add(holder, RENAMED, remotes=remotes)
     assert refused.returncode == 2, refused.stdout + refused.stderr
@@ -179,8 +180,7 @@ def test_each_command_the_refusal_names_runs_on_the_row_it_names(
                 cwd=family["remotes"] / f"{PINNED}.git").stdout.strip()
     argv = host_words(commands[0].replace("<commit>", older))
     assert argv[argv.index("--member") + 1] == PINNED
-    unnamed = [] if verb == "bump" else ["--family-root", str(holder)]
-    done = run_script(FAMILY, *argv, *unnamed, env=offline.env)
+    done = run_script(FAMILY, *argv, env=offline.env)
     assert done.returncode == 0, done.stdout + done.stderr
     if verb == "remove":
         added = offline.add(holder, RENAMED, remotes=remotes)
