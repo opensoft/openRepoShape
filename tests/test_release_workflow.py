@@ -590,7 +590,7 @@ def test_the_package_job_runs_its_python_3_9_on_ubuntu_24_04():
     26.04 has."""
     jobs = load_yaml(WORKFLOWS / "tests.yml")["jobs"]
     package = jobs["package"]
-    assert package["runs-on"] == "ubuntu-24.04"
+    assert package["runs-on"] == "eagle-linux-ubuntu24"
     pythons = [step["with"]["python-version"] for step in package["steps"]
                if step.get("uses", "").startswith("actions/setup-python@")]
     assert pythons == ["3.9"]
@@ -605,7 +605,7 @@ def test_the_tests_job_runs_the_suite_on_ubuntu_24_04():
     the suite runs on 26.04; the change that moves it back takes this test
     with it."""
     jobs = load_yaml(WORKFLOWS / "tests.yml")["jobs"]
-    assert jobs["tests"]["runs-on"] == "ubuntu-24.04"
+    assert jobs["tests"]["runs-on"] == "eagle-linux-ubuntu24"
 
 
 def setup_python_pairs():
@@ -629,6 +629,12 @@ def setup_python_pairs():
             for step in steps:
                 for row in rows or [{}]:
                     runner = str(job["runs-on"])
+                    if runner == "${{ startsWith(matrix.os, 'ubuntu-') && 'eagle-linux-ubuntu24' || matrix.os }}":
+                        runner = ("eagle-linux-ubuntu24" if row["os"].startswith("ubuntu-")
+                                  else row["os"])
+                    # Eagle's declared profile is Ubuntu 24.04; native rows keep their OS.
+                    if runner == "eagle-linux-ubuntu24":
+                        runner = "ubuntu-24.04"
                     python = str(step["with"]["python-version"])
                     for key, value in row.items():
                         ref = "${{ matrix.%s }}" % key

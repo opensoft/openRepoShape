@@ -189,7 +189,7 @@ env:
 jobs:
   build:
     name: build and verify
-    runs-on: ubuntu-latest
+    runs-on: eagle-linux-ubuntu24
     timeout-minutes: 30
     permissions:
       contents: read  # the checkout, the tag, main and the release branch, and the forge's tree listing
@@ -713,7 +713,7 @@ jobs:
     # ON A v* TAG ONLY. A branch is the rehearsal, and both environments
     # would refuse it anyway (the header says why both guards exist).
     if: startsWith(github.ref, 'refs/tags/v')
-    runs-on: ubuntu-latest
+    runs-on: eagle-linux-ubuntu24
     timeout-minutes: 30
     environment:
       name: testpypi
@@ -886,7 +886,7 @@ jobs:
       ${{ !cancelled() && needs.build.result == 'success' &&
       (needs.testpypi.result == 'success' ||
       (needs.testpypi.result == 'skipped' && !startsWith(github.ref, 'refs/tags/'))) }}
-    runs-on: ${{ matrix.os }}
+    runs-on: ${{ startsWith(matrix.os, 'ubuntu-') && 'eagle-linux-ubuntu24' || matrix.os }}
     timeout-minutes: 30
     permissions:
       contents: read  # the checkout, for the pipx lock alone
@@ -1255,7 +1255,7 @@ jobs:
     # check passed: with no status function in it, `if:` also requires
     # every job above to have succeeded.
     if: startsWith(github.ref, 'refs/tags/v')
-    runs-on: ubuntu-latest
+    runs-on: eagle-linux-ubuntu24
     timeout-minutes: 30
     environment:
       name: pypi

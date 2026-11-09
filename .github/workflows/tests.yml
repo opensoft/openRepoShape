@@ -71,7 +71,7 @@ jobs:
   # `/tmp/pytest-of-runner/pytest-0`. The same job passed on 24.04. It stays
   # on 24.04 until the suite runs on 26.04, which #1096 tracks.
   tests:
-    runs-on: ubuntu-24.04
+    runs-on: eagle-linux-ubuntu24
     steps:
       # PINNED BY COMMIT, not by tag — the rule this repository spends a
       # whole README section on. A tag can be moved and a commit cannot.
@@ -286,7 +286,7 @@ jobs:
   # own (#1096), and `tests-git-bash` runs on windows-latest. In release.yml,
   # `build` asks for `3.12` on ubuntu-latest, which 26.04 has.
   package:
-    runs-on: ubuntu-24.04
+    runs-on: eagle-linux-ubuntu24
     steps:
       # The same two commits the other jobs pin.
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262  # v4
