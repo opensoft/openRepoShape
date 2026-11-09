@@ -48,7 +48,7 @@ from test_update_shape import rendered_shape_line, strip_shape_block
 
 sys.path.insert(0, str(REPO / "scripts"))
 from repo_shape import (  # noqa: E402
-    Refusal, load_yaml, shell_quoted, tree_digest,
+    PYTHON, Refusal, load_yaml, shell_quoted, tree_digest,
 )
 from shape_materialize import (  # noqa: E402
     SHAPE_REPOSITORY, readme_shape_lines, readme_trailing_shape_line,
@@ -540,7 +540,11 @@ def test_add_refuses_a_spelling_of_a_member_the_family_already_pins(
     assert result.returncode == 2, result.stderr + result.stdout
     assert "REFUSED member-already-present" in result.stderr
     assert "the row IRRS pins InkRouter/IRRS" in result.stderr
-    assert ("`family.py bump --family-root "
+    # The line as every remedy prints one of `family.py`'s own: the
+    # interpreter and the path that reaches the file from where the run
+    # stood, which is this process's (#1127).
+    script = shell_quoted(os.path.relpath(FAMILY.resolve()))
+    assert (f"`{PYTHON} {script} bump --family-root "
             f"{shell_quoted(holder.resolve())} --member IRRS --to "
             "<commit>`") in result.stderr
     assert "mounting" not in result.stdout
