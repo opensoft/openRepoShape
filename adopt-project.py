@@ -1285,6 +1285,10 @@ SUBMODULE_KEY_RE = re.compile(r"submodule\.(?P<name>.*)\.(?P<key>path|url)")
 #: The `git` subcommand that reads and writes a config file: a source's
 #: `.gitmodules`, a leg mount's url, the elector's name.
 GIT_CONFIG = "config"
+#: What `git config --unset` exits with when the key is not there (git 2.43).
+#: Every other failure of it is a different number (255 for a file it cannot
+#: lock, 129 for a usage it refuses), which `_extract_leg` does not go on from.
+GIT_CONFIG_KEY_ABSENT = 5
 #: The `git` subcommand that prints one object: a source's `.gitmodules`
 #: and the target of a symlink it keeps in the root, and in the split commit
 #: a symlink's target and the shape pin. With `--batch`, it prints the
@@ -1962,6 +1966,22 @@ def _utf8_spelling(recorded: str) -> str | None:
         return None
 
 
+def _recorded_paths(recorded: str) -> list[Path]:
+    """Every path `_recorded_path` asks for `recorded`, a path a plan records
+    as text, in the order it asks them, `~` expanded: the spelling
+    `_recorded_spelling` gives, then, where this locale spells the text
+    otherwise than its UTF-8, the plan's UTF-8 bytes (#1078). One path under
+    a UTF-8 locale, and for text that is all ASCII. `_at_the_record` asks
+    them whether a clone `Plan._recorded_source` makes again is at the
+    record (#1112)."""
+    spelling = _recorded_spelling(recorded)[0]
+    paths = [Path(os.path.expanduser(spelling))]
+    utf8 = _utf8_spelling(recorded)
+    if utf8 is not None and utf8 != spelling:
+        paths.append(Path(os.path.expanduser(utf8)))
+    return paths
+
+
 def _recorded_path(recorded: str) -> tuple[Path, bool, str]:
     """`(path, there, said)`: `recorded`, a path a plan records as text, as
     `_recorded_spelling` spells it, `~` expanded; whether anything is there,
@@ -1979,17 +1999,37 @@ def _recorded_path(recorded: str) -> tuple[Path, bool, str]:
     it, reads as it did. Where neither names anything, the path is the
     spelling as written, and every word of a refusal is as before. Under a
     UTF-8 locale, and for text that is all ASCII, the two are one name,
-    asked once."""
-    spelling, said = _recorded_spelling(recorded)
-    path = Path(os.path.expanduser(spelling))
-    if _is_there(path):
-        return path, True, said
-    utf8 = _utf8_spelling(recorded)
-    if utf8 is not None and utf8 != spelling:
-        other = Path(os.path.expanduser(utf8))
-        if _is_there(other):
-            return other, True, said
-    return path, False, said
+    asked once (`_recorded_paths`)."""
+    said = _recorded_spelling(recorded)[1]
+    paths = _recorded_paths(recorded)
+    for path in paths:
+        if _is_there(path):
+            return path, True, said
+    return paths[0], False, said
+
+
+def _at_the_record(target: Path, path: Path, there: bool,
+                   recorded: str) -> bool:
+    """Whether `target`, where `Plan._recorded_source` clones the plan's
+    source again, is at `recorded`, the plan's `source.local_path`, whose
+    `(path, there)` `_recorded_path` gave: whether its real path is that of
+    a path `_recorded_path` asked (#1112). Where nothing is there, it asked
+    each path `_recorded_paths` gives; where something is, each up to
+    `path`, the one there.
+
+    A SPELLING ASKED BEFORE THE ONE THERE IS THE RECORD TOO: it names
+    nothing, and `_recorded_path` asks it first next time. Under Latin-1,
+    say, where the plan's UTF-8 bytes held a clone no longer whole and
+    `--work-dir` named the spelling as written, the byte 0xE9, which was
+    free, the clone made there was compared with the UTF-8 bytes alone: it
+    was removed when `check` ended, and every run cloned it once more. A
+    spelling asked AFTER the one there is not the record: a clone kept
+    there, the next run would read the one there first, and be refused
+    `adopt-work-dir-occupied` at the clone it kept."""
+    at = os.path.realpath(target)
+    paths = _recorded_paths(recorded)
+    asked = paths[:paths.index(path) + 1] if there else paths
+    return any(os.path.realpath(record) == at for record in asked)
 
 
 # ---------------------------------------------------------------------------
@@ -6829,6 +6869,18 @@ class Plan:
         removed; where that path is free, the clone made there is the one
         the plan records, and is not on `made`.
 
+        WHERE NEITHER SPELLING NAMES ANYTHING, THE CLONE IS AT THE RECORD AT
+        EITHER (#1112): its target's real path is compared with each path
+        `_recorded_path` asked (`_at_the_record`). Under a locale of one
+        byte to a character, Latin-1 say, a plan written in UTF-8 whose
+        clone was in a work directory outside ASCII, `Thing\\u00e9`, was
+        cloned again at the plan's UTF-8 bytes, which `--work-dir` names,
+        and that clone was compared with the spelling as written alone: it
+        went on `made`, was removed when `check` ended, and every run cloned
+        it once more, #803's bug again. Where a spelling is there, the
+        clone is at the record at that one, as before, and at a spelling
+        asked before it, which names nothing, but not at one asked after.
+
         A PATH THE PERSON GAVE IS HELD TO BEING A REPOSITORY'S TOP LEVEL, as
         `--source` is (`_top_level`, #796), and refused by its key: a file
         ended `check` and `execute` in a traceback, and a directory inside a
@@ -6895,8 +6947,9 @@ class Plan:
         if repository is None:
             raise self._gone(local_path, state, "the plan records no "
                              "`source.repository` to clone again")
-        at_the_record = os.path.realpath(path) == os.path.realpath(
-            work_root / SOURCE_READONLY / repository.split("/")[1])
+        at_the_record = _at_the_record(
+            work_root / SOURCE_READONLY / repository.split("/")[1], path,
+            there, local_path)
         return Source.clone(
             repository, work_root, unwritable,
             None if at_the_record else made,
@@ -14756,6 +14809,43 @@ def _extract_leg(role: str, source: Source, work: Path, paths: list[str],
     """
     run(["git", *FILE_PROTOCOL, "clone", "-q", str(source.path), str(work)])
     run(["git", "checkout", "-q", "-B", branch, source.commit], cwd=work)
+    # THE CLONE'S `origin` URL GOES FIRST (#1247). It is the source's path,
+    # byte for byte, and `git filter-repo` prints it as it removes `origin`
+    # (`NOTICE: Removing 'origin' remote ... (was <url>)`), decoded as UTF-8
+    # with `errors='replace'`. Under a Latin-1 locale a directory `caf` plus
+    # U+00E9 is the byte 0xE9, which that decode makes U+FFFD, and a Latin-1
+    # stdout cannot hold U+FFFD: filter-repo raised `UnicodeEncodeError` and
+    # `execute` stopped after both legs existed. No variable reaches every
+    # install: a launcher that runs it with `python -E`, as #1247's pipx one
+    # did, drops `PYTHONIOENCODING` and `PYTHONUTF8`, and an `LC_ALL` for the
+    # child names a locale the host may not have. With no url, filter-repo
+    # prints nothing of `origin` and leaves the remote alone, and nothing reads
+    # that remote again: `_push_the_leg` pushes to the leg's url, and
+    # `_mount_the_legs` mounts this clone by its path. ONLY THE URL: the
+    # remote-tracking branches stay, and filter-repo still makes each a branch
+    # before it asks for the url, so it rewrites every branch of the source as
+    # before. `git remote remove` took them with it, and a leg whose tracking
+    # branch holds a `cherry-pick -x` of a commit only another branch reaches
+    # then kept that commit's old id in its message, where this one rewrites
+    # it: a different leg (git 2.43, filter-repo 2.47.0).
+    # THE CLONE'S OWN CONFIG FILE IS NAMED, with `--file`. `GIT_CONFIG` in the
+    # environment (a legacy variable git still reads) names the file `git
+    # config` writes otherwise, and the unset took `remote.origin.url` out of
+    # a file of the person's, outside this clone, and `execute` then refused
+    # with both legs made. `--local` is no way round that: with `GIT_CONFIG`
+    # set, git 2.43 exits 129. `.git` is a directory, made by the `git clone`
+    # above, and `work` is an absolute path (`_work_root`).
+    # A CLONE WITH NO `origin` URL IS NOT A FAILURE (git exits 5): a global
+    # `clone.defaultRemoteName` gives the clone another remote, and `execute`
+    # then fails where main fails, at `mounting the legs`, not here with no
+    # words and before any leg is pushed. That setting is its own defect.
+    # Every other exit is refused.
+    try:
+        run(["git", GIT_CONFIG, "--file", str(work / ".git" / "config"),
+             "--unset", "remote.origin.url"], cwd=work)
+    except CommandFailed as exc:
+        if exc.code != GIT_CONFIG_KEY_ABSENT:
+            raise
     # LF, on every platform. `git filter-repo --paths-from-file` matches a
     # line against a path, and a CRLF-terminated line ends in a character no
     # path contains - so on Windows every pattern would match nothing, the

@@ -186,9 +186,9 @@ from typing import Callable, Iterator, NamedTuple
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 from repo_shape import (  # noqa: E402
     COMMIT_RE, PROJECT_ID_RE, PYTHON, SHA256_RE, TREE_DIGEST_DEFINITION,
-    VISIBILITY_CHOICES, NamingPolicy, Refusal, file_sha256, find_repo_root,
-    git_out, load_yaml, recorded_gitlink, repo_basename, spelled,
-    tree_digest,
+    VISIBILITY_CHOICES, NamingPolicy, Refusal, escape_unencodable_stdout,
+    file_sha256, find_repo_root, git_out, load_yaml, recorded_gitlink,
+    repo_basename, spelled, tree_digest,
 )
 
 #: BOTH END IN `\Z`, NEVER `$` (#1139): `$` also matches just before a
@@ -4369,6 +4369,11 @@ def _run_checks(args: argparse.Namespace,
 
 
 def main(argv: list[str] | None = None) -> int:
+    # FIRST, as `siblings.py` and both roots' `bootstrap.py` do (#391, #454):
+    # a note ends a digest in U+2026, which a stdout in Latin-1 or ASCII
+    # cannot hold, and a holder that passed ended in a `UnicodeEncodeError`
+    # traceback, exit 1 (#1214).
+    escape_unencodable_stdout()
     parser = argparse.ArgumentParser(description=__doc__.splitlines()[0])
     parser.add_argument("--root", type=Path, default=None,
                         help="the family root (default: the enclosing "
