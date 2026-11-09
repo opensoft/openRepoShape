@@ -60,7 +60,7 @@ from test_family_bump_remove_rollback import (
 from test_family_bump_to_a_tag import annotated, both_runs, peeled_line
 from test_family_member_path import MEMBER, OTHER, older, raw
 #: The shell's reading of a printed line, and of a refusal's `switch`.
-from test_family_printed_quoting import host_words
+from test_family_printed_quoting import family_lead, host_words
 from test_family_tracking_branch import remedy_switch
 
 PATH = f"members/{MEMBER}"
@@ -84,7 +84,8 @@ def duplicate_id_refusal(to: str, holder: Path) -> tuple[str, str]:
     """The two lines `bump --to <to>` is refused with when the member's
     `project.yaml` at `to` records the neighbour's id. The `remove` the
     remedy names carries `--family-root` and the holder, as `remove`
-    requires (#1005)."""
+    requires (#1005), after the interpreter and the path to `family.py`
+    from where the run stood (#1127)."""
     return (
         f"REFUSED member-duplicate-id: {ORG}/{MEMBER} at {to[:12]} is "
         f"already a member of {NAME} under another name: its project.yaml "
@@ -94,7 +95,8 @@ def duplicate_id_refusal(to: str, holder: Path) -> tuple[str, str]:
         "Remediation: a family pins each project once. Pass `--to` a commit "
         f"of {ORG}/{MEMBER} whose project.yaml records an id no other row "
         f"records. If {ORG}/{MEMBER} and {ORG}/{OTHER} are one project, "
-        f"`family.py remove --family-root {shell_quoted(holder.resolve())} "
+        f"`{family_lead()}remove --family-root "
+        f"{shell_quoted(holder.resolve())} "
         f"--member {OTHER}` takes the other row out first. "
         "Two projects that record one id are a fault in one of their "
         "`project.yaml` files, mended in that project, not in the family.")
