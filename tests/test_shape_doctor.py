@@ -5260,6 +5260,12 @@ ROOT_PIN_FAULTS = [
                  id="a-list-not-a-mapping"),
     pytest.param(pin_with(r'^commit: .*$', 'commit: "zzzz"'),
                  "update-pin-commit", id="a-commit-that-is-not-40-hex"),
+    # `$` matched just before a trailing line feed (#1017): the double-quoted
+    # `\n` after the hex is a commit that is not 40 hex. In the replacement
+    # of `re.sub`, `\\` is the one backslash the file spells it with.
+    pytest.param(pin_with(r'^commit: .*$',
+                          'commit: "' + "1" * 40 + r'\\n"'),
+                 "update-pin-commit", id="a-commit-ending-in-a-line-break"),
     pytest.param(other_digest_definition, "update-pin-digest-definition",
                  id="another-digest-definition"),
     pytest.param(pin_with(r'(?s)^files:.*\Z', 'files: []\n'),

@@ -63,8 +63,8 @@ from test_family_remove_gitmodules import verb_args
 from test_family_tracking_branch import on_main  # noqa: F401
 from test_validate_family_branch_step import BRANCH_LEFT
 from test_validate_family_unnamed_mounts import (
-    GITLINK_REMEDY, GITLINK_SAID, GITLINK_SAID_FETCHED, VARIANT, codes,
-    commands, findings, removal, spare_commits, stage_gitlink,
+    GITLINK_REMEDY, GITLINK_SAID, GITLINK_SAID_FETCHED, STAGE, VARIANT,
+    codes, commands, findings, removal, spare_commits, stage_gitlink,
     stage_unmerged_gitlink, take_out_as_printed, with_section,
 )
 
@@ -152,7 +152,7 @@ def test_a_hand_mounts_staged_removal_is_committed_and_added_as_printed(
         commit_all(holder, env, "Take the hand mount out, as printed")
     else:
         (left,) = section
-        assert commands(left) == removal(HAND, "path", "url")
+        assert commands(left) == [*removal(HAND, "path", "url"), STAGE]
         take_out_as_printed(holder, left)
         assert (holder / HAND / ".git").is_file(), "premise: checkout left"
         taken = added_as_printed(family, holder, env, add)
@@ -240,7 +240,7 @@ def test_a_section_git_rm_cached_leaves_keeps_its_own_commands(
                              "gitmodules-path-unnamed"]
     gitlink, section = findings(result)
     assert "git rm" not in "".join(gitlink.splitlines()[1:]), gitlink
-    assert commands(section) == removal(HAND, "path", "url")
+    assert commands(section) == [*removal(HAND, "path", "url"), STAGE]
     assert "takes this section out too" not in result.stderr
     take_out_as_printed(holder, section)
     assert_passes_in_every_mode(holder, 2)
