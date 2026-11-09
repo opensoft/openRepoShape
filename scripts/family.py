@@ -307,8 +307,10 @@ HEADS_PREFIX = "refs/heads/"
 #: holder only through `update-shape.py`. `tests/test_family_member_name.py`
 #: reads every spelling and fails when they differ, so it is one rule kept in
 #: three places and never three rules. Change one and the test names the rest.
+#: It ends in `\Z` with them (#1139). `--member` is stripped before it is
+#: asked, so no line feed reached this copy's `$`.
 MEMBER_RE = re.compile(
-    r"^[A-Za-z0-9][A-Za-z0-9_.-]*/[A-Za-z0-9][A-Za-z0-9_.-]*$")
+    r"^[A-Za-z0-9][A-Za-z0-9_.-]*/[A-Za-z0-9][A-Za-z0-9_.-]*\Z")
 
 #: The suffix a LEG's name carries after its assembly root's — the
 #: `(?:-spec|-code)?` that `contracts/repository-naming.yaml`'s leg pattern
@@ -1128,7 +1130,11 @@ def _read_member_project(path: Path, project: str, repository: str,
         raise Refusal("member-manifest-unreadable",
                       f"{repository}: project.yaml is not a mapping")
     project_id = str(manifest.get("id") or "")
-    if not PROJECT_ID_RE.match(project_id):
+    # `fullmatch`, NOT `match` (#1139): `$` also matches just before a
+    # trailing line feed, so a member whose `project.yaml` read `id:
+    # "irqs\n"` was mounted, and its row recorded that id, which the
+    # holder's gate compares with the same manifest and passed.
+    if not PROJECT_ID_RE.fullmatch(project_id):
         raise Refusal(
             "member-bad-id",
             f"{repository}: project.yaml `id:` is {manifest.get('id')!r}, "
@@ -6581,8 +6587,9 @@ def _checked_member_id(family: Family, repository: str, project: str,
     row = _row_recording(family, project_id)
     if row is not None:
         name = row["project"]
-        # THE `bump` IT NAMES RUNS AS PRINTED (#927), with this holder's
-        # `--family-root`, as `member-already-present`'s does.
+        # THE `remove` AND THE `bump` IT NAMES RUN AS PRINTED (#1005, #927),
+        # each with this holder's `--family-root`, which both verbs require,
+        # as `member-already-present`'s `bump` does.
         raise Refusal(
             "member-duplicate-id",
             f"{project} is already a member of {family.data.get('name')} "
@@ -6592,9 +6599,10 @@ def _checked_member_id(family: Family, repository: str, project: str,
             "project twice, which `validate-family.py` refuses",
             "Remediation: a family pins each project once. If "
             f"{repository} is {row.get('repository')} renamed at the forge, "
-            f"`family.py remove --member {name}` takes the old row out and "
-            "this `add` then pins it under the new name; `family.py bump "
-            f"--family-root {shell_quoted(family.root)} --member {name} "
+            "`family.py remove --family-root "
+            f"{shell_quoted(family.root)} --member {name}` takes the old row "
+            "out and this `add` then pins it under the new name; `family.py "
+            f"bump --family-root {shell_quoted(family.root)} --member {name} "
             "--to <commit>` moves the row that is there instead. Two "
             "projects that record one id are a fault in one of their "
             "`project.yaml` files, mended in that project, not in the "
@@ -7794,17 +7802,60 @@ def _branch_by_hand(branch: str) -> str:
     `!` (`\\041`), so the line is ASCII whatever the stream it is printed on,
     and never depends on a shell's history expansion. A ref name cannot hold a
     newline, so the substitution's stripped trailing newlines lose nothing."""
-    try:
-        branch.encode("utf-8")
-    except UnicodeEncodeError:
-        pass
-    else:
+    if _is_utf_8(branch):
         return shlex.quote(branch)
-    escapes = "".join(
-        chr(byte) if 0x20 <= byte < 0x7f and chr(byte) not in "'\\%!"
-        else f"\\{byte:03o}"
-        for byte in branch.encode("utf-8", "surrogateescape"))
+    escapes = _printf_escapes(branch.encode("utf-8", "surrogateescape"))
     return f"\"$(printf '{escapes}')\""
+
+
+def _is_utf_8(text: str) -> bool:
+    """Whether `text`, read from git with `surrogateescape`, is UTF-8: it
+    holds no lone surrogate standing for a byte that is not."""
+    try:
+        text.encode("utf-8")
+    except UnicodeEncodeError:
+        return False
+    return True
+
+
+def _printf_escapes(raw: bytes) -> str:
+    """`raw` as the text of a `printf` format in single quotes that writes
+    `raw` back, as `_branch_by_hand` spells it: each printable ASCII byte as
+    itself, and every other byte, and `'`, `\\`, `%` and `!`, as `\\` and
+    three octal digits (#1079)."""
+    return "".join(
+        chr(byte) if 0x20 <= byte < 0x7f and chr(byte) not in "'\\%!"
+        else f"\\{byte:03o}" for byte in raw)
+
+
+def _path_by_hand(path: str) -> str:
+    """`path` as ONE word a person types into a POSIX shell, so the shell
+    hands git the path's exact bytes (#1086): the directory of `git -C`, or
+    a pathspec after `--`.
+
+    A UTF-8 path is `shlex.quote`d, as it always was. A path read from git
+    with `surrogateescape` (a leg's, from its member's `ls-files -z`) that
+    holds a byte which is not UTF-8 is spelled as `_branch_by_hand` spells
+    such a branch, `"$(printf '<escapes>/')"`, for two things a path can
+    hold and a ref name cannot.
+
+    A NEWLINE AT ITS END, which `$(...)` strips: the format ends in a `/`,
+    so the last byte the substitution writes is never a newline, in sh,
+    dash, bash or zsh. Each word this is for names a directory, and git
+    reads `<dir>/` as `<dir>`: `git -C` changes into it, and `git submodule
+    update -- <leg>/` updates the gitlink at `<leg>`, which no index entry
+    can sit under. One word with no variable, so the line stays one command
+    a person pastes as it is.
+
+    A `-` AT ITS START, which the `printf` of sh, dash and bash reads as an
+    option (`Illegal option -c`; zsh's prints it): it is an escape too,
+    `\\055`. The rest of the line is ASCII, as `_branch_by_hand`'s is."""
+    if _is_utf_8(path):
+        return shlex.quote(path)
+    escapes = _printf_escapes(path.encode("utf-8", "surrogateescape"))
+    if escapes.startswith("-"):
+        escapes = "\\055" + escapes[1:]
+    return f"\"$(printf '{escapes}/')\""
 
 
 def _head_by_hand(path: str, at: str, branch: str | None) -> str:
@@ -7812,9 +7863,10 @@ def _head_by_hand(path: str, at: str, branch: str | None) -> str:
     checkout was on, else the commit. FROM THE RECORD, with no git call: it
     is named when a step failed, often with `path` not on disk at all. The
     branch is spelled by `_branch_by_hand`, which keeps the bytes of a name
-    that is not UTF-8 (#1079)."""
+    that is not UTF-8 (#1079), and the path by `_path_by_hand`, which keeps
+    those of a leg's path inside its member (#1086)."""
     target = f"{_branch_by_hand(branch)} --" if branch is not None else at
-    return f"git -C {shlex.quote(path)} checkout -q {target}"
+    return f"git -C {_path_by_hand(path)} checkout -q {target}"
 
 
 def _entries_by_hand(name: str, entries: list[bytes]) -> str:
@@ -8326,9 +8378,11 @@ class PinRollback:
         legs = [] if self.legs_back else [
             leg for leg in self.legs if leg[0] not in self.legs_left]
         if legs:
+            # A leg's path is read with `surrogateescape`, so it is spelled
+            # by `_path_by_hand`, as its `git -C` below is (#1086).
             typed.append(f"git -C {shlex.quote(self.path)} {offline} "
                          "submodule update --init --no-fetch -- " + " ".join(
-                             shlex.quote(leg) for leg, _, _, _ in legs))
+                             _path_by_hand(leg) for leg, _, _, _ in legs))
             typed += [_head_by_hand(f"{self.path}/{leg}", at, branch)
                       for leg, _, at, branch in legs
                       if at is not None and branch is not None]
@@ -8665,6 +8719,9 @@ def _checked_bumped_id(family: Family, row: dict, commit: str,
     if held is None:
         return
     repository = row.get("repository")
+    # THE `remove` IT NAMES RUNS AS PRINTED (#1005): `remove` requires
+    # `--family-root`, so the line names this holder, spelled by
+    # `shell_quoted` as `member-already-present`'s `bump` is (#927).
     raise Refusal(
         "member-duplicate-id",
         f"{repository} at {commit[:12]} is already a member of "
@@ -8675,7 +8732,8 @@ def _checked_bumped_id(family: Family, row: dict, commit: str,
         "Remediation: a family pins each project once. Pass `--to` a commit "
         f"of {repository} whose project.yaml records an id no other row "
         f"records. If {repository} and {held.get('repository')} are one "
-        f"project, `family.py remove --member {held['project']}` takes the "
+        "project, `family.py remove --family-root "
+        f"{shell_quoted(family.root)} --member {held['project']}` takes the "
         "other row out first. Two projects that record one id are a fault in "
         "one of their `project.yaml` files, mended in that project, not in "
         "the family.")
@@ -9361,11 +9419,16 @@ def cmd_bump(args) -> int:
     project = checked_value("--member", repo_basename(args.member))
     row = family.member(project)
     if row is None:
+        # THE `add` IT NAMES RUNS AS PRINTED (#1005): `add` requires
+        # `--family-root`, so the line names this holder, spelled by
+        # `shell_quoted` as `_add_command`'s is (#486). `<org>` is left for
+        # the person to fill in: nothing here says whose repository it is.
         raise Refusal(
             "member-unknown",
             f"{project} is not a member of {family.data.get('name')}",
-            "Remediation: `family.py add --member <org>/" + project
-            + "` puts it in the family first.")
+            "Remediation: `family.py add --family-root "
+            f"{shell_quoted(family.root)} --member <org>/{project}` puts it "
+            "in the family first.")
     project = str(row["project"])
     commit = checked_value("--to", args.to).lower()
     if not COMMIT_RE.match(commit):
