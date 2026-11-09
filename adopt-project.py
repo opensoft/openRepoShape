@@ -3017,6 +3017,29 @@ def _remote_names(path: Path) -> list[str]:
     return [_git_path(name) for name in listed.splitlines() if name]
 
 
+def _remote_exists(path: Path, name: str) -> bool:
+    """Whether the source has a remote `name` as `git remote get-url` reads
+    one: listed by `git remote`, or kept as a file in `.git/branches` or
+    `.git/remotes`, which it does not list. `name` is a remote this tool
+    reads (`origin`, or one `_remotes_of` took), never one that starts with
+    `-`, which git would read as an option."""
+    return subprocess.run(["git", "remote", "get-url", name], cwd=path,
+                          capture_output=True, check=False).returncode == 0
+
+
+def _printable_ascii(name: str) -> bool:
+    """Whether `name` is printable ASCII, which every way through can type
+    in a command line in any locale."""
+    return name.isascii() and name.isprintable()
+
+
+def _readable_remote_name(name: str) -> bool:
+    """Whether `name` may be the source's remote read in `origin`'s place:
+    printable ASCII, and not one that starts with `-`, which git reads as an
+    option (`git remote get-url -x` is an unknown switch, not the remote)."""
+    return _printable_ascii(name) and not name.startswith("-")
+
+
 def _remotes_of(path: Path) -> tuple[str, list[str]]:
     """`(remote, passed_over)`: the remote the source's facts are read from,
     `_source_remote`'s, and the remotes it has where it has no `origin` and
@@ -3048,14 +3071,15 @@ def _remotes_of(path: Path) -> tuple[str, list[str]]:
     now, not the source's. A source with several remotes and no `origin`
     is read as one with no remote, and `adopt-no-org` and
     `plan-tracking-branch-missing` name the remotes passed over
-    (`_passed_over`). So is a remote whose name is not printable ASCII,
-    which every way through names in a command line, in any locale."""
+    (`_passed_over`) and the ways through, which are no fetch from an
+    `origin` it has not (`_tracking_branch_remediation`). So is a remote
+    whose name is not printable ASCII, which every way through names in a
+    command line, in any locale, and so is one that starts with `-`, which
+    git reads as an option."""
     names = _remote_names(path)
-    if not names or ORIGIN in names or subprocess.run(
-            ["git", "remote", "get-url", ORIGIN], cwd=path,
-            capture_output=True, check=False).returncode == 0:
+    if not names or ORIGIN in names or _remote_exists(path, ORIGIN):
         return ORIGIN, []
-    if len(names) == 1 and names[0].isascii() and names[0].isprintable():
+    if len(names) == 1 and _readable_remote_name(names[0]):
         return names[0], []
     return ORIGIN, names
 
@@ -3066,6 +3090,16 @@ def _source_remote(path: Path) -> str:
     return _remotes_of(path)[0]
 
 
+def _fetchable(source: Source) -> str | None:
+    """The remote a way through may fetch from: the one the source's facts
+    are read from (`Source.remote`) where the source has it, else None. A
+    source with no remote has none, and one whose remotes were passed over
+    has no `origin` (`_remotes_of`), so a fetch from `origin` fails there:
+    `fatal: 'origin' does not appear to be a git repository`."""
+    return (source.remote if _remote_exists(source.path, source.remote)
+            else None)
+
+
 def _passed_over(path: Path) -> str:
     """How a refusal or a finding says the source's remotes were passed over
     (`_remotes_of`), by name; empty where none was."""
@@ -3073,9 +3107,13 @@ def _passed_over(path: Path) -> str:
     if len(passed) > 1:
         return (f"it has no remote `origin`, and which of its {len(passed)} "
                 f"others it is a clone of is not guessed: {_listed(passed)}")
+    if not passed:
+        return ""
+    why = ("its name is not printable ASCII" if not _printable_ascii(passed[0])
+           else "its name starts with `-`, which git reads as an option "
+                "(`git remote rename -- <name> origin` takes it past that)")
     return (f"it has no remote `origin`, and its one remote, "
-            f"{_listed(passed)}, is not read in that one's place, as its "
-            "name is not printable ASCII" if passed else "")
+            f"{_listed(passed)}, is not read in that one's place, as {why}")
 
 
 def _the_sources(remote: str) -> str:
@@ -3135,6 +3173,8 @@ def _remote_branches(remote: str) -> str:
     """Where git keeps the branches of the source's remote `remote` as it
     last fetched them (`_source_remote`): `ORIGIN_BRANCHES` for `origin`."""
     return f"refs/remotes/{remote}/"
+
+
 #: How `Source.open` refuses a source whose default branch is no branch of
 #: its own, and the way through it, in `plan`, `check` and `execute` alike
 #: (#797).
@@ -5094,20 +5134,43 @@ def _misread_findings(plan: Plan, unwritten=()) -> list[str]:
 #: what it prints once after it (#479). `execute` refuses under the same code
 #: a tracking branch the remote the split goes to does not have.
 TRACKING_BRANCH_MISSING = "plan-tracking-branch-missing"
-def _tracking_branch_remediation(remote: str = "origin") -> str:
-    """What `check` prints once after `plan-tracking-branch-missing`, the
-    fetch in it from the source's remote (`_source_remote`, #1276)."""
-    return (
+
+
+def _tracking_branch_remediation(source: Source) -> str:
+    """What `check` prints once after `plan-tracking-branch-missing`: the
+    branch to name, and how a branch only a remote has gets into the source.
+    IT FETCHES FROM NO REMOTE THE SOURCE HAS NOT (#1276). Where the source
+    has the remote it reads, `origin` or its only remote, that is a fetch
+    from it (`_source_remote`). Where its remotes were passed over, as
+    `adopt-no-org` says them, it is no fetch from an `origin` it has not
+    (`fatal: 'origin' does not appear to be a git repository`) but what
+    `adopt-no-org` gives: the rename that names the remote it is a clone of
+    `origin`, or a branch made from a remote's. And a source with no remote
+    has no fetch to give."""
+    first = (
         "Remediation: set `tracking_branch:` in the plan to a branch the "
         "source has: its default branch, as `source.default_branch:` records "
         "it, unless the project is to track another. Or re-run `plan` without "
-        "`--tracking-branch`, which records that default branch. A branch "
-        "that is on GitHub and not yet in the source's clone is fetched into "
-        f"it first (`git fetch {shlex.quote(remote)}`), and then `check` is "
-        "run again.")
+        "`--tracking-branch`, which records that default branch.")
+    passed = _remotes_of(source.path)[1]
+    if passed:
+        return (
+            f"{first} A branch one of the source's remotes has "
+            f"({_listed(passed)}), and the source has not made its own, is "
+            "made one with `git branch <branch> refs/remotes/<name>/"
+            "<branch>`, run in the source, where `<name>` is that remote; or "
+            "the source can name the remote it is a clone of `origin` (`git "
+            "remote rename <name> origin`), and its branches are read from "
+            "that remote. Then `check` is run again.")
+    remote = _fetchable(source)
+    if remote is None:
+        return f"{first} Then `check` is run again."
+    return (
+        f"{first} A branch that is on GitHub and not yet in the source's "
+        f"clone is fetched into it first (`git fetch {shlex.quote(remote)}`), "
+        "and then `check` is run again.")
 
 
-TRACKING_BRANCH_REMEDIATION = _tracking_branch_remediation()
 #: Where `_branches_of` reads the branches of a source that has fetched any
 #: from its remote `origin`; from another remote, `_remote_branches`'.
 ORIGIN_BRANCHES = "refs/remotes/origin/"
@@ -5179,7 +5242,7 @@ def _tracking_branch_findings(plan: Plan, source: Source
     if problem is None:
         return [], []
     return ([f"FINDING {TRACKING_BRANCH_MISSING}: {problem}"],
-            [_tracking_branch_remediation(source.remote)])
+            [_tracking_branch_remediation(source)])
 
 
 def _tracking_branch_notes(args, source: Source) -> list[str]:
@@ -5199,8 +5262,8 @@ def _tracking_branch_notes(args, source: Source) -> list[str]:
 #: `execute`'s refusal of a remote `git ls-remote` cannot read, asked before
 #: any leg exists whether it has the tracking branch.
 REMOTE_UNREADABLE = "adopt-remote-unreadable"
-#: How `_refuse_a_tracking_branch_the_remote_lacks` ends, and the sentence it
-#: adds under `--local-remote-dir`, where the source is the remote.
+
+
 def _remote_lacks_remediation(remote: str = "origin") -> str:
     """How `_refuse_a_tracking_branch_the_remote_lacks` ends, its commands
     run in the source with its remote (`_source_remote`, #1276)."""
@@ -5227,10 +5290,6 @@ def _local_remote_lacks(remote: str = "origin") -> str:
         "itself, so the tracking branch must be one of the source's own "
         f"branches, and one only its remote {_spelled(remote)} has is not: "
         f"`git branch <name> {shlex.quote(remote)}/<name>` makes it one.")
-
-
-REMOTE_LACKS_REMEDIATION = _remote_lacks_remediation()
-LOCAL_REMOTE_LACKS = _local_remote_lacks()
 
 
 def _refuse_a_tracking_branch_the_remote_lacks(urls: dict, tracking: str,
@@ -5476,29 +5535,35 @@ def _refuse_a_root_no_disk_holds(name: str, flag: str, made: str) -> None:
                                           f"{PROJECT_NAME_FIX}")
 
 
-#: What `plan` says after `checked_value`'s remedy when the value refused is
-#: the source's own branch, which nobody passed (#797, L1-71's first case on
-#: #457). The alphabet alone said nothing of the way past it, which works.
-DEFAULT_BRANCH_WAY_PAST = (
-    "The source's branch can keep its name: the source is read at it as it "
-    "is, and only the tracking branch is held to that pattern, since "
-    "`execute` pushes both legs to it and opens the split's pull request "
-    "against it. So make a branch whose name matches at the same commit, in "
-    "the source with that branch checked out (`git branch main`, and `git "
-    "push origin main` where the source has a remote `origin`), and pass "
-    "it: `--tracking-branch main`.")
+def _default_branch_way_past(remote: str) -> str:
+    """What `plan` says after `checked_value`'s remedy when the value refused
+    is the source's own branch, which nobody passed (#797, L1-71's first case
+    on #457). The alphabet alone said nothing of the way past it, which
+    works. The push in it goes to the source's remote (`_source_remote`,
+    #1276): `origin`, or its only remote."""
+    return (
+        "The source's branch can keep its name: the source is read at it as "
+        "it is, and only the tracking branch is held to that pattern, since "
+        "`execute` pushes both legs to it and opens the split's pull request "
+        "against it. So make a branch whose name matches at the same commit, "
+        "in the source with that branch checked out (`git branch main`, and "
+        f"`git push {shlex.quote(remote)} main` where the source has a "
+        f"remote {_spelled(remote)}), and pass it: `--tracking-branch "
+        "main`.")
 
 
-def _checked_default_branch(what: str, branch: str) -> str:
+def _checked_default_branch(what: str, branch: str,
+                            remote: str = ORIGIN) -> str:
     """`checked_value(what, branch)` of the source's default branch, which
     `plan` takes as the tracking branch when none is passed, its refusal
-    saying the way past it too (`DEFAULT_BRANCH_WAY_PAST`)."""
+    saying the way past it too (`_default_branch_way_past`). `remote` is the
+    source's remote (`Source.remote`)."""
     try:
         return checked_value(what, branch)
     except Refusal as refused:
         raise Refusal(refused.code, refused.detail,
-                      f"{refused.remediation} {DEFAULT_BRANCH_WAY_PAST}"
-                      ) from None
+                      f"{refused.remediation} "
+                      f"{_default_branch_way_past(remote)}") from None
 
 
 def _checked_plan_inputs(args, source: Source,
@@ -5540,8 +5605,8 @@ def _checked_plan_inputs(args, source: Source,
     # create is refused here, in git's words.
     if args.tracking_branch is None:
         tracking = _flag_named(TRACKING_KEY, set())
-        args.tracking_branch = _checked_default_branch(tracking,
-                                                       source.branch)
+        args.tracking_branch = _checked_default_branch(
+            tracking, source.branch, source.remote)
         refuse_bad_branch("adopt-bad-tracking-branch", tracking,
                           args.tracking_branch)
     # Whether `--id` was passed is read BEFORE it is filled in: a refusal of
@@ -10136,12 +10201,17 @@ GITHUB_RUN = "`execute` without `--local-remote-dir`"
 #: How a finding names the runs that extract a leg from the source: both.
 EITHER_RUN = "`execute`, with `--local-remote-dir` or without it,"
 
-#: What `check` says once after its findings when one of them is about the
-#: split branch.
-def _split_branch_remediation(remote: str = "origin") -> str:
+
+def _split_branch_remediation(remote: str | None = ORIGIN) -> str:
     """What `check` says once after its findings when one of them is about
-    the split branch, naming the source's remote (`_source_remote`,
-    #1276)."""
+    the split branch, naming the source's remote (`_source_remote`, #1276).
+    `remote` is None where the source has none to fetch from (`_fetchable`):
+    the sentence that gives the fetch is left out, for it would name an
+    `origin` the source has not."""
+    gone = ("" if remote is None else
+            f" A branch named as {_the_sources(remote)} last fetched it "
+            "leaves `check`'s findings once `git fetch --prune "
+            f"{shlex.quote(remote)}` in the source finds it gone there.")
     return (
         "Remediation: `execute` pushes its one split commit to the plan's "
         "`adopt_branch:` in the repository the split goes to: the source "
@@ -10156,15 +10226,15 @@ def _split_branch_remediation(remote: str = "origin") -> str:
         "instead. Otherwise delete each branch a finding names, where it "
         "names it, once neither it nor a pull request from it is wanted, or "
         "set `adopt_branch:` to a name git can create there, and run `check` "
-        f"again. A branch named as {_the_sources(remote)} last fetched it "
-        "leaves `check`'s findings once `git fetch --prune "
-        f"{shlex.quote(remote)}` in the source finds it gone there. A branch "
-        "the source itself holds is also in the history `check` reads for "
-        "the source's submodules, and `git filter-repo` exports it once the "
-        "plan names another branch, so a finding that names one of its "
-        "commits stands until that branch is deleted.")
+        f"again.{gone} A branch the source itself holds is also in the "
+        "history `check` reads for the source's submodules, and `git "
+        "filter-repo` exports it once the plan names another branch, so a "
+        "finding that names one of its commits stands until that branch is "
+        "deleted.")
 
 
+#: What `check` says once after its findings when one of them is about the
+#: split branch, for a source whose remote is `origin`.
 SPLIT_BRANCH_REMEDIATION = _split_branch_remediation()
 
 #: `execute`'s remediation for `plan-split-branch-taken`.
@@ -10426,7 +10496,8 @@ def _check_split_branch(plan: Plan, source: Source
     extracting = _extracts_a_leg(assigned_paths(plan.entries))
     found = _split_branch_findings(
         branch, _places_check_asks(plan, source, extracting), source)
-    return found, [_split_branch_remediation(source.remote)] if found else []
+    return found, ([_split_branch_remediation(_fetchable(source))]
+                   if found else [])
 
 
 def _a_leg_may_be_on_disk(urls: dict) -> bool:
@@ -18740,11 +18811,13 @@ def main(argv: list[str] | None = None) -> int:
                       help="the organisation the source repository is in, "
                            "which the plan records as `org:` (default: the "
                            "organisation of an `org/repo` --source, or the "
-                           "one a local source's `origin` url names, or, "
-                           "where it has no `origin`, its only remote's). A "
-                           "source whose `origin` is a path, or that has "
-                           "none and not one other remote, names no "
-                           "organisation: `plan` refuses it as "
+                           "one a local source's `origin` url names; where "
+                           "it has no `origin` and exactly one remote, that "
+                           "remote's url, unless its name is not printable "
+                           "ASCII or starts with `-`). A source with no "
+                           "remote, with two or more and no `origin`, or "
+                           "whose `origin` (or only remote) is a path, names "
+                           "no organisation: `plan` refuses it as "
                            "`adopt-no-org` unless --org is given. "
                            f"`execute` refuses one over {GITHUB_OWNER_MAX} "
                            "characters without --local-remote-dir, GitHub's "

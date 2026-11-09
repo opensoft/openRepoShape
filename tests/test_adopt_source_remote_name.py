@@ -51,6 +51,13 @@ GITHUB_URL = f"https://github.com/{ORG}/{PROJECT}.git"
 FORK_URL = f"https://github.com/someone/{PROJECT}.git"
 UPSTREAM = "upstream"
 MISSING = "plan-tracking-branch-missing"
+#: A remote named as a shell reads it, and how a command line quotes it: the
+#: way through must quote it, so that pasting it runs no command.
+SHELL_ACTIVE = "up$(id)"
+ONLY_REMOTES = [pytest.param(UPSTREAM, UPSTREAM, id="plain"),
+                pytest.param(SHELL_ACTIVE, "'up$(id)'", id="shell-active")]
+#: The two characters the tests spell by code, so that no escape is typed.
+ESC, BACKSLASH = chr(27), chr(92)
 needs_filter_repo = pytest.mark.skipif(
     shutil.which("git-filter-repo") is None,
     reason="git filter-repo is not installed: `pip install git-filter-repo`")
@@ -145,14 +152,17 @@ def test_the_default_branch_is_the_only_remotes_head(tmp_path):
     assert written["tracking_branch"] == "main", written
 
 
-def test_a_tracking_branch_is_asked_of_the_only_remotes_branches(tmp_path):
+@pytest.mark.parametrize("remote, typed", ONLY_REMOTES)
+def test_a_tracking_branch_is_asked_of_the_only_remotes_branches(
+        tmp_path, remote, typed):
     """The issue's second row, `--tracking-branch`. `develop` is a branch of
     `upstream` the source has not made its own. On main `plan` noted it as
     "no branch of the source (its branches: `feature`, `main`...)" and
     `check` found it, exit 1, where the same source with `origin` checked
     ok. Now it checks ok; and `wip`, a branch of the source's own alone, is
-    found as no branch of `upstream`, with the fetch from `upstream`."""
-    source = cloned_as(tmp_path, UPSTREAM)
+    found as no branch of `upstream`, with the fetch from `upstream`, which
+    is quoted where its name is one a shell would run (`up$(id)`)."""
+    source = cloned_as(tmp_path, remote)
     git("switch", "-q", "-c", "feature", cwd=source)
     git("branch", "wip", cwd=source)
 
@@ -165,26 +175,29 @@ def test_a_tracking_branch_is_asked_of_the_only_remotes_branches(tmp_path):
 
     result, plan = planned(tmp_path, source, "--org", ORG,
                            "--tracking-branch", "wip", name="wip")
-    found = ("is `wip`, which is no branch of the source's remote `upstream` "
+    found = (f"is `wip`, which is no branch of the source's remote `{remote}` "
              "(its branches: `develop`, `main`; the source's default branch "
              "is `main`)")
     assert f"NOTE the tracking branch {found}" in result.stdout, result.stdout
     checked = check(plan)
     assert checked.returncode == 1, checked.stdout + checked.stderr
     assert f"FINDING {MISSING}: `tracking_branch` {found}" in checked.stderr
-    assert "(`git fetch upstream`), and then `check` is run again." in \
+    assert (f"(`git fetch {typed}`), and then `check` is run again.") in \
         checked.stderr, checked.stderr
 
 
 @needs_filter_repo
-def test_execute_names_the_only_remote_in_its_way_through(tmp_path):
+@pytest.mark.parametrize("remote, typed", ONLY_REMOTES)
+def test_execute_names_the_only_remote_in_its_way_through(tmp_path, remote,
+                                                          typed):
     """`execute --local-remote-dir` of the `develop` plan: `check`'s reading
     passes it, and the source itself, where the split goes, has no
     `develop`, so it is refused before any leg exists, as for the same
-    source with `origin`, and each command it gives is run with `upstream`.
+    source with `origin`, and each command it gives is run with `upstream`,
+    quoted where its name is one a shell would run (`up$(id)`).
     On main it was refused as `check`'s finding, `develop` being no branch
     it read."""
-    source = cloned_as(tmp_path, UPSTREAM)
+    source = cloned_as(tmp_path, remote)
     _, plan = planned(tmp_path, source, "--org", ORG,
                       "--tracking-branch", "develop")
 
@@ -196,10 +209,10 @@ def test_execute_names_the_only_remote_in_its_way_through(tmp_path):
     said = " ".join(result.stderr.split())
     assert f"REFUSED {MISSING}: `tracking_branch` is `develop`, which " in said
     assert "as `check` prints them" not in said, said
-    assert ("run `git fetch --prune upstream` and `git remote set-head "
-            "upstream --auto`") in said, said
-    assert ("one only its remote `upstream` has is not: `git branch <name> "
-            "upstream/<name>` makes it one.") in said, said
+    assert (f"run `git fetch --prune {typed}` and `git remote set-head "
+            f"{typed} --auto`") in said, said
+    assert (f"one only its remote `{remote}` has is not: `git branch <name> "
+            f"{typed}/<name>` makes it one.") in said, said
     assert "origin" not in said, said
     assert not (tmp_path / "remotes").exists()
 
@@ -223,6 +236,30 @@ def test_a_clone_of_another_branch_names_the_only_remote(tmp_path):
     assert "`git branch main upstream/main`, run in the source; where " \
         "`upstream` may have changed its default branch since, run `git " \
         "remote set-head upstream --auto` first." in result.stderr
+    assert not plan.exists()
+
+
+def test_the_way_past_a_default_branch_pushes_to_the_only_remote(tmp_path):
+    """`plan` refuses a default branch the tracking branch's pattern does not
+    take (`a=b`, which git does) as `unsafe-value`, and says the way past
+    it, a branch of another name pushed to the source's remote. For a source
+    cloned under `upstream` that was `git push origin main`, to a remote it
+    has not; now `git push upstream main`."""
+    source = cloned_as(tmp_path, UPSTREAM)
+    git("branch", "a=b", cwd=source)
+    git("update-ref", "refs/remotes/upstream/a=b", "HEAD", cwd=source)
+    git("symbolic-ref", "refs/remotes/upstream/HEAD",
+        "refs/remotes/upstream/a=b", cwd=source)
+
+    result, plan = planned(tmp_path, source, "--org", ORG)
+
+    assert result.returncode == 2, result.stdout + result.stderr
+    said = " ".join(result.stderr.split())
+    assert "REFUSED unsafe-value: --tracking-branch (not given, so the " \
+        "source's default branch) is 'a=b'" in said, said
+    assert ("(`git branch main`, and `git push upstream main` where the "
+            "source has a remote `upstream`)") in said, said
+    assert "origin" not in said, said
     assert not plan.exists()
 
 
@@ -380,6 +417,114 @@ def test_several_remotes_and_no_origin_are_named_and_not_guessed(tmp_path):
     checked = check(plan)
     assert checked.returncode == 1, checked.stdout + checked.stderr
     assert f"FINDING {MISSING}: `tracking_branch` {found}" in checked.stderr
+    # Its way through is no `git fetch origin`, which fails here (`fatal:
+    # 'origin' does not appear to be a git repository`): the rename
+    # `adopt-no-org` gives, or a branch made from a remote's.
+    said = " ".join(checked.stderr.split())
+    assert "git fetch" not in said, said
+    assert ("A branch one of the source's remotes has (`fork`, `upstream`), "
+            "and the source has not made its own, is made one with `git "
+            "branch <branch> refs/remotes/<name>/<branch>`, run in the "
+            "source, where `<name>` is that remote; or the source can name "
+            "the remote it is a clone of `origin` (`git remote rename <name> "
+            "origin`), and its branches are read from that remote. Then "
+            "`check` is run again.") in said, said
+
+
+@pytest.mark.parametrize("through", [
+    ("branch", "develop", f"refs/remotes/{UPSTREAM}/develop"),
+    ("remote", "rename", UPSTREAM, "origin"),
+], ids=["branch", "rename"])
+def test_the_way_through_for_several_remotes_passes_check(tmp_path, through):
+    """Each way `check` gives for `develop`, a branch only `upstream` has, in
+    a source with `upstream` and `fork` and no `origin`, is run in the source,
+    and the same plan then checks `plan ok`."""
+    source = cloned_as(tmp_path, UPSTREAM)
+    with_fork(tmp_path, source)
+    git("switch", "-q", "-c", "feature", cwd=source)
+    _, plan = planned(tmp_path, source, "--org", ORG,
+                      "--tracking-branch", "develop")
+    checked = check(plan)
+    assert checked.returncode == 1, checked.stdout + checked.stderr
+    assert f"FINDING {MISSING}" in checked.stderr, checked.stderr
+
+    git(*through, cwd=source)
+
+    checked = check(plan)
+    assert checked.returncode == 0, checked.stdout + checked.stderr
+    assert "plan ok" in checked.stdout, checked.stdout
+
+
+def test_a_source_with_no_remote_is_given_no_fetch(tmp_path):
+    """A source with no remote has none to fetch from, so `check`'s way
+    through for a tracking branch it has not leaves out the `git fetch
+    origin` it gave (`fatal: 'origin' does not appear to be a git
+    repository`), and says the rest; so does its way through for a split
+    branch, which gave `git fetch --prune origin`."""
+    source = cloned_as(tmp_path, UPSTREAM)
+    git("remote", "remove", UPSTREAM, cwd=source)
+    git("switch", "-q", "-c", "feature", cwd=source)
+    _, plan = planned(tmp_path, source, "--org", ORG,
+                      "--tracking-branch", "develop")
+
+    checked = check(plan)
+
+    assert checked.returncode == 1, checked.stdout + checked.stderr
+    said = " ".join(checked.stderr.split())
+    assert (f"FINDING {MISSING}: `tracking_branch` is `develop`, which is no "
+            "branch of the source (its branches: `feature`, `main`; the "
+            "source's default branch is `feature`).") in said, said
+    assert "git fetch" not in said, said
+    assert ("which records that default branch. Then `check` is run "
+            "again.") in said, said
+
+    # `check`'s other way through that fetched from a remote, for a split
+    # branch git cannot hold, leaves the fetch out too.
+    git("branch", "adopt", cwd=source)
+    checked = check(plan)
+    assert checked.returncode == 1, checked.stdout + checked.stderr
+    said = " ".join(checked.stderr.split())
+    assert "FINDING plan-split-branch-taken" in said, said
+    assert "git fetch" not in said, said
+    assert "last fetched it" not in said, said
+
+
+@pytest.mark.parametrize("make, name, why", [
+    (("config", f"remote.up{ESC}[2Jx.url", GITHUB_URL), f"up{ESC}[2Jx",
+     "its name is not printable ASCII"),
+    (("remote", "add", "--", "-x", GITHUB_URL), "-x",
+     "its name starts with `-`, which git reads as an option (`git remote "
+     "rename -- <name> origin` takes it past that)"),
+], ids=["control-character", "leading-dash"])
+def test_an_only_remote_a_command_line_cannot_name_is_not_read(
+        tmp_path, make, name, why):
+    """A remote whose name holds an ESC (`git config` makes one: `git remote
+    add` refuses it, and `git remote` lists it) is refused by name, spelled,
+    where it was read as the source's remote and printed raw into the
+    `source` line, as the clearing of a screen. One named `-x` is refused by
+    name too: git reads `get-url -x` as an option, which refused it for
+    another reason. Both go with the rename and no fetch."""
+    source = cloned_as(tmp_path, UPSTREAM)
+    git("remote", "remove", UPSTREAM, cwd=source)
+    git(*make, cwd=source)
+    git("switch", "-q", "-c", "feature", cwd=source)
+    spelled = name.replace(ESC, BACKSLASH + "x1b")
+
+    result, _ = planned(tmp_path, source)
+
+    assert result.returncode == 2, result.stdout + result.stderr
+    assert ("REFUSED adopt-no-org: the source names no organisation this "
+            "tool can read: it has no remote `origin`, and its one remote, "
+            f"`{spelled}`, is not read in that one's place, as {why}\n") in \
+        result.stderr, result.stderr
+    result, plan = planned(tmp_path, source, "--org", ORG,
+                           "--tracking-branch", "develop", name="org")
+    assert result.returncode == 0, result.stdout + result.stderr
+    checked = check(plan)
+    assert checked.returncode == 1, checked.stdout + checked.stderr
+    assert "git fetch" not in checked.stderr, checked.stderr
+    assert "(`git remote rename <name> origin`)" in checked.stderr
+    assert ESC not in result.stdout + result.stderr + checked.stderr
 
 
 def test_an_only_remote_named_outside_printable_ascii_is_not_read(tmp_path):
