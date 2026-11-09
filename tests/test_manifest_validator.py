@@ -4,16 +4,18 @@
 from __future__ import annotations
 
 import os
-import re
 import subprocess
 import sys
+import unicodedata
 
 import pytest
 
-from conftest import REPO, git, run_script
+from conftest import (REPO, git, load_without_bytecode, run_script,
+                      scalar_lines_not_refused)
 
 sys.path.insert(0, str(REPO / "scripts"))
 from repo_shape import parse_yaml, path_spelling_fault  # noqa: E402
+from shape_materialize import unwritable_reason  # noqa: E402
 
 #: A name that holds a backslash or a drive letter is one Git records on
 #: POSIX and refuses on Windows, where each is a separator or a drive.
@@ -902,7 +904,9 @@ def test_a_value_ending_in_a_line_break_is_one_finding_of_its_key(
     assert result.returncode == 1, result.stdout + result.stderr
     line = next((line for line in result.stderr.splitlines()
                  if line.startswith(finding)), "")
-    assert holds in line and "a line break" in line, result.stderr
+    assert holds in line, result.stderr
+    assert "a line break" in line, result.stderr
+    assert line.endswith(". Write it on one line."), result.stderr
     assert "1 finding(s)" in result.stderr, result.stderr
     assert "manifest ok" not in result.stdout
 
@@ -921,7 +925,9 @@ def test_a_value_that_must_print_refuses_what_does_not(project, key, escape,
     assert result.returncode == 1, result.stdout + result.stderr
     line = next((line for line in result.stderr.splitlines()
                  if line.startswith(finding)), "")
-    assert holds in line and kind in line, result.stderr
+    assert holds in line, result.stderr
+    assert kind in line, result.stderr
+    assert line.endswith(". Write it without that character."), result.stderr
     assert "1 finding(s)" in result.stderr, result.stderr
 
 
@@ -935,11 +941,16 @@ def test_a_value_that_must_print_refuses_what_does_not(project, key, escape,
 @pytest.mark.parametrize("key", list(TYPED_LINES))
 def test_a_typed_value_refuses_what_255_refuses(project, key, escape,
                                                 code_point, kind):
+    """The way through is said by kind: U+2028 is a line break."""
     result, finding, holds = held(project, key, escape, code_point)
     assert result.returncode == 1, result.stdout + result.stderr
     line = next((line for line in result.stderr.splitlines()
                  if line.startswith(finding)), "")
-    assert holds in line and kind in line, result.stderr
+    assert holds in line, result.stderr
+    assert kind in line, result.stderr
+    assert line.endswith(". Write it on one line." if kind == "a line break"
+                         else ". Write it without that character."), \
+        result.stderr
     assert "1 finding(s)" in result.stderr, result.stderr
 
 
@@ -952,8 +963,9 @@ def test_a_typed_value_holding_a_byte_that_is_not_utf8_is_a_finding(project,
     assert result.returncode == 1, result.stdout + result.stderr
     line = next((line for line in result.stderr.splitlines()
                  if line.startswith(finding)), "")
-    assert holds in line and "a byte that is not UTF-8" in line, \
-        result.stderr
+    assert holds in line, result.stderr
+    assert "a byte that is not UTF-8" in line, result.stderr
+    assert line.endswith(". Write it without that character."), result.stderr
 
 
 @pytest.mark.parametrize("escape", [
@@ -988,35 +1000,95 @@ def test_a_record_keeps_the_characters_the_source_held(project):
     assert "manifest ok" in result.stdout
 
 
-#: A scalar line of `project.yaml`: its indent and any `- `, its key, and a
-#: value that opens no block or flow collection.
-SCALAR_LINE = re.compile(
-    r"^(?P<lead> *(?:- )?)(?P<key>[a-z_]+): (?P<value>[^\[{].*)$")
-
-
 def test_every_scalar_line_ending_in_a_line_feed_is_refused(project):
     """THE GUARD (#1205's part 2): every scalar line of a scaffolded
     `project.yaml`, rewritten one at a time as its value double-quoted with
     a trailing `\\n`, is refused by name, whichever check refuses it: a
     finding, exit 1, or a refusal, exit 2. Never `manifest ok`, and never a
-    traceback. A key
-    added to the template that no check refuses fails here by its line."""
-    path = project / "project.yaml"
-    text = path.read_text(encoding="utf-8")
-    lines = text.split("\n")
-    swept, passed = 0, []
-    for index, line in enumerate(lines):
-        match = SCALAR_LINE.match(line)
-        if match is None:
-            continue
-        value = match["value"].strip('"')
-        lines[index] = f'{match["lead"]}{match["key"]}: "{value}\\n"'
-        path.write_text("\n".join(lines), encoding="utf-8")
-        lines[index] = line
-        result = validate(project)
-        swept += 1
-        if result.returncode == 0 or "Traceback" in result.stderr:
-            passed.append(f"{line.strip()}: exit {result.returncode}")
-    path.write_text(text, encoding="utf-8")
+    traceback. A key added to the template that no check refuses fails here
+    by its line. The loop is conftest's `scalar_lines_not_refused`, which
+    `tests/test_family.py` runs over a holder's `family.yaml`."""
+    swept, passed = scalar_lines_not_refused(project / "project.yaml",
+                                             lambda: validate(project))
     assert swept >= 30, f"fixture drift: {swept} scalar lines"
     assert passed == [], passed
+
+
+# --- each copy of #255's rule answers as the original does (#1205) ----------
+#
+# The two pinned validators each hold a copy of #255's rule (`UNWRITABLE`,
+# `_held_kind` and `_first_held`), since neither imports anything from
+# `scripts/` (#610). Nothing else holds a copy to `unwritable_reason` in
+# `scripts/shape_materialize.py`: one that drifts refuses a name the tools
+# write, or passes one they refuse, and every row above still passes.
+
+#: Each pinned validator that holds a copy, by path.
+RULE_COPIES = {
+    "validate-manifest": (REPO / "templates" / "assembly-root" / "scripts"
+                          / "validate-manifest.py"),
+    "validate-family": (REPO / "templates" / "family-root" / "scripts"
+                        / "validate-family.py"),
+}
+
+
+def rule_sample() -> list[str]:
+    """THE SWEEP, kept fast: each code point whose Unicode category is not
+    the one before it, and the one before it, so every category boundary is
+    asked from both sides; every C0 and C1 control, the line breaks among
+    them; the nine bidi controls by number, U+202A to U+202E and U+2066 to
+    U+2069, so a copy that drops the isolates fails; and the lone
+    surrogates at each end of the range a byte that is not UTF-8 is kept in
+    (#247). Each is asked alone, between two letters, after an ESC and
+    before a line feed, so a line break is named first wherever it is."""
+    points = {*range(0xA0), *range(0x202A, 0x202F), *range(0x2066, 0x206A),
+              0x2028, 0x2029, 0xD800, 0xDC7F, 0xDC80, 0xDCFF, 0xDD00, 0xDFFF}
+    before = None
+    for point in range(0x110000):
+        category = unicodedata.category(chr(point))
+        if category != before:
+            points.update((max(point - 1, 0), point))
+        before = category
+    return [value for char in map(chr, sorted(points))
+            for value in (char, f"A{char}z", chr(0x1B) + char,
+                          char + chr(0x0A))]
+
+
+def what_the_copy_gets_wrong(copy, value: str) -> list:
+    """Where `copy` answers `value` otherwise than the original (#1205): a
+    typed value is refused where `unwritable_reason` refuses it, as the
+    same thing; any other where it does not print; and either way a line
+    break is the character named, wherever it is."""
+    reason = unwritable_reason(value)
+    first_break = next((char for char in value
+                        if char.splitlines() != [char]), None)
+    typed = copy._first_held(value, True)
+    printed = copy._first_held(value, False)
+    wrong = []
+    if (typed is None) != (reason is None):
+        wrong.append(("refuses", ascii(value), reason, typed))
+    elif typed and not reason.startswith(
+            "it holds " + typed[1].split(",")[0]):
+        wrong.append(("says", ascii(value), reason, typed[1]))
+    if (printed is None) != value.isprintable():
+        wrong.append(("prints", ascii(value), printed))
+    for found in (typed, printed):
+        if found and first_break and found[0] != first_break:
+            wrong.append(("a line break first", ascii(value), found))
+    return wrong
+
+
+@pytest.mark.parametrize("name", list(RULE_COPIES))
+def test_each_copy_of_the_rule_answers_as_255_does(name):
+    """Each validator's copy, loaded by path, answers every value of
+    `rule_sample` as `unwritable_reason` does where a person types it, and
+    as `str.isprintable` does where not: the same verdict, the same kind,
+    and a line break named first."""
+    kept = list(sys.path)
+    try:
+        copy = load_without_bytecode(RULE_COPIES[name],
+                                     "rule_copy_" + name.replace("-", "_"))
+    finally:
+        sys.path[:] = kept
+    wrong = [row for value in rule_sample()
+             for row in what_the_copy_gets_wrong(copy, value)]
+    assert wrong == [], f"{len(wrong)} answers differ: {wrong[:5]}"

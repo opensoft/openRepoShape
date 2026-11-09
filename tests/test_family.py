@@ -33,7 +33,8 @@ import sys
 import pytest
 
 from conftest import (NO_BYTECODE, REPO, appended_to_command_scope,
-                      cloned_just_pushed, git, rmtree, run_script)
+                      cloned_just_pushed, git, rmtree, run_script,
+                      scalar_lines_not_refused)
 #: The trailer helpers and the two lines a lane's run lands, imported from
 #: the file that owns those rules rather than retyped — see
 #: `tests/test_commit_trailers.py`.
@@ -964,6 +965,7 @@ def test_a_holder_value_ending_in_a_line_break_is_one_finding_of_its_key(
     result, line = held(holder, key, escape, code_point, *extra)
     assert result.returncode == 1, result.stdout + result.stderr
     assert "a line break" in line, result.stderr
+    assert line.endswith(". Write it on one line."), result.stderr
     assert "\n1 finding(s) in family.yaml" in result.stderr, result.stderr
     assert "family ok" not in result.stdout
 
@@ -978,6 +980,7 @@ def test_a_holder_value_that_must_print_refuses_what_does_not(
     result, line = held(holder, key, escape, code_point, "--no-members")
     assert result.returncode == 1, result.stdout + result.stderr
     assert "does not print" in line, result.stderr
+    assert line.endswith(". Write it without that character."), result.stderr
     assert "\n1 finding(s) in family.yaml" in result.stderr, result.stderr
 
 
@@ -994,6 +997,7 @@ def test_a_typed_holder_value_refuses_what_255_refuses(holder, key, escape,
     result, line = held(holder, key, escape, code_point, "--no-members")
     assert result.returncode == 1, result.stdout + result.stderr
     assert kind in line, result.stderr
+    assert line.endswith(". Write it without that character."), result.stderr
     assert "\n1 finding(s) in family.yaml" in result.stderr, result.stderr
 
 
@@ -1014,12 +1018,6 @@ def test_a_created_by_keeps_what_255_keeps(holder, escape):
     assert "family ok" in result.stdout
 
 
-#: A scalar line of `family.yaml`: its indent and any `- `, its key, and a
-#: value that opens no block or flow collection.
-SCALAR_LINE = re.compile(
-    r"^(?P<lead> *(?:- )?)(?P<key>[a-z_]+): (?P<value>[^\[{].*)$")
-
-
 def test_every_holder_scalar_line_ending_in_a_line_feed_is_refused(holder):
     """THE GUARD (#1205's part 2): every scalar line of a holder's
     `family.yaml`, its two member rows among them, rewritten one at a time
@@ -1027,24 +1025,11 @@ def test_every_holder_scalar_line_ending_in_a_line_feed_is_refused(holder):
     whichever check refuses it: a finding, exit 1, or a refusal, exit 2 (a
     member pin's `commit` is `member-pin-commit`). Never `family ok`, and
     never a traceback. A key added to the template, or to the row
-    `family.py add` writes, that no check refuses fails here by its line."""
-    path = holder / "family.yaml"
-    text = path.read_text(encoding="utf-8")
-    lines = text.split("\n")
-    swept, passed = 0, []
-    for index, line in enumerate(lines):
-        match = SCALAR_LINE.match(line)
-        if match is None:
-            continue
-        value = match["value"].strip('"')
-        lines[index] = f'{match["lead"]}{match["key"]}: "{value}\\n"'
-        path.write_text("\n".join(lines), encoding="utf-8")
-        lines[index] = line
-        result = validate(holder)
-        swept += 1
-        if result.returncode == 0 or "Traceback" in result.stderr:
-            passed.append(f"{line.strip()}: exit {result.returncode}")
-    path.write_text(text, encoding="utf-8")
+    `family.py add` writes, that no check refuses fails here by its line.
+    The loop is conftest's `scalar_lines_not_refused`, which
+    `tests/test_manifest_validator.py` runs over a `project.yaml`."""
+    swept, passed = scalar_lines_not_refused(holder / "family.yaml",
+                                             lambda: validate(holder))
     assert swept >= 30, f"fixture drift: {swept} scalar lines"
     assert passed == [], passed
 
