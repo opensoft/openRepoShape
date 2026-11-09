@@ -219,10 +219,10 @@ def test_1077_a_value_the_index_alone_gives_is_named_and_taken_out(
     Git reads the index's file and dies on it (`git submodule status`,
     exit 128). Main read the work tree's file and HEAD's and said `family
     ok`. It is `gitmodules-value-refused` now, in every mode, naming the
-    index's file, and its lines put that file back, not HEAD's, and take
-    the key out; the text says to stage the file. Typed, staged as it
-    says and committed: nothing is left, and the gate and a plain clone
-    pass."""
+    index's file, and its lines put that file back, not HEAD's, take the
+    key out, and stage the file, the last line as the text says (#1150).
+    Typed, then a plain `git commit`: nothing is left, and the gate and a
+    plain clone pass."""
     env = cloning(offline, tmp_path, family)
     staged_only(holder, env, valued(head_bytes(holder, env), ROW,
                                     b"\tupdate = !true\n"))
@@ -237,9 +237,9 @@ def test_1077_a_value_the_index_alone_gives_is_named_and_taken_out(
         + "The work tree holds no .gitmodules, so the first line below puts "
         "back the index's. Take the key out by hand, in a POSIX shell, then "
         "stage .gitmodules:\n    git checkout -- .gitmodules\n    git "
-        f"config -f .gitmodules --unset-all submodule.{ROW}.update"]
+        f"config -f .gitmodules --unset-all submodule.{ROW}.update\n    "
+        f"{STAGE}"]
     typed_in_order(holder, env, validate(holder, "--no-members"))
-    raw(holder, env, "add", "--", GITMODULES)
     committed_as_staged(holder, env)
     assert raw(holder, env, "status", "--porcelain").stdout == b""
     ends_well(holder, env, family, tmp_path)
@@ -284,8 +284,11 @@ def test_1077_a_value_head_gives_where_the_deletion_is_staged_puts_head_s_back(
     reads`, and its first line puts back HEAD's file, as the index holds
     none. A check that read the index's file alone, with no fallback to
     HEAD's, found nothing in it and said to commit the index's file, with
-    no line, over a deletion a plain `git commit` records. Typed in order,
-    staged and committed: HEAD's file holds no value, both members stay,
+    no line, over a deletion a plain `git commit` records. Its last line
+    stages the file, as the text says (#1150): typed without it, the
+    plain `git commit` after them exits 1 (`no changes added to commit`)
+    and HEAD keeps the value (rv1227's M1 on #1227). Typed in order, then
+    a plain `git commit`: HEAD's file holds no value, both members stay,
     nothing is left, and the gate and a plain clone pass."""
     env = cloning(offline, tmp_path, family)
     committed_gitmodules(holder, env, valued(
@@ -303,9 +306,8 @@ def test_1077_a_value_head_gives_where_the_deletion_is_staged_puts_head_s_back(
         "back HEAD's, as the index holds none. Take the key out by hand, in "
         "a POSIX shell, then stage and commit .gitmodules:\n    git "
         "checkout HEAD -- .gitmodules\n    git config -f .gitmodules "
-        f"--unset-all submodule.{ROW}.update"]
+        f"--unset-all submodule.{ROW}.update\n    {STAGE}"]
     typed_in_order(holder, env, validate(holder, "--no-members"))
-    raw(holder, env, "add", "--", GITMODULES)
     committed_as_staged(holder, env)
     assert b"!true" not in head_bytes(holder, env)
     assert head_paths(holder, env) == {ROW, OTHER_ROW}
@@ -355,9 +357,9 @@ def test_1077_a_url_git_dies_on_is_written_back_as_the_file_git_reads_gave_it(
     MEMBER's section a `url` that is not HEAD's, then a `url` with no
     value, which git dies on. The line that writes the url back, as it
     last gave one, takes it from the file git reads (the index's), not
-    HEAD's: from HEAD's it undid what was staged. Typed in order, then
-    staged and committed: HEAD gives the staged url, and the gate passes
-    in `--no-members`."""
+    HEAD's: from HEAD's it undid what was staged. Its last line stages
+    the file (#1150). Typed in order, then a plain `git commit`: HEAD
+    gives the staged url, and the gate passes in `--no-members`."""
     env = cloning(offline, tmp_path, family)
     data = head_bytes(holder, env)
     url = "https://github.com/InkRouter/Staged.git"
@@ -375,10 +377,9 @@ def test_1077_a_url_git_dies_on_is_written_back_as_the_file_git_reads_gave_it(
     assert codes_of(found) == ["gitmodules-value-refused"], found
     lines = commands(found[0])
     assert lines[0] == "git checkout -- .gitmodules", lines
-    assert lines[-1] == (f"git config -f .gitmodules submodule.{ROW}.url "
-                         f"{url}"), lines
+    assert lines[-2:] == [f"git config -f .gitmodules submodule.{ROW}.url "
+                          f"{url}", STAGE], lines
     typed_in_order(holder, env, validate(holder, "--no-members"))
-    raw(holder, env, "add", "--", GITMODULES)
     committed_as_staged(holder, env)
     assert url.encode() in head_bytes(holder, env)
     assert raw(holder, env, "status", "--porcelain").stdout == b""

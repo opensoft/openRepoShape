@@ -1175,8 +1175,10 @@ def copy_in_the_way(target: Path, actual: str) -> str | None:
     nowhere included (it is written through, and a file lands where nothing
     was meant), or when something on the way to it is not a directory, which
     a symlink to one is. `adopt-project.py check` finds what a plan keeps
-    there before any leg exists (`plan-root-blocks-shape-copy`); this is the
-    same question asked of the disk, for a caller that skipped `check`.
+    there before any leg exists (`plan-root-blocks-shape-copy`; a symlink
+    there whose target `plan-empty-symlink` or `plan-bad-symlink-target`
+    names one by one is that finding's alone, #979); this is the same
+    question asked of the disk, for a caller that skipped `check`.
     """
     parts = actual.split("/")
     for end in range(1, len(parts) + 1):
@@ -1784,9 +1786,15 @@ def gives_a_branch_another_name(source: str, destination: str) -> bool:
     `refs/heads-archive/old` for `refs/heads*`, and `origin_fetch_refspecs`
     says what leaving those out costs (BUT A COMMIT ONLY A REF THAT IS NO
     BRANCH REACHES). A shorter start, such as `refs/*` or `*`, can name a
-    tag, and that clause has left it out first. ANY OTHER SOURCE NAMES NO
-    BRANCH, though a refspec from one can still put a ref on a branch's
-    name: `origin_fetch_refspecs` says where (WHAT CAN STILL CLASH).
+    tag, and that clause has left it out first. ANY OTHER SOURCE TAKES NO
+    BRANCH BY A PATTERN, and a full name that is no pattern, such as
+    `refs/h`, takes the one ref git completes it to on the remote: that ref
+    itself, or one such as the branch `refs/heads/refs/h` or the tag
+    `refs/tags/refs/h` (measured, git 2.43 and 2.47.1). Such a name can
+    stand for a branch its spelling does not show, so it is not left out
+    here. A refspec from any such source can still put a ref on a branch's
+    name, if the ref is not that branch itself: `origin_fetch_refspecs`
+    says where (WHAT CAN STILL CLASH).
     """
     fixed, star, _ = source.partition("*")
     if not source.startswith(HEADS_PREFIX):
@@ -4994,9 +5002,18 @@ def _materialize(shape_root: Path, template_root: Path, target: Path,
                     "root already holds under its collision directory, so "
                     "the source cannot keep its own path there. "
                     "`adopt-project.py check` reports a plan that does as "
-                    "`plan-root-blocks-shape-copy`, before any leg exists. "
-                    "Send that path to a leg or `drop` it in the plan, and "
-                    "run `execute` again with fresh leg repositories and "
+                    "`plan-root-blocks-shape-copy`, before any leg exists, "
+                    "except a symlink there whose target "
+                    "`plan-empty-symlink` or `plan-bad-symlink-target` "
+                    "names one by one: that finding names it, once. Send "
+                    "that path to a leg or `drop` it in the plan. For such "
+                    "a symlink, first give it a target of its own in the "
+                    "source, or remove it there, commit, and re-run "
+                    "`plan`, since no answer in the plan changes a target. "
+                    "A link kept there with a target of its own is then "
+                    "`plan-root-blocks-shape-copy`'s, and the answer above "
+                    "is the one that helps. Then run `execute` again with "
+                    "fresh leg repositories and "
                     "an empty `--work-dir`, or none: this run made both "
                     "legs and cloned them into the work directory it was "
                     "given.")

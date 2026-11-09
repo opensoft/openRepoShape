@@ -105,6 +105,8 @@ from test_validate_pins_spelled_and_named import leg_with_its_own_git_directory
 from test_validate_pins_unreadable_workflow import CANNOT_RUN_AS_ROOT
 #: A mode for the block and the old one back after it.
 from test_validate_pins_unreadable_workflows_dir import mode_of
+#: A `stat` refused at one path, from the file that owns it (#1146).
+from test_root_git_unreadable import as_python_314
 
 sys.path.insert(0, str(REPO / "scripts"))
 import shape_advisory  # noqa: E402
@@ -552,9 +554,13 @@ def test_a_mount_whose_git_cannot_be_reached_is_not_one_without_a_git(
         standard, project, monkeypatch):
     """A mount this user can list and not search: its `.git`'s `stat` is
     refused, which 3.14 answered as "no `.git` of its own", and the row sent
-    a checkout over it. Every row that reads the mount says the same line."""
+    a checkout over it. Every row that reads the mount says the same line.
+    Only the legs' `.git` is refused: the root's own is #1146's case, which
+    the `legs` row names once, before any leg."""
     module, ctx = in_process(standard, project)
-    refused_stat(monkeypatch, ".git")
+    as_python_314(monkeypatch, {
+        ctx.root / leg / ".git": PermissionError(errno.EACCES, DENIED)
+        for leg in ("spec", "code")})
     legs = module.check_legs(ctx)
     shape_files = module.check_leg_shape_files(ctx)
     placement = module.check_placement(ctx)
