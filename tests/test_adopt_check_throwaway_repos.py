@@ -1473,6 +1473,9 @@ def test_nothing_beyond_the_first_symlink_on_the_way_is_asked(adopter,
 #: outside the assembly, and a gitlink.
 LINK_OUT = ("link", "{victim}")
 GITLINK = ("gitlink", None)
+#: `LINK_OUT`'s symlink, where `{victim}` is a folder this user may not
+#: search while the mount runs (r1237c's NIT 1).
+LINK_SHUT = ("link", "{shut}")
 
 
 def with_kinds(kinds: dict):
@@ -1534,6 +1537,12 @@ def outside_the_assembly(base: Path) -> Path:
 #: ran `git rm -f` of the gitlink `D` (or of `M`), which emptied the folder
 #: the symlink leads to and stopped at `fatal: could not remove 'D'`
 #: (`'M/D'`), or stopped there where the gitlink was a file or below one.
+#: The sixth shape pins what 63c52718 already ran, too: the gitlink `D/G`
+#: is below `D`, which the clone left the symlink `d`, leading to a folder
+#: this user may not search while the mount runs. `D` is named and taken
+#: whole; asked before the folders on the way, the gitlink's own path is
+#: refused there, a `PermissionError` after both legs are pushed (r1237c's
+#: NIT 1).
 #: The last two shapes pin what 63c52718 already ran: every path the index
 #: holds under a removed path is asked, not only the twins (r1237b's
 #: SHOULD 1), and a path under one is the path or below it after a `/`
@@ -1558,6 +1567,11 @@ AT_A_GITLINK_OR_BEYOND_A_LINK = [
                  {"drop": ["M/"]},
                  [([*CACHED_AS, "M/D"], None), (WRITTEN_AS, b"m\0")],
                  id="a-gitlink-below-a-file-the-clone-left"),
+    pytest.param(("D/G", "d"), {"D/G": GITLINK, "d": LINK_SHUT},
+                 (("D", "d"),), {"drop": ["D/"]},
+                 [([*CACHED_AS, "D"], None), (WRITTEN_AS, b"d\0")],
+                 marks=CANNOT_RUN_AS_ROOT,
+                 id="a-gitlink-below-the-link-to-a-folder-nobody-may-search"),
     pytest.param(("S/D/x", "S/z", "s/d"), {"s/d": LINK_OUT},
                  (("S/D", "s/d"),), {"code": ["S/"]},
                  [([*CACHED_AS, "S/D"], None), ([*FORCED_AS, "S"], None),
@@ -1587,12 +1601,17 @@ def test_nothing_is_removed_through_a_symlink_at_a_gitlink_or_beyond(
     its own blob, and none that goes."""
     victim = outside_the_assembly(tmp_path)
     assembly, blobs = an_assembly(tmp_path, paths, with_kinds(
-        {path: (kind, target and target.format(victim=victim))
+        {path: (kind, target and target.format(victim=victim, shut=victim))
          for path, (kind, target) in kinds.items()}))
     for at, twin in made:
         as_the_twin(assembly, at, twin)
-    ran = git_commands_of_the_mount(adopter, monkeypatch, tmp_path,
-                                    assembly, moved)
+    if LINK_SHUT in kinds.values():
+        victim.chmod(0)
+    try:
+        ran = git_commands_of_the_mount(adopter, monkeypatch, tmp_path,
+                                        assembly, moved)
+    finally:
+        victim.chmod(0o755)
     assert what_it_holds(victim) == {"x": b"victim\n", "keep": b"keep\n"}
     assert ran == commands
     removed = [path.rstrip("/") for leg in moved.values() for path in leg]
