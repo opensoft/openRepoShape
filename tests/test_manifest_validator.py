@@ -4,6 +4,7 @@
 from __future__ import annotations
 
 import os
+import re
 import subprocess
 import sys
 
@@ -841,3 +842,181 @@ def test_the_recorded_path_rule_refuses_what_git_will_not_record(tmp_path,
                    f"160000,{commit},{path}", cwd=repo, check=False)
     assert (path_spelling_fault(path) is None) == (recorded.returncode == 0), (
         path_spelling_fault(path), recorded.stderr)
+
+
+# --- a value no pattern reads, holding a character it may not (#1205) -------
+#
+# A double-quoted `"...\n"` in a key no pattern reads was `manifest ok`, exit
+# 0: `name` split that line in two, and a leg's path so read met
+# `validate-pins.py`'s `pin-gitlink-absent` two steps later. Each such key is
+# refused by its own code now, once. `name`, `elected_by` and `reference`,
+# which a person types, keep #255's rule, the one the tools ask before they
+# write them, so a joiner and a no-break space stay valid there (lane 3's
+# ruling on #1205, issuecomment-6742051321).
+
+#: `(line as scaffolded, the line with "{}" where a character goes, the key
+#: as the finding names it, the finding's code)`.
+TYPED_LINES = {
+    "name": ('name: "Atlas"', 'name: "Atlas{}"', "name", "manifest-name"),
+    "reference": ('reference: "openxFactory docs/project-repo-schema.md"',
+                  'reference: "openxFactory docs/project-repo-schema.md{}"',
+                  "reference", "manifest-reference"),
+    "elected_by": ('elected_by: "Test Human"', 'elected_by: "Test Human{}"',
+                   "elected_by", "manifest-elected-by"),
+}
+PRINTED_LINES = {
+    "spec-path": ('path: "spec"', 'path: "spec{}"', "leg 'spec': path",
+                  "manifest-leg-path"),
+    "code-path": ('path: "code"', 'path: "code{}"', "leg 'code': path",
+                  "manifest-leg-path"),
+    "shape-repository": ("\n  repository: opensoft/openRepoShape\n",
+                         '\n  repository: "opensoft/openRepoShape{}"\n',
+                         "shape.repository", "manifest-shape-repository"),
+    "shape-digest-algorithm": ("\n  digest_algorithm: sha256\n",
+                               '\n  digest_algorithm: "sha256{}"\n',
+                               "shape.digest_algorithm",
+                               "manifest-shape-digest-algorithm"),
+}
+VALUE_LINES = {**TYPED_LINES, **PRINTED_LINES}
+
+
+def held(project, key: str, escape: str, code_point: str):
+    """The validator's answer with `escape` (YAML's spelling) at the end
+    of `key`'s value, and the finding it must give: `FINDING <code>: <key>
+    is ...`, holding `code_point`."""
+    old, new, what, code = VALUE_LINES[key]
+    edit(project, old, new.format(escape))
+    return validate(project), f"FINDING {code}: {what} is ", \
+        f", which holds {code_point}, "
+
+
+@pytest.mark.parametrize("escape, code_point", [
+    pytest.param("\\n", "U+000A", id="line-feed"),
+    pytest.param("\\r", "U+000D", id="carriage-return"),
+])
+@pytest.mark.parametrize("key", list(VALUE_LINES))
+def test_a_value_ending_in_a_line_break_is_one_finding_of_its_key(
+        project, key, escape, code_point):
+    """On main each was `manifest ok`, exit 0."""
+    result, finding, holds = held(project, key, escape, code_point)
+    assert result.returncode == 1, result.stdout + result.stderr
+    line = next((line for line in result.stderr.splitlines()
+                 if line.startswith(finding)), "")
+    assert holds in line and "a line break" in line, result.stderr
+    assert "1 finding(s)" in result.stderr, result.stderr
+    assert "manifest ok" not in result.stdout
+
+
+@pytest.mark.parametrize("escape, code_point, kind", [
+    pytest.param("\\xa0", "U+00A0", "does not print", id="no-break-space"),
+    pytest.param("\\t", "U+0009", "does not print", id="tab"),
+    pytest.param("\\u202e", "U+202E", "does not print", id="bidi-override"),
+])
+@pytest.mark.parametrize("key", list(PRINTED_LINES))
+def test_a_value_that_must_print_refuses_what_does_not(project, key, escape,
+                                                       code_point, kind):
+    """`str.isprintable`, as the issue asks, for the keys no person types
+    as free text."""
+    result, finding, holds = held(project, key, escape, code_point)
+    assert result.returncode == 1, result.stdout + result.stderr
+    line = next((line for line in result.stderr.splitlines()
+                 if line.startswith(finding)), "")
+    assert holds in line and kind in line, result.stderr
+    assert "1 finding(s)" in result.stderr, result.stderr
+
+
+@pytest.mark.parametrize("escape, code_point, kind", [
+    pytest.param("\\t", "U+0009", "a control character", id="tab"),
+    pytest.param("\\x1b", "U+001B", "a control character", id="esc"),
+    pytest.param("\\u202e", "U+202E", "a bidirectional control",
+                 id="bidi-override"),
+    pytest.param("\\u2028", "U+2028", "a line break", id="line-separator"),
+])
+@pytest.mark.parametrize("key", list(TYPED_LINES))
+def test_a_typed_value_refuses_what_255_refuses(project, key, escape,
+                                                code_point, kind):
+    result, finding, holds = held(project, key, escape, code_point)
+    assert result.returncode == 1, result.stdout + result.stderr
+    line = next((line for line in result.stderr.splitlines()
+                 if line.startswith(finding)), "")
+    assert holds in line and kind in line, result.stderr
+    assert "1 finding(s)" in result.stderr, result.stderr
+
+
+@pytest.mark.parametrize("key", ["reference", "elected_by"])
+def test_a_typed_value_holding_a_byte_that_is_not_utf8_is_a_finding(project,
+                                                                     key):
+    """The stand-in a plan keeps for such a byte (#247), which `name` is
+    refused as a surrogate already (#280)."""
+    result, finding, holds = held(project, key, "\\udce9", "U+DCE9")
+    assert result.returncode == 1, result.stdout + result.stderr
+    line = next((line for line in result.stderr.splitlines()
+                 if line.startswith(finding)), "")
+    assert holds in line and "a byte that is not UTF-8" in line, \
+        result.stderr
+
+
+@pytest.mark.parametrize("escape", [
+    pytest.param("\\xa0", id="no-break-space"),
+    pytest.param("\\u200c", id="zero-width-non-joiner"),
+    pytest.param("\\u3000", id="ideographic-space"),
+    pytest.param("\\xad", id="soft-hyphen"),
+])
+@pytest.mark.parametrize("key", list(TYPED_LINES))
+def test_a_typed_value_keeps_what_255_keeps(project, key, escape):
+    """What `scaffold-project.py` and `adopt-project.py` write, and this
+    passed before: a Persian name joins its parts with U+200C, and
+    `--name "Atlas\\xa0One"` is written as it was typed. `str.isprintable`
+    refuses each, which is why these keys do not ask it (#1205)."""
+    old, new, _what, _code = VALUE_LINES[key]
+    edit(project, old, new.format("X" + escape + "Y"))
+    result = validate(project)
+    assert result.returncode == 0, result.stdout + result.stderr
+    assert "manifest ok" in result.stdout
+
+
+def test_a_record_keeps_the_characters_the_source_held(project):
+    """The two records' `path` and `resolution` hold what the source held,
+    and `adopt-project.py` writes a line break, a tab or a no-break space
+    there as it found it (the macOS `Icon\\r`): they are not asked."""
+    append_record(project, SUBMODULE_RECORD.replace(
+        '  - path: ".cursor"\n', '  - path: "vendor/Icon\\r"\n', 1).replace(
+        '"editor rules the code leg reads"', '"kept\\tas\\xa0the plan said"',
+        1))
+    result = validate(project)
+    assert result.returncode == 0, result.stdout + result.stderr
+    assert "manifest ok" in result.stdout
+
+
+#: A scalar line of `project.yaml`: its indent and any `- `, its key, and a
+#: value that opens no block or flow collection.
+SCALAR_LINE = re.compile(
+    r"^(?P<lead> *(?:- )?)(?P<key>[a-z_]+): (?P<value>[^\[{].*)$")
+
+
+def test_every_scalar_line_ending_in_a_line_feed_is_refused(project):
+    """THE GUARD (#1205's part 2): every scalar line of a scaffolded
+    `project.yaml`, rewritten one at a time as its value double-quoted with
+    a trailing `\\n`, is refused by name, whichever check refuses it: a
+    finding, exit 1, or a refusal, exit 2. Never `manifest ok`, and never a
+    traceback. A key
+    added to the template that no check refuses fails here by its line."""
+    path = project / "project.yaml"
+    text = path.read_text(encoding="utf-8")
+    lines = text.split("\n")
+    swept, passed = 0, []
+    for index, line in enumerate(lines):
+        match = SCALAR_LINE.match(line)
+        if match is None:
+            continue
+        value = match["value"].strip('"')
+        lines[index] = f'{match["lead"]}{match["key"]}: "{value}\\n"'
+        path.write_text("\n".join(lines), encoding="utf-8")
+        lines[index] = line
+        result = validate(project)
+        swept += 1
+        if result.returncode == 0 or "Traceback" in result.stderr:
+            passed.append(f"{line.strip()}: exit {result.returncode}")
+    path.write_text(text, encoding="utf-8")
+    assert swept >= 30, f"fixture drift: {swept} scalar lines"
+    assert passed == [], passed

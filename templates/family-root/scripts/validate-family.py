@@ -16,6 +16,17 @@ WHAT IS CHECKED
 
   - the envelope: `schema_version`, `kind: family-manifest`, `id`, `name`,
     `org`, `created_by` / `created_on`, `visibility`, `members_dir`
+  - that no text value holds a character it may not (#1205), named with
+    the key and the character's code point. `name` and `created_by`, which
+    a person types, are held to #255's rule, the one `family.py init` asks
+    of the value before it writes it: no line break, lone surrogate,
+    bidirectional control or other control character; a joiner or a
+    no-break space a name needs is kept. `org`, the holder's own
+    `repository`, `tracking_branch`, `shape.repository`,
+    `shape.digest_algorithm` and each member pin's `digest_algorithm` hold
+    only characters that print (`str.isprintable`). A key whose own check
+    refuses such a value already is not asked twice. It reads `family.yaml`
+    alone, as the rest of the envelope does, so `--no-members` asks it too.
   - the family NAME against `contracts/repository-naming.yaml`, in the
     `family` form. That form is DECLARED-ONLY: `InkRouter` is spelled exactly
     like an assembly root and `family.yaml` is what tells them apart, so the
@@ -178,6 +189,7 @@ import re
 import shlex
 import stat
 import sys
+import unicodedata
 from collections import Counter
 from contextlib import contextmanager
 from pathlib import Path
@@ -659,6 +671,108 @@ def _check_schema_kind_and_id(manifest: dict, report: Report) -> None:
                        f"{PROJECT_ID_RE.pattern}")
 
 
+#: The nine bidirectional embedding, override and isolate controls, U+202A
+#: to U+202E and U+2066 to U+2069: #255's `BIDI_CONTROLS`, copied from
+#: openRepoShape's `scripts/shape_materialize.py`, since this file imports
+#: nothing new from `repo_shape.py`, which may be older than it (#370, #610).
+BIDI_CONTROLS = frozenset((*range(0x202A, 0x202F), *range(0x2066, 0x206A)))
+
+#: What each character a value may not hold is, as its finding says it
+#: (#1205).
+CHARACTER_KINDS = {
+    "line-break": ("a line break, and the value is one line: what prints it "
+                   "is split in two there"),
+    "not-utf8": ("a byte that is not UTF-8, which no UTF-8 file, commit "
+                 "message or console can hold"),
+    "surrogate": ("a lone surrogate, which no UTF-8 file, commit message or "
+                  "console can hold"),
+    "bidi": ("a bidirectional control, which shows the rest of the line it "
+             "is printed in in another order than it is written"),
+    "control": "a control character, which does not print",
+    "unprintable": ("a character that does not print, or a space other "
+                    "than ` `: a person reading the value cannot tell what "
+                    "it holds"),
+}
+
+
+def _unwritable_character(value: str) -> tuple[str, str] | None:
+    """The first character of `value` #255's rule refuses, and what it is
+    (a `CHARACTER_KINDS` key); None where it refuses none.
+
+    #255'S RULE, COPIED (#1205): `unwritable_reason` in openRepoShape's
+    `scripts/shape_materialize.py`, which `scaffold-project.py`,
+    `adopt-project.py` and `family.py init` ask of a name, an elector and a
+    reference before they write one. A line break (one `str.splitlines`
+    ends a line at: CR, U+0085 and U+2028 among them), a lone surrogate, a
+    bidi control and any other control character. NOT `str.isprintable`,
+    which refuses U+200C ZERO WIDTH NON-JOINER, which a Persian name joins
+    its parts with, and a no-break space: the tools write both, and this
+    file passed both before, so refusing either would refuse a manifest
+    the tools wrote. Standard library only, as the rest of this file.
+    `validate-manifest.py`'s, word for word.
+    """
+    char = next((c for c in value if c.splitlines() != [c]), None)
+    if char is not None:
+        return char, "line-break"
+    for char in value:
+        category = unicodedata.category(char)
+        if category == "Cs":
+            return char, ("not-utf8" if "\udc80" <= char <= "\udcff"
+                          else "surrogate")
+        if ord(char) in BIDI_CONTROLS:
+            return char, "bidi"
+        if category in ("Cc", "Zl", "Zp"):
+            return char, "control"
+    return None
+
+
+def _unprintable_character(value: str) -> tuple[str, str] | None:
+    """The first character of `value` that does not print
+    (`str.isprintable`), and what it is; None where every one prints
+    (#1205). A line break is said as one."""
+    char = next((c for c in value if not c.isprintable()), None)
+    if char is None:
+        return None
+    return char, ("line-break" if char.splitlines() != [char]
+                  else "unprintable")
+
+
+def _held_character(what: str, value, typed: bool = False) -> str | None:
+    """The finding's words where `value` holds a character its key may not,
+    or None: none does, or it is not text, which is another check's to
+    name (#1205).
+
+    A LINE FEED WAS `family ok` IN EVERY KEY NO PATTERN READS. A
+    double-quoted `"InkRouter\\n"` (or a block scalar) passed, and `name`
+    split its `ok` note in two, while `family.py add` refused the
+    `tracking_branch` this said was fine. `typed` is a value a person
+    types, held to #255's rule (`_unwritable_character`); any other is held
+    to `_unprintable_character`. The character is named by its code point,
+    and the value by `repr`, so the line says what is there.
+    `validate-manifest.py`'s, word for word but for this paragraph.
+    """
+    if not isinstance(value, str):
+        return None
+    found = (_unwritable_character if typed
+             else _unprintable_character)(value)
+    if found is None:
+        return None
+    char, kind = found
+    return (f"{what} is {value!r}, which holds U+{ord(char):04X}, "
+            f"{CHARACTER_KINDS[kind]}. Write it on one line, "
+            "without that character.")
+
+
+def _held_finding(report: Report, code: str, what: str, value,
+                  typed: bool = False) -> bool:
+    """`_held_character`'s finding under `code`, where there is one, and
+    whether there was (#1205)."""
+    held = _held_character(what, value, typed)
+    if held:
+        report.finding(code, held)
+    return bool(held)
+
+
 def _check_family_name(manifest: dict, policy: NamingPolicy,
                        report: Report) -> None:
     """The one field in the envelope that is also a naming-policy question:
@@ -670,6 +784,10 @@ def _check_family_name(manifest: dict, policy: NamingPolicy,
     name = manifest.get("name")
     if not isinstance(name, str) or not name.strip():
         report.finding("family-name", f"name is {name!r}")
+        return
+    # #255's rule (#1205), said alone: the classifier reads the name
+    # stripped, so `InkRouter\n` was a family, and its note split in two.
+    if _held_finding(report, "family-name", "name", name, typed=True):
         return
     # THE DECLARED-ONLY FORM, ASKED FOR BY NAME. This manifest IS the
     # declaration, so the classifier is given `family` rather than being
@@ -694,14 +812,20 @@ def _check_family_name(manifest: dict, policy: NamingPolicy,
 def _check_org_visibility_and_dates(manifest: dict, report: Report) -> None:
     """`org`, `created_by`, `created_on`, `visibility` and `members_dir` —
     five independent fields, none of them read by any other check, split from
-    `_check_envelope` for #137."""
+    `_check_envelope` for #137. `org` prints, and `created_by` is held to
+    #255's rule (#1205)."""
     if not isinstance(manifest.get("org"), str) or not manifest.get("org"):
         report.finding("family-org", f"org is {manifest.get('org')!r}")
+    else:
+        _held_finding(report, "family-org", "org", manifest["org"])
     if not isinstance(manifest.get("created_by"), str) or \
             not manifest["created_by"].strip():
         report.finding("family-created-by",
                        "created_by is empty. Creating a family is a human's "
                        "act and the manifest records whose.")
+    else:
+        _held_finding(report, "family-created-by", "created_by",
+                      manifest["created_by"], typed=True)
     created_on = manifest.get("created_on")
     if not isinstance(created_on, str) or not DATE_RE.match(created_on):
         report.finding("family-created-on",
@@ -751,15 +875,46 @@ def _check_shape_block(manifest: dict, report: Report) -> None:
                        f"{TREE_DIGEST_DEFINITION!r}")
 
 
+def _check_characters(manifest: dict, report: Report) -> None:
+    """The holder's own `repository`, `tracking_branch`,
+    `shape.repository`, `shape.digest_algorithm` and each member pin's
+    `digest_algorithm`: each holds only characters that print (#1205), and
+    nothing else here reads any of them. `family.py add` refused the
+    `tracking_branch` `main\\n` (`unsafe-value`) that this said was `family
+    ok`. A row or a pin that is not a mapping is another check's to name,
+    and what `digest_algorithm` may be otherwise is not asked here."""
+    for key, code in (("repository", "family-repository"),
+                      ("tracking_branch", "family-tracking-branch")):
+        _held_finding(report, code, key, manifest.get(key))
+    shape = manifest.get("shape")
+    if isinstance(shape, dict):
+        for key, code in (("repository", "family-shape-repository"),
+                          ("digest_algorithm",
+                           "family-shape-digest-algorithm")):
+            _held_finding(report, code, f"shape.{key}", shape.get(key))
+    members = manifest.get("members")
+    for index, row in enumerate(members if isinstance(members, list)
+                                else ()):
+        pin = row.get("pin") if isinstance(row, dict) else None
+        if isinstance(pin, dict):
+            _held_finding(report, "member-pin-digest-algorithm",
+                          f"members[{index}]: pin.digest_algorithm",
+                          pin.get("digest_algorithm"))
+
+
 def _check_envelope(manifest: dict, policy: NamingPolicy,
                     report: Report) -> None:
     """`schema_version`, `kind: family-manifest`, `id`, `name`, `org`,
     `created_by` / `created_on`, `visibility`, `members_dir` and `shape` — in
-    that order, unchanged; each is now its own decision (#137)."""
+    that order, unchanged; each is now its own decision (#137). Then the
+    text values nothing above reads, held to characters that print
+    (`_check_characters`, #1205): here, because this is what `family.py
+    init` asks of the manifest it would write."""
     _check_schema_kind_and_id(manifest, report)
     _check_family_name(manifest, policy, report)
     _check_org_visibility_and_dates(manifest, report)
     _check_shape_block(manifest, report)
+    _check_characters(manifest, report)
 
 
 def _member_project_name(row: dict, seen: dict, report: Report) -> str | None:
