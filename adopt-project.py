@@ -3042,7 +3042,7 @@ def _remotes_of(path: Path) -> tuple[str, list[str]]:
     NOR IS ONE GUESSED AMONG SEVERAL. The current branch's remote is not
     asked: it is whichever branch this working copy has checked out, not
     the branch adopted, which is read from the remote, and `git switch`
-    changed the remote it named, the organisation and the default branch
+    would change the remote it named, the organisation and the default branch
     with it, between `plan` and `check`. Nor is `clone.defaultRemoteName`:
     git reads it in `git clone` alone, and it is this machine's setting
     now, not the source's. A source with several remotes and no `origin`
