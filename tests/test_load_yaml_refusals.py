@@ -328,6 +328,26 @@ def test_each_tool_names_the_file_load_yaml_refuses_as_shown_path_names_it(
     assert_shown_safe(result.stdout, result.stderr)
 
 
+@pytest.mark.parametrize("name", UNPRINTABLE)
+def test_a_path_typed_relative_is_named_as_typed_and_spelled(tmp_path, name):
+    """The rows above type a path under `tmp_path`, which is absolute, so a
+    `load_yaml` that named `Path(path).absolute()` would pass every one of
+    them (rv1274's X5). This one types the file relative to the folder the
+    tool runs in: the refusal names it as typed, still relative, and spelled
+    as `repr` spells it. `adopt-project.py check --plan` is one of the tools
+    that names the file it was handed; the four that are given a root build
+    an absolute path of their own before `load_yaml` sees it."""
+    plan = unparsable(unsafe_folder(tmp_path, name) / "adoption-plan.yaml")
+    typed = str(plan.relative_to(tmp_path))
+    result = run_script(ADOPT, "check", "--plan", typed, cwd=tmp_path)
+    said = result.stdout + result.stderr
+    assert result.returncode == 2, said
+    assert refused_lines(result.stderr) == [
+        f"REFUSED yaml-unparsable: {spelt(typed)}: {NOT_PARSED}"], ascii(said)
+    assert chr(0x202E) not in said, ascii(said)
+    assert_shown_safe(result.stdout, result.stderr)
+
+
 # --- the readers that find the path in the detail by its text ---------------
 
 #: The commit before #1168: its `repo_shape.py` names the file raw, and its
@@ -445,8 +465,9 @@ def test_the_gates_load_takes_either_prefix(tmp_path, monkeypatch, name,
                                  "load_yaml_refusals_pins")
     monkeypatch.setattr(gate, "load_yaml", loader)
     root = unsafe_folder(tmp_path, name)
+    manifest = unparsable(root / "project.yaml")
     with pytest.raises(Refusal) as caught:
-        gate._load(root, unparsable(root / "project.yaml"))
+        gate._load(root, manifest)
     assert caught.value.detail == f"project.yaml: {NOT_PARSED}"
 
 
