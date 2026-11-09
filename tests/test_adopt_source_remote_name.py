@@ -239,17 +239,20 @@ def test_a_clone_of_another_branch_names_the_only_remote(tmp_path):
     assert not plan.exists()
 
 
-def test_the_way_past_a_default_branch_pushes_to_the_only_remote(tmp_path):
+@pytest.mark.parametrize("remote, typed", ONLY_REMOTES)
+def test_the_way_past_a_default_branch_pushes_to_the_only_remote(
+        tmp_path, remote, typed):
     """`plan` refuses a default branch the tracking branch's pattern does not
     take (`a=b`, which git does) as `unsafe-value`, and says the way past
     it, a branch of another name pushed to the source's remote. For a source
     cloned under `upstream` that was `git push origin main`, to a remote it
-    has not; now `git push upstream main`."""
-    source = cloned_as(tmp_path, UPSTREAM)
+    has not; now `git push upstream main`, quoted where the name is one a
+    shell would run (`git push 'up$(id)' main`)."""
+    source = cloned_as(tmp_path, remote)
     git("branch", "a=b", cwd=source)
-    git("update-ref", "refs/remotes/upstream/a=b", "HEAD", cwd=source)
-    git("symbolic-ref", "refs/remotes/upstream/HEAD",
-        "refs/remotes/upstream/a=b", cwd=source)
+    git("update-ref", f"refs/remotes/{remote}/a=b", "HEAD", cwd=source)
+    git("symbolic-ref", f"refs/remotes/{remote}/HEAD",
+        f"refs/remotes/{remote}/a=b", cwd=source)
 
     result, plan = planned(tmp_path, source, "--org", ORG)
 
@@ -257,32 +260,35 @@ def test_the_way_past_a_default_branch_pushes_to_the_only_remote(tmp_path):
     said = " ".join(result.stderr.split())
     assert "REFUSED unsafe-value: --tracking-branch (not given, so the " \
         "source's default branch) is 'a=b'" in said, said
-    assert ("(`git branch main`, and `git push upstream main` where the "
-            "source has a remote `upstream`)") in said, said
+    assert (f"(`git branch main`, and `git push {typed} main` where the "
+            f"source has a remote `{remote}`)") in said, said
     assert "origin" not in said, said
     assert not plan.exists()
 
 
-def test_check_asks_the_split_branch_of_the_only_remotes_branches(tmp_path):
+@pytest.mark.parametrize("remote, typed", ONLY_REMOTES)
+def test_check_asks_the_split_branch_of_the_only_remotes_branches(
+        tmp_path, remote, typed):
     """`check` asks for the split branch in the assembly repository, as the
     source's remote last fetched it, where that is the source's own
     repository. `upstream` has a branch `adopt`, which git cannot hold
     beside `adopt/three-repo-shape`. On main `upstream`'s branches were not
     read, and `check` said `plan ok`; it is found now, named as `upstream`
-    last fetched it, with the fetch that prunes it from `upstream`."""
-    source = cloned_as(tmp_path, UPSTREAM)
-    git("update-ref", "refs/remotes/upstream/adopt", "HEAD", cwd=source)
+    last fetched it, with the fetch that prunes it from `upstream`, quoted
+    where the name is one a shell would run (`up$(id)`)."""
+    source = cloned_as(tmp_path, remote)
+    git("update-ref", f"refs/remotes/{remote}/adopt", "HEAD", cwd=source)
     _, plan = planned(tmp_path, source, "--org", ORG)
 
     checked = check(plan)
 
     assert checked.returncode == 1, checked.stdout + checked.stderr
     said = " ".join(checked.stderr.split())
-    assert (f"`{ORG}/{PROJECT}` on GitHub, as the source's remote `upstream` "
-            "last fetched it,") in said, said
-    assert ("A branch named as the source's remote `upstream` last fetched it "
-            "leaves `check`'s findings once `git fetch --prune upstream` in "
-            "the source finds it gone there.") in said, said
+    assert (f"`{ORG}/{PROJECT}` on GitHub, as the source's remote "
+            f"`{remote}` last fetched it,") in said, said
+    assert (f"A branch named as the source's remote `{remote}` last fetched "
+            f"it leaves `check`'s findings once `git fetch --prune {typed}` "
+            "in the source finds it gone there.") in said, said
 
 
 @pytest.mark.parametrize("url, said", [
@@ -404,7 +410,7 @@ def test_several_remotes_and_no_origin_are_named_and_not_guessed(tmp_path):
     assert result.returncode == 2, result.stdout + result.stderr
     assert ("REFUSED adopt-no-org: the source names no organisation this "
             f"tool can read: {passed}\n") in result.stderr, result.stderr
-    assert "(`git remote rename <name> origin`)" in result.stderr
+    assert "(`git remote rename -- <name> origin`)" in result.stderr
 
     result, plan = planned(tmp_path, source, "--org", ORG,
                            "--tracking-branch", "develop", name="org")
@@ -426,19 +432,20 @@ def test_several_remotes_and_no_origin_are_named_and_not_guessed(tmp_path):
             "and the source has not made its own, is made one with `git "
             "branch <branch> refs/remotes/<name>/<branch>`, run in the "
             "source, where `<name>` is that remote; or the source can name "
-            "the remote it is a clone of `origin` (`git remote rename <name> "
-            "origin`), and its branches are read from that remote. Then "
-            "`check` is run again.") in said, said
+            "the remote it is a clone of `origin` (`git remote rename -- "
+            "<name> origin`), and its branches are read from that remote. "
+            "Then `check` is run again.") in said, said
 
 
 @pytest.mark.parametrize("through", [
     ("branch", "develop", f"refs/remotes/{UPSTREAM}/develop"),
-    ("remote", "rename", UPSTREAM, "origin"),
+    ("remote", "rename", "--", UPSTREAM, "origin"),
 ], ids=["branch", "rename"])
 def test_the_way_through_for_several_remotes_passes_check(tmp_path, through):
     """Each way `check` gives for `develop`, a branch only `upstream` has, in
     a source with `upstream` and `fork` and no `origin`, is run in the source,
-    and the same plan then checks `plan ok`."""
+    as printed (the rename takes `--`, which a remote named `-x` needs), and
+    the same plan then checks `plan ok`."""
     source = cloned_as(tmp_path, UPSTREAM)
     with_fork(tmp_path, source)
     git("switch", "-q", "-c", "feature", cwd=source)
@@ -489,25 +496,57 @@ def test_a_source_with_no_remote_is_given_no_fetch(tmp_path):
     assert "last fetched it" not in said, said
 
 
-@pytest.mark.parametrize("make, name, why", [
-    (("config", f"remote.up{ESC}[2Jx.url", GITHUB_URL), f"up{ESC}[2Jx",
-     "its name is not printable ASCII"),
-    (("remote", "add", "--", "-x", GITHUB_URL), "-x",
-     "its name starts with `-`, which git reads as an option (`git remote "
-     "rename -- <name> origin` takes it past that)"),
-], ids=["control-character", "leading-dash"])
+#: An only remote a command line cannot name the way it names an ordinary
+#: one, as `(make, name, why, ways)`: how a source gets it, its name, why
+#: `adopt-no-org` says it is not read, and what `check` says to do for a
+#: branch only it has. A name with an ESC (`git config` makes one, `git
+#: remote add` refuses it) is one git can hold no branch of: `git branch
+#: <branch> refs/remotes/<name>/<branch>` has none to name, so it is not
+#: given. A name that starts with `-` holds branches, and its rename takes
+#: `--`.
+RENAME = ("the source can name the remote it is a clone of `origin` (`git "
+          "remote rename -- <name> origin`), and its branches are read from "
+          "that remote. Then `check` is run again.")
+ODD_ONLY_REMOTES = [
+    pytest.param(
+        ("config", f"remote.up{ESC}[2Jx.url", GITHUB_URL), f"up{ESC}[2Jx",
+        "its name is not printable ASCII",
+        "`git branch` makes no branch of the source's remote "
+        f"`up{BACKSLASH}x1b[2Jx` the source's own, as git holds no branch of "
+        f"a remote named like that, but {RENAME}", id="control-character"),
+    pytest.param(
+        ("remote", "add", "--", "-x", GITHUB_URL), "-x",
+        "its name starts with `-`, which git reads as an option (`git remote "
+        "rename -- <name> origin` takes it past that)",
+        "A branch the source's remote `-x` has, and the source has not made "
+        "its own, is made one with `git branch <branch> refs/remotes/<name>/"
+        "<branch>`, run in the source, where `<name>` is that remote; or "
+        f"{RENAME}", id="leading-dash"),
+]
+
+
+def odd_only_remote(tmp_path, make):
+    """The source `Thing` with no remote but the one `make` makes, HEAD on a
+    branch `feature` of its own."""
+    source = cloned_as(tmp_path, UPSTREAM)
+    git("remote", "remove", UPSTREAM, cwd=source)
+    git(*make, cwd=source)
+    git("switch", "-q", "-c", "feature", cwd=source)
+    return source
+
+
+@pytest.mark.parametrize("make, name, why, ways", ODD_ONLY_REMOTES)
 def test_an_only_remote_a_command_line_cannot_name_is_not_read(
-        tmp_path, make, name, why):
+        tmp_path, make, name, why, ways):
     """A remote whose name holds an ESC (`git config` makes one: `git remote
     add` refuses it, and `git remote` lists it) is refused by name, spelled,
     where it was read as the source's remote and printed raw into the
     `source` line, as the clearing of a screen. One named `-x` is refused by
     name too: git reads `get-url -x` as an option, which refused it for
-    another reason. Both go with the rename and no fetch."""
-    source = cloned_as(tmp_path, UPSTREAM)
-    git("remote", "remove", UPSTREAM, cwd=source)
-    git(*make, cwd=source)
-    git("switch", "-q", "-c", "feature", cwd=source)
+    another reason. Both go with the rename, which takes `--`, and no fetch;
+    the one git can hold branches of is also told the branch it makes, and
+    the other, why it has none."""
+    source = odd_only_remote(tmp_path, make)
     spelled = name.replace(ESC, BACKSLASH + "x1b")
 
     result, _ = planned(tmp_path, source)
@@ -517,14 +556,67 @@ def test_an_only_remote_a_command_line_cannot_name_is_not_read(
             "tool can read: it has no remote `origin`, and its one remote, "
             f"`{spelled}`, is not read in that one's place, as {why}\n") in \
         result.stderr, result.stderr
+    assert ("name the remote it is a clone of `origin` (`git remote rename "
+            "-- <name> origin`)") in " ".join(result.stderr.split())
     result, plan = planned(tmp_path, source, "--org", ORG,
                            "--tracking-branch", "develop", name="org")
     assert result.returncode == 0, result.stdout + result.stderr
     checked = check(plan)
     assert checked.returncode == 1, checked.stdout + checked.stderr
-    assert "git fetch" not in checked.stderr, checked.stderr
-    assert "(`git remote rename <name> origin`)" in checked.stderr
+    said = " ".join(checked.stderr.split())
+    assert "git fetch" not in said, said
+    assert ways in said, said
+    assert "git remote rename <name>" not in said, said
     assert ESC not in result.stdout + result.stderr + checked.stderr
+
+
+@pytest.mark.parametrize("make, name, why, ways", ODD_ONLY_REMOTES)
+def test_the_rename_adopt_no_org_gives_reads_the_remote_as_origin(
+        tmp_path, make, name, why, ways):
+    """`adopt-no-org`'s way through for a remote `-x` or one with an ESC,
+    `git remote rename -- <name> origin`, is run as printed: the same `plan`
+    with no `--org` then reads the organisation from it, and its `check`
+    passes. The rename without `--` is not a way for `-x`: git reads it as
+    an option (`error: unknown switch`)."""
+    source = odd_only_remote(tmp_path, make)
+    result, _ = planned(tmp_path, source)
+    assert result.returncode == 2, result.stdout + result.stderr
+    assert "REFUSED adopt-no-org" in result.stderr, result.stderr
+
+    git("remote", "rename", "--", name, "origin", cwd=source)
+
+    result, plan = planned(tmp_path, source, name="renamed")
+    assert result.returncode == 0, result.stdout + result.stderr
+    assert load_yaml(plan)["org"] == ORG
+    checked = check(plan)
+    assert checked.returncode == 0, checked.stdout + checked.stderr
+    assert "plan ok" in checked.stdout, checked.stdout
+
+
+@pytest.mark.parametrize("through", [
+    ("branch", "develop", "refs/remotes/-x/develop"),
+    ("remote", "rename", "--", "-x", "origin"),
+], ids=["branch", "rename"])
+def test_the_way_through_for_a_remote_named_like_an_option_passes_check(
+        tmp_path, through):
+    """The only remote `-x` has `develop`, which the source has not made its
+    own: each way `check` gives, run in the source as printed, makes the
+    same plan check `plan ok`. The branch is made from `refs/remotes/-x/
+    develop`, which is no option to git, and the rename takes `--`."""
+    source = cloned_as(tmp_path, UPSTREAM)
+    git("remote", "rename", UPSTREAM, "--", "-x", cwd=source)
+    git("switch", "-q", "-c", "feature", cwd=source)
+    _, plan = planned(tmp_path, source, "--org", ORG,
+                      "--tracking-branch", "develop")
+    checked = check(plan)
+    assert checked.returncode == 1, checked.stdout + checked.stderr
+    assert f"FINDING {MISSING}" in checked.stderr, checked.stderr
+
+    git(*through, cwd=source)
+
+    checked = check(plan)
+    assert checked.returncode == 0, checked.stdout + checked.stderr
+    assert "plan ok" in checked.stdout, checked.stdout
 
 
 def test_an_only_remote_named_outside_printable_ascii_is_not_read(tmp_path):
