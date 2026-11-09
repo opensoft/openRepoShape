@@ -1082,16 +1082,17 @@ def test_a_list_an_empty_list_a_bare_key_and_no_key_are_not_plan_bad_findings(
 #: was adopted as written: the pins `openGlass` and `True`, `2026`, none, and
 #: `{'a': 1}`. Since #273 every entry of a list is `_read_pins`' to judge,
 #: beside the entries, in its own words: a name alone is `plan-pin-
-#: unrecorded`, anything else `plan` never writes there `plan-pin-malformed`.
+#: unrecorded`, anything else `plan` never writes there `plan-pin-malformed`,
+#: said as `_read_as` says what the plan's reader read (#1020).
 PIN_ENTRIES = {
     "name-and-true": ("pins: [openGlass, true]\n", [
         (PIN_UNRECORDED, "`pins:` entry 1, 'openGlass', is a name with no "
                          "commit and no digest"),
-        (PIN_MALFORMED, "`pins:` entry 2 is True, not a pin")]),
+        (PIN_MALFORMED, "`pins:` entry 2 is the boolean true, not a pin")]),
     "number": ("pins:\n  - 2026\n", [
-        (PIN_MALFORMED, "`pins:` entry 1 is 2026, not a pin")]),
+        (PIN_MALFORMED, "`pins:` entry 1 is the number 2026, not a pin")]),
     "null": ("pins: [null]\n", [
-        (PIN_MALFORMED, "`pins:` entry 1 is None, not a pin")]),
+        (PIN_MALFORMED, "`pins:` entry 1 is null, not a pin")]),
     "mapping": ("pins: [{a: 1}]\n", [
         (PIN_UNRECORDED, "`pins:` entry 1 records no `commit:` and no "
                          "`tree_sha256:`")]),
