@@ -176,10 +176,13 @@ MANIFEST_FLAGS = {
 #: It, its digest and its collisions are `shape_materialize`'s since #273,
 #: because `adopt-project.py plan --pin` takes the same argument and writes
 #: the same file; imported under the names this file has always called them
-#: by, so what it refuses, and in which words, is unchanged.
-from shape_materialize import (  # noqa: E402
+#: by, so what it refuses, and in which words, is unchanged. The pins are
+#: read through `pin_values_unfetched` (#1182), which is `declared_pin_values`
+#: with no fetch into a partial clone; that reader is still the one both
+#: tools share (#273), and stays importable here under its name.
+from shape_materialize import (  # noqa: E402, F401
     declared_pin_products, declared_pin_values, pin_source_path,
-    refuse_an_unread_pin_source,
+    pin_values_unfetched, refuse_an_unread_pin_source,
     refuse_colliding_pins as _refuse_colliding_pins,
 )
 
@@ -453,7 +456,15 @@ def main(argv: list[str] | None = None) -> int:
                              "`.` means this directory. A --pin's digest is "
                              "read only at a clone's top level, or a bare "
                              "clone's: any other path is refused as "
-                             "`pin-source-not-a-clone`.")
+                             "`pin-source-not-a-clone`. A partial clone "
+                             "(`git clone --filter`) is read where it holds "
+                             "the pinned commit and its trees. On a git "
+                             "that honours `GIT_NO_LAZY_FETCH` (2.45 or "
+                             "later, or a security release from 2.39.4 on), "
+                             "one git could read only by fetching what it "
+                             "lacks is `pin-source-unreadable`, and the "
+                             "scaffold fetches nothing into it; an older "
+                             "git fetches what it lacks into it.")
     parser.add_argument("--work-dir", default=None,
                         help="where the working trees are built "
                              "(default: a temporary directory). An empty "
@@ -1316,8 +1327,9 @@ NAME_WRITTEN_INTO = (
     "the assembly root's `project.yaml` and `README.md`, each repository's "
     "`AGENTS.md` and each first commit's message")
 
-#: How a `pin-source-unused` refusal's remediation begins (#451), and a
-#: `pin-source-no-path` one's.
+#: How a `pin-source-unused` refusal's remediation begins (#451), a
+#: `pin-source-no-path` one's, and a partial clone's `pin-source-unreadable`
+#: (#1182).
 UNREAD_PIN_SOURCE_MADE = ("nothing was created, and `--dry-run` refuses the "
                           "same.")
 
@@ -1558,8 +1570,17 @@ def _declaration(args) -> tuple[dict, set, tuple, dict]:
 
     A tree that is not reachable is offered the sources THIS TOOL reads
     (`_link_remedies`, #610), never the naming validator's.
+
+    THE PINS ARE READ WITH `GIT_NO_LAZY_FETCH=1` (#1182), and the
+    environment is put back after: a `--pin-source` that is a partial clone
+    (`git clone --filter`) short of the pinned commit or its trees was
+    fetched into from its promisor remote, `--dry-run` alike, and is
+    `pin-source-unreadable` now, naming the partial clone and the fetch that
+    makes it whole (`pin_values_unfetched`). The chain's declarations are
+    files on disk, which no git reads.
     """
-    pins = declared_pin_values(args)
+    pins = pin_values_unfetched(args, reader="the scaffold",
+                                nothing_made=UNREAD_PIN_SOURCE_MADE)
     declared_pins: set[str] = set(pins)
     chain = referent_chain_links(args.referent_chain, declared_pins)
     link_pins = link_pins_from_trees(

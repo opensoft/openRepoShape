@@ -276,5 +276,9 @@ def test_surrogateescape_reads_the_issues_branch_as_caf_and_u_dce9():
     branch = read_as_the_module_does(LATIN_1)
 
     assert branch == "caf" + chr(0xDCE9)
-    if os.fsencode(chr(0xDCE9)) == b"\xe9":
+    # `os.fsdecode` agrees only where the locale reads the byte E9 as U+DCE9
+    # (UTF-8, ASCII); a one-byte locale such as Latin-1 reads it as U+00E9
+    # (#1214). The assertion above holds in every locale.
+    if (os.fsencode(chr(0xDCE9)) == b"\xe9"
+            and os.fsdecode(b"\xe9") == chr(0xDCE9)):
         assert os.fsdecode(LATIN_1) == branch
