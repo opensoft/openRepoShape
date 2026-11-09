@@ -26,8 +26,9 @@ from pathlib import Path
 
 import pytest
 
-from conftest import (NOT_UTF_8_BRANCH, git, git_answer_bytes,
-                      on_a_branch_that_is_not_utf_8)
+from conftest import (A_NAME_HELD_AS_UTF_8, NOT_UTF_8_BRANCH, git,
+                      git_answer_bytes, on_a_branch_that_is_not_utf_8,
+                      skip_where_the_locale_does_not_spell_it_as_utf_8)
 from test_family import family, family_module  # noqa: F401
 from test_family_add_refusals import holder, offline  # noqa: F401
 from test_family_bump_remove_rollback import (
@@ -114,6 +115,9 @@ def test_the_member_head_is_the_branch_git_wrote(tmp_path, branch):
     """`_member_head` reads the branch git wrote: a byte that is not UTF-8
     as its surrogate, where it raised `UnicodeDecodeError`; and a trailing
     U+00A0, which `strip()` took off, so the rollback named `feat`."""
+    if branch != NOT_UTF_8_BRANCH:
+        skip_where_the_locale_does_not_spell_it_as_utf_8(
+            branch, A_NAME_HELD_AS_UTF_8)
     repository, at = checkout_on(tmp_path, branch)
 
     assert family_module()._member_head(repository) == (at, branch)
