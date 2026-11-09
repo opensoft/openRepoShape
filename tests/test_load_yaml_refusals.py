@@ -551,10 +551,13 @@ def test_the_doctor_finds_its_own_policy_in_the_naming_scripts_refusal(
     pytest.param(PRINTABLE_NAME, id="printable"),
 ])
 def test_the_doctor_still_finds_its_own_policy_named_raw(tmp_path, name):
-    """A root's `repo_shape.py` from before #1279 names the policy raw in
-    `policy-wrong-kind`, and the doctor still finds it by that prefix. The
-    line is built as that library prints it, since this checkout's spells
-    it. A line feed splits that line, so it is not among the names here."""
+    """A `repo_shape.py` from before #1279 names the policy raw in
+    `policy-wrong-kind`, and the doctor still finds it by that prefix. Only
+    this checkout's own library can print that line: the naming script the
+    doctor reads is this checkout's and imports this checkout's library, so
+    the library is one older than its doctor, never a root's. The line is
+    built as that library prints it, since this checkout's spells it. A
+    line feed splits that line, so it is not among the names here."""
     shape = unsafe_folder(tmp_path, name)
     policy = policy_refusal(shape, "kind: something-else\n")
     assert policy.code == "policy-wrong-kind"

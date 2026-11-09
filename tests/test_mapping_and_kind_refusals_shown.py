@@ -12,7 +12,8 @@ the path's choosing. Each is spelled now:
 - `policy-wrong-kind`, in `repo_shape.NamingPolicy.load`;
 - `manifest-unreadable`, the naming gate's `--project`;
 - `bump-leg-manifest-unreadable`, `bump-leg.py --root`, where `project.yaml`
-  is not a mapping (a root it cannot search was spelled already);
+  is not a mapping (a root it cannot search was spelled already, and the
+  last row below pins that spelling);
 - `path-policy-unreadable` and `path-policy-wrong-kind`, in
   `path_classify.PathPolicy.load`, which `adopt-project.py plan
   --path-policy` reads;
@@ -23,10 +24,13 @@ Each run is one of `test_load_yaml_refusals.py`'s, with the file it builds
 holding YAML that parses. The naming gate and the root's
 `validate-manifest.py` are copied into every project, beside a
 `scripts/repo_shape.py` that may be older than they are, so each spells the
-path with the `_shown` it already carries and imports nothing new: the rows
-that run them beside a library from before #1168 hold that. A printable path
-is named byte for byte as it always was. `adopt-project.py`'s
-`plan-unreadable` is #1177's.
+path with the `_shown` it already carries: the rows that run them beside a
+library from before #1168 hold that for any name that library lacks. It has
+`shown_path` already, so a gate that imported that name would pass those rows;
+the import is held out by `test_pinned_copy_text.py`'s
+`test_no_pinned_script_imports_what_an_older_library_lacks`.
+A printable path is named byte for byte as it always was.
+`adopt-project.py`'s `plan-unreadable` is #1177's.
 
 NO NETWORK AND NO GITHUB: temporary files, local repositories, and the
 session's `gh` guard first on PATH for every tool run.
@@ -42,6 +46,8 @@ import pytest
 from conftest import (
     REPO, assert_shown_safe, named_as, run_script, unsafe_folder,
 )
+from test_bump_leg_unopenable import needs_a_mode
+from test_bump_leg_unsearchable import unsearchable_root
 from test_load_yaml_refusals import (
     NAMES, TEMPLATE_SCRIPTS, TOOLS, a_root, older_library, refused_lines,
 )
@@ -164,3 +170,24 @@ def test_a_copied_gate_spells_the_path_beside_an_older_library(
     assert "Traceback" not in result.stderr, ascii(result.stderr)
     assert_refused_once(result, "manifest-unreadable", named_as(path, name),
                         NOT_A_MAPPING)
+
+
+@needs_a_mode
+@pytest.mark.parametrize("name", NAMES)
+def test_a_root_that_cannot_be_searched_is_named_as_shown_path_names_it(
+        tmp_path, name):
+    """THE SPELLING THIS CHANGE LEFT ALONE: a `--root`
+    this user cannot search is `bump-leg-manifest-unreadable` from
+    `_manifest_unopened_refusal`, which names `project.yaml` as `shown_path`
+    does and did before #1279. No other row ran it under a path holding
+    U+202E, an ESC or a line feed (`test_bump_leg_unsearchable.py` uses a
+    printable one), so it was one `{path}` from raw with every row green.
+    This row passes on #1274's head too: it pins a spelling, and fails
+    nothing first. The root's mode is put back in a `finally`."""
+    path, argv = TOOLS["bump-leg--root"](unsafe_folder(tmp_path, name),
+                                         tmp_path)
+    with unsearchable_root(path.parent, 0):
+        result = run_script(*argv, cwd=tmp_path)
+    assert_refused_once(result, "bump-leg-manifest-unreadable",
+                        named_as(path, name), "cannot be read: Permission "
+                        "denied")
