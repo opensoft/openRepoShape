@@ -69,6 +69,10 @@ ASSEMBLY_TEMPLATE = (REPO / "templates" / "assembly-root" / "scripts"
                      / "bootstrap.py")
 FAMILY_TEMPLATE = (REPO / "templates" / "family-root" / "scripts"
                    / "bootstrap.py")
+#: The holder's gate, the copy every family holder carries: it prints each
+#: member's note, and one ends a digest in U+2026 (#1214).
+FAMILY_VALIDATOR = (REPO / "templates" / "family-root" / "scripts"
+                    / "validate-family.py")
 FAMILY_TOOL = REPO / "scripts" / "family.py"
 FAMILY_NAME = "InkRouter"
 
@@ -922,11 +926,13 @@ def test_each_root_runs_repo_shapes_own_function(template, name):
     assert getattr(template, name) is getattr(repo_shape, name), name
 
 
-@pytest.mark.parametrize("path", [ASSEMBLY_TEMPLATE, FAMILY_TEMPLATE],
-                         ids=["assembly-root", "family-root"])
+@pytest.mark.parametrize(
+    "path", [ASSEMBLY_TEMPLATE, FAMILY_TEMPLATE, FAMILY_VALIDATOR],
+    ids=["assembly-root", "family-root", "validate-family"])
 def test_main_escapes_stdout_before_it_prints_or_parses_anything(path):
     """The reconfigure is `main`'s FIRST statement: `--help` and an argument
-    error print too."""
+    error print too. The holder's gate, `validate-family.py`, is held to it
+    as the two roots' `bootstrap.py` are (#1214)."""
     text = path.read_text(encoding="utf-8")
     main = next(node for node in ast.parse(text).body
                 if isinstance(node, ast.FunctionDef) and node.name == "main")
