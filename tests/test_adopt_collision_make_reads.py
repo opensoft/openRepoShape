@@ -53,8 +53,8 @@ from conftest import ADOPT, REPO, git, load_without_bytecode
 from test_adopt_contracts_dir import (SPEC_PATH, SPLIT_BRANCH,
                                       adopt_with_legs_mounted_away,
                                       needs_filter_repo)
-from test_adopt_make_reads_first import (disk_keeps_case, make, needs_make,
-                                         tree_keeping)
+from test_adopt_make_reads_first import (disk_keeps_case, keeps_twins, make,
+                                         needs_make, tree_keeping)
 from test_adopt_printed_sentences import NAMES, entries_of, makefile_lines
 from test_pinned_copy_text import ADOPTED_SENTENCES, TEMPLATE_AGENTS, flat
 
@@ -293,7 +293,9 @@ def copied(clone: Path, name: str) -> Path:
 
 @needs_filter_repo
 @needs_make
-@pytest.mark.parametrize("kept, first", CLONES)
+@pytest.mark.parametrize("kept, first",
+                         [row for row in CLONES
+                          if not keeps_twins(row.values[0])])
 def test_the_sentences_are_true_of_what_make_does_in_the_clone(
         tmp_path, kept, first):
     """r1046's measurement, taken for each kept name (#1048). After a real
@@ -304,7 +306,14 @@ def test_the_sentences_are_true_of_what_make_does_in_the_clone(
     of a `GNUmakefile` or a `makefile` is what `make` does: `make
     contracts-dir` has no rule at the root until that file holds the block,
     or includes a Makefile that does, and then it prints the spec leg's
-    `contracts/`."""
+    `contracts/`.
+
+    The rows that keep `Makefile` and `makefile` side by side,
+    `Makefile+makefile` and `all-three`, are left out: the plan keeps a set
+    of case twins in the root, which `check` names and `execute` refuses
+    before any leg as `plan-case-twins` (#1161), so there is no clone to run
+    `make` in. `test_execute_refuses_makefile_beside_makefile_before_any_leg`,
+    in `test_adopt_make_reads_first.py`, pins that refusal for those trees."""
     if not disk_keeps_case(tmp_path):
         pytest.skip("this disk ignores case: it cannot hold the rows apart")
     adopted = adopt_with_legs_mounted_away(tmp_path, by_hand=False,
@@ -359,7 +368,9 @@ INCLUDING = "{name}-only:\n\t@echo {name} only\n\ninclude Makefile\n"
 
 @needs_filter_repo
 @needs_make
-@pytest.mark.parametrize("first", ["GNUmakefile", "makefile"])
+@pytest.mark.parametrize("first",
+                         [name for name in ("GNUmakefile", "makefile")
+                          if not keeps_twins(("Makefile", name))])
 def test_where_the_file_make_reads_includes_makefile_the_merge_alone_is_enough(
         tmp_path, first):
     """#1105's review, SHOULD-1, measured in a real adoption's clone. The
@@ -370,7 +381,15 @@ def test_where_the_file_make_reads_includes_makefile_the_merge_alone_is_enough(
     prints the spec leg's `contracts/`. The split message's follow-up says
     `make` reads that file and that the targets reach it once it includes a
     Makefile that has them, which the merge makes so, and does not say they
-    do not arrive with that merge alone."""
+    do not arrive with that merge alone.
+
+    The `makefile` row is left out: it keeps `Makefile` and `makefile` side
+    by side in the root, each with its own blob, a set of case twins, which
+    `check` names and `execute` refuses before any leg as `plan-case-twins`
+    (#1161), so there is no clone to run `make` in.
+    `test_execute_refuses_makefile_beside_makefile_before_any_leg`, in
+    `test_adopt_make_reads_first.py`, pins that refusal for such a tree.
+    The `GNUmakefile` row keeps no twins and runs as it did."""
     if not disk_keeps_case(tmp_path):
         pytest.skip("this disk ignores case: it cannot hold the rows apart")
     tree = tree_keeping(("Makefile", first))
