@@ -33,8 +33,7 @@ import sys
 import pytest
 
 from conftest import (NO_BYTECODE, REPO, appended_to_command_scope,
-                      cloned_just_pushed, git, rmtree, run_script,
-                      scalar_lines_not_refused)
+                      cloned_just_pushed, git, rmtree, run_script)
 #: The trailer helpers and the two lines a lane's run lands, imported from
 #: the file that owns those rules rather than retyped — see
 #: `tests/test_commit_trailers.py`.
@@ -46,6 +45,10 @@ from test_commit_trailers import (
 #: and the module that owns its tests, imported rather than retyped for the
 #: same reason.
 from test_update_shape import rendered_shape_line, strip_shape_block
+#: The guard's sweep (#1205), one loop for this file and
+#: `tests/test_manifest_validator.py`; its own line, so a change to the
+#: import above meets no change of this one.
+from conftest import scalar_lines_not_refused
 
 sys.path.insert(0, str(REPO / "scripts"))
 from repo_shape import (  # noqa: E402
