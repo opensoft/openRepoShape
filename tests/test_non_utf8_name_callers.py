@@ -192,11 +192,24 @@ def test_the_fixture_that_guards_those_rows_asks_the_real_disk(
 
 # --- `directory_named`'s own question: Windows, emulated --------------------
 
+def windows_fsdecode(name: str | bytes | os.PathLike) -> str:
+    """`os.fsdecode` as Windows has it: UTF-8 with `surrogatepass`, whatever
+    the locale, so a name made from UTF-8's bytes reads back as the text
+    they spell. A str goes through as it is, as on every system."""
+    name = os.fspath(name)
+    if isinstance(name, str):
+        return name
+    return name.decode("utf-8", "surrogatepass")
+
+
 def windows_names_it(monkeypatch) -> None:
     """Windows, as far as `skip_where_this_system_cannot_name` can ask it:
-    `os.name` is `nt` and `os.fsencode` gives a surrogate three bytes."""
+    `os.name` is `nt`, `os.fsencode` gives a surrogate three bytes, and
+    `os.fsdecode` reads UTF-8 in every locale, so the locale's question it
+    asks of a name that is UTF-8 is Windows' answer too (#1214)."""
     monkeypatch.setattr(os, "name", "nt")
     monkeypatch.setattr(os, "fsencode", windows_fsencode)
+    monkeypatch.setattr(os, "fsdecode", windows_fsdecode)
 
 
 def test_where_windows_cannot_carry_the_byte_directory_named_skips_and_makes_nothing(

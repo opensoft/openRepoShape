@@ -669,6 +669,24 @@ def test_the_family_passes_its_own_gate(family):
     assert "InkRouter: family (declared by family.yaml)" in result.stdout
 
 
+def test_the_gate_passes_on_a_stdout_that_cannot_hold_its_notes(family):
+    """A note ends each member's digest in U+2026, which a stdout in Latin-1
+    cannot hold, so on a holder that passes the gate ended in a
+    `UnicodeEncodeError` traceback, exit 1 (#1214). It escapes what its
+    stdout cannot encode, as `siblings.py` does, and passes, the note
+    ending in `\\u2026`."""
+    result = run_script(family["root"] / "scripts" / "validate-family.py",
+                        cwd=family["root"],
+                        env={"PYTHONIOENCODING": "latin-1"})
+    assert result.returncode == 0, result.stderr + result.stdout
+    assert "Traceback" not in result.stderr, result.stderr
+    assert "family ok: InkRouter (inkrouter), 2 member(s)" in result.stdout
+    notes = [line for line in result.stdout.splitlines()
+             if ": tree digest recomputes (" in line]
+    assert len(notes) == 2, result.stdout
+    assert all(note.endswith("\\u2026)") for note in notes), notes
+
+
 def test_make_pins_checks_the_lockstep_alone(family):
     proc = subprocess.run(["make", "pins"], cwd=str(family["root"]),
                           capture_output=True, text=True, check=False)

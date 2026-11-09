@@ -70,12 +70,23 @@ POLICY = REPO / "contracts" / "repository-naming.yaml"
 #: unless the source kept one of its own (rv610's F1 on #634: then the block
 #: waits in `shape/Makefile`, and `make contracts-dir` has no rule at the
 #: root), and of a SCAFFOLDED one, whose legs are the scaffold's seed (F5).
+#: And of the file `make` reads: GNU make reads the first of `GNUmakefile`,
+#: `makefile` and `Makefile` it finds, so where the source kept either of the
+#: first two `make` reads that file, and the shape's Makefile, or a `Makefile`
+#: it is merged into, only where that file includes it (#1048, measured on
+#: #1046's review; the include on #1105's, NIT-3 and SHOULD-1).
 ADOPTED_SENTENCES = (
     "Where this root was ADOPTED, the shape's Makefile exports "
     "`CONTRACTS_DIR` once, as the `contracts/` of the spec leg at the path "
-    "`project.yaml` mounts it, and `make contracts-dir` prints it. Where the "
-    "source kept a Makefile of its own, that block waits in `shape/Makefile` "
-    "until the two are merged.")
+    "`project.yaml` mounts it, and `make contracts-dir` prints it wherever "
+    "`make` reads that Makefile. GNU make reads the first of `GNUmakefile`, "
+    "`makefile` and `Makefile` it finds, and only that one. Where the source "
+    "kept a Makefile of its own, that block waits in `shape/Makefile` until "
+    "the two are merged. Where the source kept a `GNUmakefile` or a "
+    "`makefile`, beside a `Makefile` or instead of one, `make` at the root "
+    "reads the first of them, and not the shape's Makefile unless that file "
+    "includes it, so `make contracts-dir` has no rule there until that file "
+    "holds the block, or includes a Makefile that does.")
 SCAFFOLDED_SENTENCE = (
     "A SCAFFOLDED root's Makefile exports none: its legs start from the "
     "scaffold's seed, with no `contracts/`, so nothing reads across them "
