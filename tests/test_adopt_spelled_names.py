@@ -50,8 +50,10 @@ from pathlib import Path
 
 import pytest
 
-from conftest import (ADOPT, REPO, blank_unnamed_pin_sources, git,
-                      make_source_repo, skip_where_a_name_cannot_be_not_utf_8)
+from conftest import (A_NAME_HELD_AS_UTF_8, ADOPT, REPO,
+                      blank_unnamed_pin_sources, git, make_source_repo,
+                      skip_where_a_name_cannot_be_not_utf_8,
+                      skip_where_the_locale_does_not_spell_it_as_utf_8)
 
 sys.path.insert(0, str(REPO / "scripts"))
 from repo_shape import double_quoted, git_out, parse_yaml  # noqa: E402
@@ -525,6 +527,8 @@ def test_plan_under_the_c_locale_keeps_each_column_under_its_heading(
     else:
         pytest.skip(f"this Python gives a redirected stdout {codec} under "
                     "the C locale, which holds the name")
+    skip_where_the_locale_does_not_spell_it_as_utf_8("caf\u00e9.md",
+                                                     A_NAME_HELD_AS_UTF_8)
     source = make_source_repo(tmp_path / "Thing",
                               {"README.md": "# Thing\n",
                                "caf\u00e9.md": "x\n",
