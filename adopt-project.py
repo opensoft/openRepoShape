@@ -14851,10 +14851,14 @@ def _extract_leg(role: str, source: Source, work: Path, paths: list[str],
     # with both legs made. `--local` is no way round that: with `GIT_CONFIG`
     # set, git 2.43 exits 129. `.git` is a directory, made by the `git clone`
     # above, and `work` is an absolute path (`_work_root`).
-    # A CLONE WITH NO `origin` URL IS NOT A FAILURE (git exits 5): a global
-    # `clone.defaultRemoteName` gives the clone another remote, and `execute`
-    # then fails where main fails, at `mounting the legs`, not here with no
-    # words and before any leg is pushed. That setting is its own defect.
+    # EXIT 5 (git: no such key) IS TOLERATED, AND NO KNOWN CAUSE REMAINS. Its
+    # one cause was a clone that a global `clone.defaultRemoteName` gave
+    # another remote than `origin` (#1261): it has no `remote.origin.url` to
+    # unset. The clone above carries `REMOTE_NAMED_ORIGIN`, which outranks
+    # that setting in the global file, a template's `config`,
+    # `GIT_CONFIG_COUNT` and `GIT_CONFIG_PARAMETERS` (git 2.43), so this clone
+    # always has an `origin` URL and the unset exits 0. The tolerance stays as
+    # a guard, and is harmless: a clone with no url is what the unset makes.
     # Every other exit is refused.
     try:
         run(["git", GIT_CONFIG, "--file", str(work / ".git" / "config"),
