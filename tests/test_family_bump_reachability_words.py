@@ -444,6 +444,108 @@ def test_a_tag_of_a_tag_the_two_share_reaches_it(holder, offline, tmp_path):
     offline.assert_left_nothing()
 
 
+def made_on(holder: Path, env: dict, parent: str, name: str) -> str:
+    """A commit made in the holder's own mount on top of `parent`, a commit
+    only the mount holds, and NEVER PUSHED, adding the file `name`, with the
+    mount put back at the pin: `commit_in_mount`, which checks `parent` out
+    first. Returns its sha."""
+    def change(mount: Path) -> None:
+        raw(mount, env, "checkout", "-q", parent)
+        (mount / name).write_bytes(b"made in the mount, on top of another\n")
+
+    return commit_in_mount(holder, env, change, push=False)
+
+
+@pytest.mark.parametrize("kinds", [
+    ("annotated", "annotated"), ("lightweight", "annotated"),
+    ("annotated", "lightweight")],
+    ids=["both-annotated-made-apart", "mount-lightweight-origin-annotated",
+         "mount-annotated-origin-lightweight"])
+def test_a_tag_at_a_descendant_of_the_commit_reaches_it(
+        holder, offline, tmp_path, kinds):
+    """#1019. A TAG AT A DESCENDANT OF THE COMMIT REACHES IT, as a tag at the
+    commit does: the mount's tags are listed with `for-each-ref --contains`,
+    a tag at the commit or at any commit made on top of it, where
+    `--points-at` lists only a tag AT the commit. A commit on no branch of
+    the member's remote and a commit made on top of it, on none either; the
+    mount and the remote each tag the DESCENDANT `v1`, made apart (the
+    reviewer's case J of #988). Both runs refuse the commit
+    `member-to-local-only` in the tag words, with nothing moved and the
+    mount's own `v1` as it was. No row before this one tags a descendant of
+    the commit: the tags in them are at the commit itself or below it, so
+    `--points-at` in place of `--contains`, the mutant M9 of #988's review,
+    survived every row of this file."""
+    mount_kind, remote_kind = kinds
+    env = isolated(offline, tmp_path)
+    mount = holder / PATH
+    made = made_in_the_mount(holder, env, "BELOW.md")
+    above = made_on(holder, env, made, "ABOVE.md")
+    remote_tag = tag_as(mount, env, remote_kind, "v1", above, "the remote's")
+    remote = private_origin(holder, env)
+    raw(mount, env, "push", "-q", "origin", "refs/tags/v1")
+    raw(mount, env, "tag", "-d", "v1")
+    mount_tag = tag_as(mount, env, mount_kind, "v1", above, "the mount's")
+    assert raw(mount, env, "rev-parse", f"{above}^").stdout.decode().strip(
+        ) == made, "premise: the commit is the parent of the one the tags name"
+    assert mount_tag != remote_tag, "premise: the two tags are two objects"
+    for repository in (mount, remote):
+        assert raw(repository, env, "rev-parse", "refs/tags/v1^{}"
+                   ).stdout.decode().strip() == above, (
+            "premise: both tags name the descendant")
+        assert raw(repository, env, "for-each-ref", "--points-at", made,
+                   "refs/tags/").stdout == b"", (
+            "premise: no tag is AT the commit")
+    assert contains(remote, env, made, "refs/tags/"), (
+        "premise: a tag of the member's remote reaches it, from above")
+    assert not contains(remote, env, made, "refs/heads/"), (
+        "premise: no branch of the member's remote reaches it")
+    assert not contains(mount, env, made, "refs/remotes/"), (
+        "premise: no remote-tracking ref of the mount does")
+
+    stderr = both_runs(holder, env, made)
+
+    assert refusal(stderr) == local_only(made, made, tagged=True)
+    assert "cannot fetch" not in stderr
+    assert raw(mount, env, "rev-parse", "v1").stdout.decode().strip() \
+        == mount_tag, "the mount's own tag is as it was"
+    offline.assert_left_nothing()
+
+
+def test_a_tag_at_an_ancestor_of_the_commit_alone_keeps_the_plain_words(
+        holder, offline, tmp_path):
+    """#1019's CONTROL, the row above turned over. The commit the runs name is
+    the CHILD here, which the member's remote does not hold, and the mount
+    and the remote both tag its PARENT, which only a tag reaches. A tag at an
+    ancestor does not reach a commit made on top of it: `for-each-ref
+    --contains` lists the tags at the commit and above it, never below it.
+    So both runs keep #613's words, "a pin the rest of the world cannot
+    fetch" included, which are true of the child. A check that read the tags
+    the other way round (`--merged`) would tell the tag words here."""
+    env = isolated(offline, tmp_path)
+    mount = holder / PATH
+    parent = made_in_the_mount(holder, env, "PARENT.md")
+    child = made_on(holder, env, parent, "CHILD.md")
+    tag_as(mount, env, "annotated", "v-below", parent, "the parent's")
+    remote = private_origin(holder, env)
+    raw(mount, env, "push", "-q", "origin", "refs/tags/v-below")
+    assert raw(mount, env, "rev-parse", f"{child}^").stdout.decode().strip(
+        ) == parent, "premise: the commit named is the child of the one tagged"
+    assert contains(remote, env, parent, "refs/tags/"), (
+        "premise: a tag of the member's remote reaches the parent")
+    assert raw(remote, env, "cat-file", "-e", child,
+               check=False).returncode != 0, (
+        "premise: the member's remote does not hold the child")
+    assert not contains(mount, env, child, "refs/tags/"), (
+        "premise: no tag of the mount reaches the child")
+    assert not contains(mount, env, child, "refs/remotes/"), (
+        "premise: no remote-tracking ref of the mount does")
+
+    stderr = both_runs(holder, env, child)
+
+    assert refusal(stderr) == local_only(child)
+    offline.assert_left_nothing()
+
+
 def no_origin(to: str) -> tuple[str, str]:
     """The two lines `bump --to <to>`, a commit the mount holds, is refused
     with when the mount has no remote named `origin`."""
