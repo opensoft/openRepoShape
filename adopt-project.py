@@ -230,6 +230,7 @@ import stat
 import subprocess
 import sys
 import tempfile
+import unicodedata
 from pathlib import Path, PurePosixPath
 from typing import Callable, NamedTuple
 
@@ -2069,6 +2070,10 @@ SOURCE_UNREADABLE = "source-unreadable"
 SOURCE_UNREADABLE_PERMISSION = (
     "Make it readable by this user: `chmod u+rx` on the directory and on "
     "every directory above it, or fix who owns them. ")
+#: The same for a file, a `.git` that names the git directory (#1099).
+SOURCE_UNREADABLE_FILE_PERMISSION = (
+    "Make it readable by this user: `chmod u+r` on the file and `chmod "
+    "u+rx` on every directory above it, or fix who owns them. ")
 SOURCE_UNREADABLE_OTHER = (
     "The operating system gave another reason than permission, which no "
     "`chmod` puts right: put right what it names. ")
@@ -2146,15 +2151,18 @@ def _ambiguous(spec: str, name: str) -> Refusal:
 
 
 def _source_unreadable(named: str, exc: OSError, untold: str,
-                       instead: str = "") -> Refusal:
+                       instead: str = "", *,
+                       permission: str = SOURCE_UNREADABLE_PERMISSION
+                       ) -> Refusal:
     """`source-unreadable` (#430): `named` (`--source '<it>'`, or the plan's
     `source.local_path`) is a path whose `stat` the operating system refused
     for another reason than that nothing is there, `<named>: cannot be read
     (<reason>)`, as `validate-pins.py`'s `_cannot_read` words it; `untold` is
     what that leaves unknown, which is not guessed. The way out follows the
-    cause (`SOURCE_UNREADABLE_PERMISSION`, `SOURCE_UNREADABLE_OTHER`), and
+    cause (`permission`, a directory's `SOURCE_UNREADABLE_PERMISSION` unless
+    the caller names a file's, or `SOURCE_UNREADABLE_OTHER`), and
     `instead`, another way to name the source, ends it."""
-    advice = (SOURCE_UNREADABLE_PERMISSION if isinstance(exc, PermissionError)
+    advice = (permission if isinstance(exc, PermissionError)
               else SOURCE_UNREADABLE_OTHER)
     return Refusal(
         SOURCE_UNREADABLE,
@@ -2754,6 +2762,41 @@ def _not_a_whole_clone(path: Path, commit: str) -> str | None:
     return None
 
 
+def _git_refused(path: Path) -> tuple[OSError, bool] | None:
+    """`(the OSError, whether the .git is a file)`: how the operating system
+    refuses this user the `.git` in `path`; None where `path` holds no
+    `.git`, or one git can be let into (#1099).
+
+    GIT SAYS "NOT A GIT REPOSITORY" OF A `.git` IT CANNOT READ, as it says
+    of a clone emptied, and climbs to the directory above, which may be
+    another repository. So a clone `plan` made whose `.git` is at mode 000
+    was "no longer whole (git finds no repository there)", and its
+    `source.repository` was cloned again from GitHub beside it. The `.git`
+    is asked here, before git runs, as `_is_a` asks a path (#430): a
+    directory by whether the `HEAD` in it is there, a `stat` that needs the
+    directory searched and nothing of `HEAD` itself, and a file, which names
+    the git directory elsewhere, by opening it, as git reads it. Nothing
+    there, a `HEAD` that is not there, or a `.git` that is neither, is git's
+    own question, asked as before. A `.git` whose own `stat` is refused is
+    in a `path` this user cannot search, which is `path`'s to name
+    (`_top_level`, `_not_a_whole_clone`, #918)."""
+    dot_git = path / ".git"
+    try:
+        a_directory = _is_a(dot_git, stat.S_ISDIR)
+        a_file = not a_directory and _is_a(dot_git, stat.S_ISREG)
+    except OSError:
+        return None
+    try:
+        if a_directory:
+            # only its refusal is asked: a `HEAD` not there is git's to read
+            _is_there(dot_git / "HEAD")
+        elif a_file:
+            os.close(os.open(dot_git, os.O_RDONLY))
+    except OSError as exc:
+        return None if _absent(exc) else (exc, a_file)
+    return None
+
+
 class Source:
     """A repository being read, and nothing more. Nothing here writes to it."""
 
@@ -2879,7 +2922,12 @@ class Source:
         if made is not None:
             made.append(claim)
         try:
-            print(f"cloning {repository} (read only) into {path}")
+            # The path is the caller's typed `--work-dir`, made absolute, so
+            # it is `_shown` as `plan`'s other lines name a path (#1115,
+            # #1120's N4): printed as it was, a bidi control in it reached
+            # the terminal and a line feed split the line.
+            print(f"cloning {repository} (read only) into "
+                  f"{_shown(str(path))}")
             run(["gh", "repo", "clone", repository, str(path), "--",
                  "--quiet"])
         except BaseException as exc:
@@ -6582,8 +6630,10 @@ def cmd_plan(args) -> int:
     args.plan_written = True
     # And it is SAID from here, before the report reads more of the source:
     # the report's last reads (`symlink_targets`) can still refuse, exit 2,
-    # and the plan is on disk (#799's L1-79).
-    print(f"\nplan written to {out}")
+    # and the plan is on disk (#799's L1-79). The path is the caller's typed
+    # `--out`, so it is `_shown` as every other path this report names is
+    # (#1115): a bidi control in it reached the terminal as it was typed.
+    print(f"\nplan written to {_shown(str(out))}")
 
     _print_plan_report(args, source, tree, entries, follow_ups, seeded, pins)
     return 0
@@ -6631,10 +6681,16 @@ def _print_entries(entries: list[Entry]) -> None:
     stood 3 characters right of its heading. The rule id is a path
     policy's, which `--path-policy` may name and nothing asks to be
     printable, so it is `_shown` as a question is.
+
+    AND IT IS PADDED BY THE COLUMNS IT TAKES, not the code points it holds
+    (#1034, `_padded`). `\\u540d\\u524d.md`, two wide characters, takes 7
+    columns and was padded as 5, so its row stood 2 columns right of its
+    headings; `e\\u0301.md`, whose acute is drawn over the `e`, takes 4 and
+    was padded as 5, 1 column left.
     """
     print(f"\n{'path':<34} {'leg':<10} {'conf':<7} {'files':>6} {'rule'}")
     for entry in entries:
-        print(f"{_printed(_shown(entry.path)):<34} "
+        print(f"{_padded(_printed(_shown(entry.path)), 34)} "
               f"{(entry.leg or 'REVIEW'):<10} "
               f"{entry.confidence:<7} {entry.files:>6} "
               f"{_shown(str(entry.rule))}")
@@ -6654,6 +6710,55 @@ def _printed(text: str) -> str:
         return text.encode(encoding, errors).decode(encoding)
     except (LookupError, UnicodeError):
         return text
+
+
+#: The general categories a terminal gives no column of their own (#1034):
+#: a non-spacing mark and an enclosing one, which it draws over the
+#: character before them, and a format character, which it does not draw.
+#: `_shown` spells every format character, so none reaches `plan`'s table
+#: as it is.
+ZERO_COLUMN_CATEGORIES = frozenset(("Mn", "Me", "Cf"))
+#: The East Asian widths a terminal gives two columns: wide and fullwidth.
+TWO_COLUMN_WIDTHS = frozenset(("W", "F"))
+#: The Hangul medial vowels and final consonants, which a terminal gives no
+#: column of their own, as glibc's `wcwidth` gives them none (#1034): U+1160
+#: to U+11FF in the block Hangul Jamo, and U+D7B0 to U+D7FF in Hangul Jamo
+#: Extended-B. Their category is Lo and their East Asian width N, so neither
+#: set above names them, but a terminal draws each inside the syllable its
+#: leading consonant begins: U+1112 U+1161 U+11AB, one syllable spelled in
+#: its three jamo, takes the 2 columns of U+1112.
+MEDIAL_AND_FINAL_JAMO = frozenset(map(chr, range(0x1160, 0x1200)))
+MEDIAL_AND_FINAL_JAMO_EXTENDED_B = frozenset(map(chr, range(0xD7B0, 0xD800)))
+
+
+def _columns(text: str) -> int:
+    """How many columns `text` takes on a terminal (#1034): none for a
+    character of `ZERO_COLUMN_CATEGORIES` or a Hangul medial vowel or final
+    consonant (`MEDIAL_AND_FINAL_JAMO`, `MEDIAL_AND_FINAL_JAMO_EXTENDED_B`),
+    two for one `unicodedata.east_asian_width` calls wide or fullwidth, and
+    one for any other, an ambiguous one among them, as a terminal outside
+    an East Asian locale draws it.
+
+    THE CATEGORY IS ASKED FIRST: the voiced sound mark U+3099, which a
+    decomposed `\\u304c` ends in, is wide, and is drawn over the kana
+    before it. AND IT IS THE CATEGORY, not `unicodedata.combining`, whose
+    canonical combining class is 0 for marks a terminal draws over the
+    character before them all the same: the Thai vowel sign U+0E35 and
+    the variation selector U+FE0F among them."""
+    return sum(
+        0 if (unicodedata.category(char) in ZERO_COLUMN_CATEGORIES
+              or char in MEDIAL_AND_FINAL_JAMO
+              or char in MEDIAL_AND_FINAL_JAMO_EXTENDED_B)
+        else 2 if unicodedata.east_asian_width(char) in TWO_COLUMN_WIDTHS
+        else 1
+        for char in text)
+
+
+def _padded(text: str, columns: int) -> str:
+    """`text` and the spaces that make it `columns` columns wide on a
+    terminal (`_columns`), as `f"{text:<{columns}}"` makes it that many
+    code points. A text wider than that is `text` as it is, as there."""
+    return text + " " * (columns - _columns(text))
 
 
 def _print_summary(entries: list[Entry]) -> None:
@@ -6720,8 +6825,8 @@ class Plan:
         self.path = path
         self.data = data
         if data.get("kind") != PLAN_KIND:
-            detail = (f"{path}: kind is {data.get('kind')!r}, expected "
-                      f"{PLAN_KIND!r}")
+            detail = (f"{_shown(str(path))}: kind is "
+                      f"{data.get('kind')!r}, expected {PLAN_KIND!r}")
             if data.get("kind") == PLACEMENT_PLAN_KIND:
                 # A REFUSAL THAT SAYS WHERE THE FILE GOES INSTEAD. This one is
                 # reachable by an honest mistake -- the two files look alike,
@@ -6741,8 +6846,8 @@ class Plan:
         if data.get("mode") != "in-place":
             raise Refusal(
                 "plan-unsupported-mode",
-                f"{path}: mode is {data.get('mode')!r}; v0.2 implements "
-                "`in-place` only",
+                f"{_shown(str(path))}: mode is {data.get('mode')!r}; "
+                "v0.2 implements `in-place` only",
                 "Remediation: re-run `plan`, which writes `mode: in-place`. "
                 "A `new-root` mode is described in the tool's own docstring "
                 "and is not implemented.")
@@ -6762,7 +6867,8 @@ class Plan:
     def load(cls, path: Path) -> "Plan":
         data = load_yaml(path)
         if not isinstance(data, dict):
-            raise Refusal("plan-unreadable", f"{path}: not a mapping")
+            raise Refusal("plan-unreadable",
+                          f"{_shown(str(path))}: not a mapping")
         return cls(path, data)
 
     @property
@@ -6825,8 +6931,8 @@ class Plan:
         repository = self._recorded_repository()
         if repository is None:
             raise Refusal("plan-no-source",
-                          f"{self.path}: `source:` names neither a local path "
-                          "nor a repository")
+                          f"{_shown(str(self.path))}: `source:` names "
+                          "neither a local path nor a repository")
         return Source.clone(repository, work_root, unwritable, made,
                             done=done, instead=self.read_at)
 
@@ -6925,7 +7031,12 @@ class Plan:
         GitHub beside the one still there. So is a directory this user
         cannot enter (#918): git runs in it, and at mode 000 that was a
         `PermissionError` traceback where `plan` did not make it, and "no
-        longer whole (git finds no repository there)" where it did.
+        longer whole (git finds no repository there)" where it did. So is a
+        directory whose `.git` this user cannot read (`_git_refused`,
+        #1099), named by that `.git`: git says "not a git repository" of it,
+        so at mode 000 that was `git-failed` where `plan` did not make it,
+        and "no longer whole (git finds no repository there)", cloned again
+        from GitHub, where it did.
 
         A PATH THIS LOCALE CANNOT SPELL IS ASKED AS ITS UTF-8 BYTES
         (`_recorded_spelling`, #918): a plan written in UTF-8 mode for
@@ -6950,6 +7061,9 @@ class Plan:
             path, there, said = _recorded_path(local_path)
         except OSError as exc:
             raise unreadable(exc) from exc
+        refused = _git_refused(path) if there else None
+        if refused is not None:
+            raise self._git_unreadable(local_path, *refused) from refused[0]
         if self.source.get("cloned") is not True:
             if there:
                 return Source.in_place(_top_level(path, f"{named},",
@@ -7002,6 +7116,25 @@ class Plan:
             f"the plan's `source.local_path`, {_spelled(local_path)}, "
             f"{state}, and {why}", PLAN_SOURCE_GONE_REMEDY)
 
+    def _git_unreadable(self, local_path: str, exc: OSError,
+                        a_file: bool) -> Refusal:
+        """`source-unreadable` of the `.git` in the plan's
+        `source.local_path`, which the operating system refuses this user
+        (`exc`; `a_file` where that `.git` is a file), naming that `.git` and
+        the reason, as a recorded path this user cannot enter is named
+        (#918). What git would find there cannot be told, so the clone is
+        neither read nor called no longer whole nor cloned again (#1099)."""
+        return _source_unreadable(
+            f"the `.git` in the plan's `source.local_path`, "
+            f"{_spelled(os.path.join(local_path, '.git'))}", exc,
+            ("whether `plan`'s clone is still whole, to be read, or no longer "
+             "whole, to be cloned again," if self.source.get("cloned") is True
+             else "whether a repository is there"),
+            "pass the source again with --source, which is held to the "
+            "plan's `commit:`",
+            permission=(SOURCE_UNREADABLE_FILE_PERMISSION if a_file
+                        else SOURCE_UNREADABLE_PERMISSION))
+
     def names(self) -> dict[str, str]:
         """The three repository names the plan declares, validated as values.
 
@@ -7049,19 +7182,21 @@ class Plan:
             if not PROJECT_ID_RE.match(project_id):
                 raise Refusal(
                     "plan-bad-id",
-                    f"{self.path}: {DERIVED_ID} is {project_id!r}, which "
-                    f"must match {pattern}", DERIVED_PLAN_ID_REMEDIATION)
+                    f"{_shown(str(self.path))}: {DERIVED_ID} is "
+                    f"{project_id!r}, which must match {pattern}",
+                    DERIVED_PLAN_ID_REMEDIATION)
             return project_id
         if _a_number_or_boolean(set_id):
             raise Refusal("plan-bad-id",
-                          f"{self.path}: {_not_text('id', set_id)}",
+                          f"{_shown(str(self.path))}: "
+                          f"{_not_text('id', set_id)}",
                           NOT_TEXT_REMEDIATION)
         project_id = str(set_id)
         if not PROJECT_ID_RE.match(project_id):
             raise Refusal(
                 "plan-bad-id",
-                f"{self.path}: `id:` is {project_id!r} and must match "
-                f"{pattern}", PLAN_ID_REMEDIATION)
+                f"{_shown(str(self.path))}: `id:` is {project_id!r} and "
+                f"must match {pattern}", PLAN_ID_REMEDIATION)
         return project_id
 
     def get(self, key, default=None):
@@ -9036,7 +9171,8 @@ def _refuse_a_mistyped_plan(plan: Plan) -> None:
         return
     # `FINDING <code>: <detail>` is the one shape every finding is written in.
     code = findings[0].split()[1].rstrip(":")
-    lines = [f"{len(findings)} finding(s) in {plan.path}, as `check` prints "
+    lines = [f"{len(findings)} finding(s) in {_shown(str(plan.path))}, as "
+             "`check` prints "
              "them:"]
     lines += [f"  {finding}" for finding in findings[:REFUSED_FINDINGS_SHOWN]]
     if len(findings) > REFUSED_FINDINGS_SHOWN:
@@ -10348,7 +10484,7 @@ def _refuse_a_branch_in_the_split_branchs_way(
     found = _split_branch_findings(branch, places)
     if found:
         raise Refusal(SPLIT_BRANCH_TAKEN, "\n".join(
-            [f"{len(found)} finding(s) in {plan.path}:",
+            [f"{len(found)} finding(s) in {_shown(str(plan.path))}:",
              *(f"  {finding}" for finding in found)]),
             SPLIT_BRANCH_TAKEN_REMEDIATION)
 
@@ -13648,7 +13784,8 @@ def cmd_check(args) -> int:
     if mistyped:
         for line in [*mistyped, *mistyped_remediation]:
             print(line, file=sys.stderr)
-        print(f"\n{len(mistyped)} finding(s) in {plan.path}", file=sys.stderr)
+        print(f"\n{len(mistyped)} finding(s) in {_shown(str(plan.path))}",
+              file=sys.stderr)
         return 1
     # THE PLAN'S THREE REPOSITORY NAMES, THEN ITS `org:` AND `id:`, right
     # after the plan's keys and before anything else is read, made or opened,
@@ -13796,7 +13933,8 @@ def cmd_check(args) -> int:
     for line in [*findings, *remediation]:
         print(line, file=sys.stderr)
     if findings:
-        print(f"\n{len(findings)} finding(s) in {plan.path}", file=sys.stderr)
+        print(f"\n{len(findings)} finding(s) in {_shown(str(plan.path))}",
+              file=sys.stderr)
         return 1
     print("\nplan ok")
     return 0
@@ -14824,14 +14962,14 @@ def _create_leg_remote(plan: Plan, names: dict, repositories: dict,
     # Asked before either leg was made (#798); one there now was made since.
     if bare.exists():
         raise Refusal(
-            LEG_REMOTE_EXISTS, f"{bare} already exists",
+            LEG_REMOTE_EXISTS, f"{_shown(str(bare))} already exists",
             "Remediation: choose an empty --local-remote-dir, and a "
             "--work-dir the run that made it did not clone into (a fresh "
             "one, or none): `git clone` refuses a directory it already "
             "cloned into. There is no --force: re-running over a live leg "
             "is not an adoption.")
     run(["git", "init", "-q", "--bare", "-b", tracking, str(bare)])
-    print(f"  bare  {bare}")
+    print(f"  bare  {_shown(str(bare))}")
 
 
 def _extract_leg(role: str, source: Source, work: Path, paths: list[str],
@@ -14903,7 +15041,7 @@ def _extract_leg(role: str, source: Source, work: Path, paths: list[str],
     digest = tree_digest(work, head)
     _push_the_leg(f"pushing the {role} leg", work, url, tracking, repository)
     print(f"  {role:<5} {len(paths):>3} path(s) -> {head[:12]} "
-          f"({count} commits kept) -> {url}")
+          f"({count} commits kept) -> {_shown(url)}")
     return head, digest
 
 
@@ -14946,7 +15084,7 @@ def _seed_leg(role: str, work: Path, values: dict, branch: str, url: str,
     _push_the_leg(f"pushing the seeded {role} leg", work, url, tracking,
                   repository)
     print(f"  {role:<5}   0 path(s) -> {commit[:12]} (SEEDED from "
-          f"{SEED_TEMPLATE[role]}/) -> {url}")
+          f"{SEED_TEMPLATE[role]}/) -> {_shown(url)}")
     return commit, digest
 
 
@@ -15371,11 +15509,12 @@ def _what_cannot_be_held(plan: Plan, names: dict, org: str, local: bool,
     the manifest's values, means the two cannot disagree again. It is a
     generator, so `execute` asks nothing after the first refusal."""
     asked = [lambda: _refuse_a_root_no_disk_holds(
-                 names["assembly"], f"{plan.path}: `legs.assembly`",
+                 names["assembly"],
+                 f"{_shown(str(plan.path))}: `legs.assembly`",
                  "no repository was created."),
              lambda: _refuse_names_nothing_keeps(names, org, local)]
     if not local:
-        named = f"{plan.path}: `org:`"
+        named = f"{_shown(str(plan.path))}: `org:`"
         asked += [
             lambda: refuse_an_owner_github_cannot_have(
                 "adopt-org-too-long", org, named, ORG_REMEDIATION),
@@ -15494,7 +15633,7 @@ def _refuse_a_topic_github_cannot_set(plan: Plan, topic: str) -> None:
     named = "`id:`" if plan.get("id") is not None else DERIVED_ID
     refuse_a_topic_github_cannot_set(
         "adopt-topic-too-long", topic, plan.project_id,
-        f"{plan.path}: {named}", TOPIC_REMEDIATION)
+        f"{_shown(str(plan.path))}: {named}", TOPIC_REMEDIATION)
 
 
 def _remote_urls(org: str, names: dict, local_remote_dir: Path | None,
@@ -15628,7 +15767,8 @@ def _refuse_what_check_finds(plan: Plan, source: Source,
         return
     # `FINDING <code>: <detail>` is the one shape both functions write.
     code = findings[0].split()[1].rstrip(":")
-    lines = [f"{len(findings)} finding(s) in {plan.path}, as `check` prints "
+    lines = [f"{len(findings)} finding(s) in {_shown(str(plan.path))}, as "
+             "`check` prints "
              f"them{_as_resolved_here(findings, local_remote_dir)}:"]
     lines += [f"  {finding}" for finding in findings[:REFUSED_FINDINGS_SHOWN]]
     if len(findings) > REFUSED_FINDINGS_SHOWN:
@@ -16344,7 +16484,8 @@ def _commit_the_split(plan: Plan, source: Source, assembly: Path,
             urls, list(leg_commits), work_root, names,
             interrupted=_interrupted(exc), source=source))
         raise
-    print(f"\n  split {split_commit[:12]} on {branch} -> {urls['assembly']}")
+    print(f"\n  split {split_commit[:12]} on {branch} -> "
+          f"{_shown(urls['assembly'])}")
     return split_commit, message, materialized.collisions
 
 
@@ -18061,7 +18202,7 @@ def _refuse_a_plan_for_another_repository(
     detail = _not_the_source(plan, source, names)
     if detail:
         raise Refusal(
-            PLAN_NOT_THE_SOURCE, f"{plan.path}: {detail}",
+            PLAN_NOT_THE_SOURCE, f"{_shown(str(plan.path))}: {detail}",
             _own_name_remediation(
                 _held_repository(plan, source), naming, pins,
                 "no leg repository was created and nothing was pushed. "))
@@ -18617,8 +18758,9 @@ SOURCE_OVERRIDE_HELP = (
     "whole, its `source.repository` is cloned again, and any other "
     "`local_path` that is gone is refused as `plan-source-gone`; one that "
     "is a file, or a directory inside a repository, as "
-    "`source-not-top-level`; and one this user cannot reach, a clone "
-    "`plan` made included, as `source-unreadable`, never cloned again. "
+    "`source-not-top-level`; and one this user cannot reach, or one whose "
+    "`.git` this user cannot read, a clone `plan` made included, as "
+    "`source-unreadable`, never cloned again. "
     "Either source, where it is a partial clone (`git clone --filter`) "
     "that lacks an object its branches, tags or HEAD reach, is refused as "
     "`source-partial-clone` before anything reads it: git would fetch that "
