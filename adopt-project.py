@@ -114,8 +114,15 @@ THREE SUBCOMMANDS, BECAUSE THE MIDDLE ONE IS A HUMAN.
            one git cannot make or ask there is `adopt-git-unasked`, which
            says why (#910). The symlink probe keeps its plain `git init`
            and asks only `core.symlinks`; where git cannot make it, a
-           symlink is taken to check out as one, and a NOTE says why. It
-           prints what will happen and changes nothing.
+           symlink is taken to check out as one, and a NOTE says why.
+           Source paths the plan keeps in one repository that differ only
+           in case, `A` and `a`, or a file and a folder above another
+           path, `f` and `F/x`, are `plan-case-twins` on every disk, as a
+           disk that ignores case holds each set as one name (#1161). A
+           set of one name whose paths hold one blob in one mode is a NOTE
+           in a leg, and in the root only where it is two paths whose names
+           differ only in their last part.
+           It prints what will happen and changes nothing.
   execute  asks about both legs before it makes either (#798), then
            creates the two legs, extracts them with `git filter-repo`, makes
            the one split commit on a branch of the source, sets the
@@ -230,6 +237,7 @@ import stat
 import subprocess
 import sys
 import tempfile
+import unicodedata
 from pathlib import Path, PurePosixPath
 from typing import Callable, NamedTuple
 
@@ -315,8 +323,10 @@ from shape_materialize import (  # noqa: E402
     BRANCH_REMEDIATION, branch_problem, refuse_bad_branch,
 )
 # The shape's bootstrap script, which its `make bootstrap` runs: where it
-# went beside one the source kept decides what NEXT can name (#480).
-from shape_materialize import BOOTSTRAP  # noqa: E402
+# went beside one the source kept decides what NEXT can name (#480). A NOTE
+# names it for a person to type as `BOOTSTRAP_COMMAND`, `python` on Windows
+# as well (#1132).
+from shape_materialize import BOOTSTRAP, BOOTSTRAP_COMMAND  # noqa: E402
 # `run`'s own check of a command line, for the one command `run` cannot run:
 # `_git_rm`, whose path goes to git as the bytes the tree holds (#527).
 from shape_materialize import check_program  # noqa: E402
@@ -3966,6 +3976,53 @@ def _root_keeps(surviving: set[str], path: str, *,
 GNU_MAKE_READS = ("GNUmakefile", "makefile", "Makefile")
 
 
+def _make_reads_first(surviving) -> str | None:
+    """The source's name GNU make finds at the root before the shape's
+    `Makefile`: the first of `GNUmakefile` and `makefile` the root keeps, in
+    `GNU_MAKE_READS`' order and asked as `_root_keeps` asks it, with a `/`
+    where the root keeps a DIRECTORY of that name; None where it keeps
+    neither. `surviving` is each path the plan's entries send to the root.
+
+    A DIRECTORY OF THAT NAME IS WHAT GNU MAKE FINDS FIRST ALL THE SAME, and
+    it stops there, `GNUmakefile: Is a directory.  Stop.`, exit 2, for every
+    target, with or without a `Makefile` beside it (RV1121's NIT-1, measured
+    with GNU make 4.3 for `GNUmakefile/` and `makefile/`, each alone and
+    each beside `Makefile`). The `CONTRACTS_DIR` line named it as a file
+    that could export the variable, and NEXT named `make bootstrap` there
+    (#1132). The `/` is how a text knows to say so
+    (`_make_reads_first_clause`).
+    """
+    kept = set(surviving)
+    return next((name if name in kept else f"{name}/"
+                 for name in GNU_MAKE_READS
+                 if name != SHAPE_MAKEFILE and _root_keeps(kept, name)), None)
+
+
+def _make_reads_first_clause(first: str, reach: str, has: str) -> str:
+    """What a text says of `first`, the source's name `_make_reads_first`
+    found: `reach` is what then reaches `make` at the root, and `has` how a
+    FILE of that name would hold it.
+
+    A FILE: GNU make reads it, so `reach` holds only once that file `has`
+    it, or includes a Makefile that does (#977).
+
+    A DIRECTORY (`first` ends in `/`): GNU make stops at it for every
+    target, so nothing that file "does" can be true of it, and the clause
+    says `make` stops there, in GNU make's own words, and that `reach`
+    holds only once the root keeps no directory of that name (#1132).
+    """
+    listed = _and_listed([f"`{name}`" for name in GNU_MAKE_READS])
+    name = first.rstrip("/")
+    if name != first:
+        return (f"GNU make at the root stops at the source's directory "
+                f"{_spelled(first)}, the first of {listed} it finds "
+                f"(`{name}: Is a directory.`), so {reach} only once the root "
+                "keeps no directory of that name")
+    return (f"GNU make at the root reads the source's {_spelled(first)}, the "
+            f"first of {listed} it finds, so {reach} only once "
+            f"{_spelled(first)} {has}, or includes a Makefile that does")
+
+
 def _makefile_follow_up(surviving: set[str]) -> str:
     """The follow-up that says which Makefile wires `CONTRACTS_DIR`, where
     the shape's is written, and, where the source keeps a file GNU make reads
@@ -3992,15 +4049,19 @@ def _makefile_follow_up(surviving: set[str]) -> str:
     case is kept, and as `shape/Makefile` where it is not, naming the kept
     path that takes the name there. Whether GNU make itself reads a name by
     its case there is its build's to say, so nothing more is said of it.
+
+    AND A DIRECTORY OF THAT NAME IS NO FILE (#1132, RV1121's NIT-1). The
+    line said `make` exports `CONTRACTS_DIR` "only once `GNUmakefile` does"
+    of a kept directory `GNUmakefile/`, where GNU make stops for every
+    target. The name is `_make_reads_first`'s, and the clause
+    `_make_reads_first_clause`'s, which says GNU make stops there.
     """
     aside = _root_keeps(surviving, SHAPE_MAKEFILE)
     folded = (not aside
               and _root_keeps(surviving, SHAPE_MAKEFILE, fold=True))
     twins = sorted(kept.rstrip("/") for kept in surviving
                    if kept.rstrip("/").casefold() == SHAPE_MAKEFILE.casefold())
-    first = next((name for name in GNU_MAKE_READS
-                  if name != SHAPE_MAKEFILE and _root_keeps(surviving, name)),
-                 None)
+    first = _make_reads_first(surviving)
     whose = "the shape's" if aside or folded or first else "the root"
     said = (f"{whose} Makefile wires `CONTRACTS_DIR` to the `contracts/` of "
             "the spec leg, where the plan's `legs.spec_path` mounts it, and "
@@ -4020,12 +4081,9 @@ def _makefile_follow_up(surviving: set[str]) -> str:
     elif first:
         said += f"; it is written as the root's `{SHAPE_MAKEFILE}`"
     if first:
-        listed = _and_listed([f"`{name}`" for name in GNU_MAKE_READS])
-        said += (
-            f"{'; and' if aside or folded else ', but'} GNU make at the root "
-            f"reads the source's {_spelled(first)}, the first of {listed} it "
-            f"finds, so `make` there exports `CONTRACTS_DIR` only once "
-            f"{_spelled(first)} does, or includes a Makefile that does")
+        said += (f"{'; and' if aside or folded else ', but'} "
+                 + _make_reads_first_clause(
+                     first, "`make` there exports `CONTRACTS_DIR`", "does"))
     return said
 
 
@@ -6680,10 +6738,16 @@ def _print_entries(entries: list[Entry]) -> None:
     stood 3 characters right of its heading. The rule id is a path
     policy's, which `--path-policy` may name and nothing asks to be
     printable, so it is `_shown` as a question is.
+
+    AND IT IS PADDED BY THE COLUMNS IT TAKES, not the code points it holds
+    (#1034, `_padded`). `\\u540d\\u524d.md`, two wide characters, takes 7
+    columns and was padded as 5, so its row stood 2 columns right of its
+    headings; `e\\u0301.md`, whose acute is drawn over the `e`, takes 4 and
+    was padded as 5, 1 column left.
     """
     print(f"\n{'path':<34} {'leg':<10} {'conf':<7} {'files':>6} {'rule'}")
     for entry in entries:
-        print(f"{_printed(_shown(entry.path)):<34} "
+        print(f"{_padded(_printed(_shown(entry.path)), 34)} "
               f"{(entry.leg or 'REVIEW'):<10} "
               f"{entry.confidence:<7} {entry.files:>6} "
               f"{_shown(str(entry.rule))}")
@@ -6705,6 +6769,55 @@ def _printed(text: str) -> str:
         return text
 
 
+#: The general categories a terminal gives no column of their own (#1034):
+#: a non-spacing mark and an enclosing one, which it draws over the
+#: character before them, and a format character, which it does not draw.
+#: `_shown` spells every format character, so none reaches `plan`'s table
+#: as it is.
+ZERO_COLUMN_CATEGORIES = frozenset(("Mn", "Me", "Cf"))
+#: The East Asian widths a terminal gives two columns: wide and fullwidth.
+TWO_COLUMN_WIDTHS = frozenset(("W", "F"))
+#: The Hangul medial vowels and final consonants, which a terminal gives no
+#: column of their own, as glibc's `wcwidth` gives them none (#1034): U+1160
+#: to U+11FF in the block Hangul Jamo, and U+D7B0 to U+D7FF in Hangul Jamo
+#: Extended-B. Their category is Lo and their East Asian width N, so neither
+#: set above names them, but a terminal draws each inside the syllable its
+#: leading consonant begins: U+1112 U+1161 U+11AB, one syllable spelled in
+#: its three jamo, takes the 2 columns of U+1112.
+MEDIAL_AND_FINAL_JAMO = frozenset(map(chr, range(0x1160, 0x1200)))
+MEDIAL_AND_FINAL_JAMO_EXTENDED_B = frozenset(map(chr, range(0xD7B0, 0xD800)))
+
+
+def _columns(text: str) -> int:
+    """How many columns `text` takes on a terminal (#1034): none for a
+    character of `ZERO_COLUMN_CATEGORIES` or a Hangul medial vowel or final
+    consonant (`MEDIAL_AND_FINAL_JAMO`, `MEDIAL_AND_FINAL_JAMO_EXTENDED_B`),
+    two for one `unicodedata.east_asian_width` calls wide or fullwidth, and
+    one for any other, an ambiguous one among them, as a terminal outside
+    an East Asian locale draws it.
+
+    THE CATEGORY IS ASKED FIRST: the voiced sound mark U+3099, which a
+    decomposed `\\u304c` ends in, is wide, and is drawn over the kana
+    before it. AND IT IS THE CATEGORY, not `unicodedata.combining`, whose
+    canonical combining class is 0 for marks a terminal draws over the
+    character before them all the same: the Thai vowel sign U+0E35 and
+    the variation selector U+FE0F among them."""
+    return sum(
+        0 if (unicodedata.category(char) in ZERO_COLUMN_CATEGORIES
+              or char in MEDIAL_AND_FINAL_JAMO
+              or char in MEDIAL_AND_FINAL_JAMO_EXTENDED_B)
+        else 2 if unicodedata.east_asian_width(char) in TWO_COLUMN_WIDTHS
+        else 1
+        for char in text)
+
+
+def _padded(text: str, columns: int) -> str:
+    """`text` and the spaces that make it `columns` columns wide on a
+    terminal (`_columns`), as `f"{text:<{columns}}"` makes it that many
+    code points. A text wider than that is `text` as it is, as there."""
+    return text + " " * (columns - _columns(text))
+
+
 def _print_summary(entries: list[Entry]) -> None:
     print()
     for leg, row in summary_of(entries).items():
@@ -6722,10 +6835,14 @@ def _predict_collisions(entries: list[Entry], *,
     the root, so the follow-up is in the plan the human reads rather than in
     output they may never scroll back to.
 
-    The WORDING comes from `shape_materialize.collision_follow_up`, the same
-    function `execute` reports its actual collisions through — including the
-    one collision whose answer is not "merge": an `AGENTS.md` or `CLAUDE.md`
-    the source already holds needs ONE LINE ADDED, not a merge.
+    The WORDING comes from `shape_materialize.collision_follow_up`, the one
+    place a collision's follow-up is said — including the one collision
+    whose answer is not "merge": an `AGENTS.md` or `CLAUDE.md` the source
+    already holds needs ONE LINE ADDED, not a merge. The plan stores what it
+    returns in `follow_ups:`, and `execute` carries those items into the
+    split commit's message and names the collisions that actually happened
+    by path only. This said `execute` reports them through that function,
+    which `execute` never calls (#1105's second review, NIT-3).
 
     The PATHS come from `assembly_root_paths`, the list #172's mount rule
     reads, so the two cannot list different files. The list this function
@@ -6769,8 +6886,8 @@ class Plan:
         self.path = path
         self.data = data
         if data.get("kind") != PLAN_KIND:
-            detail = (f"{path}: kind is {data.get('kind')!r}, expected "
-                      f"{PLAN_KIND!r}")
+            detail = (f"{_shown(str(path))}: kind is "
+                      f"{data.get('kind')!r}, expected {PLAN_KIND!r}")
             if data.get("kind") == PLACEMENT_PLAN_KIND:
                 # A REFUSAL THAT SAYS WHERE THE FILE GOES INSTEAD. This one is
                 # reachable by an honest mistake -- the two files look alike,
@@ -6790,8 +6907,8 @@ class Plan:
         if data.get("mode") != "in-place":
             raise Refusal(
                 "plan-unsupported-mode",
-                f"{path}: mode is {data.get('mode')!r}; v0.2 implements "
-                "`in-place` only",
+                f"{_shown(str(path))}: mode is {data.get('mode')!r}; "
+                "v0.2 implements `in-place` only",
                 "Remediation: re-run `plan`, which writes `mode: in-place`. "
                 "A `new-root` mode is described in the tool's own docstring "
                 "and is not implemented.")
@@ -6811,7 +6928,8 @@ class Plan:
     def load(cls, path: Path) -> "Plan":
         data = load_yaml(path)
         if not isinstance(data, dict):
-            raise Refusal("plan-unreadable", f"{path}: not a mapping")
+            raise Refusal("plan-unreadable",
+                          f"{_shown(str(path))}: not a mapping")
         return cls(path, data)
 
     @property
@@ -6874,8 +6992,8 @@ class Plan:
         repository = self._recorded_repository()
         if repository is None:
             raise Refusal("plan-no-source",
-                          f"{self.path}: `source:` names neither a local path "
-                          "nor a repository")
+                          f"{_shown(str(self.path))}: `source:` names "
+                          "neither a local path nor a repository")
         return Source.clone(repository, work_root, unwritable, made,
                             done=done, instead=self.read_at)
 
@@ -7125,19 +7243,21 @@ class Plan:
             if not PROJECT_ID_RE.match(project_id):
                 raise Refusal(
                     "plan-bad-id",
-                    f"{self.path}: {DERIVED_ID} is {project_id!r}, which "
-                    f"must match {pattern}", DERIVED_PLAN_ID_REMEDIATION)
+                    f"{_shown(str(self.path))}: {DERIVED_ID} is "
+                    f"{project_id!r}, which must match {pattern}",
+                    DERIVED_PLAN_ID_REMEDIATION)
             return project_id
         if _a_number_or_boolean(set_id):
             raise Refusal("plan-bad-id",
-                          f"{self.path}: {_not_text('id', set_id)}",
+                          f"{_shown(str(self.path))}: "
+                          f"{_not_text('id', set_id)}",
                           NOT_TEXT_REMEDIATION)
         project_id = str(set_id)
         if not PROJECT_ID_RE.match(project_id):
             raise Refusal(
                 "plan-bad-id",
-                f"{self.path}: `id:` is {project_id!r} and must match "
-                f"{pattern}", PLAN_ID_REMEDIATION)
+                f"{_shown(str(self.path))}: `id:` is {project_id!r} and "
+                f"must match {pattern}", PLAN_ID_REMEDIATION)
         return project_id
 
     def get(self, key, default=None):
@@ -9112,7 +9232,8 @@ def _refuse_a_mistyped_plan(plan: Plan) -> None:
         return
     # `FINDING <code>: <detail>` is the one shape every finding is written in.
     code = findings[0].split()[1].rstrip(":")
-    lines = [f"{len(findings)} finding(s) in {plan.path}, as `check` prints "
+    lines = [f"{len(findings)} finding(s) in {_shown(str(plan.path))}, as "
+             "`check` prints "
              "them:"]
     lines += [f"  {finding}" for finding in findings[:REFUSED_FINDINGS_SHOWN]]
     if len(findings) > REFUSED_FINDINGS_SHOWN:
@@ -9681,6 +9802,180 @@ def _unsafe_path_findings(plan: Plan) -> tuple[list[str], list[str]]:
 
 
 # ---------------------------------------------------------------------------
+# Case twins the plan keeps in one repository (#1161)
+# ---------------------------------------------------------------------------
+#
+# A source commit can hold paths that differ only in case, `A` and `a`, or a
+# file and, in another case, a folder above another path, `f` and `F/x`: git
+# holds each under its own name and blob on any disk (#1033). A disk that
+# ignores case, as a macOS or Windows disk does by default, holds each such
+# set as one name, and a clone there checks out only one path of it (git's
+# "the following paths have collided"). `check` passed them wherever the
+# plan kept them. Measured for #1161 with git 2.43 and the tool at 4c7b8acd,
+# the work directory and every repository on a disk that ignores case and
+# keeps it: `check` printed `plan ok` for each set kept in the root or in
+# one leg, but for folder twins (`D/x`, `d/x`) in 2 of 4 fresh sources,
+# where the #654 rehearsal said `plan-file-reencoded`, git saying `will not
+# add file alias`, and `execute` refused that before any leg. A file and a
+# folder (`F/x`, `f`) stopped `execute` after both legs and the split were
+# pushed, as `adopt-lost: F/x`. File twins in the root were adopted, each
+# set kept as it was in the repository made. Twins in the code leg were
+# adopted so in 2 runs, and in 3 others, for #1189's review, `execute`
+# stopped after both legs were pushed, mounting them, at `git rm -r` ("the
+# following files have local modifications").
+#
+# So `check` names them, on every disk, as #520 names a branch in another
+# case: one plan is then not good on one machine and lost on another.
+# `plan-case-twins` names, for each repository the split makes -- the root,
+# the spec leg, the code leg -- each set of SOURCE paths, each sent there by
+# one answered entry (`_answered_legs`), that a disk ignoring case cannot
+# hold apart (`_case_twin_sets`). Only the source's paths are asked: a kept
+# path that is a twin of a file the shape writes into the root, `Makefile`,
+# `README.md`, `AGENTS.md`, `CLAUDE.md` or `.gitmodules`, is not (#1191). A
+# path git refuses is `plan-path-git-refuses`'s alone, and a path no entry
+# answers once is another finding's. Twins the plan sends to DIFFERENT
+# repositories, and a twin it drops beside one it keeps, are not asked
+# either, though `execute` on a disk that ignores case loses them too, as
+# `adopt-lost` after both legs are pushed (#1183).
+#
+# A set of ONE NAME whose paths hold one blob in one mode loses nothing on
+# such a disk: the one path it checks out holds what each path holds. In a
+# leg it is a NOTE, not this finding (`_one_blob_twins`): `execute` there
+# verified every such set measured for #1189, two files in one folder in 6
+# runs, 5 in the code leg and 1 in the spec leg, and for its second review
+# folder twins (`src/D/x`, `src/d/x`), alone and beside folders that only
+# merge, and symlinks to one target, 1 run each. In the root the NOTE takes
+# only two paths whose names differ only in their last part, `A` and `a`,
+# the shape `execute` verified there in every run measured: 2 of files,
+# and for the second review 1 of symlinks to one target and 1 of
+# executables; and with the rule above, in 2 runs each, files `A` and `a`
+# and files `D/A` and `D/a` in one folder: `check` printed the NOTE and
+# `plan ok`, and `execute` verified. Other sets of one blob in the root met
+# git's `will not add file alias` there, which the #654 rehearsal reports
+# as `plan-file-reencoded`, in 1 run each for the second review: folder
+# twins (`D/x`, `d/x`), alone and beside folders that only merge, in
+# `check`; three paths (`AB`, `Ab`, `ab`) in `execute` alone, before any
+# leg, after `check` had said `plan ok`. With the rule above, in 2 runs
+# each, `check` met it for both, beside `plan-case-twins`, and `execute`
+# refused both as `plan-case-twins` before any leg. So in the root they
+# stay this finding, and its remediation, a rename. A file against a
+# folder is always the finding: such a disk cannot hold a file and a folder
+# under one name, whatever their bytes.
+
+#: `check`'s finding, and the code of `execute`'s refusal, for paths the
+#: plan keeps in one repository that a disk ignoring case holds as one.
+CASE_TWINS = "plan-case-twins"
+#: Each repository the split makes, by the `leg:` that sends a path there,
+#: as `plan-case-twins` names it, in the order it is asked.
+TWIN_REPOSITORIES = {"root": "the assembly root", "spec": "the spec leg",
+                     "code": "the code leg"}
+#: What a plan holding such twins is told to do, once after every finding.
+#: It offers no answer that sends the twins of a set into different
+#: repositories, or drops one: on a disk that ignores case `execute` loses
+#: those too, after both legs are pushed (#1183).
+CASE_TWINS_REMEDIATION = (
+    "Remediation: rename paths in the source until no two that one "
+    "repository would hold differ only in case -- each twin of a set but "
+    "one, or the folder above a twin -- commit that, and re-run `plan`: a "
+    "plan is written against one commit of the source, and `check` calls it "
+    "`plan-stale` once the source has moved.")
+
+
+def _case_twin_sets(paths: list[str]) -> list[list[str]]:
+    """Each set of two or more of `paths` that a disk ignoring case holds as
+    one name, in the order of `paths`, as is each set: paths equal once case
+    is folded (`casefold`, as `_KeptTree` folds), and a path equal so to a
+    folder above another (`f` and `F/x`), which such a disk cannot hold as a
+    file and a folder at once. Paths that only share a folder in another
+    case (`D/x` and `d/y`) are in no set: such a disk merges the folders,
+    and the names in them differ.
+
+    Each path joins the set of the first name above it, or its own, that is
+    some path's whole name folded: two paths such a disk holds as one share
+    that name, and two it holds apart do not."""
+    whole = {path.casefold() for path in paths}
+    sets: dict[str, list[str]] = {}
+    for path in paths:
+        parts = path.casefold().split("/")
+        name = next(above for above in ("/".join(parts[:end])
+                                        for end in range(1, len(parts) + 1))
+                    if above in whole)
+        sets.setdefault(name, []).append(path)
+    return [named for named in sets.values() if len(named) > 1]
+
+
+def _one_blob_twins(named: list[str], kinds: dict, leg: str) -> bool:
+    """Whether the set `named`, which the plan keeps in the repository
+    `leg:` `leg` sends it to, is left to the NOTE: every path folds to ONE
+    name and holds one blob in one mode, `kinds` giving each path's `(mode,
+    object)`, so the one path a disk ignoring case checks out holds what
+    each holds. In the root, only TWO paths whose names differ only in
+    their last part, `A` and `a`, are: folder twins (`D/x`, `d/x`) and sets
+    of three or more met git's `will not add file alias` there, and stay
+    the finding. A file against a folder is never such a set, nor are
+    submodules, whose object is a commit and no blob."""
+    if leg == "root" and (len(named) != 2 or len(
+            {path.rpartition("/")[0] for path in named}) != 1):
+        return False
+    return (len({path.casefold() for path in named}) == 1
+            and len({kinds[path] for path in named}) == 1
+            and kinds[named[0]][0] != GITLINK_MODE)
+
+
+def _case_twin_findings(plan: Plan, tree: list,
+                        refused: list[str] | tuple = ()
+                        ) -> tuple[list[str], list[str], list[str]]:
+    """`plan-case-twins` for each repository the split makes that the plan
+    keeps case twins in (`_case_twin_sets`), in `TWIN_REPOSITORIES`' order,
+    naming `NAMED_PATHS` of them set by set and counting the rest; what to
+    print once after every finding; and a NOTE for each repository whose
+    sets of one name hold one blob in one mode, in the root only sets of
+    two paths whose names differ only in their last part
+    (`_one_blob_twins`), which the finding leaves out. Only the paths ONE
+    answered entry sends there are asked (`_answered_legs`), and none git
+    refuses, `refused`: `plan-path-git-refuses` names those."""
+    held = set(refused)
+    kinds = {path: (mode, oid) for path, mode, oid, _ in tree}
+    answered = _answered_legs(plan.entries, [path for path, _, _, _ in tree
+                                             if path not in held])
+    found, notes = [], []
+    for leg, where in TWIN_REPOSITORIES.items():
+        sets = _case_twin_sets([path for path, (answer, _) in answered.items()
+                                if answer == leg])
+        alike = [named for named in sets
+                 if _one_blob_twins(named, kinds, leg)]
+        sets = [named for named in sets if named not in alike]
+        if alike:
+            same = [path for named in alike for path in named]
+            notes.append(
+                f"NOTE the plan keeps {len(alike)} "
+                f"{'set' if len(alike) == 1 else 'sets'} of case twins in "
+                f"{where} whose paths hold one blob in one mode, {len(same)} "
+                f"paths: {_named_and_counted(same)}. A disk that ignores "
+                "case holds each set as one name, and a clone made there "
+                "checks out one path of each, git saying `the following "
+                "paths have collided`; that path holds what each path of the "
+                "set holds, so none is lost, and `check` names no "
+                f"`{CASE_TWINS}` for them.")
+        if not sets:
+            continue
+        twins = [path for named in sets for path in named]
+        found.append(
+            f"FINDING {CASE_TWINS}: the plan keeps {len(sets)} "
+            f"{'set' if len(sets) == 1 else 'sets'} of case twins in {where}, "
+            f"{len(twins)} paths, the paths of a set differing only in case, "
+            "or one naming in another case a folder above another: "
+            f"{_named_and_counted(twins)}. A disk that ignores case, as a "
+            "macOS or Windows disk does by default, holds each set as one "
+            "name: a clone made there checks out only one path of each set, "
+            "and `execute` could stop there before any leg exists, at git's "
+            "`will not add file alias`, or after both legs are pushed, as "
+            "`adopt-lost` or at `git rm` mounting the legs, so `execute` "
+            "refuses them on every disk.")
+    return found, [CASE_TWINS_REMEDIATION] if found else [], notes
+
+
+# ---------------------------------------------------------------------------
 # The two branch names a plan gives `execute` (#420, #520)
 # ---------------------------------------------------------------------------
 #
@@ -9775,7 +10070,8 @@ def _entry_findings(plan: Plan, source: Source,
                     ) -> tuple[list[str], list[str], list[str]]:
     """Every FINDING `check` prints about the plan's ENTRIES, in its order,
     what it prints once after them, and the NOTEs it prints beside them:
-    each entry's path, then coverage, then each entry's `leg:`, the two
+    each entry's path, then the case twins the plan keeps in one repository
+    (#1161), then coverage, then each entry's `leg:`, the two
     mount paths and what the root keeps where the shape writes, the pins,
     then each pin's digest the clone `plan` read it from recomputes
     otherwise (#449), then each value `execute` would write into the
@@ -9843,6 +10139,16 @@ def _entry_findings(plan: Plan, source: Source,
     answer changes either; and for each path of the source commit git
     refuses as a path, `..` or `.Git/x` (#910), as `plan-path-git-refuses`,
     asked of git first, in a throwaway repository of its own.
+
+    THEN THE CASE TWINS (#1161), `plan-case-twins`: the source paths, each
+    sent by one answered entry, that one repository would hold and a disk
+    ignoring case holds as one name (`_case_twin_findings`). Their first
+    fix is a rename in the source too, so they come before the findings
+    about the answers, and they ask no path git refuses, which the finding
+    before them names. A set of one name whose paths hold one blob in one
+    mode loses nothing there, and is a NOTE instead, listed first of the
+    NOTEs returned here: in a leg, and in the root where it is two paths
+    whose names differ only in their last part.
 
     `check`'S THROWAWAY REPOSITORIES (#910) are made in the work directory.
     The first is the split's own `git clone` of the source (#1083), asked as
@@ -9923,7 +10229,9 @@ def _entry_findings(plan: Plan, source: Source,
     probe = _SymlinkProbe(source.work_root)
     unsafe, unsafe_remediation = _source_path_findings(plan, tree, targets,
                                                        refused)
-    findings = (unsafe
+    twins, twins_remediation, twin_notes = _case_twin_findings(plan, tree,
+                                                               refused)
+    findings = (unsafe + twins
                 + _coverage_findings([str(e.get("path"))
                                       for e in plan.entries],
                                      [path for path, _, _, _ in tree])
@@ -9960,12 +10268,12 @@ def _entry_findings(plan: Plan, source: Source,
     return (findings + misread + split + linked + asked
             + unwritable_findings + value_findings + names
             + tracking_findings + moved + field_findings,
-            unsafe_remediation
+            unsafe_remediation + twins_remediation
             + ([MANIFEST_MISREAD_REMEDIATION] if misread else [])
             + split_remediation + unwritable_remediation + value_remediation
             + names_remediation + tracking_remediation + moved_remediation
             + field_remediation,
-            pin_notes + notes + unasked_notes + probe.notes())
+            twin_notes + pin_notes + notes + unasked_notes + probe.notes())
 
 
 # ---------------------------------------------------------------------------
@@ -10424,7 +10732,7 @@ def _refuse_a_branch_in_the_split_branchs_way(
     found = _split_branch_findings(branch, places)
     if found:
         raise Refusal(SPLIT_BRANCH_TAKEN, "\n".join(
-            [f"{len(found)} finding(s) in {plan.path}:",
+            [f"{len(found)} finding(s) in {_shown(str(plan.path))}:",
              *(f"  {finding}" for finding in found)]),
             SPLIT_BRANCH_TAKEN_REMEDIATION)
 
@@ -13724,7 +14032,8 @@ def cmd_check(args) -> int:
     if mistyped:
         for line in [*mistyped, *mistyped_remediation]:
             print(line, file=sys.stderr)
-        print(f"\n{len(mistyped)} finding(s) in {plan.path}", file=sys.stderr)
+        print(f"\n{len(mistyped)} finding(s) in {_shown(str(plan.path))}",
+              file=sys.stderr)
         return 1
     # THE PLAN'S THREE REPOSITORY NAMES, THEN ITS `org:` AND `id:`, right
     # after the plan's keys and before anything else is read, made or opened,
@@ -13872,7 +14181,8 @@ def cmd_check(args) -> int:
     for line in [*findings, *remediation]:
         print(line, file=sys.stderr)
     if findings:
-        print(f"\n{len(findings)} finding(s) in {plan.path}", file=sys.stderr)
+        print(f"\n{len(findings)} finding(s) in {_shown(str(plan.path))}",
+              file=sys.stderr)
         return 1
     print("\nplan ok")
     return 0
@@ -14900,14 +15210,14 @@ def _create_leg_remote(plan: Plan, names: dict, repositories: dict,
     # Asked before either leg was made (#798); one there now was made since.
     if bare.exists():
         raise Refusal(
-            LEG_REMOTE_EXISTS, f"{bare} already exists",
+            LEG_REMOTE_EXISTS, f"{_shown(str(bare))} already exists",
             "Remediation: choose an empty --local-remote-dir, and a "
             "--work-dir the run that made it did not clone into (a fresh "
             "one, or none): `git clone` refuses a directory it already "
             "cloned into. There is no --force: re-running over a live leg "
             "is not an adoption.")
     run(["git", "init", "-q", "--bare", "-b", tracking, str(bare)])
-    print(f"  bare  {bare}")
+    print(f"  bare  {_shown(str(bare))}")
 
 
 def _extract_leg(role: str, source: Source, work: Path, paths: list[str],
@@ -14979,7 +15289,7 @@ def _extract_leg(role: str, source: Source, work: Path, paths: list[str],
     digest = tree_digest(work, head)
     _push_the_leg(f"pushing the {role} leg", work, url, tracking, repository)
     print(f"  {role:<5} {len(paths):>3} path(s) -> {head[:12]} "
-          f"({count} commits kept) -> {url}")
+          f"({count} commits kept) -> {_shown(url)}")
     return head, digest
 
 
@@ -15022,7 +15332,7 @@ def _seed_leg(role: str, work: Path, values: dict, branch: str, url: str,
     _push_the_leg(f"pushing the seeded {role} leg", work, url, tracking,
                   repository)
     print(f"  {role:<5}   0 path(s) -> {commit[:12]} (SEEDED from "
-          f"{SEED_TEMPLATE[role]}/) -> {url}")
+          f"{SEED_TEMPLATE[role]}/) -> {_shown(url)}")
     return commit, digest
 
 
@@ -15447,11 +15757,12 @@ def _what_cannot_be_held(plan: Plan, names: dict, org: str, local: bool,
     the manifest's values, means the two cannot disagree again. It is a
     generator, so `execute` asks nothing after the first refusal."""
     asked = [lambda: _refuse_a_root_no_disk_holds(
-                 names["assembly"], f"{plan.path}: `legs.assembly`",
+                 names["assembly"],
+                 f"{_shown(str(plan.path))}: `legs.assembly`",
                  "no repository was created."),
              lambda: _refuse_names_nothing_keeps(names, org, local)]
     if not local:
-        named = f"{plan.path}: `org:`"
+        named = f"{_shown(str(plan.path))}: `org:`"
         asked += [
             lambda: refuse_an_owner_github_cannot_have(
                 "adopt-org-too-long", org, named, ORG_REMEDIATION),
@@ -15570,7 +15881,7 @@ def _refuse_a_topic_github_cannot_set(plan: Plan, topic: str) -> None:
     named = "`id:`" if plan.get("id") is not None else DERIVED_ID
     refuse_a_topic_github_cannot_set(
         "adopt-topic-too-long", topic, plan.project_id,
-        f"{plan.path}: {named}", TOPIC_REMEDIATION)
+        f"{_shown(str(plan.path))}: {named}", TOPIC_REMEDIATION)
 
 
 def _remote_urls(org: str, names: dict, local_remote_dir: Path | None,
@@ -15704,7 +16015,8 @@ def _refuse_what_check_finds(plan: Plan, source: Source,
         return
     # `FINDING <code>: <detail>` is the one shape both functions write.
     code = findings[0].split()[1].rstrip(":")
-    lines = [f"{len(findings)} finding(s) in {plan.path}, as `check` prints "
+    lines = [f"{len(findings)} finding(s) in {_shown(str(plan.path))}, as "
+             "`check` prints "
              f"them{_as_resolved_here(findings, local_remote_dir)}:"]
     lines += [f"  {finding}" for finding in findings[:REFUSED_FINDINGS_SHOWN]]
     if len(findings) > REFUSED_FINDINGS_SHOWN:
@@ -16420,7 +16732,8 @@ def _commit_the_split(plan: Plan, source: Source, assembly: Path,
             urls, list(leg_commits), work_root, names,
             interrupted=_interrupted(exc), source=source))
         raise
-    print(f"\n  split {split_commit[:12]} on {branch} -> {urls['assembly']}")
+    print(f"\n  split {split_commit[:12]} on {branch} -> "
+          f"{_shown(urls['assembly'])}")
     return split_commit, message, materialized.collisions
 
 
@@ -16571,7 +16884,7 @@ def cmd_execute(args) -> int:
         # the split's branch, and the repository it is pushed to (#523); and
         # the paths the plan keeps in the root, where a `GNUmakefile` or
         # `makefile` is what GNU make reads there before any `Makefile`
-        # (#1047).
+        # (#1047), and a directory of either name stops it (#1132).
         _next_steps(names, collisions,
                     (branch, urls["assembly"]) if local else None,
                     surviving=paths_for["root"])
@@ -17186,12 +17499,34 @@ def _next_steps(names: dict, collisions: list,
     the same file. Where it holds one, the command is `python3
     scripts/bootstrap.py`, and the NOTE names the file and says what it
     takes for `make bootstrap` to run there; where the script went aside,
-    that is the command named after the merges. Elsewhere the block is what
-    it was, byte for byte."""
+    that is the command named after the merges.
+
+    AND A DIRECTORY NAMED `GNUmakefile` OR `makefile` STOPS GNU MAKE AT THE
+    ROOT (#1132, RV1121's NIT-1). GNU make finds it before any `Makefile`
+    and stops there for every target, `GNUmakefile: Is a directory.  Stop.`,
+    so `make bootstrap` exits 2 whatever is merged, and NEXT named it as the
+    command, or as what runs after the merges. `surviving` is each path the
+    plan's entries send to the root, asked by `_make_reads_first`, whose
+    `CONTRACTS_DIR` line names the same directory. Where the root keeps one,
+    the command is `python3 scripts/bootstrap.py`, the NOTE says `make`
+    stops there, in `_make_reads_first_clause`'s words, and where the script
+    went aside, that command is the one named after the merges. Beside a
+    kept `Makefile` alone, the NOTE says the targets run there once the
+    follow-up merges the two, AND only once the root keeps no directory of
+    that name: with the directory gone, the root's `Makefile` is still the
+    source's own until that merge (#1207's review, NIT-3). A kept FILE of
+    that name is the paragraph above's, in the same clause's file words.
+
+    A NOTE THAT NAMES `python3 scripts/bootstrap.py` FOR A PERSON TO RUN
+    names `python` on Windows too, as the template's `scripts/bootstrap.py`
+    does (`BOOTSTRAP_COMMAND`, #1132, RV1121's NIT-2): a Windows install
+    usually puts no `python3` on PATH. The command line is the one pasted
+    where the clone is made, and stays as it was. Elsewhere the block is
+    what it was, byte for byte."""
     aside = dict(collisions)
     script, makefile = aside.get(BOOTSTRAP), aside.get(SHAPE_MAKEFILE)
-    first = next((name for name in GNU_MAKE_READS if name != SHAPE_MAKEFILE
-                  and _root_keeps(set(surviving), name)), None)
+    first = _make_reads_first(surviving)
+    stops = first if first and first.endswith("/") else None
     bootstrap = ("" if script else
                  "\n    python3 scripts/bootstrap.py" if makefile or first else
                  "\n    make bootstrap")
@@ -17207,14 +17542,11 @@ def _next_steps(names: dict, collisions: list,
                           "--recurse-submodules", "-b", shlex.quote(branch),
                           shlex.quote(url)])
     print(f"\nNEXT: review {review}, then\n    {clone}{bootstrap}")
-    reads = (
-        f"GNU make at the root reads the source's {_spelled(first)}, the "
-        f"first of {_and_listed([_spelled(name) for name in GNU_MAKE_READS])}"
-        " it finds, so `make bootstrap` and the shape's other make targets "
-        f"run there only once {_spelled(first)} has them, or includes a "
-        "Makefile that does") if first else ""
-    runs = ("; `python3 scripts/bootstrap.py` is what the shape's `make "
-            "bootstrap` runs.")
+    merged = (" once the follow-up merges the two, and" if makefile
+              and stops and not script else "")
+    reads = _make_reads_first_clause(
+        first, "`make bootstrap` and the shape's other make targets run "
+        f"there{merged}", "has them") if first else ""
     if script:
         kept = [path for path in (SHAPE_MAKEFILE, BOOTSTRAP)
                 if path in aside]
@@ -17224,19 +17556,19 @@ def _next_steps(names: dict, collisions: list,
               f"`make bootstrap` nor `python3 {BOOTSTRAP}` runs the "
               "shape's bootstrap yet: merge "
               + _and_listed([f"{aside[path]} into {path}" for path in kept])
-              + (f" first, and then run `python3 {BOOTSTRAP}`; {reads}."
+              + (f" first, and then run {BOOTSTRAP_COMMAND}; {reads}."
                  if first else " first, and then run `make bootstrap`."))
-    elif makefile and first:
-        print(f"NOTE the root keeps its own {SHAPE_MAKEFILE} and the shape's "
-              f"is {makefile}, and {reads}{runs}")
     elif first:
-        print(f"NOTE the shape's Makefile is the root's `{SHAPE_MAKEFILE}`, "
-              f"but {reads}{runs}")
+        lead = (f"the root keeps its own {SHAPE_MAKEFILE} and the shape's is "
+                f"{makefile}, and" if makefile else
+                f"the shape's Makefile is the root's `{SHAPE_MAKEFILE}`, but")
+        print(f"NOTE {lead} {reads}; {BOOTSTRAP_COMMAND} is what the "
+              "shape's `make bootstrap` runs.")
     elif makefile:
         print(f"NOTE the root keeps its own {SHAPE_MAKEFILE} and the shape's "
               f"is {makefile}, so `make bootstrap` and the shape's other make "
               "targets arrive only once the follow-up merges the two; "
-              "`python3 scripts/bootstrap.py` is what `make bootstrap` runs.")
+              f"{BOOTSTRAP_COMMAND} is what `make bootstrap` runs.")
 
 
 def _account_for(before: dict, after: dict, drops: list[str]) -> tuple[dict, list]:
@@ -18137,7 +18469,7 @@ def _refuse_a_plan_for_another_repository(
     detail = _not_the_source(plan, source, names)
     if detail:
         raise Refusal(
-            PLAN_NOT_THE_SOURCE, f"{plan.path}: {detail}",
+            PLAN_NOT_THE_SOURCE, f"{_shown(str(plan.path))}: {detail}",
             _own_name_remediation(
                 _held_repository(plan, source), naming, pins,
                 "no leg repository was created and nothing was pushed. "))
