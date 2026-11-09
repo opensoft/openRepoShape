@@ -94,3 +94,8 @@ is what you must and must not do inside it.
   manual; README-lanes there describes the register's data shape. That
   tooling is Amendment 9's later, coordinated act 3; this template (act 1)
   depends on none of it.
+- `opensoft/openRepoTools-spec` and `opensoft/openRepoTools-code` — in the
+  three-repository shape of `opensoft/openRepoTools`, the spec leg holds
+  README-lanes (`docs/README-lanes.md`) and the code leg holds the lane tooling;
+  the assembly `opensoft/openRepoTools` mounts them at `spec/` and `code/`. In
+  the single-repository shape both are in `opensoft/openRepoTools` itself.
