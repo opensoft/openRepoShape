@@ -589,7 +589,7 @@ def test_the_validator_asked_is_the_one_in_the_template(tmp_path):
     template = template_copy(tmp_path, "bare", quoted=False)
     validator = template / "scripts" / "validate-family.py"
     source = validator.read_text(encoding="utf-8")
-    old = 'DATE_RE = re.compile(r"^\\d{4}-\\d{2}-\\d{2}$")'
+    old = 'DATE_RE = re.compile(r"^\\d{4}-\\d{2}-\\d{2}\\Z")'
     assert old in source
     validator.write_bytes(source.replace(
         old, 'DATE_RE = re.compile(r"^2027-\\d{2}-\\d{2}$")').encode("utf-8"))

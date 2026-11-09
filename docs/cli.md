@@ -408,7 +408,14 @@ options:
                         refused as `pin-source-no-path`, and `.` means this
                         directory. A --pin's digest is read only at a clone's
                         top level, or a bare clone's: any other path is
-                        refused as `pin-source-not-a-clone`.
+                        refused as `pin-source-not-a-clone`. A partial clone
+                        (`git clone --filter`) is read where it holds the
+                        pinned commit and its trees. On a git that honours
+                        `GIT_NO_LAZY_FETCH` (2.45 or later, or a security
+                        release from 2.39.4 on), one git could read only by
+                        fetching what it lacks is `pin-source-unreadable`, and
+                        the scaffold fetches nothing into it; an older git
+                        fetches what it lacks into it.
   --work-dir WORK_DIR   where the working trees are built (default: a
                         temporary directory). An empty value is refused as
                         `work-dir-no-path`, and `.` means the directory the
@@ -472,7 +479,14 @@ options:
                         `source-unreadable`, a path this user cannot reach
                         (under a directory it may not search, or one it may
                         not enter), which is never read as one that is not
-                        there, nor cloned as an `org/repo`.
+                        there, nor cloned as an `org/repo`. A partial clone
+                        (`git clone --filter`) short of an object its
+                        branches, tags or HEAD reach is refused as `source-
+                        partial-clone`, as `check` refuses it, before anything
+                        reads it: git would fetch that object into it, and
+                        `plan` never fetches into the source. Run `git fetch
+                        --refetch --no-filter <remote>` in it to make it
+                        whole.
   --project PROJECT     the assembly-root name; for an in-place adoption it is
                         the source repository's own name. `execute` refuses
                         one over 95 characters without --local-remote-dir:
@@ -579,7 +593,14 @@ options:
                         `pin-source-no-path`, and `.` means this directory.
                         `pin-source-not-a-clone` refuses any other path than a
                         clone's top level, or a bare clone's, where a --pin's
-                        digest is read.
+                        digest is read. A partial clone (`git clone --filter`)
+                        is read where it holds the pinned commit and its
+                        trees. On a git that honours `GIT_NO_LAZY_FETCH` (2.45
+                        or later, or a security release from 2.39.4 on), one
+                        git could read only by fetching what it lacks is
+                        refused as `pin-source-unreadable`, and nothing is
+                        fetched into it; an older git fetches what it lacks
+                        into it.
   --allow-empty-leg {spec,code}
                         record in the plan that this leg having NO path is
                         intended, so it may be SEEDED from the shape's
