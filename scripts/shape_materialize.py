@@ -21,8 +21,8 @@ names are NOT more important than the project's, and silently overwriting one
 would put a byte in the split commit that no `git rm` accounts for — which is
 precisely what `adopt-project.py --verify` would then report as a mismatch.
 So a colliding template file is written BESIDE the original under
-`collision_dir` (`shape/`) and the collision is reported for the plan's
-`follow_ups:`. The human merges it; the tool never guesses. A copy whose own
+`collision_dir` (`shape/`) and the collision is reported in the adoption's
+follow-ups. The human merges it; the tool never guesses. A copy whose own
 path is taken -- the source keeps a `shape/README.md` of its own -- is
 REFUSED, never written over (`copy_in_the_way`, #262).
 
@@ -1014,10 +1014,12 @@ def collision_follow_up(intended: str, actual: str,
     """The follow-up for ONE collision, in one place.
 
     `adopt-project.py plan` says it: `_predict_collisions` PREDICTS the
-    collisions from the plan's surviving root paths, the plan stores each
-    follow-up in `follow_ups:`, and `execute` carries those items into the
-    split commit's message, so the plan a human approves and the commit
-    message they read afterwards hold one spelling of each. `execute` names
+    collisions from the plan's surviving root paths, and `plan` prints each
+    follow-up; `check` and `execute` predict them again from the plan as it
+    stands, which the plan no longer stores (#1206), and `execute` writes
+    them into the split commit's message, so the plan a human approves and
+    the commit message they read afterwards hold one spelling of each, and a
+    hand edit of the plan changes both. `execute` names
     the collisions that actually happened by path only: its `beside` lines,
     and the split message's "WRITTEN BESIDE" list. `Materialized.follow_ups()`
     would say this of them, and nothing calls it (#1105's review, NIT-4).
