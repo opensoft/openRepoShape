@@ -29,6 +29,12 @@ WHAT IS CHECKED
     alone, so `--no-members` asks it too.
   - that every entry of `members:` is a mapping, the `member-row` finding
     (#864). It reads `family.yaml` alone, so `--no-members` asks it too.
+  - that every row's `id:` is a project id, `PROJECT_ID_RE` asked of the
+    whole of it, the `member-id-malformed` finding (#1204): an id that ends
+    in a line feed or holds a space names no project. It reads
+    `family.yaml` alone, so `--no-members` asks it too; with the members
+    checked, each member's own `project.yaml` `id:` is asked as `family.py
+    add` asks it.
   - EVERY MEMBER, three ways:
       1. the GITLINK this repository records at `members/<Project>` equals
          `members[].pin.commit` — the same lockstep rule an assembly root
@@ -1619,12 +1625,12 @@ def _check_member_checkout(root: Path, asked: Gitlinked, report: Report,
         return
     _check_member_tree(member, asked.pin, asked.path, asked.commit,
                        asked.project, report, asked.rule, stop)
-    _check_member_identity(member, asked.row, asked.project, asked.path,
+    _check_member_identity(root, member, asked.row, asked.project, asked.path,
                            report)
 
 
-def _check_member_identity(member: Path, row: dict, project: str, path: str,
-                           report: Report) -> None:
+def _check_member_identity(root: Path, member: Path, row: dict, project: str,
+                           path: str, report: Report) -> None:
     """The mounted tree is the PROJECT this row claims, not just a commit.
 
     A member is an assembly root, so it carries `project.yaml`, and that file
@@ -1642,6 +1648,17 @@ def _check_member_identity(member: Path, row: dict, project: str, path: str,
     (`load_yaml`'s `yaml-unreadable` line), and gave no cure. `path` is the
     row's path as `_check_member_repository_and_path` resolved it, so a
     row that gives none is named at `members/<P>`, not `None` (r956's NIT 1).
+
+    THE MEMBER'S OWN `id:` IS ASKED AS `family.py add` ASKS IT (#1204),
+    `PROJECT_ID_RE` of the whole of `str(id or "")` (`_read_member_project`'s
+    `member-bad-id`), so the gate refuses, members checked, every mounted
+    member `add` would refuse: `member-id-malformed`, naming the file, as
+    the source, and the `bump` that pins it once it is mended. A row that
+    spelled the same malformed text was `ok`, since the two compared equal.
+    Where either id is malformed, `member-id-mismatch` is not said as well:
+    the row's own finding, made in every mode, or this one, is the fault,
+    and a mismatch would send the person to copy a malformed id. `root` is
+    the holder each remedy names.
     """
     manifest_path = member / "project.yaml"
     named = f"{path}/project.yaml"
@@ -1673,11 +1690,32 @@ def _check_member_identity(member: Path, row: dict, project: str, path: str,
         return
     recorded_id = row.get("id")
     actual_id = manifest.get("id")
+    source_bad = not _is_project_id(str(actual_id or ""))
+    if source_bad:
+        word = str(recorded_id or project)
+        report.finding(
+            "member-id-malformed",
+            f"{named}: the member's own `id:` is {actual_id!r}, which does "
+            f"not match {PROJECT_ID_RE.pattern}, so the tree mounted at "
+            f"{path} is no project, and `family.py add` and `bump` refuse "
+            "it as `member-bad-id`. That file is the source every row pins, "
+            "so it is mended in the member's own repository, whose "
+            "validate-manifest.py refuses it as `manifest-id`; then, from a "
+            "checkout of openRepoShape and on a branch other than the "
+            "holder's tracking branch, which `bump` refuses "
+            f"(`{_switch_line(root, 'bump', word)}` makes one), "
+            f"`{_bump_to(root, project, None)}` pins the mended commit and "
+            f"writes the row's `id:` from it. {BRANCH_LEFT}")
     if recorded_id is None:
         report.finding(
             "member-id-absent",
             f"{project}: the row records no `id:`, so nothing checks that the "
             "tree mounted here is the project this row claims")
+    elif source_bad or not _is_project_id(str(recorded_id)):
+        # ONE FINDING FOR ONE FAULT (#1204): the member's own id was named
+        # just above, or the row's by `_check_member_ids_well_formed`, in
+        # every mode, with the `bump` that writes the row from the source.
+        return
     elif str(recorded_id) != str(actual_id):
         report.finding(
             "member-id-mismatch",
@@ -1942,6 +1980,101 @@ def _check_member_ids_unique(root: Path, members: list,
             f"--family-root {shlex.quote(str(root))} --member "
             f"{shlex.quote(project)}` takes the later row, {project}, out; "
             f"name {first} there instead to keep {project}. {BRANCH_LEFT}")
+
+
+def _is_project_id(text: str) -> bool:
+    """Whether `text` is a project id: `PROJECT_ID_RE` asked of the WHOLE
+    text (#1204).
+
+    `fullmatch`, NOT `match` (#1139): the pattern ends in `$`, which also
+    matches just before a trailing line feed, so `match` takes `irrs\\n`.
+    The pattern is the holder's own `repo_shape.py`'s, whose text each
+    finding prints, so it is asked whole, not respelled. ONE reader for
+    the two places a member's id is asked, its row's `id:`
+    (`_check_member_ids_well_formed`) and its mounted `project.yaml`'s
+    (`_check_member_identity`), so the two cannot drift into two
+    questions."""
+    return PROJECT_ID_RE.fullmatch(text) is not None
+
+
+def _bump_to(root: Path, project: str, commit: str | None) -> str:
+    """`family.py bump` of `project` in this holder, `--to commit`, or `--to
+    <commit>` where no commit can be named, as THE LOCKSTEP RULE says it:
+    POSIX-quoted, as every line this file prints is (#1204)."""
+    to = "<commit>" if commit is None else shlex.quote(commit)
+    return (f"{PYTHON} scripts/family.py bump --family-root "
+            f"{shlex.quote(str(root))} --member {shlex.quote(project)} "
+            f"--to {to}")
+
+
+def _check_member_ids_well_formed(root: Path, members: list,
+                                  report: Report) -> None:
+    """Every row's `id:` is a project id: the `member-id-malformed` finding
+    (#1204).
+
+    Nothing asked it. A row's id met two checks, the mounted `project.yaml`
+    compared with it as text and `_check_member_ids_unique`, and neither is
+    a pattern, so under `--no-members` an id that ended in a line feed, held
+    a space or opened with `-` was `family ok`, and with the members checked
+    so was one the mounted `project.yaml` spelled the same: the row a
+    `family.py add` older than #1166 wrote for a member whose own `id:` read
+    `"irqs\\n"`. It reads `family.yaml` alone, so it runs under
+    `--no-members` too, as `--pins` and a full run do.
+
+    THE ROWS IT ASKS ARE `_check_member_ids_unique`'s: a row that is no
+    mapping (`member-row`), has no `project:` (`member-project`) or spells
+    an earlier row's `project:` exactly (`member-duplicate`) is skipped, so
+    every row `_check_member_identity` reaches has been asked here. A row
+    with no `id:`, or `id: null`, is `member-id-absent`'s, as before. Any
+    other `id:` is asked as its text, `str()`, the text the identity check
+    compares: a number reads as its digits, so a row a holder written before
+    #259 keeps as `id: 2026` is an id, as `family.py`'s `_member_id` says
+    it passes; `true`, `1.5`, `-3`, a list and a mapping read as text no
+    id is, and are refused, each named as the reader read it.
+
+    THE REMEDY IS `family.py bump` TO THE COMMIT THE ROW PINS, runnable as
+    printed: `bump` reads the member's own `project.yaml` at that commit,
+    asks its `id:` as `add` does (`member-bad-id`) and writes the row from
+    it, and the pin does not move. Not `remove` and then `add`, which the
+    issue suggested: in a holder with the member checked out, `remove`
+    leaves the member's object store under `.git/modules/` on purpose, and
+    `add` then refuses `member-git-dir-cached`, so the two as printed did
+    not run (measured for #1204); and `add` would clone the member again
+    and move the pin to its tip without an `--at`. `bump` needs the member
+    checked out, and its own `member-uninitialized` names the line that
+    checks it out. A pin that is no 40-hex commit is named `--to <commit>`;
+    where members are checked, `member-pin-commit` refuses the run first, and
+    this finding follows once the pin is mended.
+    """
+    projects: set[str] = set()
+    for row in members:
+        if not isinstance(row, dict):
+            continue
+        project = row.get("project")
+        if not isinstance(project, str) or not project or project in projects:
+            continue
+        projects.add(project)
+        member_id = row.get("id")
+        if member_id is None or _is_project_id(str(member_id)):
+            continue
+        pin = row.get("pin")
+        commit = pin.get("commit") if isinstance(pin, dict) else None
+        if not isinstance(commit, str) or not COMMIT_RE.fullmatch(commit):
+            commit = None
+        report.finding(
+            "member-id-malformed",
+            f"{project}: the row records id {member_id!r}, which does not "
+            f"match {PROJECT_ID_RE.pattern}, so it names no project. The "
+            "member's own project.yaml `id:` is the source this row pins. "
+            "From a checkout of openRepoShape, with the member checked out, "
+            "and on a branch other than the holder's tracking branch, which "
+            "`bump` refuses "
+            f"(`{_switch_line(root, 'bump', str(member_id))}` makes one), "
+            f"`{_bump_to(root, project, commit)}` writes the row's `id:` "
+            "from that file at the commit the row pins, and the pin stays "
+            "where it is. Where that file's `id:` is no project id either, "
+            "`bump` refuses it as `member-bad-id`: mend it in the member's "
+            f"own repository first, and give `--to` that commit. {BRANCH_LEFT}")
 
 
 def _gitmodules_sections(root: Path) -> dict[str, dict[str, str]]:
@@ -4468,7 +4601,8 @@ def _check_members(root: Path, members: list, no_members: bool,
 
     Split from `main` for #137. Every check that needs no member checked
     out comes first, so `--no-members` asks them too: the ones that read a
-    file alone, `family.yaml`'s names (#331) and ids (#206) and the paths
+    file alone, `family.yaml`'s names (#331), ids (#206) and each id's
+    form, `member-id-malformed` (#1204), and the paths
     `.gitmodules` gives twice (#300), then the gitlinks and sections no row
     names, which read the index and HEAD as well (#361), the gitlinks no
     section of HEAD's `.gitmodules` gives (#611) or gives a url, and a
@@ -4513,6 +4647,7 @@ def _check_members(root: Path, members: list, no_members: bool,
     """
     _check_member_names_unique(members, report)
     _check_member_ids_unique(root, members, report)
+    _check_member_ids_well_formed(root, members, report)
     # A ROW THAT IS NOT A MAPPING reads `family.yaml` alone too, so it is
     # found here, in both modes (#864): found only in the loop below, past
     # the `--no-members` return, it was counted as a member there, and the
