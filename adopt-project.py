@@ -14488,11 +14488,29 @@ def _unacted(text: str, kept: str = "") -> str:
                    else _spelled_character(char) for char in text)
 
 
+def _output_unacted(exc: CommandFailed) -> str:
+    """What `exc`'s command printed, `_unacted` but for its line breaks,
+    which it keeps, so it still reads a line to a line: except where it
+    names an argument of the command, or the directory it ran in, that
+    holds a line feed, which is spelled whole there, as the command line
+    spells it (#1233). git's `To` and `error:` lines name the remote a push
+    was refused at, so under `--local-remote-dir <D>/re<LF>mote` the block
+    held a line `mote/Thing-spec.git` the path had put in it. The longest
+    is spelled first, so one that holds another is spelled whole."""
+    output = exc.output
+    named = {str(part) for part in (*exc.args_list, exc.cwd) if part}
+    for part in sorted(named, key=lambda part: (-len(part), part)):
+        if "\n" in part:
+            output = output.replace(part, _unacted(part))
+    return _unacted(output, kept="\n")
+
+
 def _loudly(exc: CommandFailed, step: str) -> str:
     """`exc.loudly(step)`, the REFUSED block `CommandFailed` prints, with
     each argument of the command, the directory it ran in and what it
     printed `_unacted`, as `_first_said` spells what gh said (#1195). What
-    it printed keeps its line breaks, so it still reads a line to a line.
+    it printed keeps its line breaks, so it still reads a line to a line,
+    and a path in it that holds a line feed is spelled (`_output_unacted`).
 
     `CommandFailed` is `scripts/shape_materialize.py`'s, shared by every
     tool, and names all three as they are. A command names what was typed:
@@ -14500,11 +14518,15 @@ def _loudly(exc: CommandFailed, step: str) -> str:
     printed the override raw three times, in the command and in git's own
     `To` and `error:` lines, below the `bare` lines and above the notice,
     which spell it (#1152). A character that is printable prints as it is,
-    so a command of plain paths prints the block it printed before."""
+    so a command of plain paths prints the block it printed before. A
+    spelled character and a typed backslash sequence read alike, since a
+    backslash prints as it is: a path that holds the six characters
+    `\\u202e` prints as one that holds U+202E, and `C:\\x1b` as a spelled
+    ESC (#1233)."""
     return CommandFailed(
         [_unacted(str(argument)) for argument in exc.args_list],
         _unacted(str(exc.cwd)) if exc.cwd else exc.cwd, exc.code,
-        _unacted(exc.output, kept="\n")).loudly(step)
+        _output_unacted(exc)).loudly(step)
 
 
 def _failed_loudly(step: str, exc: BaseException) -> str:

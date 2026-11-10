@@ -639,11 +639,11 @@ def test_a_leg_remote_already_there_is_named_as_a_path_is(
 #: What the `pre-receive` hook says as it refuses a push.
 HOOK_SAYS = "this remote takes no push"
 
-#: The characters a refused command named raw, and the control. A line feed
-#: is left out: git's own output names the remote with it, and the line
-#: breaks in what a command printed are kept as line breaks.
-REFUSED_CHARACTERS = [param for param in CHARACTERS
-                      if param.id != "line-feed"]
+#: The characters a refused command named raw, and the control: all of
+#: `CHARACTERS`. The line feed is one again (#1233): git's own `To` and
+#: `error:` lines name the remote with it, and it split them, as the line
+#: breaks in what a command printed are kept; a path there is spelled whole.
+REFUSED_CHARACTERS = CHARACTERS
 
 
 def a_global_config_whose_hook_refuses_every_push(tmp_path: Path) -> Path:
@@ -679,7 +679,11 @@ def test_a_refused_command_names_the_remote_and_work_dirs_spelled(
     directory holds the character too, for the `(in ...)` line. A byte that
     is not UTF-8 printed as `\\udcff` before as well, since stderr is
     `backslashreplace`; git's own lines hold U+FFFD for it, as `run`
-    decodes what a command printed."""
+    decodes what a command printed. A line feed in the remote split git's
+    `To` and `error:` lines, each into a line `<D>/re` and a line `mote/...`
+    of the path's: the path is spelled whole where git names it now, so
+    the `To` line names the remote on one line and no line is the path's
+    (#1233, RV1225's N1)."""
     skip_where_cannot_carry(typed, tmp_path)
     planned = a_source_and_its_plan(tmp_path / "src", NO_SPECS)
     plan = tmp_path / "plan.yaml"
@@ -704,7 +708,15 @@ def test_a_refused_command_names_the_remote_and_work_dirs_spelled(
         "--- output ---"], stderr
     said = lines[start + 5:lines.index("--- end output ---", start)]
     assert f"remote: {HOOK_SAYS}" in [line.rstrip() for line in said], stderr
-    if typed:
+    told = [line for line in said if line.startswith("To ")]
+    assert len(told) == 1, stderr
+    assert told[0].startswith(f"To {base}/re"), stderr
+    assert told[0].endswith("mote/Thing-spec.git"), stderr
+    assert not [line for line in said if line.startswith("mote/")], stderr
+    if typed == "\n":
+        for raw in (f"re{typed}mote", f"wo{typed}rk"):
+            assert raw not in stdout + stderr, stdout + stderr
+    elif typed:
         assert typed not in stdout + stderr, stdout + stderr
 
 
@@ -720,17 +732,18 @@ def a_refused_push(adopter, typed: str):
 
 
 def the_block_of(step: str, typed: str, spelled: str) -> str:
-    """The REFUSED block `a_refused_push` is said in: the command and the
-    directory with `typed` spelled, and what git said with it spelled too,
-    but a line feed kept as the line break it is there."""
-    said = typed if typed == "\n" else spelled
+    """The REFUSED block `a_refused_push` is said in: the command, the
+    directory and what git said, each with `typed` spelled, a line feed too,
+    since the remote git names is spelled whole (#1233), and git's tab
+    spelled `\\t`, as `_first_said` spells one; the line break between
+    git's two lines is kept."""
     return (f"REFUSED {step}. THE EXACT COMMAND WAS:\n"
             f"    git push -q /remotes/re{spelled}mote/Thing.git "
             f"{SPLIT_BRANCH}\n"
             f"    (in /work/wo{spelled}rk/Thing)\n"
             "    exit 1\n"
             "--- output ---\n"
-            f"To /remotes/re{said}mote/Thing.git\n"
+            f"To /remotes/re{spelled}mote/Thing.git\n"
             " ! [remote rejected]\\t(pre-receive hook declined)\n"
             "--- end output ---")
 
