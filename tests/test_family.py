@@ -320,6 +320,10 @@ def test_init_copies_the_siblings_utility_and_the_makefile_target(family, monkey
     makefile = (root / "Makefile").read_text(encoding="utf-8")
     assert "siblings:" in makefile
     assert "$(PYTHON) scripts/siblings.py" in makefile
+    assert "WORKING CLONES BESIDE THIS HOLDER — not in" in makefile, (
+        "the Makefile tells a person that the sibling clones `siblings.py` "
+        "works on are BESIDE the holder, not in `members/<Project>`; its dash "
+        "is one character only when the file is read as UTF-8")
     assert "make siblings" in (root / "README.md").read_text(
         encoding="utf-8")
     assert "make siblings" in (root / "AGENTS-shape.md").read_text(
@@ -724,6 +728,7 @@ def test_validate_refuses_a_missing_gitlink(holder):
 def test_validate_finds_a_pin_that_disagrees_with_the_gitlink(holder):
     """THE LOCKSTEP RULE. Moving the pin alone is exactly the failure the
     xFactory aggregation shipped seven times in a row."""
+    before = (holder / "family.yaml").read_bytes()
     text = (holder / "family.yaml").read_text(encoding="utf-8")
     row = {r["project"]: r for r in manifest(holder)["members"]}["IRRS"]
     # A REAL commit that is not the gitlink: the member's own parent. Pinning
@@ -733,6 +738,13 @@ def test_validate_finds_a_pin_that_disagrees_with_the_gitlink(holder):
                  cwd=holder / "members" / "IRRS").stdout.strip()
     (holder / "family.yaml").write_text(
         text.replace(row["pin"]["commit"], parent), encoding="utf-8")
+    assert not before.isascii(), (
+        "fixture drift: family.yaml holds no character outside ASCII, so the "
+        "next assert cannot tell a read as UTF-8 from a read as anything else")
+    assert (holder / "family.yaml").read_bytes() == before.replace(
+        row["pin"]["commit"].encode("ascii"), parent.encode("ascii")), (
+        "the rewrite changed more than the pin's commit: family.yaml was read "
+        "or written as something other than UTF-8")
     result = validate(holder)
     assert result.returncode == 1
     assert "member-gitlink-mismatch" in result.stderr
@@ -1700,9 +1712,18 @@ def test_update_shape_reads_a_family_root_and_mirrors_into_family_yaml(
 
     changed = "templates/family-root/scripts/validate-family.py"
     source = upstream / changed
-    source.write_text(source.read_text(encoding="utf-8")
-                      + "\n# An upstream fix that must reach every family.\n",
+    appended = "\n# An upstream fix that must reach every family.\n"
+    old_bytes = source.read_bytes()
+    source.write_text(source.read_text(encoding="utf-8") + appended,
                       encoding="utf-8")
+    assert not old_bytes.isascii(), (
+        "fixture drift: the upstream validate-family.py holds no character "
+        "outside ASCII, so the next assert cannot tell a read as UTF-8 from a "
+        "read as anything else")
+    assert source.read_bytes() == old_bytes + appended.encode("utf-8"), (
+        "the rewrite changed more than the appended line: the upstream "
+        "validate-family.py was read or written as something other than "
+        "UTF-8")
     git("-c", "user.name=t", "-c", "user.email=t@t", "commit", "-q", "-m",
         "Fix the family validator", "--", changed, cwd=upstream)
     target_commit = git("rev-parse", "HEAD", cwd=upstream).stdout.strip()
