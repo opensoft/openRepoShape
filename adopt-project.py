@@ -4290,9 +4290,10 @@ READ_ACROSS = "read across the assembly root"
 
 def holds_a_read_across(follow_ups) -> bool:
     """Whether `follow_ups` holds a read-across follow-up: a line that says
-    a file must `READ_ACROSS`. Asked of the plan's own list, as the plan
-    stands, and not of a `git grep`, which `check` and the split message
-    never run (#906)."""
+    a file must `READ_ACROSS`. Asked of the list `check` and `execute` work
+    out from the plan as it stands (`_follow_ups_as_it_stands`, #1206),
+    which holds the lines of the `git grep` they run (#906), and of no list
+    the plan stores: it holds none."""
     return any(isinstance(item, str) and READ_ACROSS in item
                for item in follow_ups)
 
@@ -4478,8 +4479,11 @@ def _makefile_follow_up(surviving: set[str]) -> str:
     DISK THAT IGNORES CASE (#1206): a kept `makefile/` is the path the
     shape's Makefile is written beside there, and the line said "the
     source's `makefile` is that path, until the two are merged". It names
-    "the source's directory `makefile/`" and says nothing of a merge: the
-    clause that follows says what GNU make does there, and what it takes.
+    "the source's directory `makefile/`" and says nothing of a merge. For
+    `makefile/` spelled so, the clause that follows says what GNU make does
+    there, and what it takes; `_make_reads_first` does not fold case, so
+    `MakeFile/` and `MAKEFILE/` get no clause, and #1314 settles the wording
+    of those cases.
     """
     aside = _root_keeps(surviving, SHAPE_MAKEFILE)
     folded = (not aside
@@ -4500,7 +4504,10 @@ def _makefile_follow_up(surviving: set[str]) -> str:
             "run adds none of it to the root's Makefile")
     elif folded:
         # A DIRECTORY takes the name all the same, but nothing merges a
-        # Makefile into it: the clause that follows says what it takes.
+        # Makefile into it. The clause that follows says what it takes only
+        # for a `makefile/` spelled so: `_make_reads_first` does not fold
+        # case, so `MakeFile/` and `MAKEFILE/` get none, and #1314 settles
+        # the wording of those other directory cases.
         directory = f"{twins[0]}/" in surviving and twins[0] not in surviving
         taking = (f"directory {_spelled(twins[0] + '/')}" if directory
                   else _spelled(twins[0]))
@@ -7275,8 +7282,9 @@ def _predict_collisions(entries: list[Entry], *,
     """Which shape files will not be able to take their own names.
 
     Known BEFORE `execute` runs, because the plan says which paths survive in
-    the root, so the follow-up is in the plan the human reads rather than in
-    output they may never scroll back to.
+    the root, so `plan` and `check` print the follow-up for the human to read
+    before anything is made, rather than in output they may never scroll back
+    to.
 
     The WORDING comes from `shape_materialize.collision_follow_up`, the one
     place a collision's follow-up is said — including the one collision
@@ -7368,7 +7376,13 @@ def _follow_ups_as_it_stands(plan: Plan, source: Source,
     # An entry whose path `execute` will not extract is `check`'s
     # `plan-unsafe-path`, which `execute` refuses before any leg exists: it
     # is read in no follow-up, so `git grep` is never handed it (a NUL in an
-    # argument is a `ValueError` before git runs).
+    # argument is a `ValueError` before git runs). Every entry with an
+    # `entry_path_problem` is left out, the root and drop ones too, though
+    # `_unsafe_path_findings` judges only the entries sent to a leg: that
+    # changes no output. A kept root entry with such a name is in no finding
+    # and no follow-up, since no name `entry_path_problem` refuses can be a
+    # path of the shape, a name GNU make reads or `CODEOWNERS`, the only
+    # names a follow-up reads from the root's entries.
     entries = [_EntryAsItStands(path, str(e.get("leg"))
                                 if str(e.get("leg")) in LEG_VALUES else None)
                for e in plan.entries
@@ -9684,7 +9698,8 @@ def _plan_list(data: dict, key: str) -> list:
 
 def _not_a(code: str, key: str, value, kind: str, why: str) -> str:
     """The finding for a `key:` that holds `value` where `plan` writes a
-    `kind`, in `_follow_ups_findings`' words."""
+    `kind`, in `_plan_key_findings`' words: "`key:` is X, not a Y", and
+    `why`."""
     return (f"FINDING {code}: `{key}:` is {_read_as(value)}, not a {kind}: "
             f"{why}")
 
@@ -17516,8 +17531,10 @@ def cmd_execute(args) -> int:
                                    plan.entries, source.tree(), source.commit)
     # And the follow-ups the split commit's message lists, from the plan as
     # it stands, as `check` prints them, which `plan` no longer stores
-    # (#1206): worked out before anything exists, so a `git grep` that
-    # cannot run says so before a leg is made.
+    # (#1206): worked out before anything exists, so the message is whole
+    # before a leg is made. A `git grep` that exits other than 0 or 1 stops
+    # nothing: it is a follow-up line that says to look by hand
+    # (`_search_by_hand`).
     follow_ups = _follow_ups_as_it_stands(plan, source, names)
 
     # ---- (a) the two legs' remotes ----------------------------------------

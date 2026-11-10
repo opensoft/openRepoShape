@@ -1017,12 +1017,13 @@ def collision_follow_up(intended: str, actual: str,
     collisions from the plan's surviving root paths, and `plan` prints each
     follow-up; `check` and `execute` predict them again from the plan as it
     stands, which the plan no longer stores (#1206), and `execute` writes
-    them into the split commit's message, so the plan a human approves and
-    the commit message they read afterwards hold one spelling of each, and a
-    hand edit of the plan changes both. `execute` names
-    the collisions that actually happened by path only: its `beside` lines,
-    and the split message's "WRITTEN BESIDE" list. `Materialized.follow_ups()`
-    would say this of them, and nothing calls it (#1105's review, NIT-4).
+    them into the split commit's message, so `check`'s output, which a
+    human reads before approving, and the commit message they read afterwards
+    hold one spelling of each, and a hand edit of the plan changes both.
+    `execute` names the collisions that actually happened by path only: its
+    `beside` lines, and the split message's "WRITTEN BESIDE" list.
+    `Materialized.follow_ups()` would say this of them, and nothing calls it
+    (#1105's review, NIT-4).
 
     A `.gitattributes` THAT IS A SYMLINK gets no block (`_append_eol_block`),
     so `attributes_link` says which of two things happened, and the follow-up

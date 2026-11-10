@@ -280,3 +280,45 @@ def test_a_follow_ups_that_holds_nothing_passes(tmp_path, block):
     checked = run_script(ADOPT, "check", "--plan", str(plan))
     assert checked.returncode == 0, checked.stderr + checked.stdout
     assert printed_by_check(checked.stdout)
+
+
+#: Two entries a hand edit can write that no command line can carry: a spec
+#: directory and a code file whose names hold a NUL, a double-quoted YAML
+#: scalar's `\x00` escape. Each is `check`'s `plan-unsafe-path`.
+NUL_ENTRIES = ('  - path: "a\\x00b/"\n    leg: spec\n'
+               '  - path: "c\\x00d"\n    leg: code\n')
+
+
+def test_an_entry_git_cannot_be_handed_is_read_in_no_follow_up(tmp_path):
+    """`check` of a plan with a code file and a spec directory that hold a
+    NUL (and the entries `plan` wrote): exit 1, one `plan-unsafe-path`
+    FINDING for each, and no traceback. The follow-ups are asked from the
+    plan as it stands and one of them runs `git grep`, which a NUL in an
+    argument ends in `ValueError: embedded null byte` before git runs, so
+    `_follow_ups_as_it_stands` leaves such an entry out; main's `check` ran
+    no `git grep`, and ended in findings. The entries `plan` wrote are
+    still read: the code file that names `contracts/` still gets its
+    read-across line."""
+    source = make_source_repo(tmp_path / "Thing", {**TREE, **MAKEFILE},
+                              edits=EDITS)
+    plan = tmp_path / "adoption-plan.yaml"
+    written = write_plan(source, plan, project=PROJECT)
+    assert written.returncode == 0, written.stderr + written.stdout
+    text = plan.read_text(encoding="utf-8")
+    assert text.count("\npaths:\n") == 1, text
+    with plan.open("w", encoding="utf-8", newline="\n") as handle:
+        handle.write(text.replace("\npaths:\n",
+                                  "\npaths:\n" + NUL_ENTRIES, 1))
+    checked = run_script(ADOPT, "check", "--plan", str(plan))
+    assert "Traceback" not in checked.stderr + checked.stdout, checked.stderr
+    assert checked.returncode == 1, checked.stderr + checked.stdout
+    found = [line for line in checked.stderr.splitlines()
+             if line.startswith("FINDING plan-unsafe-path: ")]
+    assert len(found) == 2, checked.stderr
+    assert found[0].startswith("FINDING plan-unsafe-path: `a\\x00b/` has leg: "
+                               "spec"), found
+    assert found[1].startswith("FINDING plan-unsafe-path: `c\\x00d` has leg: "
+                               "code"), found
+    said = printed_by_check(checked.stdout)
+    assert [item for item in said
+            if "must read across the assembly root" in item], said
