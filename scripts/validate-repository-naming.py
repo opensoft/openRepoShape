@@ -198,19 +198,12 @@ DEFAULT_IGNORABLE = re.compile(
     r"\U000e0000-\U000e0fff]")
 
 
-def _code_point_escaped(found: re.Match) -> str:
-    """The escape `repr` writes for the character `found` where it does not
-    print it, `\\u034f` or `\\U000e0100`: `repo_shape.code_point_escaped`."""
-    code = ord(found[0])
-    if code <= 0xFF:
-        return f"\\x{code:02x}"
-    return f"\\u{code:04x}" if code <= 0xFFFF else f"\\U{code:08x}"
-
-
 def _visible_repr(text: str) -> str:
-    """`repr(text)`, with each `DEFAULT_IGNORABLE` character escaped too:
-    `repo_shape.visible_repr`. `repr` writes U+034F as it is."""
-    return DEFAULT_IGNORABLE.sub(_code_point_escaped, repr(text))
+    """`repr(text)`, with each `DEFAULT_IGNORABLE` character escaped too, as
+    `ascii` escapes it, `\\u034f`: `repo_shape.visible_repr`. `repr` writes
+    U+034F as it is."""
+    return DEFAULT_IGNORABLE.sub(lambda found: ascii(found[0])[1:-1],
+                                 repr(text))
 
 
 def _shown(path) -> str:
