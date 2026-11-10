@@ -664,9 +664,10 @@ options:
                         and any other `local_path` that is gone is refused as
                         `plan-source-gone`; one that is a file, or a directory
                         inside a repository, as `source-not-top-level`; and
-                        one this user cannot reach, a clone `plan` made
-                        included, as `source-unreadable`, never cloned again.
-                        Either source, where it is a partial clone (`git clone
+                        one this user cannot reach, or one whose `.git` this
+                        user cannot read, a clone `plan` made included, as
+                        `source-unreadable`, never cloned again. Either
+                        source, where it is a partial clone (`git clone
                         --filter`) that lacks an object its branches, tags or
                         HEAD reach, is refused as `source-partial-clone`
                         before anything reads it: git would fetch that object
@@ -730,9 +731,10 @@ options:
                         and any other `local_path` that is gone is refused as
                         `plan-source-gone`; one that is a file, or a directory
                         inside a repository, as `source-not-top-level`; and
-                        one this user cannot reach, a clone `plan` made
-                        included, as `source-unreadable`, never cloned again.
-                        Either source, where it is a partial clone (`git clone
+                        one this user cannot reach, or one whose `.git` this
+                        user cannot read, a clone `plan` made included, as
+                        `source-unreadable`, never cloned again. Either
+                        source, where it is a partial clone (`git clone
                         --filter`) that lacks an object its branches, tags or
                         HEAD reach, is refused as `source-partial-clone`
                         before anything reads it: git would fetch that object

@@ -174,7 +174,12 @@ EXIT CODES
        `scripts/bootstrap.py` or `Makefile`, whose `stat` the operating
        system refused, as it does in a folder this user cannot search. That
        member is refused by name, with the cure, and the others are still
-       tried. An unanswerable question is never an implicit pass.
+       tried. So is the holder's own `.git`, before any member is
+       (`git-repo-unreadable`, #1148). The holder's own `.gitmodules`,
+       which every member's url comes from, is `gitmodules-unreadable`
+       (#1110), and then no member is cloned, fetched or run in. An
+       unanswerable question is never an
+       implicit pass.
 """
 
 from __future__ import annotations
@@ -188,6 +193,7 @@ import shutil
 import stat
 import subprocess
 import sys
+import unicodedata
 from collections.abc import Callable
 from pathlib import Path
 
@@ -332,8 +338,8 @@ def _anything(mode: int) -> bool:
 
 
 def member_unreadable(named: str, exc: OSError, what: str,
-                      then: str = "Then run the same command again."
-                      ) -> Refusal:
+                      then: str = "Then run the same command again.",
+                      code: str = "member-unreadable") -> Refusal:
     """`member-unreadable`: `<named>: cannot be read (<the system's
     reason>)`, `validate-pins.py`'s `_cannot_read` line (#430), for a path
     of a member's that this command must ask about and the operating system
@@ -347,17 +353,78 @@ def member_unreadable(named: str, exc: OSError, what: str,
     the cure. THE ADVICE FOLLOWS THE CAUSE, in `validate-pins.py`'s words: a
     permission (`PermissionError`, which is `EACCES` and `EPERM`) is put
     right by the mode or the owner, and any other cause is `OTHER_REASON`,
-    which is not told to `chmod`."""
+    which is not told to `chmod`. `code` is the refusal's:
+    `git-repo-unreadable` for the holder's own `.git`
+    (`_refuse_an_unreadable_root`, #1148)."""
+    return path_unreadable(code, named, exc, what, then)
+
+
+def path_unreadable(code: str, named: str, exc: OSError, what: str,
+                    then: str = "Then run the same command again."
+                    ) -> Refusal:
+    """`code`'s refusal of a path this command must read and the operating
+    system will not let it, in `member_unreadable`'s words: the holder's
+    `.gitmodules` is `gitmodules-unreadable` (#1110), the code the holder's
+    own `validate-family.py` and `family.py` give that file."""
     advice = (
         "Make what this user may not open readable by this user: `chmod u+r` "
         "on a file, `chmod u+rx` on a directory (and on every directory above "
         "it), or fix who owns it. "
         if isinstance(exc, PermissionError) else OTHER_REASON)
     return Refusal(
-        "member-unreadable",
+        code,
         f"{named}: cannot be read ({exc.strerror or type(exc).__name__})",
         f"Remediation: {what} A path this command cannot read is a question "
         f"it cannot answer, never a pass. {advice}{then}")
+
+
+#: The refusal of a holder whose own `.git` this user cannot reach (#1148),
+#: the code `validate-family.py` and `bootstrap.py` refuse it by, and what
+#: was not done.
+ROOT_UNREADABLE = "git-repo-unreadable"
+ROOT_UNDONE = ("The holder's `.git` is how this command finds the holder, and "
+               "it could not be asked, so nothing was cloned, fetched or "
+               "run.")
+
+
+def _refuse_an_unreadable_root(start: Path) -> None:
+    """`git-repo-unreadable`, by name, exit 2, where this user cannot `stat`
+    a `.git` that `find_repo_root` would ask, at `start` or above it, before
+    the first that is there (#1148).
+
+    `find_repo_root` ASKS `exists()`, AND IS A SHAPE COPY THIS FILE MAY NOT
+    RELY ON BEING NEWER THAN ITSELF (#370, #610), so each `.git` it would ask
+    is asked here first, with `_is_a`, in the same order. A holder whose
+    `.git` is a link into a folder this user cannot search ended `make
+    siblings`, `make park` and `make resume` in a `PermissionError`
+    traceback on Python 3.12, exit 1, a FINDING's code; from 3.14 `exists()`
+    answers False, and the run refused `not-a-git-repo` (`no .git found`)
+    about a holder that has one. A `.git` that answers absent (nothing
+    there, a link that leads nowhere or to itself) is passed over, as
+    `exists()` passes it. It is named relative to where the walk starts, or
+    whole where it is not under it.
+
+    ONLY THE `stat` THAT `exists()` ASKS, as `validate-manifest.py` asks
+    its root's (#1146). This command reads the holder's files, and
+    `.gitmodules` as a file, and runs git in the holder only for the branch
+    its layout table shows: with a `.git` directory at mode 000 it still
+    places every member beside the holder, and shows that branch as `?`
+    (measured). What git reads inside the holder's repository is
+    `validate-family.py`'s question and `make bootstrap`'s, and each asks
+    it."""
+    path = Path(start).resolve()
+    for candidate in [path, *path.parents]:
+        dotgit = candidate / ".git"
+        try:
+            if _is_a(dotgit, _anything):
+                return
+        except OSError as exc:
+            try:
+                shown = dotgit.relative_to(path).as_posix()
+            except ValueError:
+                shown = str(dotgit)
+            raise member_unreadable(spelled(shown), exc, ROOT_UNDONE,
+                                    code=ROOT_UNREADABLE) from exc
 
 
 # ---------------------------------------------------------------------------
@@ -429,9 +496,32 @@ def submodule_urls(root: Path) -> dict[str, str]:
     any of these: `git submodule init` says `No url found` or `bad config
     line`, or that the value is invalid, and a clone made from the url
     would be of a member git does not mount.
+
+    A `.gitmodules` THIS USER MAY NOT READ IS REFUSED, NEVER NONE (#1110):
+    `gitmodules-unreadable`, raised before anything is cloned, fetched or
+    run. Asked with `Path.is_file()`, one that is a link into a folder this
+    user cannot search ended `make siblings` and `make park` in a
+    `PermissionError` traceback on Python 3.12, and on 3.14 was no file, so
+    each member was planned and cloned from its row's
+    `https://github.com/<repository>.git`, a remote the holder is not
+    pinned against. It is asked as `_is_a` asks: nothing at the name is no
+    file, as it always was; a refused `stat`, and a file this user may not
+    open (`os.access`: git could not read it either, and its failure is
+    read as no url below), are refused by name.
     """
     path = root / ".gitmodules"
-    if not path.is_file():
+    try:
+        there = _is_a(path, stat.S_ISREG)
+        if there and not os.access(path, os.R_OK):
+            raise PermissionError(errno.EACCES, os.strerror(errno.EACCES),
+                                  str(path))
+    except OSError as exc:
+        raise path_unreadable(
+            "gitmodules-unreadable", ".gitmodules", exc,
+            "siblings.py reads the holder's .gitmodules for each member's "
+            "url, the one `make bootstrap` uses, and nothing was cloned, "
+            "fetched or run without it.") from exc
+    if not there:
         return {}
     proc = subprocess.run(["git", "config", "-z", "-f", str(path), "--list"],
                           capture_output=True, check=False)
@@ -705,6 +795,87 @@ def branch_of(path: Path) -> str:
 
 
 # ---------------------------------------------------------------------------
+# the columns a name takes in the layout table (#1216)
+# ---------------------------------------------------------------------------
+#
+# A ROW PADS ITS NAME BY THE COLUMNS A TERMINAL GIVES IT, not the code points
+# it holds, which is all a format width counts. `\u65e5\u672c\u8a9e`, three
+# wide characters, was padded as 3 and took 6 columns, so its row's `state`
+# stood 3 columns right of every other row's; `e\u0301cole`, whose acute is
+# drawn over the `e`, was padded as 6 and took 5, and stood 1 column left.
+# And the name is measured as stdout writes it: on a stdout that cannot hold
+# a character, `escape_unencodable_stdout` has it written as `\u65e5`, six
+# columns the pad had counted as one.
+#
+# THE RULE IS WRITTEN HERE, NOT IMPORTED. It is the one #1034 gives
+# `adopt-project.py`'s `plan` table, and
+# `scripts/validate-repository-naming.py` writes its own copy for its
+# listing (#1217). A holder that kept an older `repo_shape.py`
+# (`update-shape.py apply --accept-local`) must still be able to run this
+# file, and an import of a name its copy lacks would stop `make siblings`,
+# `park` and `resume` dead, as the `mv` lines below say of `shell_line`.
+# `tests/test_pinned_copy_columns.py` holds the copies to one answer for
+# every character.
+
+#: The general categories a terminal gives no column of their own: a
+#: non-spacing mark and an enclosing one, drawn over the character before
+#: them, and a format character, which it does not draw.
+ZERO_COLUMN_CATEGORIES = frozenset(("Mn", "Me", "Cf"))
+#: The East Asian widths a terminal gives two columns: wide and fullwidth.
+TWO_COLUMN_WIDTHS = frozenset(("W", "F"))
+#: The Hangul medial vowels and final consonants, U+1160 to U+11FF in Hangul
+#: Jamo and U+D7B0 to U+D7FF in Hangul Jamo Extended-B. Each is a letter (Lo)
+#: of East Asian width N, so neither set above names them, and a terminal
+#: draws each inside the syllable its leading consonant begins: no column of
+#: its own, as glibc's `wcwidth` gives it none.
+MEDIAL_AND_FINAL_JAMO = frozenset(map(chr, range(0x1160, 0x1200)))
+MEDIAL_AND_FINAL_JAMO_EXTENDED_B = frozenset(map(chr, range(0xD7B0, 0xD800)))
+
+
+def _char_columns(char: str) -> int:
+    """The columns a terminal gives `char`. The category is asked before the
+    width: the voiced sound mark U+3099 is wide, and is drawn over the kana
+    before it. An ambiguous width is one column, as a terminal outside an
+    East Asian locale draws it."""
+    if (unicodedata.category(char) in ZERO_COLUMN_CATEGORIES
+            or char in MEDIAL_AND_FINAL_JAMO
+            or char in MEDIAL_AND_FINAL_JAMO_EXTENDED_B):
+        return 0
+    if unicodedata.east_asian_width(char) in TWO_COLUMN_WIDTHS:
+        return 2
+    return 1
+
+
+def _columns(text: str) -> int:
+    """How many columns a row's name takes on a terminal (`_char_columns`
+    for each of its characters)."""
+    return sum(_char_columns(char) for char in text)
+
+
+def _padded(text: str, columns: int) -> str:
+    """A row's name and the spaces that make it `columns` columns wide on a
+    terminal, as `f"{text:<{columns}}"` makes it that many code points. A
+    name wider than that is printed whole, with no space added, as there:
+    the row stands right, and nothing is cut."""
+    return text + " " * (columns - _columns(text))
+
+
+def _printed(text: str) -> str:
+    """A row's name as stdout writes it, which is what the row pads: each
+    character stdout's encoding cannot hold escaped, as its handler writes
+    it once `escape_unencodable_stdout` has made that `backslashreplace`.
+    On an ASCII stdout `\\u65e5\\u672c\\u8a9e` is the 18 characters of its
+    three escapes; on a UTF-8 one, the 3 it holds. Where stdout names no
+    encoding, or its own handler cannot write `text`, it is `text`."""
+    encoding = getattr(sys.stdout, "encoding", None) or "utf-8"
+    errors = getattr(sys.stdout, "errors", None) or "strict"
+    try:
+        return text.encode(encoding, errors).decode(encoding)
+    except (LookupError, UnicodeError):
+        return text
+
+
+# ---------------------------------------------------------------------------
 # one member
 # ---------------------------------------------------------------------------
 
@@ -725,9 +896,11 @@ class Sibling:
     def row(self, kind: str = "sibling") -> str:
         # `project` is a manifest's text and `branch` a clone's (#454), so a
         # row prints them spelled; the fields still hold the raw values, which
-        # the paths and the commands are made from.
-        return (f"  {kind:<9} {spelled(self.project):<18} {self.state:<22} "
-                f"{spelled(self.branch)}")
+        # the paths and the commands are made from. The name is padded by the
+        # columns it takes as stdout writes it (#1216): `kind` and `state` are
+        # this file's own ASCII words, and `branch` ends the row.
+        return (f"  {kind:<9} {_padded(_printed(spelled(self.project)), 18)} "
+                f"{self.state:<22} {spelled(self.branch)}")
 
 
 def refused_member(root: Path, row: dict, refusal: Refusal) -> Sibling:
@@ -1270,7 +1443,15 @@ def dispatch_all(root: Path, name: str, rows: list[dict],
           "holder. This")
     print("  command clones nothing and fetches nothing: it only dispatches.")
 
-    urls = submodule_urls(root)
+    # Each working clone is verified against its `.gitmodules` url, so a
+    # `.gitmodules` this user may not read runs the verb in no member
+    # (#1110): exit 2, as a refusal is.
+    try:
+        urls = submodule_urls(root)
+    except Refusal as exc:
+        sys.stdout.flush()
+        print(str(exc), file=sys.stderr)
+        return 2
     print(f"\n(a) make {target}, one member at a time")
     dispatched: list[Sibling] = []
     if not rows:
@@ -1552,7 +1733,10 @@ def _load_family(args: argparse.Namespace) -> tuple[Path, str, list[dict],
     Split from `main` for #137. Raises `Refusal` exactly as `main` always
     caught it — no `family.yaml`, or one that is not a mapping.
     """
-    root = find_repo_root(args.root or Path(__file__).resolve().parents[1])
+    start = args.root or Path(__file__).resolve().parents[1]
+    # A `.git` this user cannot read is refused by name first (#1148).
+    _refuse_an_unreadable_root(start)
+    root = find_repo_root(start)
     # `members_of` is `bootstrap.py`'s reading of the rows and stays the
     # only one; the manifest is then read again for the two fields the
     # LAYOUT needs and bootstrap has no use for.
@@ -1726,7 +1910,14 @@ def _run_placement(root: Path, name: str, rows: list[dict], manifest: dict,
         return 1
 
     prefix, source, token = git_prefix()
-    urls = submodule_urls(root)
+    # Each member is cloned from its `.gitmodules` url, so a `.gitmodules`
+    # this user may not read clones and fetches nothing (#1110): exit 2.
+    try:
+        urls = submodule_urls(root)
+    except Refusal as exc:
+        sys.stdout.flush()
+        print(str(exc), file=sys.stderr)
+        return 2
     print(f"\n(a) the members, beside the holder (credential source: "
           f"{source})")
     siblings = _place_all_members(root, rows, urls, prefix, token, dry_run)
