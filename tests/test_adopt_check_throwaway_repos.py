@@ -1176,6 +1176,26 @@ def test_a_set_the_note_takes_is_still_asked(tmp_path):
                     "them: `A.md` and `a.md`.") in finding_lines(result)[0]
 
 
+@pytest.mark.parametrize("leg", ["code", "drop"])
+def test_a_set_the_plan_splits_or_drops_is_still_asked(tmp_path, leg):
+    """The control the other way: the rehearsal still asks a set #1237 made
+    adoptable. `A.md` and `a.md`, each CRLF under `* text eol=lf`, the root
+    keeps `A.md` and the plan sends `a.md` to the code leg or drops it, so
+    the CRLF twin kept in the root is named, beside the one the plan moves,
+    as it was on f7f34fb0. Were such sets skipped as the sets
+    `plan-case-twins` names are, `check` would say `plan ok` and `execute`
+    would lose `A.md` (`adopt-lost`), after both legs were pushed (r1297d's
+    SHOULD-1)."""
+    source = a_source(tmp_path, files={ROOT_ATTRIBUTES: TEXT_EOL_LF,
+                                       "A.md": CRLF, "a.md": CRLF})
+    plan = planned(source, tmp_path, {"A.md": ROOT, "a.md": leg})
+    for env in (None, ignoring_case(tmp_path)):
+        result = checked(plan, env)
+        assert codes(result) == [REENCODED_FILES, REENCODED_FILES], \
+            result.stderr
+        assert "`A.md`" in finding_lines(result)[0]
+
+
 # ---------------------------------------------------------------------------
 # #1183: case twins the plan sends into different repositories, or drops
 # ---------------------------------------------------------------------------
