@@ -1199,12 +1199,6 @@ it is CALLED under the naming policy, what IS in it, the way in and **machine** 
 and a repository the advisory is not silent about gets the **Triad** row, status
 `advisory`: said once and stepped over by the verdict (a leg gets its root).
 
-Local compatibility links do not make a leg's documents assembly manifests.
-The **manifest kinds** row skips an untracked, Git-ignored symlink only when
-its existing target is inside a declared leg recorded as a Git submodule.
-Tracked links, ordinary files, links outside those legs, and every path a root
-gate reads are still checked. This exception changes no pin or validator.
-
 Every row is `ok`, `note`, `FINDING` or `n/a` — or `advisory`, the Triad row
 alone — and a row that is not `ok` names the exact command that fixes it
 whenever there is one to run, except the Triad row, which names none in any

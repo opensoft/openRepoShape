@@ -4399,6 +4399,11 @@ def check_manifest_kinds(ctx: Context) -> Row:
     a file that DOES declare a kind that nothing here validates, which is a
     manifest travelling in a shape root with no gate behind it.
 
+    An ignored, untracked compatibility symlink into a declared, indexed
+    Git leg belongs to that repository, not this root. `local_leg_alias`
+    excludes only those aliases, never a path a root gate reads. Tracked
+    links, regular files and links outside recorded legs remain candidates.
+
     A REGISTERED KIND WHOSE GATE THIS ROOT NEVER RUNS IS THAT CASE TOO,
     wherever the file is (#211, #327). A kind counts `validated` only where a
     check it is registered to RUNS -- `ManifestKind.runs_in` -- so a
