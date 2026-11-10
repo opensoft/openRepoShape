@@ -52,6 +52,15 @@ with its own blob, and `plan-path-git-refuses` names both twins of a path git
 refuses. This bench has no usable disk that ignores case, so the row that
 needs one skips here.
 
+#1161: so `check` passed twins wherever the plan kept them, though a disk
+that ignores case holds each set as one name. Measured with git 2.43 on
+4c7b8acd, the work directory and every repository on such a disk: `execute`
+lost `F/x` beside `f` after both legs were pushed (`adopt-lost`), and was
+refused at the folder twins `D/x` and `d/x` as `plan-file-reencoded` in 2
+of 4 fresh sources. Now `plan-case-twins` names each set the plan keeps in
+one repository, the root or a leg, on every disk, and `execute` refuses it
+before any leg exists.
+
 #1136 followed, measured on bba168bd with git 2.43. In each case `check`
 said `plan ok`, and `execute` made both legs and stopped extracting the
 spec leg:
@@ -73,6 +82,17 @@ a file only that tree's rules reach is asked about too (r1169b's
 SHOULD-1). A `GIT_ATTR_SOURCE` is
 `adopt-git-unasked`, by name, before any question. And three of the
 throwaways read their environment before they are made.
+
+#1192 followed, measured on 93d29314 with git 2.43. Under a filter that
+fails for a `.gitattributes` the mount's `git rm` leaves, the rehearsal's
+compare of what it removes (`update-index -q --refresh`) stopped there,
+exit 128, which nothing read, and `diff-files` then listed every file it
+had not reached: `check` also said `plan-file-reencoded` for a file the
+split stores as its blob. Now the rules `git rm` leaves are marked
+unchanged in that compare, and a compare git refuses is the finding, in
+git's words. So a `.gitattributes` the plan keeps under `.github/`, whose
+filter fails, is the split's store's refusal alone, its folder named in
+UTF-8 or not (r1253's SHOULD-2).
 """
 
 from __future__ import annotations
@@ -90,7 +110,7 @@ import pytest
 
 from conftest import (ADOPT, WINDOWS_SKIP, appended_to_command_scope,
                       findings, git, planned, refused_before_any_leg,
-                      run_script)
+                      run_script, skip_where_a_name_cannot_be_not_utf_8)
 from test_adopt_nested_attributes import (KEEP_GITHUB, ROOT, ROOT_ATTRIBUTES,
                                           SOURCE, YML_CRLF, adoption_plan,
                                           committed_raw, github)
@@ -186,9 +206,11 @@ def with_paths(repo: Path, paths: tuple[str, ...],
                own_blobs: bool = False, links: tuple[str, ...] = ()) -> None:
     """A commit on `main` whose tree gains each of `paths`, whether git
     takes it as a path or not: `git mktree` writes what it is given, and no
-    index is asked. With `own_blobs`, each path's blob holds its own name,
-    so an index that holds one path's blob under another's name is seen.
-    Each of `links` is written as a symlink (mode 120000), not a file."""
+    index is asked. A folder HEAD already holds, `src/` say, gains them
+    beside what it holds, and is not written twice. With `own_blobs`, each
+    path's blob holds its own name, so an index that holds one path's blob
+    under another's name is seen. Each of `links` is written as a symlink
+    (mode 120000), not a file."""
     shared = blob_of(repo, b"x\n")
     nested: dict = {}
     for path in paths:
@@ -200,14 +222,19 @@ def with_paths(repo: Path, paths: tuple[str, ...],
                       blob_of(repo, f"{path}\n".encode("utf-8"))
                       if own_blobs else shared)
 
-    def rows(names: dict) -> list[str]:
-        return [f"{below[0]} blob {below[1]}\t{name}"
-                if isinstance(below, tuple)
-                else f"040000 tree {mktree(repo, rows(below))}\t{name}"
-                for name, below in names.items()]
+    def rows(names: dict, folder: str) -> list[str]:
+        held = {line.split("\t", 1)[1]: line for line in git(
+            "ls-tree", f"HEAD:{folder}", cwd=repo,
+            check=False).stdout.splitlines()}
+        for name, below in names.items():
+            inner = f"{folder}/{name}" if folder else name
+            held[name] = (f"{below[0]} blob {below[1]}\t{name}"
+                          if isinstance(below, tuple) else
+                          f"040000 tree {mktree(repo, rows(below, inner))}"
+                          f"\t{name}")
+        return list(held.values())
 
-    held = git("ls-tree", "HEAD", cwd=repo).stdout.splitlines()
-    tree = mktree(repo, held + rows(nested))
+    tree = mktree(repo, rows(nested, ""))
     commit = git("commit-tree", tree, "-p", "HEAD", "-m", "Add paths",
                  cwd=repo).stdout.strip()
     git("update-ref", "refs/heads/main", commit, cwd=repo)
@@ -487,7 +514,7 @@ def test_on_a_disk_that_ignores_case_each_twin_is_held_or_named(adopter,
     assert fates == as_measured(ALL_TWINS, TWINS_REFUSED)
 
 
-def test_check_names_each_twin_git_refuses_and_no_twin_it_holds(tmp_path):
+def test_check_names_each_twin_git_refuses_and_each_set_it_holds(tmp_path):
     """`check` over a source holding the twins of `file-twins`,
     `folder-twins` and `a-folder-and-a-file`, and the two refused sets
     above, with `core.ignorecase` true in the global config. On a disk that
@@ -499,8 +526,10 @@ def test_check_names_each_twin_git_refuses_and_no_twin_it_holds(tmp_path):
     `plan-file-reencoded`; this row does not see it, because the rehearsal
     asks nothing of a source that holds a path git refuses
     (`_reencoded_files_findings`, `if refused: return []`).
-    `refused_paths` meets every twin, and `plan-path-git-refuses` names, in
-    the tree's order, the four git refuses and none of the six it holds."""
+    `refused_paths` meets every twin: `plan-path-git-refuses` names, in the
+    tree's order, the four git refuses, and `plan-case-twins` (#1161) names
+    the six it holds, set by set, because the plan keeps them all in the
+    root, and none of the four, which are the first finding's alone."""
     source = a_source(tmp_path)
     with_paths(source, ALL_TWINS, own_blobs=True)
     result = checked(planned(source, tmp_path, TWIN_ANSWERS),
@@ -513,8 +542,448 @@ def test_check_names_each_twin_git_refuses_and_no_twin_it_holds(tmp_path):
         "`.Git/A`, `.Git/a` and `.Git/x`. Each clone the split makes of the "
         "source would stop at the first, `unable to checkout working tree`, "
         "so `execute` refuses them before it makes either leg, whatever the "
-        "plan answers for them."]
+        "plan answers for them.",
+        twins_kept("3 sets", ROOT_TWINS, "6 paths",
+                   "`A`, `a`, `D/x`, `d/x`, `F/x` and `f`")]
     assert result.stderr.count(PATH_REMEDY) == 1, result.stderr
+    assert result.stderr.count(TWINS_REMEDY) == 1, result.stderr
+
+
+# ---------------------------------------------------------------------------
+# #1161: the case twins the plan keeps in one repository
+# ---------------------------------------------------------------------------
+
+#: The finding #1161 adds, the code of `execute`'s refusal, how its
+#: remediation begins, and the whole of it: a rename in the source, and no
+#: answer that sends the twins into different repositories, which a disk
+#: that ignores case loses too (#1183, r1189's MUST 1).
+PLAN_CASE_TWINS = "plan-case-twins"
+TWINS_REMEDY = "Remediation: rename paths in the source until no two"
+TWINS_REMEDIATION = (
+    "Remediation: rename paths in the source until no two that one "
+    "repository would hold differ only in case -- each twin of a set but "
+    "one, or the folder above a twin -- commit that, and re-run `plan`: a "
+    "plan is written against one commit of the source, and `check` calls it "
+    "`plan-stale` once the source has moved.")
+#: Where `plan-case-twins` says the plan keeps a set.
+ROOT_TWINS, SPEC_TWINS, CODE_TWINS = ("the assembly root", "the spec leg",
+                                      "the code leg")
+
+
+def twins_kept(sets: str, where: str, paths: str, named: str) -> str:
+    """`plan-case-twins` as `check` prints it for `sets` sets of twins in
+    `where`, `paths` paths, named as `named`."""
+    return (f"FINDING {PLAN_CASE_TWINS}: the plan keeps {sets} of case twins "
+            f"in {where}, {paths}, the paths of a set differing only in "
+            "case, or one naming in another case a folder above another: "
+            f"{named}. A disk that ignores case, as a macOS or Windows disk "
+            "does by default, holds each set as one name: a clone made there "
+            "checks out only one path of each set, and `execute` could stop "
+            "there before any leg exists, at git's `will not add file "
+            "alias`, or after both legs are pushed, as `adopt-lost` or at "
+            "`git rm` mounting the legs, so `execute` refuses them on every "
+            "disk.")
+
+
+def one_blob_twins(sets: str, where: str, paths: str, named: str) -> str:
+    """The NOTE `check` prints for `sets` sets of twins in `where` whose
+    paths fold to one name and hold one blob in one mode, `paths` paths,
+    named as `named`: `plan-case-twins` leaves them out (r1189's SHOULD
+    5)."""
+    return (f"NOTE the plan keeps {sets} of case twins in {where} whose "
+            f"paths hold one blob in one mode, {paths}: {named}. A disk that "
+            "ignores case holds each set as one name, and a clone made there "
+            "checks out one path of each, git saying `the following paths "
+            "have collided`; that path holds what each path of the set "
+            "holds, so none is lost, and `check` names no "
+            f"`{PLAN_CASE_TWINS}` for them.")
+
+
+#: `(the paths a source commit gains, each with a blob of its own, the
+#: plan's answers, what `check` finds)`. An answer left out is the one
+#: `plan` wrote: `specs/` goes to the spec leg and `src/` to the code leg.
+#: On 4c7b8acd, #1158's head, `check` printed `plan ok` for every one.
+TWINS_KEPT = [
+    pytest.param(("A", "a"), {"A": ROOT, "a": ROOT},
+                 [twins_kept("1 set", ROOT_TWINS, "2 paths", "`A` and `a`")],
+                 id="file-twins"),
+    pytest.param(("D/x", "d/x"), {"D/": ROOT, "d/": ROOT},
+                 [twins_kept("1 set", ROOT_TWINS, "2 paths",
+                             "`D/x` and `d/x`")],
+                 id="folder-twins"),
+    pytest.param(("F/x", "f"), {"F/": ROOT, "f": ROOT},
+                 [twins_kept("1 set", ROOT_TWINS, "2 paths",
+                             "`F/x` and `f`")],
+                 id="a-folder-and-a-file"),
+    pytest.param(("E", "e/x"), {"E": ROOT, "e/": ROOT},
+                 [twins_kept("1 set", ROOT_TWINS, "2 paths",
+                             "`E` and `e/x`")],
+                 id="a-file-and-a-folder"),
+    pytest.param(("AB", "Ab", "aB"), {"AB": ROOT, "Ab": ROOT, "aB": ROOT},
+                 [twins_kept("1 set", ROOT_TWINS, "3 paths",
+                             "`AB`, `Ab` and `aB`")],
+                 id="three-twins-none-in-lower-case"),
+    pytest.param(("specs/A", "specs/a"), {},
+                 [twins_kept("1 set", SPEC_TWINS, "2 paths",
+                             "`specs/A` and `specs/a`")],
+                 id="twins-in-the-spec-leg"),
+    pytest.param(("src/É", "src/é"), {},
+                 [twins_kept("1 set", CODE_TWINS, "2 paths",
+                             "`src/É` and `src/é`")],
+                 id="non-ascii-twins-in-the-code-leg"),
+    pytest.param(("src/A", "src/D/x", "src/a", "src/d/x"), {},
+                 [twins_kept("2 sets", CODE_TWINS, "4 paths",
+                             "`src/A`, `src/a`, `src/D/x` and `src/d/x`")],
+                 id="two-sets-in-the-code-leg-set-by-set"),
+    pytest.param(("A", "a", "specs/A", "specs/a", "src/A", "src/a"),
+                 {"A": ROOT, "a": ROOT},
+                 [twins_kept("1 set", ROOT_TWINS, "2 paths", "`A` and `a`"),
+                  twins_kept("1 set", SPEC_TWINS, "2 paths",
+                             "`specs/A` and `specs/a`"),
+                  twins_kept("1 set", CODE_TWINS, "2 paths",
+                             "`src/A` and `src/a`")],
+                 id="a-set-in-each-repository"),
+    pytest.param(tuple("AaBbCcDdEeFf"), dict.fromkeys("AaBbCcDdEeFf", ROOT),
+                 [twins_kept("6 sets", ROOT_TWINS, "12 paths",
+                             "`A`, `a`, `B`, `b`, `C`, `c`, `D`, `d`, `E`, "
+                             "`e` and 2 more")],
+                 id="ten-named-and-the-rest-counted"),
+    # r1189's SHOULD 6: a file against a folder below the top level, and
+    # one against a folder two levels above another path.
+    pytest.param(("src/E", "src/e/x"), {},
+                 [twins_kept("1 set", CODE_TWINS, "2 paths",
+                             "`src/E` and `src/e/x`")],
+                 id="a-file-and-a-folder-in-the-code-leg"),
+    pytest.param(("f", "F/G/x"), {"f": ROOT, "F/": ROOT},
+                 [twins_kept("1 set", ROOT_TWINS, "2 paths",
+                             "`F/G/x` and `f`")],
+                 id="a-file-and-a-folder-two-levels-above"),
+    # Known limit 1: `casefold` folds `ß` to `ss`, as `lower` does not.
+    pytest.param(("src/straße", "src/STRASSE"), {},
+                 [twins_kept("1 set", CODE_TWINS, "2 paths",
+                             "`src/STRASSE` and `src/straße`")],
+                 id="sharp-s-folded-as-ss"),
+    pytest.param(("AB", "Ab", "aB", "ab"), dict.fromkeys(("AB", "Ab", "aB",
+                                                          "ab"), ROOT),
+                 [twins_kept("1 set", ROOT_TWINS, "4 paths",
+                             "`AB`, `Ab`, `aB` and `ab`")],
+                 id="one-set-of-four"),
+]
+
+
+@pytest.mark.parametrize(("paths", "answers", "found"), TWINS_KEPT)
+def test_check_names_the_case_twins_the_plan_keeps_in_one_repository(
+        tmp_path, paths, answers, found):
+    """A disk that ignores case holds each set as one name. Measured for
+    #1161 with git 2.43 on 4c7b8acd, the work directory and every
+    repository on such a disk: `check` printed `plan ok` for each set, and
+    `execute` lost `F/x` after both legs were pushed (`adopt-lost`), or was
+    refused at folder twins as `plan-file-reencoded`, git saying `will not
+    add file alias`. Now `check` names each set on every disk, one finding
+    for each repository that holds one, root, spec leg, code leg, and says
+    its remediation once."""
+    source = a_source(tmp_path)
+    with_paths(source, paths, own_blobs=True)
+    result = checked(planned(source, tmp_path, answers))
+    assert "REFUSED" not in result.stderr, result.stderr
+    assert result.returncode == 1, result.stderr
+    assert finding_lines(result) == found
+    assert result.stderr.count(TWINS_REMEDY) == 1, result.stderr
+    assert TWINS_REMEDIATION in result.stderr.splitlines(), result.stderr
+    assert "NOTE the plan keeps" not in result.stdout, result.stdout
+
+
+def test_twins_come_before_coverage_and_name_executes_refusal(
+        adopter, monkeypatch, tmp_path):
+    """r1189's SHOULD 6: beside a path no entry covers, `plan-case-twins`
+    is listed before `plan-uncovered`, as a rename in the source is their
+    first fix, and so it is the code of `execute`'s refusal."""
+    source = a_source(tmp_path)
+    with_paths(source, ("A", "a", "z"), own_blobs=True)
+    plan = planned(source, tmp_path, {"A": ROOT, "a": ROOT, "z": ROOT})
+    lines = plan.read_bytes().decode().splitlines(keepends=True)
+    start = lines.index("  - path: z\n")
+    end = start + 1
+    while lines[end].startswith("    "):
+        end += 1
+    plan.write_bytes("".join(lines[:start] + lines[end:]).encode())
+    assert [code for code, _ in findings(plan)] == [PLAN_CASE_TWINS,
+                                                    "plan-uncovered"]
+    refusal = refused_before_any_leg(adopter, monkeypatch, plan, tmp_path)
+    assert refusal.code == PLAN_CASE_TWINS
+
+
+#: `(the paths a source commit gains, all with one blob, or each with its
+#: own, the plan's answers, the finding, the NOTE)`: r1189's SHOULD 5. A
+#: set of one name whose paths hold one blob in one mode is checked out as
+#: one path holding what each holds, and no path is lost; its own blobs
+#: lose one. A file against a folder is the finding with one blob too. In
+#: the root the NOTE takes only two paths whose names differ only in their
+#: last part (r1189b's SHOULD 1): on a disk that ignores case, folder twins
+#: and three paths of one blob there met git's `will not add file alias`,
+#: and in a leg they verified.
+ONE_BLOB = [
+    pytest.param(("A", "a"), False, {"A": ROOT, "a": ROOT}, [],
+                 [one_blob_twins("1 set", ROOT_TWINS, "2 paths",
+                                 "`A` and `a`")],
+                 id="one-blob"),
+    pytest.param(("A", "a"), True, {"A": ROOT, "a": ROOT},
+                 [twins_kept("1 set", ROOT_TWINS, "2 paths", "`A` and `a`")],
+                 [], id="two-blobs"),
+    pytest.param(("src/AB", "src/Ab", "src/ab"), False, {}, [],
+                 [one_blob_twins("1 set", CODE_TWINS, "3 paths",
+                                 "`src/AB`, `src/Ab` and `src/ab`")],
+                 id="one-blob-in-the-code-leg"),
+    pytest.param(("F/x", "f"), False, {"F/": ROOT, "f": ROOT},
+                 [twins_kept("1 set", ROOT_TWINS, "2 paths",
+                             "`F/x` and `f`")],
+                 [], id="a-folder-and-a-file-with-one-blob"),
+    pytest.param(("D/x", "d/x"), False, {"D/": ROOT, "d/": ROOT},
+                 [twins_kept("1 set", ROOT_TWINS, "2 paths",
+                             "`D/x` and `d/x`")],
+                 [], id="folder-twins-of-one-blob-in-the-root"),
+    pytest.param(("AB", "Ab", "ab"), False,
+                 dict.fromkeys(("AB", "Ab", "ab"), ROOT),
+                 [twins_kept("1 set", ROOT_TWINS, "3 paths",
+                             "`AB`, `Ab` and `ab`")],
+                 [], id="three-of-one-blob-in-the-root"),
+    pytest.param(("D/A", "D/a"), False, {"D/": ROOT}, [],
+                 [one_blob_twins("1 set", ROOT_TWINS, "2 paths",
+                                 "`D/A` and `D/a`")],
+                 id="two-of-one-blob-in-one-folder-of-the-root"),
+    pytest.param(("src/D/x", "src/d/x"), False, {}, [],
+                 [one_blob_twins("1 set", CODE_TWINS, "2 paths",
+                                 "`src/D/x` and `src/d/x`")],
+                 id="folder-twins-of-one-blob-in-the-code-leg"),
+    # The spec leg takes the NOTE as the code leg does: only the root asks
+    # for two paths in one folder.
+    pytest.param(("specs/D/x", "specs/d/x"), False, {}, [],
+                 [one_blob_twins("1 set", SPEC_TWINS, "2 paths",
+                                 "`specs/D/x` and `specs/d/x`")],
+                 id="folder-twins-of-one-blob-in-the-spec-leg"),
+    # A file against a folder in a leg, one blob and one last name: the
+    # whole paths fold to two names, so it is the finding there too.
+    pytest.param(("src/F/f", "src/f"), False, {},
+                 [twins_kept("1 set", CODE_TWINS, "2 paths",
+                             "`src/F/f` and `src/f`")],
+                 [], id="a-folder-and-a-file-of-one-blob-in-the-code-leg"),
+]
+
+
+@pytest.mark.parametrize(("paths", "own_blobs", "answers", "found", "noted"),
+                         ONE_BLOB)
+def test_a_set_of_one_blob_is_a_note_and_not_the_finding(
+        tmp_path, paths, own_blobs, answers, found, noted):
+    source = a_source(tmp_path)
+    with_paths(source, paths, own_blobs=own_blobs)
+    result = checked(planned(source, tmp_path, answers))
+    assert "REFUSED" not in result.stderr, result.stderr
+    assert result.returncode == (1 if found else 0), result.stderr
+    assert finding_lines(result) == found
+    assert [line for line in result.stdout.splitlines()
+            if line.startswith("NOTE the plan keeps")] == noted
+    assert ("plan ok" in result.stdout) is not found, result.stdout
+    assert (TWINS_REMEDY in result.stderr) is bool(found), result.stderr
+
+
+def asked_of(adopter, rows: list[tuple[str, str, str]], leg: str = ROOT):
+    """`_case_twin_findings` over a tree of `(path, mode, object)` rows, the
+    plan keeping each in the repository `leg:` `leg` sends it to, the root
+    unless named: its findings and NOTEs, no remediation but where there is
+    a finding."""
+    plan = SimpleNamespace(entries=[{"path": path, "leg": leg}
+                                    for path, _, _ in rows])
+    found, remedies, notes = adopter._case_twin_findings(
+        plan, [(path, mode, oid, 1) for path, mode, oid in rows])
+    assert remedies == ([TWINS_REMEDIATION] if found else [])
+    return found, notes
+
+
+ONE = "1" * 40
+OTHER = "2" * 40
+
+
+#: `(the tree's rows, the findings, the NOTEs)`: one blob in one mode,
+#: asked of the function itself, as `with_paths` writes no mode but a
+#: file's or a symlink's.
+ONE_BLOB_ROWS = [
+    pytest.param([("A", "100644", ONE), ("a", "100755", ONE)],
+                 [twins_kept("1 set", ROOT_TWINS, "2 paths", "`A` and `a`")],
+                 [], id="one-blob-in-two-modes"),
+    pytest.param([("A", "160000", ONE), ("a", "160000", ONE)],
+                 [twins_kept("1 set", ROOT_TWINS, "2 paths", "`A` and `a`")],
+                 [], id="submodules-at-one-commit"),
+    pytest.param([("A", "120000", ONE), ("a", "120000", ONE)], [],
+                 [one_blob_twins("1 set", ROOT_TWINS, "2 paths",
+                                 "`A` and `a`")],
+                 id="symlinks-to-one-target"),
+    pytest.param([("AB", "100644", ONE), ("Ab", "100644", ONE),
+                  ("ab", "100644", OTHER)],
+                 [twins_kept("1 set", ROOT_TWINS, "3 paths",
+                             "`AB`, `Ab` and `ab`")],
+                 [], id="one-of-three-another-blob"),
+    pytest.param([("A", "100644", ONE), ("B", "100644", ONE),
+                  ("a", "100644", ONE), ("b", "100644", OTHER)],
+                 [twins_kept("1 set", ROOT_TWINS, "2 paths", "`B` and `b`")],
+                 [one_blob_twins("1 set", ROOT_TWINS, "2 paths",
+                                 "`A` and `a`")],
+                 id="a-set-of-each-in-one-repository"),
+    pytest.param([("A", "100644", ONE), ("B", "100644", OTHER),
+                  ("a", "100644", ONE), ("b", "100644", OTHER)], [],
+                 [one_blob_twins("2 sets", ROOT_TWINS, "4 paths",
+                                 "`A`, `a`, `B` and `b`")],
+                 id="two-sets-of-one-blob-set-by-set"),
+    # One name as `casefold` folds it, as the set itself was folded.
+    pytest.param([("STRASSE", "100644", ONE), ("straße", "100644", ONE)],
+                 [], [one_blob_twins("1 set", ROOT_TWINS, "2 paths",
+                                     "`STRASSE` and `straße`")],
+                 id="sharp-s-and-ss-of-one-blob"),
+    # Two paths in the root whose names differ in their folder AND their
+    # last part are not the NOTE's shape: their folders are twins too.
+    pytest.param([("D/A", "100644", ONE), ("d/a", "100644", ONE)],
+                 [twins_kept("1 set", ROOT_TWINS, "2 paths",
+                             "`D/A` and `d/a`")],
+                 [], id="two-of-one-blob-in-folders-in-another-case"),
+]
+
+
+@pytest.mark.parametrize(("rows", "found", "noted"), ONE_BLOB_ROWS)
+def test_only_one_blob_in_one_mode_is_left_to_the_note(adopter, rows, found,
+                                                       noted):
+    assert asked_of(adopter, rows) == (found, noted)
+
+
+@pytest.mark.parametrize("mode", ["100755", "120000"],
+                         ids=["executable", "symlink"])
+def test_every_path_of_a_leg_set_is_asked_its_mode(adopter, mode):
+    """Three paths of one name and one blob in the code leg, the last of
+    them an executable or a symlink: the set holds two modes, so it is the
+    finding, and no NOTE, whichever path differs."""
+    rows = [("src/AB", "100644", ONE), ("src/Ab", "100644", ONE),
+            ("src/ab", mode, ONE)]
+    assert asked_of(adopter, rows, "code") == (
+        [twins_kept("1 set", CODE_TWINS, "3 paths",
+                    "`src/AB`, `src/Ab` and `src/ab`")], [])
+
+
+def test_the_one_blob_note_is_the_first_of_the_entries_notes(
+        adopter, monkeypatch, tmp_path):
+    """`_entry_findings` lists the twins' NOTE before the pins' NOTEs, as it
+    lists their finding before the pins' findings."""
+    source = a_source(tmp_path)
+    with_paths(source, ("A", "a"))
+    plan = adopter.Plan.load(planned(source, tmp_path, {"A": ROOT, "a": ROOT}))
+    work = tmp_path / "work"
+    work.mkdir()
+    opened = plan.open_source(None, work)
+    monkeypatch.setattr(adopter, "_pin_digest_findings",
+                        lambda _plan: ([], ["NOTE a pin's"]))
+    found, _, notes = adopter._entry_findings(plan, opened)
+    assert found == []
+    assert notes == [one_blob_twins("1 set", ROOT_TWINS, "2 paths",
+                                    "`A` and `a`"), "NOTE a pin's"]
+
+
+#: `(the paths, the answers)` of sources no repository the split makes holds
+#: twins of, and `check` finds nothing in, on 4c7b8acd and now.
+NO_TWINS_KEPT = [
+    pytest.param(("A", "a", "D/x", "d/x"),
+                 {"A": ROOT, "a": "code", "D/": ROOT, "d/": "code"},
+                 id="twins-in-different-repositories"),
+    pytest.param(("A", "a"), {"A": ROOT, "a": "drop"}, id="a-twin-dropped"),
+    pytest.param(("D/x", "d/y"), {"D/": ROOT, "d/": ROOT},
+                 id="folders-in-another-case-holding-other-names"),
+    pytest.param(("A", "b", "D/x", "e/x"),
+                 {"A": ROOT, "b": ROOT, "D/": ROOT, "e/": ROOT},
+                 id="no-twins"),
+]
+
+
+@pytest.mark.parametrize(("paths", "answers"), NO_TWINS_KEPT)
+def test_paths_no_one_repository_holds_as_one_name_are_no_finding(
+        tmp_path, paths, answers):
+    """Folders in another case merge into one whose names differ, and no
+    path is lost. Twins the plan sends to different repositories, and a
+    twin it drops beside one it keeps, are not this finding, which asks one
+    repository at a time; on a disk that ignores case `execute` loses them
+    too, as `adopt-lost` after both legs are pushed (r1189's SHOULD 3,
+    #1183)."""
+    source = a_source(tmp_path)
+    with_paths(source, paths, own_blobs=True)
+    assert findings(planned(source, tmp_path, answers)) == []
+
+
+def test_a_twin_still_unanswered_is_named_by_plan_unresolved_alone(
+        tmp_path):
+    """`a` still has `leg: null`: `plan-unresolved` names it, and no set is
+    named while one of its twins goes nowhere yet."""
+    source = a_source(tmp_path)
+    with_paths(source, ("A", "a"), own_blobs=True)
+    result = checked(planned(source, tmp_path, {"A": ROOT}))
+    assert result.returncode == 1, result.stderr
+    assert codes(result) == ["plan-unresolved"], result.stderr
+    assert TWINS_REMEDY not in result.stderr, result.stderr
+
+
+def test_execute_refuses_case_twins_before_any_leg(adopter, monkeypatch,
+                                                   tmp_path):
+    """The set measured to stop `execute` after both legs were pushed."""
+    source = a_source(tmp_path)
+    with_paths(source, ("F/x", "f"), own_blobs=True)
+    refusal = refused_before_any_leg(
+        adopter, monkeypatch,
+        planned(source, tmp_path, {"F/": ROOT, "f": ROOT}), tmp_path)
+    assert refusal.code == PLAN_CASE_TWINS
+    assert TWINS_REMEDY in refusal.remediation
+
+
+def test_execute_takes_sets_of_one_blob_past_checks_findings(
+        adopter, monkeypatch, tmp_path):
+    """The NOTE is no refusal: a plan keeping sets of one blob in the root
+    (`A`, `a`) and in the code leg (`src/A`, `src/a`) is `plan ok`, and
+    `execute` goes on past `check`'s findings to its next step, which a
+    sentinel stops here before any leg exists."""
+    source = a_source(tmp_path)
+    with_paths(source, ("A", "a", "src/A", "src/a"))
+    plan = planned(source, tmp_path, {"A": ROOT, "a": ROOT})
+    assert findings(plan) == []
+
+    class NextStep(Exception):
+        """`execute` reached the step after `_refuse_what_check_finds`."""
+
+    def next_step(*_args):
+        raise NextStep
+
+    monkeypatch.setattr(adopter, "_require_filter_repo", lambda: None)
+    monkeypatch.setattr(adopter, "_refuse_symlinks_checked_out_as_files",
+                        next_step)
+    remotes = tmp_path / "remotes"
+    with pytest.raises(NextStep):
+        adopter.cmd_execute(Namespace(
+            plan=str(plan), source=None, local_remote_dir=remotes,
+            allow_empty_leg=[], yes=True, work_dir=tmp_path / "work"))
+    assert not remotes.exists()
+
+
+def test_on_a_disk_that_ignores_case_check_names_the_twins_too(tmp_path):
+    """The rows above ask nothing of the disk, and `plan-case-twins` asks
+    nothing of it either. This row runs `check` with its work directory on
+    the disk `git init` is asked about, and is skipped where that disk keeps
+    case, as every CI disk does (CI is Linux only since #597)."""
+    work = tmp_path / "work"
+    git("init", "-q", str(work / "probe"), cwd=tmp_path)
+    if git("config", "--local", "--get", "core.ignorecase",
+           cwd=work / "probe", check=False).stdout.strip() != "true":
+        pytest.skip("needs a disk that ignores case: `git init` wrote no "
+                    "`core.ignorecase=true` in the work directory, so that "
+                    "disk keeps case; the rows above find the twins on "
+                    "every disk")
+    source = a_source(tmp_path)
+    with_paths(source, ("A", "a"), own_blobs=True)
+    result = checked(planned(source, tmp_path, {"A": ROOT, "a": ROOT}), None,
+                     "--work-dir", str(work / "check"))
+    assert finding_lines(result) == [
+        twins_kept("1 set", ROOT_TWINS, "2 paths", "`A` and `a`")]
 
 
 # ---------------------------------------------------------------------------
@@ -2316,3 +2785,343 @@ def test_the_checkout_questions_take_the_settings_and_no_attr_source(
                    if name not in ANOTHER_REPOSITORY}
     monkeypatch.delenv(PARAMETERS)
     assert PARAMETERS not in adopter._split_checkout_env()
+
+
+# ---------------------------------------------------------------------------
+# #1192: the mount's compare, under a filter that fails
+# ---------------------------------------------------------------------------
+
+SPEC_MD = "specs/001-feature/spec.md"
+#: A side tree's rules: the failing filter for the root's own
+#: `.gitattributes`, and `*.md text`, which reaches `SPEC_MD`.
+FILTER_AND_TEXT = FILTERED_ROOT + OWN_TEXT_ROOT
+#: The rule of the source's own root that gives `notes.txt` alone the
+#: failing filter, and that file.
+FILTERED_NOTES = {ROOT_ATTRIBUTES: f"/{NOTES} filter={FAILING}\n".encode(),
+                  NOTES: b"notes\n"}
+#: Where the plan sends `notes.txt`: each place the mount's `git rm` takes
+#: it from.
+SENT_OR_DROPPED = ["spec", "code", "drop"]
+
+
+def spec_under_a_side_tree(base: Path, handed, rules: bytes, entries=(),
+                           spec: bytes | None = None) -> tuple[Path, dict]:
+    """The plan for a source whose own root says `NEUTRAL_ROOT`, with
+    `SPEC_MD` committed as `spec` byte for byte where it is given, and which
+    holds on a side branch a tree whose `.gitattributes` says `rules`; and
+    `entries`, with `attr.tree` naming that tree by its object id, in the
+    form `handed` gives them. The control: in the source, git reads `text`
+    for `SPEC_MD` under them; where this git reads no `attr.tree`, the form
+    is skipped."""
+    files = {ROOT_ATTRIBUTES: NEUTRAL_ROOT}
+    if spec is not None:
+        files[SPEC_MD] = spec
+    source = a_source(base, files=files)
+    env = handed(base, [*entries,
+                        ("attr.tree", on_a_side_branch(source, rules))])
+    read = subprocess.run(["git", "check-attr", "text", "--", SPEC_MD],
+                          cwd=str(source), env={**os.environ, **env},
+                          capture_output=True, text=True, check=True)
+    if read.stdout.strip() == f"{SPEC_MD}: text: unspecified":
+        pytest.skip("this git reads no `attr.tree`")
+    assert read.stdout.strip() == f"{SPEC_MD}: text: set"
+    return planned(source, base, {}), env
+
+
+def compare_refused(path: str) -> str:
+    """`plan-file-reencoded` for the mount's compare, which git refuses at
+    `path`, whose clean filter `FAILING` fails."""
+    return (f"FINDING {REENCODED_FILES}: this machine's git refuses to "
+            "compare what the plan sends to a leg or drops with its blob, "
+            "as the mount's `git rm` does (git said `fatal: "
+            f"{path}: clean filter '{FAILING}' failed`), so `execute` would "
+            "stop after the leg repositories exist, at the first step that "
+            "reads that file again: extracting the spec leg, extracting the "
+            "code leg once the spec leg is pushed, or, once both legs are "
+            "pushed, cloning the source for the split or mounting the legs. "
+            "Change the rule or the setting git names, and re-run `plan`.")
+
+
+@pytest.mark.parametrize("handed", EVERY_FORM)
+def test_a_side_trees_failing_filter_over_its_text_rule_is_one_finding(
+        tmp_path, handed):
+    """#1192: the side tree `attr.tree` names says `/.gitattributes
+    filter=w1136`, that filter failing, and `*.md text`. Measured on
+    93d29314 with git 2.43, in each form: `check` said the right
+    `plan-attributes-reencoded`, and also `plan-file-reencoded` naming
+    `specs/001-feature/spec.md`, which the split stores as its blob (the
+    control below). The rehearsal's `update-index -q --refresh` died at the
+    root's `.gitattributes`, exit 128, which nothing read, and `diff-files`
+    then listed each file it had not reached. The mount's `git rm` compares
+    only what it removes, so the rules it leaves are marked unchanged now,
+    and the filter's failure is the one finding."""
+    plan, env = spec_under_a_side_tree(tmp_path, handed, FILTER_AND_TEXT,
+                                       FAILING_FILTER)
+    result = checked(plan, env)
+    assert "REFUSED" not in result.stderr, result.stderr
+    assert result.returncode == 1, result.stderr
+    assert codes(result) == [REENCODED_ATTRIBUTES], result.stderr
+    assert f"clean filter '{FAILING}' failed" in finding_lines(result)[0]
+
+
+@pytest.mark.parametrize("handed", EVERY_FORM)
+def test_a_file_the_compare_reaches_is_still_named_beside_that_filter(
+        tmp_path, handed):
+    """The control where the compare runs to its end: the same side tree
+    and filter, over a spec committed with CRLF, which `*.md text` stores
+    as LF. The filter's failure is named, and so is the spec, which the
+    mount's `git rm` would refuse, as on 93d29314."""
+    plan, env = spec_under_a_side_tree(tmp_path, handed, FILTER_AND_TEXT,
+                                       FAILING_FILTER, b"# The feature\r\n")
+    result = checked(plan, env)
+    assert "REFUSED" not in result.stderr, result.stderr
+    assert result.returncode == 1, result.stderr
+    assert codes(result) == [REENCODED_ATTRIBUTES, REENCODED_FILES], \
+        result.stderr
+    found = finding_lines(result)[1]
+    assert SENT_CRLF in found and f": `{SPEC_MD}`." in found, found
+
+
+@pytest.mark.parametrize("handed", EVERY_FORM)
+def test_the_side_trees_text_rule_alone_is_plan_ok(tmp_path, handed):
+    """The control: the tree's `*.md text` alone, with no filter. Git
+    stores `specs/001-feature/spec.md` (`# The feature`, LF only) as its
+    blob, and `check` says `plan ok`, as on 93d29314."""
+    plan, env = spec_under_a_side_tree(tmp_path, handed, OWN_TEXT_ROOT)
+    result = checked(plan, env)
+    assert result.returncode == 0, result.stderr
+    assert "plan ok" in result.stdout
+
+
+@pytest.mark.parametrize("leg", SENT_OR_DROPPED)
+def test_a_compare_git_refuses_is_that_finding_in_gits_words(tmp_path, leg):
+    """A filter that fails for a file the plan sends to a leg or drops: the
+    mount's compare stops at it, exit 128, and that is the finding. Measured
+    on 93d29314 with git 2.43: `check` said the file was stored as other
+    bytes than its blob, from the list `diff-files` gave of the files the
+    compare had not reached."""
+    plan = planned(a_source(tmp_path, files=FILTERED_NOTES), tmp_path,
+                   {NOTES: leg})
+    result = checked(plan, with_parameters(tmp_path, FAILING_FILTER))
+    assert "REFUSED" not in result.stderr, result.stderr
+    assert result.returncode == 1, result.stderr
+    assert finding_lines(result) == [compare_refused(NOTES)]
+
+
+@pytest.mark.parametrize("leg", SENT_OR_DROPPED)
+def test_execute_refuses_a_compare_git_refuses_before_any_leg(
+        adopter, monkeypatch, tmp_path, leg):
+    """With the check patched out, `execute` made both leg repositories and
+    stopped at the first step that read the file again (measured with git
+    2.43, `STOPS_AT_A_READ`): which step that is, the clock decides, so the
+    row below asks only that it is one the finding names. Unpatched, it
+    refuses before any leg."""
+    plan = planned(a_source(tmp_path, files=FILTERED_NOTES), tmp_path,
+                   {NOTES: leg})
+    for name, value in with_parameters(tmp_path, FAILING_FILTER).items():
+        monkeypatch.setenv(name, value)
+    refusal = refused_before_any_leg(adopter, monkeypatch, plan, tmp_path)
+    assert refusal.code == REENCODED_FILES
+    assert refusal.detail.splitlines()[1:] == [f"  {compare_refused(NOTES)}"]
+
+
+#: Each step `execute` can stop at for a compare git refuses: how the
+#: finding names it, and which legs `execute`'s notice says are pushed.
+READ_AGAIN_STOPS = {
+    "extracting the spec leg": ("extracting the spec leg,",
+                                "neither leg is pushed"),
+    "extracting the code leg": (
+        "extracting the code leg once the spec leg is pushed,",
+        "the spec leg is pushed"),
+    "cloning the source for the split": (
+        "once both legs are pushed, cloning the source for the split",
+        "both legs are pushed"),
+    "mounting the legs": (
+        "once both legs are pushed, cloning the source for the split or "
+        "mounting the legs.", "both legs are pushed"),
+}
+#: How the extractions run: as they are, or as if each trusted the file's
+#: stat data and never read it, the filter out of the environment while
+#: each runs (r1253's probe), which leaves the steps after both legs.
+EXTRACTIONS = [pytest.param(False, id="as-they-run"),
+               pytest.param(True, id="as-if-trusting-the-stat")]
+
+
+@NEEDS_FILTER_REPO
+@pytest.mark.parametrize("trusting", EXTRACTIONS)
+@pytest.mark.parametrize("leg", SENT_OR_DROPPED)
+def test_execute_stops_at_a_step_the_refused_compare_names(
+        adopter, monkeypatch, capsys, tmp_path, leg, trusting):
+    """The measurement behind `STOPS_AT_A_READ` (r1253's SHOULD-1): with
+    `check`'s refusal patched out, `execute` makes both leg repositories and
+    stops at a step the finding names, with the legs pushed that it names
+    for that step. Which step, the clock decides (`READ_AGAIN`): here,
+    nearly always extracting the spec leg, so no step in particular is
+    asked for. Where neither extraction reads the file, the split's own
+    clone did, in 24 of 24 runs on 18c2aaef (r1253), a step the finding
+    left out. Where no step read the file again, nothing stopped for it,
+    as the finding warns, and the row is skipped."""
+    plan = planned(a_source(tmp_path, files=FILTERED_NOTES), tmp_path,
+                   {NOTES: leg})
+    for name, value in with_parameters(tmp_path, FAILING_FILTER).items():
+        monkeypatch.setenv(name, value)
+    ((code, detail),) = findings(plan)
+    assert code == REENCODED_FILES
+    monkeypatch.setattr(adopter, "_refuse_what_check_finds",
+                        lambda *args, **kwargs: None)
+    if trusting:
+        extract = adopter._extract_leg
+
+        def without_the_filter(*args, **kwargs):
+            saved = os.environ.pop(PARAMETERS)
+            try:
+                return extract(*args, **kwargs)
+            finally:
+                os.environ[PARAMETERS] = saved
+        monkeypatch.setattr(adopter, "_extract_leg", without_the_filter)
+    args = Namespace(plan=str(plan), source=None,
+                     local_remote_dir=tmp_path / "remotes",
+                     allow_empty_leg=[], yes=True, work_dir=tmp_path / "work")
+    stopped = adopter.cmd_execute(args)
+    said = capsys.readouterr().err
+    if stopped == 0:
+        pytest.skip(f"no step read `{NOTES}` again in this run (READ_AGAIN)")
+    assert stopped == 2, said
+    (refused,) = [line for line in said.splitlines()
+                  if line.startswith("REFUSED ")]
+    step = refused[len("REFUSED "):].split(". THE EXACT COMMAND WAS:")[0]
+    assert step in READ_AGAIN_STOPS, said
+    named, pushed = READ_AGAIN_STOPS[step]
+    assert named in detail, detail
+    assert f"fatal: {NOTES}: clean filter '{FAILING}' failed" in said, said
+    assert f", and {pushed}. " in said, said
+    if trusting:
+        assert pushed == "both legs are pushed", said
+    assert (tmp_path / "remotes" / "Northwind-spec.git").is_dir()
+    assert (tmp_path / "remotes" / "Northwind-code.git").is_dir()
+
+
+def test_a_compare_git_refuses_is_named_where_the_root_is_not_laid_out(
+        tmp_path):
+    """The root keeps a FILE named `shape`, where the shape's own
+    `shape/.gitattributes` would go (`plan-root-blocks-shape-copy`, #262),
+    so the rehearsal cannot write the split's root, and asks nothing after
+    the mount's compare: a compare git refuses is still named."""
+    files = {**FILTERED_NOTES, "shape": b"a file\n",
+             ROOT_ATTRIBUTES: TEXT_EOL_LF + FILTERED_NOTES[ROOT_ATTRIBUTES]}
+    plan = planned(a_source(tmp_path, files=files), tmp_path,
+                   {"shape": ROOT, NOTES: "spec"})
+    result = checked(plan, with_parameters(tmp_path, FAILING_FILTER))
+    assert result.returncode == 1, result.stderr
+    assert codes(result) == ["plan-root-blocks-shape-copy",
+                             REENCODED_FILES], result.stderr
+    assert finding_lines(result)[1] == compare_refused(NOTES)
+
+
+def test_a_gitattributes_the_mount_removes_is_still_compared(tmp_path):
+    """Only the `.gitattributes` the mount's `git rm` leaves are marked
+    unchanged in its compare: one the plan sends to a leg, committed with
+    CRLF under the root's `* text eol=lf`, is compared and named, as on
+    93d29314."""
+    files = {ROOT_ATTRIBUTES: TEXT_EOL_LF, "docs/.gitattributes":
+             b"*.md text\r\n", "docs/a.md": b"# a\n"}
+    plan = planned(a_source(tmp_path, files=files), tmp_path,
+                   {"docs/": "spec"})
+    result = checked(plan)
+    assert result.returncode == 1, result.stderr
+    assert codes(result) == [REENCODED_FILES], result.stderr
+    found = finding_lines(result)[0]
+    assert SENT_CRLF in found and ": `docs/.gitattributes`." in found, found
+
+
+#: `caf` and the byte 0xE9, a folder name that is not UTF-8, as
+#: `Source.tree` keeps it (`os.fsdecode(b"caf\xe9")` on POSIX). Built with
+#: `chr`, as `NOT_UTF_8_BRANCH` is, so this module imports everywhere.
+NOT_UTF_8_FOLDER = "caf" + chr(0xDCE9)
+#: The root's rules that name the failing filter for a `.gitattributes` one
+#: folder under `.github/`, beside `*.md text`, which reaches `SPEC_MD`.
+FILTERED_UNDER_GITHUB = (f".github/*/.gitattributes filter={FAILING}\n"
+                         .encode() + OWN_TEXT_ROOT)
+#: A `.gitattributes` the plan keeps under `.github/`, whose filter fails:
+#: `(its folder, the folder as `plan` asks about it, the root's rules, the
+#: kept file's own)`. The root's rules name the filter for it, in a folder
+#: named in UTF-8 or not; or the kept file's own rule does, beside the
+#: root's `*.md text`.
+KEPT_UNDER_GITHUB = [
+    pytest.param(".github/kept/", ".github/kept/", FILTERED_UNDER_GITHUB,
+                 b"*.yml text\n", id="the-roots-rule"),
+    pytest.param(f".github/{NOT_UTF_8_FOLDER}/", '".github/caf\\udce9/"',
+                 FILTERED_UNDER_GITHUB, b"*.yml text\n",
+                 id="the-roots-rule-not-utf-8"),
+    pytest.param(".github/kept/", ".github/kept/", OWN_TEXT_ROOT,
+                 f".gitattributes filter={FAILING}\n".encode(),
+                 id="its-own-rule"),
+]
+
+
+def store_refused(path: str) -> str:
+    """`plan-file-reencoded` for the split's `git add`, which git refuses at
+    `path`, whose clean filter `FAILING` fails."""
+    return (f"FINDING {REENCODED_FILES}: this machine's git refuses to store "
+            "again what the plan keeps in the assembly root, as the split's "
+            f"`git add -A` does (git said `fatal: {path}: clean filter "
+            f"'{FAILING}' failed`), so `execute` would stop after the leg "
+            "repositories exist, no later than committing the split, and "
+            "sooner where a step before it meets the same rule: extracting "
+            "or seeding a leg, or mounting the legs, where the rule reaches "
+            "the `.gitmodules` it writes. Commit the file git names in the "
+            "source as git stores it, or change the rule or the setting that "
+            "refuses it, and re-run `plan`.")
+
+
+@pytest.mark.parametrize(("folder", "asked", "root", "kept"),
+                         KEPT_UNDER_GITHUB)
+def test_a_kept_nested_gitattributes_whose_filter_fails_is_the_stores_alone(
+        tmp_path, folder, asked, root, kept):
+    """A `.gitattributes` the plan keeps under `.github/`, whose filter
+    fails, beside `SPEC_MD`, which `*.md text` reaches and the split stores
+    as its blob. The mount's `git rm` leaves it, so the compare marks it
+    unchanged, by the bytes the tree holds (`_nul`), and the split's `git
+    add` refuses it: that is the one finding (r1253's SHOULD-2). Measured
+    on 93d29314 with git 2.43, in each row: `check` also said
+    `plan-file-reencoded` naming `SPEC_MD`, a second form of #1192. Where
+    only the root's own `.gitattributes` was marked, the compare refused the
+    kept file too; where the marked paths were encoded as strict UTF-8, the
+    folder that is not UTF-8 raised `UnicodeEncodeError`. git's words are
+    decoded with `replace` (`_SplitRehearsal.refused`), so that folder's
+    name in them is not held here."""
+    if not folder.isascii():
+        skip_where_a_name_cannot_be_not_utf_8(tmp_path)
+    source = a_source(tmp_path, files={ROOT_ATTRIBUTES: root,
+                                       f"{folder}.gitattributes": kept})
+    plan = planned(source, tmp_path, {asked: ROOT})
+    result = checked(plan, with_parameters(tmp_path, FAILING_FILTER))
+    assert "REFUSED" not in result.stderr, result.stderr
+    assert result.returncode == 1, result.stderr
+    assert codes(result) == [REENCODED_FILES], result.stderr
+    (found,) = finding_lines(result)
+    named = f"{folder}.gitattributes"
+    if folder.isascii():
+        assert found == store_refused(named)
+    else:
+        before, after = store_refused(named).split(named)
+        assert found.startswith(before) and found.endswith(after), found
+
+
+def test_each_refusal_is_named_in_the_groups_order(tmp_path):
+    """A filter that fails for every Markdown file: the split's `git add`
+    refuses the kept `README.md`, the mount's compare the spec it sends to
+    the spec leg, and the split's store the pinned `AGENTS-shape.md`, in
+    the order of the groups, what the root keeps first. On 93d29314 the
+    compare's was the list `diff-files` gave, first."""
+    source = a_source(tmp_path, files={
+        ROOT_ATTRIBUTES: f"*.md filter={FAILING}\n".encode()})
+    result = checked(planned(source, tmp_path, {}),
+                     with_parameters(tmp_path, FAILING_FILTER))
+    assert result.returncode == 1, result.stderr
+    assert codes(result) == [REENCODED_FILES] * 3, result.stderr
+    store, compare, copies = finding_lines(result)
+    assert "to store again what the plan keeps in the assembly root" in store
+    assert "`fatal: README.md: clean filter" in store, store
+    assert compare == compare_refused(SPEC_MD)
+    assert "to store the pinned shape copies the split writes" in copies
