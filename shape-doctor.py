@@ -3858,7 +3858,7 @@ def local_leg_alias(ctx: Context, path: Path, read_as: dict) -> bool:
     if ctx.kind != PROJECT or rel in read_as:
         return False
     try:
-        if not path.is_symlink():
+        if not stat.S_ISLNK(path.lstat().st_mode):
             return False
         tracked = git_answer(
             ["--literal-pathspecs", "ls-files", "--stage", "-z", "--", rel],
