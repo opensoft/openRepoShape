@@ -61,6 +61,27 @@ of 4 fresh sources. Now `plan-case-twins` names each set the plan keeps in
 one repository, the root or a leg, on every disk, and `execute` refuses it
 before any leg exists.
 
+#1183: twins the plan sends into different repositories, or drops one of,
+are no finding, and `execute` lost them on such a disk. Measured with git
+2.43 on 4d40ce9f: the split's clone checks out one file per set, holding the
+bytes of the twin git wrote last, and the mount's `git rm` of the twin that
+goes deleted that file (`adopt-lost` for the twin the root keeps) or refused
+it as a local modification (`REFUSED mounting the legs`), after both legs
+were pushed. Now the mount removes such a path with `-f` and writes each
+twin the root keeps back from the index. The rows that drive the mount make
+that one file on any disk, as hard links; the rows that run `execute` whole
+skip on a disk that keeps case, but for one control.
+
+`-f` also skipped what kept git from removing through a symlink. Where the
+clone left a folder as its twin, a symlink to a folder outside the work
+directory, `git rm -f` unlinked the file in that folder (r1237); where it
+left a gitlink so, `git rm -f`, which removes the folder at a gitlink's
+path with all it holds, emptied that folder (r1237b). Now each path the
+index holds beyond a symlink on the way, and each gitlink whose own path
+the disk holds as no folder (a symlink, a file, or nothing), leaves the
+index alone (`git rm --cached`), and nothing on the disk is touched. The
+rows make that symlink, or that file, by hand on a disk that keeps case.
+
 #1136 followed, measured on bba168bd with git 2.43. In each case `check`
 said `plan ok`, and `execute` made both legs and stopped extracting the
 spec leg:
@@ -98,9 +119,11 @@ UTF-8 or not (r1253's SHOULD-2).
 from __future__ import annotations
 
 import importlib.util
+import json
 import os
 import shutil
 import subprocess
+import sys
 import tempfile
 from argparse import Namespace
 from pathlib import Path
@@ -109,8 +132,9 @@ from types import SimpleNamespace
 import pytest
 
 from conftest import (ADOPT, WINDOWS_SKIP, appended_to_command_scope,
-                      findings, git, planned, refused_before_any_leg,
-                      run_script, skip_where_a_name_cannot_be_not_utf_8)
+                      findings, git, make_source_repo, planned,
+                      refused_before_any_leg, run_script,
+                      skip_where_a_name_cannot_be_not_utf_8)
 from test_adopt_nested_attributes import (KEEP_GITHUB, ROOT, ROOT_ATTRIBUTES,
                                           SOURCE, YML_CRLF, adoption_plan,
                                           committed_raw, github)
@@ -122,6 +146,11 @@ from test_adopt_root_symlinks import (GITHUB, OUTSIDE_CI, WORKFLOW, climbs,
 from test_adopt_root_symlinks import links_as_links  # noqa: F401
 from test_adopt_root_symlinks import unwritable_work  # noqa: F401
 from test_adopt_root_symlinks import planned as planned_with_links
+#: #527's child, `_mount_the_legs` under `LC_ALL=C PYTHONUTF8=0`, and the
+#: environment it runs in.
+from test_adopt_git_rm_bytes import MOUNT_IN_THE_C_LOCALE, c_locale_or_skip
+#: The one skip for a mode that root reads through and Windows ignores.
+from test_validate_pins_unreadable_workflow import CANNOT_RUN_AS_ROOT
 
 #: The two findings #910 adds, and the codes of `execute`'s refusals.
 PATH_GIT_REFUSES = "plan-path-git-refuses"
@@ -554,9 +583,10 @@ def test_check_names_each_twin_git_refuses_and_each_set_it_holds(tmp_path):
 # ---------------------------------------------------------------------------
 
 #: The finding #1161 adds, the code of `execute`'s refusal, how its
-#: remediation begins, and the whole of it: a rename in the source, and no
-#: answer that sends the twins into different repositories, which a disk
-#: that ignores case loses too (#1183, r1189's MUST 1).
+#: remediation begins, and the whole of it: a rename in the source. It
+#: offers no answer that sends the twins into different repositories
+#: (r1189's MUST 1), written while a disk that ignores case lost those too;
+#: `execute` keeps them since #1183 (the rows under #1183 below).
 PLAN_CASE_TWINS = "plan-case-twins"
 TWINS_REMEDY = "Remediation: rename paths in the source until no two"
 TWINS_REMEDIATION = (
@@ -580,8 +610,8 @@ def twins_kept(sets: str, where: str, paths: str, named: str) -> str:
             "does by default, holds each set as one name: a clone made there "
             "checks out only one path of each set, and `execute` could stop "
             "there before any leg exists, at git's `will not add file "
-            "alias`, or after both legs are pushed, as `adopt-lost` or at "
-            "`git rm` mounting the legs, so `execute` refuses them on every "
+            "alias`, or, for a set in the assembly root, after both legs are "
+            "pushed, as `adopt-lost`, so `execute` refuses them on every "
             "disk.")
 
 
@@ -905,9 +935,9 @@ def test_paths_no_one_repository_holds_as_one_name_are_no_finding(
     """Folders in another case merge into one whose names differ, and no
     path is lost. Twins the plan sends to different repositories, and a
     twin it drops beside one it keeps, are not this finding, which asks one
-    repository at a time; on a disk that ignores case `execute` loses them
-    too, as `adopt-lost` after both legs are pushed (r1189's SHOULD 3,
-    #1183)."""
+    repository at a time (r1189's SHOULD 3). On a disk that ignores case
+    `execute` lost them, as `adopt-lost` after both legs were pushed, until
+    #1183: it keeps them now (the rows under #1183 below)."""
     source = a_source(tmp_path)
     with_paths(source, paths, own_blobs=True)
     assert findings(planned(source, tmp_path, answers)) == []
@@ -984,6 +1014,753 @@ def test_on_a_disk_that_ignores_case_check_names_the_twins_too(tmp_path):
                      "--work-dir", str(work / "check"))
     assert finding_lines(result) == [
         twins_kept("1 set", ROOT_TWINS, "2 paths", "`A` and `a`")]
+
+
+# ---------------------------------------------------------------------------
+# #1183: case twins the plan sends into different repositories, or drops
+# ---------------------------------------------------------------------------
+
+#: The branch `_commit_the_split` checks the assembly out on.
+SPLIT_BRANCH = "adopt/three-repo-shape"
+#: The two legs as `_mount_the_legs` finds them in the work directory.
+LEG_NAMES = {"spec": "Northwind-spec", "code": "Northwind-code"}
+#: What the mount adds to the root's index: its two gitlinks and the file
+#: that registers them.
+MOUNTED = (".gitmodules", "spec", "code")
+#: `git rm` of one path, as `_mount_the_legs` runs it, and with `-f`.
+REMOVED_AS = ["git", "--literal-pathspecs", "rm", "-r", "-q", "--"]
+FORCED_AS = ["git", "--literal-pathspecs", "rm", "-r", "-q", "-f", "--"]
+#: How the mount writes the twins the root keeps back from the index.
+WRITTEN_AS = ["git", "checkout-index", "-f", "-z", "--stdin"]
+
+
+def at_or_under(path: str, top: str) -> bool:
+    return path == top or path.startswith(top + "/")
+
+
+def z_rows(repository: Path, *args: str) -> list[str]:
+    """The rows `git <args>` prints in `repository`, each ended by a NUL,
+    decoded as `_git_path` decodes a path: a byte that is not UTF-8 kept as
+    a surrogate, which `git`'s text would refuse."""
+    raw = subprocess.run(["git", *args], cwd=str(repository),
+                         capture_output=True, check=True).stdout
+    return [row.decode("utf-8", "surrogateescape")
+            for row in raw.split(b"\0") if row]
+
+
+def an_assembly(base: Path, paths: tuple[str, ...],
+                add=with_paths) -> tuple[Path, dict]:
+    """`(assembly, blobs)`: `a_source` whose commit gains `paths` by `add`,
+    each with a blob of its own, cloned into `base/work` as
+    `_commit_the_split` clones it, with no template and the split branch
+    checked out at that commit, beside the two legs; `blobs` holds each
+    path of that commit's tree and its blob."""
+    source = a_source(base)
+    add(source, paths, own_blobs=True)
+    commit = git("rev-parse", "HEAD", cwd=source).stdout.strip()
+    work = base / "work"
+    assembly = work / "Northwind"
+    git("clone", "-q", "--template=", str(source), str(assembly), cwd=base)
+    git("checkout", "-q", "-B", SPLIT_BRANCH, commit, cwd=assembly)
+    for role, name in LEG_NAMES.items():
+        make_source_repo(work / name, tree={"file.txt": role}, edits=())
+    return assembly, {row.split("\t", 1)[1]: row.split()[2]
+                      for row in z_rows(source, "ls-tree", "-r", "-z",
+                                        commit)}
+
+
+def as_one_file(assembly: Path, sets: tuple[tuple[str, ...], ...]) -> None:
+    """What a clone on a disk that ignores case checks out of each of
+    `sets`, made on a disk that keeps case: ONE FILE, holding the bytes of
+    the twin git wrote last, the last of the set in the index's order, as
+    #1183's trace measured. Each other twin is made a hard link to that
+    twin's file, so the twins share one file as they do there. Where the
+    clone's own disk ignores case, git did this itself, and nothing is
+    done."""
+    if git("config", "--get", "core.ignorecase", cwd=assembly,
+           check=False).stdout.strip() == "true":
+        return
+    for named in sets:
+        *others, last = named
+        for twin in others:
+            (assembly / twin).unlink()
+            os.link(assembly / last, assembly / twin)
+
+
+def mounted(adopter, base: Path, assembly: Path, moved: dict) -> None:
+    """`_mount_the_legs` of `assembly`, `moved` its `paths_for`, then the
+    `git add -A -- .` that `_stage_the_split` begins with."""
+    work = base / "work"
+    adopter._mount_the_legs(
+        assembly, work, LEG_NAMES,
+        {role: str(work / name) for role, name in LEG_NAMES.items()},
+        {"spec": [], "code": [], "drop": [], **moved}, "spec", "code")
+    git("add", "-A", "--", ".", cwd=assembly)
+
+
+def staged(assembly: Path) -> dict:
+    """Each path the assembly's index holds but the mount's own, and its
+    object."""
+    held = {row.split("\t", 1)[1]: row.split()[1]
+            for row in z_rows(assembly, "ls-files", "-s", "-z")}
+    return {path: oid for path, oid in held.items() if path not in MOUNTED}
+
+
+#: `(the paths a source commit gains, each with a blob of its own, the sets
+#: of them a disk that ignores case holds as one, each in the index's
+#: order, and the paths the plan sends to a leg or drops, by `leg:`)`.
+#: Measured on 4d40ce9f on such a disk, `execute` stopped after both legs
+#: were pushed: as `adopt-lost` for the twin the root keeps where the twin
+#: that goes sorts last (`across`, `dropped`, `a-folder-kept-beside-a-file`),
+#: and `REFUSED mounting the legs` at `git rm` where it sorts first.
+SPLIT_TWINS = [
+    pytest.param(("A", "a", "D/x", "d/x"), (("A", "a"), ("D/x", "d/x")),
+                 {"code": ["a", "d/"]}, id="across"),
+    pytest.param(("A", "a", "D/x", "d/x"), (("A", "a"), ("D/x", "d/x")),
+                 {"code": ["A", "D/"]}, id="across-the-other-way"),
+    pytest.param(("A", "a"), (("A", "a"),), {"drop": ["a"]}, id="dropped"),
+    pytest.param(("A", "a"), (("A", "a"),), {"drop": ["A", "a"]},
+                 id="both-dropped"),
+    pytest.param(("A", "a"), (("A", "a"),), {"spec": ["A"], "code": ["a"]},
+                 id="one-to-each-leg"),
+    pytest.param(("F/x", "f"), (("F/x", "f"),), {"code": ["f"]},
+                 id="a-folder-kept-beside-a-file"),
+]
+
+
+@pytest.mark.parametrize(("paths", "sets", "moved"), SPLIT_TWINS)
+def test_the_mount_keeps_each_twin_the_root_keeps_with_its_own_blob(
+        adopter, tmp_path, paths, sets, moved):
+    """The twins share one file, as on a disk that ignores case. On
+    4d40ce9f the mount's `git rm` refused that file as a local
+    modification where the twin that goes sorts first, and elsewhere the
+    root kept the other twin's bytes (on such a disk, none: the one file
+    was gone). Now the root's index holds each path the plan keeps there,
+    each with its own blob, and no path the plan moved or dropped."""
+    assembly, blobs = an_assembly(tmp_path, paths)
+    as_one_file(assembly, sets)
+    mounted(adopter, tmp_path, assembly, moved)
+    removed = [path.rstrip("/") for leg in moved.values() for path in leg]
+    assert staged(assembly) == {
+        path: oid for path, oid in blobs.items()
+        if not any(at_or_under(path, top) for top in removed)}
+
+
+def git_commands_of_the_mount(adopter, monkeypatch, base: Path,
+                              assembly: Path, moved: dict) -> list:
+    """`(command, input)` of each `git rm` and `git checkout-index` that
+    `mounted` runs, in order, each command as text."""
+    ran = []
+    real = subprocess.run
+
+    def recorded(command, *args, **named):
+        words = [os.fsdecode(word) for word in command]
+        if "rm" in words[:3] or "checkout-index" in words[:2]:
+            ran.append((words, named.get("input")))
+        return real(command, *args, **named)
+
+    monkeypatch.setattr(subprocess, "run", recorded)
+    mounted(adopter, base, assembly, moved)
+    monkeypatch.undo()
+    return ran
+
+
+def test_a_source_with_no_twin_set_split_is_mounted_as_before(
+        adopter, monkeypatch, tmp_path):
+    """`AB` and `ab` are twins the root keeps both of, and `a` goes to the
+    code leg: no set has a path at or under a path that goes (`a` is no
+    folder above `ab`), so each path is removed as on 4d40ce9f, without
+    `-f`, and nothing is written back from the index."""
+    assembly, _ = an_assembly(tmp_path, ("AB", "a", "ab", "b/x"))
+    assert git_commands_of_the_mount(
+        adopter, monkeypatch, tmp_path, assembly,
+        {"code": ["a"], "drop": ["b/"]}) == [
+            ([*REMOVED_AS, "a"], None), ([*REMOVED_AS, "b"], None)]
+
+
+def test_only_a_path_a_twin_is_at_or_under_is_removed_with_f(
+        adopter, monkeypatch, tmp_path):
+    """`a` and `b` go to the code leg, and `A`, the twin of `a`, stays in
+    the root: `a` alone is removed with `-f`, and `A` alone is written back
+    from the index, after the last `git rm`. On 4d40ce9f neither was."""
+    assembly, _ = an_assembly(tmp_path, ("A", "a", "b"))
+    assert git_commands_of_the_mount(
+        adopter, monkeypatch, tmp_path, assembly, {"code": ["a", "b"]}) == [
+            ([*FORCED_AS, "a"], None), ([*REMOVED_AS, "b"], None),
+            (WRITTEN_AS, b"A\0")]
+
+
+def test_a_path_git_cannot_write_back_is_refused_naming_the_command(
+        adopter, tmp_path):
+    """`_write_from_the_index` of a path the index does not hold: git
+    refuses it, and the mount raises `CommandFailed`, one of
+    `LATE_FAILURES`, naming the command and carrying what git said, as
+    `_git_rm` does."""
+    assembly, _ = an_assembly(tmp_path, ("A",))
+    with pytest.raises(adopter.CommandFailed) as caught:
+        adopter._write_from_the_index(assembly, ["nowhere"])
+    assert caught.value.args_list == WRITTEN_AS
+    assert caught.value.code != 0
+    assert "nowhere" in caught.value.output
+
+
+def test_a_forced_git_rm_git_refuses_is_refused_naming_it_with_f(
+        adopter, tmp_path):
+    """`_git_rm` with `forced` of a path the index does not hold: git
+    refuses it, and the mount raises `CommandFailed` naming the command it
+    ran, with `-f`, as `execute` prints it after both legs exist."""
+    assembly, _ = an_assembly(tmp_path, ("A",))
+    with pytest.raises(adopter.CommandFailed) as caught:
+        adopter._git_rm(assembly, "nowhere", True)
+    assert caught.value.args_list == [*FORCED_AS, "nowhere"]
+    assert caught.value.code != 0
+    assert "nowhere" in caught.value.output
+
+
+#: Case twins whose names hold the byte E9, which is not UTF-8, each spelled
+#: as `_git_path` spells it: that byte as the surrogate U+DCE9.
+NOT_UTF8_TWINS = ("caf\udce9A", "caf\udce9a")
+
+
+def with_names_not_utf8(repository: Path, paths: tuple[str, ...],
+                        own_blobs: bool = True) -> None:
+    """`with_paths` for names that are not UTF-8, which it hands `git
+    mktree` as text: each of `paths` goes into the index as the bytes it
+    spells, with a blob of its own holding those bytes and a newline, and
+    the index is committed on `main`."""
+    assert own_blobs
+    for path in paths:
+        name = path.encode("utf-8", "surrogateescape")
+        blob = blob_of(repository, name + b"\n")
+        subprocess.run(["git", "update-index", "--add", "--cacheinfo",
+                        b"100644," + blob.encode("ascii") + b"," + name],
+                       cwd=str(repository), check=True)
+    git("commit", "-qm", "Add paths", cwd=repository)
+
+
+def test_twins_whose_names_are_not_utf_8_keep_their_own_blobs(
+        adopter, tmp_path):
+    """`caf<E9>A` kept in the root and `caf<E9>a` sent to the code leg, the
+    byte E9 not UTF-8, sharing one file: the mount reads the index's names
+    as bytes, and hands the twin it writes back to git as the bytes the
+    tree holds, so the root's index holds that twin with its own blob. A
+    listing decoded, or a name encoded, as strict UTF-8 raises a
+    `UnicodeError` there, after both legs are pushed."""
+    try:
+        os.close(os.open(os.fsencode(tmp_path) + b"/caf\xe9",
+                         os.O_CREAT | os.O_WRONLY, 0o644))
+    except (OSError, ValueError):
+        pytest.skip("this disk, or this platform, takes no file name that "
+                    "is not UTF-8")
+    kept, moved = NOT_UTF8_TWINS
+    assembly, blobs = an_assembly(tmp_path, NOT_UTF8_TWINS,
+                                  with_names_not_utf8)
+    as_one_file(assembly, (NOT_UTF8_TWINS,))
+    mounted(adopter, tmp_path, assembly, {"code": [moved]})
+    assert kept in blobs
+    assert staged(assembly) == {path: oid for path, oid in blobs.items()
+                                if path != moved}
+
+
+#: `git rm` of one path from the index alone, as the mount takes a path the
+#: disk holds beyond a symlink (r1237).
+CACHED_AS = ["git", "--literal-pathspecs", "rm", "-r", "-q", "--cached",
+             "--"]
+
+
+def with_a_link(target: str):
+    """An `add` for `an_assembly`: each of `paths` goes into the source
+    commit with a blob of its own, as `with_paths` writes it, but a path
+    whose last name is `d`, which is a symlink leading to `target`."""
+    def add(repository: Path, paths: tuple[str, ...],
+            own_blobs: bool = True) -> None:
+        assert own_blobs
+        for path in paths:
+            mode, data = (("120000", target.encode()) if path.split("/")[-1]
+                          == "d" else ("100644", f"{path}\n".encode()))
+            git("update-index", "--add", "--cacheinfo",
+                f"{mode},{blob_of(repository, data)},{path}", cwd=repository)
+        git("commit", "-qm", "Add paths", cwd=repository)
+    return add
+
+
+def as_the_link(assembly: Path, folder: str, link: str) -> None:
+    """What a clone on a disk that ignores case checks out of the folder
+    `folder` and its twin `link`, a symlink that sorts after it: the
+    symlink alone, which both names reach, as r1237 measured. Made on a
+    disk that keeps case: the folder gives way to a symlink leading where
+    `link` leads. Where the clone's own disk ignores case, git did this
+    itself, and nothing is done."""
+    if git("config", "--get", "core.ignorecase", cwd=assembly,
+           check=False).stdout.strip() == "true":
+        return
+    for child in (assembly / folder).iterdir():
+        child.unlink()
+    (assembly / folder).rmdir()
+    os.symlink(os.readlink(assembly / link), assembly / folder)
+
+
+def what_it_holds(folder: Path) -> dict:
+    return {child.name: child.read_bytes() for child in folder.iterdir()}
+
+
+#: `(the paths a source commit gains, a path named `d` among them the
+#: symlink, where it leads, `{victim}` being a folder outside the assembly,
+#: the paths the plan sends to a leg or drops, the `git rm` and `git
+#: checkout-index` the mount runs)`. On c9f0cc18 the mount ran `git rm -f`
+#: of the folder `D` (or `src`) and unlinked `x` in the folder the symlink
+#: leads to.
+BEYOND_A_LINK = [
+    pytest.param(("D/x", "d"), "{victim}", {"code": ["D/"]},
+                 [([*CACHED_AS, "D"], None), (WRITTEN_AS, b"d\0")],
+                 id="a-link-out-of-the-assembly"),
+    pytest.param(("D/x", "d"), "../../victim", {"code": ["D/"]},
+                 [([*CACHED_AS, "D"], None), (WRITTEN_AS, b"d\0")],
+                 id="a-relative-link-out-of-the-assembly"),
+    pytest.param(("D/x", "d"), "{victim}", {"drop": ["D/"]},
+                 [([*CACHED_AS, "D"], None), (WRITTEN_AS, b"d\0")],
+                 id="the-folder-dropped"),
+    pytest.param(("D/x", "E/x", "d"), "E", {"code": ["D/"]},
+                 [([*CACHED_AS, "D"], None), (WRITTEN_AS, b"d\0")],
+                 id="a-link-to-a-folder-the-root-keeps"),
+    pytest.param(("src/D/x", "src/d"), "{victim}", {"drop": ["src/"]},
+                 [([*CACHED_AS, "src/D"], None), ([*FORCED_AS, "src"], None)],
+                 id="both-in-a-dropped-folder-beside-other-files"),
+    pytest.param(("D/x", "D/y", "d"), "{victim}", {"code": ["D/"]},
+                 [([*CACHED_AS, "D"], None), (WRITTEN_AS, b"d\0")],
+                 id="two-files-beyond-the-link-taken-at-once"),
+    pytest.param(("D/x", "D/y", "d"), "{victim}",
+                 {"code": ["D/x"], "drop": ["D/y"]},
+                 [([*CACHED_AS, "D/x"], None), ([*CACHED_AS, "D/y"], None),
+                  (WRITTEN_AS, b"d\0")],
+                 id="entries-below-the-link-taken-path-by-path"),
+]
+
+
+@pytest.mark.parametrize(("paths", "target", "moved", "commands"),
+                         BEYOND_A_LINK)
+def test_no_file_is_removed_through_a_symlink_a_case_twin_left(
+        adopter, monkeypatch, tmp_path, paths, target, moved, commands):
+    """`D/x` goes, `d`, a symlink to a folder, stays in the root (or goes
+    with it), and the clone left `D` as that symlink, as on a disk that
+    ignores case. On c9f0cc18 the mount's `git rm -f -- D` unlinked `x` in
+    the folder the symlink leads to, outside the work directory where it
+    leads there, and `execute` printed `adoption verified` (r1237); without
+    `-f`, git refused it. Now each path beyond the symlink leaves the index
+    alone, `git rm --cached`, and the folder holds what it held; `git add
+    -A` stages nothing beyond the symlink, and the root's index holds each
+    path the plan keeps there with its own blob."""
+    victim = tmp_path / "victim"
+    victim.mkdir()
+    (victim / "x").write_bytes(b"victim\n")
+    (victim / "keep").write_bytes(b"keep\n")
+    assembly, blobs = an_assembly(
+        tmp_path, paths, with_a_link(target.format(victim=victim)))
+    link = next(path for path in paths if path.split("/")[-1] == "d")
+    folder = link[:-1] + "D"
+    leads_to = assembly / target if target == "E" else victim
+    held = what_it_holds(leads_to)
+    as_the_link(assembly, folder, link)
+    ran = git_commands_of_the_mount(adopter, monkeypatch, tmp_path,
+                                    assembly, moved)
+    assert what_it_holds(leads_to) == held
+    assert ran == commands
+    removed = [path.rstrip("/") for leg in moved.values() for path in leg]
+    left = staged(assembly)
+    # A disk that keeps case holds the symlink made in `folder`'s place
+    # beside `link`, and `git add -A` adds it there; on a disk that
+    # ignores case the two are one, `link`'s own.
+    assert left.pop(folder, blobs[link]) == blobs[link]
+    assert left == {path: oid for path, oid in blobs.items()
+                    if not any(at_or_under(path, top) for top in removed)}
+
+
+def test_a_folder_that_is_no_symlink_is_still_removed_with_f(
+        adopter, monkeypatch, tmp_path):
+    """The control: `D/x` goes and `d`, a symlink to a folder outside the
+    assembly, stays in the root, on a disk that keeps case, where `D` is
+    the folder the clone wrote. `D` is removed with `-f`, as on c9f0cc18:
+    `D/x` is gone from the disk and the index, the folder `d` leads to
+    holds what it held, and `d` is written back from the index."""
+    victim = tmp_path / "victim"
+    victim.mkdir()
+    (victim / "x").write_bytes(b"victim\n")
+    assembly, blobs = an_assembly(tmp_path, ("D/x", "d"),
+                                  with_a_link(str(victim)))
+    if git("config", "--get", "core.ignorecase", cwd=assembly,
+           check=False).stdout.strip() == "true":
+        pytest.skip("on a disk that ignores case the clone leaves `D` the "
+                    "symlink `d`: the rows above")
+    assert (assembly / "D" / "x").read_bytes() == b"D/x\n"
+    ran = git_commands_of_the_mount(adopter, monkeypatch, tmp_path,
+                                    assembly, {"code": ["D/"]})
+    assert ran == [([*FORCED_AS, "D"], None), (WRITTEN_AS, b"d\0")]
+    assert not os.path.lexists(assembly / "D")
+    assert what_it_holds(victim) == {"x": b"victim\n"}
+    assert staged(assembly) == {path: oid for path, oid in blobs.items()
+                                if path != "D/x"}
+
+
+#: `(what the disk holds, each folder or symlink by its path, a path the
+#: index holds, the folder `_beyond_a_symlink` names)`. A symlink leads to
+#: `elsewhere`, a folder beside them; one made beyond a symlink is made in
+#: the folder that symlink leads to.
+ON_THE_WAY = [
+    pytest.param({"D": "link"}, "D/x", "D", id="the-folder-a-symlink"),
+    pytest.param({"D": "folder", "D/E": "link"}, "D/E/x", "D/E",
+                 id="a-folder-below-it-a-symlink"),
+    pytest.param({"D": "link", "D/E": "link"}, "D/E/x", "D",
+                 id="a-symlink-beyond-the-first-symlink"),
+    pytest.param({"D": "folder"}, "D/x", None, id="a-folder"),
+    pytest.param({"d": "link"}, "d", None, id="the-path-itself-a-symlink"),
+    pytest.param({}, "nowhere/D/x", None, id="nothing-there"),
+    pytest.param({"F": "file"}, "F/G/x", None, id="a-file-on-the-way"),
+]
+
+
+@pytest.mark.parametrize(("layout", "path", "named"), ON_THE_WAY)
+def test_the_first_symlink_on_the_way_is_named_and_nothing_else(
+        adopter, tmp_path, layout, path, named):
+    """Each folder on the way to the path is asked with `lstat`, from the
+    top: the first that is a symlink is named, and not a symlink beyond
+    it; the path itself, which `git rm` of a file's or a symlink's entry
+    unlinks as what it is, is not asked here (a gitlink's is, by
+    `_taken_beyond_a_symlink`: the rows under r1237b below), and a folder
+    that is not there, or a file, is no symlink."""
+    (tmp_path / "elsewhere").mkdir()
+    assembly = tmp_path / "assembly"
+    assembly.mkdir()
+    for where, what in layout.items():
+        if what == "link":
+            os.symlink(tmp_path / "elsewhere", assembly / where)
+        elif what == "folder":
+            (assembly / where).mkdir()
+        else:
+            (assembly / where).write_bytes(b"F\n")
+    assert adopter._beyond_a_symlink(assembly, path) == named
+
+
+@CANNOT_RUN_AS_ROOT
+def test_a_folder_on_the_way_nobody_may_search_is_raised_not_read_as_none(
+        adopter, tmp_path):
+    """A folder on the way that this user may not search: its `lstat` is
+    refused, and the `PermissionError` is raised, one of `LATE_FAILURES`,
+    so `execute` names it, as `_is_a` raises a refused `stat` (#430). Read
+    as no symlink, the path would be removed with `-f` unasked."""
+    assembly = tmp_path / "assembly"
+    (assembly / "D" / "E").mkdir(parents=True)
+    (assembly / "D").chmod(0)
+    try:
+        with pytest.raises(PermissionError):
+            adopter._beyond_a_symlink(assembly, "D/E/x")
+    finally:
+        (assembly / "D").chmod(0o755)
+    assert issubclass(PermissionError, adopter.LATE_FAILURES)
+
+
+@CANNOT_RUN_AS_ROOT
+def test_nothing_beyond_the_first_symlink_on_the_way_is_asked(adopter,
+                                                              tmp_path):
+    """`D` is a symlink to `elsewhere`, a folder this user may not search:
+    `D` is named, and nothing in `elsewhere` is asked. Asked past the first
+    symlink, `lstat` of `D/E` is refused there, and the `PermissionError`
+    would stop the mount after both legs are pushed (r1237b's R02)."""
+    elsewhere = tmp_path / "elsewhere"
+    (elsewhere / "E").mkdir(parents=True)
+    assembly = tmp_path / "assembly"
+    assembly.mkdir()
+    os.symlink(elsewhere, assembly / "D")
+    elsewhere.chmod(0)
+    try:
+        assert adopter._beyond_a_symlink(assembly, "D/E/x") == "D"
+    finally:
+        elsewhere.chmod(0o755)
+
+
+# ---------------------------------------------------------------------------
+# r1237b: a gitlink whose case twin is a symlink, and every path held asked
+# ---------------------------------------------------------------------------
+
+#: A path's kind in `with_kinds`: a symlink leading to `{victim}`, a folder
+#: outside the assembly, and a gitlink.
+LINK_OUT = ("link", "{victim}")
+GITLINK = ("gitlink", None)
+#: `LINK_OUT`'s symlink, with `{shut}` in the place of `{victim}`
+#: (r1237c's NIT 1): `{shut}` is filled with `victim`, shut while the mount
+#: runs.
+LINK_SHUT = ("link", "{shut}")
+
+
+def with_kinds(kinds: dict):
+    """An `add` for `an_assembly`: each of `paths` goes into the source
+    commit with a blob of its own, as `with_paths` writes it, but a path
+    `kinds` gives `("link", target)` is a symlink leading to `target`, and
+    one it gives `GITLINK` a gitlink to the source's first commit, which
+    the clone checks out as an empty folder."""
+    def add(repository: Path, paths: tuple[str, ...],
+            own_blobs: bool = True) -> None:
+        assert own_blobs
+        first = git("rev-parse", "HEAD", cwd=repository).stdout.strip()
+        for path in paths:
+            kind, target = kinds.get(path, ("file", None))
+            if kind == "gitlink":
+                mode, oid = "160000", first
+            else:
+                mode, data = (("120000", target.encode()) if kind == "link"
+                              else ("100644", (path + "\n").encode()))
+                oid = blob_of(repository, data)
+            git("update-index", "--add", "--cacheinfo",
+                f"{mode},{oid},{path}", cwd=repository)
+        git("commit", "-qm", "Add paths", cwd=repository)
+    return add
+
+
+def as_the_twin(assembly: Path, at: str, twin: str) -> None:
+    """What a clone on a disk that ignores case leaves at `at`, a folder
+    (a gitlink's empty one among them), beside its twin `twin`, which
+    sorts after it: `twin` alone, which both names reach, as r1237 and
+    r1237b measured. Made on a disk that keeps case: the folder gives way
+    to a symlink leading where `twin` leads, or to a hard link of `twin`'s
+    file. Where the clone's own disk ignores case, git did this itself,
+    and nothing is done."""
+    if git("config", "--get", "core.ignorecase", cwd=assembly,
+           check=False).stdout.strip() == "true":
+        return
+    shutil.rmtree(assembly / at)
+    if (assembly / twin).is_symlink():
+        os.symlink(os.readlink(assembly / twin), assembly / at)
+    else:
+        os.link(assembly / twin, assembly / at)
+
+
+def outside_the_assembly(base: Path) -> Path:
+    """`base/victim`, a folder outside the assembly holding `x` and
+    `keep`."""
+    victim = base / "victim"
+    victim.mkdir()
+    (victim / "x").write_bytes(b"victim\n")
+    (victim / "keep").write_bytes(b"keep\n")
+    return victim
+
+
+#: `(the paths a source commit gains, the kind of each that is no file
+#: (`with_kinds`), each `(at, twin)` the clone left as `twin` alone
+#: (`as_the_twin`), the paths the plan sends to a leg or drops, the `git
+#: rm` and `git checkout-index` the mount runs)`. On 63c52718 the mount
+#: ran `git rm -f` of the gitlink `D` (or of `M`), which emptied the folder
+#: the symlink leads to and stopped at `fatal: could not remove 'D'`
+#: (`'M/D'`), or stopped there where the gitlink was a file or below one.
+#: The sixth shape pins what 63c52718 already ran, too: the gitlink `D/G`
+#: is below `D`, which the clone left the symlink `d`, leading to a folder
+#: this user may not search while the mount runs. `D` is named and taken
+#: whole; asked before the folders on the way, the gitlink's own path is
+#: refused there, a `PermissionError` after both legs are pushed (r1237c's
+#: NIT 1).
+#: The last two shapes pin what 63c52718 already ran: every path the index
+#: holds under a removed path is asked, not only the twins (r1237b's
+#: SHOULD 1), and a path under one is the path or below it after a `/`
+#: (its NIT 1).
+AT_A_GITLINK_OR_BEYOND_A_LINK = [
+    pytest.param(("D", "d"), {"D": GITLINK, "d": LINK_OUT}, (("D", "d"),),
+                 {"drop": ["D"]},
+                 [([*CACHED_AS, "D"], None), (WRITTEN_AS, b"d\0")],
+                 id="a-gitlink-the-clone-left-the-link-dropped"),
+    pytest.param(("D", "d"), {"D": GITLINK, "d": LINK_OUT}, (("D", "d"),),
+                 {"code": ["D"]},
+                 [([*CACHED_AS, "D"], None), (WRITTEN_AS, b"d\0")],
+                 id="a-gitlink-the-clone-left-the-link-sent-to-a-leg"),
+    pytest.param(("M/D", "M/d", "M/z"), {"M/D": GITLINK, "M/d": LINK_OUT},
+                 (("M/D", "M/d"),), {"drop": ["M/"]},
+                 [([*CACHED_AS, "M/D"], None), ([*FORCED_AS, "M"], None)],
+                 id="a-gitlink-the-clone-left-the-link-in-a-dropped-folder"),
+    pytest.param(("D", "d"), {"D": GITLINK}, (("D", "d"),), {"drop": ["D"]},
+                 [([*CACHED_AS, "D"], None), (WRITTEN_AS, b"d\0")],
+                 id="a-gitlink-the-clone-left-a-file"),
+    pytest.param(("M/D", "m"), {"M/D": GITLINK}, (("M", "m"),),
+                 {"drop": ["M/"]},
+                 [([*CACHED_AS, "M/D"], None), (WRITTEN_AS, b"m\0")],
+                 id="a-gitlink-below-a-file-the-clone-left"),
+    pytest.param(("D/G", "d"), {"D/G": GITLINK, "d": LINK_SHUT},
+                 (("D", "d"),), {"drop": ["D/"]},
+                 [([*CACHED_AS, "D"], None), (WRITTEN_AS, b"d\0")],
+                 marks=CANNOT_RUN_AS_ROOT,
+                 id="a-gitlink-below-the-link-to-a-folder-nobody-may-search"),
+    pytest.param(("S/D/x", "S/z", "s/d"), {"s/d": LINK_OUT},
+                 (("S/D", "s/d"),), {"code": ["S/"]},
+                 [([*CACHED_AS, "S/D"], None), ([*FORCED_AS, "S"], None),
+                  (WRITTEN_AS, b"s/d\0")],
+                 id="a-file-beside-the-folder-the-clone-left-the-link"),
+    pytest.param(("D/x", "DD/y", "d", "dd"),
+                 {"d": LINK_OUT, "dd": LINK_OUT}, (("D", "d"), ("DD", "dd")),
+                 {"code": ["D/", "DD/"]},
+                 [([*CACHED_AS, "D"], None), ([*CACHED_AS, "DD"], None),
+                  (WRITTEN_AS, b"d\0dd\0")],
+                 id="two-folders-one-name-a-prefix-of-the-other"),
+]
+
+
+@pytest.mark.parametrize(("paths", "kinds", "made", "moved", "commands"),
+                         AT_A_GITLINK_OR_BEYOND_A_LINK)
+def test_nothing_is_removed_through_a_symlink_at_a_gitlink_or_beyond(
+        adopter, monkeypatch, tmp_path, paths, kinds, made, moved, commands):
+    """`git rm` of a gitlink's entry removes the folder at its path with
+    all it holds, and follows a symlink there: on 63c52718, where the clone
+    left the gitlink `D` the symlink `d`, the mount's `git rm -f -- D`
+    emptied the folder `d` leads to, outside the assembly, and stopped
+    after both legs were pushed (r1237b). Now a gitlink whose own path the
+    disk holds as no folder leaves the index alone, `git rm --cached`, as
+    each path beyond a symlink on the way does; the folder holds what it
+    held, and the root's index holds each path the plan keeps there with
+    its own blob, and none that goes."""
+    victim = outside_the_assembly(tmp_path)
+    assembly, blobs = an_assembly(tmp_path, paths, with_kinds(
+        {path: (kind, target and target.format(victim=victim, shut=victim))
+         for path, (kind, target) in kinds.items()}))
+    for at, twin in made:
+        as_the_twin(assembly, at, twin)
+    # Shut while the mount runs, for the reason in the table's header comment.
+    if LINK_SHUT in kinds.values():
+        victim.chmod(0)
+    try:
+        ran = git_commands_of_the_mount(adopter, monkeypatch, tmp_path,
+                                        assembly, moved)
+    finally:
+        victim.chmod(0o755)
+    assert what_it_holds(victim) == {"x": b"victim\n", "keep": b"keep\n"}
+    assert ran == commands
+    removed = [path.rstrip("/") for leg in moved.values() for path in leg]
+    left = staged(assembly)
+    # A disk that keeps case holds what was made at `at` beside `twin`, and
+    # `git add -A` adds it there; on a disk that ignores case the two are
+    # one, `twin`'s own.
+    for at, twin in made:
+        assert left.pop(at, blobs[twin]) == blobs[twin]
+    assert left == {path: oid for path, oid in blobs.items()
+                    if not any(at_or_under(path, top) for top in removed)}
+
+
+def test_a_gitlink_the_disk_holds_a_folder_at_is_still_removed_with_f(
+        adopter, monkeypatch, tmp_path):
+    """The control: the gitlink `D` is dropped and `d`, a symlink to a
+    folder outside the assembly, stays in the root, on a disk that keeps
+    case, where `D` is the empty folder the clone wrote for the gitlink.
+    `D` is removed with `-f`, as on 63c52718: the folder is gone, the
+    folder `d` leads to holds what it held, and `d` is written back."""
+    victim = outside_the_assembly(tmp_path)
+    assembly, blobs = an_assembly(tmp_path, ("D", "d"), with_kinds(
+        {"D": GITLINK, "d": ("link", str(victim))}))
+    if git("config", "--get", "core.ignorecase", cwd=assembly,
+           check=False).stdout.strip() == "true":
+        pytest.skip("on a disk that ignores case the clone leaves `D` the "
+                    "symlink `d`: the rows above")
+    assert [child.name for child in (assembly / "D").iterdir()] == []
+    ran = git_commands_of_the_mount(adopter, monkeypatch, tmp_path,
+                                    assembly, {"drop": ["D"]})
+    assert ran == [([*FORCED_AS, "D"], None), (WRITTEN_AS, b"d\0")]
+    assert not os.path.lexists(assembly / "D")
+    assert what_it_holds(victim) == {"x": b"victim\n", "keep": b"keep\n"}
+    assert staged(assembly) == {path: oid for path, oid in blobs.items()
+                                if path != "D"}
+
+
+def test_the_folder_on_the_way_is_asked_as_bytes_under_a_c_locale(tmp_path):
+    """`Ü/x` goes to the code leg and `ü`, a symlink to a folder
+    outside the assembly, stays in the root, the clone having left
+    `Ü` that symlink; `_mount_the_legs` runs in a child under
+    `LC_ALL=C PYTHONUTF8=0`, whose file names are ASCII. `lstat` is handed
+    the bytes the tree holds, so `Ü` is the symlink and `Ü/x`
+    leaves the index alone. Handed the text, `lstat` raises
+    `UnicodeEncodeError`, a `ValueError` `_is_itself_a` reads as nothing
+    there, and `git rm -f` unlinks `x` in the folder the symlink leads to
+    (r1237b's R03)."""
+    env = c_locale_or_skip()
+    victim = outside_the_assembly(tmp_path)
+    folder, link = "Ü", "ü"
+    assembly, _ = an_assembly(tmp_path, (f"{folder}/x", link), with_kinds(
+        {link: ("link", str(victim))}))
+    as_the_twin(assembly, folder, link)
+    child = subprocess.run(
+        [sys.executable, "-c", MOUNT_IN_THE_C_LOCALE,
+         os.fsencode(ADOPT).hex(), os.fsencode(assembly).hex(),
+         os.fsencode(tmp_path / "work").hex(),
+         json.dumps({"spec": [], "code": [f"{folder}/"], "drop": []})],
+        capture_output=True, env=env, stdin=subprocess.DEVNULL, check=False)
+    assert child.returncode == 0, child.stderr.decode("utf-8", "replace")
+    answer = json.loads(child.stdout.decode("ascii"))
+    assert what_it_holds(victim) == {"x": b"victim\n", "keep": b"keep\n"}
+    assert "raised" not in answer, answer
+    held = z_rows(assembly, "ls-files", "-z")
+    assert f"{folder}/x" not in held
+    assert link in held
+
+
+needs_filter_repo = pytest.mark.skipif(
+    shutil.which("git-filter-repo") is None,
+    reason="git filter-repo is not installed: `pip install git-filter-repo`")
+
+
+def executed(base: Path, paths: tuple[str, ...], answers: dict):
+    """`execute` of a plan for `a_source` whose commit gains `paths`, each
+    with a blob of its own, `answers` given, with its legs under
+    `--local-remote-dir` and its work directory in `base`."""
+    source = a_source(base)
+    with_paths(source, paths, own_blobs=True)
+    plan = planned(source, base, answers)
+    return run_script(ADOPT, "execute", "--plan", str(plan), "--yes",
+                      "--local-remote-dir", str(base / "remotes"),
+                      "--work-dir", str(base / "work"))
+
+
+def assert_adopted(result) -> None:
+    assert result.returncode == 0, result.stderr + result.stdout
+    assert "adoption verified" in result.stdout, result.stdout
+
+
+#: `(the paths, the plan's answers)`, run whole. On 4d40ce9f, on a disk
+#: that ignores case, `execute` exited 1 with `adopt-lost` for `A` and
+#: `D/x` (`across`) and `A` (`dropped`), and 2 with `REFUSED mounting the
+#: legs` (`across-the-other-way`, `one-to-each-leg`), each after both legs
+#: and, for `adopt-lost`, the split were pushed.
+SPLIT_EXECUTED = [
+    pytest.param(("A", "a", "D/x", "d/x"),
+                 {"A": ROOT, "a": "code", "D/": ROOT, "d/": "code"},
+                 id="across"),
+    pytest.param(("A", "a", "D/x", "d/x"),
+                 {"A": "code", "a": ROOT, "D/": "code", "d/": ROOT},
+                 id="across-the-other-way"),
+    pytest.param(("A", "a"), {"A": ROOT, "a": "drop"}, id="dropped"),
+    pytest.param(("A", "a"), {"A": "spec", "a": "code"},
+                 id="one-to-each-leg"),
+]
+
+
+@needs_filter_repo
+@pytest.mark.parametrize(("paths", "answers"), SPLIT_EXECUTED)
+def test_on_a_disk_that_ignores_case_execute_keeps_twins_it_splits(
+        tmp_path, paths, answers):
+    """`execute` whole, its work directory and its legs on the disk `git
+    init` is asked about; skipped where that disk keeps case, as every CI
+    disk does (CI is Linux only since #597), where the rows above make the
+    one file themselves."""
+    probe = tmp_path / "probe"
+    git("init", "-q", str(probe), cwd=tmp_path)
+    if git("config", "--local", "--get", "core.ignorecase", cwd=probe,
+           check=False).stdout.strip() != "true":
+        pytest.skip("needs a disk that ignores case: `git init` wrote no "
+                    "`core.ignorecase=true` in the work directory, so that "
+                    "disk keeps case; the rows that drive the mount make "
+                    "each set one file on every disk")
+    assert_adopted(executed(tmp_path, paths, answers))
+
+
+@needs_filter_repo
+def test_execute_adopts_twins_it_sends_to_different_repositories(tmp_path):
+    """The control, on any disk: `A` and `D/x` kept in the root, `a` and
+    `d/x` sent to the code leg, `execute` whole. On a disk that keeps case
+    it was adopted on 4d40ce9f too, and it still is."""
+    assert_adopted(executed(tmp_path, ("A", "a", "D/x", "d/x"),
+                            {"A": ROOT, "a": "code", "D/": ROOT,
+                             "d/": "code"}))
 
 
 # ---------------------------------------------------------------------------
