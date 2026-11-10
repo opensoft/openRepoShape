@@ -371,6 +371,15 @@ def _anything(mode: int) -> bool:
     return stat.S_IFMT(mode) != 0
 
 
+def _shown(path) -> str:
+    """A path as it is, or as Python's `repr` spells it where a character in
+    it is not printable: `repo_shape.shown_path`, which a holder's library
+    may predate (#610), as the assembly root's `validate-manifest.py` spells
+    it for itself (#1288)."""
+    text = str(path)
+    return text if text.isprintable() else repr(text)
+
+
 def unreadable(code: str, named: str, exc: OSError, what: str) -> Refusal:
     """`code`'s refusal of a path this command must ask about and the
     operating system will not let it: its `stat` refused (`_is_a`), as in a
@@ -1977,14 +1986,14 @@ def members_of(root: Path) -> tuple[str, list[dict]]:
     if not present:
         raise Refusal(
             "family-manifest-missing",
-            f"{manifest_path} does not exist, so there is no declaration of "
-            "which members to bootstrap",
+            f"{_shown(manifest_path)} does not exist, so there is no "
+            "declaration of which members to bootstrap",
             "Remediation: this command bootstraps a FAMILY holder. A project "
             "runs its own `scripts/bootstrap.py` instead.")
     manifest = load_yaml(manifest_path)
     if not isinstance(manifest, dict):
         raise Refusal("family-manifest-unreadable",
-                      f"{manifest_path}: not a mapping")
+                      f"{_shown(manifest_path)}: not a mapping")
     name = str(manifest.get("name") or root.name)
     # A `members:` THAT IS NOT A LIST, OR HOLDS AN ENTRY THAT IS NOT A
     # MAPPING, IS REFUSED BY NAME (#864), in `validate-family.py`'s words:

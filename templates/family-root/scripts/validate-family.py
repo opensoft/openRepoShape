@@ -601,6 +601,15 @@ def _refuse_an_unreadable_root(start: Path) -> None:
         return
 
 
+def _shown(path) -> str:
+    """A path as it is, or as Python's `repr` spells it where a character in
+    it is not printable: `repo_shape.shown_path`, which a holder's library
+    may predate (#610), as the assembly root's `validate-manifest.py` spells
+    it for itself (#1288)."""
+    text = str(path)
+    return text if text.isprintable() else repr(text)
+
+
 def _asked(path: Path, kind: Callable[[int], bool], code: str,
            named: str) -> bool:
     """`_is_a(path, kind)`, or `code`'s refusal naming `path` as `named`
@@ -1838,14 +1847,16 @@ def _load_shape_pin(root: Path) -> tuple[dict, str]:
     pin_path = root / "contracts" / "shape-pin.yaml"
     if not _asked(pin_path, stat.S_ISREG, "shape-pin-unreadable",
                   "contracts/shape-pin.yaml"):
-        raise Refusal("shape-pin-missing", f"{pin_path} does not exist")
+        raise Refusal("shape-pin-missing",
+                      f"{_shown(pin_path)} does not exist")
     pin = load_yaml(pin_path)
     # POSIX, on every platform: a finding names a path in THIS repository,
     # and `str()` of a relative Path on Windows spells it with backslashes —
     # a path the reader cannot paste back into git.
     rel = pin_path.relative_to(root).as_posix()
     if not isinstance(pin, dict):
-        raise Refusal("shape-pin-unreadable", f"{pin_path}: not a mapping")
+        raise Refusal("shape-pin-unreadable",
+                      f"{_shown(pin_path)}: not a mapping")
     return pin, rel
 
 
@@ -4819,16 +4830,16 @@ def _run_checks(args: argparse.Namespace,
                   MANIFEST):
         raise Refusal(
             "family-manifest-missing",
-            f"{manifest_path} does not exist. A family holder declares "
-            f"itself in `{MANIFEST}`; a repository without one is not a "
-            "family and does not run this validator.",
+            f"{_shown(manifest_path)} does not exist. A family holder "
+            f"declares itself in `{MANIFEST}`; a repository without one is "
+            "not a family and does not run this validator.",
             f"Remediation: `{PYTHON} scripts/family.py init --org <org> "
             "--family <Name>` creates one. An ordinary project runs "
             "`validate-manifest.py` instead.")
     manifest = load_yaml(manifest_path)
     if not isinstance(manifest, dict):
         raise Refusal("family-manifest-unreadable",
-                      f"{manifest_path}: not a mapping")
+                      f"{_shown(manifest_path)}: not a mapping")
     policy_path = args.policy or (root / "contracts" /
                                   "repository-naming.yaml")
     policy = NamingPolicy.load(policy_path)

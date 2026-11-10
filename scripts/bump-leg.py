@@ -224,8 +224,8 @@ class Project:
         if not present:
             raise Refusal(
                 "bump-leg-root-not-a-project",
-                f"{path} does not exist, so this is not an assembly root of a "
-                "project that has elected this shape",
+                f"{shown_path(path)} does not exist, so this is not an "
+                "assembly root of a project that has elected this shape",
                 "Remediation: --root takes the ASSEMBLY ROOT — the repository "
                 "an engineer clones — not a leg and not a family holder. A "
                 "family's member pins are moved with `scripts/family.py "
@@ -238,7 +238,7 @@ class Project:
         if data.get("kind") != "project-manifest":
             raise Refusal(
                 "bump-leg-wrong-kind",
-                f"{path}: kind is {data.get('kind')!r}, expected "
+                f"{shown_path(path)}: kind is {data.get('kind')!r}, expected "
                 "'project-manifest'",
                 "Remediation: a family holder declares `kind: "
                 "family-manifest` and its members move with `scripts/"

@@ -48,6 +48,7 @@ from conftest import (REPO, SCAFFOLD, clear_ambient_pin_sources, git,
 from test_link_source_chain_defaults import (  # noqa: F401
     VALIDATOR, manifest, naming, pinned, scaffold, tree, validate_pins,
 )
+from test_pinned_copy_columns import copies  # noqa: F401
 
 sys.path.insert(0, str(REPO / "scripts"))
 from repo_shape import (  # noqa: E402
@@ -61,6 +62,8 @@ TEMPLATE_PINS = (REPO / "templates" / "assembly-root" / "scripts" /
                  "validate-pins.py")
 TEMPLATE_FAMILY = (REPO / "templates" / "family-root" / "scripts" /
                    "validate-family.py")
+FAMILY_BOOTSTRAP = (REPO / "templates" / "family-root" / "scripts" /
+                    "bootstrap.py")
 TEMPLATE_MANIFEST = (REPO / "templates" / "assembly-root" / "scripts" /
                      "validate-manifest.py")
 POLICY = REPO / "contracts" / "repository-naming.yaml"
@@ -772,17 +775,24 @@ def test_the_naming_gate_names_a_printable_link_source_as_typed(tmp_path):
 
 @pytest.mark.parametrize("path", [
     "plain/dir", "x\x1b[31mRED", "a\nb", "a\rb", "caf\u00e9", "\udcff",
-    "tab\there", "",
+    "tab\there", "", "pl\u202ean",
 ])
-def test_the_pinned_scripts_spell_a_path_as_the_library_does(path):
-    """`validate-pins.py`, `validate-repository-naming.py` and, since #909,
-    `validate-manifest.py` each write their own `_shown`, because a root
-    whose `scripts/repo_shape.py` is older than they are has no
-    `shown_path` to import. Each must spell as `shown_path` spells."""
+def test_the_pinned_scripts_spell_a_path_as_the_library_does(copies, path):
+    """`validate-pins.py`, `validate-repository-naming.py`, since #909
+    `validate-manifest.py`, and since #1288 a family holder's
+    `validate-family.py`, `bootstrap.py` and `siblings.py` each write their
+    own `_shown`, because a root or a holder whose `scripts/repo_shape.py`
+    is older than they are has no `shown_path` to import. Each must spell
+    as `shown_path` spells, a bidi control, U+202E, among the rest.
+    `siblings.py` is `test_pinned_copy_columns.py`'s copy, its `bootstrap`
+    import answered by the holder's `bootstrap.py` beside it."""
     for script, name in ((TEMPLATE_PINS, "pins"), (VALIDATOR, "naming"),
-                         (TEMPLATE_MANIFEST, "manifest")):
+                         (TEMPLATE_MANIFEST, "manifest"),
+                         (TEMPLATE_FAMILY, "family"),
+                         (FAMILY_BOOTSTRAP, "family_bootstrap")):
         module = load_without_bytecode(script, f"pinned_copy_text_{name}")
         assert module._shown(path) == shown_path(path), script
+    assert copies["siblings"]._shown(path) == shown_path(path)
 
 
 #: Every pinned script that imports from `repo_shape`, each beside whatever

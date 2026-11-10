@@ -870,8 +870,16 @@ def pin_rows_remediation(root: Path) -> str:
     history, or the wrong one (codex, PR #343). It is spelled `git -C <root>`
     by `_by_hand`, this module's one quoter for a line a person pastes, so a
     root holding a space is one argument there.
+
+    A ROOT THAT DOES NOT PRINT IS SPELLED (#1288), as `shown_path` spells
+    it and as `validate-pins.py`'s `_quoted` spells a word of a command it
+    prints (#712): quoted, an ESC or a line break in it reached the
+    terminal as the control it is, under a `REFUSED` line that spelled it.
+    Spelled, the line cannot be pasted as the root it names, and no quoting
+    could make it so. A printable root is `_by_hand`'s line, as before.
     """
-    log = _by_hand(root, "log", "--", SHAPE_PIN)
+    log = (_by_hand(root, "log", "--", SHAPE_PIN) if str(root).isprintable()
+           else f"git -C {shown_path(root)} log -- {SHAPE_PIN}")
     return (
         "Remediation: `files:` is a list with one `path:`/`sha256:` row per "
         "copied file. The tool that cut this root wrote it and only "
@@ -907,9 +915,9 @@ def read_pin(root: Path) -> tuple[dict, list[Row]]:
     if not _is_a(pin_path, stat.S_ISREG):
         raise Refusal(
             "update-pin-missing",
-            f"{pin_path} does not exist, so there is no record of which files "
-            "were copied out of openRepoShape or which revision they came "
-            "from. Nothing can be re-synced against nothing.",
+            f"{shown_path(pin_path)} does not exist, so there is no record of "
+            "which files were copied out of openRepoShape or which revision "
+            "they came from. Nothing can be re-synced against nothing.",
             "Remediation: this command updates a project that was scaffolded "
             "or adopted with this shape. A project without a shape pin is "
             "adopted with `adopt-project.py`, not updated.")
@@ -948,12 +956,12 @@ def check_pin(pin, pin_path, root: Path) -> tuple[dict, list[Row]]:
     if not COMMIT_RE.match(commit):
         raise Refusal(
             "update-pin-commit",
-            f"{pin_path}: `commit:` is {pin.get('commit')!r}, not 40 hex, so "
-            "there is no revision to compare the upstream against")
+            f"{shown_path(pin_path)}: `commit:` is {pin.get('commit')!r}, not "
+            "40 hex, so there is no revision to compare the upstream against")
     if pin.get("digest_definition") != TREE_DIGEST_DEFINITION:
         raise Refusal(
             "update-pin-digest-definition",
-            f"{pin_path}: digest_definition is "
+            f"{shown_path(pin_path)}: digest_definition is "
             f"{pin.get('digest_definition')!r}, and this tool recomputes "
             f"{TREE_DIGEST_DEFINITION!r}. Rewriting the tree digest under a "
             "definition the pin does not claim would record a number whose "
@@ -970,21 +978,22 @@ def check_pin(pin, pin_path, root: Path) -> tuple[dict, list[Row]]:
     if not isinstance(files, list):
         raise Refusal(
             "update-pin-row",
-            f"{pin_path}: `files:` is {files!r}, not a list of "
+            f"{shown_path(pin_path)}: `files:` is {files!r}, not a list of "
             "`path:`/`sha256:` rows, so no copied file can be read from it",
             pin_rows_remediation(root))
     rows: list[Row] = []
     for raw in files:
         if not isinstance(raw, dict) or not raw.get("path"):
             raise Refusal("update-pin-row",
-                          f"{pin_path}: a `files:` row is not `path:`/`sha256:`",
+                          f"{shown_path(pin_path)}: a `files:` row is not "
+                          "`path:`/`sha256:`",
                           pin_rows_remediation(root))
         rows.append(Row(str(raw["path"]), str(raw.get("sha256") or "")))
     if not rows:
         raise Refusal(
             "update-pin-no-files",
-            f"{pin_path}: no `files:` rows, so the pin asserts nothing about "
-            "any copied file and there is nothing to re-sync")
+            f"{shown_path(pin_path)}: no `files:` rows, so the pin asserts "
+            "nothing about any copied file and there is nothing to re-sync")
     return pin, rows
 
 
