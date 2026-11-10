@@ -15085,11 +15085,67 @@ def _unacted(text: str, kept: str = "") -> str:
                    else _spelled_character(char) for char in text)
 
 
+#: What git's `vreportf` writes for a control character in every `error:` and
+#: `fatal:` line: a `?`, for each but a tab and a line feed (measured on git
+#: 2.43: ESC, CR, VT, FF and DEL). Its `To` line is not sanitized.
+GIT_WRITES_AS_QUERY = re.compile(r"[\x00-\x08\x0b-\x1f\x7f]")
+
+
+def _as_run_reads(text: str) -> str:
+    """`text` as `run` (`scripts/shape_materialize.py`) reads what a command
+    printed back: with `text=True`, universal newlines, so CR+LF, and a lone
+    CR, are a line feed there."""
+    return text.replace("\r\n", "\n").replace("\r", "\n")
+
+
+def _output_unacted(exc: CommandFailed) -> str:
+    """What `exc`'s command printed, `_unacted` but for its line breaks,
+    which it keeps, so it still reads a line to a line: except where it
+    names an argument of the command, or the directory it ran in, that
+    holds a line feed, which is spelled whole there, as the command line
+    spells it (#1233). git's `To` and `error:` lines name the remote a push
+    was refused at, so under `--local-remote-dir <D>/re<LF>mote` the block
+    held a line `mote/Thing-spec.git` the path had put in it. Each is also
+    looked for as `run` reads it back: a byte that is not UTF-8, which the
+    path holds as a surrogate, is U+FFFD there, and a CR is a line feed
+    there, with the line feed that follows it or not (`_as_run_reads`), so
+    `re<CR><LF>mote` is `re<LF>mote` in git's `To` line, which is spelled
+    `re\\r\\nmote`, as the path holds it (RV1311b's SHOULD 1). And each is
+    looked for as git's own `error:` and `fatal:` lines write it, with every
+    control character but a tab and a line feed a `?`
+    (`GIT_WRITES_AS_QUERY`): `wo<ESC><LF>rk` is `wo?<LF>rk` there, which is
+    spelled `wo?\\nrk`, so git's `?` stays as git wrote it and only the line
+    feed is spelled. A form of nothing but `?` and line feeds is not looked
+    for, since it would spell every `?` that ends a line. The longest, of
+    all those forms, is spelled first, so one that holds another is spelled
+    whole. An argument of nothing but line feeds, as `run` reads it, is not
+    looked for: it would spell every line break the command printed."""
+    output = exc.output
+    spelled: dict[str, str] = {}
+    for part in {str(given) for given in (*exc.args_list, exc.cwd) if given}:
+        read_back = _as_run_reads(part)
+        if "\n" not in read_back or not read_back.strip("\n"):
+            continue
+        forms = {part}
+        with contextlib.suppress(UnicodeError):
+            forms.add(os.fsencode(part).decode("utf-8", "replace"))
+        for form in forms:
+            for found in (form, _as_run_reads(form)):
+                spelled.setdefault(found, _unacted(form))
+            git_form = GIT_WRITES_AS_QUERY.sub("?", form)
+            if git_form.strip("?\n"):
+                spelled.setdefault(git_form, _unacted(git_form))
+    for found in sorted(spelled, key=lambda found: (-len(found), found)):
+        output = output.replace(found, spelled[found])
+    return _unacted(output, kept="\n")
+
+
 def _loudly(exc: CommandFailed, step: str) -> str:
     """`exc.loudly(step)`, the REFUSED block `CommandFailed` prints, with
     each argument of the command, the directory it ran in and what it
     printed `_unacted`, as `_first_said` spells what gh said (#1195). What
-    it printed keeps its line breaks, so it still reads a line to a line.
+    it printed keeps its line breaks, so it still reads a line to a line,
+    and a path in it that holds a line feed is spelled (`_output_unacted`).
 
     `CommandFailed` is `scripts/shape_materialize.py`'s, shared by every
     tool, and names all three as they are. A command names what was typed:
@@ -15097,11 +15153,15 @@ def _loudly(exc: CommandFailed, step: str) -> str:
     printed the override raw three times, in the command and in git's own
     `To` and `error:` lines, below the `bare` lines and above the notice,
     which spell it (#1152). A character that is printable prints as it is,
-    so a command of plain paths prints the block it printed before."""
+    so a command of plain paths prints the block it printed before. A
+    spelled character and a typed backslash sequence read alike, since a
+    backslash prints as it is: a path that holds the six characters
+    `\\u202e` prints as one that holds U+202E, and `C:\\x1b` as a spelled
+    ESC (#1233)."""
     return CommandFailed(
         [_unacted(str(argument)) for argument in exc.args_list],
         _unacted(str(exc.cwd)) if exc.cwd else exc.cwd, exc.code,
-        _unacted(exc.output, kept="\n")).loudly(step)
+        _output_unacted(exc)).loudly(step)
 
 
 def _failed_loudly(step: str, exc: BaseException) -> str:
@@ -16122,9 +16182,14 @@ def _refuse_an_unmountable_path(assembly: Path, path: str) -> None:
         run(["git", "add", "--dry-run", "--ignore-missing", "-f",
              "--no-warn-embedded-repo", "--", path], cwd=assembly)
     except CommandFailed as exc:
+        # git's words `_output_unacted`, as a refused command's block says
+        # them (#1233): a held `index.lock` is named under the assembly, so
+        # under `--work-dir`, which can hold a control character. The mount
+        # path cannot: `leg_path_problem` held it to `SAFE_ARG_RE`.
         raise Refusal(
             "adopt-mount-unaddable",
-            f"git will not add the leg mount path {path}: {exc.output}",
+            f"git will not add the leg mount path {path}: "
+            f"{_output_unacted(exc)}",
             MOUNT_REMEDIATION) from exc
     for entry in entries:
         if entry[1].casefold() in on_the_way:
