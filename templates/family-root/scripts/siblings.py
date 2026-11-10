@@ -178,8 +178,7 @@ EXIT CODES
        (`git-repo-unreadable`, #1148). The holder's own `.gitmodules`,
        which every member's url comes from, is `gitmodules-unreadable`
        (#1110), and then no member is cloned, fetched or run in. An
-       unanswerable question is never an
-       implicit pass.
+       unanswerable question is never an implicit pass.
 """
 
 from __future__ import annotations
@@ -338,8 +337,8 @@ def _anything(mode: int) -> bool:
 
 
 def member_unreadable(named: str, exc: OSError, what: str,
-                      then: str = "Then run the same command again.",
-                      code: str = "member-unreadable") -> Refusal:
+                      then: str = "Then run the same command again."
+                      ) -> Refusal:
     """`member-unreadable`: `<named>: cannot be read (<the system's
     reason>)`, `validate-pins.py`'s `_cannot_read` line (#430), for a path
     of a member's that this command must ask about and the operating system
@@ -353,19 +352,18 @@ def member_unreadable(named: str, exc: OSError, what: str,
     the cure. THE ADVICE FOLLOWS THE CAUSE, in `validate-pins.py`'s words: a
     permission (`PermissionError`, which is `EACCES` and `EPERM`) is put
     right by the mode or the owner, and any other cause is `OTHER_REASON`,
-    which is not told to `chmod`. `code` is the refusal's:
-    `git-repo-unreadable` for the holder's own `.git`
-    (`_refuse_an_unreadable_root`, #1148)."""
-    return path_unreadable(code, named, exc, what, then)
+    which is not told to `chmod`."""
+    return path_unreadable("member-unreadable", named, exc, what, then)
 
 
 def path_unreadable(code: str, named: str, exc: OSError, what: str,
                     then: str = "Then run the same command again."
                     ) -> Refusal:
     """`code`'s refusal of a path this command must read and the operating
-    system will not let it, in `member_unreadable`'s words: the holder's
-    `.gitmodules` is `gitmodules-unreadable` (#1110), the code the holder's
-    own `validate-family.py` and `family.py` give that file."""
+    system will not let it, in `member_unreadable`'s words: the holder's own
+    `.git` is `git-repo-unreadable` (`_refuse_an_unreadable_root`, #1148),
+    and its `.gitmodules` is `gitmodules-unreadable` (#1110), the code the
+    holder's own `validate-family.py` and `family.py` give that file."""
     advice = (
         "Make what this user may not open readable by this user: `chmod u+r` "
         "on a file, `chmod u+rx` on a directory (and on every directory above "
@@ -423,8 +421,8 @@ def _refuse_an_unreadable_root(start: Path) -> None:
                 shown = dotgit.relative_to(path).as_posix()
             except ValueError:
                 shown = str(dotgit)
-            raise member_unreadable(spelled(shown), exc, ROOT_UNDONE,
-                                    code=ROOT_UNREADABLE) from exc
+            raise path_unreadable(ROOT_UNREADABLE, spelled(shown), exc,
+                                  ROOT_UNDONE) from exc
 
 
 # ---------------------------------------------------------------------------
