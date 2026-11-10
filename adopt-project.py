@@ -252,6 +252,7 @@ from repo_shape import (  # noqa: E402
     parse_yaml, redacted, remote_is_a_path, remote_key, remote_local_path,
     shown_path, spelled as spelled_as_git_out, tree_digest,
 )
+from repo_shape import DEFAULT_IGNORABLE, code_point_escaped  # noqa: E402
 from shape_materialize import (  # noqa: E402
     PLACEHOLDER_RE, SHAPE_REPOSITORY, SYMLINK_HOPS,
     TEMPLATED, TOO_MANY_SYMLINKS, CommandFailed, Materialized,
@@ -1936,6 +1937,31 @@ def _is_there(path: Path) -> bool:
     does, asked as `_is_a` asks it: the `OSError` of a refused `stat` is
     raised, never read as nothing there (#430)."""
     return _is_a(path, lambda _mode: True)
+
+
+def _is_itself_a(path: str | bytes, kind: Callable[[int], bool]) -> bool:
+    """Whether `path` is itself there and of `kind` (`stat.S_ISLNK`,
+    `stat.S_ISDIR`), asked with `os.lstat`, which follows no symlink, as
+    `_is_a` asks `stat` (#430): nothing there is False, and the `OSError`
+    of an `lstat` the operating system REFUSED is raised, never read as
+    nothing there. NOT `Path.is_symlink()` or `is_dir()`, which from 3.14
+    answer False to ANY `OSError`. `path` is a `str` or the bytes
+    `_path_argument` hands git, so that no locale is in the way (#527)."""
+    try:
+        mode = os.lstat(path).st_mode
+    except OSError as exc:
+        if _absent(exc):
+            return False
+        raise
+    except ValueError:
+        # a name the operating system cannot take at all (a NUL in it)
+        return False
+    return kind(mode)
+
+
+def _is_a_symlink(path: str | bytes) -> bool:
+    """Whether `path` is itself a symlink (`_is_itself_a`)."""
+    return _is_itself_a(path, stat.S_ISLNK)
 
 
 def _os_reason(exc: OSError) -> str:
@@ -4151,8 +4177,15 @@ def _shown(path: str) -> str:
     ENDS IN A SPACE, which reads as nothing: `git commit` strips it from
     the end of each line of the split commit's message, which lists names
     `_shown`, so `trail.md ` was listed as `trail.md`, and `plan`'s table
-    pads `trail.md ` and `trail.md` to the same row."""
-    if (path.isprintable() and not path.endswith(" ")
+    pads `trail.md ` and `trail.md` to the same row.
+
+    AND SO IS ONE THAT HOLDS A DEFAULT-IGNORABLE CHARACTER (#1128), which a
+    terminal draws as nothing (`DEFAULT_IGNORABLE`): `str.isprintable`
+    passes 267 of them, among them U+034F, the variation selectors and the
+    Hangul filler U+3164, so the branch `ma<U+034F>in` printed as `main`.
+    It is spelled `` `ma\\u034fin` `` now."""
+    if (path.isprintable() and not DEFAULT_IGNORABLE.search(path)
+            and not path.endswith(" ")
             and not (path.startswith("`") and path.endswith("`"))):
         return path
     return _spelled(path)
@@ -4171,9 +4204,15 @@ def _spelled_character(char: str) -> str:
     U+2028, and `\\udc85` for the byte 0x85, which `Source.tree` keeps as
     the surrogate U+DC00 plus the byte -- except a backtick, which the plan
     holds as it is and `_spelled` wraps a name in: `SPELLED_BACKTICK`, the
-    escape the plan's reader takes for one (#900)."""
+    escape the plan's reader takes for one (#900); and a default-ignorable
+    character (`DEFAULT_IGNORABLE`, #1128), which a terminal draws as
+    nothing: its code-point escape, `\\u034f` for U+034F, which the plan's
+    reader takes for that character, where the plan holds one
+    `str.isprintable` passes as it is."""
     if char == "`":
         return SPELLED_BACKTICK
+    if DEFAULT_IGNORABLE.match(char):
+        return code_point_escaped(char)
     return double_quoted(char)[1:-1]
 
 
@@ -10313,7 +10352,14 @@ def _unsafe_path_findings(plan: Plan) -> tuple[list[str], list[str]]:
 # set kept as it was in the repository made. Twins in the code leg were
 # adopted so in 2 runs, and in 3 others, for #1189's review, `execute`
 # stopped after both legs were pushed, mounting them, at `git rm -r` ("the
-# following files have local modifications").
+# following files have local modifications"), until #1183. Measured again
+# for #1237's review with this finding taken out, 1 run each: twins kept in
+# one leg (`A` and `a` in the code leg, and in the spec leg; `D/x` and
+# `d/x`; `F/x` and `f`; `src/A` and `src/a`) were adopted; in the root,
+# `A` and `a` were adopted, `F/x` beside `f` was still `adopt-lost` after
+# both legs were pushed, and `D/x` beside `d/x` met `will not add file
+# alias` in `check` (`plan-file-reencoded`). So the finding names the
+# root's `adopt-lost`, and no `git rm`.
 #
 # So `check` names them, on every disk, as #520 names a branch in another
 # case: one plan is then not good on one machine and lost on another.
@@ -10326,8 +10372,10 @@ def _unsafe_path_findings(plan: Plan) -> tuple[list[str], list[str]]:
 # path git refuses is `plan-path-git-refuses`'s alone, and a path no entry
 # answers once is another finding's. Twins the plan sends to DIFFERENT
 # repositories, and a twin it drops beside one it keeps, are not asked
-# either, though `execute` on a disk that ignores case loses them too, as
-# `adopt-lost` after both legs are pushed (#1183).
+# either: no repository the split makes holds two of them, and `execute`
+# mounts the legs so that a disk that ignores case loses none of them
+# (`_split_case_twins`, #1183), where it lost them as `adopt-lost`, or
+# stopped at `git rm`, after both legs were pushed.
 #
 # A set of ONE NAME whose paths hold one blob in one mode loses nothing on
 # such a disk: the one path it checks out holds what each path holds. In a
@@ -10360,10 +10408,11 @@ CASE_TWINS = "plan-case-twins"
 #: as `plan-case-twins` names it, in the order it is asked.
 TWIN_REPOSITORIES = {"root": "the assembly root", "spec": "the spec leg",
                      "code": "the code leg"}
-#: What a plan holding such twins is told to do, once after every finding.
-#: It offers no answer that sends the twins of a set into different
-#: repositories, or drops one: on a disk that ignores case `execute` loses
-#: those too, after both legs are pushed (#1183).
+#: What a plan holding such twins is told to do, once after every finding:
+#: a rename in the source. It was written while an answer that sends the
+#: twins of a set into different repositories, or drops all of a set but
+#: one, was lost by `execute` on a disk that ignores case too, after both
+#: legs were pushed; `_mount_the_legs` keeps those since #1183.
 CASE_TWINS_REMEDIATION = (
     "Remediation: rename paths in the source until no two that one "
     "repository would hold differ only in case -- each twin of a set but "
@@ -10460,8 +10509,8 @@ def _case_twin_findings(plan: Plan, tree: list,
             "macOS or Windows disk does by default, holds each set as one "
             "name: a clone made there checks out only one path of each set, "
             "and `execute` could stop there before any leg exists, at git's "
-            "`will not add file alias`, or after both legs are pushed, as "
-            "`adopt-lost` or at `git rm` mounting the legs, so `execute` "
+            "`will not add file alias`, or, for a set in the assembly root, "
+            "after both legs are pushed, as `adopt-lost`, so `execute` "
             "refuses them on every disk.")
     return found, [CASE_TWINS_REMEDIATION] if found else [], notes
 
@@ -10947,7 +10996,68 @@ def _listed_by(args: list[str], cwd: Path) -> dict[str, str]:
     return _listed_branches(listed.stdout, BRANCH_REFS)
 
 
-def _branches_at(url: str, cwd: Path) -> dict[str, str]:
+def _refuse_unlisted_refs_if_seen(path: Path, prefix: str) -> None:
+    """`_refuse_unlisted_refs(path, prefix)`, run only where the disk shows
+    a directory of those refs this user cannot list (#1257): where the
+    source's common git directory can be read from the disk
+    (`_common_dir_on_disk`) and each directory git lists for `prefix` there
+    can be listed (`_unlisted_ref_directory`), nothing more is asked.
+
+    FOR THE SPLIT BRANCH, WHICH A SOURCE GIT READS WHOLE MOST OFTEN LACKS.
+    `_branch_names` asks where the default branch is missing, which a
+    readable source never is, but `_branches_at` and `_branches_in` ask
+    where the split branch is missing, which it is in every source no
+    earlier run left one in. `_refuse_unlisted_refs` runs `git rev-parse`
+    for the common git directory, so asked there it was one git call more
+    for each, in every `check` and `execute`; read from the disk it is none.
+    Where the disk shows a directory git could not list, or cannot say
+    where the refs are, git is asked, and the refusal names what git
+    names."""
+    common = _common_dir_on_disk(path)
+    if common is not None and _unlisted_ref_directory(common,
+                                                      prefix) is None:
+        return
+    _refuse_unlisted_refs(path, prefix)
+
+
+def _common_dir_on_disk(path: Path) -> Path | None:
+    """The common git directory of the repository at `path`, the top-level
+    directory or the git directory `_top_level` took, read from the disk
+    without running git, as git 2.43's `read_gitfile_gently` and
+    `get_common_dir_noenv` read it: the git directory is `path/.git` where
+    that is a directory, the one a `.git` file's `gitdir: ` line names,
+    joined to `path`, and otherwise `path` itself; then the one its
+    `commondir` file names, joined to it, where it has that file. None
+    where git is told another (`GIT_DIR` or `GIT_COMMON_DIR` set), where
+    the `.git` file does not begin `gitdir: `, where either file holds a
+    NUL (git reads such a file up to the NUL; this declines to guess), or
+    where the disk refuses a read: `_refuse_unlisted_refs_if_seen` asks
+    git then."""
+    if "GIT_DIR" in os.environ or "GIT_COMMON_DIR" in os.environ:
+        return None
+    dotgit = path / ".git"
+    try:
+        if _is_a(dotgit, stat.S_ISREG):
+            named = dotgit.read_bytes()
+            if not named.startswith(b"gitdir: ") or b"\0" in named:
+                return None
+            git_dir = path / os.fsdecode(
+                named[len(b"gitdir: "):].rstrip(b"\r\n"))
+        else:
+            git_dir = dotgit if _is_a(dotgit, stat.S_ISDIR) else path
+        commondir = git_dir / "commondir"
+        if not _is_a(commondir, stat.S_ISREG):
+            return git_dir
+        named = commondir.read_bytes()
+    except OSError:
+        return None
+    if b"\0" in named:
+        return None
+    return git_dir / os.fsdecode(named.rstrip(b"\r\n"))
+
+
+def _branches_at(url: str, cwd: Path, wanted: str | None
+                 ) -> dict[str, str]:
     """Every branch of the repository at `url`, as a push to it meets them.
     A LOCAL path's are its own refs, `git for-each-ref` (#520): `git
     ls-remote` leaves out a branch the repository hides with `hideRefs`, and
@@ -10956,10 +11066,26 @@ def _branches_at(url: str, cwd: Path) -> dict[str, str]:
     (`_branches_a_clone_gets`). One that cannot be listed fails as `run`
     fails a command, `CommandFailed`, and in `execute` before any leg
     exists: `_refuse_a_split_branch_left_behind` has just asked the same
-    repository, and a failure there is the same."""
+    repository, and a failure there is the same.
+
+    A LOCAL LIST WITHOUT `wanted`, THE SPLIT BRANCH, IS ASKED ABOUT BEFORE
+    IT IS BELIEVED (#1257), as `_branch_names` asks (#1219): `git
+    for-each-ref` passes over a directory it cannot list, and exits 0. On
+    main, with a source's `.git/refs/heads/adopt` at mode 000, `check` said
+    `plan ok` over the `adopt/three-repo-shape` an earlier run left there,
+    which it finds as `adopt-branch-exists` once that directory can be
+    listed, and `execute --local-remote-dir` made and pushed both legs
+    before its split push met that branch. So where `wanted` is not among
+    them, whether git could list each directory of `BRANCH_REFS` is asked
+    first (`_refuse_unlisted_refs_if_seen`), and one it could not is
+    `source-unreadable`, named; where it is, or is None, nothing more is
+    asked."""
     if remote_is_a_path(url):
-        return _listed_by(["git", "for-each-ref", REF_LISTING, BRANCH_REFS],
-                          Path(url))
+        branches = _listed_by(["git", "for-each-ref", REF_LISTING,
+                               BRANCH_REFS], Path(url))
+        if wanted is not None and wanted not in branches:
+            _refuse_unlisted_refs_if_seen(Path(url), BRANCH_REFS)
+        return branches
     return _branches_a_clone_gets(url, cwd)
 
 
@@ -11098,23 +11224,35 @@ def _assembly_repository(plan: Plan) -> str | None:
     return f"{org}/{name}" if org and name else None
 
 
-def _branches_in(path: Path, refs: str) -> dict[str, str]:
+def _branches_in(path: Path, refs: str, wanted: str | None
+                 ) -> dict[str, str]:
     """`_listed_branches` of the refs under `refs` in the repository at
-    `path`, read from it with `git for-each-ref`: no network."""
-    return _listed_branches(
+    `path`, read from it with `git for-each-ref`: no network. Where
+    `wanted`, the split branch, is not among them, whether git could list
+    each directory of `refs` is asked first, as `_branches_at` asks (#1257):
+    on main, with the source's `.git/refs/remotes/origin/adopt` at mode
+    000, `check` said `plan ok` over the `adopt/three-repo-shape` its
+    `origin` last fetched, which it finds as `adopt-branch-exists` once that
+    directory can be listed."""
+    branches = _listed_branches(
         git_out(["for-each-ref", REF_LISTING, refs], cwd=path, binary=True),
         refs)
+    if wanted is not None and wanted not in branches:
+        _refuse_unlisted_refs_if_seen(path, refs)
+    return branches
 
 
-def _places_in_the_source(where: str, path: Path, extracting: bool) -> list:
+def _places_in_the_source(where: str, path: Path, extracting: bool,
+                          branch: str | None) -> list:
     """The source at `path`, named `where`, as the place a run with
     `--local-remote-dir` pushes the split to, `(where, pushed_by, extracted,
     branches)`, as `_split_branch_findings` asks it: its own branches, as
-    the push meets them (`_branches_at`). While `extracting`, those a clone
+    the push meets them (`_branches_at`, which asks about a list without
+    the split branch `branch`, #1257). While `extracting`, those a clone
     of it gets (`_branches_a_clone_gets`) are met by either run's extraction
     too, and one it hides from a clone with `hideRefs` (#520) is met by the
     push alone, a second place, so a finding about it is about that run."""
-    branches = _branches_at(str(path), path)
+    branches = _branches_at(str(path), path, branch)
     if not extracting:
         return [(where, LOCAL_RUN, False, branches)]
     cloned = _branches_a_clone_gets(str(path), path)
@@ -11125,21 +11263,23 @@ def _places_in_the_source(where: str, path: Path, extracting: bool) -> list:
               if name not in cloned})]
 
 
-def _places_check_asks(plan: Plan, source: Source, extracting: bool) -> list:
-    """The places `check` asks for the split branch, `(where, pushed_by,
-    extracted, branches)`: the source, which a run with `--local-remote-dir`
-    pushes to and either run extracts from while `extracting`
-    (`_places_in_the_source`), and, where the source's `origin` is the
-    assembly repository, that repository's branches as the source last
-    fetched them, which a run without it pushes to. `check` reads no
+def _places_check_asks(plan: Plan, source: Source, extracting: bool,
+                       branch: str | None) -> list:
+    """The places `check` asks for the split branch `branch`, `(where,
+    pushed_by, extracted, branches)`: the source, which a run with
+    `--local-remote-dir` pushes to and either run extracts from while
+    `extracting` (`_places_in_the_source`), and, where the source's `origin`
+    is the assembly repository, that repository's branches as the source
+    last fetched them, which a run without it pushes to. `check` reads no
     network for either."""
     places = _places_in_the_source(f"the source {_shown(str(source.path))}",
-                                   source.path, extracting)
+                                   source.path, extracting, branch)
     assembly = _assembly_repository(plan)
     if assembly and (source.repository or "").lower() == assembly.lower():
         places.append((f"`{assembly}` on GitHub, as the source's `origin` "
                        "last fetched it,", GITHUB_RUN, False,
-                       _branches_in(source.path, "refs/remotes/origin/")))
+                       _branches_in(source.path, "refs/remotes/origin/",
+                                    branch)))
     return places
 
 
@@ -11157,7 +11297,7 @@ def _check_split_branch(plan: Plan, source: Source
     branch = checked_value(key, plan.get(key, default))
     extracting = _extracts_a_leg(assigned_paths(plan.entries))
     found = _split_branch_findings(
-        branch, _places_check_asks(plan, source, extracting), source)
+        branch, _places_check_asks(plan, source, extracting, branch), source)
     return found, [SPLIT_BRANCH_REMEDIATION] if found else []
 
 
@@ -11213,13 +11353,15 @@ def _refuse_a_branch_in_the_split_branchs_way(
         return
     the_source = f"the source {_shown(str(source.path))}"
     if local:
-        places = _places_in_the_source(the_source, source.path, extracting)
+        places = _places_in_the_source(the_source, source.path, extracting,
+                                       branch)
     else:
         places = [(the_source, None, True,
                    _branches_a_clone_gets(str(source.path), source.path))
                   ] if extracting else []
         places.append((f"`{repositories['assembly']}` on GitHub", GITHUB_RUN,
-                       False, _branches_at(urls["assembly"], source.path)))
+                       False, _branches_at(urls["assembly"], source.path,
+                                           branch)))
     found = _split_branch_findings(branch, places)
     if found:
         raise Refusal(SPLIT_BRANCH_TAKEN, "\n".join(
@@ -15398,8 +15540,8 @@ def _refuse_a_split_branch_left_behind(source: Source, urls: dict,
         return
     # Under `--local-remote-dir` the push goes into the source, and meets its
     # own refs, a branch it hides from `git ls-remote` too (#520).
-    tip = (_branches_at(urls["assembly"], source.path).get(branch) if local
-           else _tip_at(urls["assembly"], branch))
+    tip = (_branches_at(urls["assembly"], source.path, branch).get(branch)
+           if local else _tip_at(urls["assembly"], branch))
     if tip is None or _in_the_history_of(source, tip):
         return
     raise Refusal(
@@ -16168,22 +16310,229 @@ def _refuse_an_unmountable_path(assembly: Path, path: str) -> None:
 #: still a pathspec, where `*` and `?` are wildcards and a leading `:` is
 #: magic -- `git rm -- ':!keep.md'` removes every other path in the tree.
 GIT_RM = ("git", "--literal-pathspecs", "rm", "-r", "-q", "--")
+#: `GIT_RM` with `-f`, for a path at or above a case twin (#1183): see
+#: `_split_case_twins`. `-f` skips git's question whether the file on the
+#: disk still holds what the index holds, and that question was also what
+#: kept git from removing a file through a symlink: given a path beyond a
+#: symlink the disk holds on the way to it, `git rm -f` unlinks the file
+#: the symlink leads to, wherever that is (r1237). The path itself counts
+#: too where the index holds a gitlink there: git removes the folder at a
+#: gitlink's path with all it holds, and follows a symlink there, so `git
+#: rm -f` of a gitlink whose path is a symlink empties the folder it leads
+#: to (r1237b). So it is never given either: `_taken_beyond_a_symlink`
+#: takes each such path first.
+GIT_RM_FORCED = ("git", "--literal-pathspecs", "rm", "-r", "-q", "-f", "--")
+#: `GIT_RM` with `--cached`, for a path the index holds beyond a symlink
+#: the disk holds on the way to it, or a gitlink whose path the disk holds
+#: as no folder: git takes it out of the index and touches nothing on the
+#: disk (r1237, r1237b). See `_taken_beyond_a_symlink`.
+GIT_RM_CACHED = ("git", "--literal-pathspecs", "rm", "-r", "-q", "--cached",
+                 "--")
 
 
-def _git_rm(assembly: Path, path: str) -> None:
+def _git_rm(assembly: Path, path: str, forced: bool = False,
+            cached: bool = False) -> None:
     """`git rm` of `path`, an entry's path as the plan holds it, in the
     assembly: what `run` does, with `path` handed to git as the bytes the
-    tree holds (`_path_argument`, #527).
+    tree holds (`_path_argument`, #527). `forced` is `GIT_RM_FORCED`, for a
+    path a case twin is at or under (#1183), and `cached` `GIT_RM_CACHED`,
+    for one the index holds beyond a symlink (r1237), or a gitlink whose
+    path the disk holds as no folder (r1237b).
 
     `run` takes only text (`check_program`), so this asks `check_program` of
     the command as the person reads it, and a git that refuses raises
     `CommandFailed` with that command, as `run` raises it: what `execute`
     reports after both legs exist is unchanged.
     """
-    command = [*GIT_RM, path]
+    removal = GIT_RM_CACHED if cached else GIT_RM_FORCED if forced \
+        else GIT_RM
+    command = [*removal, path]
     check_program(command)
-    proc = subprocess.run([*GIT_RM, _path_argument(path)], cwd=str(assembly),
-                          capture_output=True, check=False)
+    proc = subprocess.run([*removal, _path_argument(path)],
+                          cwd=str(assembly), capture_output=True, check=False)
+    if proc.returncode != 0:
+        raise CommandFailed(command, assembly, proc.returncode,
+                            (proc.stderr + proc.stdout).decode("utf-8",
+                                                               "replace"))
+
+
+#: `git checkout-index`, writing each path it reads from its input, each
+#: ended by a NUL, from the index over whatever the disk holds there.
+CHECKOUT_INDEX = ("git", "checkout-index", "-f", "-z", "--stdin")
+
+
+def _at_or_under(path: str, top: str) -> bool:
+    """Whether `path` is `top` or a path under it, both as git spells them:
+    case counts, as it does in the index."""
+    return path == top or path.startswith(top + "/")
+
+
+def _index_modes(assembly: Path) -> dict[str, str]:
+    """Each path the assembly's index holds, in its order, as `_git_path`
+    spells it, and its mode (`GITLINK_MODE` for a gitlink): `git ls-files
+    -s -z`, which writes nothing, read as `_index_entries` reads it."""
+    raw = git_out(["ls-files", "-s", "-z"], cwd=assembly, binary=True)
+    modes = {}
+    for record in raw.split(b"\x00"):
+        head, _, name = record.partition(b"\t")
+        if name:
+            modes[_git_path(name)] = head.split()[0].decode("ascii")
+    return modes
+
+
+def _split_case_twins(held: list[str],
+                      removed: list[str]) -> list[list[str]]:
+    """Each set of case twins of `held`, the paths the assembly's index
+    holds (`_index_modes`, `_case_twin_sets`), that has a path at or under
+    one of `removed`, the paths `_mount_the_legs` takes out of the root: a
+    set the plan sends into different repositories, or drops a path of
+    (#1183); and a set it keeps whole in one leg, which reaches the mount
+    only as one of one blob in one mode, the NOTE `check` prints for it
+    (`_one_blob_twins`), every other being `plan-case-twins`. The paths of
+    such a set are removed from the root with `-f` too, and none is written
+    back, since the root keeps none of them (#1237's review, NIT 1).
+
+    A DISK THAT IGNORES CASE HOLDS EACH SUCH SET AS ONE FILE. Measured for
+    #1183 with git 2.43, on a FUSE disk that ignores case and keeps it: the
+    split's clone checks out one file per set, holding the bytes of the twin
+    git wrote last, in the index's order (`a` after `A`, `d/x` after `D/x`),
+    git saying `the following paths have collided`. The mount's `git rm` of
+    a twin then meets that file:
+    - where the twin that goes sorts last (`A` kept in the root, `a` sent to
+      the code leg or dropped, and `F/x` kept beside `f`), `git rm` deletes
+      the one file both names share, `git add -A` stages the kept twin's
+      deletion, and `execute` stopped after both legs and the split were
+      pushed, as `adopt-lost`;
+    - where it sorts first (`A` sent to a leg or dropped, `a` kept), `git
+      rm` refused, `the following file has local modifications: A`, and
+      `execute` stopped mounting the legs after both were pushed: also with
+      BOTH twins dropped, or one sent to each leg.
+    So each path such a set has at or under it is removed with `-f`, and
+    the paths of these sets that the root keeps are written back from the
+    index after the last `git rm`.
+
+    The list is asked of the index, which holds the source commit's tree,
+    once, and on every disk: on a disk that keeps case, the same commands
+    rewrite the bytes each kept twin already holds. A source with no such
+    set, as nearly every one is, gets the `git rm` of each path it always
+    got and nothing written back: that listing, which writes nothing, is
+    the one command added."""
+    return [named for named in _case_twin_sets(held)
+            if any(_at_or_under(twin, top)
+                   for twin in named for top in removed)]
+
+
+def _on_the_disk(assembly: Path, path: str) -> str | bytes:
+    """`path`, as git spells it, in the assembly, as `os.lstat` is handed
+    it: the bytes the tree holds (`_path_argument`), so that no locale is
+    in the way (#527), or the text on Windows."""
+    here = _path_argument(path)
+    return (os.path.join(os.fsencode(assembly), here)
+            if isinstance(here, bytes) else os.path.join(assembly, here))
+
+
+def _beyond_a_symlink(assembly: Path, path: str) -> str | None:
+    """The first folder on the way to `path`, a path the assembly's index
+    holds, from the top, that the disk holds as a symlink, as git spells
+    it; None where there is none (r1237). Each folder is asked with
+    `lstat` (`_is_a_symlink`, `_on_the_disk`), and none beyond the first
+    symlink, which would be asked in the folder it leads to. `path` itself
+    is not asked here: `git rm` of a file's or a symlink's entry unlinks
+    what is at the path, never what a symlink there leads to. A gitlink's
+    entry is another matter, and `_taken_beyond_a_symlink` asks a
+    gitlink's own path (r1237b)."""
+    parts = path.split("/")
+    for end in range(1, len(parts)):
+        above = "/".join(parts[:end])
+        if _is_a_symlink(_on_the_disk(assembly, above)):
+            return above
+    return None
+
+
+def _taken_beyond_a_symlink(assembly: Path, top: str,
+                            held: dict[str, str]) -> bool:
+    """`git rm --cached` (`GIT_RM_CACHED`) of each path of `held`, the
+    paths the assembly's index holds and their modes (`_index_modes`), at
+    or under `top` that the disk holds beyond a symlink
+    (`_beyond_a_symlink`), asked before `top` is removed with `-f`: of the
+    symlink's own path where that is at or under `top`, which takes each
+    path beyond it at once, else of the path; and of each gitlink there
+    whose own path the disk holds as no folder (`_is_itself_a`): a
+    symlink, a file, or nothing. Whether that took every path `held` at or
+    under `top`, leaving none for `-f`.
+
+    WHERE A FOLDER ON THE WAY IS A SYMLINK (#1237's review, r1237). A disk
+    that ignores case holds a folder `D/` and a symlink `d` as one name,
+    and the split's clone writes `d` last, so `D` is that symlink. Measured
+    with git 2.43 on a FUSE disk that ignores case, for a plan that sends
+    `D/` to the code leg, or drops it, and keeps `d` in the root, `check`
+    printing `plan ok`: `git rm -f -- D` unlinked `D/x` through the
+    symlink, the file `x` in the folder it leads to, outside the work
+    directory for `d` leading to an absolute path or to `../../victim`,
+    and `execute` printed `adoption verified`; for `d` leading to `E`, a
+    folder the root keeps, `E/x` was gone, and `execute` stopped as
+    `adopt-lost` after both legs and the split were pushed. Without `-f`,
+    git refused `D/x` as a local modification. So such a path is taken out
+    of the index alone, and no file on the disk is touched: git counts a
+    path beyond a symlink as gone from the work tree, `git add -A` does not
+    follow a symlink into a folder, and the symlink is the twin the root
+    keeps, written back from the index. The root's tree is the plan's, as
+    is each leg's, which `git filter-repo` made from the objects.
+
+    WHERE THE INDEX HOLDS A GITLINK (#1237's second review, r1237b). `git
+    rm` of a gitlink's entry is no unlink: git removes the folder at its
+    path with everything in it, and opens that path as a folder, following
+    a symlink there. Measured with git 2.43, for a gitlink `D` the disk
+    holds as a symlink to a folder outside, `git rm -f -- D` emptied that
+    folder and then said `fatal: could not remove 'D'`; on a FUSE disk that
+    ignores case, for a plan that drops the gitlink `D` and `.gitmodules`
+    and keeps `d`, a symlink, in the root (or drops the folder `M/` that
+    holds both), `check` printed `plan ok` and `execute` emptied the folder
+    `d` leads to after both legs were pushed. For a gitlink the disk holds
+    as a file, or below one (`M` a file, `M/D` the gitlink), `git rm -f`
+    stopped at the same `could not remove`, and deleted nothing. So the
+    gitlink's own path is asked too, once no folder on the way is a
+    symlink, and where it is no folder it is taken out of the index alone:
+    `git rm --cached` touched nothing there in each case. A folder there,
+    the empty one a clone writes for a gitlink, is removed with `-f` as
+    before.
+
+    REFUSING THERE WAS REJECTED: it would come after both legs are pushed,
+    for a plan that is good on every disk, and a re-run then meets
+    `leg-remote-exists`."""
+    under = [path for path in held if _at_or_under(path, top)]
+    taken: list[str] = []
+    for path in under:
+        if any(_at_or_under(path, gone) for gone in taken):
+            continue
+        link = _beyond_a_symlink(assembly, path)
+        if link is not None:
+            gone = link if _at_or_under(link, top) else path
+        elif held[path] == GITLINK_MODE and not _is_itself_a(
+                _on_the_disk(assembly, path), stat.S_ISDIR):
+            gone = path
+        else:
+            continue
+        _git_rm(assembly, gone, cached=True)
+        taken.append(gone)
+    return bool(taken) and all(any(_at_or_under(path, gone)
+                                   for gone in taken) for path in under)
+
+
+def _write_from_the_index(assembly: Path, paths: list[str]) -> None:
+    """`git checkout-index` of `paths`, which the assembly's index holds,
+    over whatever the disk holds at each (#1183): handed to git on its
+    input as the bytes the tree holds, each `_git_path` undone, so that no
+    locale and no length of a command line is in the way.
+
+    `CommandFailed` where git refuses, naming the command as `_git_rm`
+    names its own; what git said names the path."""
+    command = list(CHECKOUT_INDEX)
+    check_program(command)
+    proc = subprocess.run(
+        command, cwd=str(assembly), capture_output=True, check=False,
+        input=b"".join(path.encode("utf-8", "surrogateescape") + b"\x00"
+                       for path in paths))
     if proc.returncode != 0:
         raise CommandFailed(command, assembly, proc.returncode,
                             (proc.stderr + proc.stdout).decode("utf-8",
@@ -16200,13 +16549,31 @@ def _mount_the_legs(assembly: Path, work_root: Path, names: dict, urls: dict,
 
     Each path is the source tree's, so `_git_rm` hands it to git as the bytes
     the tree holds (#527). The mount paths are `checked_value`s, ASCII.
+
+    CASE TWINS THE PLAN SPLITS (#1183): a path with a twin at or under it
+    is removed with `-f`, and each twin the root keeps is written back from
+    the index after the last `git rm` (`_split_case_twins`), so that a disk
+    that ignores case loses none of them. Before that `-f`, each path the
+    index holds at or under it beyond a symlink the disk holds on the way,
+    and each gitlink there whose own path the disk holds as no folder, is
+    taken out of the index alone (`_taken_beyond_a_symlink`, r1237,
+    r1237b), so that `-f` removes nothing through a symlink.
     """
     removed = sorted((p.rstrip("/") for p in (paths_for["spec"]
                                               + paths_for["code"]
                                               + paths_for["drop"])),
                      key=lambda p: (p != GITMODULES, p))
+    held = _index_modes(assembly)
+    split = [twin for named in _split_case_twins(list(held), removed)
+             for twin in named]
     for path in removed:
-        _git_rm(assembly, path)
+        forced = any(_at_or_under(twin, path) for twin in split)
+        if not (forced and _taken_beyond_a_symlink(assembly, path, held)):
+            _git_rm(assembly, path, forced)
+    kept = [twin for twin in split
+            if not any(_at_or_under(twin, path) for path in removed)]
+    if kept:
+        _write_from_the_index(assembly, kept)
     # The plan moved (or dropped) the source's own .gitmodules, so its deletion
     # is staged, and `git submodule add` refuses to write into a file the index
     # says is going away. Give the assembly a fresh, EMPTY, staged one for its
