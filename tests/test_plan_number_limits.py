@@ -1,7 +1,7 @@
 # SPDX-License-Identifier: Apache-2.0
 """A plain number the plan's reader cannot make is refused by its line, and a
 float it does make is said in digits a plan can hold (#1212, which follows
-#1114 and #1198).
+#1114 and #1198), at the small end of a decimal as at the large (#1260).
 
 RV1198 found both on #1198, and both are older than it.
 
@@ -18,6 +18,14 @@ RV1198 found both on #1198, and both are older than it.
 Now `_scalar` refuses both numbers as `yaml-unparsable`, with a remedy, so
 `load_yaml` names the line; and `_read_as` says a float in the digits of its
 `repr`, written out with no exponent, which the reader reads back as it.
+
+#1260 is the other end of a decimal. `float()` makes `0.0` of a plain decimal
+that holds a nonzero digit and is too small for a 64-bit float (`0.` and four
+hundred `0`s and a `1`), a number the file does not hold, where it makes
+`inf` of one too large. `_scalar` refuses it as it refuses that one: the same
+`yaml-unparsable` by its line, with the same remedy, in words that say it
+would be zero. `0.0`, `-0.0`, a decimal of only zeros and a subnormal such as
+5e-324 are numbers still.
 
 The reader's rows run in this process. The plan's rows edit a plan `plan`
 wrote and run `check` and `execute --yes` on it, with a stub `gh` first on
@@ -62,6 +70,22 @@ LONG = "1" * (DEFAULT_DIGITS + 1)
 LONGEST = "1" * DEFAULT_DIGITS
 INFINITE = "1" * 400 + ".5"
 
+#: W1212's decimal that is too small: `0.`, four hundred `0`s and a `1`.
+#: `float()` makes `0.0` of it, a number nothing in the file holds.
+TINY = "0." + "0" * 400 + "1"
+
+#: The decimals a digit either side of half the smallest float, 5e-324, which
+#: `float()` rounds to the nearer of 0.0 and 5e-324: the one under half is
+#: `0.0`, so it is refused, and the one over half is 5e-324, a number.
+BELOW_HALF = "0." + "0" * 323 + "24703282292062327"
+ABOVE_HALF = "0." + "0" * 323 + "24703282292062328"
+
+#: Arabic-Indic zero and one: the pattern `_scalar` reads a decimal by takes
+#: the digits of every script, and `float()` reads each as its value. Escapes,
+#: so that this file stays ASCII.
+ZERO_OF_ANOTHER_SCRIPT = "\u0660"
+ONE_OF_ANOTHER_SCRIPT = "\u0661"
+
 
 def too_long(digits: int) -> str:
     return (f"a plain integer of {digits} digits is too long for this Python "
@@ -71,6 +95,11 @@ def too_long(digits: int) -> str:
 def too_large(digits: int) -> str:
     return (f"a plain decimal of {digits} digits is too large to read as a "
             "number: a 64-bit float cannot hold it, so it would be infinite")
+
+
+def too_small(digits: int) -> str:
+    return (f"a plain decimal of {digits} digits is too small to read as a "
+            "number: a 64-bit float cannot hold it, so it would be zero")
 
 
 needs_the_setting = pytest.mark.skipif(
@@ -174,6 +203,73 @@ def test_the_refusal_follows_this_pythons_setting(tmp_path, default_digits):
         refusal.detail)
     sys.set_int_max_str_digits(5000)
     assert parse_yaml(f"k: {LONG}\n") == {"k": int(LONG)}
+
+
+# --- the small end: a decimal a float can only make zero of (#1260) ----------
+
+#: `(the file, the line the number is on, how many digits it holds)`, by test
+#: id: W1212's decimal and the same with a minus sign, in each shape a plain
+#: value is read in, and the two edges: the decimal a digit under half the
+#: smallest float, and one in the digits of another script. Every one has a
+#: nonzero digit and a float of zero.
+TOO_SMALL = {
+    "block-value": (f"a: 1\nk: {TINY}\n", 2, 402),
+    "block-value-negative": (f"a: 1\nk: -{TINY}\n", 2, 402),
+    "sequence-item": (f"a: 1\nk:\n  - {TINY}\n", 3, 402),
+    "sequence-item-negative": (f"a: 1\nk:\n  - -{TINY}\n", 3, 402),
+    "flow-sequence": (f"a: 1\nk: [1.5, {TINY}]\n", 2, 402),
+    "flow-sequence-negative": (f"a: 1\nk: [1.5, -{TINY}]\n", 2, 402),
+    "flow-mapping": (f"a: 1\nk: {{x: {TINY}}}\n", 2, 402),
+    "flow-mapping-negative": (f"a: 1\nk: {{x: -{TINY}}}\n", 2, 402),
+    "nested": (f"a:\n  b:\n    k: {TINY}\n", 3, 402),
+    "nested-negative": (f"a:\n  b:\n    k: -{TINY}\n", 3, 402),
+    "below-half-the-smallest": (f"k: {BELOW_HALF}\n", 1, 341),
+    "another-script": (
+        f"k: 0.{ZERO_OF_ANOTHER_SCRIPT * 400}{ONE_OF_ANOTHER_SCRIPT}\n", 1,
+        402),
+}
+
+
+@pytest.mark.parametrize("case", sorted(TOO_SMALL))
+def test_a_decimal_a_float_can_only_make_zero_of_is_refused_by_its_line(
+        tmp_path, case):
+    """`yaml-unparsable`, naming the file and the line, with the remedy and
+    words that say it would be zero, as the large end's say it would be
+    infinite: in every place a plain value is read, with a minus sign or
+    none, and where the digits are another script's."""
+    text, line, digits = TOO_SMALL[case]
+    refusal = refusal_of(tmp_path, text)
+    assert refusal.code == "yaml-unparsable"
+    assert refusal.detail == (
+        f"{tmp_path / 'file.yaml'}: line {line}: {too_small(digits)}"), (
+        refusal.detail)
+    assert refusal.remediation == REMEDY
+    assert isinstance(refusal.__cause__, YamlError)
+
+
+#: `(the decimal, what the reader makes of it)`, by test id: the controls.
+#: A decimal of only zeros, in either script and either sign, is a number
+#: with no nonzero digit; 5e-324 is a nonzero float, spelled in its 326
+#: characters, and so is the decimal a digit over half of it.
+STILL_NUMBERS = {
+    "zero": ("0.0", 0.0),
+    "negative-zero": ("-0.0", -0.0),
+    "zeros": ("0.000", 0.0),
+    "many-zeros": ("0." + "0" * 400, 0.0),
+    "many-zeros-negative": ("-0." + "0" * 400, -0.0),
+    "zeros-of-another-script": (
+        f"{ZERO_OF_ANOTHER_SCRIPT}.{ZERO_OF_ANOTHER_SCRIPT * 400}", 0.0),
+    "the-smallest": ("0." + "0" * 323 + "5", 5e-324),
+    "the-smallest-negative": ("-0." + "0" * 323 + "5", -5e-324),
+    "above-half-the-smallest": (ABOVE_HALF, 5e-324),
+}
+
+
+@pytest.mark.parametrize("case", sorted(STILL_NUMBERS))
+def test_a_decimal_a_float_can_hold_is_still_read_as_a_number(case):
+    """`repr` of the whole, so that a `-0.0` read as `0.0` is not the same."""
+    spelled, value = STILL_NUMBERS[case]
+    assert repr(parse_yaml(f"k: {spelled}\n")) == repr({"k": value})
 
 
 # --- `_read_as`: a float in digits the reader reads back as it --------------
@@ -288,6 +384,72 @@ def test_a_commit_too_large_to_be_finite_is_refused_by_its_line(
     refused_unparsable(text, tmp_path,
                        line_of(text, f"    commit: {INFINITE}"),
                        too_large(401))
+
+
+# --- the small end, through `check` and `execute` (#1260) -------------------
+
+
+@pytest.mark.parametrize("sign", ["", "-"], ids=["positive", "negative"])
+def test_a_commit_too_small_to_be_nonzero_is_refused_by_its_line(
+        answered, tmp_path, sign):
+    """`check` and `execute` read W1212's decimal in a `commit:` as "the
+    number 0.0" and said it was not text; they now refuse it, by its line, as
+    they refuse one too large to be finite."""
+    raw = sign + TINY
+    text = pinned(answered, a_pin(commit=raw))
+    refused_unparsable(text, tmp_path, line_of(text, f"    commit: {raw}"),
+                       too_small(402))
+
+
+def test_a_key_outside_pins_too_small_to_be_nonzero_is_refused_by_its_line(
+        tmp_path):
+    """A key no pin holds was read as `0.0`, and the plan was a good one:
+    `check` printed no finding, and `execute` made the legs. It is the
+    reader's fault, not the pin rows', so it is refused the same way.
+
+    The row makes a source of its own, not the module's: where the reader
+    read it as `0.0`, `execute` ran the plan and left its split branch in the
+    source, and every row after this one would find `adopt-branch-exists`."""
+    own = tmp_path / "own"
+    own.mkdir()
+    planned_text = planned(make_source_repo(own / "Thing"), own,
+                           dict(ANSWERS)).read_text(encoding=UTF8)
+    text = planned_text + f"probe_extra: {TINY}\n"
+    refused_unparsable(text, tmp_path, len(text.splitlines()), too_small(402))
+
+
+def test_a_follow_up_too_small_to_be_nonzero_is_refused_by_its_line(
+        answered, tmp_path):
+    """A `follow_ups:` item was read as `0.0` and `check` found it is a
+    number, not text; the reader refuses it first."""
+    assert answered.count("\nfollow_ups:\n") == 1
+    text = answered.replace("\nfollow_ups:\n",
+                            "\nfollow_ups:\n  - " + TINY + "\n", 1)
+    refused_unparsable(text, tmp_path, line_of(text, f"  - {TINY}"),
+                       too_small(402))
+
+
+#: `(the commit as the plan spells it, how the finding says it)`, by test
+#: id: decimals a float can hold, which are numbers still, and so are said.
+HELD = {
+    "zeros": ("0." + "0" * 400, "0.0"),
+    "the-smallest": ("0." + "0" * 323 + "5", "0." + "0" * 323 + "5"),
+}
+
+
+@needs_filter_repo
+@pytest.mark.parametrize("case", sorted(HELD))
+def test_a_commit_a_float_can_hold_is_still_a_finding(answered, tmp_path,
+                                                       case):
+    """The controls: a decimal of only zeros and the smallest float are
+    numbers, and the `commit:` is said as #1198 says one that is not text."""
+    raw, digits = HELD[case]
+    found = one_finding(answered, tmp_path, (a_pin(commit=raw),),
+                        "plan-pin-malformed")
+    assert found.startswith(
+        f"FINDING plan-pin-malformed: {ENTRY_NAMED} records `commit:` as the "
+        f"number {digits}, which is not text. {FROM}, and nothing else: "), (
+        found[:400])
 
 
 @needs_filter_repo

@@ -189,10 +189,10 @@ class YamlError(Exception):
     `line` AND `remediation` ARE FOR `load_yaml`, WHICH NAMES A FILE (#708).
     Where the fix is one edit of the value, the same in every file, the
     refusal carries it (`_indicator_refusal`, and `_scalar`'s for a number
-    it cannot make, #1212); every other refusal carries none. Such a
-    refusal is raised where the value is read, which knows no line, so the
-    block reader records the line it read the value on (`_block_value`),
-    and `load_yaml` names it. It stays out of the words:
+    it cannot make, #1212 and #1260); every other refusal carries none.
+    Such a refusal is raised where the value is read, which knows no line,
+    so the block reader records the line it read the value on
+    (`_block_value`), and `load_yaml` names it. It stays out of the words:
     a tool that asks the reader about ONE rendered line (`k: @a`) quotes
     those words in a sentence of its own, where `line 1:` would be noise.
     """
@@ -227,8 +227,9 @@ class YamlError(Exception):
 # integer of more digits than `int()` takes (`sys.get_int_max_str_digits()`,
 # 4300 by default), which ended every tool in a `ValueError` traceback, and
 # a decimal too large for a 64-bit float to hold, which was read as the float
-# `inf`, a number this reader reads no plain scalar as (`inf` is text). See
-# `_scalar`.
+# `inf`, a number this reader reads no plain scalar as (`inf` is text). The
+# other end is refused the same way (#1260): a decimal with a nonzero digit
+# that a 64-bit float can only make `0.0` of. See `_scalar`.
 #
 # A BLOCK SCALAR'S BODY IS READ AS YAML READS IT, OR REFUSED BY ITS LINE
 # (#1004). `+` keeps the empty lines at the block's end, where it was read
@@ -623,6 +624,16 @@ def _scalar(raw: str) -> Any:
     second "the number inf". The value can be thousands of characters long,
     so the refusal says how many digits it holds, and `load_yaml` names its
     line.
+
+    THE OTHER END IS REFUSED THE SAME WAY (#1260): a decimal that holds a
+    nonzero digit and whose float is zero (`0.` and four hundred `0`s and a
+    `1`), which was read as `0.0`, a number the file does not hold. It
+    changes kind as the large end does, from nonzero to zero, where rounding
+    keeps the kind: a subnormal such as 5e-324 is nonzero, so it is a number
+    still, and so are `0.0`, `-0.0` and a decimal of only zeros. The test of
+    a nonzero digit asks each digit its value and does not look for `1` to
+    `9`, because the pattern above takes the digits of every script and
+    `float()` reads each as its value.
     """
     text = raw.strip(_YAML_WHITE)
     if text == "" or text in ("null", "~", "Null", "NULL"):
@@ -651,6 +662,12 @@ def _scalar(raw: str) -> Any:
                             "digits is too large to read as a number: a "
                             "64-bit float cannot hold it, so it would be "
                             "infinite", _UNMADE_NUMBER_REMEDY)
+        if number == 0.0 and any(
+                int(digit) for digit in text.lstrip("-").replace(".", "")):
+            raise YamlError(f"a plain decimal of {len(text.lstrip('-')) - 1} "
+                            "digits is too small to read as a number: a "
+                            "64-bit float cannot hold it, so it would be "
+                            "zero", _UNMADE_NUMBER_REMEDY)
         return number
     return text
 
@@ -1308,9 +1325,9 @@ def _block_value(text: str, line: int) -> Any:
     open with a backtick ...`, among the hundreds of lines a plan holds.
     The line is recorded on the refusal (`YamlError.line`), never put in
     its words, where the refusal carries a remedy (`_indicator_refusal`'s,
-    or `_UNMADE_NUMBER_REMEDY`, #1212): one that tells a person to edit a
-    value says where it is. The others keep the words they had, which the
-    naming gate's `declared-unverified` reason and the root's
+    or `_UNMADE_NUMBER_REMEDY`, #1212 and #1260): one that tells a person to
+    edit a value says where it is. The others keep the words they had, which
+    the naming gate's `declared-unverified` reason and the root's
     `validate-pins.py` print, and tests quote, whole.
     """
     try:
