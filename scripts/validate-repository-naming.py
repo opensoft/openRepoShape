@@ -140,6 +140,7 @@ import argparse
 import inspect
 import os
 import sys
+import unicodedata
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
@@ -151,6 +152,21 @@ from repo_shape import (  # noqa: E402
 )
 
 DEFAULT_POLICY = Path(__file__).resolve().parents[1] / "contracts" / "repository-naming.yaml"
+
+#: What the plain listing and `--explain`'s family rows pad a text by (#1217)
+#: is the columns a terminal gives it, not the code points a format width
+#: counts. These general categories take none: a non-spacing mark and an
+#: enclosing one, drawn over the character before them, and a format
+#: character, which is not drawn.
+ZERO_COLUMN_CATEGORIES = frozenset(("Mn", "Me", "Cf"))
+#: The East Asian widths that take two columns: wide and fullwidth.
+TWO_COLUMN_WIDTHS = frozenset(("W", "F"))
+#: The Hangul medial vowels and final consonants, U+1160 to U+11FF and, in
+#: Hangul Jamo Extended-B, U+D7B0 to U+D7FF: letters (Lo) of East Asian width
+#: N, drawn inside the syllable their leading consonant begins, so they take
+#: no column, as glibc's `wcwidth` counts them.
+MEDIAL_AND_FINAL_JAMO = frozenset(map(chr, range(0x1160, 0x1200)))
+MEDIAL_AND_FINAL_JAMO_EXTENDED_B = frozenset(map(chr, range(0xD7B0, 0xD800)))
 
 
 def _shown(path) -> str:
@@ -164,6 +180,64 @@ def _shown(path) -> str:
     it classified a name."""
     text = str(path)
     return text if text.isprintable() else repr(text)
+
+
+def _char_columns(char: str) -> int:
+    """How many columns a terminal draws `char` in: 0, 1 or 2. The category
+    comes first, since the voiced sound mark U+3099 is wide and still drawn
+    over the kana it follows; an ambiguous width takes one, as a terminal
+    outside an East Asian locale draws it."""
+    if (unicodedata.category(char) in ZERO_COLUMN_CATEGORIES
+            or char in MEDIAL_AND_FINAL_JAMO
+            or char in MEDIAL_AND_FINAL_JAMO_EXTENDED_B):
+        return 0
+    if unicodedata.east_asian_width(char) in TWO_COLUMN_WIDTHS:
+        return 2
+    return 1
+
+
+def _columns(text: str) -> int:
+    """The columns `text` takes in the listing, character by character."""
+    return sum(_char_columns(char) for char in text)
+
+
+def _padded(text: str, columns: int) -> str:
+    """`text` with spaces after it to fill `columns` columns of a terminal
+    (#1217), where `f"{text:<{columns}}"` filled that many code points: a
+    name of `\\u65e5\\u672c\\u8a9e` took 6 columns and was padded as 3, so
+    its label stood 3 right of `codexGlass`'s, and `e\\u0301cole` took 5,
+    padded as 6, 1 left. A text already wider gets no space and is not cut,
+    as the format width left it. Written here rather than imported, as
+    `_shown` is: a project's `scripts/repo_shape.py` may be older than this
+    copy."""
+    return text + " " * (columns - _columns(text))
+
+
+def _printed(text: str) -> str:
+    """`text` in the characters stdout will write for it, which is what is
+    padded: under `_escape_what_stdout_cannot_encode` a character the
+    encoding lacks goes out as its escape, so on an ASCII stdout the name
+    `\\u65e5\\u672c\\u8a9e` is 18 characters wide, and `Atl\\udcffas`, read
+    from a byte that is not UTF-8, is 11 on a UTF-8 stdout as on an ASCII
+    one. Unchanged where stdout has no encoding or its handler cannot write
+    `text`."""
+    encoding = getattr(sys.stdout, "encoding", None) or "utf-8"
+    errors = getattr(sys.stdout, "errors", None) or "strict"
+    try:
+        return text.encode(encoding, errors).decode(encoding)
+    except (LookupError, UnicodeError):
+        return text
+
+
+def _family_id_padded(family_id) -> str:
+    """A family's id, filling the 18 columns `--explain` gives it. An id is
+    the policy's word, and nothing checks it is ASCII or even text: text is
+    padded by its columns as stdout writes it (`_padded`, `_printed`), and
+    any other value YAML reads there, `5` or `true`, is padded by `format`,
+    so its row prints as it always did."""
+    if isinstance(family_id, str):
+        return _padded(_printed(family_id), 18)
+    return f"{family_id:<18}"
 
 
 def _not_a_name(entry) -> str | None:
@@ -792,7 +866,8 @@ def _no_family_lines(policy: NamingPolicy, name: str) -> list[str]:
     lines.append(f"    the {len(policy.families)} families are: " + ", ".join(
         f["id"] for f in policy.families))
     for family in policy.families:
-        lines.append(f"    {family['id']:<18} {family['pattern']}")
+        lines.append(f"    {_family_id_padded(family['id'])} "
+                     f"{family['pattern']}")
     return lines
 
 
@@ -916,7 +991,8 @@ def _family_row(policy: NamingPolicy, family: dict, matches: list,
     mark = "MATCH " if hits else "      "
     role_note, claim = _family_claim_and_role_note(
         policy, family, hits, role, name, found)
-    return f"    {mark}{family['id']:<18} {family['pattern']}{role_note}{claim}"
+    return (f"    {mark}{_family_id_padded(family['id'])} {family['pattern']}"
+            f"{role_note}{claim}")
 
 
 def _referent_lines(target: Target, matches: list,
@@ -1294,7 +1370,9 @@ def _print_classification(name: str, found: Classification | None) -> None:
         label = found[0] + role_suffix
     also = f"   also_matches {','.join(found.also_matches)}" \
         if found and found.also_matches else ""
-    print(f"  {name:<32} {label}{also}")
+    # Padded by the columns the name takes as stdout writes it (#1217), so
+    # a wide or combining name's label starts under every other row's.
+    print(f"  {_padded(_printed(name), 32)} {label}{also}")
 
 
 def _classify_targets(policy: NamingPolicy, targets: list, args,
