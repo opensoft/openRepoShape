@@ -128,8 +128,12 @@ def fail_where_the_caller_ends(call, *args, said: str = "") -> None:
 
 @pytest.fixture
 def a_system_that_carries_the_byte():
-    if len(os.fsencode(NOT_UTF_8_PROBE)) != 1:
-        pytest.skip("on this system the first question is the one that skips")
+    """The rows that let the probe through to the disk ask the system's
+    question and the locale's first (#1196): the helper skips on either, on
+    its own reason, and not on the one these rows hold."""
+    if (len(os.fsencode(NOT_UTF_8_PROBE)) != 1
+            or os.fsdecode(b"\xff") != NOT_UTF_8_PROBE):
+        pytest.skip("on this system an earlier question is the one that skips")
 
 
 @pytest.fixture
