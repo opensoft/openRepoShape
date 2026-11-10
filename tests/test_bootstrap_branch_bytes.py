@@ -391,6 +391,8 @@ def test_a_name_that_is_not_utf8_is_still_carried_and_the_branch_made(
                               cwd=str(project / leg), capture_output=True,
                               check=True).stdout
         assert head == b"refs/heads/a\xffb\n", head
+        assert git("rev-parse", "HEAD", cwd=project / leg
+                   ).stdout.strip()[:12] == pin12(project, leg)
     skip_where_the_locale_does_not_spell_it_as_utf_8(
         "a\udcffb", A_BYTE_READ_AS_A_SURROGATE)
     for leg in ("spec", "code"):

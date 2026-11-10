@@ -314,6 +314,7 @@ def test_a_leg_on_a_branch_whose_name_is_not_utf8_is_placed_on_every_run(
         printed.append(result.stdout)
     assert head_bytes(leg) == (b"refs/heads/a\xffb\n" if given
                                else b"refs/heads/main\n")
+    assert rev(leg) == pin
     skip_where_the_locale_does_not_spell_it_as_utf_8(
         "a\udcffb", A_BYTE_READ_AS_A_SURROGATE)
     for run, stdout in enumerate(printed, 1):
