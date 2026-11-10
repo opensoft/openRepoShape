@@ -3847,6 +3847,51 @@ def manifest_candidates(root: Path) -> tuple[list[Path], list[tuple]]:
     return [path for path in found if regular(path)], refused
 
 
+def local_leg_alias(ctx: Context, path: Path, read_as: dict) -> bool:
+    """An ignored, untracked compatibility link into a declared Git leg.
+
+    A root gate's input is always inspected. Tracked links, ordinary files,
+    non-ignored links and links outside a recorded leg remain candidates.
+    Git or filesystem errors fail closed: they never exempt a manifest.
+    """
+    rel = path.relative_to(ctx.root).as_posix()
+    if ctx.kind != PROJECT or rel in read_as:
+        return False
+    try:
+        if not path.is_symlink():
+            return False
+        tracked = git_answer(
+            ["--literal-pathspecs", "ls-files", "--stage", "-z", "--", rel],
+            ctx.root)
+        ignored = git_answer(["check-ignore", "--", rel], ctx.root)
+        if tracked is None or tracked or not ignored:
+            return False
+        target = path.resolve(strict=True)
+        root = ctx.root.resolve(strict=True)
+        for leg in ctx.legs():
+            name = leg.get("path")
+            if not isinstance(name, str) or not name:
+                continue
+            mount = (ctx.root / name).resolve(strict=True)
+            if mount == root or not mount.is_relative_to(root):
+                continue
+            # A manifest's arbitrary directory is not a repository boundary.
+            entry = git_answer(
+                ["--literal-pathspecs", "ls-files", "--stage", "-z", "--", name],
+                ctx.root)
+            if not entry or not any(
+                    record.startswith(GITLINK_MODE + " ")
+                    and record.split("\t", 1)[-1] == name
+                    and record.split("\t", 1)[0].endswith(" 0")
+                    for record in entry.split("\0")):
+                continue
+            if target.is_relative_to(mount):
+                return True
+    except (OSError, RuntimeError, ValueError):
+        pass
+    return False
+
+
 #: Named once: the row this function returns and its own `CHECKS` entry below
 #: must spell the same label, or the two read as two different checks.
 LABEL_MANIFEST_KINDS = "manifest kinds"
@@ -4467,6 +4512,8 @@ def check_manifest_kinds(ctx: Context) -> Row:
         if path == elsewhere:
             continue
         rel = path.relative_to(ctx.root).as_posix()
+        if local_leg_alias(ctx, path, read_as):
+            continue
         # `load_yaml` and not `Context._read`, which says None for both a
         # refusal and an empty file: the row quotes the refusal, less the
         # path it opens with, which the row has just named.
