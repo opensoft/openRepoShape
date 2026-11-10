@@ -497,12 +497,13 @@ options:
                         `origin` url names; where it has no `origin` and
                         exactly one remote, the one that remote's url names,
                         unless its name is not printable ASCII or starts with
-                        `-`). A source with no remote, with two or more and no
-                        `origin`, or whose `origin` (or only remote) is a
-                        path, names no organisation: `plan` refuses it as
-                        `adopt-no-org` unless --org is given. `execute`
-                        refuses one over 39 characters without --local-remote-
-                        dir, GitHub's limit on an organisation's name.
+                        `-`). A source with no remote, with two or more
+                        remotes and no `origin`, or whose `origin` (or only
+                        remote) is a path, names no organisation: `plan`
+                        refuses it as `adopt-no-org` unless --org is given.
+                        `execute` refuses one over 39 characters without
+                        --local-remote-dir, GitHub's limit on an
+                        organisation's name.
   --id ID               lowercase project id (default: --project lowercased).
                         `execute` refuses one over 39 characters without
                         --local-remote-dir: GitHub keeps a topic to 50, and

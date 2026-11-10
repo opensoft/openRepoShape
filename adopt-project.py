@@ -20431,7 +20431,7 @@ def main(argv: list[str] | None = None) -> int:
                            "it has no `origin` and exactly one remote, the "
                            "one that remote's url names, unless its name is "
                            "not printable ASCII or starts with `-`). A source "
-                           "with no remote, with two or more and no "
+                           "with no remote, with two or more remotes and no "
                            "`origin`, or whose `origin` (or only remote) is "
                            "a path, names no organisation: `plan` refuses it "
                            "as `adopt-no-org` unless --org is given. "
