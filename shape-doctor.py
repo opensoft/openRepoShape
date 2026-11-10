@@ -3342,8 +3342,9 @@ def refusals_ahead(ctx: Context, us) -> dict | None:
     NONE WHERE THE QUESTION CANNOT BE ASKED: the pin does not read, the
     checkout of the standard is a partial clone short of what the
     comparison reads, where `prepare` would fetch (`partial_clone_row`,
-    #683), or `prepare` refuses. The `shape currency` row says which, and
-    the `pins` row keeps its gate.
+    #683), or `prepare` refuses or cannot read what it asks, the root's own
+    `source_repository:` among its reasons (#1203). The `shape currency` row
+    says which of the others, and the `pins` row keeps its gate.
     """
     try:
         pin, _rows = us.read_pin(ctx.root)
@@ -3354,9 +3355,24 @@ def refusals_ahead(ctx: Context, us) -> dict | None:
     args = argparse.Namespace(root=str(ctx.root), upstream=str(ctx.shape),
                               at=None)
     try:
+        # THE PIN'S `source_repository:` IS ASKED HERE, unlike in
+        # `check_shape_currency` (#1203, the review of PR #1269, S2): the
+        # `pins` row says `update-shape.py check` reports the copies
+        # `merged-away` and the `apply` it prints drops their rows, and for
+        # a root whose field that `check` refuses it exits 2 and does
+        # neither. A refusal here is "cannot ask", below, and the row keeps
+        # the gate's finding.
+        #
+        # AN `OSError` OF THAT ASK IS "CANNOT ASK" TOO (NIT B of the second
+        # review of PR #1269): `pin_source` stats the value as a path from
+        # the directory the doctor runs in, and a stat the system refuses
+        # (`locked/x` with `locked` unsearchable) is raised out of `prepare`
+        # as the `update-unreadable` that `check` names. Caught as
+        # `Refusal` alone it left here, and the row read `could not be run:
+        # [Errno 13] ...` where it had kept the gate's finding.
         root, _pin, rows, _added, upstream, _pinned, _target, kind = \
             us.prepare(args)
-    except Refusal:
+    except (Refusal, OSError):
         return None
     try:
         ahead = {row.path: row.state for row in rows if row.is_conflict}
@@ -6421,8 +6437,14 @@ def check_shape_currency(ctx: Context) -> Row:
     if partial is not None:
         return partial
     try:
+        # THE PIN'S `source_repository:` IS NOT ASKED HERE (#1203). A
+        # `Refusal` out of `prepare` is this checkout unable to answer
+        # (below), and that field is the root's: asked here, a hand edit of
+        # it was CANNOT ANSWER with a `fetch --all` that mends nothing.
+        # `update-shape.py check`, this row's NEXT where the root is behind,
+        # asks it, in the pin's name.
         _root, _pin, rows, additions, upstream, pinned, target, _kind = \
-            us.prepare(args)
+            us.prepare(args, ask_source=False)
     except Refusal as exc:
         if exc.code == us.UPSTREAM_UNREADABLE:
             # A READ THAT FAILED, NOT A COMMIT THAT IS NOT HERE (#683), so
