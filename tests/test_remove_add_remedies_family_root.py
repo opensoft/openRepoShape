@@ -13,9 +13,8 @@ three more named another verb without it. Typed as printed, each ended in
   row out first. Both KNOW the holder, so each names it, in the one word
   `shell_quoted` makes of its path, as #927's `bump` line does.
 * `bump`'s `member-unknown`, which says `add` puts the member in the family
-  first. It names the holder the same way, and leaves `<org>` for the person
-  to fill in, as the verbs' usage lines do: nothing there says whose
-  repository the project is.
+  first. It names the holder the same way, and the owner `family.yaml`'s
+  `org:` names (#1127; `tests/test_family_remedy_lines.py` has the rest).
 
 Each case is measured two ways, over a holder in a plain folder, under two
 with a space in their names (one of them with an apostrophe too: the paths a
@@ -60,7 +59,7 @@ from test_family_add_refusals import offline  # noqa: F401
 from test_family_bump_to_checks import records_the_neighbours_id
 from test_family_dry_run import commit_in_mount, isolated
 from test_family_member_path import MEMBER, OTHER
-from test_family_printed_quoting import copied_holder, host_words
+from test_family_printed_quoting import copied_holder, family_lead, host_words
 
 #: A commit id for a `--to` that is never read: `member-unknown` is said
 #: before `--to` is.
@@ -208,8 +207,8 @@ CASES = {
         lambda line, kept: line, lambda family, kept: [],
         mend_bump_duplicate_id),
     "bump-member-unknown": Case(
-        "member-unknown", "add", f"<org>/{SPARE}", refuse_bump_unknown,
-        lambda line, kept: line.replace("<org>", ORG),
+        "member-unknown", "add", f"{ORG}/{SPARE}", refuse_bump_unknown,
+        lambda line, kept: line,
         # `add` reads the member from the family's own bare repositories,
         # as every `add` in this suite does: nothing here reaches a forge.
         lambda family, kept: ["--local-remote-dir", str(family["remotes"])],
@@ -217,11 +216,14 @@ CASES = {
 }
 
 
-def the_line(stderr: str, case: Case) -> str:
-    """The one `family.py <verb> ...` the refusal prints, from the verb to
-    the closing backtick, and the refusal checked to be the case's code."""
+def the_line(stderr: str, case: Case, reach: Reach) -> str:
+    """The one `<verb> ...` the refusal prints, from the verb to the closing
+    backtick, after the interpreter and the path to `family.py` from where
+    the refused run stood (#1127), and the refusal checked to be the case's
+    code."""
     assert f"REFUSED {case.code}: " in stderr, stderr
-    found = re.findall(rf"`family\.py ({case.verb} [^`]*)`", stderr)
+    lead = re.escape(f"`{family_lead(reach.cwd)}")
+    found = re.findall(rf"{lead}({case.verb} [^`]*)`", stderr)
     assert len(found) == 1, stderr
     return found[0]
 
@@ -240,7 +242,7 @@ def test_the_line_a_remedy_names_carries_the_holder_whole(
     refused run was pointed at it."""
     stderr, kept = case.refuse(reach, family, isolated(offline, tmp_path),
                                tmp_path)
-    line = the_line(stderr, case)
+    line = the_line(stderr, case, reach)
     assert line == expected(case, reach)
     assert host_words(line) == [case.verb, "--family-root",
                                 str(reach.holder), "--member", case.member]
@@ -253,7 +255,7 @@ def test_the_line_a_remedy_names_parses(
     words are accepted: no `the following arguments are required`."""
     stderr, kept = case.refuse(reach, family, isolated(offline, tmp_path),
                                tmp_path)
-    words = host_words(case.fill(the_line(stderr, case), kept))
+    words = host_words(case.fill(the_line(stderr, case, reach), kept))
     capsys.readouterr()
     args = parsed(family_module, words, capsys)
     assert args.family_root == str(reach.holder)
@@ -270,7 +272,7 @@ def test_the_line_a_remedy_names_runs_as_printed_and_does_what_it_says(
     is in the family: whichever the remedy says it is for."""
     env = isolated(offline, tmp_path)
     stderr, kept = case.refuse(reach, family, env, tmp_path)
-    words = host_words(case.fill(the_line(stderr, case), kept))
+    words = host_words(case.fill(the_line(stderr, case, reach), kept))
     done = run_script(FAMILY, *words, *case.extra(family, kept),
                       cwd=elsewhere, env=env)
     assert "the following arguments are required" not in done.stderr
