@@ -55,6 +55,11 @@ So beside any of those the two named different problems first:
 `plan-leg-path-collides`, `plan-bad-leg` and `plan-empty-symlink`. `check`
 now lists an unanswered entry with the rule's other problems, so both name
 it first. Each of those findings alone is named by both, as before.
+Two rows pin what the pair rows' `listed` cannot see, which counts each
+code once (RV1197): two unanswered entries, `.claude/` and `examples/`,
+each by its path ahead of the split branch taken, and a moved source
+beside an unanswered entry, named `plan-stale`, `plan-uncovered`, and
+then `plan-unresolved`, as before.
 
 Each row runs `check` and then `execute --yes` on one plan, hand-edited in
 every row but the empty link's, which `plan` writes as it is (#1197), both
@@ -321,6 +326,60 @@ def test_an_empty_link_plan_leaves_unanswered_is_named_unanswered_by_both(
         "`dangling`"), executed.stderr
     assert [code_of(line) for line in findings_of(checked)] == [
         UNANSWERED, EMPTY_LINK], checked.stderr
+
+
+def two_unanswered(base) -> str:
+    """The text of the plan `plan` writes for a new source at `base` with
+    `examples/` and `.claude/` both left at `leg: null`, and `release.yaml`
+    answered: two unanswered entries, and nothing else wrong with it."""
+    source = make_source_repo(base / "Thing")
+    return planned(source, base, {"release.yaml": "root"}).read_text(
+        encoding="utf-8")
+
+
+@needs_filter_repo
+def test_two_unanswered_entries_are_each_listed_before_the_split_branch_taken(
+        tmp_path):
+    """EACH BY ITS PATH (#1197, from RV1197): two unanswered entries,
+    `.claude/` and `examples/`, beside the split branch taken. `check`
+    lists the rule's `plan-unresolved` line for each, then the split branch
+    taken, and no entry's line after it; `execute` refuses both entries in
+    one refusal. A rule that listed only the first unanswered entry left the
+    other with the entries, after the split branch taken, and the pair rows,
+    which count each code once, did not see it."""
+    text = two_unanswered(tmp_path)
+    git("branch", "adopt", cwd=tmp_path / "Thing")
+    checked, executed = both_on(text, tmp_path)
+    assert checked.returncode == 1, checked.stdout + checked.stderr
+    assert executed.returncode == 2, executed.stdout + executed.stderr
+    assert [code_of(line) for line in findings_of(checked)] == [
+        UNANSWERED, UNANSWERED, TAKEN], checked.stderr
+    assert [line.split("`")[1] for line in findings_of(checked)
+            if code_of(line) == UNANSWERED] == [".claude/", "examples/"], (
+        checked.stderr)
+    assert named_first(executed).startswith(
+        f"REFUSED {UNANSWERED}: 2 path(s) still have `leg: null`: "
+        "`.claude/`, `examples/`"), executed.stderr
+
+
+@needs_filter_repo
+def test_a_moved_source_is_listed_before_the_uncovered_path_and_the_entry(
+        tmp_path):
+    """AS BEFORE (#1197, from RV1197): a source that has moved on, beside
+    an unanswered entry. The source's new file, `later.txt`, is in no entry,
+    so `check` lists exactly `plan-stale`, `plan-uncovered` and then the
+    entry's `plan-unresolved`, in that order: the rule lists the moved
+    source alone, and the unanswered entry stays with the entries. A rule
+    that listed the unanswered entry right after `plan-stale` put it before
+    `plan-uncovered`, and the pair rows, which count each code once, did
+    not see it. Both commands name the moved source first."""
+    checked, executed = both_on(holding(tmp_path, MOVED, UNANSWERED), tmp_path)
+    assert checked.returncode == 1, checked.stdout + checked.stderr
+    assert executed.returncode == 2, executed.stdout + executed.stderr
+    assert [code_of(line) for line in findings_of(checked)] == [
+        MOVED, UNCOVERED, UNANSWERED], checked.stderr
+    assert named_first(executed).startswith(f"REFUSED {MOVED}: "), (
+        executed.stderr)
 
 
 @needs_filter_repo
