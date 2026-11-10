@@ -24,6 +24,12 @@ as `source-partial-clone` before anything reads it
 is. Each row counts the promisor's `upload-pack` runs through a counting
 `remote.origin.uploadpack`, and hashes the source's `objects/` before and
 after.
+
+A partial clone whose recorded `.git` this user cannot read is
+`source-unreadable`, naming that `.git`, and never `source-partial-clone`
+(#1262, for #1099 and #1141): `plan.open_source` asks the `.git` ahead of this
+rule, and git cannot read the config that makes the clone a partial one
+through it. No `gh` call is made and no `upload-pack` runs.
 """
 
 from __future__ import annotations
@@ -43,6 +49,9 @@ import pytest
 from conftest import (ADOPT, FILE_PROTOCOL, git, make_source_repo, resolve,
                       run_script, write_plan)
 from test_adopt_temp_work_roots import gh_clones
+from test_adopt_unreadable_clone_git import (CURES, DIRECTORY, FILE,
+                                             at_mode_000, the_refusal)
+from test_adopt_unsearchable_source import needs_a_mode, recording_gh
 
 #: The refusal #1145 adds.
 CODE = "source-partial-clone"
@@ -127,17 +136,34 @@ def planned_once(tmp_path_factory) -> dict:
             "at": full, "commit": commit, "side": side}
 
 
+def objects_dir(path: Path) -> Path:
+    """The `objects/` of the clone at `path`: in its `.git`, or, where that
+    is a file (`gitdir: <directory>`), in the directory it names."""
+    dot_git = path / ".git"
+    if dot_git.is_file():
+        named = dot_git.read_text(encoding="utf-8").split(":", 1)[1].strip()
+        return Path(named) / "objects"
+    return dot_git / "objects"
+
+
 class Source:
     """One source made as a `VARIANTS` clone of `origin` at `<base>/Thing`,
     its `upload-pack` counted, and the plan pointed at it."""
 
-    def __init__(self, planned: dict, base: Path, variant: str):
+    def __init__(self, planned: dict, base: Path, variant: str,
+                 apart: bool = False):
         self.planned = planned
         self.base = base
         self.path = base / "Thing"
+        #: `apart`: the git directory is `<base>/store.git`, and
+        #: `<path>/.git` is a file that names it, as `git clone
+        #: --separate-git-dir` leaves it.
         git(*FILE_PROTOCOL, "clone", "-q", "--single-branch",
-            *VARIANTS[variant], "--no-local", planned["origin"].as_uri(),
-            str(self.path), cwd=base)
+            *VARIANTS[variant],
+            *(["--separate-git-dir", str(base / "store.git")] if apart
+              else []),
+            "--no-local", planned["origin"].as_uri(), str(self.path),
+            cwd=base)
         if variant == "cured":
             git(*FILE_PROTOCOL, "fetch", "-q", "--refetch", "--no-filter",
                 "origin", cwd=self.path)
@@ -173,7 +199,7 @@ class Source:
     def store(self) -> str:
         """A sha256 of every file under the source's `objects/`: each path
         and its bytes."""
-        objects = self.path / ".git" / "objects"
+        objects = objects_dir(self.path)
         digest = hashlib.sha256()
         for path in sorted(objects.rglob("*")):
             if path.is_file():
@@ -182,7 +208,7 @@ class Source:
         return digest.hexdigest()
 
     def promisor_packs(self) -> int:
-        return len(list((self.path / ".git" / "objects" / "pack")
+        return len(list((objects_dir(self.path) / "pack")
                         .glob("*.promisor")))
 
     def lacking(self, refs: str = "--all") -> int:
@@ -223,15 +249,26 @@ class Source:
         assert self.runs() == 0
         assert self.store() == self.before
 
-    def check(self) -> subprocess.CompletedProcess:
+    def check(self, env: dict | None = None) -> subprocess.CompletedProcess:
         return run_script(ADOPT, "check", "--plan", str(self.plan),
-                          "--work-dir", str(self.base / "work"))
+                          "--work-dir", str(self.base / "work"), env=env)
 
-    def execute(self) -> subprocess.CompletedProcess:
+    def execute(self, env: dict | None = None) -> subprocess.CompletedProcess:
         return run_script(ADOPT, "execute", "--plan", str(self.plan),
                           "--yes", "--local-remote-dir",
                           str(self.base / "remotes"),
-                          "--work-dir", str(self.base / "work"))
+                          "--work-dir", str(self.base / "work"), env=env)
+
+    def recorded_as_a_clone(self) -> None:
+        """The plan records the source as a clone `plan` made of
+        `testorg/Elsewhere` (`source.cloned: true`), which a run that took
+        it for no longer whole would clone again from GitHub."""
+        text = self.plan.read_text(encoding="utf-8")
+        assert "  repository: null\n" in text
+        assert "  cloned: false\n" in text
+        self.write_plan(text.replace(
+            "  repository: null\n", '  repository: "testorg/Elsewhere"\n',
+            1).replace("  cloned: false\n", "  cloned: true\n", 1))
 
     def at_the_side_commit(self, cloned: bool = False) -> None:
         """The plan names `side`'s commit, which `origin` holds and the
@@ -244,17 +281,15 @@ class Source:
             rf'^  commit: "?{planned["commit"]}"?$',
             f'  commit: "{planned["side"]}"', text, count=1, flags=re.M)
         assert swapped == 1
-        if cloned:
-            text = text.replace(
-                "  repository: null\n", '  repository: "testorg/Elsewhere"\n',
-                1).replace("  cloned: false\n", "  cloned: true\n", 1)
-            assert "  cloned: true\n" in text
         self.write_plan(text)
+        if cloned:
+            self.recorded_as_a_clone()
 
 
 @pytest.fixture
 def made(planned_once, tmp_path):
-    return lambda variant: Source(planned_once, tmp_path, variant)
+    return lambda variant, apart=False: Source(planned_once, tmp_path,
+                                               variant, apart)
 
 
 def skip_where_git_ignores_the_variable(source: Source) -> None:
@@ -337,6 +372,73 @@ def test_execute_splits_a_cured_partial_clone_and_fetches_none(made):
     assert CODE not in result.stderr + result.stdout
     assert sorted(path.name for path in (source.base / "remotes").iterdir())
     assert source.runs() == 0
+
+
+def a_partial_clone_made_as(made, variant: str, kind: str, cloned: bool
+                            ) -> Source:
+    """A `variant` partial clone that lacks objects, its `.git` a directory
+    or, for `FILE`, a file naming the git directory beside it, recorded in
+    the plan as a clone `plan` made where `cloned` says so."""
+    source = made(variant, apart=kind == FILE)
+    assert (source.path / ".git").is_file() is (kind == FILE), "premise"
+    assert source.lacking() > 0, "premise: a partial clone lacks objects"
+    if cloned:
+        source.recorded_as_a_clone()
+    return source
+
+
+@needs_a_mode
+@pytest.mark.parametrize("kind", [DIRECTORY, FILE])
+@pytest.mark.parametrize("cloned", [False, True], ids=["given", "cloned"])
+@pytest.mark.parametrize("verb", ["check", "execute"])
+@pytest.mark.parametrize("variant", ["nocheckout", "checkout"])
+def test_a_partial_clone_whose_recorded_git_is_unreadable_is_source_unreadable(
+        made, variant, verb, cloned, kind):
+    """A partial clone, with a checkout and without, whose recorded `.git`
+    (a directory or a `gitdir:` file) is at mode 000, as a plan's
+    `source.local_path` given or as a clone `plan` made: `source-unreadable`,
+    naming that `.git`, in `check` and `execute` alike, and never
+    `source-partial-clone`: that rule's questions see nothing through the
+    `.git`. `gh` is never asked, no `upload-pack` runs, `objects/` is as it
+    was and no directory the legs go in is made. Before #1141 (26cc80bd2^)
+    the `given` rows were `git-failed`, and the `cloned` rows asked `gh repo
+    clone` and were `source-unclonable`."""
+    source = a_partial_clone_made_as(made, variant, kind, cloned)
+    env, log = recording_gh(source.base / "gh-bin")
+
+    with at_mode_000(source.path / ".git"):
+        result = getattr(source, verb)(env)
+
+    assert result.returncode == 2, result.stderr + result.stdout
+    assert the_refusal(str(source.path), cloned) in result.stderr
+    assert CURES[kind] in result.stderr
+    assert CODE not in result.stderr + result.stdout
+    assert "plan ok" not in result.stdout
+    assert log.read_bytes() == b""
+    assert not (source.base / "remotes").exists()
+    source.untouched()
+
+
+@pytest.mark.parametrize("kind", [DIRECTORY, FILE])
+@pytest.mark.parametrize("cloned", [False, True], ids=["given", "cloned"])
+@pytest.mark.parametrize("variant", ["nocheckout", "checkout"])
+def test_the_same_partial_clones_with_a_readable_git_are_source_partial_clone(
+        made, variant, cloned, kind):
+    """The clones above with their `.git` as `git clone` left it: refused
+    `source-partial-clone` with its cure, never `source-unreadable`, nothing
+    fetched. So the rows above read the `.git`'s mode, not a clone this rule
+    would let by."""
+    source = a_partial_clone_made_as(made, variant, kind, cloned)
+    env, log = recording_gh(source.base / "gh-bin")
+
+    result = source.check(env)
+
+    assert result.returncode == 2, result.stderr + result.stdout
+    assert REFUSED in result.stderr
+    assert CURE in result.stderr
+    assert "source-unreadable" not in result.stderr + result.stdout
+    assert log.read_bytes() == b""
+    source.untouched()
 
 
 def test_the_guard_alone_refuses_where_git_ignores_the_variable(
