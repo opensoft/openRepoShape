@@ -176,8 +176,11 @@ from repo_shape import (  # noqa: E402
 # purpose: `shape_materialize` imports it the same way and says why (#380). A
 # block header is found with it, so a trailing comment is one here wherever it
 # is one to the reader (#437), and with the reader's rule for a key, so a
-# quoted key or a space before the colon is one here too (#674).
-from repo_shape import _split_key, _strip_comment  # noqa: E402
+# quoted key or a space before the colon is one here too (#674), and with the
+# reader's blanks, a space and a tab and no other (`_YAML_WHITE`), so a line
+# that opens with U+00A0 or U+3000 is another key here as it is to the reader
+# (#1220).
+from repo_shape import _YAML_WHITE, _split_key, _strip_comment  # noqa: E402
 # U+FEFF by the reader's own name: the two line rewrites take it off line 1
 # as `parse_yaml` does, and put it back (#933). On a line of its own, for the
 # reason the branch rule's import below gives.
@@ -1808,14 +1811,21 @@ def _is_block_header(line: str, key: str) -> bool:
     line(s)"), or a manifest `update-manifest-no-shape`, saying it has no
     `shape:` block when the reader gives it one. The column is the
     reader's: no space in front, and no tab among the blanks in front,
-    which the reader refuses outright; the text is `.strip()`ped first,
-    as `_tokenise` strips it. A line `_split_key` refuses is one the
-    reader refuses as well, so it is no header here rather than a
-    traceback, and the count that follows says so."""
-    if line.startswith(" ") or "\t" in line[:len(line) - len(line.lstrip())]:
+    which the reader refuses outright; the text is stripped of
+    `_YAML_WHITE` first, as `_significant_text` strips it for `_tokenise`.
+    A BLANK IS A SPACE OR A TAB AND NOTHING ELSE (#1220). `.strip()` with no
+    argument also cuts U+00A0 and U+3000, which the reader keeps as text, so
+    `<U+00A0>shape:` was the header here, where the reader gives it the key
+    `<U+00A0>shape`, and the rewrite wrote the block under a line the reader
+    does not read as one. A line `_split_key` refuses is one the reader
+    refuses as well, so it is no header here rather than a traceback, and
+    the count that follows says so."""
+    blanks = len(line) - len(line.lstrip(_YAML_WHITE))
+    if line.startswith(" ") or "\t" in line[:blanks]:
         return False
     try:
-        return _split_key(_strip_comment(line.strip())) == (key, "")
+        return _split_key(
+            _strip_comment(line.strip(_YAML_WHITE))) == (key, "")
     except YamlError:
         return False
 
@@ -3327,12 +3337,24 @@ class Rollback:
         every byte back, and lists what it put back under this detail
         (`_rolled_back`), so the detail does not claim it as well.
 
+        A BROKEN PIPE IS STDOUT'S, NOT A WRITE'S (#1218). `_write_copies`
+        prints each `copied` line inside this block, and unbuffered
+        (`PYTHONUNBUFFERED`) into a pipe whose reader has gone, that print
+        raises `BrokenPipeError`. It was refused here as `update-write-failed:
+        writing the copies and the --add files failed: Broken pipe`, blaming
+        the write of a copy for an error of stdout's. Every write in this
+        block is to a file of the root's, never to a pipe, so the error is
+        let through as itself, to `cmd_apply`'s arm for an `OSError` no
+        refusal can name, which puts every byte back and raises it (#1173).
+
         `step` is the refusal's own, not `self.step`, which names the git
         act a `CommandFailed` is reported under.
         """
         try:
             yield
         except OSError as exc:
+            if isinstance(exc, BrokenPipeError):
+                raise
             name = exc.filename
             at = (f" at {self._name(Path(os.fsdecode(name)))}"
                   if isinstance(name, (str, bytes, os.PathLike)) else "")
@@ -5501,6 +5523,30 @@ def cmd_apply(args) -> int:
         upstream.close()
 
 
+def _flush_stdout() -> None:
+    """Flush stdout before a failure is written to stderr, and let a flush
+    that fails go (#1218).
+
+    THE FLUSH KEEPS A MERGED LOG IN ORDER. Piped, stdout is block-buffered
+    and stderr is not, so without it a log that merges the two (`> log
+    2>&1`) shows the refusal above the `copied` and `committed` lines it is
+    about.
+
+    A STDOUT NOBODY READS MUST NOT COST THE REPORT. Into a pipe whose reader
+    has gone, as `apply --yes | head -1` leaves it once `head` has its line,
+    the flush raises `BrokenPipeError`. Raised bare in `_rolled_back` it
+    went over the REFUSED line and the ROLLED BACK list, and in
+    `landing_failed` over the step that failed and the sentence that the
+    commit stands: the tree was put back, or the commit kept, and stderr
+    said neither. The error is let go, because the report on stderr is what
+    the person needs. The bytes stay buffered, and the interpreter tries
+    them once more at exit and says so itself, with its exit 120.
+    `adopt-project.py`'s `_flush_stdout` is the same guard, for the same
+    reason (#171)."""
+    with contextlib.suppress(OSError):
+        sys.stdout.flush()
+
+
 def _rolled_back(exc: Exception, ledger: Rollback) -> int:
     """`apply`'s one failure arm: undo what `ledger` holds, then refuse,
     saying which step failed and what was put back (#202).
@@ -5522,8 +5568,9 @@ def _rolled_back(exc: Exception, ledger: Rollback) -> int:
     if undone is not None:
         # The `copied` / `re-pinned` lines first, then the refusal: a log that
         # merged the two streams would otherwise show the rollback before the
-        # writes it rolled back.
-        sys.stdout.flush()
+        # writes it rolled back. A stdout nobody reads takes nothing, and the
+        # refusal still reaches stderr (`_flush_stdout`, #1218).
+        _flush_stdout()
     if isinstance(exc, Refusal):
         if undone is None:
             raise exc
@@ -5556,13 +5603,13 @@ def _roll_back_before_raising(ledger: Rollback) -> None:
     as it always was.
 
     STDOUT IS FLUSHED FIRST, for `_rolled_back`'s reason, and a flush that
-    fails is let go: the error this answers may be stdout's own, a pipe
-    nobody reads, and what was put back must still reach stderr."""
+    fails is let go (`_flush_stdout`): the error this answers may be
+    stdout's own, a pipe nobody reads, and what was put back must still
+    reach stderr."""
     undone = ledger.undo()
     if undone is None:
         return
-    with contextlib.suppress(OSError):
-        sys.stdout.flush()
+    _flush_stdout()
     print(undone, file=sys.stderr)
 
 
@@ -5603,7 +5650,10 @@ def landing_failed(root: Path, args, exc: CommandFailed, act: str,
     branch origin lacks.
 
     STDOUT IS FLUSHED FIRST, so a combined log reads in the order things
-    happened: the commit and the push above the refusal, not below it.
+    happened: the commit and the push above the refusal, not below it. A
+    flush into a pipe nobody reads is let go (`_flush_stdout`, #1218), so
+    the step that failed and the commit that stands still reach stderr; the
+    NEXT line is stdout's, and goes wherever stdout goes.
     """
     branch = args.branch
     head = (_git_answer(root, ["rev-parse", "HEAD"]) or "").strip()
@@ -5611,7 +5661,7 @@ def landing_failed(root: Path, args, exc: CommandFailed, act: str,
                                   "--points-at", "HEAD", "refs/remotes/origin/"])
                or "").splitlines()
     pushed = bool(head) and f"refs/remotes/origin/{branch}" in at_head
-    sys.stdout.flush()
+    _flush_stdout()
     print(exc.loudly(act), file=sys.stderr)
     left = ("its pull request: the NEXT line opens it" if pushed
             else "the push and the pull request: the NEXT line makes both")

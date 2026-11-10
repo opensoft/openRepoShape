@@ -165,7 +165,9 @@ ID_READERS = {
     ("templates/assembly-root/scripts/validate-manifest.py", "fullmatch"): (
         1, "the manifest's `id:`"),
     ("templates/family-root/scripts/validate-family.py", "fullmatch"): (
-        1, "the family's `id:`"),
+        2, "the family's `id:`; and `_is_project_id`, the one reader of a "
+           "member's row `id:` and of its mounted `project.yaml` `id:` "
+           "(#1204)"),
     ("scripts/family.py", "fullmatch"): (
         1, "a member's `project.yaml` `id:`, as `add` mounts it"),
     ("scripts/family.py", "match"): (
