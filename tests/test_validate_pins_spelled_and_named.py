@@ -51,6 +51,16 @@ What #968 left, #1222, from RV1200's review of #1200 (its N2):
     under THE LOCKSTEP RULE. It is opened as a gitfile is, and refused
     `pin-submodule-unreadable`, naming that `HEAD`.
 
+What #1222 left, #1290, from RV1239's review of #1239:
+
+  * A `HEAD` that is a FIFO is not opened by #1222's guard, but git's own
+    open of it waits for a writer, and `git_out` has no timeout, so the
+    gate gave no answer in 45 s. A `HEAD` that is neither a file nor a
+    directory (a FIFO, a socket or a device, or a symlink to one) is
+    refused `pin-submodule-unreadable` by name, before git is asked. Each
+    run of the gate over a FIFO is bounded (`bounded`), so a hang fails
+    its row and not the run.
+
 THE HARNESS is `tests/test_validate_pins_named_and_spelled.py`'s: the gate
 runs as the copy a real scaffold wrote (`validate`), and in-process as that
 copy loaded as a module (`validator`). A stub `gh` is a `#!` script, so its
@@ -68,6 +78,7 @@ import errno
 import hashlib
 import json
 import os
+import signal
 import socket
 import stat
 import subprocess
@@ -76,7 +87,9 @@ from pathlib import Path
 
 import pytest
 
-from conftest import REPO, WINDOWS_SKIP, run_script
+from conftest import (
+    REPO, WINDOWS_SKIP, blank_unnamed_pin_sources, run_script,
+)
 from test_validate_pins_named_and_spelled import (
     AGAIN, CHECKOUT_READS, COMMIT, OTHER, PERMISSION, READS, SHAPE_PIN,
     UNPRINTABLE, declare_openxdox, failing, os_error, refusal_of_the_run,
@@ -977,20 +990,141 @@ def test_a_head_gone_when_it_is_opened_is_left_to_git(validator, project,
     assert report.findings == []
 
 
-@pytest.mark.parametrize("make", [
-    pytest.param(made_directory, id="directory"),
-    pytest.param(made_fifo, id="fifo", marks=POSIX_NODES),
-])
-def test_a_head_that_is_no_regular_file_is_not_opened(validator, tmp_path,
-                                                      monkeypatch, make):
-    """Only a `HEAD` that is a regular file is opened: one that is anything
-    else is git's to answer for, and the open of a FIFO would wait for a
-    writer. An open of either fails the row rather than hanging it."""
+def test_a_head_that_is_a_directory_is_left_to_git(validator, tmp_path,
+                                                   monkeypatch):
+    """Only a `HEAD` that is a regular file is opened, and one that is a
+    directory is git's to answer for, as it always was (#1222, #1290): the
+    control for #1290's rows below. An open fails the row."""
     dotgit = tmp_path / "leg" / ".git"
     dotgit.mkdir(parents=True)
-    make(dotgit / "HEAD")
+    made_directory(dotgit / "HEAD")
     failing(monkeypatch, "open", {"HEAD": AssertionError("opened")})
     assert validator._refuse_an_unreadable_git_dir(tmp_path, dotgit) is None
+
+
+# --- #1290: a leg git directory's `HEAD` that git cannot read as one ---------
+
+#: How long one run of the gate may take before its row calls it hung
+#: (#1290). The gate answers this project in a second or two; over a FIFO
+#: `HEAD` it gave no answer in 45 s (RV1239) or in 60 s (W1256).
+BOUND = 30
+
+
+def bounded(script: Path, root: Path,
+            *args: str) -> subprocess.CompletedProcess:
+    """`script` run in `root` as `run_script` runs a tool, but in a session
+    of its own and for `BOUND` seconds at most (#1290). A run that has not
+    ended by then is killed with every process in its session, the git it
+    waits in among them, so no git is left waiting on a FIFO, and the row
+    fails: a hang fails its row, never the whole run. POSIX only, as a
+    FIFO is."""
+    env = blank_unnamed_pin_sources({**os.environ, "LANES_LANE": ""}, {})
+    with subprocess.Popen(
+            [sys.executable, str(script), *args], cwd=str(root),
+            stdin=subprocess.DEVNULL, stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE, env=env, start_new_session=True) as proc:
+        try:
+            out, err = proc.communicate(timeout=BOUND)
+        except subprocess.TimeoutExpired:
+            os.killpg(proc.pid, signal.SIGKILL)
+            proc.communicate()
+            pytest.fail(f"{script.name} gave no answer in {BOUND} s")
+    return subprocess.CompletedProcess(
+        proc.args, proc.returncode, out.decode("utf-8", "replace"),
+        err.decode("utf-8", "replace"))
+
+
+def made_link_to_a_fifo(path: Path) -> None:
+    os.mkfifo(path.with_name(path.name + "-fifo"))
+    os.symlink(path.name + "-fifo", path)
+
+
+def made_link_to_a_device(path: Path) -> None:
+    os.symlink(os.devnull, path)
+
+
+#: What can stand where a git directory's `HEAD` should be that git cannot
+#: read as one, and the reason the gate names it by (#1290). A device is
+#: made only by root, so its row is a symlink to one.
+NOT_HEADS = [
+    pytest.param(made_fifo, "a FIFO, not a file", id="fifo",
+                 marks=POSIX_NODES),
+    pytest.param(made_socket, "a socket, not a file", id="socket",
+                 marks=POSIX_NODES),
+    pytest.param(made_link_to_a_fifo, "a symlink to a FIFO, not a file",
+                 id="link-to-fifo", marks=POSIX_NODES),
+    pytest.param(made_link_to_a_device, "a symlink to a device, not a file",
+                 id="link-to-device", marks=POSIX_NODES),
+]
+
+#: The two of them git waits on.
+FIFO_HEADS = NOT_HEADS[0::2]
+
+
+def in_head_s_place(project: Path, own_directory: bool, head: str,
+                    make) -> None:
+    """`make` where the leg's git directory's `HEAD` is, the `HEAD` itself
+    taken out of the way: the leg's own `.git` directory's, or the one
+    under `.git/modules/` its gitfile names."""
+    if own_directory:
+        leg_with_its_own_git_directory(project)
+    (project / head).rename(project / (head + "-aside"))
+    make(project / head)
+
+
+@pytest.mark.parametrize("own_directory, head", HEADS)
+@pytest.mark.parametrize("make, reason", FIFO_HEADS)
+def test_a_fifo_head_is_refused_by_name_within_a_bound(
+        project, own_directory, head, make, reason):
+    """#1290, RV1239 on #1239: the project's own gate, the leg's git
+    directory's `HEAD` a FIFO, or a symlink to one. #1222's guard does not
+    open it, but `git rev-parse` did, and waited for a writer: the gate gave
+    no answer. It is `pin-submodule-unreadable`, naming that `HEAD` and what
+    stands there, with the advice for a cause that is no permission, exit 2,
+    before git is asked, and nothing is written."""
+    in_head_s_place(project, own_directory, head, make)
+    before = tree_bytes(project)
+    result = bounded(project / "scripts" / "validate-pins.py", project)
+    assert result.stderr == (
+        f"REFUSED pin-submodule-unreadable: {head}: cannot be read "
+        f"({reason})\n{CHECKOUT_READS}{OTHER}{AGAIN}\n"), result.stderr
+    assert result.returncode == 2, result.stdout + result.stderr
+    assert tree_bytes(project) == before, "a validator writes nothing"
+
+
+@pytest.mark.parametrize("own_directory, head", HEADS)
+@pytest.mark.parametrize("make, reason", NOT_HEADS)
+def test_a_head_git_cannot_read_is_refused_by_name_unopened(
+        validator, project, monkeypatch, own_directory, head, make, reason):
+    """#1290 in-process, each kind: a FIFO, a socket, and a symlink to a
+    FIFO or a device, `stat`, which follows a link, finds no file and no
+    directory. Each is refused by name, as a `HEAD` this user cannot open
+    is, and none is opened. The guard is asked alone, so that where it lets
+    one through, the row fails and git is never started on a FIFO."""
+    in_head_s_place(project, own_directory, head, make)
+    failing(monkeypatch, "open", {"HEAD": AssertionError("opened")})
+    with pytest.raises(validator.Refusal) as caught:
+        validator._refuse_an_unreadable_git_dir(project,
+                                                project / "spec" / ".git")
+    assert caught.value.code == "pin-submodule-unreadable"
+    assert caught.value.detail == f"{head}: cannot be read ({reason})"
+    assert caught.value.remediation == CHECKOUT_READS + OTHER + AGAIN
+
+
+@POSIX_NODES
+def test_the_root_s_own_fifo_head_is_refused_by_name_within_a_bound(project):
+    """#1290: the root's own `.git/HEAD` a FIFO. `_refuse_an_unreadable_root`
+    asks the root's `.git` what it asks a leg's (#1146), so it is
+    `git-repo-unreadable`, naming `.git/HEAD`, where git waited on it and
+    the gate gave no answer."""
+    head = project / ".git" / "HEAD"
+    head.rename(project / ".git" / "HEAD-aside")
+    made_fifo(head)
+    result = bounded(project / "scripts" / "validate-pins.py", project)
+    assert result.stderr.splitlines()[0] == (
+        "REFUSED git-repo-unreadable: .git/HEAD: cannot be read "
+        "(a FIFO, not a file)"), result.stderr
+    assert result.returncode == 2, result.stdout + result.stderr
 
 
 def test_a_head_no_system_call_can_name_is_left_to_git(validator, tmp_path):
