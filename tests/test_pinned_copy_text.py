@@ -43,8 +43,10 @@ import sys
 
 import pytest
 
-from conftest import (REPO, SCAFFOLD, clear_ambient_pin_sources, git,
-                      load_without_bytecode, run_script)
+from conftest import (PRINTED_AS_ITSELF, REPO, SCAFFOLD,
+                      clear_ambient_pin_sources, git, load_without_bytecode,
+                      run_script,
+                      skip_where_the_locale_does_not_spell_it_as_utf_8)
 from test_link_source_chain_defaults import (  # noqa: F401
     VALIDATOR, manifest, naming, pinned, scaffold, tree, validate_pins,
 )
@@ -212,6 +214,8 @@ def test_the_variable_the_warning_offers_reads_the_later_link(tmp_path):
         cwd=tmp_path, env={"SHAPE_PIN_SOURCE_OPENYDOX": str(later)})
     assert result.returncode == 0, result.stderr + result.stdout
     assert warnings_of(result) == []
+    skip_where_the_locale_does_not_spell_it_as_utf_8("\u2192",
+                                                     PRINTED_AS_ITSELF)
     assert "declared pin chain openXdox → openYdox → openInk →" in (
         result.stdout), result.stdout
 
@@ -468,6 +472,8 @@ def test_an_unused_pin_source_is_named_spelled(pinned, tmp_path, name):
                            "--pin-source", typed)
     assert result.returncode == 0, result.stdout + result.stderr
     assert "\x1b" not in result.stdout + result.stderr
+    skip_where_the_locale_does_not_spell_it_as_utf_8("\u2014",
+                                                     PRINTED_AS_ITSELF)
     assert notes(result) == [
         f"note --pin-source {typed!r}: not used — {MORE_SPECIFIC}."]
 
@@ -483,6 +489,8 @@ def test_a_replaced_pin_source_and_its_replacement_are_spelled(pinned,
                            "--pin-source", str(pinned["product"]))
     assert result.returncode == 0, result.stdout + result.stderr
     assert "\x1b" not in result.stdout + result.stderr
+    skip_where_the_locale_does_not_spell_it_as_utf_8("\u2014",
+                                                     PRINTED_AS_ITSELF)
     assert (f"note --pin-source {first!r}: not used — the later "
             f"`--pin-source {later!r}` replaced it.") in notes(result), (
         result.stdout)
@@ -498,6 +506,8 @@ def test_a_key_read_as_a_path_is_spelled(pinned):
                            "--pin-source", typed)
     assert result.returncode == 0, result.stdout + result.stderr
     assert "\x1b" not in result.stdout + result.stderr
+    skip_where_the_locale_does_not_spell_it_as_utf_8("\u2014",
+                                                     PRINTED_AS_ITSELF)
     assert notes(result) == [
         f"note --pin-source {typed!r}: not used — {MORE_SPECIFIC}. It was "
         "read as a PATH: "
@@ -512,6 +522,8 @@ def test_a_printable_pin_source_is_named_as_typed(pinned, tmp_path):
                            f"openXdox={pinned['product']}",
                            "--pin-source", typed)
     assert result.returncode == 0, result.stdout + result.stderr
+    skip_where_the_locale_does_not_spell_it_as_utf_8("\u2014",
+                                                     PRINTED_AS_ITSELF)
     assert notes(result) == [
         f"note --pin-source {typed}: not used — {MORE_SPECIFIC}."]
 
@@ -801,8 +813,12 @@ PINNED_IMPORTERS = {
 }
 
 #: What a kept `repo_shape.py` may predate: `shown_path`, new with this bump
-#: (#610), and `host_shell_dialect`, new with v1.1.1's (#711).
-NEWER_THAN_A_KEPT_LIBRARY = ("shown_path", "host_shell_dialect")
+#: (#610), `host_shell_dialect`, new with v1.1.1's (#711), and the four names
+#: of the default-ignorable table (#1128): `DEFAULT_IGNORABLE_RANGES`,
+#: `DEFAULT_IGNORABLE`, `code_point_escaped` and `visible_repr`.
+NEWER_THAN_A_KEPT_LIBRARY = (
+    "shown_path", "host_shell_dialect", "DEFAULT_IGNORABLE_RANGES",
+    "DEFAULT_IGNORABLE", "code_point_escaped", "visible_repr")
 
 
 @pytest.mark.parametrize("name", sorted(PINNED_IMPORTERS))

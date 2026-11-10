@@ -51,6 +51,17 @@ A `.git` that answers absent (a link that leads nowhere or to itself, nothing
 there) is left as it was, and so is one the user can read: those rows are the
 controls here.
 
+THE ROOT'S `HEAD` IS OPENED TOO (#1222, rv1248's S1). A `.git/HEAD` at mode
+000 stats, so `root_git_read`'s `stat` of it passed, and the doctor said
+`DRIFTED (1 leg(s) not at the pin)` with `no gitlink recorded` of each leg,
+while `validate-pins.py`, which opens it since #1222's gate half, refused
+`git-repo-unreadable: .git/HEAD: cannot be read (Permission denied)`. The
+doctor opens it as the gate does, only where it is a regular file, and says
+the gate's line; an open that finds nothing, and a `HEAD` that is a
+directory, are git's. `tests/test_doctor_unreadable_paths.py` holds
+`root_git_read` and `_refuse_an_unreadable_root` to one answer for each
+`HEAD`, a FIFO among them.
+
 TWO KINDS OF CASE, as `tests/test_doctor_unreadable_paths.py` (#430) has them.
 The MODE cases change a real mode and run the tools as a person does; they
 skip on Windows and as root (`CANNOT_RUN_AS_ROOT`), and restore the mode in a
@@ -337,6 +348,41 @@ def test_a_gitfile_into_a_locked_folder_is_named_by_its_git_directory(
     assert_nothing_unasked_said(rows)
 
 
+@CANNOT_RUN_AS_ROOT
+def test_a_root_head_this_user_cannot_open_is_named_never_drift(standard,
+                                                                project):
+    """rv1248's S1. The root's `.git/HEAD` at mode 000: it stats, so the
+    doctor's `stat` of it passed, git could not read the root, and the
+    `legs` row said `no gitlink recorded` of each leg and the verdict
+    `DRIFTED (1 leg(s) not at the pin)`, while `validate-pins.py` refused
+    `git-repo-unreadable` naming that `HEAD`. The doctor opens it now, as
+    the gate does: the `legs` row says the gate's line once, as a person's
+    to mend, and the verdict is the gate's INVALID. Each leg's repository
+    under `.git/modules/` has a `HEAD` of its own that git reads, so
+    `placement` audits both. With the mode put back the root is
+    COMPLIANT."""
+    line = cannot(".git/HEAD", os.strerror(errno.EACCES))
+    with mode_of(project, ".git/HEAD", 0):
+        rows, verdict = doctored(standard, project)
+        pins = run_script(project / "scripts" / "validate-pins.py",
+                          cwd=project)
+    assert verdict == "INVALID (pins)"
+    legs = rows["legs"]
+    assert legs["status"] == "FINDING", legs
+    assert legs["reason"] == legs_said(line)
+    assert legs["next"] == doctor_again(standard, project)
+    assert legs["why"] == PERMISSION_WHY
+    assert [entry["gitlink_cannot_be_read"]
+            for entry in legs["detail"]["legs"]] == [line, line]
+    assert rows["pins"]["reason"] == gate_said("validate-pins.py", line)
+    assert pins.stderr == refused("validate-pins.py", line), pins.stderr
+    assert pins.returncode == 2
+    assert rows["manifest"]["status"] == "ok", rows["manifest"]
+    assert rows["placement"]["status"] == "ok", rows["placement"]
+    assert_nothing_unasked_said(rows)
+    assert doctored(standard, project)[1] == "COMPLIANT"
+
+
 def own_repository(root: Path, leg: str = "spec") -> None:
     """The leg's repository moved out of the root's `.git/modules/` into a
     `.git` directory of its own, without the `core.worktree` its old place
@@ -485,6 +531,14 @@ def moved_in(root: Path, folder: str = ".gitdir",
                  lambda root: repr(UNPRINTABLE),
                  id="gitfile-names-an-unprintable-directory",
                  marks=POSIX_NAMES),
+    pytest.param(lambda root: None, "HEAD", "open", lambda root: ".git/HEAD",
+                 id="git-directory-head-open"),
+    pytest.param(moved_out, "HEAD", "open",
+                 lambda root: str(root.resolve().parent / "elsewhere"
+                                  / "projgit" / "HEAD"),
+                 id="gitfile-names-a-directory-outside-head-open"),
+    pytest.param(moved_in, "HEAD", "open", lambda root: ".gitdir/HEAD",
+                 id="gitfile-names-a-directory-inside-head-open"),
 ])
 def test_the_doctor_and_the_gate_name_one_git_directory(
         standard, project, gates, monkeypatch, capsys, arrange, name,
@@ -494,7 +548,9 @@ def test_the_doctor_and_the_gate_name_one_git_directory(
     `validate-pins.py`'s refusal are one sentence, naming the git directory
     relative to the root where it is inside it and whole where it is not,
     from a gitfile whose line ends in CR LF as from one ending in LF, and
-    as `repr` spells a name that is not printable (r1147's N1)."""
+    as `repr` spells a name that is not printable (r1147's N1). A `HEAD`
+    that stats and cannot be opened is named itself, after that directory,
+    as the gate names it (rv1248's S1)."""
     arrange(project)
     module, ctx = in_process(standard, project)
     refusing(monkeypatch, method, name,
@@ -504,6 +560,67 @@ def test_the_doctor_and_the_gate_name_one_git_directory(
     assert module.check_legs(ctx).reason == legs_said(line)
     assert gates["validate-pins.py"].main(["--root", str(project)]) == 2
     assert capsys.readouterr().err == refused("validate-pins.py", line)
+
+
+def open_refused_at(monkeypatch, path: Path, error: OSError) -> None:
+    """`Path.open` raising `error`, with the path as its filename, for
+    `path` alone, and the real open for every other: a `HEAD` that stats
+    and whose open is refused, as one at mode 000 is, in process, on every
+    platform and as root. git, which no stand-in reaches, still reads it."""
+    real = Path.open
+
+    def opened(self, *args, **kwargs):
+        if self == path:
+            raise type(error)(error.errno, error.strerror, str(self))
+        return real(self, *args, **kwargs)
+
+    monkeypatch.setattr(Path, "open", opened)
+
+
+@pytest.mark.parametrize("error, why, advice", [
+    pytest.param(PermissionError(errno.EACCES, DENIED), PERMISSION_WHY,
+                 PERMISSION, id="permission"),
+    pytest.param(OSError(errno.EIO, IO_ERROR), OTHER_WHY, OTHER,
+                 id="io-error"),
+])
+def test_a_root_head_whose_open_is_refused_is_named_on_every_python(
+        standard, project, gates, monkeypatch, capsys, error, why, advice):
+    """rv1248's S1, in process: the open of the root's own `.git/HEAD`
+    refused, and only that one. The `legs` row says the gate's line once
+    with the advice for the cause, each leg carries it in
+    `gitlink_cannot_be_read`, and no leg is drift; `validate-pins.py`
+    refuses the same `HEAD` in the same words, with its own advice for the
+    same cause, exit 2."""
+    module, ctx = in_process(standard, project)
+    open_refused_at(monkeypatch, ctx.root / ".git" / "HEAD", error)
+    line = cannot(".git/HEAD", error.strerror)
+    assert module.root_git_read(ctx.root)[0] == line
+    legs = module.check_legs(ctx)
+    assert legs.status == module.FINDING
+    assert legs.reason == legs_said(line)
+    assert legs.next_command == doctor_again(standard, project)
+    assert legs.why == why
+    assert [entry[module.GITLINK_UNREAD] for entry in legs.detail["legs"]] \
+        == [line, line]
+    assert module.drifted_reasons({"legs": legs}, {}) == []
+    assert gates["validate-pins.py"].main(["--root", str(ctx.root)]) == 2
+    assert capsys.readouterr().err == refused("validate-pins.py", line,
+                                              advice)
+
+
+def test_a_root_head_gone_when_it_is_opened_is_left_to_git(standard, project,
+                                                           monkeypatch):
+    """The control: an open of the root's `HEAD` that finds nothing at the
+    name is a git directory with no `HEAD`, git's to answer for, and not one
+    this user cannot read, as the gate's `_gitfile_opens` answers it. git
+    reads it here, so the `legs` row is the clone's own, every leg at its
+    pin."""
+    module, ctx = in_process(standard, project)
+    open_refused_at(monkeypatch, ctx.root / ".git" / "HEAD",
+                    FileNotFoundError(errno.ENOENT, os.strerror(errno.ENOENT)))
+    assert module.root_git_read(ctx.root) is None
+    legs = module.check_legs(ctx)
+    assert legs.status == module.OK, legs.reason
 
 
 #: What answers absent, and what git answers for itself: the controls.
@@ -525,6 +642,9 @@ ABSENT = [
                  id="gitfile-naming-nothing"),
     pytest.param(lambda root: (root / ".git" / "HEAD").unlink(),
                  id="git-directory-without-head"),
+    pytest.param(lambda root: ((root / ".git" / "HEAD").unlink(),
+                               (root / ".git" / "HEAD").mkdir()),
+                 id="git-directory-head-a-directory"),
 ]
 
 
@@ -534,7 +654,8 @@ def test_what_answers_absent_is_left_to_git_as_before(
     """The controls, which the base passed too: a `.git` that answers absent
     (nothing there, a link that leads nowhere or to itself), and one git
     answers for itself (a gitfile naming no directory, a git directory with
-    no `HEAD`), are not a `.git` this user cannot read: neither row that
+    no `HEAD`, or one whose `HEAD` is a directory, which is not opened:
+    rv1248's S1), are not a `.git` this user cannot read: neither row that
     reads the root's repository says `cannot be read`."""
     arrange(project)
     module, ctx = in_process(standard, project)
@@ -545,7 +666,7 @@ def test_what_answers_absent_is_left_to_git_as_before(
 @pytest.mark.parametrize("arrange", ABSENT)
 def test_the_gates_ask_nothing_more_of_what_answers_absent(project, gates,
                                                            arrange):
-    """The same five, asked of each gate's own question: none is refused
+    """The same six, asked of each gate's own question: none is refused
     `git-repo-unreadable`, and `find_repo_root` answers for it as before."""
     arrange(project)
     for gate in gates.values():

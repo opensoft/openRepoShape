@@ -93,6 +93,7 @@ import errno
 import os
 import re
 import stat
+import subprocess
 import sys
 from pathlib import Path
 
@@ -147,6 +148,10 @@ NOT_A_REPOSITORY = "not-a-repository"
 #: answers it with silence -- the doctor's `Triad` row, and `adopt-project.py`'s
 #: `triad` lines -- or, where silence is not enough, by naming `refused`: the
 #: doctor's `leg_clone` raises it, so `the way in` offers no way in over it.
+#: So does a leg's `AGENTS.md` committed as a symlink that leads out of the
+#: commit `adopt-project.py` reads (#1163), where no leg's name answers
+#: instead: no commit holds what it leads to, so whether this is a leg is not
+#: known there either, and `refused` is None, since nothing was refused.
 NOT_ANSWERED = "not-answered"
 STATES = (ADVISE, TRIAD_ROOT, FAMILY_HOLDER, LEG_CLONE, WORKSPACE,
           RECORDED_SINGLE, NOT_A_REPOSITORY, NOT_ANSWERED)
@@ -397,6 +402,53 @@ def _is_a(path: Path, kind) -> bool:
     return kind(mode)
 
 
+#: The mode `git ls-tree` gives an entry that is a symlink: its blob holds the
+#: PATH it leads to, not a file's text (`Tree.is_link`).
+LINK_MODE = "120000"
+
+#: A full object name, SHA-1 or SHA-256, as `git cat-file --batch-check`
+#: begins the line for an object it found. Only such a line names a blob to
+#: read: the line for a name it did not find begins with the name it was
+#: asked, which a link's target spells (`Tree.text_through`).
+OBJECT_NAME_RE = re.compile(rb"[0-9a-f]{40}(?:[0-9a-f]{24})?")
+
+
+def _dot_segments_dropped(target: bytes) -> bytes | None:
+    """A committed link's own `target` with every `.` segment before its
+    last one dropped, or None where there is none to drop (#1163).
+
+    git 2.43's `cat-file --follow-symlinks` looks a `.` segment up as a
+    name, which no tree holds, so it answers `dangling` for
+    `./docs/AGENTS.md`, `docs/./AGENTS.md` and `.//docs/AGENTS.md`, where
+    the operating system reads the file. A `.` names the folder it is in, so
+    the path without it is the one the operating system follows. A LAST `.`
+    OR `/` IS KEPT: `docs/AGENTS.md/.` and `docs/AGENTS.md/` run through a
+    file, ENOTDIR on the disk and `notdir` in git, and must not become the
+    file. None, too, for an absolute target, which git answers `symlink`
+    before it reads a segment, and for one with a line break, a carriage
+    return or a NUL in it, which git 2.43's batch input does not take as the
+    one name asked: an LF splits it into two requests, git removes a
+    trailing CR (it keeps an inner one, which this check leaves out too),
+    and git cuts the name at a NUL. Such a target is left as git first
+    answered it, so a leg's file named so is advised while the disk reads
+    the leg, a known limit of #1163."""
+    if target.startswith(b"/") or any(ch in target
+                                      for ch in (b"\n", b"\r", b"\0")):
+        return None
+    *inner, last = target.split(b"/")
+    if b"." not in inner:
+        return None
+    return b"/".join([part for part in inner if part != b"."] + [last])
+
+
+class OutOfTheCommit(Exception):
+    """A symlink in the commit being read that leads OUT of it (#1163): to
+    an absolute path, or past the root, which `git cat-file
+    --follow-symlinks` answers `symlink`. What it reaches is on this
+    machine's disk, or nowhere, and in no commit, so the commit cannot say
+    what is there; `_read` answers it as a file this user cannot read."""
+
+
 class Tree:
     """The files of one repository's root, read from the disk or a commit.
 
@@ -418,6 +470,11 @@ class Tree:
     every reader takes the file as there and unreadable, on every Python: the
     record's as a reason it silences nothing, a leg's `AGENTS.md`'s as a
     question this directory cannot answer (`_leg_by_agents_md`, #1110).
+
+    `text()` reads a symlink in a commit as the blob it is, the PATH it
+    holds, as before. `text_through()` reads it as the disk's is read,
+    through it (#1163), where `is_link()` says it is one; only a leg's
+    `AGENTS.md` is read so (`_leg_by_agents_md`).
     """
 
     def __init__(self, root: Path, commit: str | None = None):
@@ -447,6 +504,74 @@ class Tree:
             raw = git_out(["cat-file", "blob", f"{self.commit}:{rel}"],
                           cwd=self.root, binary=True)
         return raw.decode("utf-8")
+
+    def is_link(self, rel: str) -> bool:
+        """Whether `rel` is a symlink IN THE COMMIT: its `git ls-tree` entry
+        has `LINK_MODE` (#1163). Never on the disk, where the operating
+        system reads through a link whoever asks. A git that cannot say
+        makes it no link, and `rel` is read as it was before."""
+        if self.commit is None:
+            return False
+        try:
+            entry = git_out(["ls-tree", "--full-tree", self.commit, "--",
+                             rel], cwd=self.root)
+        except (Refusal, OSError):
+            return False
+        return entry.startswith(f"{LINK_MODE} ")
+
+    def _follow(self, name: bytes) -> list[bytes]:
+        """The first line of `git cat-file --batch-check --follow-symlinks`'s
+        answer for `<commit>:<name>`, split at its spaces. A git that cannot
+        answer is a `Refusal`, as one that cannot give a blob is."""
+        asked = ["cat-file", "--batch-check", "--follow-symlinks"]
+        found = subprocess.run(["git", *asked], cwd=str(self.root),
+                               input=(self.commit.encode("utf-8") + b":"
+                                      + name + b"\n"),
+                               capture_output=True, check=False)
+        if found.returncode != 0:
+            raise Refusal("git-failed", f"`git {' '.join(asked)}` exited "
+                                        f"{found.returncode}")
+        return found.stdout.split(b"\n", 1)[0].split()
+
+    def text_through(self, rel: str) -> str | None:
+        """The text of the file the symlink at `rel` leads to INSIDE the
+        commit, followed as git follows it there (`git cat-file
+        --batch-check --follow-symlinks`): each link from the directory it is
+        in, through a linked folder too, up to 40 links. `rel` is a name at
+        the root, as `AGENTS.md` is.
+
+        GIT 2.43 FOLLOWS NO `.` SEGMENT (#1163), so it is not quite a
+        checkout's `open()`: it answers `dangling` for a link spelled
+        `./docs/AGENTS.md`. Where it says `dangling`, the link's own target
+        is read, and one that holds a `.` segment before its last is asked
+        again with those dropped (`_dot_segments_dropped`). One that then
+        begins with `..` climbs past the root, out of the commit, as git
+        answers `../x`; git is never asked a name that begins `../`, which
+        it takes as relative to the working directory, or refuses. Only the
+        link at `rel` is read so: a `.` segment in a link further on is still
+        `dangling`.
+
+        NOTHING THAT IS A FILE IS NONE, as on the disk: a link that dangles,
+        loops or runs through a file (#430's ENOENT, ELOOP and ENOTDIR), and
+        one that leads to a directory or a submodule. A link that leads OUT
+        of the commit raises `OutOfTheCommit`. A git that cannot follow it
+        is a `Refusal`, as one that cannot give a blob is."""
+        header = self._follow(rel.encode("utf-8"))
+        if header[:1] == [b"dangling"]:
+            target = _dot_segments_dropped(git_out(
+                ["cat-file", "blob", f"{self.commit}:{rel}"], cwd=self.root,
+                binary=True))
+            if target is not None and target.split(b"/", 1)[0] == b"..":
+                raise OutOfTheCommit(f"{rel} leads out of the commit")
+            if target is not None:
+                header = self._follow(target)
+        if header[:1] == [b"symlink"]:
+            raise OutOfTheCommit(f"{rel} leads out of the commit")
+        if (len(header) != 3 or header[1] != b"blob"
+                or not OBJECT_NAME_RE.fullmatch(header[0])):
+            return None
+        return git_out(["cat-file", "blob", header[0].decode("ascii")],
+                       cwd=self.root, binary=True).decode("utf-8")
 
 
 def _read_mapping(tree: Tree, rel: str):
@@ -612,9 +737,23 @@ def _leg_by_agents_md(tree: Tree) -> dict | None:
     `Refusal`) is answered by `_read` as a refused file is: by the folder's
     name where it is a leg's, as before, and otherwise in `read()`'s net,
     `NOT_ANSWERED`, silent.
+
+    A SYMLINK IS READ THROUGH IN A COMMIT, AS ON THE DISK (#1163). The
+    operating system reads the disk's `AGENTS.md` through its link, and that
+    is what the doctor reads. A commit's link is a blob holding the PATH it
+    leads to, and read as text that was no leg's file, so `adopt-project.py
+    plan` and `check` called a leg whose `AGENTS.md` is a link a single
+    repository, where the doctor called the same checkout the leg. Now a
+    link in the commit (`Tree.is_link`) is followed inside it
+    (`Tree.text_through`): to a file, which is read, out of the commit's
+    objects as any file there is; to nothing that is a file, which is no
+    leg's file, as on the disk. A link that leads out of the commit raises
+    `OutOfTheCommit`, for `_read` to answer as a file this user cannot read:
+    no commit says what is there.
     """
     try:
-        text = tree.text(AGENTS_MD)
+        text = (tree.text_through(AGENTS_MD) if tree.is_link(AGENTS_MD)
+                else tree.text(AGENTS_MD))
     except UnicodeDecodeError:
         return None
     except OSError as exc:
@@ -885,6 +1024,17 @@ def _read(root: Path, shape: Path, env, commit: str | None) -> Reading:
                                          "so whether this is a leg clone is "
                                          "not known here, and the advisory "
                                          "says nothing", refused=exc)
+    except OutOfTheCommit:
+        # A COMMITTED `AGENTS.md` THAT IS A SYMLINK OUT OF THE COMMIT (#1163):
+        # what it reaches is in no commit, so the commit cannot say whether
+        # this is a leg. The NAME still answers, as for a file this user
+        # cannot read; with none, `NOT_ANSWERED` -- silent, never the advice.
+        leg = _leg_by_name(names, policy)
+        if leg is None:
+            return Reading(NOT_ANSWERED, f"{AGENTS_MD}: a symlink out of the "
+                                         "commit, so whether this is a leg "
+                                         "clone is not known here, and the "
+                                         "advisory says nothing")
     else:
         leg = leg or _leg_by_name(names, policy)
     if leg is not None:
