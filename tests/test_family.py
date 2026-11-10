@@ -47,6 +47,10 @@ from test_commit_trailers import (
 #: and the module that owns its tests, imported rather than retyped for the
 #: same reason.
 from test_update_shape import rendered_shape_line, strip_shape_block
+#: The guard's sweep (#1205), one loop for this file and
+#: `tests/test_manifest_validator.py`; its own line, so a change to the
+#: import above meets no change of this one.
+from conftest import scalar_lines_not_refused
 
 sys.path.insert(0, str(REPO / "scripts"))
 from repo_shape import (  # noqa: E402
@@ -895,6 +899,149 @@ def test_an_empty_family_is_valid(tmp_path):
     result = validate(tmp_path / "work" / "Contoso")
     assert result.returncode == 0, result.stderr + result.stdout
     assert "0 member(s)" in result.stdout
+
+
+# --- a value no pattern reads, holding a character it may not (#1205) -------
+#
+# A double-quoted `"...\n"` in a key no pattern reads was `family ok`, exit 0,
+# with members checked and under `--no-members`: `name` split its `ok` note in
+# two, and `family.py add` refused the `tracking_branch` the gate passed.
+# Each such key is refused by its code now, once. `name` and `created_by`,
+# which a person types, keep #255's rule, the one `family.py init` asks before
+# it writes them (lane 3's ruling on #1205, issuecomment-6742051321).
+
+#: `(line as written, the line with "{}" where a character goes, the key as
+#: the finding names it, the finding's code)`. The holder's `repository:` and
+#: `shape.repository` are written unquoted, and the shape's
+#: `digest_algorithm` and each member pin's are told apart by their indent;
+#: the first member's is `members[0]`.
+HOLDER_TYPED = {
+    "name": ('\nname: "InkRouter"\n', '\nname: "InkRouter{}"\n', "name",
+             "family-name"),
+    "created_by": ('\ncreated_by: "Test Human"\n',
+                   '\ncreated_by: "Test Human{}"\n', "created_by",
+                   "family-created-by"),
+}
+HOLDER_PRINTED = {
+    "org": ('\norg: "InkRouter"\n', '\norg: "InkRouter{}"\n', "org",
+            "family-org"),
+    "repository": ("\nrepository: InkRouter/InkRouter\n",
+                   '\nrepository: "InkRouter/InkRouter{}"\n', "repository",
+                   "family-repository"),
+    "tracking_branch": ('\ntracking_branch: "main"\n',
+                        '\ntracking_branch: "main{}"\n', "tracking_branch",
+                        "family-tracking-branch"),
+    "shape-repository": ("\n  repository: opensoft/openRepoShape\n",
+                         '\n  repository: "opensoft/openRepoShape{}"\n',
+                         "shape.repository", "family-shape-repository"),
+    "shape-digest-algorithm": ("\n  digest_algorithm: sha256\n",
+                               '\n  digest_algorithm: "sha256{}"\n',
+                               "shape.digest_algorithm",
+                               "family-shape-digest-algorithm"),
+    "member-pin-digest-algorithm": (
+        "\n      digest_algorithm: sha256\n",
+        '\n      digest_algorithm: "sha256{}"\n',
+        "members[0]: pin.digest_algorithm", "member-pin-digest-algorithm"),
+}
+HOLDER_VALUES = {**HOLDER_TYPED, **HOLDER_PRINTED}
+
+
+def held(holder, key: str, escape: str, code_point: str, *extra):
+    """The holder's gate with `escape` (YAML's spelling) at the end of
+    `key`'s value, run with `extra`, and the line it must print: `FINDING
+    <code>: <key> is ...`, holding `code_point`, or ''."""
+    old, new, what, code = HOLDER_VALUES[key]
+    path = holder / "family.yaml"
+    text = path.read_text(encoding="utf-8")
+    assert old in text, f"fixture drift: {old!r} not in family.yaml"
+    path.write_text(text.replace(old, new.format(escape), 1),
+                    encoding="utf-8")
+    result = validate(holder, *extra)
+    line = next((line for line in result.stderr.splitlines()
+                 if line.startswith(f"FINDING {code}: {what} is ")), "")
+    return result, (line if f", which holds {code_point}, " in line else "")
+
+
+@pytest.mark.parametrize("escape, code_point, extra", [
+    pytest.param("\\n", "U+000A", (), id="line-feed"),
+    pytest.param("\\n", "U+000A", ("--no-members",),
+                 id="line-feed-no-members"),
+    pytest.param("\\r", "U+000D", (), id="carriage-return"),
+])
+@pytest.mark.parametrize("key", list(HOLDER_VALUES))
+def test_a_holder_value_ending_in_a_line_break_is_one_finding_of_its_key(
+        holder, key, escape, code_point, extra):
+    """On main each was `family ok`, exit 0, in both modes."""
+    result, line = held(holder, key, escape, code_point, *extra)
+    assert result.returncode == 1, result.stdout + result.stderr
+    assert "a line break" in line, result.stderr
+    assert line.endswith(". Write it on one line."), result.stderr
+    assert "\n1 finding(s) in family.yaml" in result.stderr, result.stderr
+    assert "family ok" not in result.stdout
+
+
+@pytest.mark.parametrize("escape, code_point", [
+    pytest.param("\\xa0", "U+00A0", id="no-break-space"),
+    pytest.param("\\x1b", "U+001B", id="esc"),
+])
+@pytest.mark.parametrize("key", list(HOLDER_PRINTED))
+def test_a_holder_value_that_must_print_refuses_what_does_not(
+        holder, key, escape, code_point):
+    result, line = held(holder, key, escape, code_point, "--no-members")
+    assert result.returncode == 1, result.stdout + result.stderr
+    assert "does not print" in line, result.stderr
+    assert line.endswith(". Write it without that character."), result.stderr
+    assert "\n1 finding(s) in family.yaml" in result.stderr, result.stderr
+
+
+@pytest.mark.parametrize("escape, code_point, kind", [
+    pytest.param("\\t", "U+0009", "a control character", id="tab"),
+    pytest.param("\\u202e", "U+202E", "a bidirectional control",
+                 id="bidi-override"),
+])
+@pytest.mark.parametrize("key", list(HOLDER_TYPED))
+def test_a_typed_holder_value_refuses_what_255_refuses(holder, key, escape,
+                                                       code_point, kind):
+    """One finding, its key's: the name is not then classified, so it is
+    not `naming-unclassified` as well."""
+    result, line = held(holder, key, escape, code_point, "--no-members")
+    assert result.returncode == 1, result.stdout + result.stderr
+    assert kind in line, result.stderr
+    assert line.endswith(". Write it without that character."), result.stderr
+    assert "\n1 finding(s) in family.yaml" in result.stderr, result.stderr
+
+
+@pytest.mark.parametrize("escape", [
+    pytest.param("\\xa0", id="no-break-space"),
+    pytest.param("\\u200c", id="zero-width-non-joiner"),
+])
+def test_a_created_by_keeps_what_255_keeps(holder, escape):
+    """What `family.py init --created-by` writes, and this passed before: a
+    Persian name joins its parts with U+200C. `str.isprintable` refuses
+    both, which is why `created_by` does not ask it (#1205)."""
+    old, new, _what, _code = HOLDER_TYPED["created_by"]
+    path = holder / "family.yaml"
+    path.write_text(path.read_text(encoding="utf-8").replace(
+        old, new.format("X" + escape + "Y"), 1), encoding="utf-8")
+    result = validate(holder, "--no-members")
+    assert result.returncode == 0, result.stdout + result.stderr
+    assert "family ok" in result.stdout
+
+
+def test_every_holder_scalar_line_ending_in_a_line_feed_is_refused(holder):
+    """THE GUARD (#1205's part 2): every scalar line of a holder's
+    `family.yaml`, its two member rows among them, rewritten one at a time
+    as its value double-quoted with a trailing `\\n`, is refused by name,
+    whichever check refuses it: a finding, exit 1, or a refusal, exit 2 (a
+    member pin's `commit` is `member-pin-commit`). Never `family ok`, and
+    never a traceback. A key added to the template, or to the row
+    `family.py add` writes, that no check refuses fails here by its line.
+    The loop is conftest's `scalar_lines_not_refused`, which
+    `tests/test_manifest_validator.py` runs over a `project.yaml`."""
+    swept, passed = scalar_lines_not_refused(holder / "family.yaml",
+                                             lambda: validate(holder))
+    assert swept >= 30, f"fixture drift: {swept} scalar lines"
+    assert passed == [], passed
 
 
 # --- bump -------------------------------------------------------------------
