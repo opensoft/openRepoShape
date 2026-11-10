@@ -77,14 +77,14 @@ NAMES = [pytest.param(*ENDS_IN_LF, id="ends-in-lf"),
 
 #: Names that pin `spelled` itself. A gate that escaped only a line feed and
 #: an ESC would print the CR raw, and one that spelled with `repr` would
-#: double the backslash: `spelled` writes a CR as `\\r` and leaves a backslash
-#: as it is (the line feed beside it is still `\\n`), so the name holding it
+#: double the backslash: `spelled` writes a CR as `\r` and leaves a backslash
+#: as it is (the line feed beside it is still `\n`), so the name holding it
 #: is not doubled.
 ENDS_IN_CR = ("Atlas" + CR, "Atlas\\r")
 WITH_BACKSLASH = ("At\\las" + LF, "At\\las\\n")
 #: U+202E (RLO) is a bidirectional control that reorders the text around it, so
 #: a name holding it can read as another name. `spelled` writes it as
-#: `\\u202e`, and a rival that escaped only the C0 controls, only the category
+#: `\u202e`, and a rival that escaped only the C0 controls, only the category
 #: Cc, or only LF, CR and ESC would print it raw. It is ASCII once spelled, so
 #: the table row can hold it too.
 RLO = chr(0x202E)
@@ -95,7 +95,7 @@ SPELLED_ITSELF = [pytest.param(*ENDS_IN_CR, id="ends-in-cr"),
 
 #: U+200D (ZWJ) is a format character `spelled` leaves as it is, so a person's
 #: emoji sequence or Indic name reads as typed; a rival built on
-#: `str.isprintable` would write it as `\\u200d`. It takes no column, so only
+#: `str.isprintable` would write it as `\u200d`. It takes no column, so only
 #: the finding is asked of it, never the table (a table padded by display width
 #: would not keep its label in the plain rows' column).
 ZWJ = chr(0x200D)
