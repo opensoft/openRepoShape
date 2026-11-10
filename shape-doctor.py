@@ -3475,11 +3475,13 @@ GITLINK_UNREAD = "gitlink_cannot_be_read"
 def root_git_read(root: Path) -> tuple | None:
     """`(the gate's line, the OSError)` where this user cannot read the
     root's own repository, else None (#1146): the `stat` of its `.git`, the
-    open of a `.git` that is a gitfile, and the `stat` of the `HEAD` in the
-    git directory that `.git` is or names -- what `validate-pins.py` asks
-    before it reads a gitlink (`_refuse_an_unreadable_root`), in its words:
-    `.git: cannot be read (<reason>)`, or the git directory a gitfile names,
-    relative to the root where it is inside it and whole where it is not.
+    open of a `.git` that is a gitfile, and the `stat` and then the open of
+    the `HEAD` in the git directory that `.git` is or names -- what
+    `validate-pins.py` asks before it reads a gitlink
+    (`_refuse_an_unreadable_root`), in its words: `.git: cannot be read
+    (<reason>)`, or the git directory a gitfile names, relative to the root
+    where it is inside it and whole where it is not, or that directory's
+    `HEAD` where it is the open that was refused (`.git/HEAD`).
 
     GIT SAID NOTHING IS RECORDED. `recorded_gitlink` reads the index through
     git and takes a listing git refused for no gitlink, so a `.git` linked
@@ -3488,9 +3490,21 @@ def root_git_read(root: Path) -> tuple | None:
     at the pin)`, about gitlinks nobody read. A `.git` that answers absent
     (nothing there, a link that leads nowhere or to itself), a gitfile that
     names no directory, and a git directory with no `HEAD` are None, left to
-    git as they always were."""
+    git as they always were.
+
+    A `HEAD` THIS USER CANNOT OPEN STATS (#1222, rv1248's S1), so a root's
+    `.git/HEAD` at mode 000 passed the `stat`, git could not read the root,
+    and the `legs` row said `no gitlink recorded` of every leg and the
+    verdict DRIFTED, while the gate refused `git-repo-unreadable` naming
+    that `HEAD`. A `HEAD` that is there is now opened as the gate opens it
+    (`regular_file_opens`, `_refuse_an_unreadable_git_dir`): only where it
+    is a regular file, so a directory or a FIFO is left to git, and an open
+    that finds nothing is a git directory with no `HEAD`. One this user
+    cannot open is named after its git directory, as the gate names it:
+    `.git/HEAD: cannot be read (<reason>)`. A refused `stat` of it still
+    names the git directory."""
     dotgit = root / ".git"
-    named = Path(".git")
+    named = dotgit
     try:
         if not is_a(dotgit, lambda _mode: True):
             return None
@@ -3502,7 +3516,10 @@ def root_git_read(root: Path) -> tuple | None:
             gitdir = dotgit.parent / os.fsdecode(
                 data[len(b"gitdir: "):].rstrip(b"\r\n"))
             named = Path(os.path.normpath(gitdir))
-        is_a(gitdir / "HEAD", lambda _mode: True)
+        head = gitdir / "HEAD"
+        if is_a(head, lambda _mode: True):
+            named = named / "HEAD"
+            regular_file_opens(head)
     except OSError as exc:
         if refused_read(exc) is None:
             return None
@@ -3547,6 +3564,37 @@ def git_dir_named(root: Path, rel: str, gitdir: Path) -> str:
     if path == mount or mount in path.parents:
         return named
     return f"{rel}: {named}"
+
+
+def regular_file_opens(path: Path) -> bool:
+    """Whether `path` can be opened where it is a regular file, asked as
+    `validate-pins.py`'s `_gitfile_opens` asks it (#919, #1222): False where
+    the open finds nothing there (`ABSENT_ERRNOS`, `ABSENT_WINERRORS`), the
+    `OSError` of an open the operating system REFUSED raised, and True for
+    anything that is no regular file, which is not opened.
+
+    A FILE AT MODE 000 STATS, so a `stat` alone passes one this user cannot
+    open. Only a regular file is opened, since the open of a FIFO waits for
+    a writer, and what is no regular file is left to git, as the gate
+    leaves it.
+
+    ITS TWO CALLERS ASK IT ONLY FOR ITS RAISE (rv1248's N3): `mount_read`
+    and `root_git_read` open a git directory's `HEAD` once its `stat` has
+    found it, so an open that finds nothing is a `HEAD` gone since, left to
+    git whatever this answers. The answer is kept, False and True as
+    `_gitfile_opens` gives them, because the gate reads that function's
+    answer of a leg's gitfile (`initialized`, #919): one question with one
+    answer in both files, which a parity row holds, so a later caller here
+    that asks a gitfile reads what the gate reads."""
+    if not is_a(path, stat.S_ISREG):
+        return True
+    try:
+        path.open("rb").close()
+    except OSError as exc:
+        if refused_read(exc) is None:
+            return False
+        raise
+    return True
 
 
 def mount_read(root: Path, rel: str, git_dir: bool = True) -> tuple:
@@ -3594,6 +3642,17 @@ def mount_read(root: Path, rel: str, git_dir: bool = True) -> tuple:
     this user was refused: it is left to git, which answers for it as it
     always did.
 
+    A `HEAD` THIS USER CANNOT OPEN STATS (#1222), so a `HEAD` at mode 000
+    passed the `stat`, git in the mount could not read it, and the `legs`
+    and `members` rows counted the mount as drift. The gate's
+    `_refuse_an_unreadable_git_dir` now opens it, and so does this: a
+    `HEAD` that is there is opened as the gate opens it
+    (`regular_file_opens`): only where it is a regular file, and an open
+    that finds nothing is a git directory with no `HEAD`. One this user
+    cannot open is named as the gate names it, after the mount where it is
+    outside it: `<rel>: .git/modules/<rel>/HEAD: cannot be read (<reason>)`,
+    or `<rel>/.git/HEAD: cannot be read (<reason>)`.
+
     `git_dir=False` ASKS NO GIT DIRECTORY, for the `leg shape files` row,
     which compares a leg's files on disk and runs no git: a git directory
     this user cannot search keeps no file in the mount from being read, so
@@ -3622,7 +3681,10 @@ def mount_read(root: Path, rel: str, git_dir: bool = True) -> tuple:
         gitdir = git_dir_of(dotgit) if git_dir else None
         if gitdir is not None:
             named = git_dir_named(root, rel, gitdir)
-            is_a(gitdir / "HEAD", lambda _mode: True)
+            head = gitdir / "HEAD"
+            if is_a(head, lambda _mode: True):
+                named = git_dir_named(root, rel, head)
+                regular_file_opens(head)
     except OSError as exc:
         return True, False, (cannot_be_read(named, exc), exc, False)
     return True, True, None
