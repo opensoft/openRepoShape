@@ -1720,7 +1720,11 @@ def test_update_shape_reads_a_family_root_and_mirrors_into_family_yaml(
         "fixture drift: the upstream validate-family.py holds no character "
         "outside ASCII, so the next assert cannot tell a read as UTF-8 from a "
         "read as anything else")
-    assert source.read_bytes() == old_bytes + appended.encode("utf-8"), (
+    # The compare is held in a name: an `==` in the assert would make pytest
+    # diff the file's quarter of a megabyte line by line, for minutes, on a
+    # failure.
+    rewritten = source.read_bytes() == old_bytes + appended.encode("utf-8")
+    assert rewritten, (
         "the rewrite changed more than the appended line: the upstream "
         "validate-family.py was read or written as something other than "
         "UTF-8")
