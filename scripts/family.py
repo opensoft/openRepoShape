@@ -1124,7 +1124,13 @@ def _read_member_project(path: Path, project: str, repository: str,
     except Refusal as exc:
         if shown is None:
             raise
-        raise Refusal(exc.code, exc.detail.replace(str(manifest_path), shown),
+        # In either spelling (#1168): `load_yaml` names the file as
+        # `shown_path` does, `repr`'d where the clone's path holds a
+        # character that is not printable (a `TMPDIR` that does), and a
+        # `repo_shape.py` older than #1168 named it raw. For a printable
+        # path the two are one.
+        detail = exc.detail.replace(shown_path(str(manifest_path)), shown)
+        raise Refusal(exc.code, detail.replace(str(manifest_path), shown),
                       exc.remediation) from exc
     if not isinstance(manifest, dict):
         raise Refusal("member-manifest-unreadable",
