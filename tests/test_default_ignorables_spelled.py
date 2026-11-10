@@ -306,6 +306,29 @@ def test_refetch_says_the_step_in_words(adopter, char):
                     f"named `ma{escaped(char)}in`")
 
 
+# --- RV1225's site: `_unacted`, which a REFUSED block is spelled with --------
+
+@EACH_CHARACTER
+def test_unacted_escapes_it(adopter, char):
+    """RV1225 (#1225's review, N4): `_unacted`, which #1233 gives
+    `adopt-mount-unaddable` too, asked `str.isprintable` alone, so U+034F in
+    git's words or in a path printed raw."""
+    assert adopter._unacted(f"ma{char}in") == f"ma{escaped(char)}in"
+
+
+@EACH_CHARACTER
+def test_a_refused_commands_block_escapes_it(adopter, char):
+    """`_loudly`'s REFUSED block names the command, the directory it ran in
+    and what it printed, each `_unacted`: the character is in none of them
+    raw, and each names it escaped."""
+    failed = adopter.CommandFailed(
+        ["git", "push", f"/srv/ma{char}in.git"], f"/work/ma{char}in", 1,
+        f"error: failed to push some refs to '/srv/ma{char}in.git'\n")
+    block = adopter._loudly(failed, "push the spec leg")
+    assert char not in block, ascii(block)
+    assert block.count(f"ma{escaped(char)}in") == 3, ascii(block)
+
+
 # --- RV1171's N4: two sentences that hold again ------------------------------
 
 @EACH_CHARACTER

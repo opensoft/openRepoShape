@@ -15132,8 +15132,10 @@ def _unacted(text: str, kept: str = "") -> str:
     """`text` with each character a terminal would act on -- one
     `str.isprintable` refuses, other than those in `kept` -- spelled as
     `_spelled_character` spells it, and every other as it is, with no
-    backticks around it: what `_first_said` does to the line gh said."""
-    return "".join(char if char.isprintable() or char in kept
+    backticks around it: what `_first_said` does to the line gh said. So is
+    each a terminal draws as nothing (`_seen`, #1165): a REFUSED block
+    printed U+034F raw in git's words, a path or an argument (RV1225)."""
+    return "".join(char if _seen(char) or char in kept
                    else _spelled_character(char) for char in text)
 
 
