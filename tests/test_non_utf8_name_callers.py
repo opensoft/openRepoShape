@@ -52,10 +52,10 @@ import test_adopt_template_values as template_values
 import test_clone_url_bytes as clone_url_bytes
 import test_non_utf8_git_reads as non_utf8_git_reads
 import test_stdout_encoding as stdout_encoding
-from conftest import (NOT_UTF_8_PROBE, skip_message,
+from conftest import (an_earlier_question_skips, skip_message,
                       skip_where_a_name_cannot_be_not_utf_8,
                       skip_where_the_environment_cannot_carry,
-                      windows_fsencode)
+                      windows_fsdecode, windows_fsencode)
 # The fixture of `test_adopt_plan_escapes.py`, `adopt-project.py` loaded as a
 # module, which two of its tests ask for.
 from test_adopt_plan_escapes import adopter  # noqa: F401 - fixture
@@ -130,9 +130,10 @@ def fail_where_the_caller_ends(call, *args, said: str = "") -> None:
 def a_system_that_carries_the_byte():
     """The rows that let the probe through to the disk ask the system's
     question and the locale's first (#1196): the helper skips on either, on
-    its own reason, and not on the one these rows hold."""
-    if (len(os.fsencode(NOT_UTF_8_PROBE)) != 1
-            or os.fsdecode(b"\xff") != NOT_UTF_8_PROBE):
+    its own reason, and not on the one these rows hold. The two are
+    `an_earlier_question_skips`, written once in `tests/conftest.py` (#1224's
+    N4)."""
+    if an_earlier_question_skips():
         pytest.skip("on this system an earlier question is the one that skips")
 
 
@@ -195,16 +196,6 @@ def test_the_fixture_that_guards_those_rows_asks_the_real_disk(
 
 
 # --- `directory_named`'s own question: Windows, emulated --------------------
-
-def windows_fsdecode(name: str | bytes | os.PathLike) -> str:
-    """`os.fsdecode` as Windows has it: UTF-8 with `surrogatepass`, whatever
-    the locale, so a name made from UTF-8's bytes reads back as the text
-    they spell. A str goes through as it is, as on every system."""
-    name = os.fspath(name)
-    if isinstance(name, str):
-        return name
-    return name.decode("utf-8", "surrogatepass")
-
 
 def windows_names_it(monkeypatch) -> None:
     """Windows, as far as `skip_where_this_system_cannot_name` can ask it:

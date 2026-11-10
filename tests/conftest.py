@@ -1167,18 +1167,30 @@ def skip_where_a_name_cannot_be_not_utf_8(directory: Path) -> None:
     - `skip_where_fsencode_gives_a_surrogate_no_byte` (Windows), asked first,
       before the disk is touched;
     - a locale of one byte to a character, Latin-1 say (#1196), asked second,
-      also before the disk is touched: there the byte 0xFF is the character
-      U+00FF, so `os.fsdecode` gives it as text and not as the surrogate
-      U+DCFF, and a name that holds it is not one that is not UTF-8. A tool
-      prints it as it is, where the test expects it spelled. The disk and
-      `os.fsencode` take the byte in every locale, so only `os.fsdecode` can
-      say. UTF-8 and ASCII give U+DCFF, and neither skips;
+      also before the disk is touched: there `os.fsdecode` reads the byte
+      0xFF in as the character U+00FF and not as the surrogate U+DCFF, so a
+      path Python reads in with it is printable text, and a tool prints it as
+      it is, where the test expects it spelled. The disk and `os.fsencode`
+      take the byte in every locale, so only `os.fsdecode` can say. UTF-8 and
+      ASCII give U+DCFF, and neither skips. Asked after the system's
+      question, because Windows' `os.fsdecode` raises on the byte;
     - a filesystem that refuses the name: macOS answers EILSEQ ("Illegal byte
       sequence"), so no clone can sit at such a path there.
 
     The third is asked by making a directory `probe<U+DCFF>` under
     `directory` and removing it; any other error is the test's own and is
     raised.
+
+    THE LOCALE'S QUESTION SKIPS MORE THAN THE ROWS IT IS FOR (#1224's N1).
+    Under a one-byte locale this helper also skips every row about a git
+    branch or a file named with the byte 0xFF (`on_a_branch_that_is_not_utf_8`
+    and the rest), though git and the disk hold that byte in every locale, so
+    each such name is one that is not UTF-8 there too, and many of those rows
+    could judge the tool. It is kept so, one helper with one answer: asked
+    only by the rows whose premise is Python's reading of the byte, it left
+    more than 60 rows of 31 files failing under Latin-1 on their own UTF-8
+    premise, each wanting a premise skip of its own. The first two questions
+    are `an_earlier_question_skips`, for the rows that need the disk's answer.
     """
     probe = directory / f"probe{NOT_UTF_8_PROBE}"
     skip_where_fsencode_gives_a_surrogate_no_byte(probe.name)
@@ -1186,8 +1198,8 @@ def skip_where_a_name_cannot_be_not_utf_8(directory: Path) -> None:
     if read != NOT_UTF_8_PROBE:
         pytest.skip(f"this system's file name encoding "
                     f"({sys.getfilesystemencoding()}) reads the byte 0xFF as "
-                    f"{ascii(read)}, not as {ascii(NOT_UTF_8_PROBE)}, so no "
-                    f"file name here is one that is not UTF-8")
+                    f"{ascii(read)}, not as {ascii(NOT_UTF_8_PROBE)}, so a "
+                    f"name that holds it is read in as text here")
     try:
         probe.mkdir()
     except OSError as exc:
@@ -1196,6 +1208,20 @@ def skip_where_a_name_cannot_be_not_utf_8(directory: Path) -> None:
         pytest.skip("needs a file name that is not UTF-8, which this "
                     "filesystem refuses (EILSEQ)")
     probe.rmdir()
+
+
+def an_earlier_question_skips() -> bool:
+    """Whether `skip_where_a_name_cannot_be_not_utf_8` skips before it asks
+    the disk: on its first question, the system's (`os.fsencode` makes no
+    single byte of `NOT_UTF_8_PROBE`, as on Windows), or on its second, the
+    locale's (`os.fsdecode` does not read the byte 0xFF back as it, as under
+    Latin-1). Written once, beside the helper, for the rows that let the
+    probe through to the disk and hold what the disk answers (#1224's N4):
+    each skips where this is true, so that a skip on the helper's own reason
+    is never read as the disk's. Asked in the helper's order, so on Windows,
+    whose `os.fsdecode` raises on the byte, the locale is never asked."""
+    return (len(os.fsencode(NOT_UTF_8_PROBE)) != 1
+            or os.fsdecode(b"\xff") != NOT_UTF_8_PROBE)
 
 
 #: A branch git makes and no text can spell (#765): `caf` and the byte 0xE9,
@@ -1267,6 +1293,19 @@ def windows_fsencode(text: str | bytes | os.PathLike) -> bytes:
     if isinstance(text, bytes):
         return text
     return text.encode("utf-8", "surrogatepass")
+
+
+def windows_fsdecode(name: str | bytes | os.PathLike) -> str:
+    """`os.fsdecode` as Windows has it: UTF-8 with `surrogatepass`, whatever
+    the locale, so a name made from UTF-8's bytes reads back as the text
+    they spell, and the byte 0xFF, which no UTF-8 text has, raises
+    `UnicodeDecodeError`. A str goes through as it is, as on every system.
+    For `monkeypatch.setattr(os, "fsdecode", windows_fsdecode)`, beside
+    `windows_fsencode`."""
+    name = os.fspath(name)
+    if isinstance(name, str):
+        return name
+    return name.decode("utf-8", "surrogatepass")
 
 
 def skip_message(call, *args) -> str | None:
