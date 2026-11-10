@@ -317,11 +317,17 @@ def test_init_copies_the_siblings_utility_and_the_makefile_target(family, monkey
     if os.name != "nt":
         assert copied.stat().st_mode & 0o111, (
             "`FAMILY_EXECUTABLE` names it, so the materializer chmods it")
-    makefile = (root / "Makefile").read_text()
+    makefile = (root / "Makefile").read_text(encoding="utf-8")
     assert "siblings:" in makefile
     assert "$(PYTHON) scripts/siblings.py" in makefile
-    assert "make siblings" in (root / "README.md").read_text()
-    assert "make siblings" in (root / "AGENTS-shape.md").read_text()
+    assert "WORKING CLONES BESIDE THIS HOLDER — not in" in makefile, (
+        "the Makefile tells a person that the sibling clones `siblings.py` "
+        "works on are BESIDE the holder, not in `members/<Project>`; its dash "
+        "is one character only when the file is read as UTF-8")
+    assert "make siblings" in (root / "README.md").read_text(
+        encoding="utf-8")
+    assert "make siblings" in (root / "AGENTS-shape.md").read_text(
+        encoding="utf-8")
 
 
 def test_init_writes_the_holders_agent_files(family, monkeypatch):
@@ -381,7 +387,7 @@ def test_the_holder_says_what_its_bytes_are(family, monkeypatch):
     assert copied.read_bytes() == template.read_bytes(), "verbatim, like the rest"
     assert b"\r" not in copied.read_bytes(), (
         "the file that says LF is itself written LF, on every platform")
-    assert "* text=auto eol=lf" in copied.read_text()
+    assert "* text=auto eol=lf" in copied.read_text(encoding="utf-8")
     rows = {row["path"]: row["sha256"].lower()
             for row in load_yaml(root / "contracts" / "shape-pin.yaml")["files"]}
     assert rows[".gitattributes"] == file_sha256(copied)
@@ -722,7 +728,8 @@ def test_validate_refuses_a_missing_gitlink(holder):
 def test_validate_finds_a_pin_that_disagrees_with_the_gitlink(holder):
     """THE LOCKSTEP RULE. Moving the pin alone is exactly the failure the
     xFactory aggregation shipped seven times in a row."""
-    text = (holder / "family.yaml").read_text()
+    before = (holder / "family.yaml").read_bytes()
+    text = (holder / "family.yaml").read_text(encoding="utf-8")
     row = {r["project"]: r for r in manifest(holder)["members"]}["IRRS"]
     # A REAL commit that is not the gitlink: the member's own parent. Pinning
     # 40 zeros would prove only that an unresolvable commit is refused, which
@@ -730,7 +737,14 @@ def test_validate_finds_a_pin_that_disagrees_with_the_gitlink(holder):
     parent = git("rev-parse", "HEAD~1",
                  cwd=holder / "members" / "IRRS").stdout.strip()
     (holder / "family.yaml").write_text(
-        text.replace(row["pin"]["commit"], parent))
+        text.replace(row["pin"]["commit"], parent), encoding="utf-8")
+    assert not before.isascii(), (
+        "fixture drift: family.yaml holds no character outside ASCII, so the "
+        "next assert cannot tell a read as UTF-8 from a read as anything else")
+    assert (holder / "family.yaml").read_bytes() == before.replace(
+        row["pin"]["commit"].encode("ascii"), parent.encode("ascii")), (
+        "the rewrite changed more than the pin's commit: family.yaml was read "
+        "or written as something other than UTF-8")
     result = validate(holder)
     assert result.returncode == 1
     assert "member-gitlink-mismatch" in result.stderr
@@ -755,19 +769,20 @@ def test_validate_accepts_a_member_bump_that_is_staged_but_not_committed(holder)
     after = git("rev-parse", "HEAD", cwd=member).stdout.strip()
     git("add", "--", "members/IRRS", cwd=holder)  # staged, NOT committed
     manifest_path = holder / "family.yaml"
-    text = manifest_path.read_text()
+    text = manifest_path.read_text(encoding="utf-8")
     assert text.count(before) == 1, "fixture drift: IRRS's pin is not unique"
-    manifest_path.write_text(text.replace(before, after, 1))
+    manifest_path.write_text(text.replace(before, after, 1),
+                             encoding="utf-8")
     result = validate(holder)
     assert result.returncode == 0, result.stderr + result.stdout
     assert "gitlink == pin" in result.stdout
 
 
 def test_validate_finds_a_digest_that_does_not_recompute(holder):
-    text = (holder / "family.yaml").read_text()
+    text = (holder / "family.yaml").read_text(encoding="utf-8")
     row = {r["project"]: r for r in manifest(holder)["members"]}["IRSS"]
     (holder / "family.yaml").write_text(
-        text.replace(row["pin"]["tree_sha256"], "b" * 64))
+        text.replace(row["pin"]["tree_sha256"], "b" * 64), encoding="utf-8")
     result = validate(holder)
     assert result.returncode == 1
     assert "member-digest-mismatch" in result.stderr
@@ -776,9 +791,10 @@ def test_validate_finds_a_digest_that_does_not_recompute(holder):
 def test_validate_finds_an_id_that_is_not_the_project_mounted_there(holder):
     """A repository at the right commit is not by itself the project the row
     claims: `project.yaml` inside the member is the source."""
-    text = (holder / "family.yaml").read_text()
+    text = (holder / "family.yaml").read_text(encoding="utf-8")
     (holder / "family.yaml").write_text(
-        text.replace("    id: irrs\n", "    id: something-else\n"))
+        text.replace("    id: irrs\n", "    id: something-else\n"),
+        encoding="utf-8")
     result = validate(holder)
     assert result.returncode == 1
     assert "member-id-mismatch" in result.stderr
@@ -871,7 +887,8 @@ def test_the_doctor_reports_a_project_pinned_twice(family, holder):
 
 def test_validate_finds_an_edited_shape_copy(holder):
     copy = holder / "scripts" / "validate-family.py"
-    copy.write_text(copy.read_text() + "\n# edited in place\n")
+    copy.write_text(copy.read_text(encoding="utf-8")
+                    + "\n# edited in place\n", encoding="utf-8")
     result = validate(holder)
     assert result.returncode == 1
     assert "shape-copy-drift" in result.stderr
@@ -1232,8 +1249,10 @@ def test_bump_to_the_commit_already_pinned_leaves_an_uncommitted_edit_alone(
     `git status` says the same before and after."""
     pinned = git("rev-parse", "HEAD:members/IRRS", cwd=holder).stdout.strip()
     manifest_path = holder / "family.yaml"
-    manifest_path.write_text(manifest_path.read_text().replace(
-        "    id: irrs\n", "    id: something-else\n"))
+    manifest_path.write_text(
+        manifest_path.read_text(encoding="utf-8").replace(
+            "    id: irrs\n", "    id: something-else\n"),
+        encoding="utf-8")
     edited = manifest_path.read_bytes()
     status = git("status", "--porcelain", cwd=holder).stdout
     assert status.strip() == "M family.yaml", status
@@ -1302,9 +1321,10 @@ def test_bump_finishes_a_bump_an_earlier_run_staged_and_did_not_commit(holder):
     before = git("rev-parse", "HEAD:members/IRRS", cwd=holder).stdout.strip()
     after = commit_in_member(member)
     manifest_path = holder / "family.yaml"
-    text = manifest_path.read_text()
+    text = manifest_path.read_text(encoding="utf-8")
     assert text.count(before) == 1, "fixture drift: IRRS's pin is not unique"
-    manifest_path.write_text(text.replace(before, after, 1))
+    manifest_path.write_text(text.replace(before, after, 1),
+                             encoding="utf-8")
     git("add", "--", "members/IRRS", "family.yaml", cwd=holder)
     head = git("rev-parse", "HEAD", cwd=holder).stdout.strip()
     args = ["bump", "--family-root", str(holder), "--member", "IRRS", "--to",
@@ -1365,8 +1385,9 @@ def test_bump_to_the_pinned_commit_repairs_a_digest_that_does_not_recompute(
     pinned = git("rev-parse", "HEAD:members/IRRS", cwd=holder).stdout.strip()
     row = {r["project"]: r for r in manifest(holder)["members"]}["IRRS"]
     manifest_path = holder / "family.yaml"
-    manifest_path.write_text(manifest_path.read_text().replace(
-        row["pin"]["tree_sha256"], "b" * 64))
+    manifest_path.write_text(
+        manifest_path.read_text(encoding="utf-8").replace(
+            row["pin"]["tree_sha256"], "b" * 64), encoding="utf-8")
     git("add", "--", "family.yaml", cwd=holder)
     git("-c", "user.name=t", "-c", "user.email=t@t", "commit", "-q", "-m",
         "Hand-edit a digest", cwd=holder)
@@ -1691,8 +1712,22 @@ def test_update_shape_reads_a_family_root_and_mirrors_into_family_yaml(
 
     changed = "templates/family-root/scripts/validate-family.py"
     source = upstream / changed
-    source.write_text(source.read_text()
-                      + "\n# An upstream fix that must reach every family.\n")
+    appended = "\n# An upstream fix that must reach every family.\n"
+    old_bytes = source.read_bytes()
+    source.write_text(source.read_text(encoding="utf-8") + appended,
+                      encoding="utf-8")
+    assert not old_bytes.isascii(), (
+        "fixture drift: the upstream validate-family.py holds no character "
+        "outside ASCII, so the next assert cannot tell a read as UTF-8 from a "
+        "read as anything else")
+    # The compare is held in a name: an `==` in the assert would make pytest
+    # diff the file's quarter of a megabyte line by line, for minutes, on a
+    # failure.
+    rewritten = source.read_bytes() == old_bytes + appended.encode("utf-8")
+    assert rewritten, (
+        "the rewrite changed more than the appended line: the upstream "
+        "validate-family.py was read or written as something other than "
+        "UTF-8")
     git("-c", "user.name=t", "-c", "user.email=t@t", "commit", "-q", "-m",
         "Fix the family validator", "--", changed, cwd=upstream)
     target_commit = git("rev-parse", "HEAD", cwd=upstream).stdout.strip()
@@ -1714,7 +1749,7 @@ def test_update_shape_reads_a_family_root_and_mirrors_into_family_yaml(
     assert load_yaml(holder / "contracts" / "shape-pin.yaml")["commit"] \
         == target_commit
     assert "must reach every family" in \
-        (holder / "scripts" / "validate-family.py").read_text()
+        (holder / "scripts" / "validate-family.py").read_text(encoding="utf-8")
     assert validate(holder).returncode == 0
 
 
@@ -1731,8 +1766,9 @@ def test_update_shape_moves_the_holder_readmes_shape_line_with_the_pin(
     upstream = upstream_clone(tmp_path / "openRepoShape")
     changed = "templates/family-root/scripts/validate-family.py"
     source = upstream / changed
-    source.write_text(source.read_text()
-                      + "\n# An upstream fix that must reach every family.\n")
+    source.write_text(source.read_text(encoding="utf-8")
+                      + "\n# An upstream fix that must reach every family.\n",
+                      encoding="utf-8")
     git("-c", "user.name=t", "-c", "user.email=t@t", "commit", "-q", "-m",
         "Fix the family validator", "--", changed, cwd=upstream)
     target_commit = git("rev-parse", "HEAD", cwd=upstream).stdout.strip()
@@ -1765,8 +1801,9 @@ def test_update_shape_with_no_shape_block_names_the_family_validator(
     upstream = upstream_clone(tmp_path / "openRepoShape")
     changed = "templates/family-root/scripts/validate-family.py"
     source = upstream / changed
-    source.write_text(source.read_text()
-                      + "\n# forces a target commit past the family's pin.\n")
+    source.write_text(source.read_text(encoding="utf-8")
+                      + "\n# forces a target commit past the family's pin.\n",
+                      encoding="utf-8")
     git("-c", "user.name=t", "-c", "user.email=t@t", "commit", "-q", "-m",
         "Force a target commit past the family's pin", "--", changed,
         cwd=upstream)
@@ -1827,7 +1864,8 @@ def test_no_members_checks_the_envelope_and_the_copies_alone(holder):
 
 def test_no_members_still_finds_an_edited_copy(holder):
     copy = holder / "Makefile"
-    copy.write_text(copy.read_text() + "\n# edited in place\n")
+    copy.write_text(copy.read_text(encoding="utf-8")
+                    + "\n# edited in place\n", encoding="utf-8")
     result = validate(holder, "--no-members")
     assert result.returncode == 1
     assert "shape-copy-drift" in result.stderr
@@ -2352,8 +2390,8 @@ def test_siblings_skips_a_clone_whose_project_id_is_not_the_rows(estate):
     sibling = estate["folder"] / "IRSS"
     manifest_path = sibling / "project.yaml"
     manifest_path.write_text(
-        manifest_path.read_text().replace('id: "irss"', 'id: "something-else"',
-                                          1))
+        manifest_path.read_text(encoding="utf-8").replace(
+            'id: "irss"', 'id: "something-else"', 1), encoding="utf-8")
     result = siblings(estate["holder"])
     assert result.returncode == 1, result.stdout + result.stderr
     assert "WRONG PROJECT" in result.stdout
