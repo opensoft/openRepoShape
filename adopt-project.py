@@ -3637,7 +3637,17 @@ def _unlisted_ref_directory(common: Path, prefix: str
     `refs/heads/feature`. Each entry on the way is `stat`ed to know a
     directory, as git's `get_dtype` follows a link, so a directory listed
     and not searched (mode `r--`), whose refs git cannot open, is named too.
-    Under a reftable `refs/heads` is a file, and nothing is listed."""
+
+    NOTHING IS LISTED WHERE GIT KEEPS THE REFS IN A REFTABLE (#1291,
+    `_keeps_refs_in_a_reftable`). git lists no directory under `refs` then,
+    for `BRANCH_REFS` or for `ORIGIN_BRANCHES`, so the walk is skipped
+    whole, not only `refs`. Measured with git 2.47.1: a reftable clone with
+    `refs` at `--x` had every ref listed by `git for-each-ref`, exit 0,
+    where this walk named `refs`, and `check` refused the source
+    `source-unreadable`; with a `refs/remotes/origin` made there by hand at
+    mode 000, git listed `origin`'s refs from the reftable all the same."""
+    if _keeps_refs_in_a_reftable(common):
+        return None
     target = PurePosixPath(prefix)
     at = PurePosixPath(target.parts[0])
     pending = [at]
@@ -3653,6 +3663,30 @@ def _unlisted_ref_directory(common: Path, prefix: str
     except OSError as exc:
         return at, exc
     return None
+
+
+def _keeps_refs_in_a_reftable(common: Path) -> bool:
+    """Whether git keeps the refs of the common git directory `common` on
+    the reftable backend (git 2.45 and later), read from the disk as git
+    makes it there: a `refs/heads` that is a FILE, and a `reftable` that is
+    a directory. False where either is not so, or a `stat` is refused, and
+    `_unlisted_ref_directory` walks as git's files backend lists, as before.
+
+    BOTH, NOT EITHER (#1291). git chooses the backend by the repository's
+    `extensions.refStorage`, which this does not parse. Each reftable
+    repository git 2.47.1 made, by `clone` and by `refs migrate`, had both,
+    its `refs` holding only `refs/heads`, a file saying "this repository
+    uses the reftable format" (`REFTABLE_FILES`, `REFTABLE_DIRS`). Each
+    alone was met on the files backend, where git lists loose refs in the
+    directories under `refs`: with a `reftable` directory made by hand and
+    `refs` at `--x`, `for-each-ref refs/heads/` left out `main`; with
+    `refs/heads` made a file and `refs` at `--x`, `for-each-ref
+    refs/remotes/origin/` left out a branch kept loose."""
+    try:
+        return (_is_a(common / "refs" / "heads", stat.S_ISREG)
+                and _is_a(common / "reftable", stat.S_ISDIR))
+    except OSError:
+        return False
 
 
 def _listed_names(directory: Path) -> list[str] | None:
