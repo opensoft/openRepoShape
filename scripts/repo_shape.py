@@ -1337,16 +1337,27 @@ def load_yaml(path: Path) -> Any:
     file it cannot open (#359), and the refusal is still raised `from` the
     `OSError`, which that validator reads to name the file relative to its
     root.
+
+    THE FILE IS NAMED AS `shown_path` NAMES IT (#1168), in all three
+    refusals. The path is typed (`--plan`, `--policy`, `--root`), and named
+    raw, a bidi control in it reordered the line, an ESC reached the
+    terminal as the control it is, and a line feed began a line of the
+    path's choosing. A printable path is named byte for byte as it always
+    was. Each reader that finds the path at the start of the detail by its
+    text -- `validate-pins.py`'s `_load`, `family.py`'s member manifest and
+    two in `shape-doctor.py` -- asks this spelling and the raw one, so it
+    reads a `repo_shape.py` from before #1168 or after it alike.
     """
+    named = shown_path(path)
     try:
         text = Path(path).read_text(encoding="utf-8")
     except OSError as exc:
         raise Refusal("yaml-unreadable",
-                      f"{path}: cannot be read ({_os_reason(exc)})") from exc
+                      f"{named}: cannot be read ({_os_reason(exc)})") from exc
     except UnicodeDecodeError as exc:
         raise Refusal(
             "yaml-unreadable",
-            f"{path}: not UTF-8 at byte {exc.start} ({exc.reason})",
+            f"{named}: not UTF-8 at byte {exc.start} ({exc.reason})",
             "Remediation: every YAML file this tool reads must be UTF-8. "
             f"Byte {exc.start}, counting from 0 at the start of the file, is "
             "the first one that is not: re-save the file as UTF-8, or replace "
@@ -1359,7 +1370,7 @@ def load_yaml(path: Path) -> Any:
         # (#708): with neither, a plan that read as text before #392 and
         # #393 ended `check` with a refusal a person could not act on.
         where = "" if exc.line is None else f"line {exc.line}: "
-        raise Refusal("yaml-unparsable", f"{path}: {where}{exc}",
+        raise Refusal("yaml-unparsable", f"{named}: {where}{exc}",
                       exc.remediation) from exc
 
 
@@ -2236,7 +2247,8 @@ class NamingPolicy:
     def load(cls, path: Path) -> "NamingPolicy":
         data = load_yaml(path)
         if not isinstance(data, dict):
-            raise Refusal("policy-unreadable", f"{path}: not a mapping")
+            raise Refusal("policy-unreadable",
+                          f"{shown_path(path)}: not a mapping")
         if data.get("kind") != "repository-naming-policy":
             raise Refusal(
                 "policy-wrong-kind",
