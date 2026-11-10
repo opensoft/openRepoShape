@@ -124,9 +124,11 @@ REFUSED = [
 
 def cloned_by_gh(owner: str, repo: str, work: Path) -> str:
     """The one line the logging `gh` keeps for `plan`'s clone of
-    `<owner>/<repo>` into `work`."""
+    `<owner>/<repo>` into `work`. Since #1268 (#1261) it ends `-- --quiet
+    --origin origin`, so that the clone names its remote `origin` whatever
+    `clone.defaultRemoteName` says."""
     return (f"repo clone {owner}/{repo} {work / 'source-readonly' / repo} "
-            "-- --quiet\n")
+            "-- --quiet --origin origin\n")
 
 
 def planned(here: Path, tmp_path: Path, spec: str, project: str, org: str,
