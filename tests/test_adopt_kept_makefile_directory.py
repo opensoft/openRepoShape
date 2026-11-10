@@ -24,6 +24,14 @@ merge of the Makefile. `_root_keeps` is unchanged: every other shape path
 kept as a directory of its name gives the line it gave, and a kept
 `Makefile` FILE reads as before.
 
+And removing the directory is not enough (RV1314's SHOULD-1): the shape's
+copy is at `shape/Makefile`, so with the directory gone `make bootstrap`
+says `No rule to make target 'bootstrap'` until the copy is moved to
+`Makefile`. Each surface says both, and the collision line says what
+`update-shape.py check` then reports of the copy's pin row, `merged-away`,
+as it says of a merged file. A real adoption's clone is taken through the
+three steps below.
+
 The tests that run `execute` need `git filter-repo` and skip without it, and
 the ones that run `make` skip without it. No network and no GitHub: the legs
 are bare repositories on disk, and `tests/conftest.py` keeps a `gh` guard
@@ -32,6 +40,7 @@ first on PATH.
 
 from __future__ import annotations
 
+import shlex
 import subprocess
 import sys
 from pathlib import Path
@@ -50,6 +59,10 @@ from test_adopt_make_bootstrap_followups import (COMMAND, EXPORTS, HEAD,
 from test_adopt_make_reads_first import (SHAPES, follow_ups_of, reads,
                                          stops_at, written_as)
 from test_adopt_printed_sentences import entries_of, makefile_lines
+from test_update_shape import next_line_of
+
+sys.path.insert(0, str(REPO / "scripts"))
+import shape_materialize  # noqa: E402
 
 
 @pytest.fixture(scope="module")
@@ -65,8 +78,15 @@ def adopter():
 #: source's directory ... is that path", and with no merge.
 PLACED = ("; it is written as `shape/Makefile`, and not as the root's "
           "`Makefile`, where the source's directory `Makefile/` is that path")
+#: What brings the shape's targets to the root of a kept `Makefile/`: the
+#: directory's removal is not enough, for the copy is at `shape/Makefile`
+#: (RV1314's SHOULD-1).
+MOVED = " and `shape/Makefile` is moved to `Makefile`"
+#: The same where GNU make stops at another directory first, which it stops
+#: at next once that one is gone.
+MOVED_BESIDE = " or `Makefile/`, and `shape/Makefile` is moved to `Makefile`"
 #: The `CONTRACTS_DIR` line for a root that keeps only `Makefile/`.
-CONTRACTS_DIR_LINE = SHAPES + PLACED + stops_at("Makefile")
+CONTRACTS_DIR_LINE = SHAPES + PLACED + stops_at("Makefile") + MOVED
 
 #: What the collision line says reaches `make` at the root.
 TARGETS = "(`bootstrap`, `validate`, `pins`, `park`, `resume`)"
@@ -76,13 +96,18 @@ REACH = f"the shape's make targets {TARGETS} reach `make` there"
 BESIDE = ("shape/Makefile is the shape's Makefile: the source repository "
           "already has a directory `Makefile/` of that name, so the shape's "
           "copy was written beside it and NOTHING was overwritten")
+#: What the collision line says of the copy's pin row once it is moved, in
+#: the words a merged file's follow-up uses.
+PIN_ROW = (". Once shape/Makefile is moved to Makefile, `update-shape.py "
+           "check` reports its pin row `merged-away`, and `apply` drops the "
+           "row")
 #: The collision line for a root that keeps only `Makefile/`.
-COLLISION = (f"{BESIDE}. {stops('Makefile', REACH)}; until then {COMMAND} is "
-             "what the shape's `make bootstrap` runs")
+COLLISION = (f"{BESIDE}. {stops('Makefile', REACH)}{MOVED}; until then "
+             f"{COMMAND} is what the shape's `make bootstrap` runs{PIN_ROW}")
 
 #: NEXT's NOTE for a root that keeps only `Makefile/`.
 NOTE = (f"NOTE the shape's Makefile is shape/Makefile, and "
-        f"{stops('Makefile', RUN_THERE)}{RUNS}")
+        f"{stops('Makefile', RUN_THERE)}{MOVED}{RUNS}")
 
 #: What a surface says where it reads a kept `Makefile/` as a Makefile the
 #: shape's is merged into.
@@ -239,6 +264,84 @@ def test_the_split_message_says_make_stops_at_the_directory(adopted):
     assert merge_said(message) == []
 
 
+def make_in(clone: Path, *args: str) -> subprocess.CompletedProcess:
+    return subprocess.run(["make", *args], cwd=str(clone),
+                          capture_output=True, text=True, encoding="utf-8",
+                          errors="replace", check=False)
+
+
+def update_shape(*args: str) -> subprocess.CompletedProcess:
+    return run_script(REPO / "update-shape.py", *args)
+
+
+@needs_filter_repo
+@needs_make
+def test_the_directory_gone_is_not_enough_and_the_moved_copy_is(adopted):
+    """RV1314's SHOULD-1, in the clone NEXT's own clone line makes. `make -n
+    bootstrap` stops at `Makefile/`; with the directory out of the way it
+    says `No rule to make target 'bootstrap'`, for the shape's copy is still
+    at `shape/Makefile` and the pin row is `unchanged`; and only once the
+    copy is moved to `Makefile` does it print the shape's bootstrap, `make -n
+    contracts-dir` answer, and `update-shape.py check` call the copy's row
+    `merged-away`, as it does for a merged file, with the NEXT line `apply`
+    that drops the row and leaves nothing to do. The lines say all of it:
+    NEXT names the two steps, and `check`'s collision line names the row's
+    fate, before the steps are taken."""
+    executed = adopted["executed"]
+    assert executed.returncode == 0, executed.stderr + executed.stdout
+    said = next_block(executed.stdout)
+    assert said[-1].endswith(f"{MOVED}{RUNS}"), said[-1]
+    (collision,) = [line for line in checked_follow_ups(adopted)
+                    if line.startswith("shape/Makefile is")]
+    assert collision.endswith(PIN_ROW), collision
+    here = adopted["base"] / "steps"
+    here.mkdir()
+    cloned = pasted(said[1], here, adopted["base"] / "remotes")
+    assert cloned.returncode == 0, cloned.stdout + cloned.stderr
+    clone = here / adopted["source"].name
+    root_arguments = ("--root", str(clone), "--upstream", str(REPO))
+
+    stopped = make_in(clone, "-n", "bootstrap")
+    assert stopped.returncode == 2, stopped.stdout + stopped.stderr
+    assert "Makefile: Is a directory." in stopped.stderr
+
+    # The directory out of the way, its rules under a name of their own.
+    git("mv", "--", "Makefile", "source-make-rules", cwd=clone)
+    gone = make_in(clone, "-n", "bootstrap")
+    assert gone.returncode == 2, gone.stdout + gone.stderr
+    assert "No rule to make target 'bootstrap'" in gone.stderr
+    unmoved = update_shape("check", *root_arguments)
+    assert unmoved.returncode == 0, unmoved.stdout + unmoved.stderr
+    assert "merged-away" not in unmoved.stdout, unmoved.stdout
+    assert ["unchanged", "shape/Makefile"] in [
+        line.split() for line in unmoved.stdout.splitlines()]
+
+    # The copy moved to the name the directory held.
+    git("mv", "--", "shape/Makefile", "Makefile", cwd=clone)
+    git("commit", "-q", "-m", "Rename the directory away and put the shape's "
+        "Makefile in its place", cwd=clone)
+    ran = make_in(clone, "-n", "bootstrap")
+    assert ran.returncode == 0, ran.stdout + ran.stderr
+    assert ran.stdout.strip() == "python3 scripts/bootstrap.py"
+    answered = make_in(clone, "-n", "contracts-dir")
+    assert answered.returncode == 0, answered.stdout + answered.stderr
+    moved = update_shape("check", *root_arguments)
+    assert moved.returncode == 1, moved.stdout + moved.stderr
+    assert ["merged-away", "shape/Makefile"] in [
+        line.split() for line in moved.stdout.splitlines()], moved.stdout
+    assert "merged into Makefile and removed" in moved.stdout, moved.stdout
+
+    line = next_line_of(moved.stdout)
+    argv = shlex.split(line[len("NEXT  "):])
+    assert argv[1:3] == ["update-shape.py", "apply"], line
+    applied = update_shape(*argv[2:])
+    assert applied.returncode == 0, applied.stdout + applied.stderr
+    assert "  dropped  shape/Makefile " in applied.stdout, applied.stdout
+    done = update_shape("check", *root_arguments)
+    assert done.returncode == 0, done.stdout + done.stderr
+    assert "nothing to do" in done.stdout, done.stdout
+
+
 # --- the words match the other two directories (#1207, #1312) ----------------
 
 def clause(text: str, name: str) -> str:
@@ -259,7 +362,9 @@ def test_the_words_match_a_kept_makefile_and_gnumakefile_directory(
     kept `makefile/` gets (#1312) and a kept `GNUmakefile/` gets (#1207),
     with the name in it; the collision line, which only `Makefile/` has,
     says it of what reaches `make` there; and the `CONTRACTS_DIR` line
-    names the directory in #1312's words for `makefile/`."""
+    names the directory in #1312's words for `makefile/`. Only a kept
+    `Makefile/` goes on to say the shape's copy must be moved to `Makefile`
+    too, for the copy of the other two is the root's `Makefile` already."""
     names = ("Makefile", "makefile", "GNUmakefile")
     lines = {name: adopter._makefile_follow_up({f"{name}/"})
              for name in names}
@@ -270,6 +375,12 @@ def test_the_words_match_a_kept_makefile_and_gnumakefile_directory(
     assert len({clause(lines[name], name) for name in names}) == 1, lines
     assert len({clause(notes[name], name) for name in names}) == 1, notes
     assert all(note.endswith(f"{RUNS}\n") for note in notes.values()), notes
+    assert lines["Makefile"].endswith(MOVED), lines["Makefile"]
+    assert notes["Makefile"].endswith(f"{MOVED}{RUNS}\n"), notes["Makefile"]
+    assert collision_line(adopter, ["Makefile/"]).count(MOVED) == 1
+    for name in ("makefile", "GNUmakefile"):
+        assert MOVED not in lines[name] + notes[name], (lines[name],
+                                                       notes[name])
     assert clause(collision_line(adopter, ["Makefile/"]), "Makefile") == \
         clause(lines["GNUmakefile"], "GNUmakefile").replace(EXPORTS, REACH)
     assert "where the source's directory `Makefile/` is that path" in \
@@ -301,7 +412,12 @@ def test_make_finds_a_kept_makefile_directory_last(adopter, kept, first):
     where the root keeps neither other name, and a `Makefile` FILE is the
     one #906's words name, so none. A directory kept only through deeper
     entries is not seen (#1206's case 2, a known limit), and `MAKEFILE/` is
-    no name GNU make looks for where case is kept."""
+    no name GNU make looks for where case is kept.
+
+    `Makefile/` beside `makefile/` is a root `check` refuses, as
+    `plan-case-twins` (the two paths differ only in case), and `execute`
+    refuses it before any leg exists (measured, RV1314's NIT-5): only the
+    unit surfaces are pinned for it here, which `check` never prints."""
     assert adopter._make_reads_first(set(kept)) == first
 
 
@@ -319,7 +435,11 @@ def test_no_surface_reads_a_kept_makefile_directory_as_a_makefile(
     """Beside whatever else the root keeps, no surface says the shape's
     Makefile is merged into the directory, and the `CONTRACTS_DIR` line and
     NEXT say GNU make stops at the directory it finds first, where that is
-    one. Where it is `Makefile/`, the collision line says it too."""
+    one. Where it is `Makefile/`, the collision line says it too.
+
+    `Makefile/` beside `makefile/` is a root `check` refuses, as
+    `plan-case-twins`, and `execute` refuses it before any leg exists
+    (measured, RV1314's NIT-5): that row pins the unit surfaces alone."""
     ups = follow_ups_of(adopter, monkeypatch,
                         [(path, "root") for path in kept])
     (line,) = makefile_lines(ups)
@@ -335,7 +455,13 @@ def test_no_surface_reads_a_kept_makefile_directory_as_a_makefile(
     if stop:
         stopped = f"stops at the source's directory `{stop}/`"
         assert stopped in line and stopped in note, (line, note)
-        assert (stopped in collision) is (stop == "Makefile"), collision
+        moved = MOVED if stop == "Makefile" else MOVED_BESIDE
+        assert moved in line and moved in note, (line, note)
+        if stop == "Makefile":
+            # Beside another directory the collision line says GNU make
+            # "reads" it, which #1240's item B is to correct: no row pins
+            # that, as #1207's review asked.
+            assert stopped in collision, collision
 
 
 def test_beside_its_own_script_only_the_scripts_merge_comes_first(
@@ -352,13 +478,13 @@ def test_beside_its_own_script_only_the_scripts_merge_comes_first(
         "shape's is shape/scripts/bootstrap.py, so neither `make bootstrap` "
         "nor `python3 scripts/bootstrap.py` runs the shape's bootstrap yet: "
         "merge shape/scripts/bootstrap.py into scripts/bootstrap.py first, "
-        f"and then run {COMMAND}; {stops('Makefile', RUN_THERE)}.\n")
+        f"and then run {COMMAND}; {stops('Makefile', RUN_THERE)}{MOVED}.\n")
     assert collision_line(adopter, ["Makefile/", "scripts/"]) == (
-        f"{BESIDE}. {stops('Makefile', REACH)}; and the root's "
+        f"{BESIDE}. {stops('Makefile', REACH)}{MOVED}; and the root's "
         "scripts/bootstrap.py is the source's own until "
         "shape/scripts/bootstrap.py is merged into it as well, so neither "
         "`make bootstrap` nor `python3 scripts/bootstrap.py` runs the "
-        f"shape's bootstrap until then, and then {COMMAND} runs it")
+        f"shape's bootstrap until then, and then {COMMAND} runs it{PIN_ROW}")
 
 
 def test_a_gnumakefile_beside_it_is_what_make_reads(adopter, capsys):
@@ -381,6 +507,56 @@ def test_a_gnumakefile_beside_it_is_what_make_reads(adopter, capsys):
         f"{REACH} only once `GNUmakefile` has them, or includes a Makefile "
         f"that does; until then {COMMAND} is what the shape's `make "
         "bootstrap` runs")
+
+
+@pytest.mark.parametrize("name", ["GNUmakefile", "makefile"])
+def test_beside_another_directory_both_conditions_are_named(adopter, capsys,
+                                                            name):
+    """GNU make stops at `name/` first, and at `Makefile/` once that one is
+    gone, and with both gone the shape's copy is still at `shape/Makefile`,
+    so the `CONTRACTS_DIR` line and NEXT name both directories and the move
+    (RV1314's SHOULD-1). The collision line beside such a directory says
+    GNU make "reads" it, #1240's item B, and is not pinned here.
+
+    `makefile/` beside `Makefile/` is a root `check` refuses, as
+    `plan-case-twins`, and `execute` refuses it before any leg exists
+    (measured, RV1314's NIT-5): that row pins the unit surfaces alone."""
+    kept = {"Makefile/", f"{name}/"}
+    assert adopter._makefile_follow_up(kept) == (
+        SHAPES + PLACED + stops_at(name) + MOVED_BESIDE)
+    assert next_said(adopter, capsys, ASIDE, sorted(kept)) == (
+        f"{HEAD}    python3 scripts/bootstrap.py\n"
+        f"NOTE the shape's Makefile is shape/Makefile, and "
+        f"{stops(name, RUN_THERE)}{MOVED_BESIDE}{RUNS}\n")
+
+
+def top_level_shape_paths() -> list:
+    """The shape's own root paths that sit at the top of the root, other than
+    `Makefile`: each the name of a directory a source may keep."""
+    return sorted(path for path in shape_materialize.assembly_root_paths()
+                  if "/" not in path and path != "Makefile")
+
+
+def test_the_top_level_shape_paths_are_the_ones_swept():
+    """The row below is no empty sweep: `README.md`, `.gitignore`,
+    `.gitattributes`, `AGENTS.md`, `CLAUDE.md`, `AGENTS-shape.md` and
+    `project.yaml` are the top-level paths the shape writes."""
+    paths = top_level_shape_paths()
+    assert len(paths) >= 7 and {"README.md", ".gitignore"} <= set(paths)
+
+
+@pytest.mark.parametrize("path", top_level_shape_paths())
+def test_only_the_makefiles_follow_up_reads_a_directory(adopter, path):
+    """A directory kept at any other top-level shape path's name is told what
+    a file there is (#1314): `directory` is read for the Makefile alone, and
+    `_predict_collisions` passes it for every path whose directory the root
+    keeps. It was `directory = bool(directory)` that no row killed, RV1314's
+    mutant M5."""
+    as_a_file = adopter._predict_collisions(entries_of((path, "root")))
+    as_a_directory = adopter._predict_collisions(
+        entries_of((f"{path}/", "root")))
+    assert len(as_a_file) == 1, as_a_file
+    assert as_a_directory == as_a_file
 
 
 # --- a kept `Makefile` FILE, and the names GNU make never looks for ----------
@@ -419,6 +595,45 @@ def test_a_directory_make_never_looks_for_gets_no_clause(adopter, name):
     line = adopter._makefile_follow_up({f"{name}/"})
     assert line == SHAPES + written_as(name, directory=True)
     assert "GNU make" not in line
+
+
+@needs_make
+def test_make_needs_each_directory_gone_and_the_copy_moved(adopter,
+                                                          tmp_path):
+    """The measurement behind "or `Makefile/`, and `shape/Makefile` is moved
+    to `Makefile`" (RV1314's SHOULD-1), with the template's own `Makefile` as
+    the shape's copy at `shape/Makefile`: GNU make stops at `GNUmakefile/`;
+    with that gone, at `Makefile/`; with both gone, `No rule to make target
+    'bootstrap'`; and it prints the shape's bootstrap only once the copy is
+    moved to `Makefile`. The `CONTRACTS_DIR` line names those conditions."""
+    assert adopter._makefile_follow_up({"Makefile/", "GNUmakefile/"}
+                                       ).endswith(MOVED_BESIDE)
+    for name in ("GNUmakefile", "Makefile"):
+        (tmp_path / name).mkdir()
+        (tmp_path / name / "rules.mk").write_text("build:\n",
+                                                  encoding="utf-8")
+    (tmp_path / "shape").mkdir()
+    (tmp_path / "shape" / "Makefile").write_bytes(
+        (TEMPLATE / "Makefile").read_bytes())
+
+    def said_by_make() -> subprocess.CompletedProcess:
+        return make_in(tmp_path, "-n", "bootstrap")
+
+    first = said_by_make()
+    assert first.returncode == 2 and "GNUmakefile: Is a directory." in \
+        first.stderr, first.stdout + first.stderr
+    (tmp_path / "GNUmakefile").rename(tmp_path / "source-gnu-rules")
+    second = said_by_make()
+    assert second.returncode == 2 and "Makefile: Is a directory." in \
+        second.stderr, second.stdout + second.stderr
+    (tmp_path / "Makefile").rename(tmp_path / "source-make-rules")
+    third = said_by_make()
+    assert third.returncode == 2 and "No rule to make target 'bootstrap'" in \
+        third.stderr, third.stdout + third.stderr
+    (tmp_path / "shape" / "Makefile").rename(tmp_path / "Makefile")
+    fourth = said_by_make()
+    assert fourth.returncode == 0, fourth.stdout + fourth.stderr
+    assert fourth.stdout.strip() == "python3 scripts/bootstrap.py"
 
 
 @needs_make
