@@ -114,8 +114,15 @@ THREE SUBCOMMANDS, BECAUSE THE MIDDLE ONE IS A HUMAN.
            one git cannot make or ask there is `adopt-git-unasked`, which
            says why (#910). The symlink probe keeps its plain `git init`
            and asks only `core.symlinks`; where git cannot make it, a
-           symlink is taken to check out as one, and a NOTE says why. It
-           prints what will happen and changes nothing.
+           symlink is taken to check out as one, and a NOTE says why.
+           Source paths the plan keeps in one repository that differ only
+           in case, `A` and `a`, or a file and a folder above another
+           path, `f` and `F/x`, are `plan-case-twins` on every disk, as a
+           disk that ignores case holds each set as one name (#1161). A
+           set of one name whose paths hold one blob in one mode is a NOTE
+           in a leg, and in the root only where it is two paths whose names
+           differ only in their last part.
+           It prints what will happen and changes nothing.
   execute  asks about both legs before it makes either (#798), then
            creates the two legs, extracts them with `git filter-repo`, makes
            the one split commit on a branch of the source, sets the
@@ -230,6 +237,7 @@ import stat
 import subprocess
 import sys
 import tempfile
+import unicodedata
 from pathlib import Path, PurePosixPath
 from typing import Callable, NamedTuple
 
@@ -315,8 +323,10 @@ from shape_materialize import (  # noqa: E402
     BRANCH_REMEDIATION, branch_problem, refuse_bad_branch,
 )
 # The shape's bootstrap script, which its `make bootstrap` runs: where it
-# went beside one the source kept decides what NEXT can name (#480).
-from shape_materialize import BOOTSTRAP  # noqa: E402
+# went beside one the source kept decides what NEXT can name (#480). A NOTE
+# names it for a person to type as `BOOTSTRAP_COMMAND`, `python` on Windows
+# as well (#1132).
+from shape_materialize import BOOTSTRAP, BOOTSTRAP_COMMAND  # noqa: E402
 # `run`'s own check of a command line, for the one command `run` cannot run:
 # `_git_rm`, whose path goes to git as the bytes the tree holds (#527).
 from shape_materialize import check_program  # noqa: E402
@@ -598,7 +608,8 @@ def _read_pins(plan: "Plan") -> tuple[list, list[str]]:
     `plan-pin-malformed`. A `pins:` that is no list is said as `_read_as`
     says what the plan's reader read, as each other key a plan is opened by
     is (`_plan_key_findings`, #901): `pins: true` is the boolean true, and
-    not Python's `True`."""
+    not Python's `True`. So is an entry that is neither a name nor a
+    mapping (#1020): `- 7` is the number 7, and `- ~` is null, not `None`."""
     rows = plan.get("pins")
     if rows is None:
         return [], []
@@ -622,9 +633,11 @@ def _read_pins(plan: "Plan") -> tuple[list, list[str]]:
                 f"(`neutral-pin-missing`): {_pin_fix(row)}.")
             continue
         if not isinstance(row, dict):
+            # Said as `pins:` itself is said (#1020): `- 7` is the number 7
+            # and `- true` the boolean true, not Python's `True`.
             findings.append(
                 f"FINDING {PIN_MALFORMED}: `pins:` entry {number} is "
-                f"{row!r}, not a pin: {_pin_fix()}.")
+                f"{_read_as(row)}, not a pin: {_pin_fix()}.")
             continue
         product = row.get("product")
         said = f"`pins:` entry {number}" + (
@@ -723,7 +736,9 @@ def _kept_pin_findings(plan: "Plan", tree: list,
     in the plan makes a link no clone makes. It is still a link found
     there, so the disk that ignores case is not asked about that file,
     which keeps `_links_at_a_pin` reading the same disk. One link, one
-    finding.
+    finding. On the disk that ignores case, where it is asked, each twin
+    at the file is a row there (#1138): a named link among them is left
+    out, and each other twin is named, before the link or after it.
 
     THROUGH THE SYMLINKS THE PLAN KEEPS ABOVE A PIN'S FILE (#904, L1-K2 of
     #457), as the root walk follows the shape's own paths. With `contracts
@@ -759,29 +774,43 @@ def _kept_pin_findings(plan: "Plan", tree: list,
 def _kept_pin_finding(disk: "_KeptTree", aside: str, walk: "_Walk | None",
                       rel: str, product: str | None,
                       named_links: frozenset | set) -> list[str] | None:
-    """`_kept_pin_findings`' FINDING for the pin's file `rel` on `disk`, as
-    the one line of a list: none, `[]`, where what the root keeps there is
-    a symlink `named_links` holds (#979), and None where it keeps nothing
-    there, so the next disk is asked."""
+    """`_kept_pin_findings`' FINDINGS for the pin's file `rel` on `disk`: a
+    line for each row the root keeps AT it, or one for a directory there;
+    none, `[]`, where each row there is a symlink `named_links` holds
+    (#979); and None where it keeps nothing there but a submodule, so the
+    next disk is asked. On a disk that ignores case each twin at the file is
+    a row there, and a named link among them is left out and no twin with it
+    (#1138).
+
+    THAT DISK IS ASKED ONLY WHERE THE ONE THAT KEEPS CASE FOUND NOTHING
+    (#524), so a pin's file with any row at its exact spelling leaves the
+    twins at other spellings unasked, whatever the row is: a file, a link
+    `named_links` holds or one it does not, or the rows of a directory
+    there. A submodule there is no row (`plan-submodule-root` names it), so
+    the twins are asked. #1138 changed which twins that disk names, not
+    when it is asked."""
     reached, link = _pin_file_reached(walk, rel)
-    at = disk.at(reached)
-    rows = [row for row in ([at] if at else disk.under(reached))
+    at = disk.every(reached)
+    rows = [row for row in (at or disk.under(reached))
             if row[1] != GITLINK_MODE]
     if not rows:
         return None
-    path, mode, entry = rows[0]
-    if at and path in named_links:
-        return []
-    under = "" if entry == path else f" under the entry {_spelled(entry)}"
+    if at:
+        rows = [row for row in rows if row[0] not in named_links]
+    else:
+        rows = rows[:1]
     where = "at" if at else "inside"
-    held = mode if at else None
-    written = (_declared_pin_held(product) if product
-               else _shape_pin_held(held))
-    through, fix = _through_the_kept_link(link, reached, entry)
-    return [f"FINDING {ROOT_HOLDS_PIN}: the plan keeps {_kind_of(mode)} "
-            f"{_spelled(path)} in the assembly root{under}, {where} "
-            f"`{rel}`{through}{aside}, where `execute` writes {written}: "
-            f"{fix}."]
+    said = []
+    for path, mode, entry in rows:
+        under = "" if entry == path else f" under the entry {_spelled(entry)}"
+        written = (_declared_pin_held(product) if product
+                   else _shape_pin_held(mode if at else None))
+        through, fix = _through_the_kept_link(link, reached, entry)
+        said.append(f"FINDING {ROOT_HOLDS_PIN}: the plan keeps "
+                    f"{_kind_of(mode)} {_spelled(path)} in the assembly "
+                    f"root{under}, {where} `{rel}`{through}{aside}, where "
+                    f"`execute` writes {written}: {fix}.")
+    return said
 
 
 def _through_the_kept_link(link: tuple[str, str] | None, reached: str,
@@ -1269,6 +1298,10 @@ SUBMODULE_KEY_RE = re.compile(r"submodule\.(?P<name>.*)\.(?P<key>path|url)")
 #: The `git` subcommand that reads and writes a config file: a source's
 #: `.gitmodules`, a leg mount's url, the elector's name.
 GIT_CONFIG = "config"
+#: What `git config --unset` exits with when the key is not there (git 2.43).
+#: Every other failure of it is a different number (255 for a file it cannot
+#: lock, 129 for a usage it refuses), which `_extract_leg` does not go on from.
+GIT_CONFIG_KEY_ABSENT = 5
 #: The `git` subcommand that prints one object: a source's `.gitmodules`
 #: and the target of a symlink it keeps in the root, and in the split commit
 #: a symlink's target and the shape pin. With `--batch`, it prints the
@@ -1946,6 +1979,22 @@ def _utf8_spelling(recorded: str) -> str | None:
         return None
 
 
+def _recorded_paths(recorded: str) -> list[Path]:
+    """Every path `_recorded_path` asks for `recorded`, a path a plan records
+    as text, in the order it asks them, `~` expanded: the spelling
+    `_recorded_spelling` gives, then, where this locale spells the text
+    otherwise than its UTF-8, the plan's UTF-8 bytes (#1078). One path under
+    a UTF-8 locale, and for text that is all ASCII. `_at_the_record` asks
+    them whether a clone `Plan._recorded_source` makes again is at the
+    record (#1112)."""
+    spelling = _recorded_spelling(recorded)[0]
+    paths = [Path(os.path.expanduser(spelling))]
+    utf8 = _utf8_spelling(recorded)
+    if utf8 is not None and utf8 != spelling:
+        paths.append(Path(os.path.expanduser(utf8)))
+    return paths
+
+
 def _recorded_path(recorded: str) -> tuple[Path, bool, str]:
     """`(path, there, said)`: `recorded`, a path a plan records as text, as
     `_recorded_spelling` spells it, `~` expanded; whether anything is there,
@@ -1963,17 +2012,37 @@ def _recorded_path(recorded: str) -> tuple[Path, bool, str]:
     it, reads as it did. Where neither names anything, the path is the
     spelling as written, and every word of a refusal is as before. Under a
     UTF-8 locale, and for text that is all ASCII, the two are one name,
-    asked once."""
-    spelling, said = _recorded_spelling(recorded)
-    path = Path(os.path.expanduser(spelling))
-    if _is_there(path):
-        return path, True, said
-    utf8 = _utf8_spelling(recorded)
-    if utf8 is not None and utf8 != spelling:
-        other = Path(os.path.expanduser(utf8))
-        if _is_there(other):
-            return other, True, said
-    return path, False, said
+    asked once (`_recorded_paths`)."""
+    said = _recorded_spelling(recorded)[1]
+    paths = _recorded_paths(recorded)
+    for path in paths:
+        if _is_there(path):
+            return path, True, said
+    return paths[0], False, said
+
+
+def _at_the_record(target: Path, path: Path, there: bool,
+                   recorded: str) -> bool:
+    """Whether `target`, where `Plan._recorded_source` clones the plan's
+    source again, is at `recorded`, the plan's `source.local_path`, whose
+    `(path, there)` `_recorded_path` gave: whether its real path is that of
+    a path `_recorded_path` asked (#1112). Where nothing is there, it asked
+    each path `_recorded_paths` gives; where something is, each up to
+    `path`, the one there.
+
+    A SPELLING ASKED BEFORE THE ONE THERE IS THE RECORD TOO: it names
+    nothing, and `_recorded_path` asks it first next time. Under Latin-1,
+    say, where the plan's UTF-8 bytes held a clone no longer whole and
+    `--work-dir` named the spelling as written, the byte 0xE9, which was
+    free, the clone made there was compared with the UTF-8 bytes alone: it
+    was removed when `check` ended, and every run cloned it once more. A
+    spelling asked AFTER the one there is not the record: a clone kept
+    there, the next run would read the one there first, and be refused
+    `adopt-work-dir-occupied` at the clone it kept."""
+    at = os.path.realpath(target)
+    paths = _recorded_paths(recorded)
+    asked = paths[:paths.index(path) + 1] if there else paths
+    return any(os.path.realpath(record) == at for record in asked)
 
 
 # ---------------------------------------------------------------------------
@@ -2010,6 +2079,10 @@ SOURCE_UNREADABLE = "source-unreadable"
 SOURCE_UNREADABLE_PERMISSION = (
     "Make it readable by this user: `chmod u+rx` on the directory and on "
     "every directory above it, or fix who owns them. ")
+#: The same for a file, a `.git` that names the git directory (#1099).
+SOURCE_UNREADABLE_FILE_PERMISSION = (
+    "Make it readable by this user: `chmod u+r` on the file and `chmod "
+    "u+rx` on every directory above it, or fix who owns them. ")
 SOURCE_UNREADABLE_OTHER = (
     "The operating system gave another reason than permission, which no "
     "`chmod` puts right: put right what it names. ")
@@ -2087,15 +2160,18 @@ def _ambiguous(spec: str, name: str) -> Refusal:
 
 
 def _source_unreadable(named: str, exc: OSError, untold: str,
-                       instead: str = "") -> Refusal:
+                       instead: str = "", *,
+                       permission: str = SOURCE_UNREADABLE_PERMISSION
+                       ) -> Refusal:
     """`source-unreadable` (#430): `named` (`--source '<it>'`, or the plan's
     `source.local_path`) is a path whose `stat` the operating system refused
     for another reason than that nothing is there, `<named>: cannot be read
     (<reason>)`, as `validate-pins.py`'s `_cannot_read` words it; `untold` is
     what that leaves unknown, which is not guessed. The way out follows the
-    cause (`SOURCE_UNREADABLE_PERMISSION`, `SOURCE_UNREADABLE_OTHER`), and
+    cause (`permission`, a directory's `SOURCE_UNREADABLE_PERMISSION` unless
+    the caller names a file's, or `SOURCE_UNREADABLE_OTHER`), and
     `instead`, another way to name the source, ends it."""
-    advice = (SOURCE_UNREADABLE_PERMISSION if isinstance(exc, PermissionError)
+    advice = (permission if isinstance(exc, PermissionError)
               else SOURCE_UNREADABLE_OTHER)
     return Refusal(
         SOURCE_UNREADABLE,
@@ -2120,13 +2196,28 @@ def _source_there(spec: str, candidate: Path, name: str | None) -> bool:
     (`acme/Atlas` beside an unsearchable `./acme`) was cloned from GitHub,
     where `source-ambiguous` refuses it once the path can be seen. Which of
     the two it names cannot be told, so neither is read, and the url is
-    offered for the repository, as `source-ambiguous` offers it."""
+    offered for the repository, as `source-ambiguous` offers it.
+
+    A NAME GITHUB CANNOT HOLD NAMES NO GITHUB REPOSITORY EITHER (#1003): an
+    owner over `GITHUB_OWNER_MAX` characters, or a repository over
+    `GITHUB_NAME_MAX`. It is refused as a path is, with no url, whatever
+    reason the operating system gave. `--source <300 a's>/Thing`, `File
+    name too long`, was "whether it names the path ... here, or only the
+    GitHub repository ..., cannot be told", and was offered
+    `https://github.com/<300 a's>/Thing`, which can never clone; and so was
+    `testorg/<300 a's>` beside a `./testorg` this user cannot search, whose
+    `stat` stops at `Permission denied` before it reaches the long part. The
+    name decides, never the reason: `testorg/Thing`, with `./testorg` a
+    symlink to a name too long, is `File name too long` as well, and names
+    a repository GitHub can hold, so its url is offered."""
     try:
         return _is_there(candidate)
     except OSError as exc:
-        if name is None:
+        owner, _, repo = (name or "").partition("/")
+        if (name is None or len(owner) > GITHUB_OWNER_MAX
+                or len(repo) > GITHUB_NAME_MAX):
             raise _source_unreadable(f"--source {spec!r}", exc,
-                                     "whether a repository is there") from exc
+                                     REPOSITORY_UNTOLD) from exc
         here = _spelled("./" + spec.rstrip("/"))
         raise _source_unreadable(
             f"--source {spec!r}", exc,
@@ -2229,7 +2320,9 @@ def _source_spec(spec: str) -> tuple[Path | None, str | None]:
         return _top_level(
             candidate, f"--source {spec!r}",
             lambda exc: _source_unreadable(f"--source {spec!r}", exc,
-                                           "whether a repository is there")
+                                           REPOSITORY_UNTOLD),
+            git_refused=lambda part: part.refusal(f"--source {spec!r}", spec,
+                                                  REPOSITORY_UNTOLD)
         ), None
     if name is None:
         raise Refusal(
@@ -2240,8 +2333,254 @@ def _source_spec(spec: str) -> tuple[Path | None, str | None]:
     return None, name
 
 
+# ---------------------------------------------------------------------------
+# A part of a repository git reads that this user cannot read (#1151)
+# ---------------------------------------------------------------------------
+
+#: What `source-unreadable` cannot tell of a source git reads no repository
+#: in: a `--source`, or a plan's `source.local_path` `plan` was given.
+REPOSITORY_UNTOLD = "whether a repository is there"
+#: The same of a clone `plan` made (`source.cloned: true`).
+CLONE_WHOLE_UNTOLD = ("whether `plan`'s clone is still whole, to be read, or "
+                      "no longer whole, to be cloned again,")
+#: The way past `source-unreadable` of a plan's `source.local_path`.
+RECORDED_SOURCE_INSTEAD = ("pass the source again with --source, which is "
+                           "held to the plan's `commit:`")
+#: How `source-unreadable` names the git directory a `.git` file's
+#: `gitdir:` line names, and the common one a linked worktree's
+#: `commondir` names, before it names the source.
+GIT_DIRECTORY_OF = "the git directory of"
+COMMON_GIT_DIRECTORY_OF = "the common git directory of"
+#: How a `.git` file names the git directory, as git's `read_gitfile_gently`
+#: reads it.
+GITDIR_PREFIX = b"gitdir: "
+
+
+class _GitPartRefused(Exception):
+    """Raised by the questions `_refused_git_path` asks: the operating system
+    refused this user `at`, a part of a repository git reads (`exc`): a file
+    it would not let this user open where `a_file`, and otherwise a
+    directory it would not let this user search."""
+
+    def __init__(self, at: Path, exc: OSError, a_file: bool):
+        super().__init__(at, exc, a_file)
+        self.at, self.exc, self.a_file = at, exc, a_file
+
+
+class _RefusedGitPath(NamedTuple):
+    """What `_refused_git_path` found (#1151): `role`, how `source-unreadable`
+    names the part before it names the source (the `.git/HEAD` in, the git
+    directory of); `at`, the part's path, from the source where it is in
+    the source's own `.git` and whole elsewhere; the operating system's
+    `OSError`; and whether it is a file this user cannot open, whose cure
+    is a file's."""
+    role: str
+    at: str
+    exc: OSError
+    a_file: bool
+
+    def refusal(self, named: str, source: str, untold: str,
+                instead: str = "") -> Refusal:
+        """`source-unreadable` of this part of the source `named` (`--source
+        '<it>'`, the plan's `source.local_path`), whose path is `source` as
+        the person gave it: `at` is joined to it, which leaves a whole `at`
+        as it is. `untold` and `instead` are `_source_unreadable`'s."""
+        return _source_unreadable(
+            f"{self.role} {named}, {_spelled(os.path.join(source, self.at))}",
+            self.exc, untold, instead,
+            permission=(SOURCE_UNREADABLE_FILE_PERMISSION if self.a_file
+                        else SOURCE_UNREADABLE_PERMISSION))
+
+
+def _where_refused(target: Path, exc: OSError) -> tuple[Path, OSError]:
+    """Where the operating system refused the `stat` of `target` (`exc`), and
+    why: the directory this user cannot search, which is the one above the
+    first part of `target`'s real path whose `stat` is refused for a
+    permission, each part before it having been `stat`ed; or that part,
+    refused for another reason. `target` and `exc` where nothing is refused
+    now."""
+    real = Path(os.path.realpath(target))
+    for depth in range(1, len(real.parts) + 1):
+        part = Path(*real.parts[:depth])
+        try:
+            _is_there(part)
+        except PermissionError as refused:
+            return part.parent, refused
+        except OSError as other:
+            return part, other
+    return target, exc
+
+
+def _a_stat_asked(target: Path, kind: Callable[[int], bool]) -> bool:
+    """`_is_a(target, kind)`, the `stat` git asks of `target`, a refused one
+    raised as `_GitPartRefused`, naming where it was refused."""
+    try:
+        return _is_a(target, kind)
+    except OSError as exc:
+        raise _GitPartRefused(*_where_refused(target, exc), False) from exc
+
+
+def _read_asked(target: Path, size: int = 1 << 16) -> bytes | None:
+    """Up to `size` bytes of the file at `target`, opened as git opens it
+    once a `stat` found it, and never waiting on a FIFO; None where nothing
+    is there. An open refused is `_GitPartRefused`, naming the file."""
+    flags = (os.O_RDONLY | getattr(os, "O_NONBLOCK", 0)
+             | getattr(os, "O_BINARY", 0))
+    try:
+        handle = os.open(target, flags)
+    except OSError as exc:
+        if _absent(exc):
+            return None
+        raise _GitPartRefused(target, exc, True) from exc
+    try:
+        return os.read(handle, size)
+    finally:
+        os.close(handle)
+
+
+def _git_directory_named(dot_git: Path) -> Path | None:
+    """The git directory `dot_git` names, as git's `read_gitfile_gently`
+    reads it: `dot_git` itself where it is a directory; where it is a file,
+    the path its `gitdir: ` line names, from the directory it is in; and
+    None where it is neither, or a file that names none, which git refuses
+    in its own words."""
+    if not _a_stat_asked(dot_git, stat.S_ISREG):
+        return dot_git if _is_a(dot_git, stat.S_ISDIR) else None
+    text = _read_asked(dot_git) or b""
+    if not text.startswith(GITDIR_PREFIX):
+        return None
+    named = text[len(GITDIR_PREFIX):].rstrip(b"\r\n")
+    return dot_git.parent / os.fsdecode(named) if named else None
+
+
+def _head_asked(head: Path) -> bool:
+    """Whether the git directory's `HEAD` is there, asked as git's
+    `validate_headref` asks it: `lstat`ed, and opened unless it is a link,
+    which git reads as text."""
+    try:
+        mode = os.lstat(head).st_mode
+    except OSError as exc:
+        if _absent(exc):
+            return False
+        raise _GitPartRefused(*_where_refused(head, exc), False) from exc
+    return stat.S_ISLNK(mode) or _read_asked(head, 1) is not None
+
+
+def _common_directory_named(git_dir: Path) -> Path:
+    """The common git directory of `git_dir`, as git's `get_common_dir`
+    reads it: the path its `commondir` names, from `git_dir`, where it holds
+    one, as a linked worktree's does; `git_dir` itself otherwise."""
+    commondir = git_dir / "commondir"
+    if not _a_stat_asked(commondir, lambda _mode: True):
+        return git_dir
+    return git_dir / os.fsdecode((_read_asked(commondir) or b"")
+                                 .rstrip(b"\r\n"))
+
+
+def _searched_asked(directory: Path) -> bool:
+    """Whether `directory` (`objects`, `refs`) is a directory, as git's
+    `is_git_directory` asks it with `access(X_OK)`: False where it is not
+    there or is none, git's own question; one this user may not search is
+    `_GitPartRefused`, naming it."""
+    if not _a_stat_asked(directory, stat.S_ISDIR):
+        return False
+    if not os.access(directory, os.X_OK):
+        raise _GitPartRefused(directory, PermissionError(
+            errno.EACCES, os.strerror(errno.EACCES), str(directory)), False)
+    return True
+
+
+def _git_part_named(at: Path, source: Path, git_dir: Path,
+                    common: Path) -> tuple[str, str]:
+    """`_RefusedGitPath`'s `(role, at)` for `at`, a part of the repository at
+    `source` that the operating system refused: in the source's own `.git`,
+    the part from the source; in its git directory elsewhere (`git_dir`),
+    or in the common one (`common`), the part from there; and a directory
+    above either, as that."""
+    own = source / ".git"
+    if at == own or own in at.parents:
+        part = at.relative_to(source).as_posix()
+        return f"the {_spelled(part)} in", part
+    at = Path(os.path.realpath(at))
+    for base, whole in ((git_dir, GIT_DIRECTORY_OF),
+                        (common, COMMON_GIT_DIRECTORY_OF)):
+        if at == base:
+            return whole, str(at)
+        if base in at.parents:
+            part = at.relative_to(base).as_posix()
+            return f"the {_spelled(part)} in {whole}", str(at)
+    above = GIT_DIRECTORY_OF if at in git_dir.parents \
+        else COMMON_GIT_DIRECTORY_OF
+    return f"a directory above {above}", str(at)
+
+
+def _refused_git_path(path: Path) -> _RefusedGitPath | None:
+    """The part of the repository at `path` that git reads and the operating
+    system refuses this user, as `source-unreadable` names it; None where
+    git can read each part, or one is not there, which is git's own
+    question, asked as before (#1151).
+
+    GIT SAYS "NOT A GIT REPOSITORY" OF A PART IT CANNOT READ, as it says of
+    a clone emptied, and climbs to the directory above, which may be another
+    repository; of a `config` it cannot read it says "unable to access". So
+    on main `plan --source` and `check --source` of a repository whose
+    `.git` is at mode 000 were `git-failed`, naming no `.git`, and a clone
+    `plan` made whose `.git/HEAD`, `objects`, `refs` or `config`, whose
+    `gitdir:` target, a linked worktree's git directory or the common
+    `.git` above it, a submodule's `.git/modules/<m>`, or a directory above
+    a `.git` link's target was at mode 000 was "no longer whole (git finds
+    no repository there)" and cloned again from GitHub, `gh` asked.
+
+    ASKED AS GIT ASKS, IN GIT'S ORDER (git 2.43's `read_gitfile_gently` and
+    `is_git_directory`): the `.git`, followed where it is a link; a `.git`
+    file opened, and its `gitdir:` line read; the git directory's `HEAD`;
+    its `commondir`, where it is there; `objects` and `refs` in the common
+    git directory, each searched; and its `config`. A `stat` refused names
+    the directory this user cannot search (`_where_refused`), with the cure
+    for a directory, and an open refused names the file, with a file's.
+    Anything else git cannot read is git's to word. It is asked ONLY WHERE
+    GIT FOUND NO REPOSITORY WHOSE TOP LEVEL IS `path` (`_top_level`,
+    `_not_a_whole_clone`), so a repository git reads is never refused
+    here."""
+    source = Path(os.path.realpath(path))
+    git_dir = common = Path(os.path.realpath(source / ".git"))
+    try:
+        named = _git_directory_named(source / ".git")
+        if named is None:
+            return None
+        git_dir = common = Path(os.path.realpath(named))
+        if not _head_asked(named / "HEAD"):
+            return None
+        common_named = _common_directory_named(named)
+        common = Path(os.path.realpath(common_named))
+        if all(_searched_asked(common_named / part)
+               for part in ("objects", "refs")):
+            _read_asked(common_named / "config", 1)
+    except _GitPartRefused as refused:
+        return _RefusedGitPath(*_git_part_named(refused.at, source, git_dir,
+                                                common),
+                               refused.exc, refused.a_file)
+    except (OSError, ValueError):
+        # read but not as git reads it (a `HEAD` that is a directory, a NUL
+        # in a `gitdir:` line): git's own words say what it is
+        return None
+    return None
+
+
+def _refuse_a_git_part(path: Path, git_refused: Callable[
+        [_RefusedGitPath], Refusal] | None) -> None:
+    """Raises `git_refused(<it>)` where the operating system refuses this
+    user a part of the repository at `path` that git reads
+    (`_refused_git_path`, #1151); returns where it refuses none, or where
+    `git_refused` is None."""
+    found = None if git_refused is None else _refused_git_path(path)
+    if found is not None:
+        raise git_refused(found)
+
+
 def _top_level(path: Path, named: str,
-               refused: Callable[[OSError], Refusal]) -> Path:
+               refused: Callable[[OSError], Refusal], *,
+               git_refused: Callable[[_RefusedGitPath], Refusal]) -> Path:
     """`path`, a local source that exists, resolved, where it is the
     top-level directory of a repository; refused as `source-not-top-level`
     where it is not a directory, or is a directory inside a repository
@@ -2273,7 +2612,14 @@ def _top_level(path: Path, named: str,
     #457's L1-105): git runs IN the directory, and at mode 000 `subprocess`
     raised the `PermissionError` of `cwd=` out of `plan`, `check` and
     `execute`, a traceback. No other `OSError` is: a git that cannot be
-    started is raised, as `git_out` leaves it (`_refused_at`)."""
+    started is raised, as `git_out` leaves it (`_refused_at`).
+
+    A PART OF ITS REPOSITORY THIS USER CANNOT READ IS `git_refused(<it>)`
+    (`_refused_git_path`, #1151), asked where git reads no repository in
+    the directory, and where it reads it as a directory inside another:
+    git says "not a git repository" of a `.git` it cannot read and climbs
+    above it. On main that was `git-failed`, or `source-not-top-level`
+    under another repository, and neither named the part."""
     resolved = Path(os.path.realpath(path))
     if not resolved.is_dir():
         raise Refusal(SOURCE_NOT_TOP_LEVEL,
@@ -2285,6 +2631,9 @@ def _top_level(path: Path, named: str,
         if not _refused_at(exc, resolved):
             raise
         raise refused(exc) from exc
+    except Refusal:
+        _refuse_a_git_part(resolved, git_refused)
+        raise
     if inside == "true":
         git_dir = os.fsdecode(git_out(["rev-parse", "--absolute-git-dir"],
                                       cwd=resolved, binary=True).rstrip(b"\n"))
@@ -2296,6 +2645,7 @@ def _top_level(path: Path, named: str,
     prefix = os.fsdecode(git_out(["rev-parse", "--show-prefix"],
                                  cwd=resolved, binary=True).rstrip(b"\n"))
     if prefix:
+        _refuse_a_git_part(resolved, git_refused)
         top = os.fsdecode(git_out(["rev-parse", "--show-toplevel"],
                                   cwd=resolved, binary=True).rstrip(b"\n"))
         raise Refusal(
@@ -2644,7 +2994,9 @@ def _claimed(work_root: Path, path: Path, repository: str,
                   _identity(os.lstat(path.parent)), made_parent)
 
 
-def _not_a_whole_clone(path: Path, commit: str) -> str | None:
+def _not_a_whole_clone(path: Path, commit: str,
+                       git_refused: Callable[[_RefusedGitPath], Refusal]
+                       | None = None) -> str | None:
     """Why the clone `plan` made at `path`, which exists, is no longer one
     the plan's source can be read from, in words; None where it is (#652).
 
@@ -2658,25 +3010,69 @@ def _not_a_whole_clone(path: Path, commit: str) -> str | None:
     A DIRECTORY THIS USER CANNOT ENTER IS NEITHER (#918, #457's L1-105): the
     `OSError` of `cwd=` (`_refused_at`) is raised, for the caller to name.
     It was "git finds no repository there", and the clone, still there, was
-    cloned again or refused as gone."""
+    cloned again or refused as gone.
+
+    NOR IS ONE WHOSE REPOSITORY HOLDS A PART THIS USER CANNOT READ (#1151):
+    where git finds no repository there, or reads it as part of another,
+    such a part is `git_refused(<it>)` (`_refused_git_path`), where the
+    caller gives one. It was "git finds no repository there", and the
+    clone was cloned again from GitHub."""
     if not path.is_dir():
         return "it is not a directory"
     try:
         top = os.fsdecode(git_out(["rev-parse", "--show-toplevel"],
                                   cwd=path, binary=True).strip())
     except Refusal:
+        _refuse_a_git_part(path, git_refused)
         return "git finds no repository there"
     except OSError as exc:
         if _refused_at(exc, path):
             raise
+        _refuse_a_git_part(path, git_refused)
         return "git finds no repository there"
     if os.path.realpath(top) != os.path.realpath(path):
+        _refuse_a_git_part(path, git_refused)
         return f"git reads it as part of the repository at {_spelled(top)}"
     if COMMIT_RE.match(commit):
         try:
             git_out([GIT_CAT_FILE, "-e", f"{commit}^{{commit}}"], cwd=path)
         except Refusal:
             return f"it no longer holds the plan's commit {commit[:12]}"
+    return None
+
+
+def _git_refused(path: Path) -> tuple[OSError, bool] | None:
+    """`(the OSError, whether the .git is a file)`: how the operating system
+    refuses this user the `.git` in `path`; None where `path` holds no
+    `.git`, or one git can be let into (#1099).
+
+    GIT SAYS "NOT A GIT REPOSITORY" OF A `.git` IT CANNOT READ, as it says
+    of a clone emptied, and climbs to the directory above, which may be
+    another repository. So a clone `plan` made whose `.git` is at mode 000
+    was "no longer whole (git finds no repository there)", and its
+    `source.repository` was cloned again from GitHub beside it. The `.git`
+    is asked here, before git runs, as `_is_a` asks a path (#430): a
+    directory by whether the `HEAD` in it is there, a `stat` that needs the
+    directory searched and nothing of `HEAD` itself, and a file, which names
+    the git directory elsewhere, by opening it, as git reads it. Nothing
+    there, a `HEAD` that is not there, or a `.git` that is neither, is git's
+    own question, asked as before. A `.git` whose own `stat` is refused is
+    in a `path` this user cannot search, which is `path`'s to name
+    (`_top_level`, `_not_a_whole_clone`, #918)."""
+    dot_git = path / ".git"
+    try:
+        a_directory = _is_a(dot_git, stat.S_ISDIR)
+        a_file = not a_directory and _is_a(dot_git, stat.S_ISREG)
+    except OSError:
+        return None
+    try:
+        if a_directory:
+            # only its refusal is asked: a `HEAD` not there is git's to read
+            _is_there(dot_git / "HEAD")
+        elif a_file:
+            os.close(os.open(dot_git, os.O_RDONLY))
+    except OSError as exc:
+        return None if _absent(exc) else (exc, a_file)
     return None
 
 
@@ -2805,7 +3201,12 @@ class Source:
         if made is not None:
             made.append(claim)
         try:
-            print(f"cloning {repository} (read only) into {path}")
+            # The path is the caller's typed `--work-dir`, made absolute, so
+            # it is `_shown` as `plan`'s other lines name a path (#1115,
+            # #1120's N4): printed as it was, a bidi control in it reached
+            # the terminal and a line feed split the line.
+            print(f"cloning {repository} (read only) into "
+                  f"{_shown(str(path))}")
             run(["gh", "repo", "clone", repository, str(path), "--",
                  "--quiet"])
         except BaseException as exc:
@@ -3845,6 +4246,53 @@ def _root_keeps(surviving: set[str], path: str, *,
 GNU_MAKE_READS = ("GNUmakefile", "makefile", "Makefile")
 
 
+def _make_reads_first(surviving) -> str | None:
+    """The source's name GNU make finds at the root before the shape's
+    `Makefile`: the first of `GNUmakefile` and `makefile` the root keeps, in
+    `GNU_MAKE_READS`' order and asked as `_root_keeps` asks it, with a `/`
+    where the root keeps a DIRECTORY of that name; None where it keeps
+    neither. `surviving` is each path the plan's entries send to the root.
+
+    A DIRECTORY OF THAT NAME IS WHAT GNU MAKE FINDS FIRST ALL THE SAME, and
+    it stops there, `GNUmakefile: Is a directory.  Stop.`, exit 2, for every
+    target, with or without a `Makefile` beside it (RV1121's NIT-1, measured
+    with GNU make 4.3 for `GNUmakefile/` and `makefile/`, each alone and
+    each beside `Makefile`). The `CONTRACTS_DIR` line named it as a file
+    that could export the variable, and NEXT named `make bootstrap` there
+    (#1132). The `/` is how a text knows to say so
+    (`_make_reads_first_clause`).
+    """
+    kept = set(surviving)
+    return next((name if name in kept else f"{name}/"
+                 for name in GNU_MAKE_READS
+                 if name != SHAPE_MAKEFILE and _root_keeps(kept, name)), None)
+
+
+def _make_reads_first_clause(first: str, reach: str, has: str) -> str:
+    """What a text says of `first`, the source's name `_make_reads_first`
+    found: `reach` is what then reaches `make` at the root, and `has` how a
+    FILE of that name would hold it.
+
+    A FILE: GNU make reads it, so `reach` holds only once that file `has`
+    it, or includes a Makefile that does (#977).
+
+    A DIRECTORY (`first` ends in `/`): GNU make stops at it for every
+    target, so nothing that file "does" can be true of it, and the clause
+    says `make` stops there, in GNU make's own words, and that `reach`
+    holds only once the root keeps no directory of that name (#1132).
+    """
+    listed = _and_listed([f"`{name}`" for name in GNU_MAKE_READS])
+    name = first.rstrip("/")
+    if name != first:
+        return (f"GNU make at the root stops at the source's directory "
+                f"{_spelled(first)}, the first of {listed} it finds "
+                f"(`{name}: Is a directory.`), so {reach} only once the root "
+                "keeps no directory of that name")
+    return (f"GNU make at the root reads the source's {_spelled(first)}, the "
+            f"first of {listed} it finds, so {reach} only once "
+            f"{_spelled(first)} {has}, or includes a Makefile that does")
+
+
 def _makefile_follow_up(surviving: set[str]) -> str:
     """The follow-up that says which Makefile wires `CONTRACTS_DIR`, where
     the shape's is written, and, where the source keeps a file GNU make reads
@@ -3871,15 +4319,19 @@ def _makefile_follow_up(surviving: set[str]) -> str:
     case is kept, and as `shape/Makefile` where it is not, naming the kept
     path that takes the name there. Whether GNU make itself reads a name by
     its case there is its build's to say, so nothing more is said of it.
+
+    AND A DIRECTORY OF THAT NAME IS NO FILE (#1132, RV1121's NIT-1). The
+    line said `make` exports `CONTRACTS_DIR` "only once `GNUmakefile` does"
+    of a kept directory `GNUmakefile/`, where GNU make stops for every
+    target. The name is `_make_reads_first`'s, and the clause
+    `_make_reads_first_clause`'s, which says GNU make stops there.
     """
     aside = _root_keeps(surviving, SHAPE_MAKEFILE)
     folded = (not aside
               and _root_keeps(surviving, SHAPE_MAKEFILE, fold=True))
     twins = sorted(kept.rstrip("/") for kept in surviving
                    if kept.rstrip("/").casefold() == SHAPE_MAKEFILE.casefold())
-    first = next((name for name in GNU_MAKE_READS
-                  if name != SHAPE_MAKEFILE and _root_keeps(surviving, name)),
-                 None)
+    first = _make_reads_first(surviving)
     whose = "the shape's" if aside or folded or first else "the root"
     said = (f"{whose} Makefile wires `CONTRACTS_DIR` to the `contracts/` of "
             "the spec leg, where the plan's `legs.spec_path` mounts it, and "
@@ -3899,12 +4351,9 @@ def _makefile_follow_up(surviving: set[str]) -> str:
     elif first:
         said += f"; it is written as the root's `{SHAPE_MAKEFILE}`"
     if first:
-        listed = _and_listed([f"`{name}`" for name in GNU_MAKE_READS])
-        said += (
-            f"{'; and' if aside or folded else ', but'} GNU make at the root "
-            f"reads the source's {_spelled(first)}, the first of {listed} it "
-            f"finds, so `make` there exports `CONTRACTS_DIR` only once "
-            f"{_spelled(first)} does, or includes a Makefile that does")
+        said += (f"{'; and' if aside or folded else ', but'} "
+                 + _make_reads_first_clause(
+                     first, "`make` there exports `CONTRACTS_DIR`", "does"))
     return said
 
 
@@ -5785,7 +6234,9 @@ def _manifest_values(plan: Plan, naming: NamingPolicy) -> dict | None:
     names, which both commands ask earlier (`plan.names()`), and before the
     plan's leg paths and branch names (`_checked_org_and_id`, #901), so a bad
     date beside a bad organisation or id does not make `check` and `execute`
-    name different problems first.
+    name different problems first. `check` has asked the two at its head
+    already, where the policy refuses the names too (#1020); `plan` asks
+    them here.
     """
     if not isinstance(plan.legs, dict):
         # The doctor's PLACEMENT plan writes `legs:` as a list (see
@@ -5800,9 +6251,10 @@ def _manifest_values(plan: Plan, naming: NamingPolicy) -> dict | None:
         return None
     # The organisation and the id are asked BEFORE the date's guard below,
     # and as `execute` asks them, after the three repository names above
-    # and before the leg paths and the branch names (#901): `unsafe-value`
-    # for an `org:` this tool will not put on a command line, and
-    # `plan-bad-id` for an `id:` that is not a project id
+    # and before the leg paths and the branch names (#901; `check` and
+    # `execute` ask them first of the plan's values since #1020):
+    # `unsafe-value` for an `org:` this tool will not put on a command line,
+    # and `plan-bad-id` for an `id:` that is not a project id
     # (`_template_table` reads it again). After the guard, neither was asked
     # of a plan whose date is a finding: `check` listed the date where
     # `execute` refused the organisation, and refused the id where `execute`
@@ -6029,8 +6481,13 @@ def _print_plan_report(args, source: Source, tree: list, entries: list,
     source, so a read that fails here (`symlink_targets`' `git cat-file
     --batch`) still leaves the line that says the plan exists (#799).
     """
+    # The branch is a name the source's author chose, as a path is, so it is
+    # `_shown` as the table and the split commit's message show a path
+    # (#900), and as `check` spells it where it names the branch (#1035):
+    # printed as it is, a bidi control in it reached the terminal raw and
+    # reordered what the line shows after it.
     print(f"source     {_source_named(source)} @ {source.commit[:12]} "
-          f"({source.branch}), {len(tree)} files, "
+          f"({_shown(source.branch)}), {len(tree)} files, "
           f"{source.commit_count()} commits")
     print(f"project    {args.project} ({args.id}) in {args.org}, mode in-place")
     # Each pin as the scaffold's plan prints it: what is pinned, at which
@@ -6500,8 +6957,10 @@ def cmd_plan(args) -> int:
     args.plan_written = True
     # And it is SAID from here, before the report reads more of the source:
     # the report's last reads (`symlink_targets`) can still refuse, exit 2,
-    # and the plan is on disk (#799's L1-79).
-    print(f"\nplan written to {out}")
+    # and the plan is on disk (#799's L1-79). The path is the caller's typed
+    # `--out`, so it is `_shown` as every other path this report names is
+    # (#1115): a bidi control in it reached the terminal as it was typed.
+    print(f"\nplan written to {_shown(str(out))}")
 
     _print_plan_report(args, source, tree, entries, follow_ups, seeded, pins)
     return 0
@@ -6549,10 +7008,16 @@ def _print_entries(entries: list[Entry]) -> None:
     stood 3 characters right of its heading. The rule id is a path
     policy's, which `--path-policy` may name and nothing asks to be
     printable, so it is `_shown` as a question is.
+
+    AND IT IS PADDED BY THE COLUMNS IT TAKES, not the code points it holds
+    (#1034, `_padded`). `\\u540d\\u524d.md`, two wide characters, takes 7
+    columns and was padded as 5, so its row stood 2 columns right of its
+    headings; `e\\u0301.md`, whose acute is drawn over the `e`, takes 4 and
+    was padded as 5, 1 column left.
     """
     print(f"\n{'path':<34} {'leg':<10} {'conf':<7} {'files':>6} {'rule'}")
     for entry in entries:
-        print(f"{_printed(_shown(entry.path)):<34} "
+        print(f"{_padded(_printed(_shown(entry.path)), 34)} "
               f"{(entry.leg or 'REVIEW'):<10} "
               f"{entry.confidence:<7} {entry.files:>6} "
               f"{_shown(str(entry.rule))}")
@@ -6574,6 +7039,55 @@ def _printed(text: str) -> str:
         return text
 
 
+#: The general categories a terminal gives no column of their own (#1034):
+#: a non-spacing mark and an enclosing one, which it draws over the
+#: character before them, and a format character, which it does not draw.
+#: `_shown` spells every format character, so none reaches `plan`'s table
+#: as it is.
+ZERO_COLUMN_CATEGORIES = frozenset(("Mn", "Me", "Cf"))
+#: The East Asian widths a terminal gives two columns: wide and fullwidth.
+TWO_COLUMN_WIDTHS = frozenset(("W", "F"))
+#: The Hangul medial vowels and final consonants, which a terminal gives no
+#: column of their own, as glibc's `wcwidth` gives them none (#1034): U+1160
+#: to U+11FF in the block Hangul Jamo, and U+D7B0 to U+D7FF in Hangul Jamo
+#: Extended-B. Their category is Lo and their East Asian width N, so neither
+#: set above names them, but a terminal draws each inside the syllable its
+#: leading consonant begins: U+1112 U+1161 U+11AB, one syllable spelled in
+#: its three jamo, takes the 2 columns of U+1112.
+MEDIAL_AND_FINAL_JAMO = frozenset(map(chr, range(0x1160, 0x1200)))
+MEDIAL_AND_FINAL_JAMO_EXTENDED_B = frozenset(map(chr, range(0xD7B0, 0xD800)))
+
+
+def _columns(text: str) -> int:
+    """How many columns `text` takes on a terminal (#1034): none for a
+    character of `ZERO_COLUMN_CATEGORIES` or a Hangul medial vowel or final
+    consonant (`MEDIAL_AND_FINAL_JAMO`, `MEDIAL_AND_FINAL_JAMO_EXTENDED_B`),
+    two for one `unicodedata.east_asian_width` calls wide or fullwidth, and
+    one for any other, an ambiguous one among them, as a terminal outside
+    an East Asian locale draws it.
+
+    THE CATEGORY IS ASKED FIRST: the voiced sound mark U+3099, which a
+    decomposed `\\u304c` ends in, is wide, and is drawn over the kana
+    before it. AND IT IS THE CATEGORY, not `unicodedata.combining`, whose
+    canonical combining class is 0 for marks a terminal draws over the
+    character before them all the same: the Thai vowel sign U+0E35 and
+    the variation selector U+FE0F among them."""
+    return sum(
+        0 if (unicodedata.category(char) in ZERO_COLUMN_CATEGORIES
+              or char in MEDIAL_AND_FINAL_JAMO
+              or char in MEDIAL_AND_FINAL_JAMO_EXTENDED_B)
+        else 2 if unicodedata.east_asian_width(char) in TWO_COLUMN_WIDTHS
+        else 1
+        for char in text)
+
+
+def _padded(text: str, columns: int) -> str:
+    """`text` and the spaces that make it `columns` columns wide on a
+    terminal (`_columns`), as `f"{text:<{columns}}"` makes it that many
+    code points. A text wider than that is `text` as it is, as there."""
+    return text + " " * (columns - _columns(text))
+
+
 def _print_summary(entries: list[Entry]) -> None:
     print()
     for leg, row in summary_of(entries).items():
@@ -6591,10 +7105,14 @@ def _predict_collisions(entries: list[Entry], *,
     the root, so the follow-up is in the plan the human reads rather than in
     output they may never scroll back to.
 
-    The WORDING comes from `shape_materialize.collision_follow_up`, the same
-    function `execute` reports its actual collisions through — including the
-    one collision whose answer is not "merge": an `AGENTS.md` or `CLAUDE.md`
-    the source already holds needs ONE LINE ADDED, not a merge.
+    The WORDING comes from `shape_materialize.collision_follow_up`, the one
+    place a collision's follow-up is said — including the one collision
+    whose answer is not "merge": an `AGENTS.md` or `CLAUDE.md` the source
+    already holds needs ONE LINE ADDED, not a merge. The plan stores what it
+    returns in `follow_ups:`, and `execute` carries those items into the
+    split commit's message and names the collisions that actually happened
+    by path only. This said `execute` reports them through that function,
+    which `execute` never calls (#1105's second review, NIT-3).
 
     The PATHS come from `assembly_root_paths`, the list #172's mount rule
     reads, so the two cannot list different files. The list this function
@@ -6638,8 +7156,8 @@ class Plan:
         self.path = path
         self.data = data
         if data.get("kind") != PLAN_KIND:
-            detail = (f"{path}: kind is {data.get('kind')!r}, expected "
-                      f"{PLAN_KIND!r}")
+            detail = (f"{_shown(str(path))}: kind is "
+                      f"{data.get('kind')!r}, expected {PLAN_KIND!r}")
             if data.get("kind") == PLACEMENT_PLAN_KIND:
                 # A REFUSAL THAT SAYS WHERE THE FILE GOES INSTEAD. This one is
                 # reachable by an honest mistake -- the two files look alike,
@@ -6659,8 +7177,8 @@ class Plan:
         if data.get("mode") != "in-place":
             raise Refusal(
                 "plan-unsupported-mode",
-                f"{path}: mode is {data.get('mode')!r}; v0.2 implements "
-                "`in-place` only",
+                f"{_shown(str(path))}: mode is {data.get('mode')!r}; "
+                "v0.2 implements `in-place` only",
                 "Remediation: re-run `plan`, which writes `mode: in-place`. "
                 "A `new-root` mode is described in the tool's own docstring "
                 "and is not implemented.")
@@ -6680,7 +7198,8 @@ class Plan:
     def load(cls, path: Path) -> "Plan":
         data = load_yaml(path)
         if not isinstance(data, dict):
-            raise Refusal("plan-unreadable", f"{path}: not a mapping")
+            raise Refusal("plan-unreadable",
+                          f"{_shown(str(path))}: not a mapping")
         return cls(path, data)
 
     @property
@@ -6743,8 +7262,8 @@ class Plan:
         repository = self._recorded_repository()
         if repository is None:
             raise Refusal("plan-no-source",
-                          f"{self.path}: `source:` names neither a local path "
-                          "nor a repository")
+                          f"{_shown(str(self.path))}: `source:` names "
+                          "neither a local path nor a repository")
         return Source.clone(repository, work_root, unwritable, made,
                             done=done, instead=self.read_at)
 
@@ -6780,6 +7299,18 @@ class Plan:
                 f"names no `owner/repo` on {GITHUB_HOST}", SOURCE_REMEDIATION)
         return name
 
+    def _git_part_unreadable(self, local_path: str,
+                             part: _RefusedGitPath) -> Refusal:
+        """`source-unreadable` of `part`, a part of the repository at the
+        plan's `source.local_path` that git reads and the operating system
+        refuses this user (`_refused_git_path`, #1151). What git would find
+        there cannot be told, so the clone is neither read nor called no
+        longer whole nor cloned again."""
+        return part.refusal(
+            "the plan's `source.local_path`", local_path,
+            (CLONE_WHOLE_UNTOLD if self.source.get("cloned") is True
+             else REPOSITORY_UNTOLD), RECORDED_SOURCE_INSTEAD)
+
     def _recorded_source(self, local_path: str, work_root: Path,
                          unwritable: str | None, made: list | None,
                          done: str = "") -> Source:
@@ -6813,6 +7344,18 @@ class Plan:
         removed; where that path is free, the clone made there is the one
         the plan records, and is not on `made`.
 
+        WHERE NEITHER SPELLING NAMES ANYTHING, THE CLONE IS AT THE RECORD AT
+        EITHER (#1112): its target's real path is compared with each path
+        `_recorded_path` asked (`_at_the_record`). Under a locale of one
+        byte to a character, Latin-1 say, a plan written in UTF-8 whose
+        clone was in a work directory outside ASCII, `Thing\\u00e9`, was
+        cloned again at the plan's UTF-8 bytes, which `--work-dir` names,
+        and that clone was compared with the spelling as written alone: it
+        went on `made`, was removed when `check` ended, and every run cloned
+        it once more, #803's bug again. Where a spelling is there, the
+        clone is at the record at that one, as before, and at a spelling
+        asked before it, which names nothing, but not at one asked after.
+
         A PATH THE PERSON GAVE IS HELD TO BEING A REPOSITORY'S TOP LEVEL, as
         `--source` is (`_top_level`, #796), and refused by its key: a file
         ended `check` and `execute` in a traceback, and a directory inside a
@@ -6831,7 +7374,12 @@ class Plan:
         GitHub beside the one still there. So is a directory this user
         cannot enter (#918): git runs in it, and at mode 000 that was a
         `PermissionError` traceback where `plan` did not make it, and "no
-        longer whole (git finds no repository there)" where it did.
+        longer whole (git finds no repository there)" where it did. So is a
+        directory whose `.git` this user cannot read (`_git_refused`,
+        #1099), named by that `.git`: git says "not a git repository" of it,
+        so at mode 000 that was `git-failed` where `plan` did not make it,
+        and "no longer whole (git finds no repository there)", cloned again
+        from GitHub, where it did.
 
         A PATH THIS LOCALE CANNOT SPELL IS ASKED AS ITS UTF-8 BYTES
         (`_recorded_spelling`, #918): a plan written in UTF-8 mode for
@@ -6849,25 +7397,31 @@ class Plan:
                 ("whether `plan`'s clone is still there, to be read, or gone, "
                  "to be cloned again," if self.source.get("cloned") is True
                  else "whether the source is still there"),
-                "pass the source again with --source, which is held to the "
-                "plan's `commit:`")
+                RECORDED_SOURCE_INSTEAD)
+
+        def git_unreadable(part: _RefusedGitPath) -> Refusal:
+            return self._git_part_unreadable(local_path, part)
 
         try:
             path, there, said = _recorded_path(local_path)
         except OSError as exc:
             raise unreadable(exc) from exc
+        refused = _git_refused(path) if there else None
+        if refused is not None:
+            raise self._git_unreadable(local_path, *refused) from refused[0]
         if self.source.get("cloned") is not True:
             if there:
                 return Source.in_place(_top_level(path, f"{named},",
-                                                  unreadable),
+                                                  unreadable,
+                                                  git_refused=git_unreadable),
                                        work_root, self.read_at)
             raise self._gone(local_path, "names nothing that exists" + said,
                              "the plan does not record it as a clone `plan` "
                              "made (`source.cloned` is not `true`), so "
                              "nothing clones it again")
         try:
-            broken = _not_a_whole_clone(path, self.source_commit) if there \
-                else None
+            broken = _not_a_whole_clone(path, self.source_commit,
+                                        git_unreadable) if there else None
         except OSError as exc:
             raise unreadable(exc) from exc
         if there and broken is None:
@@ -6879,8 +7433,9 @@ class Plan:
         if repository is None:
             raise self._gone(local_path, state, "the plan records no "
                              "`source.repository` to clone again")
-        at_the_record = os.path.realpath(path) == os.path.realpath(
-            work_root / SOURCE_READONLY / repository.split("/")[1])
+        at_the_record = _at_the_record(
+            work_root / SOURCE_READONLY / repository.split("/")[1], path,
+            there, local_path)
         return Source.clone(
             repository, work_root, unwritable,
             None if at_the_record else made,
@@ -6906,6 +7461,25 @@ class Plan:
             PLAN_SOURCE_GONE,
             f"the plan's `source.local_path`, {_spelled(local_path)}, "
             f"{state}, and {why}", PLAN_SOURCE_GONE_REMEDY)
+
+    def _git_unreadable(self, local_path: str, exc: OSError,
+                        a_file: bool) -> Refusal:
+        """`source-unreadable` of the `.git` in the plan's
+        `source.local_path`, which the operating system refuses this user
+        (`exc`; `a_file` where that `.git` is a file), naming that `.git` and
+        the reason, as a recorded path this user cannot enter is named
+        (#918). What git would find there cannot be told, so the clone is
+        neither read nor called no longer whole nor cloned again (#1099)."""
+        return _source_unreadable(
+            f"the `.git` in the plan's `source.local_path`, "
+            f"{_spelled(os.path.join(local_path, '.git'))}", exc,
+            ("whether `plan`'s clone is still whole, to be read, or no longer "
+             "whole, to be cloned again," if self.source.get("cloned") is True
+             else "whether a repository is there"),
+            "pass the source again with --source, which is held to the "
+            "plan's `commit:`",
+            permission=(SOURCE_UNREADABLE_FILE_PERMISSION if a_file
+                        else SOURCE_UNREADABLE_PERMISSION))
 
     def names(self) -> dict[str, str]:
         """The three repository names the plan declares, validated as values.
@@ -6954,19 +7528,21 @@ class Plan:
             if not PROJECT_ID_RE.match(project_id):
                 raise Refusal(
                     "plan-bad-id",
-                    f"{self.path}: {DERIVED_ID} is {project_id!r}, which "
-                    f"must match {pattern}", DERIVED_PLAN_ID_REMEDIATION)
+                    f"{_shown(str(self.path))}: {DERIVED_ID} is "
+                    f"{project_id!r}, which must match {pattern}",
+                    DERIVED_PLAN_ID_REMEDIATION)
             return project_id
         if _a_number_or_boolean(set_id):
             raise Refusal("plan-bad-id",
-                          f"{self.path}: {_not_text('id', set_id)}",
+                          f"{_shown(str(self.path))}: "
+                          f"{_not_text('id', set_id)}",
                           NOT_TEXT_REMEDIATION)
         project_id = str(set_id)
         if not PROJECT_ID_RE.match(project_id):
             raise Refusal(
                 "plan-bad-id",
-                f"{self.path}: `id:` is {project_id!r} and must match "
-                f"{pattern}", PLAN_ID_REMEDIATION)
+                f"{_shown(str(self.path))}: `id:` is {project_id!r} and "
+                f"must match {pattern}", PLAN_ID_REMEDIATION)
         return project_id
 
     def get(self, key, default=None):
@@ -7239,6 +7815,15 @@ def _leg_findings(plan: Plan, tree: list | None,
 # those disks, so a kept `readme.md` is `README.md` there, the copy goes to
 # `shape/README.md`, and what the source keeps at that path is in the way.
 # A finding that holds on the second disk alone says so.
+#
+# EVERY CASE TWIN AT A PLACE IS IN THE WAY (#1138). On a disk that ignores
+# case, `shape/README.md` and `shape/readme.md` are one place, and which of
+# them a clone holds there is git's checkout, not the plan's: each is named,
+# by a finding of its own, as each kept path in the way is. A place was one
+# group, its first row in tree order standing for it, so a twin beside a
+# link there went unnamed while the link stayed: after a bad link, which
+# #979 leaves out, and before or after a good one, whose finding the first
+# disk had made for the place.
 
 #: `check`'s finding for a kept FILE where the shape writes into a directory
 #: (#263), and for a kept path where the shape writes its copy of a file the
@@ -7260,25 +7845,40 @@ class _KeptTree:
     `kept` is `_kept_in_root`'s `(path, mode, entry)` rows.
 
     A DIRECTORY is a prefix of a kept path: git records files, so a directory
-    the plan keeps holds at least one of them."""
+    the plan keeps holds at least one of them.
+
+    EVERY ROW AT A PATH IS KEPT (#1138): on a disk that ignores case, the
+    case twins there, in tree order. A disk that keeps case has one row at
+    a path at most, so it answers as it did."""
 
     def __init__(self, kept: list, fold: bool) -> None:
         self.rows = kept
         self._fold = fold
-        self._at: dict[str, tuple[str, str, str]] = {}
+        self._at: dict[str, list[tuple[str, str, str]]] = {}
         self._dirs: set[str] = set()
         for row in kept:
             parts = row[0].split("/")
-            self._at.setdefault(self._key(row[0]), row)
+            self._at.setdefault(self._key(row[0]), []).append(row)
             self._dirs.update(self._key("/".join(parts[:end]))
                               for end in range(1, len(parts)))
 
     def _key(self, path: str) -> str:
         return path.casefold() if self._fold else path
 
+    def every(self, path: str) -> list[tuple[str, str, str]]:
+        """Every kept row AT `path`, a file, symlink or submodule: each case
+        twin there on a disk that ignores case, any of which its clone may
+        hold. What names what is in the way asks this (#1138)."""
+        return self._at.get(self._key(path), [])
+
     def at(self, path: str) -> tuple[str, str, str] | None:
-        """The kept row AT `path`, a file, symlink or submodule."""
-        return self._at.get(self._key(path))
+        """The FIRST kept row AT `path`, in tree order, or None: on a disk
+        that keeps case, the only one. For a reader of ONE row there: the
+        root's own `.gitattributes`, whose bytes are one file's, and the
+        link at a pin's file that `_links_at_a_pin` keeps from the walks,
+        which meet one twin there."""
+        rows = self.every(path)
+        return rows[0] if rows else None
 
     def holds(self, path: str) -> bool:
         """Whether something is at `path`, as `Path.exists()` says: a kept
@@ -7286,16 +7886,19 @@ class _KeptTree:
         followed (see the comment above): the row holds no target."""
         return self._key(path) in self._at or self._key(path) in self._dirs
 
-    def file_above(self, path: str) -> tuple[str, str, str] | None:
-        """The kept FILE a directory on the way to `path` would have to be,
-        the topmost: `mkdir` stops there. A symlink or a submodule is not
+    def files_above(self, path: str) -> list[tuple[str, str, str]]:
+        """The kept FILES a directory on the way to `path` would have to be,
+        at the topmost place that holds one: `mkdir` stops there. Each case
+        twin there that is a file, on a disk that ignores case (#1138), and
+        one at most on a disk that keeps it. A symlink or a submodule is not
         one; see the comment above."""
         parts = path.split("/")
         for end in range(1, len(parts)):
-            row = self.at("/".join(parts[:end]))
-            if row and row[1] in FILE_MODES:
-                return row
-        return None
+            files = [row for row in self.every("/".join(parts[:end]))
+                     if row[1] in FILE_MODES]
+            if files:
+                return files
+        return []
 
     def under(self, path: str) -> list[tuple[str, str, str]]:
         """Every kept row below the directory `path`."""
@@ -7304,15 +7907,20 @@ class _KeptTree:
                 if self._key(row[0]).startswith(prefix)]
 
 
-def _kept_there(disk: _KeptTree, path: str) -> tuple[tuple, list]:
-    """What the plan keeps at `path` on `disk`: the group `("at", path)` and
-    the row AT it, or `("dir", path)` and the rows below a kept directory
-    there. A submodule is never one of them: it is `plan-submodule-root`'s
-    (#166), and said once there."""
-    at = disk.at(path)
-    rows = [row for row in ([at] if at else disk.under(path))
-            if row[1] != GITLINK_MODE]
-    return ("at" if at else "dir", path), rows
+def _kept_there(disk: _KeptTree, path: str) -> list[tuple[tuple, list]]:
+    """What the plan keeps at `path` on `disk`, as `(group, rows)` pairs:
+    for EACH row AT it, the group `("at", that row's path)` and the row, or,
+    with none there, `("dir", path)` and the rows below a kept directory
+    there. Each case twin at `path` is one thing in the way on a disk that
+    ignores case, whichever of them its clone holds (#1138). A submodule is
+    never one of them: it is `plan-submodule-root`'s (#166), and said once
+    there."""
+    at = disk.every(path)
+    if at:
+        return [(("at", row[0]), [row]) for row in at
+                if row[1] != GITLINK_MODE]
+    rows = [row for row in disk.under(path) if row[1] != GITLINK_MODE]
+    return [(("dir", path), rows)] if rows else []
 
 
 def _shape_blocks(disk: _KeptTree) -> list[tuple]:
@@ -7323,30 +7931,29 @@ def _shape_blocks(disk: _KeptTree) -> list[tuple]:
     whether the root already holds a path, so whether its copy is written at
     all, and whether the place is free: a disk that ignores case holds
     `README.md` for a kept `readme.md`. `group` names the one thing in the
-    way, so that what one kept path blocks is one finding."""
+    way, so that what one kept path blocks is one finding: each case twin at
+    a place is one, so a place may give a block for each (#1138)."""
     out = []
     for rel in assembly_root_paths():
-        above = disk.file_above(rel)
+        above = disk.files_above(rel)
         if above:
-            out.append((ROOT_BLOCKS_SHAPE, rel, rel, ("file", above[0]),
-                        [above]))
+            out += [(ROOT_BLOCKS_SHAPE, rel, rel, ("file", row[0]), [row])
+                    for row in above]
             continue
         if not disk.holds(rel):
             continue
         if rel == SHAPE_MANIFEST:
-            group, rows = _kept_there(disk, rel)
-            if rows:
-                out.append((ROOT_BLOCKS_MANIFEST, rel, rel, group, rows))
+            out += [(ROOT_BLOCKS_MANIFEST, rel, rel, group, rows)
+                    for group, rows in _kept_there(disk, rel)]
             continue
         copy = f"{COLLISION_DIR}/{rel}"
-        above = disk.file_above(copy)
+        above = disk.files_above(copy)
         if above:
-            out.append((ROOT_BLOCKS_COPY, rel, copy, ("file", above[0]),
-                        [above]))
+            out += [(ROOT_BLOCKS_COPY, rel, copy, ("file", row[0]), [row])
+                    for row in above]
             continue
-        group, rows = _kept_there(disk, copy)
-        if rows:
-            out.append((ROOT_BLOCKS_COPY, rel, copy, group, rows))
+        out += [(ROOT_BLOCKS_COPY, rel, copy, group, rows)
+                for group, rows in _kept_there(disk, copy)]
     return out
 
 
@@ -7465,7 +8072,16 @@ def _root_shape_findings(plan: Plan, tree: list,
     sits, as the manifest's does: given a target git makes, and still kept
     there, the link is named here. A link BELOW a directory kept at either
     place is not left out: the directory is in the way whatever the link
-    holds."""
+    holds.
+
+    WHAT IS LEFT OUT IS THE LINK, AND NO CASE TWIN BESIDE IT (#1138). On
+    the disk that ignores case, `shape/readme.md` is at `shape/README.md`
+    too, and each twin at a place is a group of its own (`_kept_there`), so
+    the twin is named, once case is ignored, whether it sorts before the
+    link or after it, and whether the link is left out or named here. The
+    place was one group, its first row standing for it: a twin after a
+    named link went unnamed, and so did any twin beside a link with a
+    target git makes, the place's finding already made on the first disk."""
     kept = _kept_in_root(plan.entries, tree)
     if not kept:
         return []
@@ -8901,7 +9517,8 @@ def _refuse_a_mistyped_plan(plan: Plan) -> None:
         return
     # `FINDING <code>: <detail>` is the one shape every finding is written in.
     code = findings[0].split()[1].rstrip(":")
-    lines = [f"{len(findings)} finding(s) in {plan.path}, as `check` prints "
+    lines = [f"{len(findings)} finding(s) in {_shown(str(plan.path))}, as "
+             "`check` prints "
              "them:"]
     lines += [f"  {finding}" for finding in findings[:REFUSED_FINDINGS_SHOWN]]
     if len(findings) > REFUSED_FINDINGS_SHOWN:
@@ -9385,8 +10002,9 @@ def _bad_symlink_target_notes(tree: list, targets: dict[str, bytes]
 def _links_at_the_manifest(plan: Plan, tree: list) -> set[str]:
     """Each symlink the plan keeps in the root AT `project.yaml`, which
     #305's `plan-root-blocks-manifest` names (`_shape_blocks`), on a disk
-    that keeps case and on one that ignores it. Asked, as `_leg_findings`
-    asks it, of a plan whose `legs` it can read."""
+    that keeps case and on one that ignores it, each case twin there
+    (#1138). Asked, as `_leg_findings` asks it, of a plan whose `legs` it
+    can read."""
     if not isinstance(plan.legs, dict):
         return set()
     kept = _kept_in_root(plan.entries, tree)
@@ -9466,6 +10084,180 @@ def _unsafe_path_findings(plan: Plan) -> tuple[list[str], list[str]]:
                          f"leg: {y(entry.get('leg'))}, and `execute` will "
                          f"not extract it into a leg: {problem}")
     return found, [UNSAFE_PATH_REMEDIATION] if found else []
+
+
+# ---------------------------------------------------------------------------
+# Case twins the plan keeps in one repository (#1161)
+# ---------------------------------------------------------------------------
+#
+# A source commit can hold paths that differ only in case, `A` and `a`, or a
+# file and, in another case, a folder above another path, `f` and `F/x`: git
+# holds each under its own name and blob on any disk (#1033). A disk that
+# ignores case, as a macOS or Windows disk does by default, holds each such
+# set as one name, and a clone there checks out only one path of it (git's
+# "the following paths have collided"). `check` passed them wherever the
+# plan kept them. Measured for #1161 with git 2.43 and the tool at 4c7b8acd,
+# the work directory and every repository on a disk that ignores case and
+# keeps it: `check` printed `plan ok` for each set kept in the root or in
+# one leg, but for folder twins (`D/x`, `d/x`) in 2 of 4 fresh sources,
+# where the #654 rehearsal said `plan-file-reencoded`, git saying `will not
+# add file alias`, and `execute` refused that before any leg. A file and a
+# folder (`F/x`, `f`) stopped `execute` after both legs and the split were
+# pushed, as `adopt-lost: F/x`. File twins in the root were adopted, each
+# set kept as it was in the repository made. Twins in the code leg were
+# adopted so in 2 runs, and in 3 others, for #1189's review, `execute`
+# stopped after both legs were pushed, mounting them, at `git rm -r` ("the
+# following files have local modifications").
+#
+# So `check` names them, on every disk, as #520 names a branch in another
+# case: one plan is then not good on one machine and lost on another.
+# `plan-case-twins` names, for each repository the split makes -- the root,
+# the spec leg, the code leg -- each set of SOURCE paths, each sent there by
+# one answered entry (`_answered_legs`), that a disk ignoring case cannot
+# hold apart (`_case_twin_sets`). Only the source's paths are asked: a kept
+# path that is a twin of a file the shape writes into the root, `Makefile`,
+# `README.md`, `AGENTS.md`, `CLAUDE.md` or `.gitmodules`, is not (#1191). A
+# path git refuses is `plan-path-git-refuses`'s alone, and a path no entry
+# answers once is another finding's. Twins the plan sends to DIFFERENT
+# repositories, and a twin it drops beside one it keeps, are not asked
+# either, though `execute` on a disk that ignores case loses them too, as
+# `adopt-lost` after both legs are pushed (#1183).
+#
+# A set of ONE NAME whose paths hold one blob in one mode loses nothing on
+# such a disk: the one path it checks out holds what each path holds. In a
+# leg it is a NOTE, not this finding (`_one_blob_twins`): `execute` there
+# verified every such set measured for #1189, two files in one folder in 6
+# runs, 5 in the code leg and 1 in the spec leg, and for its second review
+# folder twins (`src/D/x`, `src/d/x`), alone and beside folders that only
+# merge, and symlinks to one target, 1 run each. In the root the NOTE takes
+# only two paths whose names differ only in their last part, `A` and `a`,
+# the shape `execute` verified there in every run measured: 2 of files,
+# and for the second review 1 of symlinks to one target and 1 of
+# executables; and with the rule above, in 2 runs each, files `A` and `a`
+# and files `D/A` and `D/a` in one folder: `check` printed the NOTE and
+# `plan ok`, and `execute` verified. Other sets of one blob in the root met
+# git's `will not add file alias` there, which the #654 rehearsal reports
+# as `plan-file-reencoded`, in 1 run each for the second review: folder
+# twins (`D/x`, `d/x`), alone and beside folders that only merge, in
+# `check`; three paths (`AB`, `Ab`, `ab`) in `execute` alone, before any
+# leg, after `check` had said `plan ok`. With the rule above, in 2 runs
+# each, `check` met it for both, beside `plan-case-twins`, and `execute`
+# refused both as `plan-case-twins` before any leg. So in the root they
+# stay this finding, and its remediation, a rename. A file against a
+# folder is always the finding: such a disk cannot hold a file and a folder
+# under one name, whatever their bytes.
+
+#: `check`'s finding, and the code of `execute`'s refusal, for paths the
+#: plan keeps in one repository that a disk ignoring case holds as one.
+CASE_TWINS = "plan-case-twins"
+#: Each repository the split makes, by the `leg:` that sends a path there,
+#: as `plan-case-twins` names it, in the order it is asked.
+TWIN_REPOSITORIES = {"root": "the assembly root", "spec": "the spec leg",
+                     "code": "the code leg"}
+#: What a plan holding such twins is told to do, once after every finding.
+#: It offers no answer that sends the twins of a set into different
+#: repositories, or drops one: on a disk that ignores case `execute` loses
+#: those too, after both legs are pushed (#1183).
+CASE_TWINS_REMEDIATION = (
+    "Remediation: rename paths in the source until no two that one "
+    "repository would hold differ only in case -- each twin of a set but "
+    "one, or the folder above a twin -- commit that, and re-run `plan`: a "
+    "plan is written against one commit of the source, and `check` calls it "
+    "`plan-stale` once the source has moved.")
+
+
+def _case_twin_sets(paths: list[str]) -> list[list[str]]:
+    """Each set of two or more of `paths` that a disk ignoring case holds as
+    one name, in the order of `paths`, as is each set: paths equal once case
+    is folded (`casefold`, as `_KeptTree` folds), and a path equal so to a
+    folder above another (`f` and `F/x`), which such a disk cannot hold as a
+    file and a folder at once. Paths that only share a folder in another
+    case (`D/x` and `d/y`) are in no set: such a disk merges the folders,
+    and the names in them differ.
+
+    Each path joins the set of the first name above it, or its own, that is
+    some path's whole name folded: two paths such a disk holds as one share
+    that name, and two it holds apart do not."""
+    whole = {path.casefold() for path in paths}
+    sets: dict[str, list[str]] = {}
+    for path in paths:
+        parts = path.casefold().split("/")
+        name = next(above for above in ("/".join(parts[:end])
+                                        for end in range(1, len(parts) + 1))
+                    if above in whole)
+        sets.setdefault(name, []).append(path)
+    return [named for named in sets.values() if len(named) > 1]
+
+
+def _one_blob_twins(named: list[str], kinds: dict, leg: str) -> bool:
+    """Whether the set `named`, which the plan keeps in the repository
+    `leg:` `leg` sends it to, is left to the NOTE: every path folds to ONE
+    name and holds one blob in one mode, `kinds` giving each path's `(mode,
+    object)`, so the one path a disk ignoring case checks out holds what
+    each holds. In the root, only TWO paths whose names differ only in
+    their last part, `A` and `a`, are: folder twins (`D/x`, `d/x`) and sets
+    of three or more met git's `will not add file alias` there, and stay
+    the finding. A file against a folder is never such a set, nor are
+    submodules, whose object is a commit and no blob."""
+    if leg == "root" and (len(named) != 2 or len(
+            {path.rpartition("/")[0] for path in named}) != 1):
+        return False
+    return (len({path.casefold() for path in named}) == 1
+            and len({kinds[path] for path in named}) == 1
+            and kinds[named[0]][0] != GITLINK_MODE)
+
+
+def _case_twin_findings(plan: Plan, tree: list,
+                        refused: list[str] | tuple = ()
+                        ) -> tuple[list[str], list[str], list[str]]:
+    """`plan-case-twins` for each repository the split makes that the plan
+    keeps case twins in (`_case_twin_sets`), in `TWIN_REPOSITORIES`' order,
+    naming `NAMED_PATHS` of them set by set and counting the rest; what to
+    print once after every finding; and a NOTE for each repository whose
+    sets of one name hold one blob in one mode, in the root only sets of
+    two paths whose names differ only in their last part
+    (`_one_blob_twins`), which the finding leaves out. Only the paths ONE
+    answered entry sends there are asked (`_answered_legs`), and none git
+    refuses, `refused`: `plan-path-git-refuses` names those."""
+    held = set(refused)
+    kinds = {path: (mode, oid) for path, mode, oid, _ in tree}
+    answered = _answered_legs(plan.entries, [path for path, _, _, _ in tree
+                                             if path not in held])
+    found, notes = [], []
+    for leg, where in TWIN_REPOSITORIES.items():
+        sets = _case_twin_sets([path for path, (answer, _) in answered.items()
+                                if answer == leg])
+        alike = [named for named in sets
+                 if _one_blob_twins(named, kinds, leg)]
+        sets = [named for named in sets if named not in alike]
+        if alike:
+            same = [path for named in alike for path in named]
+            notes.append(
+                f"NOTE the plan keeps {len(alike)} "
+                f"{'set' if len(alike) == 1 else 'sets'} of case twins in "
+                f"{where} whose paths hold one blob in one mode, {len(same)} "
+                f"paths: {_named_and_counted(same)}. A disk that ignores "
+                "case holds each set as one name, and a clone made there "
+                "checks out one path of each, git saying `the following "
+                "paths have collided`; that path holds what each path of the "
+                "set holds, so none is lost, and `check` names no "
+                f"`{CASE_TWINS}` for them.")
+        if not sets:
+            continue
+        twins = [path for named in sets for path in named]
+        found.append(
+            f"FINDING {CASE_TWINS}: the plan keeps {len(sets)} "
+            f"{'set' if len(sets) == 1 else 'sets'} of case twins in {where}, "
+            f"{len(twins)} paths, the paths of a set differing only in case, "
+            "or one naming in another case a folder above another: "
+            f"{_named_and_counted(twins)}. A disk that ignores case, as a "
+            "macOS or Windows disk does by default, holds each set as one "
+            "name: a clone made there checks out only one path of each set, "
+            "and `execute` could stop there before any leg exists, at git's "
+            "`will not add file alias`, or after both legs are pushed, as "
+            "`adopt-lost` or at `git rm` mounting the legs, so `execute` "
+            "refuses them on every disk.")
+    return found, [CASE_TWINS_REMEDIATION] if found else [], notes
 
 
 # ---------------------------------------------------------------------------
@@ -9563,7 +10355,8 @@ def _entry_findings(plan: Plan, source: Source,
                     ) -> tuple[list[str], list[str], list[str]]:
     """Every FINDING `check` prints about the plan's ENTRIES, in its order,
     what it prints once after them, and the NOTEs it prints beside them:
-    each entry's path, then coverage, then each entry's `leg:`, the two
+    each entry's path, then the case twins the plan keeps in one repository
+    (#1161), then coverage, then each entry's `leg:`, the two
     mount paths and what the root keeps where the shape writes, the pins,
     then each pin's digest the clone `plan` read it from recomputes
     otherwise (#449), then each value `execute` would write into the
@@ -9631,6 +10424,16 @@ def _entry_findings(plan: Plan, source: Source,
     answer changes either; and for each path of the source commit git
     refuses as a path, `..` or `.Git/x` (#910), as `plan-path-git-refuses`,
     asked of git first, in a throwaway repository of its own.
+
+    THEN THE CASE TWINS (#1161), `plan-case-twins`: the source paths, each
+    sent by one answered entry, that one repository would hold and a disk
+    ignoring case holds as one name (`_case_twin_findings`). Their first
+    fix is a rename in the source too, so they come before the findings
+    about the answers, and they ask no path git refuses, which the finding
+    before them names. A set of one name whose paths hold one blob in one
+    mode loses nothing there, and is a NOTE instead, listed first of the
+    NOTEs returned here: in a leg, and in the root where it is two paths
+    whose names differ only in their last part.
 
     `check`'S THROWAWAY REPOSITORIES (#910) are made in the work directory.
     The first is the split's own `git clone` of the source (#1083), asked as
@@ -9711,7 +10514,9 @@ def _entry_findings(plan: Plan, source: Source,
     probe = _SymlinkProbe(source.work_root)
     unsafe, unsafe_remediation = _source_path_findings(plan, tree, targets,
                                                        refused)
-    findings = (unsafe
+    twins, twins_remediation, twin_notes = _case_twin_findings(plan, tree,
+                                                               refused)
+    findings = (unsafe + twins
                 + _coverage_findings([str(e.get("path"))
                                       for e in plan.entries],
                                      [path for path, _, _, _ in tree])
@@ -9748,12 +10553,12 @@ def _entry_findings(plan: Plan, source: Source,
     return (findings + misread + split + linked + asked
             + unwritable_findings + value_findings + names
             + tracking_findings + moved + field_findings,
-            unsafe_remediation
+            unsafe_remediation + twins_remediation
             + ([MANIFEST_MISREAD_REMEDIATION] if misread else [])
             + split_remediation + unwritable_remediation + value_remediation
             + names_remediation + tracking_remediation + moved_remediation
             + field_remediation,
-            pin_notes + notes + unasked_notes + probe.notes())
+            twin_notes + pin_notes + notes + unasked_notes + probe.notes())
 
 
 # ---------------------------------------------------------------------------
@@ -10212,7 +11017,7 @@ def _refuse_a_branch_in_the_split_branchs_way(
     found = _split_branch_findings(branch, places)
     if found:
         raise Refusal(SPLIT_BRANCH_TAKEN, "\n".join(
-            [f"{len(found)} finding(s) in {plan.path}:",
+            [f"{len(found)} finding(s) in {_shown(str(plan.path))}:",
              *(f"  {finding}" for finding in found)]),
             SPLIT_BRANCH_TAKEN_REMEDIATION)
 
@@ -11156,7 +11961,8 @@ def _links_at_a_copy(plan: Plan, tree: list) -> set[str]:
     copy written THROUGH it, earlier in `_entry_findings`' one list; and one
     AT `project.yaml`, which #305's `plan-root-blocks-manifest` names. Asked
     as `_leg_findings` asks it, of a plan whose `legs` it can read, on a
-    disk that keeps case and on one that ignores it. A link there whose
+    disk that keeps case and on one that ignores it, where each case twin
+    there is a group `("at", its own path)` (#1138). A link there whose
     target `plan-empty-symlink` or `plan-bad-symlink-target` names one by
     one is that finding's instead (#908, #979), and no walk names it."""
     if not isinstance(plan.legs, dict):
@@ -11164,8 +11970,8 @@ def _links_at_a_copy(plan: Plan, tree: list) -> set[str]:
     kept = _kept_in_root(plan.entries, tree)
     named: set[str] = set()
     for fold in (False, True):
-        for _, _, copy, group, rows in _shape_blocks(_KeptTree(kept, fold)):
-            if group == ("at", copy) and rows[0][1] == SYMLINK_MODE:
+        for _, _, _, group, rows in _shape_blocks(_KeptTree(kept, fold)):
+            if group[0] == "at" and rows[0][1] == SYMLINK_MODE:
                 named.add(rows[0][0])
     return named
 
@@ -11187,7 +11993,10 @@ def _links_at_a_pin(plan: Plan, tree: list) -> set[str]:
     disks = (_KeptTree(kept, fold=False), _KeptTree(kept, fold=True))
     named: set[str] = set()
     for rel, _ in _pin_files(plan):
-        # The disk `_kept_pin_findings` names its row from.
+        # The disk `_kept_pin_findings` names its rows from, and there the
+        # first row: a walk meets one row at the pin's file, the one spelled
+        # as the pin where the root keeps it, and else the first twin, so a
+        # later twin is never a walk's to name again (#1138).
         disk = next((one for one in disks if _holds_a_pin(one, rel)), None)
         at = disk.at(rel) if disk else None
         if at and at[1] == SYMLINK_MODE:
@@ -11197,10 +12006,10 @@ def _links_at_a_pin(plan: Plan, tree: list) -> set[str]:
 
 def _holds_a_pin(disk: _KeptTree, rel: str) -> bool:
     """Whether `_kept_pin_findings` finds, on `disk`, something the plan
-    keeps at the pin's file `rel` or under it, but a submodule."""
-    at = disk.at(rel)
+    keeps at the pin's file `rel` or under it, but a submodule: any case
+    twin at it, as that finding asks each (#1138)."""
     return any(row[1] != GITLINK_MODE
-               for row in ([at] if at else disk.under(rel)))
+               for row in (disk.every(rel) or disk.under(rel)))
 
 
 def _root_symlink_findings(plan: Plan, source: Source, tree: list,
@@ -13508,8 +14317,19 @@ def cmd_check(args) -> int:
     if mistyped:
         for line in [*mistyped, *mistyped_remediation]:
             print(line, file=sys.stderr)
-        print(f"\n{len(mistyped)} finding(s) in {plan.path}", file=sys.stderr)
+        print(f"\n{len(mistyped)} finding(s) in {_shown(str(plan.path))}",
+              file=sys.stderr)
         return 1
+    # THE PLAN'S THREE REPOSITORY NAMES, THEN ITS `org:` AND `id:`, right
+    # after the plan's keys and before anything else is read, made or opened,
+    # as `execute` asks them (#1020): either is refused outright, exit 2, and
+    # `execute` asked them after refusing an unwritable `--work-dir`, a plan
+    # for another repository, a name the policy refuses, an unanswered entry
+    # or a source that has moved on, each a finding here, so the two named
+    # different problems first. `_manifest_values` asked them only where the
+    # policy took the names. They read only the plan.
+    plan.names()
+    _checked_org_and_id(plan)
     work_root = _work_root(args)
     # Asked before the source is opened, as `execute` asks it (#524). An
     # `org/repo` source is cloned into the work directory, so where that
@@ -13646,7 +14466,8 @@ def cmd_check(args) -> int:
     for line in [*findings, *remediation]:
         print(line, file=sys.stderr)
     if findings:
-        print(f"\n{len(findings)} finding(s) in {plan.path}", file=sys.stderr)
+        print(f"\n{len(findings)} finding(s) in {_shown(str(plan.path))}",
+              file=sys.stderr)
         return 1
     print("\nplan ok")
     return 0
@@ -14511,7 +15332,8 @@ def _held_findings(plan: Plan, names: dict, local_remote_dir: Path | None,
     first of (#863), each as a FINDING under its code, and the codes, which
     say whether the leg question is still asked (`RENAMES_THE_LEGS`). Asked
     only of an `org:` `execute` would get that far with: another is
-    `unsafe-value`, refused first in `_checked_plan_values` (#901)."""
+    `unsafe-value`, which both commands refuse first of the plan's values
+    (`_checked_org_and_id`, #1020), `check` at its head."""
     try:
         org = checked_value("org", _plan_org(plan))
     except Refusal:
@@ -14673,14 +15495,14 @@ def _create_leg_remote(plan: Plan, names: dict, repositories: dict,
     # Asked before either leg was made (#798); one there now was made since.
     if bare.exists():
         raise Refusal(
-            LEG_REMOTE_EXISTS, f"{bare} already exists",
+            LEG_REMOTE_EXISTS, f"{_shown(str(bare))} already exists",
             "Remediation: choose an empty --local-remote-dir, and a "
             "--work-dir the run that made it did not clone into (a fresh "
             "one, or none): `git clone` refuses a directory it already "
             "cloned into. There is no --force: re-running over a live leg "
             "is not an adoption.")
     run(["git", "init", "-q", "--bare", "-b", tracking, str(bare)])
-    print(f"  bare  {bare}")
+    print(f"  bare  {_shown(str(bare))}")
 
 
 def _extract_leg(role: str, source: Source, work: Path, paths: list[str],
@@ -14695,6 +15517,43 @@ def _extract_leg(role: str, source: Source, work: Path, paths: list[str],
     """
     run(["git", *FILE_PROTOCOL, "clone", "-q", str(source.path), str(work)])
     run(["git", "checkout", "-q", "-B", branch, source.commit], cwd=work)
+    # THE CLONE'S `origin` URL GOES FIRST (#1247). It is the source's path,
+    # byte for byte, and `git filter-repo` prints it as it removes `origin`
+    # (`NOTICE: Removing 'origin' remote ... (was <url>)`), decoded as UTF-8
+    # with `errors='replace'`. Under a Latin-1 locale a directory `caf` plus
+    # U+00E9 is the byte 0xE9, which that decode makes U+FFFD, and a Latin-1
+    # stdout cannot hold U+FFFD: filter-repo raised `UnicodeEncodeError` and
+    # `execute` stopped after both legs existed. No variable reaches every
+    # install: a launcher that runs it with `python -E`, as #1247's pipx one
+    # did, drops `PYTHONIOENCODING` and `PYTHONUTF8`, and an `LC_ALL` for the
+    # child names a locale the host may not have. With no url, filter-repo
+    # prints nothing of `origin` and leaves the remote alone, and nothing reads
+    # that remote again: `_push_the_leg` pushes to the leg's url, and
+    # `_mount_the_legs` mounts this clone by its path. ONLY THE URL: the
+    # remote-tracking branches stay, and filter-repo still makes each a branch
+    # before it asks for the url, so it rewrites every branch of the source as
+    # before. `git remote remove` took them with it, and a leg whose tracking
+    # branch holds a `cherry-pick -x` of a commit only another branch reaches
+    # then kept that commit's old id in its message, where this one rewrites
+    # it: a different leg (git 2.43, filter-repo 2.47.0).
+    # THE CLONE'S OWN CONFIG FILE IS NAMED, with `--file`. `GIT_CONFIG` in the
+    # environment (a legacy variable git still reads) names the file `git
+    # config` writes otherwise, and the unset took `remote.origin.url` out of
+    # a file of the person's, outside this clone, and `execute` then refused
+    # with both legs made. `--local` is no way round that: with `GIT_CONFIG`
+    # set, git 2.43 exits 129. `.git` is a directory, made by the `git clone`
+    # above, and `work` is an absolute path (`_work_root`).
+    # A CLONE WITH NO `origin` URL IS NOT A FAILURE (git exits 5): a global
+    # `clone.defaultRemoteName` gives the clone another remote, and `execute`
+    # then fails where main fails, at `mounting the legs`, not here with no
+    # words and before any leg is pushed. That setting is its own defect.
+    # Every other exit is refused.
+    try:
+        run(["git", GIT_CONFIG, "--file", str(work / ".git" / "config"),
+             "--unset", "remote.origin.url"], cwd=work)
+    except CommandFailed as exc:
+        if exc.code != GIT_CONFIG_KEY_ABSENT:
+            raise
     # LF, on every platform. `git filter-repo --paths-from-file` matches a
     # line against a path, and a CRLF-terminated line ends in a character no
     # path contains - so on Windows every pattern would match nothing, the
@@ -14715,7 +15574,7 @@ def _extract_leg(role: str, source: Source, work: Path, paths: list[str],
     digest = tree_digest(work, head)
     _push_the_leg(f"pushing the {role} leg", work, url, tracking, repository)
     print(f"  {role:<5} {len(paths):>3} path(s) -> {head[:12]} "
-          f"({count} commits kept) -> {url}")
+          f"({count} commits kept) -> {_shown(url)}")
     return head, digest
 
 
@@ -14758,7 +15617,7 @@ def _seed_leg(role: str, work: Path, values: dict, branch: str, url: str,
     _push_the_leg(f"pushing the seeded {role} leg", work, url, tracking,
                   repository)
     print(f"  {role:<5}   0 path(s) -> {commit[:12]} (SEEDED from "
-          f"{SEED_TEMPLATE[role]}/) -> {url}")
+          f"{SEED_TEMPLATE[role]}/) -> {_shown(url)}")
     return commit, digest
 
 
@@ -15025,13 +15884,39 @@ def _mount_the_legs(assembly: Path, work_root: Path, names: dict, urls: dict,
 
 def _checked_org_and_id(plan: Plan) -> str:
     """The plan's `org:` as `checked_value` hands it back, once its `id:`
-    is asked too. Both commands ask the two BEFORE THE PLAN'S LEG PATHS AND
-    BRANCH NAMES, and after its three repository names, which they ask
-    earlier (`plan.names()`, then `_check_names`): `check` in
-    `_manifest_values` and `execute` in `_checked_plan_values`.
+    is asked too. Both commands ask the two FIRST OF WHAT THEY READ OF THE
+    PLAN, right after the plan's keys (`_plan_type_findings`) and its three
+    repository names (`plan.names()`), and before `_work_root` makes the work
+    directory or the source is opened: so before an unwritable `--work-dir`,
+    before the plan is compared with the source (`plan-not-the-source`),
+    before the policy is asked about its names, before its unanswered
+    entries and a source that has moved on, and before its leg paths and
+    branch names. Both ask them at their head (`cmd_check`, `cmd_execute`).
     `checked_value` refuses an `org:` this tool will not put on a `git` or
-    `gh` command line as `unsafe-value`, and `Plan.project_id` an `id:`
-    that is no project id as `plan-bad-id`.
+    `gh` command line as `unsafe-value`, and `Plan.project_id` an `id:` that
+    is no project id as `plan-bad-id`. Both read only the plan.
+
+    A REFUSAL OF `check`'S IS ASKED BEFORE WHAT IT LISTS (#1020). `check`
+    refuses either value outright, exit 2, and so lists none of its
+    findings, and `execute` refuses at the first of them. So the two name
+    one problem first only where `execute` asks the two before anything
+    `check` lists. #901 asked them in `_checked_plan_values`, after
+    `execute` had refused an unwritable `--work-dir`, the plan for another
+    repository, a name the policy refuses, an unanswered entry and a source
+    that has moved on, each a finding of `check`'s: a bad id beside an
+    unanswered entry was `plan-bad-id` to `check` and `plan-unresolved` to
+    `execute`, and so on for `plan-stale`, `naming-unclassified`,
+    `plan-not-the-source` and `adopt-work-dir-unwritable`. And
+    `check` asked them only where the naming policy took the plan's names
+    (`_manifest_values`), so an unsafe `org:` beside a name the policy
+    refuses was `naming-unclassified` or `plan-not-the-source` to `check`,
+    a finding. Asked first by both, each is that value's refusal in both.
+    That decides #716's L4-48 too: an `org:` `checked_value` refuses names
+    no repository, on GitHub or in the manifest, so it is not compared with
+    the source's: it is `unsafe-value` in both commands, held to a
+    repository or not, where `execute` said `plan-not-the-source` of one
+    held to a repository. Once the `org:` is mended, a plan that names
+    another repository is still `plan-not-the-source` in both.
 
     ONE ORDER, THE MORE BASIC PROBLEM FIRST (#901). `execute` asked the two
     leg paths and the two branch names first, the organisation after them
@@ -15057,15 +15942,17 @@ def _checked_org_and_id(plan: Plan) -> str:
 
 
 def _checked_plan_values(plan: Plan) -> tuple[str, str, str, str]:
-    """The plan's options, in the order `check` asks them (#901): its
-    `org:` and `id:` (`_checked_org_and_id`), after the three repository
-    names both commands ask earlier (`plan.names()`), then the four values
-    that reach a `git` command line as arguments, which it returns:
-    `(spec_path, code_path, branch, tracking)`.
+    """The four plan values that reach a `git` command line as arguments, in
+    the order `check` asks them: `(spec_path, code_path, branch, tracking)`.
+    `cmd_execute` has asked the plan's `org:` and `id:` before them
+    (`_checked_org_and_id`), at its head, right after the plan's keys and
+    its three repository names and before `_work_root`, as `check` asks
+    them (#901, #1020).
 
     Split out of `cmd_execute` for #138, in the order the refusals came in
-    there, the leg paths first; #901 asks the organisation and the id
-    before them, as `check` does, so the two name one problem first.
+    there, the leg paths first; #901 asked the organisation and the id
+    before them, here, as `check` does, so the two name one problem first,
+    and #1020 asks them earlier still, in `cmd_execute`.
     A branch name `checked_value` refuses is `check`'s finding too, in the
     same words (`_branch_name_refusal`, #520), and so is a branch the plan's
     reader read as a number or a boolean, which is asked first
@@ -15075,7 +15962,6 @@ def _checked_plan_values(plan: Plan) -> tuple[str, str, str, str]:
     git will not create is refused with `check`'s other findings, by
     `_refuse_what_check_finds`, and before any leg exists as well.
     """
-    _checked_org_and_id(plan)
     spec_leg, code_leg = _plan_leg_paths(plan)
     # Before ANY leg exists: `check` finds a bad path and `execute` refuses it
     # on its own account, not because `check` happened to be run first (#169).
@@ -15156,11 +16042,12 @@ def _what_cannot_be_held(plan: Plan, names: dict, org: str, local: bool,
     the manifest's values, means the two cannot disagree again. It is a
     generator, so `execute` asks nothing after the first refusal."""
     asked = [lambda: _refuse_a_root_no_disk_holds(
-                 names["assembly"], f"{plan.path}: `legs.assembly`",
+                 names["assembly"],
+                 f"{_shown(str(plan.path))}: `legs.assembly`",
                  "no repository was created."),
              lambda: _refuse_names_nothing_keeps(names, org, local)]
     if not local:
-        named = f"{plan.path}: `org:`"
+        named = f"{_shown(str(plan.path))}: `org:`"
         asked += [
             lambda: refuse_an_owner_github_cannot_have(
                 "adopt-org-too-long", org, named, ORG_REMEDIATION),
@@ -15279,7 +16166,7 @@ def _refuse_a_topic_github_cannot_set(plan: Plan, topic: str) -> None:
     named = "`id:`" if plan.get("id") is not None else DERIVED_ID
     refuse_a_topic_github_cannot_set(
         "adopt-topic-too-long", topic, plan.project_id,
-        f"{plan.path}: {named}", TOPIC_REMEDIATION)
+        f"{_shown(str(plan.path))}: {named}", TOPIC_REMEDIATION)
 
 
 def _remote_urls(org: str, names: dict, local_remote_dir: Path | None,
@@ -15413,7 +16300,8 @@ def _refuse_what_check_finds(plan: Plan, source: Source,
         return
     # `FINDING <code>: <detail>` is the one shape both functions write.
     code = findings[0].split()[1].rstrip(":")
-    lines = [f"{len(findings)} finding(s) in {plan.path}, as `check` prints "
+    lines = [f"{len(findings)} finding(s) in {_shown(str(plan.path))}, as "
+             "`check` prints "
              f"them{_as_resolved_here(findings, local_remote_dir)}:"]
     lines += [f"  {finding}" for finding in findings[:REFUSED_FINDINGS_SHOWN]]
     if len(findings) > REFUSED_FINDINGS_SHOWN:
@@ -16129,7 +17017,8 @@ def _commit_the_split(plan: Plan, source: Source, assembly: Path,
             urls, list(leg_commits), work_root, names,
             interrupted=_interrupted(exc), source=source))
         raise
-    print(f"\n  split {split_commit[:12]} on {branch} -> {urls['assembly']}")
+    print(f"\n  split {split_commit[:12]} on {branch} -> "
+          f"{_shown(urls['assembly'])}")
     return split_commit, message, materialized.collisions
 
 
@@ -16137,6 +17026,15 @@ def _commit_the_split(plan: Plan, source: Source, assembly: Path,
 def cmd_execute(args) -> int:
     plan = Plan.load(Path(args.plan))
     _refuse_a_mistyped_plan(plan)
+    # THE PLAN'S THREE REPOSITORY NAMES, THEN ITS `org:` AND `id:`, right
+    # after the plan's keys and before anything else is read, made or opened,
+    # as `check` asks them (#1020): `check` refuses either outright, exit 2,
+    # before it lists any finding, among them an unwritable `--work-dir`, a
+    # plan for another repository, a name the policy refuses, an unanswered
+    # entry and a source that has moved on, so `execute` asks the two before
+    # it refuses any of them. They read only the plan.
+    names = plan.names()
+    _checked_org_and_id(plan)
     work_root = _work_root(args, NO_LEG_YET)
     # Before the source is opened, so before any leg exists (#524).
     _refuse_an_unwritable_work_dir(args, work_root)
@@ -16146,7 +17044,6 @@ def cmd_execute(args) -> int:
     naming = NamingPolicy.load(NAMING_POLICY)
     _require_filter_repo()
 
-    names = plan.names()
     pins = set(plan.pins)
     _refuse_a_plan_for_another_repository(plan, source, names, naming, pins)
     _check_names(naming, names, pins, source)
@@ -16272,7 +17169,7 @@ def cmd_execute(args) -> int:
         # the split's branch, and the repository it is pushed to (#523); and
         # the paths the plan keeps in the root, where a `GNUmakefile` or
         # `makefile` is what GNU make reads there before any `Makefile`
-        # (#1047).
+        # (#1047), and a directory of either name stops it (#1132).
         _next_steps(names, collisions,
                     (branch, urls["assembly"]) if local else None,
                     surviving=paths_for["root"])
@@ -16887,12 +17784,34 @@ def _next_steps(names: dict, collisions: list,
     the same file. Where it holds one, the command is `python3
     scripts/bootstrap.py`, and the NOTE names the file and says what it
     takes for `make bootstrap` to run there; where the script went aside,
-    that is the command named after the merges. Elsewhere the block is what
-    it was, byte for byte."""
+    that is the command named after the merges.
+
+    AND A DIRECTORY NAMED `GNUmakefile` OR `makefile` STOPS GNU MAKE AT THE
+    ROOT (#1132, RV1121's NIT-1). GNU make finds it before any `Makefile`
+    and stops there for every target, `GNUmakefile: Is a directory.  Stop.`,
+    so `make bootstrap` exits 2 whatever is merged, and NEXT named it as the
+    command, or as what runs after the merges. `surviving` is each path the
+    plan's entries send to the root, asked by `_make_reads_first`, whose
+    `CONTRACTS_DIR` line names the same directory. Where the root keeps one,
+    the command is `python3 scripts/bootstrap.py`, the NOTE says `make`
+    stops there, in `_make_reads_first_clause`'s words, and where the script
+    went aside, that command is the one named after the merges. Beside a
+    kept `Makefile` alone, the NOTE says the targets run there once the
+    follow-up merges the two, AND only once the root keeps no directory of
+    that name: with the directory gone, the root's `Makefile` is still the
+    source's own until that merge (#1207's review, NIT-3). A kept FILE of
+    that name is the paragraph above's, in the same clause's file words.
+
+    A NOTE THAT NAMES `python3 scripts/bootstrap.py` FOR A PERSON TO RUN
+    names `python` on Windows too, as the template's `scripts/bootstrap.py`
+    does (`BOOTSTRAP_COMMAND`, #1132, RV1121's NIT-2): a Windows install
+    usually puts no `python3` on PATH. The command line is the one pasted
+    where the clone is made, and stays as it was. Elsewhere the block is
+    what it was, byte for byte."""
     aside = dict(collisions)
     script, makefile = aside.get(BOOTSTRAP), aside.get(SHAPE_MAKEFILE)
-    first = next((name for name in GNU_MAKE_READS if name != SHAPE_MAKEFILE
-                  and _root_keeps(set(surviving), name)), None)
+    first = _make_reads_first(surviving)
+    stops = first if first and first.endswith("/") else None
     bootstrap = ("" if script else
                  "\n    python3 scripts/bootstrap.py" if makefile or first else
                  "\n    make bootstrap")
@@ -16908,14 +17827,11 @@ def _next_steps(names: dict, collisions: list,
                           "--recurse-submodules", "-b", shlex.quote(branch),
                           shlex.quote(url)])
     print(f"\nNEXT: review {review}, then\n    {clone}{bootstrap}")
-    reads = (
-        f"GNU make at the root reads the source's {_spelled(first)}, the "
-        f"first of {_and_listed([_spelled(name) for name in GNU_MAKE_READS])}"
-        " it finds, so `make bootstrap` and the shape's other make targets "
-        f"run there only once {_spelled(first)} has them, or includes a "
-        "Makefile that does") if first else ""
-    runs = ("; `python3 scripts/bootstrap.py` is what the shape's `make "
-            "bootstrap` runs.")
+    merged = (" once the follow-up merges the two, and" if makefile
+              and stops and not script else "")
+    reads = _make_reads_first_clause(
+        first, "`make bootstrap` and the shape's other make targets run "
+        f"there{merged}", "has them") if first else ""
     if script:
         kept = [path for path in (SHAPE_MAKEFILE, BOOTSTRAP)
                 if path in aside]
@@ -16925,19 +17841,19 @@ def _next_steps(names: dict, collisions: list,
               f"`make bootstrap` nor `python3 {BOOTSTRAP}` runs the "
               "shape's bootstrap yet: merge "
               + _and_listed([f"{aside[path]} into {path}" for path in kept])
-              + (f" first, and then run `python3 {BOOTSTRAP}`; {reads}."
+              + (f" first, and then run {BOOTSTRAP_COMMAND}; {reads}."
                  if first else " first, and then run `make bootstrap`."))
-    elif makefile and first:
-        print(f"NOTE the root keeps its own {SHAPE_MAKEFILE} and the shape's "
-              f"is {makefile}, and {reads}{runs}")
     elif first:
-        print(f"NOTE the shape's Makefile is the root's `{SHAPE_MAKEFILE}`, "
-              f"but {reads}{runs}")
+        lead = (f"the root keeps its own {SHAPE_MAKEFILE} and the shape's is "
+                f"{makefile}, and" if makefile else
+                f"the shape's Makefile is the root's `{SHAPE_MAKEFILE}`, but")
+        print(f"NOTE {lead} {reads}; {BOOTSTRAP_COMMAND} is what the "
+              "shape's `make bootstrap` runs.")
     elif makefile:
         print(f"NOTE the root keeps its own {SHAPE_MAKEFILE} and the shape's "
               f"is {makefile}, so `make bootstrap` and the shape's other make "
               "targets arrive only once the follow-up merges the two; "
-              "`python3 scripts/bootstrap.py` is what `make bootstrap` runs.")
+              f"{BOOTSTRAP_COMMAND} is what `make bootstrap` runs.")
 
 
 def _account_for(before: dict, after: dict, drops: list[str]) -> tuple[dict, list]:
@@ -17514,15 +18430,13 @@ def _name_remedy(code: str, repository: str | None) -> str:
 # with its `project:`, as `plan-not-the-source`: a hand edit is caught too,
 # because `org:` is read as `execute` reads it (`_plan_org`), as `str()` of
 # what the file holds. One that `checked_value` refuses (a list, a mapping,
-# an empty value, a space, a leading `-`, a character outside ASCII) is, in
-# `execute`, `plan-not-the-source` where the plan is held to a repository
-# (`_held_repository`, and the `org:` is not that repository's own) and
-# `unsafe-value` where it is held to none. `check` asks `checked_value` of
-# `org:` first (`_manifest_values`, and `_submodule_findings` where a kept
-# submodule url is relative) and ends in `unsafe-value`, exit 2, before it
-# compares anything; only where the plan's own names are refused, and no
-# kept url is relative, does it reach the comparison with one (#716,
-# L4-48). A source that names no repository (no `origin`, or one that ends
+# an empty value, a space, a leading `-`, a character outside ASCII) names
+# no repository, and is never compared: `check` and `execute` refuse it as
+# `unsafe-value` first of the plan's values, held to a repository or not
+# (`_checked_org_and_id`, #1020). Until then `execute` refused it as
+# `plan-not-the-source` where the plan was held to a repository, and `check`
+# compared it where the plan's own names were refused (#716, L4-48). A
+# source that names no repository (no `origin`, or one that ends
 # in no `org/repo`) is asked nothing by `plan`, as before; `check` and
 # `execute` hold the plan's names to what the plan recorded for it,
 # `source: repository:`, where it recorded one (#716).
@@ -17789,18 +18703,15 @@ def _not_the_source(plan: Plan, source: Source,
     read only as text: a misread one is not this question's to answer, and
     `execute` acts on `legs.assembly:`.
 
-    AN `org:` THAT `checked_value` REFUSES IS CAUGHT, BUT NOT ALWAYS AS
-    THIS (#716, L4-48): a list, a mapping, an empty value, one with a space,
-    a leading `-` or a character outside ASCII. `execute` asks this first,
-    so it refuses such an `org:` as `plan-not-the-source` where the plan is
-    held to a repository (`_held_repository`, and the `org:` is not that
-    repository's own), and as `unsafe-value`, from `_checked_plan_values`
-    (#901), where it is held to none. `check` asks
-    `checked_value` of `org:` first (`_manifest_values`, and
-    `_submodule_findings` where a kept submodule url is relative) and ends
-    in `unsafe-value`, exit 2, before it compares anything; only where the
-    plan's own names are refused, and no kept url is relative, does it
-    reach this with one."""
+    AN `org:` THAT `checked_value` REFUSES IS NEVER COMPARED (#1020): a
+    list, a mapping, an empty value, one with a space, a leading `-` or a
+    character outside ASCII. Both commands refuse it as `unsafe-value`
+    before they ask this (`_checked_org_and_id`), held to a repository or
+    not, for it names no repository. Until #1020 `execute` asked this
+    first, and refused such an `org:` as `plan-not-the-source` where the
+    plan was held to a repository and the `org:` was not that repository's
+    own, where `check` ended in `unsafe-value`, exit 2, except where the
+    plan's own names were refused (#716, L4-48)."""
     repository = _held_repository(plan, source)
     if repository is None:
         return None
@@ -17837,11 +18748,13 @@ def _refuse_a_plan_for_another_repository(
     naming policy about the plan's names or any remote anything (#499):
     what it would ask of GitHub it would ask of the repository the plan
     names, and a raw `git ls-remote` failure on that repository was the
-    first thing it said."""
+    first thing it said. It is asked after the plan's `org:` and `id:`,
+    which `check` refuses before it lists this (`_checked_org_and_id`,
+    #1020)."""
     detail = _not_the_source(plan, source, names)
     if detail:
         raise Refusal(
-            PLAN_NOT_THE_SOURCE, f"{plan.path}: {detail}",
+            PLAN_NOT_THE_SOURCE, f"{_shown(str(plan.path))}: {detail}",
             _own_name_remediation(
                 _held_repository(plan, source), naming, pins,
                 "no leg repository was created and nothing was pushed. "))
@@ -18397,8 +19310,9 @@ SOURCE_OVERRIDE_HELP = (
     "whole, its `source.repository` is cloned again, and any other "
     "`local_path` that is gone is refused as `plan-source-gone`; one that "
     "is a file, or a directory inside a repository, as "
-    "`source-not-top-level`; and one this user cannot reach, a clone "
-    "`plan` made included, as `source-unreadable`, never cloned again. "
+    "`source-not-top-level`; and one this user cannot reach, or one whose "
+    "`.git` this user cannot read, a clone `plan` made included, as "
+    "`source-unreadable`, never cloned again. "
     "Either source, where it is a partial clone (`git clone --filter`) "
     "that lacks an object its branches, tags or HEAD reach, is refused as "
     "`source-partial-clone` before anything reads it: git would fetch that "

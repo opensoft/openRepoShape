@@ -32,6 +32,17 @@ lanes/        LANES.md — the estate lane register (lane-collision-protocol
               lanes/log/ (Amendment 7).
 ```
 
+## Where the lane tooling and its manual are
+
+The files here name the lane tooling, and README-lanes (the manual for the
+register's data shape), as `opensoft/openRepoTools`'s. That name is right in
+both shapes of that project; where the files are differs. **Single-repository
+shape:** the tooling's code and the manual, `docs/README-lanes.md`, are both in
+`opensoft/openRepoTools`. **Three-repository shape:** `opensoft/openRepoTools`
+is the assembly; the code is in the code leg, `opensoft/openRepoTools-code`, and
+the manual is `docs/README-lanes.md` in the spec leg,
+`opensoft/openRepoTools-spec`; the assembly mounts them at `code/` and `spec/`.
+
 ## How it is found
 
 Named **once**, in `${AGENT_PROTOCOL_ROOT:-$HOME/.agents}/workspace.yaml`

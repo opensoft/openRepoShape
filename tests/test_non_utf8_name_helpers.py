@@ -18,6 +18,12 @@ EILSEQ is emulated the same way, by a `mkdir` that answers it.
 The two tools the tests below are written with are held here too:
 `skip_message`, which every one of them reads a skip with, and
 `windows_fsencode`, the emulation itself.
+
+A third helper, `skip_where_the_locale_does_not_spell_it_as_utf_8` (#1214),
+asks three questions of a locale through `os`, and the tests at the end hold
+its answers for UTF-8, Latin-1 and ASCII, each EMULATED the same way: CI runs
+UTF-8, and a helper that skipped where it should not would turn every row
+that asks it into a silent skip, which no run fails on.
 """
 
 from __future__ import annotations
@@ -32,6 +38,7 @@ import pytest
 from conftest import (NOT_UTF_8_PROBE, skip_message,
                       skip_where_a_name_cannot_be_not_utf_8,
                       skip_where_fsencode_gives_a_surrogate_no_byte,
+                      skip_where_the_locale_does_not_spell_it_as_utf_8,
                       windows_fsencode)
 
 LINUX_ONLY = pytest.mark.skipif(
@@ -187,3 +194,145 @@ def test_any_other_error_from_the_disk_is_the_tests_own(
     with pytest.raises(OSError) as raised:
         skip_message(skip_where_a_name_cannot_be_not_utf_8, tmp_path)
     assert raised.value.errno == code
+
+
+# --- the locale's question: does it spell the text as UTF-8 does (#1214) ------
+#
+# `skip_where_the_locale_does_not_spell_it_as_utf_8(text, premise)` asks three
+# questions, in this order, each through the `os` module at call time: can
+# `os.fsencode` spell `text`; does it give UTF-8's bytes; does `os.fsdecode`
+# read those bytes back as `text`. The reason it skips with names the question
+# that said no, so a helper that dropped, reordered or inverted one is told
+# from one that did not: a text that fails two questions is skipped by the
+# first of them.
+#
+# The three encodings are the ones `sys.getfilesystemencoding()` names, each
+# with `surrogateescape` as POSIX has it, EMULATED for one test by replacing
+# `os.fsencode`, `os.fsdecode` and `sys.getfilesystemencoding`. No Latin-1 or
+# ASCII run is needed to hold them; the last test holds the emulation to the
+# real locale of the run.
+
+UTF_8, LATIN_1, ASCII = "utf-8", "iso8859-1", "ascii"
+
+#: The questions, by the words the reason says them in.
+CANNOT_SPELL, WRITES_OTHER_BYTES, READS_OTHER_TEXT = (
+    "cannot spell", "writes", "reads")
+
+#: The premise a row names to the helper: the reason ends with it, whole.
+PREMISE = "the row needs this text spelled as UTF-8 spells it"
+
+#: Texts, built from code points: `caf` and the byte E9 that is not UTF-8,
+#: read in as a surrogate; `caf` and U+00E9, which Latin-1 writes as the byte
+#: E9 and ASCII cannot spell; U+202E and U+2026, which neither spells; and
+#: plain ASCII.
+TEXTS = {
+    "plain": "plain",
+    "byte-e9": "caf" + chr(0xDCE9),
+    "e-acute": "caf" + chr(0xE9),
+    "bidi-override": "a" + chr(0x202E) + "b",
+    "ellipsis": "(abc" + chr(0x2026) + ")",
+}
+
+#: For each text, the question that skips it in UTF-8, Latin-1 and ASCII, in
+#: that order (None: none does). UTF-8 skips nothing. Latin-1 reads the byte E9
+#: as U+00E9, writes U+00E9 as that byte and has no character for U+202E or
+#: U+2026. ASCII reads the byte E9 as the surrogate and cannot spell the rest.
+ANSWERS = {
+    "plain": (None, None, None),
+    "byte-e9": (None, READS_OTHER_TEXT, None),
+    "e-acute": (None, WRITES_OTHER_BYTES, CANNOT_SPELL),
+    "bidi-override": (None, CANNOT_SPELL, CANNOT_SPELL),
+    "ellipsis": (None, CANNOT_SPELL, CANNOT_SPELL),
+}
+ENCODINGS = (UTF_8, LATIN_1, ASCII)
+ASKED = [pytest.param(encoding, TEXTS[name], question,
+                      id=f"{encoding}-{name}")
+         for name, answered in ANSWERS.items()
+         for encoding, question in zip(ENCODINGS, answered)]
+
+
+def fsencode_in(encoding: str):
+    """`os.fsencode` as a POSIX locale of `encoding` has it: that codec, with
+    `surrogateescape`, so U+DC80 to U+DCFF are the bytes 0x80 to 0xFF. A path
+    is taken as the real one takes it (`os.fspath` first), and bytes go
+    through as they are."""
+    def fsencode(name):
+        name = os.fspath(name)
+        if isinstance(name, bytes):
+            return name
+        return name.encode(encoding, "surrogateescape")
+    return fsencode
+
+
+def fsdecode_in(encoding: str):
+    """`os.fsdecode` as a POSIX locale of `encoding` has it: that codec, with
+    `surrogateescape`, so a byte it has no character for is U+DC80 to U+DCFF.
+    A str goes through as it is, as on every system."""
+    def fsdecode(name):
+        name = os.fspath(name)
+        if isinstance(name, str):
+            return name
+        return name.decode(encoding, "surrogateescape")
+    return fsdecode
+
+
+def locale_of(monkeypatch, encoding: str) -> None:
+    """A locale whose file system encoding is `encoding`, as far as the
+    helper can ask it: `os.fsencode`, `os.fsdecode` and the name the reason
+    gives it."""
+    monkeypatch.setattr(os, "fsencode", fsencode_in(encoding))
+    monkeypatch.setattr(os, "fsdecode", fsdecode_in(encoding))
+    monkeypatch.setattr(sys, "getfilesystemencoding", lambda: encoding)
+
+
+def what_the_reason_says(question: str, encoding: str, text: str) -> str:
+    """How the reason opens, for the question that skipped."""
+    as_utf_8 = text.encode("utf-8", "surrogateescape")
+    said = {CANNOT_SPELL: f"cannot spell {ascii(text)}: ",
+            WRITES_OTHER_BYTES: f"writes {ascii(text)} as ",
+            READS_OTHER_TEXT: f"reads {as_utf_8!r} as "}[question]
+    return f"this locale's encoding ({encoding}) {said}"
+
+
+@pytest.mark.parametrize(("encoding", "text", "question"), ASKED)
+def test_the_helper_skips_what_the_locale_does_not_spell_as_utf_8_does(
+        monkeypatch, encoding, text, question):
+    """UTF-8 spells every text as itself, so nothing is skipped. A locale of
+    one byte to a character skips a text it writes as other bytes, or reads
+    back as other text, or cannot spell, and the reason says which, in the
+    encoding's own name and with the row's premise at its end."""
+    locale_of(monkeypatch, encoding)
+    reason = skip_message(skip_where_the_locale_does_not_spell_it_as_utf_8,
+                          text, PREMISE)
+    if question is None:
+        assert reason is None, (
+            f"{encoding} spells {ascii(text)} as UTF-8 does, and it was "
+            f"skipped: {reason}")
+        return
+    assert reason is not None, (
+        f"{encoding} does not spell {ascii(text)} as UTF-8 does, and the row "
+        "ran")
+    opening = what_the_reason_says(question, encoding, text)
+    assert reason.startswith(opening), reason
+    assert reason.endswith(f": {PREMISE}"), reason
+    assert reason.isascii(), reason
+
+
+@LINUX_ONLY
+@pytest.mark.parametrize("text", [pytest.param(text, id=name)
+                                  for name, text in TEXTS.items()])
+def test_the_emulation_of_this_runs_locale_answers_as_the_real_one_does(
+        monkeypatch, text):
+    """The emulation is held to the locale this run really has: the helper
+    answers the same in the emulation of its file system encoding as with
+    the real `os`, reason and all. A run in a locale that is none of the
+    three has nothing to hold it to."""
+    encoding = sys.getfilesystemencoding()
+    if encoding not in ENCODINGS:
+        pytest.skip(f"no emulation of {encoding} here")
+    real = skip_message(skip_where_the_locale_does_not_spell_it_as_utf_8,
+                        text, PREMISE)
+    locale_of(monkeypatch, encoding)
+    emulated = skip_message(skip_where_the_locale_does_not_spell_it_as_utf_8,
+                            text, PREMISE)
+    assert emulated == real
