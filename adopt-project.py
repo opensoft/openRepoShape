@@ -266,6 +266,18 @@ from shape_materialize import (  # noqa: E402
     refuse_bad_leg_paths as _refuse_bad_leg_paths,
 )
 import shape_advisory  # noqa: E402
+# WHICH REMOTE IS THE SOURCE'S IS ONE RULE FOR BOTH TOOLS (#1292).
+# `_remotes_of`, `_remote_exists` and `_printable_ascii` were defined here
+# (#1276) and are `scripts/shape_advisory.py`'s now, under the names this
+# file has always called them by: `shape-doctor.py` asks the same question
+# of the repository it is run in, for the `--project` and `--org` of its
+# adoption line, and a copy of the rule there would drift from this one as
+# its copy of `plan`'s regex did (#521). `shape_advisory.remotes_of` says
+# why the rule is what it is, and why it lives there.
+from shape_advisory import (  # noqa: E402
+    printable_ascii as _printable_ascii, remote_exists as _remote_exists,
+    remotes_of as _remotes_of,
+)
 # #172's shape half, shared with the scaffold since #197 (see that section
 # below), under the names this file has always called it by.
 from shape_materialize import (  # noqa: E402
@@ -3007,39 +3019,6 @@ class Source:
 ORIGIN = "origin"
 
 
-def _remote_names(path: Path) -> list[str]:
-    """The source's remotes as `git remote` lists them, each as `Source.tree`
-    reads a path (`_git_path`); none where git cannot list them."""
-    try:
-        listed = git_out(["remote"], cwd=path, binary=True)
-    except Refusal:
-        return []
-    return [_git_path(name) for name in listed.splitlines() if name]
-
-
-def _remote_exists(path: Path, name: str) -> bool:
-    """Whether the source has a remote `name` as `git remote get-url` reads
-    one: listed by `git remote`, or kept as a file in `.git/branches` or
-    `.git/remotes`, which it does not list. `name` is a remote this tool
-    reads (`origin`, or one `_remotes_of` took), never one that starts with
-    `-`, which git would read as an option."""
-    return subprocess.run(["git", "remote", "get-url", name], cwd=path,
-                          capture_output=True, check=False).returncode == 0
-
-
-def _printable_ascii(name: str) -> bool:
-    """Whether `name` is printable ASCII, which every way through can type
-    in a command line in any locale."""
-    return name.isascii() and name.isprintable()
-
-
-def _readable_remote_name(name: str) -> bool:
-    """Whether `name` may be the source's remote read in `origin`'s place:
-    printable ASCII, and not one that starts with `-`, which git reads as an
-    option (`git remote get-url -x` is an unknown switch, not the remote)."""
-    return _printable_ascii(name) and not name.startswith("-")
-
-
 def _holds_branches(name: str) -> bool:
     """Whether git can hold a branch of the source's remote `name`, which is
     whether `refs/remotes/<name>/<branch>` is a ref name git takes
@@ -3052,50 +3031,6 @@ def _holds_branches(name: str) -> bool:
         ["git", "check-ref-format",
          _path_argument(f"refs/remotes/{name}/branch")],
         capture_output=True, check=False).returncode == 0
-
-
-def _remotes_of(path: Path) -> tuple[str, list[str]]:
-    """`(remote, passed_over)`: the remote the source's facts are read from,
-    `_source_remote`'s, and the remotes it has where it has no `origin` and
-    none is read in that one's place, which is never guessed among; else
-    `[]`.
-
-    A SOURCE CLONED UNDER `clone.defaultRemoteName` HAS NO `origin` (#1276).
-    `git clone` names the remote after that setting, `upstream` say, and
-    `plan` read only a remote named `origin`: it refused `adopt-no-org`
-    with no `--org`, read the branch HEAD was on as the default branch, and
-    asked `--tracking-branch` of the source's own branches, where the same
-    source with `origin` read the organisation, `origin/HEAD` and
-    `origin`'s branches. So the source's ONLY remote is read in `origin`'s
-    place, as git itself reads it (`git ls-remote --get-url`, `git fetch`
-    with no remote named): the current branch's remote, else the only
-    remote, else `origin`, measured with git 2.43.
-
-    A SOURCE THAT HAS AN `origin` IS READ AS IT WAS, whatever other remotes
-    it has: listed by `git remote`, or a file in `.git/branches` or
-    `.git/remotes`, which `git remote` does not list and `git remote
-    get-url origin` reads. A source with no remote is read as it was too.
-
-    NOR IS ONE GUESSED AMONG SEVERAL. The current branch's remote is not
-    asked: it is whichever branch this working copy has checked out, not
-    the branch adopted, which is read from the remote, and `git switch`
-    would change the remote it named, the organisation and the default branch
-    with it, between `plan` and `check`. Nor is `clone.defaultRemoteName`:
-    git reads it in `git clone` alone, and it is this machine's setting
-    now, not the source's. A source with several remotes and no `origin`
-    is read as one with no remote, and `adopt-no-org` and
-    `plan-tracking-branch-missing` name the remotes passed over
-    (`_passed_over`) and the ways through, which are no fetch from an
-    `origin` it has not (`_tracking_branch_remediation`). So is a remote
-    whose name is not printable ASCII, which every way through names in a
-    command line, in any locale, and so is one that starts with `-`, which
-    git reads as an option."""
-    names = _remote_names(path)
-    if not names or ORIGIN in names or _remote_exists(path, ORIGIN):
-        return ORIGIN, []
-    if len(names) == 1 and _readable_remote_name(names[0]):
-        return names[0], []
-    return ORIGIN, names
 
 
 def _source_remote(path: Path) -> str:

@@ -9813,6 +9813,133 @@ def test_an_ancestors_origin_names_no_org_for_a_loose_directory(standard,
     assert module.origin_org(loose) is None
 
 
+#: The repository RV1280 measured on #1280 (S4), and a fork beside it.
+THING = "https://github.com/testorg/Thing.git"
+FORK = "https://github.com/someone/Fork.git"
+
+
+def with_remotes(path: Path, remotes: list) -> Path:
+    """A one-commit repository at `path` whose remotes are `remotes`,
+    `(name, url)` pairs, written with `git config`, as `git clone` under
+    `clone.defaultRemoteName` writes its one: `git remote add` refuses a
+    name that starts with `-`, and #1280's review made its `-x` this way."""
+    repository(path)
+    for name, url in remotes:
+        git("config", f"remote.{name}.url", url, cwd=path)
+        git("config", f"remote.{name}.fetch",
+            f"+refs/heads/*:refs/remotes/{name}/*", cwd=path)
+    return path
+
+
+#: `(remotes, the --project and the organisation the adoption line names)`
+#: for a clone in `work-upstream` (#1292). Its only remote is read where it
+#: has no `origin`, as `adopt-project.py plan` reads it since #1276; an
+#: `origin` is read whatever else it has; and several remotes with no
+#: `origin`, or one whose name is not printable ASCII or starts with `-`,
+#: are read as none, as `plan` passes them over.
+REMOTE_LAYOUTS = [
+    pytest.param([("upstream", THING)], "Thing", "testorg",
+                 id="only-upstream"),
+    pytest.param([("origin", THING)], "Thing", "testorg", id="only-origin"),
+    pytest.param([("origin", THING), ("fork", FORK)], "Thing", "testorg",
+                 id="origin-and-fork"),
+    pytest.param([("upstream", THING), ("fork", FORK)], "WorkUpstream", None,
+                 id="two-and-no-origin"),
+    pytest.param([("-x", THING)], "WorkUpstream", None, id="starts-with-dash"),
+    pytest.param([("café", THING)], "WorkUpstream", None,
+                 id="not-printable-ascii"),
+]
+
+
+@pytest.mark.parametrize("remotes, project, org", REMOTE_LAYOUTS)
+def test_the_adoption_line_reads_the_remote_plan_reads(standard, tmp_path,
+                                                       remotes, project, org):
+    """#1292 (RV1280 S4 on #1280): `plan` reads a source's only remote in
+    `origin`'s place, and the doctor read `origin` alone, so for a clone of
+    `testorg/Thing` whose only remote is `upstream`, in `work-upstream`,
+    `the way in` said `--project WorkUpstream --org <your-org>`, which
+    `plan` refuses `adopt-not-the-source` once `testorg` is filled in.
+
+    The doctor now asks `shape_advisory.source_remote`, the rule `plan`
+    imports, so the line is the one the same clone with `origin` gets, and
+    the `naming` row and the Triad advisory read the remote's name beside
+    the folder's, as they do for `origin`. Every other layout reads as it
+    did: `origin` whatever else is there, and none where `plan` reads none.
+    """
+    module = doctor_module(standard)
+    here = with_remotes(tmp_path / "work-upstream", remotes)
+    row = module.check_the_way_in(module.Context(here))
+    adopt = module.SHAPE_ROOT / "adopt-project.py"
+    line = (f"{module.PYTHON} {module.quote_arg(adopt, os.name)} "
+            f"plan --source {module.quote_arg(here, os.name)} "
+            f"--project {module.quote_arg(project, os.name)}")
+    if org is None:
+        line += f" --org {module.ORG_PLACEHOLDER}"
+    assert row.next_command == line, row.next_command
+    assert row.detail["origin_org"] == org, row.detail
+    assert row.detail["suggested_project"] == project, row.detail
+    names = ["work-upstream"] + ([] if org is None else ["Thing"])
+    naming = module.check_not_a_root_naming(module.Context(here))
+    assert naming.detail["names"] == names, naming.detail
+    assert module.shape_advisory.repository_names(here) == names
+
+
+@pytest.mark.parametrize("remotes, project, org", REMOTE_LAYOUTS)
+def test_plan_takes_the_adoption_line_as_the_doctor_fills_it(
+        standard, tmp_path, remotes, project, org):
+    """#1292's parity row: the doctor's adoption line, `<your-org>` filled
+    in as its `why` asks, is a line `plan` takes, for every layout. Before
+    it, the `upstream` clone's line ended `REFUSED adopt-not-the-source:
+    --org testorg and --project WorkUpstream name testorg/WorkUpstream, and
+    the source is testorg/Thing`. The organisation the doctor reads is the
+    one `plan` reads off the same clone (`_remote_repository`), as
+    `test_the_adoption_line_names_an_org_only_where_plan_reads_none` holds
+    it for `origin`'s spellings.
+    """
+    module = doctor_module(standard)
+    here = with_remotes(tmp_path / "work-upstream", remotes)
+    row = module.check_the_way_in(module.Context(here))
+    named = row.detail["suggested_project"]
+    filled = [] if row.detail["origin_org"] else ["--org", "testorg"]
+    assert row.next_command.endswith(
+        f"--project {module.quote_arg(named, os.name)}"
+        + (f" --org {module.ORG_PLACEHOLDER}" if filled else "")), \
+        row.next_command
+    # `--elected-by` is the person's, which `plan` reads from `git config
+    # user.name` where the line gives none, and this run has no such name;
+    # `--out` keeps the plan out of the directory the suite runs in.
+    result = run_script(standard / "adopt-project.py", "plan", "--source",
+                        str(here), "--project", named, *filled,
+                        "--elected-by", "Test Human",
+                        "--out", str(tmp_path / "adoption-plan.yaml"))
+    said = result.stdout + result.stderr
+    assert "adopt-not-the-source" not in said, said
+    assert result.returncode == 0, said
+    read = adoption_module(standard)._remote_repository(here)
+    assert (read or "/").split("/")[0] == (org or ""), read
+    assert module.origin_org(here) == org
+
+
+@pytest.mark.parametrize("remote", ["origin", "upstream"])
+def test_a_clone_whose_only_remote_names_a_leg_is_offered_no_adoption(
+        standard, tmp_path, remote):
+    """#1292: `shape_advisory.repository_names` read `origin` alone, so a
+    clone of `testorg/Atlas-code` whose only remote is `upstream` was a
+    single repository to the Triad advisory, and `the way in` offered to
+    adopt the code leg as a project of its own, a line `plan` refuses
+    `adopt-not-the-source`. Read from its only remote, it is the leg's row,
+    with no NEXT, as the same clone with `origin` is.
+    """
+    module = doctor_module(standard)
+    leg = "https://github.com/testorg/Atlas-code.git"
+    here = with_remotes(tmp_path / "work", [(remote, leg)])
+    assert module.shape_advisory.repository_names(here) == ["work",
+                                                            "Atlas-code"]
+    row = module.check_the_way_in(module.Context(here))
+    assert row.next_command is None, row.next_command
+    assert "NAMED OR WRITTEN AS A LEG" in row.reason, row.reason
+
+
 def test_the_way_in_row_emits_a_classifying_name_verbatim(standard, tmp_path):
     """#109: the derivation used to run unconditionally, respelling a name
     the `naming` row just above this one already classified.
