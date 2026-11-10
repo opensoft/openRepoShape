@@ -43,8 +43,8 @@ from pathlib import Path
 import pytest
 
 from conftest import (ADOPT, REPO, clone_just_pushed, git,
-                      load_without_bytecode, make_source_repo, run_script,
-                      write_plan)
+                      load_without_bytecode, make_source_repo,
+                      printed_follow_ups, run_script, write_plan)
 from test_adopt_literal_names import follow_up
 
 sys.path.insert(0, str(REPO / "scripts"))
@@ -203,7 +203,7 @@ def planned_follow_ups(source: Path, out: Path, spec_path: str,
                          extra=("--spec-path", spec_path,
                                 "--code-path", code_path))
     assert written.returncode == 0, written.stderr + written.stdout
-    return [str(item) for item in load_yaml(out)["follow_ups"]]
+    return printed_follow_ups(written.stdout)
 
 
 @pytest.mark.parametrize("spec_path, code_path, across", MOUNTS)

@@ -16,7 +16,8 @@ from pathlib import Path
 
 import pytest
 
-from conftest import ADOPT, REPO, git, resolve, run_script, write_plan
+from conftest import (ADOPT, REPO, git, printed_follow_ups, resolve,
+                      run_script, write_plan)
 from test_adopt_project_is_the_source import (DERIVED_OWN_NAME, NAME_RULE,
                                               RENAME_FIRST)
 
@@ -168,8 +169,9 @@ def test_an_unrecognised_source_package_is_read_by_extension(source_repo,
 def test_the_plan_records_the_follow_ups_the_split_makes_necessary(source_repo,
                                                                    tmp_path):
     out = tmp_path / "plan.yaml"
-    assert write_plan(source_repo, out).returncode == 0
-    follow_ups = " ".join(load_yaml(out)["follow_ups"])
+    written = write_plan(source_repo, out)
+    assert written.returncode == 0
+    follow_ups = " ".join(printed_follow_ups(written.stdout))
     assert "CONTRACTS_DIR" in follow_ups
     assert "shape/Makefile" in follow_ups
     assert "shape/README.md" in follow_ups
@@ -611,7 +613,7 @@ def test_plan_on_medxehr_matches_the_rulings(tmp_path):
     plan = load_yaml(out)
     assert plan["source"]["files"] == 167
     assert plan["source"]["commits"] == 25
-    follow_ups = " ".join(plan["follow_ups"])
+    follow_ups = " ".join(printed_follow_ups(result.stdout))
     assert "scripts/validate.py" in follow_ups, (
         "the harness that reads `contracts/` must be named, not implied")
     assert "CONTRACTS_DIR" in follow_ups

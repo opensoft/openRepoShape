@@ -4162,10 +4162,13 @@ def cross_leg_references(source: "Source",
     somebody edits it, so the plan says which file and the human decides when.
 
     IT NAMES THE TWO MOUNT KEYS, `legs.code_path` AND `legs.spec_path`, AND NO
-    PATH OF EITHER (#600), so it takes neither path. `plan` writes the list
+    PATH OF EITHER (#600), so it takes neither path. `plan` wrote the list
     once; `MOUNT_REMEDIATION` and `plan-leg-path-collides` ask a person to
     change those keys afterwards; `check`, the split commit's message and the
-    pull request's body read the line back. It said `code/src/app/main.py` and
+    pull request's body read the line back. (Since #1206 `check` and
+    `execute` work the list out again from the plan as it stands,
+    `_follow_ups_as_it_stands`, and `plan` stores none; the line still names
+    the keys, which hold whatever mount the plan now says.) It said `code/src/app/main.py` and
     `../spec/contracts/` "relative to `code/`" for legs mounted elsewhere. The
     file is named as the code leg holds it and the directory as the spec leg
     does: both are paths in the SOURCE, which no edit of the plan moves. The
@@ -4313,8 +4316,9 @@ def contracts_from_code_leg(spec_path, code_path, spec_leg_paths,
     are, computed from the values the surface itself prints:
     `check`'s `mount the legs at X/ and Y/`, from the plan as it stands, and
     the split message's `mounted back here at X/ and Y/`, from the mounts
-    `execute` made. It is never stored in `follow_ups:`, so it cannot go stale
-    between a hand edit and the next `check`, and it needs no `git grep`.
+    `execute` made. It was never stored in `follow_ups:`, so it could not go
+    stale between a hand edit and the next `check`, and since #1206 no
+    follow-up is (`_follow_ups_as_it_stands`).
 
     THE SPEC LEG'S OWN PATH, NOT ONLY ITS `contracts/` (#906). The follow-up
     is written for a code file that names ANY directory the plan sends to
@@ -4335,7 +4339,7 @@ def contracts_from_code_leg(spec_path, code_path, spec_leg_paths,
     computed from two strings that are not two mounts leads nowhere.
     `spec_leg_paths` are the paths the plan assigns to the spec leg, as
     `_leg_paths` reads them, and `follow_ups` the plan's, as
-    `_plan_follow_ups` reads them.
+    `_follow_ups_as_it_stands` works them out.
     """
     holds_contracts = any(path == "contracts/" or path.startswith("contracts/")
                           for path in spec_leg_paths)
@@ -4512,7 +4516,7 @@ def follow_ups_for(source: "Source", entries: list["Entry"], names: dict,
     The last one names the base `execute` opens the pull request against as
     the plan's `tracking_branch` (#479). It said "the source's default
     branch" while `execute` used `--base main` whatever that branch was. It
-    names the KEY and not its value: this list is written once, by `plan`,
+    names the KEY and not its value: this list was written once, by `plan`,
     and a value named here went on naming the old branch after a hand edit
     of `tracking_branch:`, which `plan-tracking-branch-missing`'s
     remediation asks for, in `check`'s output and in the pull request's own
@@ -4616,8 +4620,7 @@ def assigned_paths(entries) -> dict[str, list[str]]:
 
 
 def render_plan(args, source: Source, entries: list[Entry], names: dict,
-                pins: dict, follow_ups: list[str],
-                seeded: list[str]) -> str:
+                pins: dict, seeded: list[str]) -> str:
     lines = [
         "schema_version: 1",
         f"kind: {PLAN_KIND}",
@@ -4699,10 +4702,14 @@ def render_plan(args, source: Source, entries: list[Entry], names: dict,
         "", "paths:"]
     for entry in entries:
         entry.write(lines)
-    lines += ["", "follow_ups:"]
-    for item in follow_ups:
-        lines.append(f"  - {y(item)}")
-    lines += ["", "summary:"]
+    # No `follow_ups:` (#1206): a list written here went stale at the first
+    # edit of an entry, and `_follow_ups_findings` refuses one.
+    lines += ["",
+              "# The follow-ups are NOT stored here: `check` prints them, and",
+              "# `execute` writes them into the split commit's message, each",
+              "# worked out from the entries above as they stand, so an edit",
+              "# of a `leg:` changes them.",
+              "", "summary:"]
     for leg, row in summary_of(entries).items():
         lines.append(f"  {leg}:")
         for key, value in row.items():
@@ -7092,16 +7099,19 @@ def cmd_plan(args) -> int:
         policy, walk(policy, [(path, size) for path, _, _, size in tree]),
         source)
     implied = ask_about_refused_paths(ruled, tree)
+    #
+    # The follow-ups are PRINTED and never stored (#1206): `check` and
+    # `execute` work them out from the plan as it stands
+    # (`_follow_ups_as_it_stands`), so a hand edit of an entry changes them.
     materialized = _predict_collisions(
-        implied, attributes_link=any(path == ATTRIBUTES and mode == SYMLINK_MODE
-                                     for path, mode, _, _ in tree))
+        implied, attributes_link=_attributes_link(tree))
     follow_ups = follow_ups_for(source, implied, names, materialized)
     seeded = seeded_legs(assigned_paths(implied))
     entries = with_defaults(ask_about_refused_paths(
         ask_about_submodules(policy, ruled, tree), tree))
     out = Path(args.out)
     _write_the_plan(args, out, render_plan(args, source, entries, names, pins,
-                                           follow_ups, seeded))
+                                           seeded))
     # The plan that records the clone exists from here, whatever happens
     # next: `_leave_the_clones` keeps it, though the report below be cut
     # short by a closed pipe or Ctrl-C (#652's review, F2).
@@ -7259,11 +7269,14 @@ def _predict_collisions(entries: list[Entry], *,
     The WORDING comes from `shape_materialize.collision_follow_up`, the one
     place a collision's follow-up is said — including the one collision
     whose answer is not "merge": an `AGENTS.md` or `CLAUDE.md` the source
-    already holds needs ONE LINE ADDED, not a merge. The plan stores what it
-    returns in `follow_ups:`, and `execute` carries those items into the
-    split commit's message and names the collisions that actually happened
-    by path only. This said `execute` reports them through that function,
-    which `execute` never calls (#1105's second review, NIT-3).
+    already holds needs ONE LINE ADDED, not a merge. `plan` prints what it
+    returns, and `check` and `execute` ask it again of the plan as it stands
+    (`_follow_ups_as_it_stands`, #1206): `check` prints it, and `execute`
+    writes it into the split commit's message and names the collisions that
+    actually happened by path only. This said `execute` reports them
+    through that function, which `execute` never calls (#1105's second
+    review, NIT-3); and the plan stored the lines, which went on naming a
+    `shape/Makefile` after a hand move of the kept `Makefile` to a leg.
 
     The PATHS come from `assembly_root_paths`, the list #172's mount rule
     reads, so the two cannot list different files. The list this function
@@ -7293,6 +7306,65 @@ def _predict_collisions(entries: list[Entry], *,
                                 attributes_link=attributes_link,
                                 reads_first=reads_first)
             for path, actual in beside.items()]
+
+
+def _attributes_link(tree: list) -> bool:
+    """Whether the source's root `.gitattributes` is a symlink, read from
+    the source tree's mode: `_predict_collisions`' `attributes_link`, asked
+    one way by `plan`, `check` and `execute` (#471, #1206)."""
+    return any(path == ATTRIBUTES and mode == SYMLINK_MODE
+               for path, mode, _, _ in tree)
+
+
+class _EntryAsItStands(NamedTuple):
+    """A plan entry as `follow_ups_for` and `_predict_collisions` read one:
+    its path, and its leg where that is one of `LEG_VALUES`, else None, as
+    `_leg_paths` reads the legs `execute` splits by."""
+    path: str
+    leg: str | None
+
+
+def _follow_ups_as_it_stands(plan: Plan, source: Source,
+                             names: dict) -> list[str]:
+    """The follow-ups of the plan AS IT STANDS: `follow_ups_for` over the
+    plan's entries now, with `_predict_collisions` over the paths they send
+    to the root, and `cross_leg_references`' `git grep` over the source
+    `check` or `execute` opened (#1206).
+
+    `plan` wrote this list once, into `follow_ups:`, and `check` and the
+    split commit's message, which is also the pull request's body, read it
+    back. The plan is meant to be edited -- moving a kept Makefile to the
+    code leg "is a one-line edit of the plan" (`root-project-makefile`), and
+    every question is answered by editing `leg:` -- and after such an edit
+    the stored list still described the plan as `plan` wrote it. A kept
+    `GNUmakefile` moved to the code leg left a line saying GNU make at the
+    root reads it; a `GNUmakefile/` question answered `root` left one saying
+    the root Makefile wires `CONTRACTS_DIR`, at a root where `make` stops at
+    that directory; and a kept `Makefile` moved to the code leg left "merge
+    shape/Makefile into Makefile" over a split that wrote no
+    `shape/Makefile`. Worked out here, from the entries `execute` splits by,
+    each is the line a fresh `plan` writes for a source whose rules give the
+    edited answer directly, as #600 made the read-across line, and `plan`
+    stores none (`_follow_ups_findings` refuses a stored list by name).
+
+    `check` asks it in `_print_what_will_happen`, `execute` in
+    `cmd_execute` before any leg exists, and hands it to
+    `_commit_the_split`. An entry `ask_about_submodules` asked is read as it
+    stands, `leg: null`, until it is answered, where `plan`'s own report
+    reads what the rules imply (#166's NEW-1).
+    """
+    # An entry whose path `execute` will not extract is `check`'s
+    # `plan-unsafe-path`, which `execute` refuses before any leg exists: it
+    # is read in no follow-up, so `git grep` is never handed it (a NUL in an
+    # argument is a `ValueError` before git runs).
+    entries = [_EntryAsItStands(path, str(e.get("leg"))
+                                if str(e.get("leg")) in LEG_VALUES else None)
+               for e in plan.entries
+               for path in (str(e.get("path")),)
+               if entry_path_problem(path) is None]
+    collisions = _predict_collisions(
+        entries, attributes_link=_attributes_link(source.tree()))
+    return follow_ups_for(source, entries, names, collisions)
 
 
 # ---------------------------------------------------------------------------
@@ -9338,6 +9410,18 @@ def _refused_by_policy(path: str) -> str | None:
 # split commit's message as three follow-ups, `a`, `b` and `c`, and an item
 # `- true` as `True`.
 #
+# Since #1206 nothing reads `follow_ups:` at all. `plan` wrote the list
+# once, the plan is edited afterwards on purpose, and `check` and the split
+# commit's message went on naming what the root no longer kept: both now
+# work the follow-ups out from the entries as they stand
+# (`_follow_ups_as_it_stands`), and `plan` writes no `follow_ups:`. A plan
+# that still holds one is REFUSED BY NAME, and not read as nothing: it is
+# the list a person was told they may write items into, and an item of
+# theirs read as nothing would leave the split commit and the pull
+# request's body without a word. #293's findings fold into that one, since
+# no reader iterates the value any more. Absent, bare or `[]`, it holds
+# nothing to lose, and passes.
+#
 # `elected_on:` (#294). Nothing asked whether it was a date but
 # `_template_values`, and only for a plan with no `reference:`:
 # `default_reference` asked `election_date` after `_create_leg_remotes` had
@@ -9351,19 +9435,20 @@ def _refused_by_policy(path: str) -> str | None:
 # file and not from a flag: the refusal `election_date` raises names
 # `--elected-on`, which is right for `plan` and wrong here.
 
-#: `check`'s finding for a `follow_ups:` that is not a list of text, and the
-#: code `execute` refuses it under (#293).
+#: `check`'s finding for a plan that holds a `follow_ups:` list, and the code
+#: `execute` refuses it under (#293, #1206): one code per key, as #386 names
+#: the others `plan-bad-<key>`.
 BAD_FOLLOW_UPS = "plan-bad-follow-ups"
 
-#: Said once after the `follow_ups:` findings.
+#: Said once after the `follow_ups:` finding.
 FOLLOW_UPS_REMEDIATION = (
-    "Remediation: write `follow_ups:` in the plan file as `plan` writes it, "
-    "a list with one item of text per follow-up, each on its own line as "
-    "`  - \"<what is left to do>\"`, or `follow_ups: []` for none. `execute` "
-    "writes each item as one line of the split commit's message, so it takes "
-    "nothing else: a number or a boolean is not a list, text on the key's own "
-    "line would be written one character per follow-up, and an item that is "
-    "not text would be written as Python spells it (`True`, `None`).")
+    "Remediation: the follow-ups are no longer stored in the plan, so "
+    "delete `follow_ups:` and every item under it from the plan file: "
+    "`check` and `execute` now work them out from the plan as it stands, "
+    "from its entries, so an edit of an entry's `leg:` changes them. An item "
+    "you wrote there yourself is no longer carried into the split commit's "
+    "message, which is also the pull request's body: copy it out first, and "
+    "add it to the pull request yourself.")
 
 
 def _read_as(value) -> str:
@@ -9407,40 +9492,24 @@ def _plan_key_said(data: dict, key: str) -> str:
     return "absent" if key not in data else _plan_value_said(data[key])
 
 
-def _plan_follow_ups(plan: Plan) -> list[str]:
-    """The plan's follow-ups as `execute` writes them into the split commit's
-    message: each item of a `follow_ups:` LIST that is text, and nothing for a
-    `follow_ups:` that is absent, bare or anything but a list.
-
-    THE ONE READ, for the three readers (`_plan_values`,
-    `_print_what_will_happen`, `_commit_the_split`), so that none of them
-    iterates a number or spells a string out one character at a time. What it
-    leaves out is never silently dropped from a run: `_follow_ups_findings`
-    reports it in `check`, and `execute` has refused it through
-    `_refuse_what_check_finds` before the split commit is written.
-    """
-    value = plan.get("follow_ups", [])
-    if not isinstance(value, list):
-        return []
-    return [item for item in value if isinstance(item, str)]
-
-
 def _follow_ups_findings(plan: Plan) -> list[str]:
-    """A FINDING for a `follow_ups:` that is present and not a list, or for
-    each item of one that is not text; `[]` for a list of text, an empty
-    list and a bare key (#293)."""
+    """ONE FINDING for a plan that holds a `follow_ups:` with anything in
+    it, a list of text as `plan` wrote it before #1206 or any other value;
+    `[]` for none, a bare key and an empty list, which hold nothing to lose.
+
+    No command reads the key (#1206): `check` and `execute` work the
+    follow-ups out from the plan as it stands (`_follow_ups_as_it_stands`),
+    so a stored list is never printed beside them, never written into the
+    split commit's message, and never iterated, which is what #293's
+    findings were for (`follow_ups: 5` ended in a `TypeError`). The value is
+    said as `_read_as` says it: `a list of 4 item(s)`, `the number 5`."""
     value = plan.get("follow_ups")
-    if value is None:
+    if value is None or value == []:
         return []
-    if not isinstance(value, list):
-        return [f"FINDING {BAD_FOLLOW_UPS}: `follow_ups:` is "
-                f"{_read_as(value)}, not a list: `execute` writes each item "
-                "of a list into the split commit's message as one follow-up"]
-    return [f"FINDING {BAD_FOLLOW_UPS}: item {number} of `follow_ups:` is "
-            f"{_read_as(item)}, not text: `execute` writes each item into the "
-            "split commit's message as one line of text"
-            for number, item in enumerate(value, 1)
-            if not isinstance(item, str)]
+    return [f"FINDING {BAD_FOLLOW_UPS}: the plan holds `follow_ups:`, "
+            f"{_read_as(value)}, and the follow-ups are no longer stored in "
+            "the plan: `check` and `execute` work them out from the plan as "
+            "it stands, and no command reads this list"]
 
 
 #: `check`'s finding for an `elected_on:` that `election_date` does not read,
@@ -9492,8 +9561,8 @@ def _elected_on_findings(plan: Plan) -> list[str]:
 
 def _plan_field_findings(plan: Plan) -> tuple[list[str], list[str]]:
     """`_elected_on_findings` and `_follow_ups_findings`, in the order `plan`
-    writes the two keys (`elected_on:` before `follow_ups:`), and what `check`
-    prints once after them."""
+    wrote the two keys (`elected_on:` before `follow_ups:`, which it writes
+    no more since #1206), and what `check` prints once after them."""
     dated, followed = _elected_on_findings(plan), _follow_ups_findings(plan)
     return (dated + followed,
             ([ELECTED_ON_REMEDIATION] if dated else [])
@@ -11236,11 +11305,13 @@ def _print_what_will_happen(plan: Plan, source: Source, names: dict,
     mounts = [_plan_leg_path(plan, role) for role in EXTRACTED_LEGS]
     mounted = (f" at {_shown(mounts[0])}/ and {_shown(mounts[1])}/"
                if all(isinstance(mount, str) for mount in mounts) else "")
-    # Beside the mounts, the path the read-across follow-up leaves to them,
-    # from the mounts as the plan stands (#600's review, F1).
+    # The follow-ups of the plan as it stands, which `plan` no longer
+    # stores (#1206), and beside the mounts the path the read-across
+    # follow-up leaves to them, from the mounts as the plan stands (#600's
+    # review, F1).
+    follow_ups = _follow_ups_as_it_stands(plan, source, names)
     across = contracts_from_code_leg(mounts[0], mounts[1],
-                                     _leg_paths(plan)["spec"],
-                                     _plan_follow_ups(plan))
+                                     _leg_paths(plan)["spec"], follow_ups)
     print(f"  ONE split commit on branch "
           f"{_shown(str(plan.get('adopt_branch', ADOPT_BRANCH)))} "
           f"of {names['assembly']}: `git rm -r` those paths, mount the "
@@ -11264,7 +11335,7 @@ def _print_what_will_happen(plan: Plan, source: Source, names: dict,
               f"({_shown(values['PIN_DIGEST_SOURCE'])})")
     print("  the source is never deleted, never renamed, never force-pushed")
     print(_topics_line(topic, local))
-    for item in _plan_follow_ups(plan):
+    for item in follow_ups:
         print(f"  follow-up: {_shown(item)}")
 
 
@@ -17131,8 +17202,12 @@ def _commit_the_split(plan: Plan, source: Source, assembly: Path,
                       names: dict, urls: dict, values: dict, work_root: Path,
                       paths_for: dict, seeded: list, spec_path: str,
                       code_path: str, branch: str, leg_commits: dict,
-                      answers: str = "") -> tuple[str, str, list] | None:
+                      answers: str = "", *,
+                      follow_ups: list[str]) -> tuple[str, str, list] | None:
     """(c) ONE split commit on a branch of the source, pushed.
+
+    `follow_ups` are the split message's, `_follow_ups_as_it_stands`' of
+    the plan, which `cmd_execute` works out before any leg exists (#1206).
 
     Returns `(split_commit, message, collisions)` — the message travels on
     because it is also the pull request's body, and the collisions,
@@ -17223,7 +17298,6 @@ def _commit_the_split(plan: Plan, source: Source, assembly: Path,
                   f"{_appended_lines(materialized)}, so every checkout keeps "
                   "their bytes (#471); none of its own lines was changed")
 
-        follow_ups = _plan_follow_ups(plan)
         message = _split_message(names, paths_for, leg_commits, spec_path,
                                  code_path, follow_ups,
                                  materialized.collisions, seeded,
@@ -17330,6 +17404,11 @@ def cmd_execute(args) -> int:
     # a plan that answered none.
     answers = answered_path_record(PathPolicy.load(PATH_POLICY),
                                    plan.entries, source.tree(), source.commit)
+    # And the follow-ups the split commit's message lists, from the plan as
+    # it stands, as `check` prints them, which `plan` no longer stores
+    # (#1206): worked out before anything exists, so a `git grep` that
+    # cannot run says so before a leg is made.
+    follow_ups = _follow_ups_as_it_stands(plan, source, names)
 
     # ---- (a) the two legs' remotes ----------------------------------------
     # Both asked about first, and everything in their way refused at once,
@@ -17357,7 +17436,8 @@ def cmd_execute(args) -> int:
     assembly = work_root / names["assembly"]
     split = _commit_the_split(plan, source, assembly, names, urls, values,
                               work_root, paths_for, seeded, spec_path,
-                              code_path, branch, leg_commits, answers)
+                              code_path, branch, leg_commits, answers,
+                              follow_ups=follow_ups)
     if split is None:
         return 2
     split_commit, message, collisions = split
@@ -17447,10 +17527,10 @@ UNWRITABLE_VALUE = "plan-unwritable-value"
 #: Where `execute` writes the values it is asked about.
 ROOT_MANIFEST = "the assembly root's `project.yaml`"
 ROOT_MANIFEST_AND_README = "the assembly root's `project.yaml` and `README.md`"
-SPLIT_MESSAGE = "the split commit's message"
 
 #: Each plan value `_template_values` substitutes as it stands, by its key,
-#: and where it lands. `pins` and `follow_ups` are lists, asked item by item.
+#: and where it lands. `pins` is a list, asked item by item. A `follow_ups:`
+#: item is no plan value since #1206: the plan stores none.
 WRITTEN_PLAN_VALUES = {ELECTED_BY_KEY: ROOT_MANIFEST_AND_README,
                        ELECTED_ON_KEY: ROOT_MANIFEST_AND_README,
                        REFERENCE_KEY: ROOT_MANIFEST_AND_README,
@@ -17497,19 +17577,18 @@ def _plan_values(plan: Plan) -> list[tuple[str, str, str]]:
     writes into a file, as `str` makes it, which is how `_template_values`
     and `_commit_the_split` take it. A key the plan does not carry is filled
     by this tool (`private`, today's date) and is left out. The follow-ups
-    are `_plan_follow_ups`', the items of text `_commit_the_split` writes; a
-    `follow_ups:` that is not a list of text is `plan-bad-follow-ups` (#293),
-    and is never iterated here. The pins are the products of the pins
+    are not among them: `_commit_the_split` writes the ones
+    `_follow_ups_as_it_stands` works out, the tool's own text, and a plan
+    that still holds a `follow_ups:` list is `plan-bad-follow-ups` (#1206),
+    which nothing iterates. The pins are the products of the pins
     `execute` writes (`_declared_pins`): a `pins:` entry `_read_pins` names
     is that finding alone (#901), and `execute` writes none of a plan
     holding one."""
     fields = [(key, str(plan.get(key)), where)
               for key, where in WRITTEN_PLAN_VALUES.items()
               if plan.get(key) is not None]
-    fields += [("a `pins:` item", pin, ROOT_MANIFEST)
-               for pin in _declared_pins(plan)]
-    return fields + [("a `follow_ups:` item", item, SPLIT_MESSAGE)
-                     for item in _plan_follow_ups(plan)]
+    return fields + [("a `pins:` item", pin, ROOT_MANIFEST)
+                     for pin in _declared_pins(plan)]
 
 
 def _value_findings(plan: Plan) -> tuple[list[str], list[str]]:
@@ -17674,8 +17753,9 @@ def _split_message(names, paths_for, leg_commits, spec_path, code_path,
     another path: `git commit` strips the whitespace that ends a line, so
     `cr\\r` was `cr`, and `env_commit` writes a character UTF-8 cannot
     carry as `?`, so `caf\\udce9.md`, the byte 0xE9 that is not UTF-8, was
-    `caf?.md`. A follow-up, which a person may edit in the plan, is
-    `_shown` too, as `execute` prints it before it begins.
+    `caf?.md`. A follow-up, which names the source's paths, is `_shown`
+    too, as `check` prints it; `follow_ups` are `_follow_ups_as_it_stands`'
+    of the plan (#1206).
     """
     def none_line(role: str) -> list[str]:
         if role not in seeded:

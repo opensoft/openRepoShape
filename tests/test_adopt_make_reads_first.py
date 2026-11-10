@@ -52,8 +52,8 @@ from pathlib import Path
 import pytest
 
 from conftest import (ADOPT, REPO, findings, git, load_without_bytecode,
-                      make_source_repo, refused_before_any_leg, run_script,
-                      write_plan)
+                      make_source_repo, printed_follow_ups,
+                      refused_before_any_leg, run_script, write_plan)
 from test_adopt_contracts_dir import (EDITS, MAKEFILE_FOLLOW_UP,
                                       OWN_MAKEFILE_FOLLOW_UP, PROJECT,
                                       SPEC_PATH, SPLIT_BRANCH, TREE,
@@ -167,8 +167,9 @@ TWIN_ROWS = [pytest.param(row.values[0], id=row.id)
              for row in ROWS if keeps_twins(row.values[0])]
 CLONE_ROWS = [row for row in ROWS[1:] if not keeps_twins(row.values[0])]
 
-#: `(path, leg)` rows no shipped rule writes, which a `--path-policy` rule can
-#: (a person's answer in the plan changes no follow-up): `MAKEFILE` kept in
+#: `(path, leg)` rows no shipped rule writes, which a `--path-policy` rule can,
+#: and since #1206 a person's answer in the plan too, which `check` and
+#: `execute` read as the plan stands: `MAKEFILE` kept in
 #: the root, a name GNU make never reads where case is kept and one a disk
 #: that ignores case takes for `Makefile`; `makefile` and `GNUmakefile` sent
 #: to the legs, which leaves the root nothing GNU make reads but the shape's;
@@ -284,7 +285,7 @@ def test_plan_writes_the_line_and_check_prints_it(tmp_path, kept, said,
     plan = tmp_path / "adoption-plan.yaml"
     written = write_plan(source, plan, project=PROJECT)
     assert written.returncode == 0, written.stderr + written.stdout
-    follow_ups = [str(item) for item in load_yaml(plan)["follow_ups"]]
+    follow_ups = printed_follow_ups(written.stdout)
     assert makefile_lines(follow_ups) == [said]
     checked = run_script(ADOPT, "check", "--plan", str(plan))
     if keeps_twins(kept):
