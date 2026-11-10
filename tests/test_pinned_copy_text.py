@@ -45,7 +45,7 @@ import pytest
 
 from conftest import (PRINTED_AS_ITSELF, REPO, SCAFFOLD,
                       clear_ambient_pin_sources, git, load_without_bytecode,
-                      run_script,
+                      run_script, skip_where_the_environment_cannot_carry,
                       skip_where_the_locale_does_not_spell_it_as_utf_8)
 from test_link_source_chain_defaults import (  # noqa: F401
     VALIDATOR, manifest, naming, pinned, scaffold, tree, validate_pins,
@@ -670,6 +670,9 @@ def test_a_printable_pin_source_that_is_not_a_repository_is_named_as_typed(
     """The control: a printable folder, UTF-8 included, is named byte for
     byte, with no quotes."""
     source = tmp_path / name
+    # `mkdir` cannot make "caf\u00e9" where the file name encoding is ASCII
+    # (#1285); `plain` still runs there.
+    skip_where_the_environment_cannot_carry(name)
     source.mkdir()
     commit = git("rev-parse", "HEAD", cwd=pinned["product"]).stdout.strip()
     result = validate_pins(pinned, "--pin-source", str(source))
