@@ -4215,11 +4215,23 @@ def cross_leg_references(source: "Source",
         # The name and the code paths as the bytes the tree holds (#653):
         # as text, `Übersicht/` raised `UnicodeEncodeError` under
         # `LC_ALL=C PYTHONUTF8=0`, and `plan` wrote no plan.
-        proc = subprocess.run(
-            ["git", "--literal-pathspecs", "grep", "--no-color", "-z", "-l",
-             "-I", "-F", "-e", _path_argument(spec_dir), source.commit, "--",
-             *map(_path_argument, code_paths)],
-            cwd=str(source.path), capture_output=True, check=False)
+        try:
+            proc = subprocess.run(
+                ["git", "--literal-pathspecs", "grep", "--no-color", "-z",
+                 "-l", "-I", "-F", "-e", _path_argument(spec_dir),
+                 source.commit, "--", *map(_path_argument, code_paths)],
+                cwd=str(source.path), capture_output=True, check=False)
+        except OSError as error:
+            # A command line the kernel will not run (`E2BIG`: one code path
+            # of 140000 characters, or paths that add up past its limit)
+            # is a search git could not make, said as a grep that fails is:
+            # `check` and `execute` ask this of a plan a hand edit may have
+            # written anything into, and `check` printed its findings
+            # before #1206 asked.
+            out.append(_search_by_hand(
+                named, f"`git grep` could not be run: "
+                f"{_one_line(str(error))[:300]}"))
+            continue
         if proc.returncode not in (0, 1):
             why = _one_line(proc.stderr.decode("utf-8", "replace"))[:300]
             out.append(_search_by_hand(

@@ -322,3 +322,35 @@ def test_an_entry_git_cannot_be_handed_is_read_in_no_follow_up(tmp_path):
     said = printed_by_check(checked.stdout)
     assert [item for item in said
             if "must read across the assembly root" in item], said
+
+
+def test_a_command_line_git_cannot_be_run_with_is_a_search_by_hand(tmp_path):
+    """One hand-edited code entry of 140000 characters, more than the
+    kernel's limit on one argument: `git grep` cannot be run (`OSError:
+    [Errno 7] Argument list too long`, which ended `check` in a traceback
+    before it printed a finding), so each spec directory it would have
+    searched for is the follow-up that says to look by hand, as for a grep
+    that exits 128. `check` prints its findings, among them the entry
+    that covers nothing, and exits 1; `execute` refuses that plan first."""
+    source = make_source_repo(tmp_path / "Thing", {**TREE, **MAKEFILE},
+                              edits=EDITS)
+    plan = tmp_path / "adoption-plan.yaml"
+    written = write_plan(source, plan, project=PROJECT)
+    assert written.returncode == 0, written.stderr + written.stdout
+    text = plan.read_text(encoding="utf-8")
+    assert text.count("\npaths:\n") == 1, text
+    entry = f'  - path: "{"a" * 140000}"\n    leg: code\n'
+    with plan.open("w", encoding="utf-8", newline="\n") as handle:
+        handle.write(text.replace("\npaths:\n", "\npaths:\n" + entry, 1))
+    checked = run_script(ADOPT, "check", "--plan", str(plan))
+    assert "Traceback" not in checked.stderr + checked.stdout, \
+        checked.stderr[-600:]
+    assert checked.returncode == 1, checked.stderr[-600:]
+    assert [line for line in checked.stderr.splitlines()
+            if line.startswith("FINDING plan-empty-entry")], checked.stderr
+    said = printed_by_check(checked.stdout)
+    by_hand = [item for item in said
+               if item.startswith("git could not search the files moving to "
+                                  "the code leg for ")]
+    assert len(by_hand) == 2, said
+    assert all("`git grep` could not be run: " in item for item in by_hand)
