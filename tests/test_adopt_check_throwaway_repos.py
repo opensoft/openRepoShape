@@ -1485,8 +1485,9 @@ def test_nothing_beyond_the_first_symlink_on_the_way_is_asked(adopter,
 #: outside the assembly, and a gitlink.
 LINK_OUT = ("link", "{victim}")
 GITLINK = ("gitlink", None)
-#: `LINK_OUT`'s symlink, where `{victim}` is a folder this user may not
-#: search while the mount runs (r1237c's NIT 1).
+#: `LINK_OUT`'s symlink, with `{shut}` in the place of `{victim}`
+#: (r1237c's NIT 1): `{shut}` is filled with `victim`, shut while the mount
+#: runs.
 LINK_SHUT = ("link", "{shut}")
 
 
@@ -1617,6 +1618,7 @@ def test_nothing_is_removed_through_a_symlink_at_a_gitlink_or_beyond(
          for path, (kind, target) in kinds.items()}))
     for at, twin in made:
         as_the_twin(assembly, at, twin)
+    # Shut while the mount runs, for the reason in the table's header comment.
     if LINK_SHUT in kinds.values():
         victim.chmod(0)
     try:
