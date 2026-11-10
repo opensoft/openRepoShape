@@ -14638,9 +14638,23 @@ def cmd_check(args) -> int:
         # shows both (#871's review, S1), as it is asked beside the
         # manifest's and the split branch's findings, which `execute`
         # refuses first too.
+        # NOR ASKED OF GITHUB BESIDE A PLAN FOR ANOTHER REPOSITORY (#1232):
+        # `execute` refuses `plan-not-the-source` before it asks any remote
+        # anything (#499), so it never asks GitHub about the two legs such
+        # a plan names, where `check` ran `gh repo view` of each, under the
+        # plan's `org:`, another organisation's where that is the edit, and
+        # its NOTE said `execute` asks again. Under `--local-remote-dir` it
+        # is still asked: the disk answers, nothing leaves the machine, and
+        # a leg's bare repository is `<dir>/<name>.git`, which no `org:` is
+        # part of, so the plan the remedy writes under the source's own
+        # name is asked of the same two paths wherever it keeps the legs'
+        # names, and one round shows both.
         # A question gh cannot answer is a NOTE here, not a finding.
+        another = PLAN_NOT_THE_SOURCE in {problem.refusal.code
+                                          for problem in unmended}
         legs, fixes, unasked = (
             ([], [], []) if RENAMES_THE_LEGS.intersection(held_codes)
+            or (another and local_remote_dir is None)
             else _leg_remote_findings(plan, names, local_remote_dir))
         findings.extend(legs)
         remediation.extend(fixes)
