@@ -176,8 +176,11 @@ from repo_shape import (  # noqa: E402
 # purpose: `shape_materialize` imports it the same way and says why (#380). A
 # block header is found with it, so a trailing comment is one here wherever it
 # is one to the reader (#437), and with the reader's rule for a key, so a
-# quoted key or a space before the colon is one here too (#674).
-from repo_shape import _split_key, _strip_comment  # noqa: E402
+# quoted key or a space before the colon is one here too (#674), and with the
+# reader's blanks, a space and a tab and no other (`_YAML_WHITE`), so a line
+# that opens with U+00A0 or U+3000 is another key here as it is to the reader
+# (#1220).
+from repo_shape import _YAML_WHITE, _split_key, _strip_comment  # noqa: E402
 # U+FEFF by the reader's own name: the two line rewrites take it off line 1
 # as `parse_yaml` does, and put it back (#933). On a line of its own, for the
 # reason the branch rule's import below gives.
@@ -205,8 +208,11 @@ from shape_materialize import SHAPE_PIN  # noqa: E402
 # which other changes extend, are not lines two of them both rewrite.
 from shape_materialize import readable_branch  # noqa: E402
 
-#: `owner/repo`, the only remote spelling `--upstream` accepts.
-REPOSITORY_RE = re.compile(r"^[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+$")
+#: `owner/repo`, the only remote spelling `--upstream` accepts, and the
+#: shape pin's `source_repository:`, whether or not `--upstream` is passed
+#: (`pin_source`, #1203). `\Z`, NEVER `$` (#1139): `$` also matches just
+#: before a trailing line feed.
+REPOSITORY_RE = re.compile(r"^[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+\Z")
 
 #: How `--branch` may be spelled: the alphabet `checked_value` already
 #: allowed it, less the `~` git refuses anyway, and a FIRST character that is
@@ -640,8 +646,20 @@ def unreadable_upstream(said: str, proc: subprocess.CompletedProcess
         "openRepoShape.")
 
 
+def _holds_a_repository(path: Path) -> bool:
+    """Whether `path` is a git repository by the two questions
+    `open_upstream` asks of a path: a `.git` there, or, only where there is
+    none, a bare repository's `HEAD` file. Asked of the shape pin's
+    `source_repository:` too (`pin_source`), so the pin's value and
+    `--upstream` are one question (#1203)."""
+    return (_is_a(path / ".git", _anything)
+            or _is_a(path / "HEAD", stat.S_ISREG))
+
+
 def open_upstream(spec: str) -> Upstream:
-    """`--upstream` as a repository this tool can read.
+    """`--upstream` as a repository this tool can read, or the shape pin's
+    `source_repository:` where none was passed, once `pin_source` has asked
+    it.
 
     A PATH IS USED IN PLACE AND THIS TOOL FETCHES NOTHING INTO IT. That is
     deliberate: it is what lets the tests run with no network, and it is
@@ -665,12 +683,18 @@ def open_upstream(spec: str) -> Upstream:
     machine nor an `owner/repo` name", and a relative `a/b` spelling was
     then cloned from github.com; a checkout it cannot search was
     `update-upstream-not-a-repo`.
+
+    THE PIN'S VALUE IS ASKED BEFORE IT REACHES HERE (#1139, #1203).
+    `pin_source` asks it in `prepare`, whether or not `--upstream` was
+    passed, and refuses in the pin's name a value that is no `owner/repo`,
+    or one that names something here that is no git repository. So where
+    `spec` is the pin's, none of the refusals below is reached for it, and
+    each of them names the flag.
     """
     candidate = Path(spec).expanduser()
     if _is_a(candidate, _anything):
         path = candidate.resolve()
-        if (not _is_a(path / ".git", _anything)
-                and not _is_a(path / "HEAD", stat.S_ISREG)):
+        if not _holds_a_repository(path):
             raise Refusal(
                 "update-upstream-not-a-repo",
                 f"--upstream {spec} exists but is not a git repository",
@@ -701,6 +725,103 @@ def open_upstream(spec: str) -> Upstream:
             "network. Clone the shape once by hand and pass `--upstream "
             "<path>` instead; nothing after it fetches the shape again.")
     return Upstream(temporary / "shape.git", spec, temporary=temporary)
+
+
+#: What a shape pin's `source_repository:` that `pin_source` refuses is told.
+PIN_SOURCE_REMEDY = (
+    "Remediation: write `source_repository:` in the pin as the `owner/repo` "
+    f"its shape was copied from, `{SHAPE_REPOSITORY}` for this standard's. "
+    "It is asked with `--upstream` passed too, because `apply` names it in "
+    "its commit and its pull request; a path to a clone goes to "
+    "`--upstream`.")
+#: The same, for a value that names something HERE that is no repository:
+#: the value is looked up as a path from the directory the command runs in,
+#: so a value that is already right, `owner/repo` with a folder of that name
+#: where the command runs, needs the command run elsewhere (N2 of the review
+#: of PR #1269). The sentence is added to this refusal's remedy alone.
+PIN_SOURCE_NOT_A_REPO_REMEDY = (
+    PIN_SOURCE_REMEDY + " The value is also looked up as a path from the "
+    "directory this runs in: if it is already right, run this from a "
+    "directory where nothing is at that path.")
+
+
+def _named_here(declared: str) -> Path | None:
+    """The path `declared` names on this machine, spelled as `open_upstream`
+    looks it up (`expanduser`), or None where it names nothing there.
+
+    TWO ANSWERS THAT ARE "NOTHING THERE" for a value no one wrote as a path
+    (the review of PR #1269, S1 and N1):
+    - `~<user>/...` for a user the machine has not got: `expanduser`
+      raises `RuntimeError`, and the bare path is looked up instead, which
+      names nothing. So does a NUL byte after the `~`: `expanduser` raises
+      `ValueError` (`embedded null byte`), and the bare path, which no file
+      has the name of, names nothing either (NIT A of the second review);
+    - a name over the limit a path component may have (`ENAMETOOLONG`):
+      `stat` cannot open what no file system can hold, as it cannot open
+      what is not there.
+    Every other `OSError` of the `stat` is raised, as `_is_a` raises it."""
+    try:
+        candidate = Path(declared).expanduser()
+    except (RuntimeError, ValueError):
+        candidate = Path(declared)
+    try:
+        return candidate if _is_a(candidate, _anything) else None
+    except OSError as exc:
+        if exc.errno == errno.ENAMETOOLONG:
+            return None
+        raise
+
+
+def pin_source(pin: dict, pin_path: Path) -> str:
+    """The shape pin's `source_repository:`, the `owner/repo` its shape was
+    copied from (`SHAPE_REPOSITORY` where the pin names none), or a refusal
+    in the pin's name, `pin_path` naming the pin.
+
+    ASKED ONCE, IN `prepare`, WHICHEVER WAY THE RUN REACHES THE UPSTREAM
+    (#1203). With no `--upstream` the value is the upstream `open_upstream`
+    opens. With one passed, the value was never asked, and it is still the
+    name `prepare` gives the upstream: the README `Shape:` line is compared
+    with it, and `apply` writes it into its commit subject, its pull
+    request's title and the lines it prints. So `"opensoft/openRepoShape\\n"`
+    made a commit whose subject broke after the name, and a `gh pr create`
+    line split inside its quotes, exit 0. With no `--upstream`, a path that
+    is no repository was `update-upstream-not-a-repo` of `--upstream`, a
+    flag nobody passed.
+
+    THREE QUESTIONS, under the codes these values had (#1139):
+    - something HERE at the value, looked up as `open_upstream` looks it up
+      (`expanduser`, relative to the directory the command runs in), that
+      is no git repository: `update-upstream-not-a-repo`. The pin gets the
+      same answer whether or not `--upstream` is passed. An `owner/repo`
+      spelling that IS a repository here is taken, as it was, and with no
+      `--upstream` it is opened in place. A `~<user>` nobody has (a NUL
+      byte after the `~` too), and a name too long for a path, are nothing
+      there (`_named_here`).
+    - a value `REPOSITORY_RE` does not take WHOLE:
+      `update-upstream-unresolvable`. A path that is not spelled
+      `owner/repo` (`/srv/shape`, `~/shape`, `shape`) is refused here,
+      whether it holds a repository or not: the pin records a repository's
+      name, never where a clone is kept.
+    - `checked_value`'s: `unsafe-value`.
+
+    NOTHING WRITES A VALUE THESE REFUSE. Both pin templates hold
+    `{{SHAPE_REPOSITORY}}`, so each such value is a hand edit, and refusing
+    it costs no root that a tool made.
+    """
+    declared = str(pin.get("source_repository") or SHAPE_REPOSITORY)
+    named = f"{pin_path}: `source_repository:`"
+    candidate = _named_here(declared)
+    if candidate is not None and not _holds_a_repository(candidate.resolve()):
+        raise Refusal(
+            "update-upstream-not-a-repo",
+            f"{named} is {declared!r}, which exists but is not a git "
+            "repository", PIN_SOURCE_NOT_A_REPO_REMEDY)
+    if not REPOSITORY_RE.fullmatch(declared):
+        raise Refusal(
+            "update-upstream-unresolvable",
+            f"{named} is {declared!r}, which is not an `owner/repo` name",
+            PIN_SOURCE_REMEDY)
+    return checked_value(named, declared)
 
 
 # ---------------------------------------------------------------------------
@@ -1690,14 +1811,21 @@ def _is_block_header(line: str, key: str) -> bool:
     line(s)"), or a manifest `update-manifest-no-shape`, saying it has no
     `shape:` block when the reader gives it one. The column is the
     reader's: no space in front, and no tab among the blanks in front,
-    which the reader refuses outright; the text is `.strip()`ped first,
-    as `_tokenise` strips it. A line `_split_key` refuses is one the
-    reader refuses as well, so it is no header here rather than a
-    traceback, and the count that follows says so."""
-    if line.startswith(" ") or "\t" in line[:len(line) - len(line.lstrip())]:
+    which the reader refuses outright; the text is stripped of
+    `_YAML_WHITE` first, as `_significant_text` strips it for `_tokenise`.
+    A BLANK IS A SPACE OR A TAB AND NOTHING ELSE (#1220). `.strip()` with no
+    argument also cuts U+00A0 and U+3000, which the reader keeps as text, so
+    `<U+00A0>shape:` was the header here, where the reader gives it the key
+    `<U+00A0>shape`, and the rewrite wrote the block under a line the reader
+    does not read as one. A line `_split_key` refuses is one the reader
+    refuses as well, so it is no header here rather than a traceback, and
+    the count that follows says so."""
+    blanks = len(line) - len(line.lstrip(_YAML_WHITE))
+    if line.startswith(" ") or "\t" in line[:blanks]:
         return False
     try:
-        return _split_key(_strip_comment(line.strip())) == (key, "")
+        return _split_key(
+            _strip_comment(line.strip(_YAML_WHITE))) == (key, "")
     except YamlError:
         return False
 
@@ -2370,8 +2498,9 @@ def counted(rows: list[Row]) -> dict[str, int]:
 # ---------------------------------------------------------------------------
 
 
-def prepare(args) -> tuple[Path, dict, list[Row], list[Addition], Upstream,
-                           str, str, Kind]:
+def prepare(args, *, ask_source: bool = True
+            ) -> tuple[Path, dict, list[Row], list[Addition], Upstream,
+                       str, str, Kind]:
     """The root, its pin, its rows judged and its additions found, the
     upstream opened, the two commits and the kind of root: everything
     `check` reports and `apply` acts on, read before anything is written.
@@ -2383,7 +2512,19 @@ def prepare(args) -> tuple[Path, dict, list[Row], list[Addition], Upstream,
     answer. The root is asked first: its own `stat` (a folder above it
     this user cannot search), then whether it can be searched at all
     (`_search`). A read refused once the upstream is open closes it
-    first, as a `Refusal` does."""
+    first, as a `Refusal` does.
+
+    THE PIN'S `source_repository:` IS ASKED BEFORE THE UPSTREAM IS OPENED
+    (#1203), by `pin_source`, with or without `--upstream`. `ask_source`
+    False is the doctor's `shape currency` row's alone: it passes its own
+    checkout as the upstream, writes no commit and opens no pull request,
+    and it reads a `Refusal` from here as that checkout unable to answer, so
+    a refusal of the root's own field would be called the standard's, with a
+    `git fetch` for its remedy; `check`, the NEXT that row names where the
+    root is behind, asks the field. The doctor's `pins` row asks it: it
+    names `check` in a sentence that is false where `check` refuses (S2 of
+    the review of PR #1269). With no `--upstream` the field IS the
+    upstream, and is asked whatever `ask_source` says."""
     root = root_of(args)
     if not _is_a(root, stat.S_ISDIR):
         raise Refusal("update-root-missing", f"{root} is not a directory")
@@ -2397,7 +2538,12 @@ def prepare(args) -> tuple[Path, dict, list[Row], list[Addition], Upstream,
     if linked is not None:
         raise rewrite_link_refusal([linked])
     pinned = str(pin["commit"]).lower()
-    declared = str(pin.get("source_repository") or SHAPE_REPOSITORY)
+    # THE PIN'S `source_repository:` IS ASKED HERE, ONCE, before the
+    # upstream is opened and whether or not `--upstream` was passed (#1203):
+    # it names the upstream in what `check` and `apply` print and commit.
+    declared = (pin_source(pin, root / SHAPE_PIN)
+                if ask_source or not args.upstream
+                else str(pin.get("source_repository") or SHAPE_REPOSITORY))
     upstream = open_upstream(str(args.upstream or declared))
     upstream.repository = declared
     try:
@@ -2605,7 +2751,7 @@ def run_validator(root: Path, script: str) -> int:
     ONE THIS USER CANNOT READ IS REFUSED, never skipped (#430). On 3.14 a
     refused `stat` read as "absent; SKIPPED", so the gate this run exists to
     leave green was not run; on 3.12 it was raised out of `apply` after the
-    writes, which only a `Refusal` rolls back. It is `update-unreadable`,
+    writes, which only a `Refusal` rolled back. It is `update-unreadable`,
     a `Refusal`, so `cmd_apply` puts back every byte written before it."""
     try:
         there = _is_a(root / script, stat.S_ISREG)
@@ -3181,7 +3327,7 @@ class Rollback:
         path and the error (#285).
 
         A WRITE THAT FAILS IS A REFUSAL, NEVER A TRACEBACK, for the reason
-        `_rewrite_readme` gives for its own: `cmd_apply` rolls back on
+        `_rewrite_readme` gives for its own: `cmd_apply` rolled back on
         `Refusal` and `CommandFailed` and on nothing else. A directory this
         process cannot write, a file where `--add` has to make a directory,
         a read-only pin, a disk that filled — each escaped as a traceback
@@ -3191,12 +3337,24 @@ class Rollback:
         every byte back, and lists what it put back under this detail
         (`_rolled_back`), so the detail does not claim it as well.
 
+        A BROKEN PIPE IS STDOUT'S, NOT A WRITE'S (#1218). `_write_copies`
+        prints each `copied` line inside this block, and unbuffered
+        (`PYTHONUNBUFFERED`) into a pipe whose reader has gone, that print
+        raises `BrokenPipeError`. It was refused here as `update-write-failed:
+        writing the copies and the --add files failed: Broken pipe`, blaming
+        the write of a copy for an error of stdout's. Every write in this
+        block is to a file of the root's, never to a pipe, so the error is
+        let through as itself, to `cmd_apply`'s arm for an `OSError` no
+        refusal can name, which puts every byte back and raises it (#1173).
+
         `step` is the refusal's own, not `self.step`, which names the git
         act a `CommandFailed` is reported under.
         """
         try:
             yield
         except OSError as exc:
+            if isinstance(exc, BrokenPipeError):
+                raise
             name = exc.filename
             at = (f" at {self._name(Path(os.fsdecode(name)))}"
                   if isinstance(name, (str, bytes, os.PathLike)) else "")
@@ -4194,9 +4352,10 @@ def _nothing_to_do(rows: list[Row], pinned: str, target: str,
 def _refuse_kept_copies_missing_names(root: Path, rows: list[Row],
                                       taking: list[Addition], accepted: set,
                                       target: str, kind: Kind) -> None:
-    """`update-accept-local-missing-name` (#536, #604): a copy
-    `--accept-local` keeps and a copy this run writes beside it disagree on
-    a name. One imports it from the other, whose bytes do not define it.
+    """`update-accept-local-missing-name` (#536, #604, #1082): a copy this
+    run writes, or one `--accept-local` keeps, and a copy beside it
+    disagree on a name, as this run would leave them. One imports it from
+    the other, whose bytes do not define it.
 
     THE VALIDATORS CANNOT SEE IT, AND NOTHING ELSE RUNS THAT COPY. Since
     #456 moved `spelled` and `escape_unencodable_stdout` into
@@ -4224,36 +4383,59 @@ def _refuse_kept_copies_missing_names(root: Path, rows: list[Row],
     `_validators_meet` finds none of them meeting a line it names: a
     clause that is false of one line in the list is false.
 
-    WHAT IS ASKED, AND OF WHAT: BOTH DIRECTIONS, between a KEPT copy, a
-    `both` or `locally-modified` row `--accept-local` named, read from its
-    bytes on disk, and a copy this run WRITES, read from the bytes it is
-    about to write: each `upstream-changed` row and each `--add` file.
+    WHAT IS ASKED, AND OF WHAT: a copy this run WRITES, read from the bytes
+    it is about to write (each `upstream-changed` row and each `--add`
+    file), against the module it imports from; and a KEPT copy, read from
+    its bytes on disk, against a module this run writes: a `both` or
+    `locally-modified` row `--accept-local` named, or an `unchanged` row
+    an earlier run kept (#1082).
 
-      * A WRITTEN IMPORTER AND A KEPT MODULE (#536,
-        `_kept_copies_lacking`): each written `.py` copy's imports, against
-        what the kept bytes define.
-      * A KEPT IMPORTER AND A WRITTEN MODULE (#604,
+      * A WRITTEN IMPORTER (#536, #1082, `_written_copies_lacking`): each
+        written `.py` copy's imports, against what its module defines AS
+        THIS RUN LEAVES IT (`_copies_as_left`): the bytes this run writes
+        there, or else the bytes on disk. That module may be a copy this
+        run's `--accept-local` keeps (#536); a copy AN EARLIER RUN KEPT,
+        whose row reads `unchanged` because the pin records the project's
+        own bytes and the upstream has not changed the file since (#1082);
+        or the upstream's own bytes at the target, written by this run or
+        already on disk. #536 asked the first alone, so a holder whose
+        `apply --accept-local scripts/bootstrap.py` had kept a
+        `bootstrap.py` from before #1023 was written, by its next apply
+        and with no `--accept-local` at all, the `siblings.py` that takes
+        `member_make_environment` from it: `copied`, validators green, a
+        commit, and an `ImportError` from the first `siblings.py --help`.
+      * A KEPT IMPORTER AND A WRITTEN MODULE (#604, #1082,
         `_kept_copies_importing_dropped`): each kept `.py` copy's imports,
-        against what the module's written bytes define. Upstream does drop
-        public names: cac6bb20 took `link_manifest_path` and
-        `declared_neutral_pins` out of `scripts/repo_shape.py`. A project
-        whose kept `bootstrap.py` imported a name dropped like that got
-        `pins ok`, `manifest ok`, and an `ImportError` from its next
-        `bootstrap.py --help`. Only what THIS RUN takes away is refused: a
-        name the module's bytes on disk define now and its written bytes do
-        not. A name the bytes on disk lack too already stops the kept copy
-        today, and a module with no file yet, an `--add` file, defines
-        nothing to take away.
+        whoever kept it, against what the module's written bytes define.
+        Upstream does drop public names: cac6bb20 took `link_manifest_path`
+        and `declared_neutral_pins` out of `scripts/repo_shape.py`. A
+        project whose kept `bootstrap.py` imported a name dropped like that
+        got `pins ok`, `manifest ok`, and an `ImportError` from its next
+        `bootstrap.py --help`. A copy an earlier run kept met it from a run
+        with no `--accept-local` at all: a holder whose `apply
+        --accept-local scripts/siblings.py` had kept its own `siblings.py`,
+        edited to take a name from `bootstrap.py`, was written, by its next
+        apply, a `bootstrap.py` that no longer defined it (#1082). Only
+        what THIS RUN takes away is refused: a name the module's bytes on
+        disk define now and its written bytes do not. A name the bytes on
+        disk lack too already stops the kept copy today, and a module with
+        no file yet, an `--add` file, defines nothing to take away.
 
-    A row the run leaves alone is not asked about, in either direction: an
-    edit that already broke an untouched importer is the project's doing,
-    not this run's. A module is resolved the way every shipped importer
-    resolves it, its own directory first on `sys.path`: `from M import ...`
-    in `<dir>/<file>.py` is the copy at `<dir>/M.py`, a dotted `M` naming
-    that path's subdirectories. So the same code covers `repo_shape.py`
-    today, and any helper kept or written beside its importer later, a
-    holder's `bootstrap.py` under its `siblings.py` among them. A module
-    that resolves to no copy on the other side is not asked about.
+    AN IMPORTER THIS RUN DOES NOT WRITE IS ASKED ONLY WHERE IT HOLDS THE
+    PROJECT'S OWN BYTES: a copy this run's `--accept-local` keeps (#604),
+    or one an earlier run kept (#1082), and only against a module this run
+    writes. An `unchanged` copy that holds the upstream's own bytes is not
+    asked as an importer: that pair is two of the target's own copies, and
+    no shipped copy disagrees with the module beside it, as the last
+    paragraph says. A module is resolved the way every shipped importer
+    resolves it, its own directory first on `sys.path`: `from M import
+    ...` in `<dir>/<file>.py` is the copy at `<dir>/M.py`, a dotted `M`
+    naming that path's subdirectories. So the same code covers
+    `repo_shape.py` today, and any helper kept or written beside its
+    importer later, a holder's `bootstrap.py` under its `siblings.py`
+    among them. A module that resolves to no pinned copy this run leaves
+    at its path, or to no copy this run writes for a kept importer, is not
+    asked about.
     `_names_imported` reads what a copy takes, and `_names_defined` (a file)
     or `_names_defined_in` (bytes) what a module binds.
 
@@ -4279,35 +4461,58 @@ def _refuse_kept_copies_missing_names(root: Path, rows: list[Row],
     `break`, a `continue` or a `return` (`_names_imported`): a refusal
     Python would not make, though still one before the yes and before any
     write. A name bound only through `globals()`, `setattr` on the module
-    or `exec` reads as missing: refused where a kept module binds it that
-    way (#536), or where the written bytes do and the bytes on disk bound
-    it plainly (#604). One bound and then deleted (`NAME = 1`, then `del
-    NAME`) reads as defined, so that copy's `ImportError` is still its
-    first run's to meet.
+    or `exec` reads as missing: refused where the module a written copy
+    imports from binds it that way (#536), or where the written bytes do
+    and the bytes on disk bound it plainly (#604). One bound and then
+    deleted (`NAME = 1`, then `del NAME`) reads as defined, so that copy's
+    `ImportError` is still its first run's to meet. No shipped copy takes
+    a name the readers miss from the module beside it (the reader rows of
+    `tests/test_update_shape_kept_helper.py`), so a root that holds none
+    of its own bytes meets this only where the target's own copies
+    disagree.
     """
     kept = {row.path: row for row in rows
             if row.state in (BOTH, LOCALLY_MODIFIED) and row.path in accepted}
-    if not kept:
-        return
     written = _written_copies(rows, taking)
-    pairs = sorted(_kept_copies_lacking(root, written, kept)
-                   + _kept_copies_importing_dropped(root, written, kept))
+    left = _copies_as_left(rows, written, kept)
+    earlier = {row.path: row for row in rows
+               if left.get(row.path) == EARLIER_MODULE}
+    pairs = sorted(_written_copies_lacking(root, written, left)
+                   + _kept_copies_importing_dropped(root, written, kept,
+                                                    earlier))
     if pairs:
         raise _missing_name_refusal(
-            pairs, kept, target, _validators_meet(root, written, pairs, kind))
+            pairs, {row.path: row for row in rows}, target,
+            _validators_meet(root, written, pairs, kind))
 
 
 #: Which side of a pair `update-accept-local-missing-name` names is the
-#: MODULE (#604): the kept bytes lack a name a written copy imports (#536),
-#: or the written bytes drop one a kept copy imports.
+#: MODULE, and whose its bytes are as this run leaves them (#604, #1082):
+#: the bytes a copy kept by this run's `--accept-local` (#536), or by an
+#: earlier run's (#1082), lack a name a written copy imports; the
+#: upstream's own bytes at the target do (#1082); or the bytes this run
+#: writes drop one a copy imports that this run's `--accept-local` keeps
+#: (#604), or that an earlier run kept (#1082).
 KEPT_MODULE = "kept"
+EARLIER_MODULE = "kept by an earlier run"
+UPSTREAM_MODULE = "the upstream's"
 WRITTEN_MODULE = "written"
+WRITTEN_UNDER_EARLIER = "written under a copy an earlier run kept"
+#: The word a `(written) no longer defines` line gives its importer, by
+#: the line's side: the kept copy's, `(kept)` or `(kept by an earlier
+#: run)`.
+KEPT_IMPORTERS = {WRITTEN_MODULE: KEPT_MODULE,
+                  WRITTEN_UNDER_EARLIER: EARLIER_MODULE}
 
 
 class Disagreement(NamedTuple):
-    """One line of `update-accept-local-missing-name` (#536, #604):
-    `importer` imports `names` from `module`, and `side` says whether the
-    module is the kept copy (`KEPT_MODULE`) or the written one."""
+    """One line of `update-accept-local-missing-name` (#536, #604, #1082):
+    `importer` imports `names` from `module`, and `side` says whose bytes
+    the module holds as this run leaves it: a copy this run keeps
+    (`KEPT_MODULE`), one an earlier run kept (`EARLIER_MODULE`), the
+    upstream's own (`UPSTREAM_MODULE`), or the bytes this run writes there
+    under an importer this run's `--accept-local` keeps (`WRITTEN_MODULE`)
+    or one an earlier run kept (`WRITTEN_UNDER_EARLIER`)."""
     module: str
     importer: str
     names: list
@@ -4325,11 +4530,42 @@ def _written_copies(rows: list[Row],
     return written
 
 
-def _kept_copies_lacking(root: Path, written: dict, kept: dict) -> list:
-    """`(kept module, written copy, [the names it lacks], KEPT_MODULE)` for
-    each written `.py` copy that imports from a kept one (#536). Split out
-    of `_refuse_kept_copies_missing_names`, which says what is asked of
-    what; each kept copy is read once, however many copies import from it.
+def _copies_as_left(rows: list[Row], written: dict,
+                    kept: dict) -> dict[str, str]:
+    """`{path: side}` for every pinned copy this run leaves at its path,
+    the modules a written copy is asked against (#1082): which of
+    `Disagreement`'s sides its bytes are then.
+
+    A copy THIS RUN'S `--accept-local` keeps is `KEPT_MODULE` (#536). An
+    `unchanged` row is the upstream's own bytes where it holds the
+    target's, and `EARLIER_MODULE` where it does not: its digest is the
+    pin's, so an earlier run recorded the project's own bytes there, and
+    the upstream has not changed the file since. A written copy, an `--add`
+    file and an `already-at-target` row hold the target's bytes, and are
+    `UPSTREAM_MODULE`. A `merged-away` row leaves no file at its path, and
+    the conflicts and the unaccepted `locally-modified` rows were refused
+    before this is asked, so none of those is here.
+    """
+    left = dict.fromkeys(written, UPSTREAM_MODULE)
+    for row in rows:
+        if row.path in kept:
+            left[row.path] = KEPT_MODULE
+        elif row.state == ALREADY_AT_TARGET:
+            left[row.path] = UPSTREAM_MODULE
+        elif row.state == UNCHANGED:
+            upstreams = (row.target_bytes is not None
+                         and row.digest == file_bytes_sha256(row.target_bytes))
+            left[row.path] = UPSTREAM_MODULE if upstreams else EARLIER_MODULE
+    return left
+
+
+def _written_copies_lacking(root: Path, written: dict, left: dict) -> list:
+    """`(module, written copy, [the names it lacks], side)` for each written
+    `.py` copy that imports from a copy this run leaves (#536, #1082), its
+    module read as this run leaves it and its side `_copies_as_left`'s.
+    Split out of `_refuse_kept_copies_missing_names`, which says what is
+    asked of what; each module is read once, however many copies import
+    from it.
     """
     imports = [(path, module, names) for path, data in sorted(written.items())
                if path.endswith(".py") and data is not None
@@ -4338,28 +4574,43 @@ def _kept_copies_lacking(root: Path, written: dict, kept: dict) -> list:
     lacking = []
     for path, module, names in imports:
         helper = _module_beside(path, module)
-        if helper not in kept:
+        if helper not in left:
             continue
         if helper not in defined:
-            defined[helper] = _names_defined(root / helper)
+            defined[helper] = _names_as_left(root, helper, written)
         known = defined[helper]
         missing = sorted(names - known) if known is not None else []
         if missing:
-            lacking.append(Disagreement(helper, path, missing, KEPT_MODULE))
+            lacking.append(Disagreement(helper, path, missing, left[helper]))
     return lacking
 
 
-def _kept_copies_importing_dropped(root: Path, written: dict,
-                                   kept: dict) -> list:
-    """`(written module, kept copy, [the names this run drops],
-    WRITTEN_MODULE)` for each kept `.py` copy that imports from a module
-    this run writes (#604): the reverse of `_kept_copies_lacking`, which
-    `_refuse_kept_copies_missing_names` says the why of. Each written
-    module is read once, however many kept copies import from it.
+def _names_as_left(root: Path, path: str, written: dict) -> set[str] | None:
+    """What the module at `path` defines as this run leaves it (#1082):
+    in the bytes this run writes there, else in its bytes on disk. None
+    where that cannot be told, which is no refusal."""
+    if path not in written:
+        return _names_defined(root / path)
+    data = written[path]
+    return _names_defined_in(data) if data is not None else None
+
+
+def _kept_copies_importing_dropped(root: Path, written: dict, kept: dict,
+                                   earlier: dict) -> list:
+    """`(written module, kept copy, [the names this run drops], side)` for
+    each kept `.py` copy that imports from a module this run writes
+    (#604): the reverse of `_written_copies_lacking`, which
+    `_refuse_kept_copies_missing_names` says the why of. A copy in `kept`,
+    which this run's `--accept-local` keeps, is `WRITTEN_MODULE`'s
+    importer; one in `earlier`, which an earlier run kept, is
+    `WRITTEN_UNDER_EARLIER`'s (#1082). Each written module is read once,
+    however many kept copies import from it.
     """
+    importers = {**dict.fromkeys(earlier, WRITTEN_UNDER_EARLIER),
+                 **dict.fromkeys(kept, WRITTEN_MODULE)}
     dropped: dict[str, set[str]] = {}
     pairs = []
-    for path in sorted(kept):
+    for path, side in sorted(importers.items()):
         for module, names in sorted(_imports_on_disk(root, path).items()):
             beside = _module_beside(path, module)
             if beside not in written:
@@ -4369,8 +4620,7 @@ def _kept_copies_importing_dropped(root: Path, written: dict,
                                                  written[beside])
             missing = sorted(names & dropped[beside])
             if missing:
-                pairs.append(Disagreement(beside, path, missing,
-                                          WRITTEN_MODULE))
+                pairs.append(Disagreement(beside, path, missing, side))
     return pairs
 
 
@@ -4440,83 +4690,145 @@ def _validators_meet(root: Path, written: dict, pairs: list,
     return False
 
 
-def _missing_name_refusal(pairs: list, kept: dict, target: str,
+#: How `update-accept-local-missing-name` opens. Where every line names a
+#: copy this run's `--accept-local` keeps (#536, #604), as it always has;
+#: where a line names a copy an earlier run kept, or the upstream's own,
+#: which nothing this run was given keeps (#1082), in words true of every
+#: kind of line.
+KEPT_LEAD = ("--accept-local keeps this project's own bytes of a copy that "
+             "disagrees with a copy this run writes beside it: one of the "
+             "two imports a name from the other that the other's bytes do "
+             "not define")
+LEFT_LEAD = ("a copy imports a name from a copy beside it whose bytes, as "
+             "this run leaves them, do not define it, and this run writes "
+             "one of the two")
+
+
+def _missing_name_refusal(pairs: list, copies: dict, target: str,
                           validated: bool) -> Refusal:
     """The one `update-accept-local-missing-name` refusal, one line per
-    pair, in either direction (#536, #604). Every sentence in it is true
-    of every line it lists, whichever side of the line is the kept copy;
-    the validators clause is said only where `validated`, which
-    `_validators_meet` answers, is false, as
-    `_refuse_kept_copies_missing_names` says why.
+    pair, in either direction (#536, #604, #1082). Every sentence in it is
+    true of every line it lists, whichever side of the line is the kept
+    copy, and whoever kept it: `KEPT_LEAD` where every line is one this
+    run's `--accept-local` makes, else `LEFT_LEAD`. The validators clause
+    is said only where `validated`, which `_validators_meet` answers, is
+    false, as `_refuse_kept_copies_missing_names` says why. `copies` is
+    every pinned row, by its path.
     """
+    sides = {pair.side for pair in pairs}
+    lead = KEPT_LEAD if sides <= {KEPT_MODULE, WRITTEN_MODULE} else LEFT_LEAD
     return Refusal(
         "update-accept-local-missing-name",
-        "--accept-local keeps this project's own bytes of a copy that "
-        "disagrees with a copy this run writes beside it: one of the two "
-        "imports a name from the other that the other's bytes do not "
-        "define, so the importer would stop on an ImportError the first "
+        lead + ", so the importer would stop on an ImportError the first "
         "time it runs"
         + ("" if validated else
            ", though the validators, which never import it, pass")
         + ":\n" + "\n".join(_missing_name_line(*pair) for pair in pairs),
-        _missing_name_remediation(pairs, kept, target))
+        _missing_name_remediation(pairs, copies, target))
 
 
 def _missing_name_line(module: str, importer: str, names: list[str],
                        side: str) -> str:
-    """One pair's line: which copy is kept, which written, and the names.
+    """One pair's line: whose bytes the module holds, which copy imports
+    from it, and the names. A side's own constant is its word: `(kept)`,
+    `(kept by an earlier run)` or `(the upstream's)` for a written
+    importer's module, and `(written)` under a kept importer (#604), whose
+    own word, `(kept)` or `(kept by an earlier run)` (#1082), says who
+    kept it (`KEPT_IMPORTERS`).
     """
     said = ", ".join(names)
-    if side == KEPT_MODULE:
-        return (f"    {module} (kept) lacks {said}, which {importer} "
-                "imports from it")
-    return (f"    {module} (written) no longer defines {said}, which "
-            f"{importer} (kept) imports from it")
+    if side in KEPT_IMPORTERS:
+        return (f"    {module} (written) no longer defines {said}, which "
+                f"{importer} ({KEPT_IMPORTERS[side]}) imports from it")
+    return (f"    {module} ({side}) lacks {said}, which {importer} "
+            "imports from it")
 
 
-def _missing_name_remediation(pairs: list, kept: dict, target: str) -> str:
-    """The human's two exits, for each kept copy the lines name (#536,
-    #604). Keeping the edit is the human's decision: change the kept copy
-    so it agrees, as the side it is on asks, commit each change, and run
-    again with the same `--accept-local`; or drop the edit, so the
-    upstream's copy is taken. Each change names the lines it settles, so
-    neither is read as settling the other's. `--accept-local` is named in
-    prose, and no NEXT line passes it. The upstream's bytes are named by
-    `upstream_show`, quoted, since #604 made a kept copy any `.py` path.
+def _missing_name_remediation(pairs: list, copies: dict, target: str) -> str:
+    """The human's exits (#536, #604, #1082): for each copy the project
+    keeps that a line names, `_keep_or_drop`'s two; and for a line whose
+    module is the upstream's own, another target, since no edit of the
+    project's settles two of the upstream's copies disagreeing. `copies`
+    maps a path to its row. Nothing was written, whichever.
     """
-    named = sorted({pair.module if pair.side == KEPT_MODULE else pair.importer
-                    for pair in pairs})
-    upstreams = "; ".join(f"`{upstream_show(target, kept[path].source)}` "
-                          f"for {path}" for path in named)
-    both = [path for path in named if kept[path].state == BOTH]
     sides = {pair.side for pair in pairs}
+    said = ([_keep_or_drop(pairs, copies, target, sides)]
+            if sides - {UPSTREAM_MODULE} else [])
+    if UPSTREAM_MODULE in sides:
+        said.append("A `(the upstream's) lacks` line is two of the "
+                    "upstream's own copies disagreeing at this target, "
+                    "which no edit of this project's settles: run this "
+                    "again with an --at whose copies agree.")
+    return "Remediation: " + " ".join(said) + " Nothing was written."
+
+
+def _keep_or_drop(pairs: list, copies: dict, target: str, sides: set) -> str:
+    """The human's two exits, for each kept copy the lines name (#536,
+    #604, #1082). Keeping the edit is the human's decision: change the
+    kept copy so it agrees, as the side it is on asks, commit each change,
+    and run again with the same `--accept-local`, and with it on a copy an
+    earlier run kept, whose changed row then reads `locally-modified`; or
+    drop the edit, so the upstream's copy is taken. Each change names the
+    lines it settles, so none is read as settling another's, and the kept
+    copy a `(written) no longer defines` line names is its importer.
+    `--accept-local` is named in prose, and no NEXT line passes it. The
+    upstream's bytes are named by `upstream_show`, quoted, since #604 made
+    a kept copy any `.py` path.
+    """
+    named = sorted({pair.importer if pair.side in KEPT_IMPORTERS
+                    else pair.module
+                    for pair in pairs if pair.side != UPSTREAM_MODULE})
+    upstreams = "; ".join(f"`{upstream_show(target, copies[path].source)}` "
+                          f"for {path}" for path in named)
+    both = [path for path in named if copies[path].state == BOTH]
     changes = []
     if KEPT_MODULE in sides:
         changes.append("merge the upstream's version by hand into a kept "
                        "copy that lacks a name, so it defines every name "
                        "its `(kept) lacks` line names")
+    if EARLIER_MODULE in sides:
+        changes.append("merge the upstream's version by hand into a copy "
+                       "an earlier run kept that lacks a name, so it "
+                       "defines every name its `(kept by an earlier run) "
+                       "lacks` line names")
     if WRITTEN_MODULE in sides:
         changes.append("change a kept copy that imports a name the module "
                        "written beside it no longer defines, so it no "
                        "longer takes any name its `(written) no longer "
                        "defines` line names")
+    if WRITTEN_UNDER_EARLIER in sides:
+        changes.append("change a copy an earlier run kept that imports a "
+                       "name the module written beside it no longer "
+                       "defines, so it no longer takes any name its "
+                       "`(written) no longer defines` line names")
+    earlier = sides & {EARLIER_MODULE, WRITTEN_UNDER_EARLIER}
+    again = "with the same --accept-local"
+    if earlier:
+        changed = ("--accept-local on each copy an earlier run kept that you "
+                   "changed, whose row then reads `locally-modified`")
+        again = (f"{again}, and with {changed}"
+                 if sides & {KEPT_MODULE, WRITTEN_MODULE} else
+                 f"with {changed}")
     return (
-        "Remediation: whether the project keeps its edit is the human's "
-        "decision, and a kept copy must still agree with the copies "
-        "written beside it on every name one imports from the other. "
-        "Either " + ", and ".join(changes) + ", commit each, and run this "
-        "again with the same --accept-local; or drop the edit, so the "
-        "upstream's copy is taken: write the upstream's bytes over it, "
-        "commit that, and run this again without --accept-local on that "
-        f"path. In a shape clone the upstream's bytes are {upstreams}"
+        "whether the project keeps its edit is the human's decision, and a "
+        "kept copy must still agree with the copies written beside it on "
+        "every name one imports from the other. "
+        + ("An earlier run kept each `(kept by an earlier run)` copy: the "
+           "pin records the project's own bytes for it, and the upstream "
+           "has not changed it since, so `check` reads its row "
+           "`unchanged`. " if earlier else "")
+        + "Either " + ", and ".join(changes) + f", commit each, and run "
+        f"this again {again}; or drop the edit, so the upstream's copy is "
+        "taken: write the upstream's bytes over it, commit that, and run "
+        "this again without --accept-local on that path. In a shape clone "
+        f"the upstream's bytes are {upstreams}"
         + (", and for a kept copy that imports a name they show what the "
            "upstream's own copy of that file imports instead"
-           if WRITTEN_MODULE in sides else "")
+           if sides & set(KEPT_IMPORTERS) else "")
         + "."
         + (f" {', '.join(both)} changed upstream too, so dropping the edit "
            "there is `update-conflict`'s merge by hand again, settled on the "
-           "upstream's side." if both else "")
-        + " Nothing was written.")
+           "upstream's side." if both else ""))
 
 
 def _module_beside(path: str, module: str) -> str:
@@ -5016,9 +5328,11 @@ def _rewrite_readme(readme: ReadmeShapeLine, ledger: Rollback) -> None:
     way of failing to READ this file into one of those readings, so what is
     left here is the write itself — a disk that filled, a permission that
     changed under the run — and this phase runs AFTER the copies and the pin.
-    An `OSError` escaping would leave that tree behind, because `cmd_apply`
-    rolls back on `Refusal` and `CommandFailed` and on nothing else (Copilot,
-    PR #152). Named as a refusal, the arm that already exists puts every byte
+    An `OSError` escaping left that tree behind, because `cmd_apply` rolled
+    back on `Refusal` and `CommandFailed` and on nothing else (Copilot, PR
+    #152); it puts the bytes back under any `OSError` now (#1173), but
+    one it cannot name is still a traceback, which names no step and no
+    remedy. Named as a refusal, the arm that already exists puts every byte
     back — and says so itself, listing what it put back under this detail
     (`_rolled_back`, #202), so the detail does not claim it a second time.
     """
@@ -5198,13 +5512,39 @@ def cmd_apply(args) -> int:
         # A READ REFUSED AFTER `prepare` (#430), the first write included:
         # this arm is the rollback, and it answers a `Refusal`, so a refused
         # read is made one, `update-unreadable`, and every byte goes back
-        # under it. Any other `OSError` is raised as it was.
+        # under it. Any other `OSError` is raised as it was, once every byte
+        # is back (#1173).
         refusal = unreadable_refusal(root, exc)
         if refusal is None:
+            _roll_back_before_raising(ledger)
             raise
         return _rolled_back(refusal, ledger)
     finally:
         upstream.close()
+
+
+def _flush_stdout() -> None:
+    """Flush stdout before a failure is written to stderr, and let a flush
+    that fails go (#1218).
+
+    THE FLUSH KEEPS A MERGED LOG IN ORDER. Piped, stdout is block-buffered
+    and stderr is not, so without it a log that merges the two (`> log
+    2>&1`) shows the refusal above the `copied` and `committed` lines it is
+    about.
+
+    A STDOUT NOBODY READS MUST NOT COST THE REPORT. Into a pipe whose reader
+    has gone, as `apply --yes | head -1` leaves it once `head` has its line,
+    the flush raises `BrokenPipeError`. Raised bare in `_rolled_back` it
+    went over the REFUSED line and the ROLLED BACK list, and in
+    `landing_failed` over the step that failed and the sentence that the
+    commit stands: the tree was put back, or the commit kept, and stderr
+    said neither. The error is let go, because the report on stderr is what
+    the person needs. The bytes stay buffered, and the interpreter tries
+    them once more at exit and says so itself, with its exit 120.
+    `adopt-project.py`'s `_flush_stdout` is the same guard, for the same
+    reason (#171)."""
+    with contextlib.suppress(OSError):
+        sys.stdout.flush()
 
 
 def _rolled_back(exc: Exception, ledger: Rollback) -> int:
@@ -5228,8 +5568,9 @@ def _rolled_back(exc: Exception, ledger: Rollback) -> int:
     if undone is not None:
         # The `copied` / `re-pinned` lines first, then the refusal: a log that
         # merged the two streams would otherwise show the rollback before the
-        # writes it rolled back.
-        sys.stdout.flush()
+        # writes it rolled back. A stdout nobody reads takes nothing, and the
+        # refusal still reaches stderr (`_flush_stdout`, #1218).
+        _flush_stdout()
     if isinstance(exc, Refusal):
         if undone is None:
             raise exc
@@ -5240,6 +5581,36 @@ def _rolled_back(exc: Exception, ledger: Rollback) -> int:
         return 2
     print(f"{exc.loudly(ledger.step)}\n{undone}", file=sys.stderr)
     return 2
+
+
+def _roll_back_before_raising(ledger: Rollback) -> None:
+    """`apply`'s answer to an `OSError` no refusal can name, before
+    `cmd_apply` raises it as it was (#1173): undo what `ledger` holds, and
+    say what was put back on stderr, as `_rolled_back` says it under a
+    failed git command.
+
+    NO NAME, AND STILL A ROLLBACK. `unreadable_refusal` names a read the
+    system refused, and nothing else: a file gone between its `stat` and
+    its read, an interpreter gone when a validator starts, or an error that
+    names no path -- a `BrokenPipeError` from a flush into a pipe nobody
+    reads any more, an `EIO` -- has no refusal to be. Each was raised with
+    every copy, the pin and the manifest left written and the root's own
+    validators undecided: the traceback over a half-written tree that
+    `Rollback.writing` and `_rewrite_readme` exist to prevent. The traceback
+    stays, as the tool's answer to an error it cannot name, and the tree is
+    as it was under it. Nothing to put back says nothing: an `OSError`
+    before the first write, or after the commit landed, is raised exactly
+    as it always was.
+
+    STDOUT IS FLUSHED FIRST, for `_rolled_back`'s reason, and a flush that
+    fails is let go (`_flush_stdout`): the error this answers may be
+    stdout's own, a pipe nobody reads, and what was put back must still
+    reach stderr."""
+    undone = ledger.undo()
+    if undone is None:
+        return
+    _flush_stdout()
+    print(undone, file=sys.stderr)
 
 
 class LandingIncomplete(Exception):
@@ -5279,7 +5650,10 @@ def landing_failed(root: Path, args, exc: CommandFailed, act: str,
     branch origin lacks.
 
     STDOUT IS FLUSHED FIRST, so a combined log reads in the order things
-    happened: the commit and the push above the refusal, not below it.
+    happened: the commit and the push above the refusal, not below it. A
+    flush into a pipe nobody reads is let go (`_flush_stdout`, #1218), so
+    the step that failed and the commit that stands still reach stderr; the
+    NEXT line is stdout's, and goes wherever stdout goes.
     """
     branch = args.branch
     head = (_git_answer(root, ["rev-parse", "HEAD"]) or "").strip()
@@ -5287,7 +5661,7 @@ def landing_failed(root: Path, args, exc: CommandFailed, act: str,
                                   "--points-at", "HEAD", "refs/remotes/origin/"])
                or "").splitlines()
     pushed = bool(head) and f"refs/remotes/origin/{branch}" in at_head
-    sys.stdout.flush()
+    _flush_stdout()
     print(exc.loudly(act), file=sys.stderr)
     left = ("its pull request: the NEXT line opens it" if pushed
             else "the push and the pull request: the NEXT line makes both")

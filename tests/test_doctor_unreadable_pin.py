@@ -501,7 +501,7 @@ def test_an_oserror_the_root_did_not_refuse_is_raised_as_it_was(
     module, ctx = in_process(standard, project)
     error = raised(standard, ctx.root)
 
-    def prepare(_args):
+    def prepare(_args, **_ask_source):
         raise error
 
     monkeypatch.setattr(ctx.update_shape(), "prepare", prepare)

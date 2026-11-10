@@ -401,7 +401,7 @@ python3 scripts/family.py siblings --family-root <path>
    `family.yaml`'s `members:` block, which the tool rewrites wholesale, but for
    a row repair `validate-family.py` names; the commit is then the person's.
 4. **The member must be scaffolded or adopted FIRST.** A family cannot make a
-   project out of a repository; it can only pin one that already is.
+   project out of a repository; it can only pin one that already is. A row whose `id:` is no project id is `member-id-malformed`.
 5. **`make siblings` in the holder — or `family.py siblings --family-root
    <path>`, the same file — places the WORKSTATION layout**: each member
    cloned BESIDE the holder, in the family folder, on its tracking branch,
