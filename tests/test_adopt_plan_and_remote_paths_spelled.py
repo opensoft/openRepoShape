@@ -488,17 +488,20 @@ def test_the_plan_is_named_as_a_path_is(request, tmp_path, row, command,
 @pytest.fixture(scope="module")
 def no_filter_repo(tmp_path_factory) -> dict:
     """`run_adopt`'s `over` for a child that finds no `git filter-repo`,
-    whether or not this machine has one: PATH less each directory that holds
-    a `git-filter-repo`, and, where that took `git` too, a directory of its
-    own holding a link to it. Skipped where git still finds the tool, in its
-    own exec path, which no PATH hides: `_require_filter_repo` asks
-    `git filter-repo --version` too."""
+    whether or not this machine has one: PATH less each entry that holds a
+    `git-filter-repo` (an empty entry is the current directory, as git reads
+    it) and, where what is left finds another `git` than this session's, a
+    first entry of its own holding a link to the session's. Skipped where git
+    still finds the tool, in its own exec path, which no PATH hides:
+    `_require_filter_repo` asks `git filter-repo --version` too."""
     kept = [entry for entry in os.environ.get("PATH", "").split(os.pathsep)
-            if shutil.which("git-filter-repo", path=entry) is None]
-    if shutil.which("git", path=os.pathsep.join(kept)) is None:
+            if shutil.which("git-filter-repo",
+                            path=entry or os.curdir) is None]
+    git = shutil.which("git")
+    if shutil.which("git", path=os.pathsep.join(kept)) != git:
         alone = tmp_path_factory.mktemp("git-alone")
-        (alone / "git").symlink_to(shutil.which("git"))
-        kept.append(os.fspath(alone))
+        (alone / "git").symlink_to(git)
+        kept.insert(0, os.fspath(alone))
     path = os.pathsep.join(kept)
     assert shutil.which("git-filter-repo", path=path) is None, path
     probe = subprocess.run(["git", "filter-repo", "--version"],
@@ -512,9 +515,14 @@ def no_filter_repo(tmp_path_factory) -> dict:
 
 
 #: Each of `CASES` with its marks taken off, so that it runs wherever this
-#: file runs, and whether `needs_filter_repo` guards it there.
-GUARDS = [pytest.param(*case.values, needs_filter_repo in case.marks,
-                       id=case.id) for case in CASES]
+#: file runs, and whether `needs_filter_repo` guards it there: on the case, or
+#: on `test_the_plan_is_named_as_a_path_is`, which every case runs under. A
+#: skip inside that test's body is not a mark, and this cannot read it.
+GUARDS = [pytest.param(*case.values, needs_filter_repo.mark in [
+    getattr(mark, "mark", mark) for mark in (
+        *case.marks,
+        *getattr(test_the_plan_is_named_as_a_path_is, "pytestmark", []))],
+    id=case.id) for case in CASES]
 
 
 @pytest.mark.parametrize("row, command, is_guarded", GUARDS)
