@@ -528,13 +528,17 @@ def policy_refusal(shape: Path, text: str) -> Refusal:
 @pytest.mark.parametrize("text, code", [
     pytest.param(UNPARSABLE, "yaml-unparsable", id="load-yaml"),
     pytest.param("- a list\n", "policy-unreadable", id="not-a-mapping"),
+    pytest.param("kind: something-else\n", "policy-wrong-kind",
+                 id="wrong-kind"),
 ])
 @pytest.mark.parametrize("name", NAMES)
 def test_the_doctor_finds_its_own_policy_in_the_naming_scripts_refusal(
         tmp_path, name, text, code):
     """`naming_script_refusal` knows the checkout's own policy by the path
-    at the start of the detail. `load_yaml` and `policy-unreadable` spell
-    it now, and the doctor asks that spelling too."""
+    at the start of the detail. `load_yaml`, `policy-unreadable` and, since
+    #1279, `policy-wrong-kind` spell it now, and the doctor asks that
+    spelling too. Named raw, a line feed split the wrong kind's line, and
+    the doctor did not find its own policy in it."""
     shape = unsafe_folder(tmp_path, name)
     refusal = policy_refusal(shape, text)
     found = doctor_module().naming_script_refusal(shape, f"{refusal}\n")
@@ -547,12 +551,20 @@ def test_the_doctor_finds_its_own_policy_in_the_naming_scripts_refusal(
     pytest.param(PRINTABLE_NAME, id="printable"),
 ])
 def test_the_doctor_still_finds_its_own_policy_named_raw(tmp_path, name):
-    """`policy-wrong-kind` names the policy raw, as it always did, and the
-    doctor still finds it by that prefix. A line feed splits that line, so
-    it is not among the names here, as on main."""
+    """A `repo_shape.py` from before #1279 names the policy raw in
+    `policy-wrong-kind`, and the doctor still finds it by that prefix. Only
+    this checkout's own library can print that line: the naming script the
+    doctor reads is this checkout's and imports this checkout's library, so
+    the library is one older than its doctor, never a root's. The line is
+    built as that library prints it, since this checkout's spells it. A
+    line feed splits that line, so it is not among the names here."""
     shape = unsafe_folder(tmp_path, name)
-    refusal = policy_refusal(shape, "kind: something-else\n")
-    assert refusal.code == "policy-wrong-kind"
+    policy = policy_refusal(shape, "kind: something-else\n")
+    assert policy.code == "policy-wrong-kind"
+    refusal = Refusal(policy.code,
+                      f"{shape / 'contracts' / 'repository-naming.yaml'}: "
+                      "kind is 'something-else', expected "
+                      "'repository-naming-policy'")
     found = doctor_module().naming_script_refusal(shape, f"{refusal}\n")
     assert found is not None, ascii(str(refusal))
     assert found.detail == refusal.detail

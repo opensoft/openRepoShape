@@ -2761,10 +2761,13 @@ def naming_script_refusal(shape: Path, whole: str) -> Refusal | None:
     `project.yaml` the script was asked to read -- each is about what the
     script was asked, and is not this.
 
-    IN EITHER SPELLING (#1168): `load_yaml` and `policy-unreadable` name the
-    file as `shown_path` does, `repr`'d where this checkout's path holds a
-    character that is not printable, and `policy-wrong-kind` names it raw.
-    For a printable path the two are one.
+    IN EITHER SPELLING (#1168): `load_yaml`, `policy-unreadable` and, since
+    #1279, `policy-wrong-kind` name the file as `shown_path` does, `repr`'d
+    where this checkout's path holds a character that is not printable. It
+    is named raw only where this checkout's own `repo_shape.py` is older
+    than its doctor: the script that prints the line is this checkout's, and
+    imports this checkout's library, so a root's library never reaches this
+    function. For a printable path the two are one.
     """
     policy = f"{shape / NAMING_COPY}: "
     spelt = f"{shown_path(shape / NAMING_COPY)}: "
