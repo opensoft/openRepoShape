@@ -7299,7 +7299,7 @@ class Plan:
         self.data = data
         if data.get("kind") != PLAN_KIND:
             detail = (f"{_shown(str(path))}: kind is "
-                      f"{data.get('kind')!r}, expected {PLAN_KIND!r}")
+                      f"{_plan_key_said(data, 'kind')}, expected {PLAN_KIND!r}")
             if data.get("kind") == PLACEMENT_PLAN_KIND:
                 # A REFUSAL THAT SAYS WHERE THE FILE GOES INSTEAD. This one is
                 # reachable by an honest mistake -- the two files look alike,
@@ -7319,7 +7319,7 @@ class Plan:
         if data.get("mode") != "in-place":
             raise Refusal(
                 "plan-unsupported-mode",
-                f"{_shown(str(path))}: mode is {data.get('mode')!r}; "
+                f"{_shown(str(path))}: mode is {_plan_key_said(data, 'mode')}; "
                 "v0.2 implements `in-place` only",
                 "Remediation: re-run `plan`, which writes `mode: in-place`. "
                 "A `new-root` mode is described in the tool's own docstring "
@@ -7662,7 +7662,9 @@ class Plan:
         boolean (`id: 007`) was `str` of what was read, `7`, which the
         pattern takes: it is refused by what was read (L1-K3). And an `id:`
         the pattern refuses is told what an id may hold, as `plan` tells a
-        passed `--id` (`PASSED_ID_REMEDIATION`).
+        passed `--id` (`PASSED_ID_REMEDIATION`). A list or a mapping is
+        named by what was read too, `a list of 2 item(s)`, where it was the
+        quoted text `"['a', 'b']"` that `str` made of it (#1199).
         """
         set_id, pattern = self.get("id"), PROJECT_ID_RE.pattern
         if set_id is None:
@@ -7683,7 +7685,7 @@ class Plan:
         if not PROJECT_ID_RE.match(project_id):
             raise Refusal(
                 "plan-bad-id",
-                f"{_shown(str(self.path))}: `id:` is {project_id!r} and "
+                f"{_shown(str(self.path))}: `id:` is {_plan_value_said(set_id)} and "
                 f"must match {pattern}", PLAN_ID_REMEDIATION)
         return project_id
 
@@ -7849,8 +7851,8 @@ def _leg_findings(plan: Plan, tree: list | None,
                 f"question was: {_shown(str(entry.get('question')))}")
         elif str(leg) not in LEG_VALUES:
             findings.append(
-                f"FINDING plan-bad-leg: {path} declares leg {leg!r}; it is "
-                f"one of {list(LEG_VALUES)}")
+                f"FINDING plan-bad-leg: {path} declares leg "
+                f"{_plan_value_said(leg)}; it is one of {list(LEG_VALUES)}")
     if isinstance(plan.legs, dict):
         findings += _root_shape_findings(plan, tree, named_links)
         # THE PINS, LAST (#273): each `pins:` entry `execute` cannot write a
@@ -9371,6 +9373,29 @@ def _read_as(value) -> str:
     if isinstance(value, list):
         return f"a list of {len(value)} item(s)"
     return f"a value of type {type(value).__name__}"
+
+
+def _plan_value_said(value) -> str:
+    """A plan value that a refusal names, said as the plan's other refusals
+    say one (#1199, which follows #1114).
+
+    A value the plan's reader read as text is spelled as Python spells it,
+    quoted, as it always was (`kind is 'placement-plan'`, a leg `'Spec'`), so
+    no refusal of a text changes by a byte. Any other is said as `_read_as`
+    says what was read: `the number 7`, `the boolean true`, `null`, `a list
+    of 2 item(s)`. It was `repr` of every one, which spells a number `7`, a
+    boolean `True`, a null `None`, and a list or a mapping as Python does,
+    with no word that the plan holds one."""
+    return repr(value) if isinstance(value, str) else _read_as(value)
+
+
+def _plan_key_said(data: dict, key: str) -> str:
+    """The plan's top-level `key:` said by `_plan_value_said`, or `absent`
+    where the plan has no `key:` line at all. `data.get` gives None for that
+    and for a bare `key:`, which `_read_as` calls `null`: a plan with a line
+    is sent to that line, and one without is told it has none (`_not_the_source`
+    tells an absent `org:` from a null one the same way)."""
+    return "absent" if key not in data else _plan_value_said(data[key])
 
 
 def _plan_follow_ups(plan: Plan) -> list[str]:
