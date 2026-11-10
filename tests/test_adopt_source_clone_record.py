@@ -259,7 +259,8 @@ def test_each_spelling_of_a_name_is_cloned_and_recorded_as_owner_repo(
     code, _, err = run(adopter, capsys, *plan_args(spec, plan, WORK_FLAG,
                                                    str(work)))
     assert code == 0, err
-    assert calls == [[*CLONE, str(clone_dir(work)), "--", "--quiet"]]
+    assert calls == [[*CLONE, str(clone_dir(work)), "--", "--quiet",
+                      "--origin", "origin"]]
     assert recorded(plan)["repository"] == REPOSITORY
 
 
