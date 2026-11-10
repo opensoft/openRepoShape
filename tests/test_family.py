@@ -48,7 +48,7 @@ from test_update_shape import rendered_shape_line, strip_shape_block
 
 sys.path.insert(0, str(REPO / "scripts"))
 from repo_shape import (  # noqa: E402
-    Refusal, load_yaml, shell_quoted, tree_digest,
+    PYTHON, Refusal, load_yaml, shell_quoted, tree_digest,
 )
 from shape_materialize import (  # noqa: E402
     SHAPE_REPOSITORY, readme_shape_lines, readme_trailing_shape_line,
@@ -540,7 +540,11 @@ def test_add_refuses_a_spelling_of_a_member_the_family_already_pins(
     assert result.returncode == 2, result.stderr + result.stdout
     assert "REFUSED member-already-present" in result.stderr
     assert "the row IRRS pins InkRouter/IRRS" in result.stderr
-    assert ("`family.py bump --family-root "
+    # The line as every remedy prints one of `family.py`'s own: the
+    # interpreter and the path that reaches the file from where the run
+    # stood, which is this process's (#1127).
+    script = shell_quoted(os.path.relpath(FAMILY.resolve()))
+    assert (f"`{PYTHON} {script} bump --family-root "
             f"{shell_quoted(holder.resolve())} --member IRRS --to "
             "<commit>`") in result.stderr
     assert "mounting" not in result.stdout
@@ -667,6 +671,24 @@ def test_the_family_passes_its_own_gate(family):
     assert result.returncode == 0, result.stderr + result.stdout
     assert "family ok: InkRouter (inkrouter), 2 member(s)" in result.stdout
     assert "InkRouter: family (declared by family.yaml)" in result.stdout
+
+
+def test_the_gate_passes_on_a_stdout_that_cannot_hold_its_notes(family):
+    """A note ends each member's digest in U+2026, which a stdout in Latin-1
+    cannot hold, so on a holder that passes the gate ended in a
+    `UnicodeEncodeError` traceback, exit 1 (#1214). It escapes what its
+    stdout cannot encode, as `siblings.py` does, and passes, the note
+    ending in `\\u2026`."""
+    result = run_script(family["root"] / "scripts" / "validate-family.py",
+                        cwd=family["root"],
+                        env={"PYTHONIOENCODING": "latin-1"})
+    assert result.returncode == 0, result.stderr + result.stdout
+    assert "Traceback" not in result.stderr, result.stderr
+    assert "family ok: InkRouter (inkrouter), 2 member(s)" in result.stdout
+    notes = [line for line in result.stdout.splitlines()
+             if ": tree digest recomputes (" in line]
+    assert len(notes) == 2, result.stdout
+    assert all(note.endswith("\\u2026)") for note in notes), notes
 
 
 def test_make_pins_checks_the_lockstep_alone(family):

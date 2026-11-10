@@ -432,6 +432,12 @@ NAMING_POLICY_YAML = "contracts/repository-naming.yaml"
 #: rather than importing one across a boundary neither module crosses
 #: otherwise.
 BOOTSTRAP = "scripts/bootstrap.py"
+#: The command the shape's `make bootstrap` runs, as a sentence names it for
+#: a person to type: with the interpreter's name on Windows, where there is
+#: usually no `python3`, as the template's own `scripts/bootstrap.py` names
+#: both (#1132, RV1121's NIT-2). A line a person pastes as it is printed
+#: stays `python3 scripts/bootstrap.py`.
+BOOTSTRAP_COMMAND = f"`python3 {BOOTSTRAP}` (`python` on Windows)"
 #: And again for the project's manifest validator, which `COPIED_VERBATIM` and
 #: `EXECUTABLE` both carry and `manifest_validator` loads from the template.
 MANIFEST_VALIDATOR = "scripts/validate-manifest.py"
@@ -1027,12 +1033,19 @@ def collision_follow_up(intended: str, actual: str,
     `make` READS THE MERGED FILE. Until it is made, `make bootstrap` in the
     root exits 2 with `No rule to make target 'bootstrap'`, so the follow-up
     says that, and what runs meanwhile: `python3 scripts/bootstrap.py`, unless
-    that script went aside as well. `beside` maps each shape file written
+    that script went aside as well. It names that command as the template's
+    `scripts/bootstrap.py` does, `python` on Windows as well
+    (`BOOTSTRAP_COMMAND`, #1132). `beside` maps each shape file written
     beside one the source kept to where it went, the whole list, and only the
     Makefile's follow-up reads it. Where the root's `scripts/bootstrap.py` is
     the source's own, that command runs the source's script and exits 0, so
-    the follow-up names no command, and says both merges come first (#493's
-    review, F2).
+    the follow-up names no command to run meanwhile (#493's review, F2): it
+    says that command runs the shape's bootstrap once the script is merged,
+    and `make bootstrap` once both merges are made. It said neither runs it
+    "before both merges are made", which is untrue of `python3
+    scripts/bootstrap.py`: the script's merge alone lets it run the shape's,
+    while `make bootstrap` still exits 2 (#1105's second review, NIT-2,
+    measured in a root that keeps only `Makefile`).
 
     BUT GNU MAKE READS THE FIRST OF `GNUmakefile`, `makefile` AND `Makefile`
     IT FINDS, AND ONLY THAT ONE (#1048, measured on #1046's review). Where
@@ -1050,10 +1063,11 @@ def collision_follow_up(intended: str, actual: str,
     the merge alone, which turns on that file's own lines. Where
     `scripts/bootstrap.py` went aside as well, it says `python3
     scripts/bootstrap.py` runs the shape's bootstrap once that script is
-    merged, and not that `make bootstrap` does. With none, the Makefile's
-    follow-up is what it was, byte for byte: a root whose only Makefile is
-    the source's is one where `make` reads the merged file. It is read by no
-    other collision.
+    merged, and not that `make bootstrap` does. Both name that command as
+    `BOOTSTRAP_COMMAND` does, `python` on Windows as well (#1132). With none,
+    the Makefile's follow-up is what it was, byte for byte: a root whose only
+    Makefile is the source's is one where `make` reads the merged file. It is
+    read by no other collision.
 
     AND A PINNED COPY'S FOLLOW-UP SAYS WHAT HAPPENS TO ITS ROW (#502). The
     shape pin has a row for a copied file at the path it landed on, so once
@@ -1109,9 +1123,10 @@ def collision_follow_up(intended: str, actual: str,
         arrive = (f"The shape's make targets ({targets}) arrive only with "
                   "that merge")
         joint = ", and"
-        meanwhile = ("`python3 scripts/bootstrap.py` is what `make "
-                     "bootstrap` runs")
-        until = "before both merges are made"
+        meanwhile = f"{BOOTSTRAP_COMMAND} is what `make bootstrap` runs"
+        then = (f"{BOOTSTRAP_COMMAND} runs the shape's bootstrap once the "
+                "script is merged, and `make bootstrap` once both merges are "
+                "made")
     else:
         listed = _listed([f"`{name}`" for name in GNU_MAKE_READS])
         arrive = (
@@ -1120,15 +1135,15 @@ def collision_follow_up(intended: str, actual: str,
             f"({targets}) reach `make` there only once `{reads_first}` has "
             "them, or includes a Makefile that does")
         joint = "; and"
-        meanwhile = ("`python3 scripts/bootstrap.py` is what the shape's "
-                     "`make bootstrap` runs")
-        until = f"until then, and then `python3 {BOOTSTRAP}` runs it"
+        meanwhile = (f"{BOOTSTRAP_COMMAND} is what the shape's `make "
+                     "bootstrap` runs")
+        then = (f"neither `make bootstrap` nor `python3 {BOOTSTRAP}` runs the "
+                f"shape's bootstrap until then, and then {BOOTSTRAP_COMMAND} "
+                "runs it")
     if script is None:
         return f"{merge}. {arrive}; until then {meanwhile}"
     return (f"{merge}. {arrive}{joint} the root's {BOOTSTRAP} is the source's "
-            f"own until {script} is merged into it as well, so neither `make "
-            f"bootstrap` nor `python3 {BOOTSTRAP}` runs the shape's "
-            f"bootstrap {until}")
+            f"own until {script} is merged into it as well, so {then}")
 
 
 def _attributes_link_follow_up(intended: str, actual: str,
@@ -1175,8 +1190,10 @@ def copy_in_the_way(target: Path, actual: str) -> str | None:
     nowhere included (it is written through, and a file lands where nothing
     was meant), or when something on the way to it is not a directory, which
     a symlink to one is. `adopt-project.py check` finds what a plan keeps
-    there before any leg exists (`plan-root-blocks-shape-copy`); this is the
-    same question asked of the disk, for a caller that skipped `check`.
+    there before any leg exists (`plan-root-blocks-shape-copy`; a symlink
+    there whose target `plan-empty-symlink` or `plan-bad-symlink-target`
+    names one by one is that finding's alone, #979); this is the same
+    question asked of the disk, for a caller that skipped `check`.
     """
     parts = actual.split("/")
     for end in range(1, len(parts) + 1):
@@ -1784,9 +1801,15 @@ def gives_a_branch_another_name(source: str, destination: str) -> bool:
     `refs/heads-archive/old` for `refs/heads*`, and `origin_fetch_refspecs`
     says what leaving those out costs (BUT A COMMIT ONLY A REF THAT IS NO
     BRANCH REACHES). A shorter start, such as `refs/*` or `*`, can name a
-    tag, and that clause has left it out first. ANY OTHER SOURCE NAMES NO
-    BRANCH, though a refspec from one can still put a ref on a branch's
-    name: `origin_fetch_refspecs` says where (WHAT CAN STILL CLASH).
+    tag, and that clause has left it out first. ANY OTHER SOURCE TAKES NO
+    BRANCH BY A PATTERN, and a full name that is no pattern, such as
+    `refs/h`, takes the one ref git completes it to on the remote: that ref
+    itself, or one such as the branch `refs/heads/refs/h` or the tag
+    `refs/tags/refs/h` (measured, git 2.43 and 2.47.1). Such a name can
+    stand for a branch its spelling does not show, so it is not left out
+    here. A refspec from any such source can still put a ref on a branch's
+    name, if the ref is not that branch itself: `origin_fetch_refspecs`
+    says where (WHAT CAN STILL CLASH).
     """
     fixed, star, _ = source.partition("*")
     if not source.startswith(HEADS_PREFIX):
@@ -4994,9 +5017,18 @@ def _materialize(shape_root: Path, template_root: Path, target: Path,
                     "root already holds under its collision directory, so "
                     "the source cannot keep its own path there. "
                     "`adopt-project.py check` reports a plan that does as "
-                    "`plan-root-blocks-shape-copy`, before any leg exists. "
-                    "Send that path to a leg or `drop` it in the plan, and "
-                    "run `execute` again with fresh leg repositories and "
+                    "`plan-root-blocks-shape-copy`, before any leg exists, "
+                    "except a symlink there whose target "
+                    "`plan-empty-symlink` or `plan-bad-symlink-target` "
+                    "names one by one: that finding names it, once. Send "
+                    "that path to a leg or `drop` it in the plan. For such "
+                    "a symlink, first give it a target of its own in the "
+                    "source, or remove it there, commit, and re-run "
+                    "`plan`, since no answer in the plan changes a target. "
+                    "A link kept there with a target of its own is then "
+                    "`plan-root-blocks-shape-copy`'s, and the answer above "
+                    "is the one that helps. Then run `execute` again with "
+                    "fresh leg repositories and "
                     "an empty `--work-dir`, or none: this run made both "
                     "legs and cloned them into the work directory it was "
                     "given.")

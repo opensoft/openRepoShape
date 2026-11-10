@@ -44,8 +44,11 @@ from pathlib import Path
 
 import pytest
 
-from conftest import (ADOPT, ORG, REPO, SCAFFOLD, git, make_source_repo,
-                      run_script, skip_where_a_name_cannot_be_not_utf_8)
+from conftest import (A_BYTE_READ_AS_A_SURROGATE, ADOPT, ORG, REPO, SCAFFOLD,
+                      git, make_source_repo, run_script,
+                      skip_where_a_name_cannot_be_not_utf_8,
+                      skip_where_the_environment_cannot_carry,
+                      skip_where_the_locale_does_not_spell_it_as_utf_8)
 
 sys.path.insert(0, str(REPO / "scripts"))
 from repo_shape import load_yaml, parse_yaml, tree_digest  # noqa: E402
@@ -308,6 +311,10 @@ def test_the_source_is_printed_escaped_and_never_raised_on(
     in the plan, which cannot hold that byte, so it refuses the name as a
     value it cannot record before it reads any digest (#273's review, N2),
     and spells it the same way."""
+    skip_where_the_environment_cannot_carry(name)
+    if "\udcff" in name:
+        skip_where_the_locale_does_not_spell_it_as_utf_8(
+            name, A_BYTE_READ_AS_A_SURROGATE)
     typed = str(tmp_path / name)
     result = run(kind, tmp_path, adoptable, typed, env=env)
     assert result.returncode == 2, result.stdout + result.stderr
