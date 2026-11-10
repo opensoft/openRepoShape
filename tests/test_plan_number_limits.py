@@ -209,9 +209,12 @@ def test_the_refusal_follows_this_pythons_setting(tmp_path, default_digits):
 
 #: `(the file, the line the number is on, how many digits it holds)`, by test
 #: id: W1212's decimal and the same with a minus sign, in each shape a plain
-#: value is read in, and the two edges: the decimal a digit under half the
-#: smallest float, and one in the digits of another script. Every one has a
-#: nonzero digit and a float of zero.
+#: value is read in, and the three edges: the decimal a digit under half the
+#: smallest float, one in the digits of another script, and one whose nonzero
+#: digit is not the last, with more digits than the default limit lets
+#: `int()` read in one piece (a test of the last digit alone, or of all the
+#: digits as one integer, reads that one wrong). Every one has a nonzero digit
+#: and a float of zero.
 TOO_SMALL = {
     "block-value": (f"a: 1\nk: {TINY}\n", 2, 402),
     "block-value-negative": (f"a: 1\nk: -{TINY}\n", 2, 402),
@@ -227,16 +230,20 @@ TOO_SMALL = {
     "another-script": (
         f"k: 0.{ZERO_OF_ANOTHER_SCRIPT * 400}{ONE_OF_ANOTHER_SCRIPT}\n", 1,
         402),
+    "nonzero-digit-not-last": (f"k: 0.{'0' * 4400}10\n", 1, 4403),
+    "nonzero-digit-not-last-negative": (f"k: -0.{'0' * 4400}10\n", 1, 4403),
 }
 
 
 @pytest.mark.parametrize("case", sorted(TOO_SMALL))
 def test_a_decimal_a_float_can_only_make_zero_of_is_refused_by_its_line(
-        tmp_path, case):
+        tmp_path, default_digits, case):
     """`yaml-unparsable`, naming the file and the line, with the remedy and
     words that say it would be zero, as the large end's say it would be
     infinite: in every place a plain value is read, with a minus sign or
-    none, and where the digits are another script's."""
+    none, where the digits are another script's, and where the nonzero digit
+    is not the last: read at Python's default limit on an integer's digits,
+    whatever this host's setting is."""
     text, line, digits = TOO_SMALL[case]
     refusal = refusal_of(tmp_path, text)
     assert refusal.code == "yaml-unparsable"
