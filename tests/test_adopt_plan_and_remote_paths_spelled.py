@@ -789,6 +789,21 @@ def test_a_refused_command_no_step_said_is_said_spelled(
         "a git or gh command failed", typed, spelled) + "\n"
 
 
+def test_a_path_that_holds_another_is_spelled_whole_where_git_names_it(
+        adopter):
+    """The paths of a command that hold a line feed are spelled in what it
+    printed longest first: here the directory it ran in, `/re<LF>mote`, is
+    in the remote it pushed to, `/re<LF>mote/wo<LF>rk.git`, which git
+    names. Spelled shortest first, the remote's second line feed would be
+    left as it is, and the line split there (#1233)."""
+    refused = adopter.CommandFailed(
+        ["git", "push", "-q", "/re\nmote/wo\nrk.git", SPLIT_BRANCH],
+        "/re\nmote", 1, "To /re\nmote/wo\nrk.git\nerror: refused\n")
+    assert adopter._loudly(refused, "pushing the split").split("\n")[-4:] == [
+        "--- output ---", "To /re\\nmote/wo\\nrk.git", "error: refused",
+        "--- end output ---"]
+
+
 # --- a mount git will not add: `adopt-mount-unaddable` (#1233) --------------
 
 #: What `adopt-mount-unaddable` begins with, for the spec leg at `spec`.
