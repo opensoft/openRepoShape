@@ -509,6 +509,8 @@ ORIGINS_PAST = [
                  id="repository-100-dot-git-dot-git"),
     pytest.param(f"{URL}{OWNER_OVER}/{NAME_OVER}/", OWNER_OVER, NAME_OVER,
                  id="both-over"),
+    pytest.param(f"{URL}{ORG}/{NAME_OVER}.git/", ORG, NAME_OVER,
+                 id="repository-101-slash"),
 ]
 #: The controls: at GitHub's limits each names its repository, as it did.
 ORIGINS_AT = [
