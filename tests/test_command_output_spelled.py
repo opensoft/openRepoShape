@@ -713,9 +713,10 @@ def test_init_refused_leaves_a_refusal_as_it_was(adopter):
     assert adopter._init_refused(refusal) == f"detail {BIDI} kept"
 
 
+@pytest.mark.usefixtures("links_as_links")
 @pytest.mark.parametrize("typed", EVERY)
 def test_check_names_the_probes_command_spelled_where_git_refuses_it(
-        adopter, links_as_links, tmp_path, typed):  # noqa: F811
+        tmp_path, typed):
     """A real `check` whose `git init` of the symlink probe fails
     (`GIT_DEFAULT_HASH=bogus`), in a `--work-dir` that holds the character:
     the NOTE names the work directory `_spelled` and, now, the command's
