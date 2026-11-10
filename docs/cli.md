@@ -479,7 +479,14 @@ options:
                         `source-unreadable`, a path this user cannot reach
                         (under a directory it may not search, or one it may
                         not enter), which is never read as one that is not
-                        there, nor cloned as an `org/repo`.
+                        there, nor cloned as an `org/repo`. A partial clone
+                        (`git clone --filter`) short of an object its
+                        branches, tags or HEAD reach is refused as `source-
+                        partial-clone`, as `check` refuses it, before anything
+                        reads it: git would fetch that object into it, and
+                        `plan` never fetches into the source. Run `git fetch
+                        --refetch --no-filter <remote>` in it to make it
+                        whole.
   --project PROJECT     the assembly-root name; for an in-place adoption it is
                         the source repository's own name. `execute` refuses
                         one over 95 characters without --local-remote-dir:
@@ -586,7 +593,14 @@ options:
                         `pin-source-no-path`, and `.` means this directory.
                         `pin-source-not-a-clone` refuses any other path than a
                         clone's top level, or a bare clone's, where a --pin's
-                        digest is read.
+                        digest is read. A partial clone (`git clone --filter`)
+                        is read where it holds the pinned commit and its
+                        trees. On a git that honours `GIT_NO_LAZY_FETCH` (2.45
+                        or later, or a security release from 2.39.4 on), one
+                        git could read only by fetching what it lacks is
+                        refused as `pin-source-unreadable`, and nothing is
+                        fetched into it; an older git fetches what it lacks
+                        into it.
   --allow-empty-leg {spec,code}
                         record in the plan that this leg having NO path is
                         intended, so it may be SEEDED from the shape's
@@ -647,9 +661,10 @@ options:
                         and any other `local_path` that is gone is refused as
                         `plan-source-gone`; one that is a file, or a directory
                         inside a repository, as `source-not-top-level`; and
-                        one this user cannot reach, a clone `plan` made
-                        included, as `source-unreadable`, never cloned again.
-                        Either source, where it is a partial clone (`git clone
+                        one this user cannot reach, or one whose `.git` this
+                        user cannot read, a clone `plan` made included, as
+                        `source-unreadable`, never cloned again. Either
+                        source, where it is a partial clone (`git clone
                         --filter`) that lacks an object its branches, tags or
                         HEAD reach, is refused as `source-partial-clone`
                         before anything reads it: git would fetch that object
@@ -713,9 +728,10 @@ options:
                         and any other `local_path` that is gone is refused as
                         `plan-source-gone`; one that is a file, or a directory
                         inside a repository, as `source-not-top-level`; and
-                        one this user cannot reach, a clone `plan` made
-                        included, as `source-unreadable`, never cloned again.
-                        Either source, where it is a partial clone (`git clone
+                        one this user cannot reach, or one whose `.git` this
+                        user cannot read, a clone `plan` made included, as
+                        `source-unreadable`, never cloned again. Either
+                        source, where it is a partial clone (`git clone
                         --filter`) that lacks an object its branches, tags or
                         HEAD reach, is refused as `source-partial-clone`
                         before anything reads it: git would fetch that object
