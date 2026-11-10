@@ -337,6 +337,17 @@ def _anything(mode: int) -> bool:
     return stat.S_IFMT(mode) != 0
 
 
+def _shown(path) -> str:
+    """A path as it is, or as Python's `repr` spells it where a character in
+    it is not printable: `repo_shape.shown_path`, which a holder's library
+    may predate (#610), as the assembly root's `validate-manifest.py` spells
+    it for itself (#1288). Written here, not imported from `bootstrap.py`:
+    a holder that kept its own `bootstrap.py` (`--accept-local`) would be
+    refused `update-accept-local-missing-name` for the name (#536)."""
+    text = str(path)
+    return text if text.isprintable() else repr(text)
+
+
 def member_unreadable(named: str, exc: OSError, what: str,
                       then: str = "Then run the same command again.",
                       code: str = "member-unreadable") -> Refusal:
@@ -1744,7 +1755,7 @@ def _load_family(args: argparse.Namespace) -> tuple[Path, str, list[dict],
     manifest = load_yaml(root / MANIFEST)
     if not isinstance(manifest, dict):
         raise Refusal("family-manifest-unreadable",
-                      f"{root / MANIFEST}: not a mapping")
+                      f"{_shown(root / MANIFEST)}: not a mapping")
     return root, name, rows, manifest
 
 

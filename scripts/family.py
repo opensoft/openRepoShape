@@ -573,11 +573,12 @@ class Family:
                 exc.remediation = _unparsable_in_an_act(root)
             raise
         if not isinstance(data, dict):
-            raise Refusal("family-unreadable", f"{path}: not a mapping")
+            raise Refusal("family-unreadable",
+                          f"{shown_path(path)}: not a mapping")
         if data.get("kind") != "family-manifest":
             raise Refusal(
                 "family-wrong-kind",
-                f"{path}: kind is {data.get('kind')!r}, expected "
+                f"{shown_path(path)}: kind is {data.get('kind')!r}, expected "
                 "'family-manifest'")
         _checked_members_readable(path, data.get("members"))
         return cls(root, data)

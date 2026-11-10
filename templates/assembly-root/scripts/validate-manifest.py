@@ -1429,9 +1429,9 @@ def main(argv: list[str] | None = None) -> int:
         if not _is_file(root, manifest_path):
             raise Refusal(
                 "manifest-missing",
-                f"{manifest_path} does not exist. A project that has elected "
-                "this schema declares it in `project.yaml`; a project that has "
-                "not, does not run this validator.",
+                f"{_shown(manifest_path)} does not exist. A project that has "
+                "elected this schema declares it in `project.yaml`; a project "
+                "that has not, does not run this validator.",
             )
         manifest = _load(root, manifest_path)
         if not isinstance(manifest, dict):
