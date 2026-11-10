@@ -619,6 +619,99 @@ def _checked_out(checkout: Path, path: str) -> bool:
                   f"{path}/.git")
 
 
+# A member's `.git` and the git directory it names, asked before git is
+# (#1221). `_checked_out` only `stat`s the `.git`, and three states pass
+# that `stat` and reach the pinned commit's lookup, which git then failed:
+# a gitfile at mode 000, which stats; a `.git` directory at mode 000, which
+# git passes over, walking up to the holder's own repository; and the
+# directory a readable gitfile names, at mode 000. Each was refused
+# `member-commit-unresolvable`, "the pinned commit ... is not in that
+# member's object store", with a fetch that cannot help. Each is now
+# `member-unreadable`, naming the part, with its `chmod`.
+#
+# `validate-pins.py`'s `_gitfile_opens` (#919), `_leg_git_dir` (#968) and
+# `_refuse_an_unreadable_git_dir` (#968), COPIED, NOT SHARED: the two roots
+# are separate templates, and this file is a pinned copy a holder re-copies
+# one row at a time (#610's skew rule). `tests/test_validate_family_
+# unreadable.py` holds `_member_git_dir` to the gate's `_leg_git_dir` over
+# every shape of `gitdir: ` line the gate's rows write. A `HEAD` file itself
+# at mode 000 is not asked here, since the gate does not ask it either.
+
+def _gitfile_opens(path: Path) -> bool:
+    """Whether a member's `.git` that is a regular file, a gitfile, can be
+    opened (#1221), as `validate-pins.py` asks a leg's (#919): False where
+    nothing is there to open (`_ABSENT_ERRNOS`, `_ABSENT_WINERRORS`), the
+    `OSError` of an open the operating system REFUSED raised, and True for
+    a `.git` that is no regular file, a checkout's own directory, which git
+    reads itself. Only a regular file is opened, since the open of a FIFO
+    waits for a writer."""
+    if not _is_a(path, stat.S_ISREG):
+        return True
+    try:
+        path.open("rb").close()
+    except OSError as exc:
+        if (exc.errno in _ABSENT_ERRNOS
+                or getattr(exc, "winerror", None) in _ABSENT_WINERRORS):
+            return False
+        raise
+    return True
+
+
+def _gitfile_read(checkout: Path, path: str) -> bool:
+    """`_gitfile_opens` of the `.git` in `checkout`, the gitlink path `path`,
+    or `member-unreadable` naming `<path>/.git` where its open was refused
+    (#1221)."""
+    try:
+        return _gitfile_opens(checkout / ".git")
+    except OSError as exc:
+        raise _unreadable(MEMBER_UNREADABLE, f"{path}/.git", exc) from exc
+
+
+def _member_git_dir(dotgit: Path) -> Path | None:
+    """The git directory of a member whose `.git` is `dotgit`, as
+    `validate-pins.py`'s `_leg_git_dir` finds a leg's (#968, #1221): `dotgit`
+    itself where it is no regular file (a checkout's own directory); the
+    directory a gitfile's `gitdir: ` line names, joined to the gitfile's own
+    directory as git joins it, its `..` left for the system to follow; and
+    None where the gitfile names none, which git refuses as it always did.
+    Raises the `OSError` of a `stat` or a read the operating system
+    refused."""
+    if not _is_a(dotgit, stat.S_ISREG):
+        return dotgit
+    data = dotgit.read_bytes()
+    if not data.startswith(b"gitdir: "):
+        return None
+    return dotgit.parent / os.fsdecode(data[len(b"gitdir: "):].rstrip(b"\r\n"))
+
+
+def _refuse_an_unreadable_git_dir(checkout: Path, path: str) -> None:
+    """`member-unreadable`, by name, for a member at the gitlink path `path`
+    whose git directory this user cannot search (#1221), asked as
+    `validate-pins.py` asks a leg's (#968): the `stat` of its `HEAD`, which
+    a git directory at mode 000 or r-- refuses.
+
+    NAMED AS THE GATE NAMES IT, relative to the holder: `<path>/.git` for a
+    checkout's own directory, `.git/modules/<path>` for the one an absorbed
+    member's gitfile names, and whole where it is outside the holder. A git
+    directory with no `HEAD`, or a gitfile that names none, is left to git,
+    which answers for it as it always did."""
+    dotgit = checkout / ".git"
+    named = f"{path}/.git"
+    try:
+        gitdir = _member_git_dir(dotgit)
+        if gitdir is not None:
+            holder = Path(os.path.normpath(
+                checkout.parents[len(Path(path).parts) - 1]))
+            found = Path(os.path.normpath(gitdir))
+            try:
+                named = found.relative_to(holder).as_posix()
+            except ValueError:
+                named = str(found)
+            _is_a(gitdir / "HEAD", _any_kind)
+    except OSError as exc:
+        raise _unreadable(MEMBER_UNREADABLE, named, exc) from exc
+
+
 def _checkout_gone(root: Path, path: str) -> bool:
     """`_gone` of the `.git` at the gitlink path `path`, or
     `member-unreadable` naming it where its `stat` was refused for any
@@ -1479,14 +1572,19 @@ def _check_member_tree(member: Path, pin: dict, path: str, commit: str,
     `.git` (`_checked_out`, #430): it ended the run in a traceback up to
     Python 3.13, and on 3.14 was `member-uninitialized`, whose update then
     failed (`could not open '<path>/.git' for writing`) on the checkout
-    that is there.
+    that is there. So is a `.git` gitfile this user cannot open
+    (`_gitfile_read`, #1221), and a git directory this user cannot search,
+    the `.git` itself or the one a gitfile names
+    (`_refuse_an_unreadable_git_dir`, #1221): each passed the `stat` and
+    reached git, and the run ended `member-commit-unresolvable`, which says
+    the pinned commit is missing and prescribes a fetch.
 
     The pinned commit's lookup and the digest are read inside `_git_runs`,
     and nothing else here is (#928). All of this ran inside one, the `stat`
     of the checkout's `.git` too: on Python 3.12, a refused one met here
     was `git-not-runnable`, which says to put git on PATH.
     """
-    if not _checked_out(member, path):
+    if not (_checked_out(member, path) and _gitfile_read(member, path)):
         raise Refusal(
             "member-uninitialized",
             f"{path} is not an initialized submodule checkout, so neither the "
@@ -1496,6 +1594,7 @@ def _check_member_tree(member: Path, pin: dict, path: str, commit: str,
             f"Remediation: {stop}`git submodule update --init --recursive`, "
             "or `make bootstrap`, which resolves a credential for private "
             "members first.")
+    _refuse_an_unreadable_git_dir(member, path)
     unread = (f"{project}'s pinned commit and its tree digest could not be "
               f"read in {path}")
     # `_git_runs` OUTSIDE the `try`, as `validate-pins.py` has it: the
