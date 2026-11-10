@@ -3365,7 +3365,14 @@ class Source:
             read if listed.returncode else Registrations())
 
     def commit_count(self) -> int:
-        return int(git_out(["rev-list", "--count", self.commit], cwd=self.path))
+        """How many commits the pinned commit reaches. THE ARGV ENDS IN `--`
+        (#1215): `rev-list` reads its argument as a revision AND, where the
+        source's work tree holds a file of that name, as a path, and refuses
+        (`ambiguous argument`, exit 128). The source is read in place, so any
+        file its work tree holds under the id of the branch tip (an untracked
+        note, say) stopped `plan` before a word of the plan was written."""
+        return int(git_out(["rev-list", "--count", self.commit, "--"],
+                           cwd=self.path))
 
 
 def _remote_repository(path: Path) -> str | None:
@@ -15795,7 +15802,12 @@ def _extract_leg(role: str, source: Source, work: Path, paths: list[str],
     run(["git", "filter-repo", "--paths-from-file", str(listing), "--force"],
         cwd=work)
     head = git_out(["rev-parse", "HEAD"], cwd=work).lower()
-    count = git_out(["rev-list", "--count", "HEAD"], cwd=work)
+    # `--` ENDS THE COUNT'S ARGV (#1215). `rev-list` reads `HEAD` as a
+    # revision AND as a path where the leg keeps a root file of that name,
+    # and refuses (`ambiguous argument`, exit 128): `execute` then stopped
+    # here, after `git filter-repo` and before the leg was pushed. `rev-parse`
+    # above takes no path, so it never had the problem.
+    count = git_out(["rev-list", "--count", "HEAD", "--"], cwd=work)
     digest = tree_digest(work, head)
     _push_the_leg(f"pushing the {role} leg", work, url, tracking, repository)
     print(f"  {role:<5} {len(paths):>3} path(s) -> {head[:12]} "
