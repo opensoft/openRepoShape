@@ -1260,6 +1260,27 @@ contracts-dir:
 ADOPT_MAKEFILE_BLOCK = adopt_makefile_block("spec", "code")
 
 
+def unacted(text: str, kept: str = "") -> str:
+    """`text` with each character a terminal would act on spelled, and every
+    other character as it is (#1213, after #1195's `adopt-project.py`
+    `_unacted`, which is this).
+
+    A character a terminal acts on is one `str.isprintable` refuses: ESC,
+    which starts a terminal sequence; a bidirectional control, which shows
+    what follows it in another order; a carriage return, which sends the
+    cursor back over the row; a line feed, which splits the line; a tab; and
+    a lone surrogate, the byte of a name that is not UTF-8, which a strict
+    stdout cannot encode. Each is written as `repo_shape.double_quoted`
+    writes it in a plan's `path:`, the one table of escapes (a code point
+    escape such as `\\x1b` for ESC), with no quotes or backticks around it,
+    as `_first_said` writes the line gh said. The characters in `kept` stay
+    as they are: a command's output keeps its line breaks, so that it still
+    reads a line to a line. A printable character, a plain path among them,
+    prints as it is."""
+    return "".join(char if char.isprintable() or char in kept
+                   else double_quoted(char)[1:-1] for char in text)
+
+
 class CommandFailed(Exception):
     def __init__(self, args, cwd, code, output):
         super().__init__(" ".join(args))
@@ -1269,12 +1290,42 @@ class CommandFailed(Exception):
         self.output = output.strip()
 
     def loudly(self, what: str) -> str:
-        where = f"    (in {self.cwd})\n" if self.cwd else ""
+        """The REFUSED block every tool prints of a command that failed: the
+        step, the command, the directory it ran in and what it printed.
+
+        EACH OF THEM IS SPELLED (`unacted`, #1213). The command and the
+        directory name what the caller typed, a `--out`, a `--work-dir`, a
+        clone directory or a branch, and the output is git's or gh's own
+        words, which name them back and carry whatever a remote or a hook
+        said; printed as they were, a bidirectional control or an ESC in any
+        of them reached the terminal. The output keeps its line breaks. A
+        printable character prints as it is, so a command of plain paths
+        prints the block it always printed.
+
+        THE CHOICE #1213 LEFT TO ITS BUILDER: THE SPELLING IS HERE, ONCE, AND
+        NO TOOL SPELLS AT ITS CALL. Sixteen calls in four tools print this
+        block (`scaffold-project.py`, `update-shape.py`, `scripts/family.py`
+        and `scripts/bump-leg.py`), and `adopt-project.py` prints it through
+        `_loudly`; a call that spelled it itself would be sixteen copies of a
+        rule a seventeenth could leave out. The cost the issue named is that
+        this moves every tool's REFUSED block, where a row that asserts a raw
+        character in one would move with it. It was measured, and there is
+        none: a row of `tests/` that asserts such a block names printable
+        text, and the rows of the four tools run as they did before. The
+        step is spelled too, because two calls name a member's path in it.
+        `adopt-project.py`'s `_loudly` (#1195) spells the same three before
+        it calls this, which is idempotent, and is left as it is for the
+        change that is editing it (#1233); it becomes a call of `loudly`
+        once that has landed. A new tool that prints this block takes the
+        spelling with it, and one that prints a command's words any other way
+        calls `unacted`."""
+        where = f"    (in {unacted(str(self.cwd))})\n" if self.cwd else ""
+        said = unacted(self.output, kept="\n")
         return (
-            f"REFUSED {what}. THE EXACT COMMAND WAS:\n"
-            f"    {' '.join(self.args_list)}\n{where}"
+            f"REFUSED {unacted(what)}. THE EXACT COMMAND WAS:\n"
+            f"    {unacted(' '.join(self.args_list))}\n{where}"
             f"    exit {self.code}\n"
-            f"--- output ---\n{self.output}\n--- end output ---"
+            f"--- output ---\n{said}\n--- end output ---"
         )
 
 
