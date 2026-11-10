@@ -1282,6 +1282,86 @@ def skip_where_the_environment_cannot_carry(value: str) -> None:
                     f"({sys.getfilesystemencoding()}) cannot spell {value!r}")
 
 
+def skip_where_the_locale_does_not_spell_it_as_utf_8(text: str,
+                                                      premise: str) -> None:
+    """Skip where this locale does not spell `text` as UTF-8 does, and say
+    the row's `premise`, which holds only where it does (#1214).
+
+    A locale of one byte to a character, such as Latin-1 (`LOCPATH`,
+    `LC_ALL=en_US.ISO-8859-1`, `PYTHONUTF8=0`), reads and writes every byte
+    as a character of its own. A row written for UTF-8 then asks the tool
+    another question, which the tool answers rightly:
+    - the byte 0xFF or 0xE9 on a command line, which UTF-8 reads as U+DCFF
+      or U+DCE9 (a byte that is not UTF-8), is the text `\\u00ff` or
+      `\\u00e9`, which a tool takes;
+    - a branch or a file made from `feat\\u00a0` or `caf\\u00e9.md` holds one
+      byte, 0xA0 or 0xE9, where UTF-8 writes two, so git holds a name that is
+      not UTF-8, and a tool says so;
+    - the three UTF-8 bytes of U+202E read as three characters, one of them
+      the control U+0080;
+    - a stdout in that encoding has no U+2026 or U+2014, so a tool writes
+      `\\u2026` there (#214).
+
+    Three questions, each through the `os` module at call time, so a test
+    can emulate a locale: whether `os.fsencode` can spell `text`, whether it
+    gives UTF-8's bytes (U+DC80 to U+DCFF stand for a byte, as
+    `surrogateescape` has them), and whether `os.fsdecode` reads those bytes
+    back as `text`. UTF-8 says yes to all three. ASCII (`LC_ALL=C
+    PYTHONUTF8=0 PYTHONCOERCECLOCALE=0`) does for a byte that is not UTF-8,
+    and cannot spell any other text past ASCII.
+
+    A row asks it of the text its premise is about, and only that. A branch
+    whose bytes are not UTF-8 (`on_a_branch_that_is_not_utf_8`) is one in
+    every locale, and a row about it judges there too (#1224's N1). A name
+    the TEST cannot make or pass at all is
+    `skip_where_the_environment_cannot_carry`'s."""
+    encoding = sys.getfilesystemencoding()
+    as_utf_8 = text.encode("utf-8", "surrogateescape")
+    try:
+        spelled = os.fsencode(text)
+    except UnicodeEncodeError:
+        pytest.skip(f"this locale's encoding ({encoding}) cannot spell "
+                    f"{ascii(text)}: {premise}")
+    if spelled != as_utf_8:
+        pytest.skip(f"this locale's encoding ({encoding}) writes "
+                    f"{ascii(text)} as {spelled!r}, not as UTF-8's "
+                    f"{as_utf_8!r}: {premise}")
+    try:
+        read = os.fsdecode(as_utf_8)
+    except UnicodeDecodeError:
+        read = None
+    if read != text:
+        pytest.skip(f"this locale's encoding ({encoding}) reads {as_utf_8!r} "
+                    f"as {ascii(read)}, not as {ascii(text)}: {premise}")
+
+
+#: The premises a row names to the helper above, one for each way a locale
+#: that is not UTF-8 asks the tool another question.
+#: A byte that is not UTF-8 on a command line or in a name, which the row
+#: needs read in as its surrogate (#663).
+A_BYTE_READ_AS_A_SURROGATE = (
+    "the row needs a byte that is not UTF-8, which Python reads in as a "
+    "surrogate (U+DC80 to U+DCFF) where the locale is UTF-8 or ASCII; here "
+    "it is a character, and the tool takes it as one")
+#: Text the row writes into a name, which it needs git or the disk to hold
+#: as UTF-8's bytes (#765).
+A_NAME_HELD_AS_UTF_8 = (
+    "the row needs git or the disk to hold this text as UTF-8's bytes; held "
+    "as other bytes it is a name that is not UTF-8, and the tool names it as "
+    "one")
+#: A character the row reads as itself in what the tool prints (#214).
+PRINTED_AS_ITSELF = (
+    "the row reads this character as itself in what the tool prints, and a "
+    "stdout in this encoding writes it as an escape (#214)")
+#: A name the row makes from UTF-8's bytes, which it needs read back as the
+#: text they spell: the three bytes of U+202E, read in this encoding, are
+#: three characters, one of them the control U+0080 (#433).
+A_NAME_READ_AS_UTF_8 = (
+    "the row needs a name made from UTF-8's bytes read back as the text they "
+    "spell; read in this encoding they are other characters, and the tool "
+    "names those")
+
+
 # --- the `gh` guard (#296) ---------------------------------------------------
 #
 # NO TEST REACHES THE OPERATOR'S `gh`, and the doctor's `machine` row is still
@@ -2649,3 +2729,38 @@ def assert_a_copy_answers_as_the_rule_does(copy: str, end: str, said: str,
     assert answered == said, (
         f"{copy} answers {answered!r} for a value that ends in {end!r}, and "
         f"the table says {said!r}")
+
+
+# --- a manifest's scalar lines, each ending in a line feed (#1205) -----------
+
+#: A scalar line of a `project.yaml` or a `family.yaml`: its indent and any
+#: `- `, its key, and a value that opens no block or flow collection.
+SCALAR_LINE = re.compile(
+    r"^(?P<lead> *(?:- )?)(?P<key>[a-z_]+): (?P<value>[^\[{].*)$")
+
+
+def scalar_lines_not_refused(manifest: Path, validate) -> tuple[int, list]:
+    """THE GUARD'S SWEEP (#1205's part 2), one loop for
+    `tests/test_manifest_validator.py` and `tests/test_family.py`: every
+    scalar line of `manifest`, rewritten one at a time as its value
+    double-quoted with a trailing `\\n`, and `validate()` run on each. It
+    gives how many lines were swept, and each that was not refused by name
+    (a finding, exit 1, or a refusal, exit 2): exit 0, or a traceback. The
+    file is put back as it was."""
+    text = manifest.read_text(encoding="utf-8")
+    lines = text.split("\n")
+    swept, passed = 0, []
+    for index, line in enumerate(lines):
+        match = SCALAR_LINE.match(line)
+        if match is None:
+            continue
+        value = match["value"].strip('"')
+        lines[index] = f'{match["lead"]}{match["key"]}: "{value}\\n"'
+        manifest.write_text("\n".join(lines), encoding="utf-8")
+        lines[index] = line
+        result = validate()
+        swept += 1
+        if result.returncode == 0 or "Traceback" in result.stderr:
+            passed.append(f"{line.strip()}: exit {result.returncode}")
+    manifest.write_text(text, encoding="utf-8")
+    return swept, passed
