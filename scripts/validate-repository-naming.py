@@ -139,6 +139,7 @@ from __future__ import annotations
 import argparse
 import inspect
 import os
+import re
 import sys
 from pathlib import Path
 
@@ -153,17 +154,49 @@ from repo_shape import (  # noqa: E402
 DEFAULT_POLICY = Path(__file__).resolve().parents[1] / "contracts" / "repository-naming.yaml"
 
 
+#: UNICODE'S DEFAULT_IGNORABLE_CODE_POINT, the characters a terminal draws as
+#: nothing (#1165): `repo_shape.DEFAULT_IGNORABLE`, the same 17 ranges in
+#: escapes, so no such character is in this file raw, and asked of no
+#: `unicodedata`, so Python 3.12 and 3.14 read one table. Written here
+#: rather than imported, for `_shown`'s reason.
+#: `tests/test_default_ignorables_spelled.py` holds it to the library's.
+DEFAULT_IGNORABLE = re.compile(
+    r"[\u00ad\u034f\u061c\u115f-\u1160\u17b4-\u17b5\u180b-\u180f"
+    r"\u200b-\u200f\u202a-\u202e\u2060-\u206f\u3164\ufe00-\ufe0f\ufeff"
+    r"\uffa0\ufff0-\ufff8\U0001bca0-\U0001bca3\U0001d173-\U0001d17a"
+    r"\U000e0000-\U000e0fff]")
+
+
+def _code_point_escaped(found: re.Match) -> str:
+    """The escape `repr` writes for the character `found` where it does not
+    print it, `\\u034f` or `\\U000e0100`: `repo_shape.code_point_escaped`."""
+    code = ord(found[0])
+    if code <= 0xFF:
+        return f"\\x{code:02x}"
+    return f"\\u{code:04x}" if code <= 0xFFFF else f"\\U{code:08x}"
+
+
+def _visible_repr(text: str) -> str:
+    """`repr(text)`, with each `DEFAULT_IGNORABLE` character escaped too:
+    `repo_shape.visible_repr`. `repr` writes U+034F as it is."""
+    return DEFAULT_IGNORABLE.sub(_code_point_escaped, repr(text))
+
+
 def _shown(path) -> str:
     """A path as a line about it names it: as it is, unless a character in
-    it is not printable (`str.isprintable`), and then as Python's `repr`
-    spells it (#610). It is `repo_shape.shown_path`, which spells the
+    it is not printable (`str.isprintable`) or is one a terminal draws as
+    nothing (`DEFAULT_IGNORABLE`, #1165), and then as Python's `repr`
+    spells it, with that one escaped too (#610). It is
+    `repo_shape.shown_path`, which spells the
     manifest in a `link-source-unreadable` reason, so one line holds one
     spelling. Written here rather than imported: this file is copied into
     every project and may meet a `scripts/repo_shape.py` older than itself,
     which has no such name, and the gate would end in an `ImportError` before
     it classified a name."""
     text = str(path)
-    return text if text.isprintable() else repr(text)
+    if text.isprintable() and not DEFAULT_IGNORABLE.search(text):
+        return text
+    return _visible_repr(text)
 
 
 def _not_a_name(entry) -> str | None:

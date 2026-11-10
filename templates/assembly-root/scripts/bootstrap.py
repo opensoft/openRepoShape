@@ -650,6 +650,18 @@ def _stays_for_an_operation(root: Path, sub: Path, where: str,
 #: space (#715): git takes the name, and no person can tell it from the name
 #: without it, so `_say_not_tried` gives it a line of its own.
 UNSEEN = "a character that does not print or is white space"
+#: UNICODE'S DEFAULT_IGNORABLE_CODE_POINT, the characters a terminal draws as
+#: nothing (#1165): `repo_shape.DEFAULT_IGNORABLE`, the same 17 ranges in
+#: escapes, so no such character is in this file raw, and asked of no
+#: `unicodedata`, so Python 3.12 and 3.14 read one table. Written here
+#: rather than imported, for the skew rule's reason: a root's
+#: `scripts/repo_shape.py` may be older than this file (#715).
+#: `tests/test_default_ignorables_spelled.py` holds it to the library's.
+DEFAULT_IGNORABLE = re.compile(
+    r"[\u00ad\u034f\u061c\u115f-\u1160\u17b4-\u17b5\u180b-\u180f"
+    r"\u200b-\u200f\u202a-\u202e\u2060-\u206f\u3164\ufe00-\ufe0f\ufeff"
+    r"\uffa0\ufff0-\ufff8\U0001bca0-\U0001bca3\U0001d173-\U0001d17a"
+    r"\U000e0000-\U000e0fff]")
 #: The bytes `_paste_word` writes as themselves inside a `printf` format: the
 #: characters a path or a ref name is made of. `%` is the format's own and the
 #: backslash is its escape, so each is an octal escape here, as is every
@@ -710,7 +722,10 @@ def _argument_fault(branch: str) -> str | None:
     BEFORE `UNWRITABLE`, for that fault's reason: a name holding such a
     character is not good under any encoding, so the line that calls a
     name good is never said of it (`"日本 x"` under `LC_ALL=C` is named
-    for its space, which the root's own validator names too).
+    for its space, which the root's own validator names too). A
+    default-ignorable character (`DEFAULT_IGNORABLE`, #1165), which a
+    terminal draws as nothing though `str.isprintable` passes it, is
+    `UNSEEN` too: this step made `ma<U+034F>in` beside `main`.
     """
     for char in branch:
         if char == "\x00":
@@ -719,7 +734,8 @@ def _argument_fault(branch: str) -> str | None:
             return f"U+{ord(char):04X}, a lone surrogate"
     for char in branch:
         if not "\ud800" <= char <= "\udfff" and (
-                not char.isprintable() or char.isspace()):
+                not char.isprintable() or char.isspace()
+                or DEFAULT_IGNORABLE.match(char)):
             return f"U+{ord(char):04X}, {UNSEEN}"
     unwritable = next((char for char in branch
                        if _fsencoded_length(char) == 0), None)

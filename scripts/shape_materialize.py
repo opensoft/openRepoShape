@@ -77,6 +77,8 @@ from repo_shape import (  # noqa: E402
 # How a `--pin-source` that is not printable is named, the one spelling the
 # scaffold's chain WARNING gives it too (#610).
 from repo_shape import shown_path  # noqa: E402
+# What a name a terminal draws part of as nothing is spelled with (#1165).
+from repo_shape import DEFAULT_IGNORABLE, visible_repr  # noqa: E402
 # What git answers about where a `--pin-source` is, and why, in its own
 # words, where it cannot (#800).
 from repo_shape import git_out  # noqa: E402
@@ -1629,6 +1631,14 @@ def readable_branch(what: str, value) -> str:
     NUL and a lone surrogate (#280) have their own, and any other such
     character is `UNSEEN`.
 
+    SO IS A DEFAULT-IGNORABLE CHARACTER (`DEFAULT_IGNORABLE`, #1165), which
+    a terminal draws as nothing, though `str.isprintable` passes 267 of
+    them: `ma<U+034F>in` was taken for a branch, to be compared and handed
+    to `gh pr create --base`, and read as `main`. The root's two ask the
+    same table, each from a copy of its own. Each refusal names the value
+    as `visible_repr` does, `'ma\\u034fin'`, where `repr` wrote U+034F as
+    it is.
+
     It is NOT `checked_value`'s `SAFE_ARG_RE`. A name in any script, or one
     holding `&`, is a name git creates and the root's own gate passes.
     `bump-leg.py` only compares it and prints it, and `update-shape.py`
@@ -1646,12 +1656,12 @@ def readable_branch(what: str, value) -> str:
     if text.startswith("-"):
         raise Refusal(
             "unsafe-value",
-            f"{what} is {text!r}, which begins with `-`, and git creates no "
-            "branch whose name begins with one",
+            f"{what} is {visible_repr(text)}, which begins with `-`, and git "
+            "creates no branch whose name begins with one",
             "Remediation: give it a branch name git can create, such as "
             "`main` or `release/1.2`.")
-    char = next((c for c in text if not c.isprintable() or c.isspace()),
-                None)
+    char = next((c for c in text if not c.isprintable() or c.isspace()
+                 or DEFAULT_IGNORABLE.match(c)), None)
     if char is None:
         return text
     if char == "\x00":
@@ -1664,7 +1674,8 @@ def readable_branch(what: str, value) -> str:
                 "name without it")
     raise Refusal(
         "unseen-branch",
-        f"{what} is {text!r}, which holds U+{ord(char):04X}, {kind}",
+        f"{what} is {visible_repr(text)}, which holds U+{ord(char):04X}, "
+        f"{kind}",
         "Remediation: give it a name with no such character, such as "
         "`main` or `release/1.2`, and run this again.")
 
@@ -3798,11 +3809,13 @@ def scaffold_link_remedies(chain) -> dict[str, str]:
 
 def shown_source(source) -> str:
     """A `--pin-source` path as a refusal names it: as it is, unless a
-    character in it is not printable (`str.isprintable`), and then as
-    Python's `repr` spells it -- `\\x1b`, `\\n`, `\\r`, and `\\udcff` for a
-    byte that is not UTF-8, as `sys.argv` keeps one -- which is how every
-    other value a refusal here names is spelled (`--pin {raw!r}`). The
-    question `adopt-project.py`'s `_shown` asks of a path it prints.
+    character in it is not printable (`str.isprintable`) or is drawn as
+    nothing (`DEFAULT_IGNORABLE`, #1165), and then as Python's `repr`
+    spells it, with that one escaped too -- `\\x1b`, `\\n`, `\\r`,
+    `\\u034f`, and `\\udcff` for a byte that is not UTF-8, as `sys.argv`
+    keeps one -- which is how every other value a refusal here names is
+    spelled (`--pin {raw!r}`). The question `adopt-project.py`'s `_shown`
+    asks of a path it prints.
 
     It IS `repo_shape.shown_path` (#610), which the scaffold's
     `declared-unverified` WARNING spells the same `--pin-source` with, so
@@ -5927,8 +5940,12 @@ def _reading_in_words(reading) -> str:
 
 def _line_shown(line: str) -> str:
     """`line` in backticks, or as Python spells it where it holds a character
-    a terminal shows as something else, so that one finding stays one line."""
-    return f"`{line}`" if line.isprintable() else repr(line)
+    a terminal shows as something else, so that one finding stays one line;
+    and so is one a terminal draws as nothing (`DEFAULT_IGNORABLE`, #1165),
+    with it escaped (`visible_repr`)."""
+    if line.isprintable() and not DEFAULT_IGNORABLE.search(line):
+        return f"`{line}`"
+    return visible_repr(line)
 
 
 def _reading_of(rendered: str):

@@ -464,13 +464,44 @@ def _shared_variable_notes(shared: dict) -> list[str]:
 SOURCE_ABSENT = "no such file or directory"
 
 
+#: UNICODE'S DEFAULT_IGNORABLE_CODE_POINT, the characters a terminal draws as
+#: nothing (#1165): `repo_shape.DEFAULT_IGNORABLE`, the same 17 ranges in
+#: escapes, so no such character is in this file raw, and asked of no
+#: `unicodedata`, so Python 3.12 and 3.14 read one table. Written here
+#: rather than imported, for `_shown`'s reason.
+#: `tests/test_default_ignorables_spelled.py` holds it to the library's.
+DEFAULT_IGNORABLE = re.compile(
+    r"[\u00ad\u034f\u061c\u115f-\u1160\u17b4-\u17b5\u180b-\u180f"
+    r"\u200b-\u200f\u202a-\u202e\u2060-\u206f\u3164\ufe00-\ufe0f\ufeff"
+    r"\uffa0\ufff0-\ufff8\U0001bca0-\U0001bca3\U0001d173-\U0001d17a"
+    r"\U000e0000-\U000e0fff]")
+
+
+def _code_point_escaped(found: re.Match) -> str:
+    """The escape `repr` writes for the character `found` where it does not
+    print it, `\\u034f` or `\\U000e0100`: `repo_shape.code_point_escaped`."""
+    code = ord(found[0])
+    if code <= 0xFF:
+        return f"\\x{code:02x}"
+    return f"\\u{code:04x}" if code <= 0xFFFF else f"\\U{code:08x}"
+
+
+def _visible_repr(text: str) -> str:
+    """`repr(text)`, with each `DEFAULT_IGNORABLE` character escaped too:
+    `repo_shape.visible_repr`. `repr` writes U+034F as it is."""
+    return DEFAULT_IGNORABLE.sub(_code_point_escaped, repr(text))
+
+
 def _shown(path) -> str:
     """A path as it is, or as Python's `repr` spells it where a character in
-    it is not printable: `repo_shape.shown_path`, which a root's library
-    may predate (#610), as `validate-pins.py` and the naming gate spell it
-    for themselves."""
+    it is not printable, with one a terminal draws as nothing
+    (`DEFAULT_IGNORABLE`, #1165) escaped too: `repo_shape.shown_path`,
+    which a root's library may predate (#610), as `validate-pins.py` and the
+    naming gate spell it for themselves."""
     text = str(path)
-    return text if text.isprintable() else repr(text)
+    if text.isprintable() and not DEFAULT_IGNORABLE.search(text):
+        return text
+    return _visible_repr(text)
 
 
 def _sources_there(link: str, asked) -> tuple[list[str], set[str]]:
@@ -981,12 +1012,15 @@ def _branch_finding(code: str, what: str, value) -> list[str]:
     space as YAML does, where it used to strip it: so `bootstrap.py` made a
     second `main` beside the first, and `bump-leg.py`'s guard of the
     tracking branch let a commit be made on `main`. No person can tell such
-    a name from the one without it.
+    a name from the one without it. NOR A DEFAULT-IGNORABLE CHARACTER
+    (`DEFAULT_IGNORABLE`, #1165), which a terminal draws as nothing though
+    `str.isprintable` passes it: `ma<U+034F>in` read as `main`. The finding
+    names the value as `_visible_repr` does, `'ma\\u034fin'`.
     """
     if not isinstance(value, str):
         return []
-    char = next((c for c in value if not c.isprintable() or c.isspace()),
-                None)
+    char = next((c for c in value if not c.isprintable() or c.isspace()
+                 or DEFAULT_IGNORABLE.match(c)), None)
     if char is None:
         return []
     if char == "\x00":
@@ -999,8 +1033,9 @@ def _branch_finding(code: str, what: str, value) -> list[str]:
                 "reading the name cannot tell it from the name without it")
     return [_finding(
         code,
-        f"{what} is {value!r}, which holds U+{ord(char):04X}, {kind}. Name a "
-        "branch git can create, such as `main` or `release/1.2`.")]
+        f"{what} is {_visible_repr(value)}, which holds U+{ord(char):04X}, "
+        f"{kind}. Name a branch git can create, such as `main` or "
+        "`release/1.2`.")]
 
 
 def _tracking_branch_finding(manifest: dict) -> list[str]:

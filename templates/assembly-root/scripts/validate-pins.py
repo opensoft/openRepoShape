@@ -1506,17 +1506,49 @@ def _check_shape_pin(root: Path, manifest: dict, report: Report) -> None:
         report.note(f"{rel}: {len(files)} copied shape file(s) match their digests")
 
 
+#: UNICODE'S DEFAULT_IGNORABLE_CODE_POINT, the characters a terminal draws as
+#: nothing (#1165): `repo_shape.DEFAULT_IGNORABLE`, the same 17 ranges in
+#: escapes, so no such character is in this file raw, and asked of no
+#: `unicodedata`, so Python 3.12 and 3.14 read one table. Written here
+#: rather than imported, for `_shown`'s reason.
+#: `tests/test_default_ignorables_spelled.py` holds it to the library's.
+DEFAULT_IGNORABLE = re.compile(
+    r"[\u00ad\u034f\u061c\u115f-\u1160\u17b4-\u17b5\u180b-\u180f"
+    r"\u200b-\u200f\u202a-\u202e\u2060-\u206f\u3164\ufe00-\ufe0f\ufeff"
+    r"\uffa0\ufff0-\ufff8\U0001bca0-\U0001bca3\U0001d173-\U0001d17a"
+    r"\U000e0000-\U000e0fff]")
+
+
+def _code_point_escaped(found: re.Match) -> str:
+    """The escape `repr` writes for the character `found` where it does not
+    print it, `\\u034f` or `\\U000e0100`: `repo_shape.code_point_escaped`."""
+    code = ord(found[0])
+    if code <= 0xFF:
+        return f"\\x{code:02x}"
+    return f"\\u{code:04x}" if code <= 0xFFFF else f"\\U{code:08x}"
+
+
+def _visible_repr(text: str) -> str:
+    """`repr(text)`, with each `DEFAULT_IGNORABLE` character escaped too:
+    `repo_shape.visible_repr`. `repr` writes U+034F as it is."""
+    return DEFAULT_IGNORABLE.sub(_code_point_escaped, repr(text))
+
+
 def _shown(typed: str) -> str:
     """A `--pin-source` value as a note names it: as typed, unless a
-    character in it is not printable (`str.isprintable`), and then as
-    Python's `repr` spells it, `'x\\x1b[31mRED'` (#610). It is the spelling
+    character in it is not printable (`str.isprintable`) or is one a
+    terminal draws as nothing (`DEFAULT_IGNORABLE`, #1165), and then as
+    Python's `repr` spells it, with that one escaped too, `'x\\x1b[31mRED'`
+    and `'ma\\u034fin'` (#610). It is the spelling
     the scaffold's `pin-source-unreadable` gives a `--pin-source`
     (`repo_shape.shown_path`), written here rather than imported: a root
     whose `scripts/repo_shape.py` is older than this file has no such name,
     and this gate would end in an `ImportError` before it checked a pin.
     Printed raw, an ESC in the value reached the terminal as the control it
     is."""
-    return typed if typed.isprintable() else repr(typed)
+    if typed.isprintable() and not DEFAULT_IGNORABLE.search(typed):
+        return typed
+    return _visible_repr(typed)
 
 
 class PinSources:
