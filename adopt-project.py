@@ -4395,6 +4395,15 @@ def _root_keeps(surviving: set[str], path: str, *,
     `fold` asks it as a disk that ignores case finds a path, where `place`'s
     `Path.exists()` holds a kept `makefile` to be `Makefile` (#977), as
     `_KeptTree` asks it for `check`.
+
+    A DIRECTORY OF THAT VERY NAME IS KEPT AS THE PATH (#1314): `place`'s
+    `Path.exists()` is True of one, so the shape's copy goes beside a kept
+    `Makefile/` as `shape/Makefile`, as it does beside a kept `README.md/`,
+    and `_predict_collisions` must name it. So this answers yes, and the
+    words tell the two apart: nothing merges a Makefile into a directory,
+    and GNU make stops at a `Makefile/` it finds first, as it does at a
+    `GNUmakefile/` (`_make_reads_first`, `_makefile_follow_up`, and
+    `collision_follow_up`'s `directory`).
     """
     if fold:
         surviving = {kept.casefold() for kept in surviving}
@@ -4408,11 +4417,12 @@ GNU_MAKE_READS = ("GNUmakefile", "makefile", "Makefile")
 
 
 def _make_reads_first(surviving) -> str | None:
-    """The source's name GNU make finds at the root before the shape's
-    `Makefile`: the first of `GNUmakefile` and `makefile` the root keeps, in
-    `GNU_MAKE_READS`' order and asked as `_root_keeps` asks it, with a `/`
-    where the root keeps a DIRECTORY of that name; None where it keeps
-    neither. `surviving` is each path the plan's entries send to the root.
+    """The source's name GNU make finds at the root where the shape's
+    `Makefile` would be the root's: the first of `GNUmakefile`, `makefile`
+    and a DIRECTORY `Makefile/` the root keeps, in `GNU_MAKE_READS`' order
+    and asked as `_root_keeps` asks it, with a `/` where the root keeps a
+    DIRECTORY of that name; None where it keeps none of them. `surviving`
+    is each path the plan's entries send to the root.
 
     A DIRECTORY OF THAT NAME IS WHAT GNU MAKE FINDS FIRST ALL THE SAME, and
     it stops there, `GNUmakefile: Is a directory.  Stop.`, exit 2, for every
@@ -4422,14 +4432,23 @@ def _make_reads_first(surviving) -> str | None:
     that could export the variable, and NEXT named `make bootstrap` there
     (#1132). The `/` is how a text knows to say so
     (`_make_reads_first_clause`).
+
+    AND A DIRECTORY `Makefile/` IS ONE TOO (#1314): GNU make finds it last
+    of the three, where the shape's `Makefile` would be, and stops there,
+    `Makefile: Is a directory.  Stop.`, exit 2 (measured with GNU make 4.3,
+    alone and beside the shape's `shape/Makefile`). So where the root keeps
+    neither other name it is `Makefile/`. A kept `Makefile` FILE is the one
+    the follow-up merges the shape's into (#906), and is still None here.
     """
     kept = set(surviving)
     return next((name if name in kept else f"{name}/"
                  for name in GNU_MAKE_READS
-                 if name != SHAPE_MAKEFILE and _root_keeps(kept, name)), None)
+                 if _root_keeps(kept, name)
+                 and (name != SHAPE_MAKEFILE or name not in kept)), None)
 
 
-def _make_reads_first_clause(first: str, reach: str, has: str) -> str:
+def _make_reads_first_clause(first: str, reach: str, has: str, *,
+                             moved: bool = False) -> str:
     """What a text says of `first`, the source's name `_make_reads_first`
     found: `reach` is what then reaches `make` at the root, and `has` how a
     FILE of that name would hold it.
@@ -4441,14 +4460,30 @@ def _make_reads_first_clause(first: str, reach: str, has: str) -> str:
     target, so nothing that file "does" can be true of it, and the clause
     says `make` stops there, in GNU make's own words, and that `reach`
     holds only once the root keeps no directory of that name (#1132).
+
+    `moved` says the root keeps a DIRECTORY `Makefile/` and no `Makefile`
+    FILE (#1314), so the shape's Makefile is `shape/Makefile` and no
+    removal of a directory brings it to the root: GNU make then says `No
+    rule to make target` until it is moved to `Makefile` (measured with GNU
+    make 4.3). Said of a directory `first`, `reach` holds only once the
+    root keeps no directory of that name, and `shape/Makefile` is moved to
+    `Makefile`; and where `first` is another directory GNU make finds before
+    `Makefile/`, no `Makefile/` either, which it stops at next. A FILE
+    `first` is read as it was: the file can include `shape/Makefile`.
     """
     listed = _and_listed([f"`{name}`" for name in GNU_MAKE_READS])
     name = first.rstrip("/")
     if name != first:
+        keeps = "keeps no directory of that name"
+        if moved:
+            keeps += ("" if name == SHAPE_MAKEFILE
+                      else f" or `{SHAPE_MAKEFILE}/`,")
+            keeps += (f" and `{COLLISION_DIR}/{SHAPE_MAKEFILE}` is moved to "
+                      f"`{SHAPE_MAKEFILE}`")
         return (f"GNU make at the root stops at the source's directory "
                 f"{_spelled(first)}, the first of {listed} it finds "
                 f"(`{name}: Is a directory.`), so {reach} only once the root "
-                "keeps no directory of that name")
+                + keeps)
     return (f"GNU make at the root reads the source's {_spelled(first)}, the "
             f"first of {listed} it finds, so {reach} only once "
             f"{_spelled(first)} {has}, or includes a Makefile that does")
@@ -4494,10 +4529,28 @@ def _makefile_follow_up(surviving: set[str]) -> str:
     "the source's directory `makefile/`" and says nothing of a merge. For
     `makefile/` spelled so, the clause that follows says what GNU make does
     there, and what it takes; `_make_reads_first` does not fold case, so
-    `MakeFile/` and `MAKEFILE/` get no clause, and #1314 settles the wording
-    of those cases.
+    `MakeFile/` and `MAKEFILE/` get no clause. They need none (#1314): where
+    case is kept, GNU make looks for no such name and reads the shape's
+    `Makefile`, and where it is ignored, whether it reads a name by its case
+    is its build's to say, as above.
+
+    NOR INTO A DIRECTORY `Makefile/` (#1314). It takes the name on every
+    disk, so the shape's goes beside it as `shape/Makefile`, and the line
+    said "the source keeps a Makefile of its own at the root, so that block
+    waits in `shape/Makefile` until the two are merged", where GNU make
+    stops at the directory, `Makefile: Is a directory.  Stop.`. It says the
+    shape's is written as `shape/Makefile` where the source's directory
+    `Makefile/` is that path, in the words a kept `makefile/` gets, and then
+    `_make_reads_first_clause` for the name `_make_reads_first` gives, which
+    says GNU make stops there where it finds it first, as it says of
+    `GNUmakefile/`. And it says what brings the shape's targets, which the
+    directory's removal alone never does (RV1314's SHOULD-1): with it gone
+    `make` says `No rule to make target` until `shape/Makefile` is moved to
+    `Makefile`, so the clause asks both (`moved`), beside a `GNUmakefile/`
+    or `makefile/` that `make` stops at first as well.
     """
     aside = _root_keeps(surviving, SHAPE_MAKEFILE)
+    directory_aside = aside and SHAPE_MAKEFILE not in surviving
     folded = (not aside
               and _root_keeps(surviving, SHAPE_MAKEFILE, fold=True))
     twins = sorted(kept.rstrip("/") for kept in surviving
@@ -4509,7 +4562,12 @@ def _makefile_follow_up(surviving: set[str]) -> str:
             "exports it, so the code leg's tooling takes the path from the "
             "environment instead of assuming it sits beside it")
     copy = f"`{COLLISION_DIR}/{SHAPE_MAKEFILE}`"
-    if aside:
+    if directory_aside:
+        said += (
+            f"; it is written as {copy}, and not as the root's "
+            f"`{SHAPE_MAKEFILE}`, where the source's directory "
+            f"{_spelled(SHAPE_MAKEFILE + '/')} is that path")
+    elif aside:
         said += (
             "; but the source keeps a Makefile of its own at the root, so "
             f"that block waits in {copy} until the two are merged, and the "
@@ -4518,8 +4576,8 @@ def _makefile_follow_up(surviving: set[str]) -> str:
         # A DIRECTORY takes the name all the same, but nothing merges a
         # Makefile into it. The clause that follows says what it takes only
         # for a `makefile/` spelled so: `_make_reads_first` does not fold
-        # case, so `MakeFile/` and `MAKEFILE/` get none, and #1314 settles
-        # the wording of those other directory cases.
+        # case, so `MakeFile/` and `MAKEFILE/` get none, which is what holds
+        # of them (#1314, in the docstring).
         directory = f"{twins[0]}/" in surviving and twins[0] not in surviving
         taking = (f"directory {_spelled(twins[0] + '/')}" if directory
                   else _spelled(twins[0]))
@@ -4532,7 +4590,8 @@ def _makefile_follow_up(surviving: set[str]) -> str:
     if first:
         said += (f"{'; and' if aside or folded else ', but'} "
                  + _make_reads_first_clause(
-                     first, "`make` there exports `CONTRACTS_DIR`", "does"))
+                     first, "`make` there exports `CONTRACTS_DIR`", "does",
+                     moved=directory_aside))
     return said
 
 
@@ -7321,7 +7380,12 @@ def _predict_collisions(entries: list[Entry], *,
     before the shape's `Makefile` as well, where the plan keeps a
     `GNUmakefile` or a `makefile`, read as `_makefile_follow_up` reads it
     (`GNU_MAKE_READS`, `_root_keeps`): the merge brings the shape's make
-    targets only where `make` reads the merged file (#1048).
+    targets only where `make` reads the merged file (#1048). And it is told
+    where the root keeps a DIRECTORY of that very name, which `_root_keeps`
+    reads as the path, for the copy goes beside it all the same: nothing
+    merges a Makefile into a directory, and GNU make stops at a `Makefile/`
+    it finds first, so the Makefile's follow-up says that (#1314). No other
+    follow-up reads it.
 
     `attributes_link` says the source's root `.gitattributes` is a symlink,
     read from the source tree's mode as `execute` reads it from the index:
@@ -7336,7 +7400,9 @@ def _predict_collisions(entries: list[Entry], *,
                         and _root_keeps(surviving, name)), None)
     return [collision_follow_up(path, actual, beside,
                                 attributes_link=attributes_link,
-                                reads_first=reads_first)
+                                reads_first=reads_first,
+                                directory=(path not in surviving
+                                           and f"{path}/" in surviving))
             for path, actual in beside.items()]
 
 
@@ -18247,6 +18313,17 @@ def _next_steps(names: dict, collisions: list,
     source's own until that merge (#1207's review, NIT-3). A kept FILE of
     that name is the paragraph above's, in the same clause's file words.
 
+    AND A DIRECTORY `Makefile/` IS NO MAKEFILE TO MERGE (#1314). The shape's
+    goes beside it as `shape/Makefile` all the same, and the NOTE said the
+    targets arrive "once the follow-up merges the two", where GNU make stops
+    at the directory and nothing merges a Makefile into one. So no NOTE
+    names a merge of the Makefile there: `_make_reads_first` names the
+    directory where GNU make finds it first, and the NOTE says "the shape's
+    Makefile is shape/Makefile, and" then what the clause says, with the
+    directory's removal AND the move of `shape/Makefile` to `Makefile` as
+    what brings the targets (`moved`, RV1314's SHOULD-1); where the script
+    went aside too, only the script's merge comes first.
+
     A NOTE THAT NAMES `python3 scripts/bootstrap.py` FOR A PERSON TO RUN
     names `python` on Windows too, as the template's `scripts/bootstrap.py`
     does (`BOOTSTRAP_COMMAND`, #1132, RV1121's NIT-2): a Windows install
@@ -18257,6 +18334,10 @@ def _next_steps(names: dict, collisions: list,
     script, makefile = aside.get(BOOTSTRAP), aside.get(SHAPE_MAKEFILE)
     first = _make_reads_first(surviving)
     stops = first if first and first.endswith("/") else None
+    # The shape's Makefile went beside a DIRECTORY `Makefile/`, which
+    # nothing merges it into (#1314).
+    directory_aside = (bool(makefile) and SHAPE_MAKEFILE not in surviving
+                       and f"{SHAPE_MAKEFILE}/" in surviving)
     bootstrap = ("" if script else
                  "\n    python3 scripts/bootstrap.py" if makefile or first else
                  "\n    make bootstrap")
@@ -18273,13 +18354,14 @@ def _next_steps(names: dict, collisions: list,
                           shlex.quote(url)])
     print(f"\nNEXT: review {review}, then\n    {clone}{bootstrap}")
     merged = (" once the follow-up merges the two, and" if makefile
-              and stops and not script else "")
+              and stops and not script and not directory_aside else "")
     reads = _make_reads_first_clause(
         first, "`make bootstrap` and the shape's other make targets run "
-        f"there{merged}", "has them") if first else ""
+        f"there{merged}", "has them", moved=directory_aside) if first else ""
     if script:
         kept = [path for path in (SHAPE_MAKEFILE, BOOTSTRAP)
-                if path in aside]
+                if path in aside
+                and not (path == SHAPE_MAKEFILE and directory_aside)]
         print(f"NOTE the root keeps its own {_and_listed(kept)}, and the "
               f"shape's {'are' if len(kept) > 1 else 'is'} "
               f"{_and_listed([aside[path] for path in kept])}, so neither "
@@ -18289,8 +18371,9 @@ def _next_steps(names: dict, collisions: list,
               + (f" first, and then run {BOOTSTRAP_COMMAND}; {reads}."
                  if first else " first, and then run `make bootstrap`."))
     elif first:
-        lead = (f"the root keeps its own {SHAPE_MAKEFILE} and the shape's is "
-                f"{makefile}, and" if makefile else
+        lead = (f"the shape's Makefile is {makefile}, and" if directory_aside
+                else f"the root keeps its own {SHAPE_MAKEFILE} and the "
+                f"shape's is {makefile}, and" if makefile else
                 f"the shape's Makefile is the root's `{SHAPE_MAKEFILE}`, but")
         print(f"NOTE {lead} {reads}; {BOOTSTRAP_COMMAND} is what the "
               "shape's `make bootstrap` runs.")
