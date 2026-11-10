@@ -32,8 +32,10 @@ import sys
 
 import pytest
 
-from conftest import (NO_BYTECODE, REPO, appended_to_command_scope,
-                      cloned_just_pushed, git, rmtree, run_script)
+from conftest import (A_BYTE_READ_AS_A_SURROGATE, NO_BYTECODE, REPO,
+                      appended_to_command_scope, cloned_just_pushed, git,
+                      rmtree, run_script,
+                      skip_where_the_locale_does_not_spell_it_as_utf_8)
 #: The trailer helpers and the two lines a lane's run lands, imported from
 #: the file that owns those rules rather than retyped — see
 #: `tests/test_commit_trailers.py`.
@@ -332,13 +334,13 @@ def test_init_writes_the_holders_agent_files(family, monkeypatch):
     template = REPO / "templates" / "family-root" / "AGENTS-shape.md"
     copied = root / "AGENTS-shape.md"
     assert copied.read_bytes() == template.read_bytes()
-    assert "{{" not in copied.read_text()
+    assert "{{" not in copied.read_text(encoding="utf-8")
 
     rows = {row["path"]: row["sha256"].lower()
             for row in load_yaml(root / "contracts" / "shape-pin.yaml")["files"]}
     assert rows["AGENTS-shape.md"] == file_sha256(copied)
 
-    flat = " ".join(copied.read_text().split())
+    flat = " ".join(copied.read_text(encoding="utf-8").split())
     assert "a consumer deriving permission from them is defective" in flat
     for rule in ("members/<Project>", "family.py add", "family.py bump",
                  "family.py remove", "make bootstrap", "make validate",
@@ -351,14 +353,15 @@ def test_init_writes_the_holders_agent_files(family, monkeypatch):
         assert rule in flat, f"the holder's rules say nothing about {rule}"
     assert "no spec leg, no code leg and no `project.yaml`" in flat
 
-    agents = (root / "AGENTS.md").read_text()
+    agents = (root / "AGENTS.md").read_text(encoding="utf-8")
     assert agents.splitlines()[0] == (
         "Read AGENTS-shape.md first — the rules of this repository's shape.")
     assert NAME in agents
     assert "inkrouter" in agents
     assert ORG in agents
     assert "{{" not in agents
-    assert (root / "CLAUDE.md").read_text() == "Read AGENTS.md.\n"
+    assert ((root / "CLAUDE.md").read_text(encoding="utf-8")
+            == "Read AGENTS.md.\n")
     assert "AGENTS.md" not in rows, (
         "the holder's own instructions are the holder's, not the shape's")
     assert "CLAUDE.md" not in rows, (
@@ -1503,6 +1506,8 @@ def test_commit_one_refuses_a_trailer_that_is_no_text_before_it_stages(
     root.mkdir()
     git("init", "-q", "-b", "main", ".", cwd=root)
     (root / "a.txt").write_text("x\n", encoding="utf-8")
+    skip_where_the_locale_does_not_spell_it_as_utf_8(
+        "Co-Authored-By: Jos\udce9", A_BYTE_READ_AS_A_SURROGATE)
 
     with pytest.raises(Refusal) as caught:
         family_module()._commit_one(
