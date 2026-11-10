@@ -51,6 +51,7 @@ import pytest
 
 from conftest import (ADOPT, git, load_without_bytecode, make_source_repo,
                       run_script)
+from repo_shape import load_yaml
 from test_adopt_project_is_the_source import edited
 from test_adopt_temp_work_roots import (
     ORG, PROJECT, REPOSITORY, SMALL_TREE, needs_filter_repo, recorded,
@@ -478,4 +479,190 @@ def test_a_record_github_cannot_hold_offers_no_org(tmp_path, verb, owner):
     assert "plan-not-the-source" in control.stderr, said(control)
     assert (f"Run `plan` again with `--project {PROJECT} --org {OWNER_AT}`, "
             "the source's own name,") in control.stderr, said(control)
+    assert log.read_bytes() == b""
+
+
+# --- a local source's `origin` (#1211) --------------------------------------
+#
+# AT #1194'S HEAD 906172b4 (2026-11-10), a local source's `origin` was read by
+# `url_repository`, which asked neither limit: a clone whose `origin` is
+# `https://gitlab.com/<40 c's>/Thing.git`, planned with `--org testorg`, was
+# refused `adopt-not-the-source` and told to run `plan` again with `--org <40
+# c's>`, which `execute` refuses; planned with no `--org`, it was written with
+# `org: <40 c's>`; and `check` held a plan to that name while `origin` was
+# there, and to nothing once it was gone (RV1194's NIT-1 and NIT-2). The
+# reading now asks `github_can_hold`, the rule `_github_name` asks, of the
+# repository as written, so the two read every spelling alike.
+
+#: (the source's `origin`, its owner, and the repository as `url_repository`
+#: names it). Each is past a limit GitHub keeps, as `_github_name` counts it.
+ORIGINS_PAST = [
+    pytest.param(f"{URL}{OWNER_OVER}/{PROJECT}.git", OWNER_OVER, PROJECT,
+                 id="owner-40"),
+    pytest.param(f"https://gitlab.com/{OWNER_OVER}/{PROJECT}.git",
+                 OWNER_OVER, PROJECT, id="gitlab-owner-40"),
+    pytest.param(f"git@github.com:{ISSUE_OWNER}/{PROJECT}.git", ISSUE_OWNER,
+                 PROJECT, id="scp-owner-50"),
+    pytest.param(f"{URL}{ORG}/{NAME_OVER}.git", ORG, NAME_OVER,
+                 id="repository-101"),
+    pytest.param(f"{URL}{ORG}/{NAME_AT}.git.git", ORG, f"{NAME_AT}.git",
+                 id="repository-100-dot-git-dot-git"),
+    pytest.param(f"{URL}{OWNER_OVER}/{NAME_OVER}/", OWNER_OVER, NAME_OVER,
+                 id="both-over"),
+]
+#: The controls: at GitHub's limits each names its repository, as it did.
+ORIGINS_AT = [
+    pytest.param(f"{URL}{OWNER_AT}/{PROJECT}.git", OWNER_AT, PROJECT,
+                 id="owner-39"),
+    pytest.param(f"https://gitlab.com/{OWNER_AT}/{PROJECT}.git", OWNER_AT,
+                 PROJECT, id="gitlab-owner-39"),
+    pytest.param(f"{URL}{ORG}/{NAME_AT}.git", ORG, NAME_AT,
+                 id="repository-100"),
+    pytest.param(f"{URL}{ORG}/{NAME_AT}.GIT", ORG, f"{NAME_AT}.GIT",
+                 id="repository-100-dot-GIT"),
+]
+
+
+def with_origin(tmp_path: Path, origin: str) -> Path:
+    """A local source whose `origin` is `origin`, as it is written."""
+    source = make_source_repo(tmp_path / "source" / PROJECT, tree=SMALL_TREE,
+                              edits=())
+    git("remote", "add", "origin", origin, cwd=source)
+    return source
+
+
+@pytest.mark.parametrize(
+    ("origin", "owner", "repo", "past"),
+    [pytest.param(*row.values, True, id=row.id) for row in ORIGINS_PAST]
+    + [pytest.param(*row.values, False, id=row.id) for row in ORIGINS_AT])
+def test_an_origin_is_read_by_the_rule_a_name_is(adopter, origin, owner,
+                                                 repo, past):
+    """`url_repository` reads an `origin` as `_github_name` reads the same
+    `owner/repo` typed: past either limit, counted once one `.git` is
+    dropped, it names no repository; at them it names the one it did."""
+    written = origin.rstrip("/").rpartition("/")[2]
+
+    assert adopter.url_repository(origin) == (None if past else
+                                              f"{owner}/{repo}")
+    assert (adopter._github_name(f"{owner}/{written}") is None) is past
+
+
+@pytest.mark.parametrize(("origin", "owner", "repo"), ORIGINS_PAST)
+def test_an_origin_github_cannot_hold_offers_no_org(tmp_path, origin, owner,
+                                                    repo):
+    """RV1194's P25 and P27: a local source whose `origin` names an owner of
+    40 characters, on github.com or gitlab.com, planned with `--org
+    testorg`, was refused `adopt-not-the-source` and told to run `plan`
+    again with `--org <40 c's>`, which `execute` refuses; a repository of
+    101 was told `--project <101 r's>`. Such an `origin` names no
+    repository now, as a path does: the plan is written, recording none,
+    and nothing is offered. `gh` is never asked."""
+    source = with_origin(tmp_path, origin)
+    env, log = recording_gh(tmp_path / "gh-bin")
+
+    proc = planned(tmp_path, tmp_path, str(source), PROJECT, ORG, env)
+
+    assert proc.returncode == 0, said(proc)
+    assert "adopt-not-the-source" not in said(proc), said(proc)
+    assert "Run `plan` again" not in said(proc), said(proc)
+    assert "(origin: " not in proc.stdout, said(proc)
+    assert recorded(tmp_path / "adoption-plan.yaml")["repository"] is None
+    assert log.read_bytes() == b""
+
+
+@pytest.mark.parametrize(("origin", "owner", "repo"), ORIGINS_AT)
+def test_an_origin_github_can_hold_is_still_the_source(tmp_path, origin,
+                                                       owner, repo):
+    """The control: at GitHub's limits the `origin` names the source's own
+    repository, and `--org testorg --project Thing` is refused
+    `adopt-not-the-source` naming it, as it was."""
+    source = with_origin(tmp_path, origin)
+    env, log = recording_gh(tmp_path / "gh-bin")
+
+    proc = planned(tmp_path, tmp_path, str(source), PROJECT, ORG, env)
+
+    assert proc.returncode == 2, said(proc)
+    assert (f"REFUSED adopt-not-the-source: --org {ORG} and --project "
+            f"{PROJECT} name {REPOSITORY}, and the source is {owner}/{repo}:"
+            ) in proc.stderr, said(proc)
+    assert not (tmp_path / "adoption-plan.yaml").exists()
+    assert log.read_bytes() == b""
+
+
+@pytest.mark.parametrize(("origin", "org"), [
+    pytest.param(f"{URL}{OWNER_OVER}/{PROJECT}.git", None, id="owner-40"),
+    pytest.param(f"https://gitlab.com/{ISSUE_OWNER}/{PROJECT}.git", None,
+                 id="gitlab-owner-50"),
+    pytest.param(f"{URL}{ORG}/{NAME_OVER}.git", None, id="repository-101"),
+    pytest.param(f"{URL}{OWNER_AT}/{PROJECT}.git", OWNER_AT, id="owner-39"),
+])
+def test_plan_reads_no_org_from_an_origin_github_cannot_hold(tmp_path,
+                                                             origin, org):
+    """With no `--org`, `plan` took the organisation from an `origin` of
+    `<40 c's>/Thing` and wrote the plan with `org: <40 c's>`, which
+    `execute` refuses. It reads none there now, as from a path, and asks
+    for `--org` (`adopt-no-org`), as `shape-doctor.py`'s adoption line
+    does. The control: an owner of 39 is still read."""
+    source = with_origin(tmp_path, origin)
+    env, log = recording_gh(tmp_path / "gh-bin")
+    plan = tmp_path / "adoption-plan.yaml"
+
+    proc = run_script(ADOPT, "plan", "--source", str(source), "--project",
+                      PROJECT, "--elected-by", "Test Human", "--elected-on",
+                      "2026-09-02", "--out", str(plan), "--work-dir",
+                      str(tmp_path / "work"), cwd=tmp_path, env=env)
+
+    if org is None:
+        assert proc.returncode == 2, said(proc)
+        assert "REFUSED adopt-no-org: " in proc.stderr, said(proc)
+        assert not plan.exists()
+    else:
+        assert proc.returncode == 0, said(proc)
+        assert load_yaml(plan)["org"] == org
+    assert log.read_bytes() == b""
+
+
+@needs_filter_repo
+@VERBS
+@pytest.mark.parametrize(("owner", "held"), [
+    pytest.param(OWNER_OVER, False, id="owner-40"),
+    pytest.param(OWNER_AT, True, id="owner-39"),
+])
+def test_a_plan_is_held_alike_with_origin_there_or_gone(tmp_path, verb,
+                                                       owner, held):
+    """RV1194-cont's P29: a source whose `origin` is
+    `https://gitlab.com/<40 c's>/Thing.git`, planned with `--org <40 c's>`,
+    its `org:` then edited to `testorg`. `check` found `plan-not-the-source`
+    with `origin` there, offering `--org <40 c's>`, and `plan ok` with it
+    removed. The `origin` names no repository now, and the plan records
+    none, so both readings hold it to nothing: `check` says `plan ok` and
+    `execute` goes on to the confirmation it is not given, either way. The
+    control: an owner of 39 holds it, with `origin` there and gone."""
+    source = with_origin(tmp_path,
+                         f"https://gitlab.com/{owner}/{PROJECT}.git")
+    env, log = recording_gh(tmp_path / "gh-bin")
+    written = planned(tmp_path, tmp_path, str(source), PROJECT, owner, env)
+    assert written.returncode == 0, said(written)
+    plan = tmp_path / "adoption-plan.yaml"
+    edited(plan, (f"org: {owner}", f"org: {ORG}"))
+
+    there = unconfirmed(verb, plan, tmp_path, env)
+    git("remote", "remove", "origin", cwd=source)
+    gone = unconfirmed(verb, plan, tmp_path, env)
+
+    for proc in (there, gone):
+        if held:
+            assert "plan-not-the-source: " in proc.stderr, said(proc)
+            assert (f"Run `plan` again with `--project {PROJECT} --org "
+                    f"{owner}`, the source's own name,") in proc.stderr
+        else:
+            assert "plan-not-the-source" not in said(proc), said(proc)
+            assert f"--org {owner}" not in said(proc), said(proc)
+            if verb == "check":
+                assert proc.returncode == 0, said(proc)
+                assert "\nplan ok\n" in proc.stdout, said(proc)
+            else:
+                assert "REFUSED adopt-unconfirmed: " in proc.stderr, \
+                    said(proc)
+        assert not (tmp_path / "remotes").exists()
     assert log.read_bytes() == b""
