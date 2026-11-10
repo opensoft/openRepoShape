@@ -1149,6 +1149,19 @@ SYMLINK_MODE = "120000"
 FILE_MODES = ("100644", "100755")
 LEG_VALUES = ("spec", "code", "root", "drop")
 FILE_PROTOCOL = ["-c", "protocol.file.allow=always"]
+#: Each clone `execute` makes names its remote `origin`, whatever
+#: `clone.defaultRemoteName` says (#1261). `git clone` names the remote
+#: after it, and with `upstream` in the global config `_mount_the_legs`'
+#: `git remote set-url origin` ended `execute` in `REFUSED mounting the
+#: legs`, exit 2, after both legs were pushed. A `-c` reaches the clone
+#: `git submodule add` makes as well as `git clone`'s own, and outranks
+#: the global file, a template's `config`, `GIT_CONFIG_COUNT` and a
+#: parent's `GIT_CONFIG_PARAMETERS` (each measured with git 2.43).
+#: `Source.clone` hands `gh repo clone` `--origin origin` instead, a `git
+#: clone` flag gh passes on after its `--` as it passes `--quiet`, so the
+#: clone `_default_branch` and `_branches_of` read as `origin`'s names its
+#: remote so.
+REMOTE_NAMED_ORIGIN = ["-c", "clone.defaultRemoteName=origin"]
 #: The file `git submodule add` records a mount in. `_mount_the_legs` checks,
 #: writes, stages and edits it, and `check` and `execute` ask which leg the
 #: plan gave the source's own -- named once so those uses cannot spell it
@@ -3208,7 +3221,7 @@ class Source:
             print(f"cloning {repository} (read only) into "
                   f"{_shown(str(path))}")
             run(["gh", "repo", "clone", repository, str(path), "--",
-                 "--quiet"])
+                 "--quiet", "--origin", "origin"])
         except BaseException as exc:
             if made is None:
                 with contextlib.suppress(OSError, _NotTheClone):
@@ -12888,16 +12901,17 @@ def _split_clone_asked(source: Source) -> None:
     hash, where each throwaway `git init`, which names its branch and the
     source's format, makes its repository. So `check` said `plan ok`, and
     `execute` stopped after both legs existed. Asked as that clone is made,
-    the answer is the split's on every version of git: with `FILE_PROTOCOL`,
-    as `execute` gives each of its clones, the template this machine's git
-    copies in, as `_extract_leg`'s clone takes it, and the `-c` settings a
-    parent git hands this process (`_split_clone_env`). Left out is only
-    what the other questions ask, or what would run or write here:
-    `--no-checkout`, as the rehearsal asks what a checkout makes of each
-    file and `_paths_git_refuses` which paths git holds at all; any hook of
-    this machine's (`core.hooksPath` an empty directory), as in every
-    throwaway; and each variable that names another repository, which
-    `_split_clone_env()` leaves out.
+    the answer is the split's on every version of git: with `FILE_PROTOCOL`
+    and `REMOTE_NAMED_ORIGIN`, as `execute` gives each of its clones (a
+    `clone.defaultRemoteName` git refuses, `a..b`, stops neither, #1261),
+    the template this machine's git copies in, as `_extract_leg`'s clone
+    takes it, and the `-c` settings a parent git hands this process
+    (`_split_clone_env`). Left out is only what the other questions ask,
+    or what would run or write here: `--no-checkout`, as the rehearsal
+    asks what a checkout makes of each file and `_paths_git_refuses` which
+    paths git holds at all; any hook of this machine's (`core.hooksPath`
+    an empty directory), as in every throwaway; and each variable that
+    names another repository, which `_split_clone_env()` leaves out.
 
     `--shared` copies no object of a source that is not shallow: the clone
     borrows the source's. git ignores it for a shallow source, and says
@@ -12916,7 +12930,8 @@ def _split_clone_asked(source: Source) -> None:
         with _asked_there(scratch.parent):
             empty.mkdir()
             cloned = subprocess.run(
-                ["git", *FILE_PROTOCOL, "-c", f"core.hooksPath={empty}",
+                ["git", *FILE_PROTOCOL, *REMOTE_NAMED_ORIGIN,
+                 "-c", f"core.hooksPath={empty}",
                  "clone", "-q", "--no-checkout", "--shared",
                  str(source.path), str(scratch / THROWAWAY_REPOSITORY)],
                 cwd=str(scratch), env=env, capture_output=True, check=False)
@@ -15686,7 +15701,8 @@ def _extract_leg(role: str, source: Source, work: Path, paths: list[str],
     PLAN's commit rather than to whatever the default branch is now, so the
     extraction and the coverage check are about the same tree.
     """
-    run(["git", *FILE_PROTOCOL, "clone", "-q", str(source.path), str(work)])
+    run(["git", *FILE_PROTOCOL, *REMOTE_NAMED_ORIGIN, "clone", "-q",
+         str(source.path), str(work)])
     run(["git", "checkout", "-q", "-B", branch, source.commit], cwd=work)
     # THE CLONE'S `origin` URL GOES FIRST (#1247). It is the source's path,
     # byte for byte, and `git filter-repo` prints it as it removes `origin`
@@ -15714,10 +15730,14 @@ def _extract_leg(role: str, source: Source, work: Path, paths: list[str],
     # with both legs made. `--local` is no way round that: with `GIT_CONFIG`
     # set, git 2.43 exits 129. `.git` is a directory, made by the `git clone`
     # above, and `work` is an absolute path (`_work_root`).
-    # A CLONE WITH NO `origin` URL IS NOT A FAILURE (git exits 5): a global
-    # `clone.defaultRemoteName` gives the clone another remote, and `execute`
-    # then fails where main fails, at `mounting the legs`, not here with no
-    # words and before any leg is pushed. That setting is its own defect.
+    # EXIT 5 (git: no such key) IS TOLERATED, AND NO KNOWN CAUSE REMAINS. Its
+    # one cause was a clone that a global `clone.defaultRemoteName` gave
+    # another remote than `origin` (#1261): it has no `remote.origin.url` to
+    # unset. The clone above carries `REMOTE_NAMED_ORIGIN`, which outranks
+    # that setting in the global file, a template's `config`,
+    # `GIT_CONFIG_COUNT` and `GIT_CONFIG_PARAMETERS` (git 2.43), so this clone
+    # always has an `origin` URL and the unset exits 0. The tolerance stays as
+    # a guard, and is harmless: a clone with no url is what the unset makes.
     # Every other exit is refused.
     try:
         run(["git", GIT_CONFIG, "--file", str(work / ".git" / "config"),
@@ -16044,8 +16064,9 @@ def _mount_the_legs(assembly: Path, work_root: Path, names: dict, urls: dict,
         # a name already in use can only meet a `.gitmodules` the plan KEPT
         # here, which verification never passes (#165).
         _refuse_an_unmountable_path(assembly, path)
-        run(["git", *FILE_PROTOCOL, "submodule", "add", "--force", "-q",
-             str(work_root / names[role]), path], cwd=assembly)
+        run(["git", *FILE_PROTOCOL, *REMOTE_NAMED_ORIGIN, "submodule",
+             "add", "--force", "-q", str(work_root / names[role]), path],
+            cwd=assembly)
         run(["git", GIT_CONFIG, "-f", GITMODULES, f"submodule.{path}.url",
              urls[role]], cwd=assembly)
         run(["git", "remote", "set-url", "origin", urls[role]],
@@ -17125,8 +17146,8 @@ def _commit_the_split(plan: Plan, source: Source, assembly: Path,
         # HOOKS a template installs no longer run on the split's commit and
         # push, as they did before #243; hooks set with `core.hooksPath` still
         # do, and the legs keep their template's hooks.
-        run(["git", *FILE_PROTOCOL, "clone", "-q", "--template=",
-             str(source.path), str(assembly)])
+        run(["git", *FILE_PROTOCOL, *REMOTE_NAMED_ORIGIN, "clone", "-q",
+             "--template=", str(source.path), str(assembly)])
         run(["git", "checkout", "-q", "-B", branch, source.commit],
             cwd=assembly)
         step = "mounting the legs"
