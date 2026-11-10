@@ -64,6 +64,11 @@ own 137 is no signal, and a git killed in an update that exits 0 is told
 nowhere. With a token in use, the update is not traced, and a signal
 before a later failure is still the credential's skip, a row pins that.
 
+WHERE THAT UPDATE WAS ITSELF KILLED (#1085), rv1076's NIT 2 on #1076: a
+signal in git's trace and a negative code for git's update, as where the OOM
+killer takes a checkout and then the top `git`. No run here reaches it, so a
+row calls `killed_said`: git's update was itself killed, it did not go on.
+
 A CREDENTIAL IN USE (#996): B4 with `SHAPE_LEGS_TOKEN` or
 `SHAPE_LEGS_APP_TOKEN` set said the advice to set the token that was set,
 and ok. It is named now, and the token is in no output and no file under
@@ -105,7 +110,7 @@ from test_family_head_lost_gitmodules import (
     GITMODULES, assert_passes_in_every_mode, commit_all, committed_gitmodules,
     pinned,
 )
-from test_family_holder_bootstrap_texts import ALONE, OURS
+from test_family_holder_bootstrap_texts import ALONE, OURS, loaded
 from test_family_holder_remedies_compose import (
     OTHER_ROW, STOP_FAILED, cloning, valued,
 )
@@ -1180,6 +1185,13 @@ WENT_ON = ("a git that git's update ran died of signal {signum} ({name}, "
 DIED_FAILED = ("family bootstrap FAILED: git's update (a git it ran died of "
                "signal {signum})")
 
+#: What it says of that signal where git's update was itself killed, which
+#: Python gives as a negative code: it did not go on (#1085).
+KILLED_AFTER = ("a git that git's update ran died of signal {signum} "
+                "({name}, exit {code}), and git's update was itself killed "
+                "(exit {ended}). Git's own words above say which git and "
+                "where.")
+
 #: A hook here is a POSIX shell script that signals the git running it.
 POSIX_HOOK = pytest.mark.skipif(
     os.name == "nt", reason="a hook here sends a POSIX signal to the git "
@@ -1322,6 +1334,22 @@ def test_p3_before_a_later_failure_fails_naming_the_signal(
         KILLED_LEAD + WENT_ON.format(signum=11, name="SIGSEGV", code=139,
                                      ended=128),
         DIED_FAILED.format(signum=11)]
+
+
+def test_an_update_itself_killed_after_a_signal_is_not_said_to_go_on():
+    """#1085, rv1076's NIT 2 on #1076: git's trace gave a git that git's
+    update ran, dead of SIGKILL (137), and git's update itself was killed,
+    which Python gives as -9. The line said "git's update went on and ended
+    with exit -9", where it did not go on: it was killed. It says so now,
+    with that code. No run reaches the line short of the OOM killer taking
+    a checkout and then the top `git`, so the row calls `killed_said`
+    itself, as `signal_met` hands it its arguments."""
+    boot = loaded("bootstrap.py", "bootstrap_stops_named")
+
+    said = boot.killed_said(boot.Died(9, 137), -9)
+
+    assert said == KILLED_AFTER.format(signum=9, name="SIGKILL", code=137,
+                                       ended=-9)
 
 
 @POSIX_HOOK

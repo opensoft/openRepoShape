@@ -472,7 +472,7 @@
 
       <!-- reads README.md § preamble: blob ddadd23a162129f7e64fefce899105661440c05c -->
 
-      <!-- reads README.md § Starting a project in a new organisation: blob 8f25ef0d24d075f9e7c2f4ed3279079ebe061105 -->
+      <!-- reads README.md § Starting a project in a new organisation: blob b102a1cd7ec797cf9aa1daa80fbf3a5e60ae3b72 -->
 
       <!-- reads README.md § The three legs: blob 4ec313e8424665e41fc92a4147808e0bd4901d78 -->
 
@@ -612,7 +612,7 @@ openRepoShape &lt;Project&gt; --org &lt;your-org&gt;</code></pre></div>
 
     <section id="start">
 
-      <!-- reads README.md § Starting a project in a new organisation: blob 8f25ef0d24d075f9e7c2f4ed3279079ebe061105 -->
+      <!-- reads README.md § Starting a project in a new organisation: blob b102a1cd7ec797cf9aa1daa80fbf3a5e60ae3b72 -->
 
       <p class="eyebrow">Setup</p>
       <h2>Start here</h2>
@@ -737,8 +737,9 @@ sudo dnf install gh</code></pre></div>
           Printed commands are quoted for a POSIX shell, so paste them into Git Bash. Only
           <code>shape-doctor.py</code>&rsquo;s lines, <code>setup-project.py</code>&rsquo;s family
           lines and <code>family.py</code>&rsquo;s <code>NEXT</code>, <code>switch -c</code>,
-          <code>add</code>, <code>cd</code>, <code>git rm -r --cached</code> and <code>bump</code>
-          lines are quoted for the shell they are printed in, PowerShell or Git Bash, on Windows.
+          <code>add</code>, <code>cd</code>, <code>git rm -r --cached</code>, <code>bump</code> and
+          <code>remove</code> lines are quoted for the shell they are printed in, PowerShell or Git
+          Bash, on Windows.
           A shell started from inside Git Bash inherits its <code>MSYSTEM</code>, which is how a tool
           tells Git Bash apart, so a PowerShell started there is handed Git Bash&rsquo;s quoting, and a
           cmd.exe started anywhere else is handed PowerShell&rsquo;s. Off Windows and in Git Bash, a path
@@ -1092,7 +1093,7 @@ cd Atlas &amp;&amp; python3 scripts/bootstrap.py   # what `make bootstrap` runs<
 
     <section id="partway">
 
-      <!-- reads README.md § Starting a project in a new organisation: blob 8f25ef0d24d075f9e7c2f4ed3279079ebe061105 -->
+      <!-- reads README.md § Starting a project in a new organisation: blob b102a1cd7ec797cf9aa1daa80fbf3a5e60ae3b72 -->
 
       <p class="eyebrow">Setup</p>
       <h2>If it fails part-way</h2>
@@ -1124,6 +1125,14 @@ cd Atlas &amp;&amp; python3 scripts/bootstrap.py   # what `make bootstrap` runs<
         re-running it. A leg with other commits is refused, and a root that HAS commits is a live
         repository, which <a href="#adopt"><code>adopt-project.py</code></a> converts in place
         instead.</li>
+        <li>The <code>--reuse-empty-repo</code> re-run, as every run, turns off git&rsquo;s own
+        terminal prompt and no other: an ssh passphrase or host-key prompt, a credential helper
+        that prompts, or
+        <code>GIT_ASKPASS</code>, <code>SSH_ASKPASS</code> or <code>core.askPass</code> can still
+        make it wait. A key in an ssh agent, a helper that answers without prompting, or
+        <code>GIT_SSH_COMMAND='ssh -o BatchMode=yes'</code> (with anything your
+        <code>core.sshCommand</code> adds) set in your shell for the run, which makes ssh fail at
+        once instead, keeps it from waiting.</li>
         <li><code>--visibility internal</code> is the third value every tool here accepts; only a
         GitHub Enterprise Cloud organisation offers it at all, and one that does not is refused by
         GitHub rather than by this tool.</li>
@@ -1133,7 +1142,7 @@ cd Atlas &amp;&amp; python3 scripts/bootstrap.py   # what `make bootstrap` runs<
 
     <section id="ci">
 
-      <!-- reads README.md § Starting a project in a new organisation: blob 8f25ef0d24d075f9e7c2f4ed3279079ebe061105 -->
+      <!-- reads README.md § Starting a project in a new organisation: blob b102a1cd7ec797cf9aa1daa80fbf3a5e60ae3b72 -->
 
       <!-- reads README.md § The three legs: blob 4ec313e8424665e41fc92a4147808e0bd4901d78 -->
 
@@ -1196,7 +1205,7 @@ gh secret set SHAPE_LEGS_APP_PRIVATE_KEY --org &lt;your-org&gt; &lt; app-private
 
     <section id="legs">
 
-      <!-- reads README.md § Starting a project in a new organisation: blob 8f25ef0d24d075f9e7c2f4ed3279079ebe061105 -->
+      <!-- reads README.md § Starting a project in a new organisation: blob b102a1cd7ec797cf9aa1daa80fbf3a5e60ae3b72 -->
 
       <!-- reads README.md § The three legs: blob 4ec313e8424665e41fc92a4147808e0bd4901d78 -->
 
@@ -1279,7 +1288,7 @@ gh secret set SHAPE_LEGS_APP_PRIVATE_KEY --org &lt;your-org&gt; &lt; app-private
 
     <section id="adopt">
 
-      <!-- reads README.md § Adopting an existing repository: blob 65fb9bf156f22898f6c75833f702861d4cc849e6 -->
+      <!-- reads README.md § Adopting an existing repository: blob a7154cc3186677058edf16e13594e83d5907f6c5 -->
 
       <p class="eyebrow">Reference</p>
       <h2>Adopting an existing repository</h2>
@@ -1452,7 +1461,7 @@ python3 scripts/family.py siblings --family-root ../InkRouter/InkRouter</code></
 
     <section id="doublepin">
 
-      <!-- reads README.md § Starting a project in a new organisation: blob 8f25ef0d24d075f9e7c2f4ed3279079ebe061105 -->
+      <!-- reads README.md § Starting a project in a new organisation: blob b102a1cd7ec797cf9aa1daa80fbf3a5e60ae3b72 -->
 
       <!-- reads README.md § The double pin, and the lockstep invariant: blob 57fffa08ffad5476f8eae73dd3e8494a02e050c9 -->
 
@@ -1751,7 +1760,7 @@ openRepoShape --doctor                 # the repository you are standing in
 
     <section id="park">
 
-      <!-- reads README.md § Starting a project in a new organisation: blob 8f25ef0d24d075f9e7c2f4ed3279079ebe061105 -->
+      <!-- reads README.md § Starting a project in a new organisation: blob b102a1cd7ec797cf9aa1daa80fbf3a5e60ae3b72 -->
 
       <!-- reads README.md § Carrying in-flight work to another workstation: blob b84512ad39c09085dfe6bf7ea694017f5e28c1dd -->
 

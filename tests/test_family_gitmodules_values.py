@@ -98,8 +98,8 @@ from test_family_head_lost_gitmodules import (
 )
 from test_family_member_path import MEMBER, OTHER, raw
 from test_family_tracking_branch import on_main  # noqa: F401
-from test_validate_family_typed_states import ROW, removal_staged
-from test_validate_family_unnamed_mounts import commands, findings
+from test_validate_family_typed_states import GONE, ROW, removal_staged
+from test_validate_family_unnamed_mounts import STAGE, commands, findings
 
 #: The issue's table, `update = None` first, then `branch` with no value:
 #: each a line added to OTHER's section after its url, as rv648 (p11) and
@@ -185,17 +185,25 @@ def said(key: str, value: str | None, where: str) -> str:
 
 
 def taken_out(key: str, value: str | None, *, back: str | None = None,
-              where: str = HERE_AND_HEAD, put_back: bool = False) -> str:
+              where: str = HERE_AND_HEAD, put_back: str = "") -> str:
     """`gitmodules-value-refused` WHOLE, with the commands that take the key
-    out of the work tree's file, after the one that puts HEAD's back where
-    `put_back`, and write `back` in where it is given."""
-    lines = (["git checkout HEAD -- .gitmodules"] if put_back else []) + [
+    out of the work tree's file, after the one that puts back the file git
+    reads in its place where the work tree's is gone as `put_back`
+    (`GONE`) says, the index's, or HEAD's where the index holds none
+    (#1077), and write `back` in where it is given, then, where HEAD's
+    gives the value, the line that stages the file, which the commit
+    records (`STAGE`, #1150): said in words alone, a plain `git commit`
+    after the lines recorded the value the index's file still gave."""
+    whose, line = GONE[put_back] if put_back else ("", "")
+    lines = ([line] if put_back else []) + [
         f"git config -f .gitmodules --unset-all {full(key)}"]
     if back is not None:
         lines.append(f"git config -f .gitmodules {full(key)} {back}")
+    if where != WORK_TREE_ONLY:
+        lines.append(STAGE)
     return (said(key, value, where)
             + ("The work tree holds no .gitmodules, so the first line below "
-               "puts HEAD's back. " if put_back else "")
+               f"puts back {whose}. " if put_back else "")
             + "Take the key out"
             + (f" and write its {key} back" if back is not None else "")
             + " by hand, in a POSIX shell"
@@ -791,6 +799,10 @@ def test_a_bare_key_in_a_blob_is_read_up_to_and_named_in_the_cure(
 #: A line of the person's own, staged with the line git cannot parse.
 OWN_LINE = b"# a line of the person's own, staged with it\n"
 
+#: How the gate refuses an index's `.gitmodules` git cannot parse (#1150).
+INDEX_UNREADABLE = ("REFUSED gitmodules-unreadable: the index's .gitmodules "
+                    "could not be read as git reads it: ")
+
 
 @pytest.mark.parametrize("place", ("inside-a-section",
                                    "before-the-first-section"))
@@ -800,12 +812,13 @@ def test_the_index_s_file_cut_short_is_put_back_from_the_index(
     whole: the line inside OTHER's section, or first in the file (RV877's
     SHOULD-2), staged with a line of the person's own, not committed, and
     the work tree's file lost. Git reads the index's up to the line, the
-    first one reading nothing, and dies at OTHER or MEMBER. The gate
-    reads the work tree's file and HEAD's, not the index's, so it cannot
-    name the line, and HEAD's file put back would lose what was staged.
-    The cure puts the index's back, its line first included: typed as
-    printed, mended and committed, the person's own line is in HEAD, and
-    the run is the credential's skip."""
+    first one reading nothing, and dies at OTHER or MEMBER. HEAD's file
+    put back would lose what was staged. The cure puts the index's back,
+    its line first included: typed as printed, mended and committed, the
+    person's own line is in HEAD, and the run is the credential's skip.
+    The gate read the index's file as nothing there, so it never named the
+    line; it refuses that file `gitmodules-unreadable` now, naming the
+    line, as it refuses HEAD's (#1150)."""
     env = isolated(offline, tmp_path)
     clone = cloned(holder, env, family, tmp_path, recurse=False)
     staged = raw(clone, env, "show", f"HEAD:{GITMODULES}").stdout + OWN_LINE
@@ -814,8 +827,9 @@ def test_the_index_s_file_cut_short_is_put_back_from_the_index(
     lose_work_tree_file(clone, env)
     git_reads_up_to_the_line(clone, env, place)
     gate = validate(clone, "--no-members")
-    assert "bad config line" not in gate.stdout + gate.stderr, (
-        "premise: the gate cannot name the line", gate.stdout + gate.stderr)
+    assert gate.returncode == 2, gate.stdout + gate.stderr
+    assert gate.stderr.startswith(INDEX_UNREADABLE), gate.stderr
+    assert "bad config line" in gate.stderr, gate.stderr
 
     result = bootstrap(clone, env, "--skip-members")
 
@@ -1094,10 +1108,11 @@ def test_a_value_git_dies_on_in_the_index_s_file_is_named_and_mended(
         family, holder, offline, tmp_path):
     """`update = None` committed, and the work tree's file lost, not
     committed: git reads the index's and dies all the same, and bootstrap
-    names it. The gate reads HEAD's, and, the work tree holding none, its
-    first line puts HEAD's back before the key is taken out. Typed as
-    printed and committed, the same run checks both members out and the
-    gate passes in every mode."""
+    names it. The gate reads the index's too, as git reads it, and HEAD's,
+    which both give it, and, the work tree holding none, its first line
+    puts the index's back before the key is taken out, not HEAD's (#1077).
+    Typed as printed and committed, the same run checks both members out
+    and the gate passes in every mode."""
     env = fetching(isolated(offline, tmp_path))
     clone, _ = edited_clone(holder, env, family, tmp_path,
                             with_line("update = None"))
@@ -1113,16 +1128,18 @@ def test_a_value_git_dies_on_in_the_index_s_file_is_named_and_mended(
         failed_on(MEMBER, OTHER)], result.stderr
     found_in_every_mode_and_typed(
         clone, env,
-        taken_out("update", "None", where=HEAD_ONLY, put_back=True))
+        taken_out("update", "None", put_back="deleted"))
     assert_a_good_holder_s_run(clone, env)
 
 
-def test_two_keys_with_no_gitmodules_in_the_work_tree_put_head_s_back_once(
+def test_two_keys_with_no_gitmodules_in_the_work_tree_put_it_back_once(
         holder, offline, tmp_path):
     """Two values git dies on committed, and the work tree's file lost: one
-    finding for each key, and only the first puts HEAD's back, since a
-    second `git checkout` would put back the key the first took out. Typed
-    as printed and committed, the holder passes in every mode."""
+    finding for each key, and only the first puts the index's back, the
+    file git reads, which gives both, as HEAD's does (#1077: it put HEAD's
+    back), since a second `git checkout` would put back the key the first
+    took out. Typed as printed and committed, the holder passes in every
+    mode."""
     env = isolated(offline, tmp_path)
     data = raw(holder, env, "show", f"HEAD:{GITMODULES}").stdout
     # Each line goes in right after the url, so `update` comes first.
@@ -1134,8 +1151,8 @@ def test_two_keys_with_no_gitmodules_in_the_work_tree_put_head_s_back_once(
 
     assert result.returncode == 1, result.stdout + result.stderr
     assert findings(result) == [
-        taken_out("update", "None", where=HEAD_ONLY, put_back=True),
-        taken_out("shallow", "maybe", where=HEAD_ONLY)]
+        taken_out("update", "None", put_back="deleted"),
+        taken_out("shallow", "maybe")]
     for finding in findings(result):
         for command in commands(finding):
             type_line(holder, env, command)
@@ -1241,7 +1258,8 @@ def edited_not_committed(root, env, data: bytes) -> None:
 WHERE = {
     "head-only": (mended_not_committed,
                   said("update", "None", HEAD_ONLY) + "Stage and commit the "
-                  "work tree's .gitmodules, which does not give it."),
+                  "work tree's .gitmodules, which does not give it:"
+                  f"\n    {STAGE}"),
     "work-tree-only": (edited_not_committed,
                        taken_out("update", "None", where=WORK_TREE_ONLY)),
 }
@@ -1252,9 +1270,10 @@ def test_the_gate_says_which_file_gives_it(holder, offline, tmp_path, set_up,
                                            expected):
     """In the holder, members checked out: HEAD's file alone gives the
     value, the work tree's mended and not committed, and the finding says
-    to commit that, printing no command; or the work tree's alone, which
-    git reads here and a clone does not, and the command takes it out with
-    nothing to commit. Done as it says, the holder passes in every mode."""
+    to stage and commit that, its one line staging it (#1150); or the work
+    tree's alone, which git reads here and a clone does not, and the
+    command takes it out with nothing to commit. Done as it says, the
+    holder passes in every mode."""
     env = isolated(offline, tmp_path)
     set_up(holder, env, raw(holder, env, "show", f"HEAD:{GITMODULES}").stdout)
 
