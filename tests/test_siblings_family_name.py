@@ -30,6 +30,14 @@ only the README's title, and `siblings.py` says which name it means on a line
 of its own where the two differ. The rows build such a holder, follow its
 README's layout, and run `make siblings` to a clone.
 
+#1216. The layout table, and the dispatch's `(b) what ran`, padded each
+member's name with a format width, which counts code points. Measured on
+main 50ce8ab1, a UTF-8 stdout put the `state` of `\\u65e5\\u672c\\u8a9e`'s
+rows 3 columns right of `state`, and `e\\u0301cole`'s 1 left; an ASCII
+stdout, which writes each as its escapes, 15 and 5 right. A row now pads the
+name by the columns it takes as stdout writes it. The rows read the table
+raw, since `layout` collapses the pad they count.
+
 NO NETWORK AND NO GITHUB: bare repositories in a temporary directory, a dry run
 for every row that would otherwise clone from GitHub, and the session `gh`
 guard (`tests/conftest.py`).
@@ -362,6 +370,98 @@ def test_a_dispatch_over_a_member_with_no_clone_is_spelled(plain, tmp_path,
         r"sibling Su\u2028b SKIPPED no clone -",
     ], out
     assert not NEVER_RAW & (set(out) | set(err)), out + err
+
+
+# --- #1216: a row pads its name by the columns it takes ---------------------
+
+#: Three wide characters, and a name whose acute is a combining mark.
+WIDE = "\u65e5\u672c\u8a9e"
+COMBINING = "e\u0301cole"
+#: Three members not checked out and not cloned, each mounted at
+#: `members/<its name>`, so the pinned rows hold the same characters.
+COLUMN_MEMBERS = "members:\n" + "".join(
+    f'  - project: "{name}"\n    repository: Contoso/{repository}\n'
+    f'    path: "members/{name}"\n'
+    for name, repository in ((WIDE, "Wide"), (COMBINING, "Accent"),
+                             ("Atlas", "Atlas")))
+#: The columns a terminal gives each name a UTF-8 stdout writes as it is,
+#: counted by hand: two to a wide character and none to the combining
+#: acute. A name an ASCII stdout writes is its escapes, all ASCII, and
+#: takes one column to a character.
+TAKES = {WIDE: 6, COMBINING: 5, f"members/{WIDE}": 14,
+         f"members/{COMBINING}": 13}
+#: Where a row's `state` begins: the 2 of the indent, the 9 of `what` and a
+#: space, then the 18 of `name` and a space.
+STATE_COLUMN = 31
+
+
+def state_columns(stdout: str, heading: str) -> list[tuple[str, int]]:
+    """`(name, the column its state begins at)` for each row under
+    `heading`, read raw. A name here holds no space, so it ends at the
+    first one after column 12."""
+    lines = stdout.split("\n")
+    start = lines.index(heading)
+    assert lines[start + 1].index("state") == STATE_COLUMN, stdout
+    rows = []
+    for line in lines[start + 2:]:
+        if not line.startswith("  "):
+            break
+        name, _, rest = line[12:].partition(" ")
+        if name not in TAKES:
+            assert name.isascii(), (name, stdout)
+        takes = TAKES.get(name, len(name))
+        rows.append((name, 12 + takes + 1 + len(rest) - len(rest.lstrip(" "))))
+    return rows
+
+
+@pytest.mark.parametrize("encoding", NARROW)
+def test_the_layout_keeps_every_state_under_its_heading(plain, tmp_path,
+                                                         encoding):
+    """THE ISSUE'S ROWS, in the placement's table: the holder, each member
+    and each pinned mount. On main a UTF-8 stdout put the wide name's
+    `state` at column 34 and the combining one's at 30, and an ASCII stdout
+    at 46 and 36. Every row whose name fits the field as stdout writes it
+    starts its `state` at column 31 now. On an ASCII stdout the two pinned
+    mounts, written as `members/` and their escapes, take 26 and 19 columns,
+    more than the field: each keeps the one space between fields, as `:<18`
+    keeps it after an ASCII name that long, and nothing is cut."""
+    edit(plain, "family.yaml", "members: []", COLUMN_MEMBERS)
+    code, out, err = sib(plain, "--dry-run", tmp_path=tmp_path,
+                         encoding=encoding)
+    assert code == 0, out + err
+    wide, combining = (shown(name, encoding) for name in (WIDE, COMBINING))
+    narrow = encoding == "ascii:strict"
+    assert state_columns(out, "(b) the layout") == [
+        (PLAIN, STATE_COLUMN), (wide, STATE_COLUMN),
+        (combining, STATE_COLUMN), ("Atlas", STATE_COLUMN),
+        (f"members/{wide}", 39 if narrow else STATE_COLUMN),
+        (f"members/{combining}", 32 if narrow else STATE_COLUMN),
+        ("members/Atlas", STATE_COLUMN)], out
+    lines = out.split("\n")
+    assert f"  {'sibling':<9} {'Atlas':<18} {'would clone':<22} -" in lines
+    if narrow:
+        assert (f"  {'pinned':<9} members/{wide} {'not checked out':<22} "
+                "make bootstrap") in lines, out
+
+
+@pytest.mark.parametrize("encoding", NARROW)
+def test_what_ran_keeps_every_state_under_its_heading(plain, tmp_path,
+                                                      encoding):
+    """The same three members in the dispatch's `(b) what ran`, which prints
+    the same rows: no clone, so each is skipped, exit 1, and every `state`
+    starts at column 31 on either stdout."""
+    edit(plain, "family.yaml", "members: []", COLUMN_MEMBERS)
+    code, out, err = sib(plain, "--make", "park", "--dry-run",
+                         tmp_path=tmp_path, encoding=encoding,
+                         changes=PYTHON_AS_MAKE)
+    assert code == 1, out + err
+    assert "Traceback" not in err, err
+    assert state_columns(out, "(b) what ran") == [
+        (shown(WIDE, encoding), STATE_COLUMN),
+        (shown(COMBINING, encoding), STATE_COLUMN),
+        ("Atlas", STATE_COLUMN)], out
+    assert (f"  {'sibling':<9} {'Atlas':<18} {'SKIPPED no clone':<22} -"
+            in out.split("\n")), out
 
 
 # --- #454: a real clone, named with a line separator -------------------------

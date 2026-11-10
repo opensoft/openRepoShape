@@ -2239,6 +2239,7 @@ class NamingPolicy:
             templates += list(referent.get("also_accepted") or [])
             family["_referent_templates"] = tuple(templates)
         topic = data.get("topic") or {}
+        # No tool reads it yet; one that does must use `fullmatch`, for `$` takes a final line feed (#1202).
         self.topic_pattern = re.compile(topic.get("pattern", r"^xf-project-[a-z0-9-]+$"))
         self.topic_template = topic.get("template", "xf-project-{id}")
 
@@ -2276,9 +2277,9 @@ class NamingPolicy:
         first entry is canonical and is what a manifest records.
         """
         family = self.family("domain-descendant")
-        if family is None or not family["_re"].match(name):
+        if family is None or not family["_re"].fullmatch(name):
             return ()
-        match = family["_split_re"].match(name)
+        match = family["_split_re"].fullmatch(name)
         if not match:
             return ()
         product = match.groupdict().get("product")
@@ -2444,10 +2445,10 @@ class NamingPolicy:
             roles = family.get("roles") or []
             hit = False
             for role in roles:
-                if role["_re"].match(name):
+                if role["_re"].fullmatch(name):
                     found.append((family["id"], role["id"]))
                     hit = True
-            if not hit and family["_re"].match(name):
+            if not hit and family["_re"].fullmatch(name):
                 found.append((family["id"], None))
         return found
 
