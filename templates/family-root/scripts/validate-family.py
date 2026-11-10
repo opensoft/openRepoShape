@@ -4851,7 +4851,7 @@ def _run_checks(args: argparse.Namespace,
         members = []
     if not isinstance(members, list):
         raise Refusal("family-members-unreadable",
-                      f"{manifest_path}: `members:` is {members!r}, "
+                      f"{_shown(manifest_path)}: `members:` is {members!r}, "
                       "expected a list")
     _check_members(root, members, args.no_members, report)
     if not args.pins:
