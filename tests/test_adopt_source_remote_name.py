@@ -632,3 +632,32 @@ def test_an_only_remote_named_outside_printable_ascii_is_not_read(tmp_path):
             "tool can read: it has no remote `origin`, and its one remote, "
             "`Ürsprung`, is not read in that one's place, as its name "
             "is not printable ASCII") in result.stderr, result.stderr
+
+
+#: A remote's name that is the one byte 0xFF, which is not UTF-8, as
+#: `os.fsdecode` keeps it: `git config remote.<name>.url` makes such a
+#: remote, and `git remote` lists it as that byte.
+NOT_UTF_8_REMOTE = chr(0xDCFF)
+
+
+def test_an_only_remote_named_by_a_byte_that_is_not_utf_8_is_not_read(
+        tmp_path):
+    """A source whose only remote is named by the byte 0xFF is refused
+    `adopt-no-org`, exit 2, saying the remote is not read in `origin`'s
+    place as its name is not printable ASCII. Its name is read as a byte
+    that is not UTF-8 is kept (`surrogateescape`): read strictly, `plan`
+    ended in a `UnicodeDecodeError` traceback, exit 1. How the refusal
+    spells the byte is not pinned here."""
+    source = odd_only_remote(
+        tmp_path, ("config", f"remote.{NOT_UTF_8_REMOTE}.url", GITHUB_URL))
+
+    result, _ = planned(tmp_path, source)
+
+    assert result.returncode == 2, result.stdout + result.stderr
+    said = " ".join(result.stderr.split())
+    assert ("REFUSED adopt-no-org: the source names no organisation this "
+            "tool can read: it has no remote `origin`, and its one remote, "
+            ) in said, said
+    assert ("is not read in that one's place, as its name is not printable "
+            "ASCII") in said, said
+    assert "Traceback" not in result.stderr, result.stderr
