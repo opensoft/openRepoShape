@@ -176,8 +176,11 @@ from repo_shape import (  # noqa: E402
 # purpose: `shape_materialize` imports it the same way and says why (#380). A
 # block header is found with it, so a trailing comment is one here wherever it
 # is one to the reader (#437), and with the reader's rule for a key, so a
-# quoted key or a space before the colon is one here too (#674).
-from repo_shape import _split_key, _strip_comment  # noqa: E402
+# quoted key or a space before the colon is one here too (#674), and with the
+# reader's blanks, a space and a tab and no other (`_YAML_WHITE`), so a line
+# that opens with U+00A0 or U+3000 is another key here as it is to the reader
+# (#1220).
+from repo_shape import _YAML_WHITE, _split_key, _strip_comment  # noqa: E402
 # U+FEFF by the reader's own name: the two line rewrites take it off line 1
 # as `parse_yaml` does, and put it back (#933). On a line of its own, for the
 # reason the branch rule's import below gives.
@@ -206,8 +209,9 @@ from shape_materialize import SHAPE_PIN  # noqa: E402
 from shape_materialize import readable_branch  # noqa: E402
 
 #: `owner/repo`, the only remote spelling `--upstream` accepts, and the
-#: shape pin's `source_repository:` where no `--upstream` is passed. `\Z`,
-#: NEVER `$` (#1139): `$` also matches just before a trailing line feed.
+#: shape pin's `source_repository:`, whether or not `--upstream` is passed
+#: (`pin_source`, #1203). `\Z`, NEVER `$` (#1139): `$` also matches just
+#: before a trailing line feed.
 REPOSITORY_RE = re.compile(r"^[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+\Z")
 
 #: How `--branch` may be spelled: the alphabet `checked_value` already
@@ -642,9 +646,20 @@ def unreadable_upstream(said: str, proc: subprocess.CompletedProcess
         "openRepoShape.")
 
 
-def open_upstream(spec: str, pin_path: Path | None = None) -> Upstream:
+def _holds_a_repository(path: Path) -> bool:
+    """Whether `path` is a git repository by the two questions
+    `open_upstream` asks of a path: a `.git` there, or, only where there is
+    none, a bare repository's `HEAD` file. Asked of the shape pin's
+    `source_repository:` too (`pin_source`), so the pin's value and
+    `--upstream` are one question (#1203)."""
+    return (_is_a(path / ".git", _anything)
+            or _is_a(path / "HEAD", stat.S_ISREG))
+
+
+def open_upstream(spec: str) -> Upstream:
     """`--upstream` as a repository this tool can read, or the shape pin's
-    `source_repository:` where none was passed, read from `pin_path`.
+    `source_repository:` where none was passed, once `pin_source` has asked
+    it.
 
     A PATH IS USED IN PLACE AND THIS TOOL FETCHES NOTHING INTO IT. That is
     deliberate: it is what lets the tests run with no network, and it is
@@ -669,19 +684,17 @@ def open_upstream(spec: str, pin_path: Path | None = None) -> Upstream:
     then cloned from github.com; a checkout it cannot search was
     `update-upstream-not-a-repo`.
 
-    A VALUE THE PIN HOLDS IS REFUSED IN THE PIN'S NAME (#1139). The pin's
-    `source_repository:` read as `opensoft/openRepoShape` and a line feed
-    passed `REPOSITORY_RE`, whose `$` took the line feed, and was refused
-    by `checked_value` as `unsafe-value` of `--upstream`, a flag nobody had
-    passed. The pattern takes no line feed now, so the value is
-    `update-upstream-unresolvable`, and that refusal and `checked_value`'s
-    name the pin and its field.
+    THE PIN'S VALUE IS ASKED BEFORE IT REACHES HERE (#1139, #1203).
+    `pin_source` asks it in `prepare`, whether or not `--upstream` was
+    passed, and refuses in the pin's name a value that is no `owner/repo`,
+    or one that names something here that is no git repository. So where
+    `spec` is the pin's, none of the refusals below is reached for it, and
+    each of them names the flag.
     """
     candidate = Path(spec).expanduser()
     if _is_a(candidate, _anything):
         path = candidate.resolve()
-        if (not _is_a(path / ".git", _anything)
-                and not _is_a(path / "HEAD", stat.S_ISREG)):
+        if not _holds_a_repository(path):
             raise Refusal(
                 "update-upstream-not-a-repo",
                 f"--upstream {spec} exists but is not a git repository",
@@ -689,23 +702,13 @@ def open_upstream(spec: str, pin_path: Path | None = None) -> Upstream:
                 "`--upstream opensoft/openRepoShape` to clone one.")
         return Upstream(path, str(path))
     if not REPOSITORY_RE.match(spec):
-        if pin_path is not None:
-            raise Refusal(
-                "update-upstream-unresolvable",
-                f"{pin_path}: `source_repository:` is {spec!r}, which is "
-                "neither a path on this machine nor an `owner/repo` name",
-                "Remediation: write `source_repository:` in the pin as the "
-                "`owner/repo` its shape was copied from, "
-                f"`{SHAPE_REPOSITORY}` for this standard's, or pass "
-                "`--upstream` a path to a clone of openRepoShape.")
         raise Refusal(
             "update-upstream-unresolvable",
             f"--upstream {spec!r} is neither a path on this machine nor an "
             "`owner/repo` name",
             "Remediation: pass a path to a clone of openRepoShape, or "
             "`--upstream opensoft/openRepoShape`.")
-    checked_value("--upstream" if pin_path is None
-                  else f"{pin_path}: `source_repository:`", spec)
+    checked_value("--upstream", spec)
     temporary = Path(tempfile.mkdtemp(prefix="openreposhape-upstream-"))
     url = f"https://github.com/{spec}.git"
     args = ["git", "clone", "--quiet", "--bare", url, str(temporary / "shape.git")]
@@ -722,6 +725,103 @@ def open_upstream(spec: str, pin_path: Path | None = None) -> Upstream:
             "network. Clone the shape once by hand and pass `--upstream "
             "<path>` instead; nothing after it fetches the shape again.")
     return Upstream(temporary / "shape.git", spec, temporary=temporary)
+
+
+#: What a shape pin's `source_repository:` that `pin_source` refuses is told.
+PIN_SOURCE_REMEDY = (
+    "Remediation: write `source_repository:` in the pin as the `owner/repo` "
+    f"its shape was copied from, `{SHAPE_REPOSITORY}` for this standard's. "
+    "It is asked with `--upstream` passed too, because `apply` names it in "
+    "its commit and its pull request; a path to a clone goes to "
+    "`--upstream`.")
+#: The same, for a value that names something HERE that is no repository:
+#: the value is looked up as a path from the directory the command runs in,
+#: so a value that is already right, `owner/repo` with a folder of that name
+#: where the command runs, needs the command run elsewhere (N2 of the review
+#: of PR #1269). The sentence is added to this refusal's remedy alone.
+PIN_SOURCE_NOT_A_REPO_REMEDY = (
+    PIN_SOURCE_REMEDY + " The value is also looked up as a path from the "
+    "directory this runs in: if it is already right, run this from a "
+    "directory where nothing is at that path.")
+
+
+def _named_here(declared: str) -> Path | None:
+    """The path `declared` names on this machine, spelled as `open_upstream`
+    looks it up (`expanduser`), or None where it names nothing there.
+
+    TWO ANSWERS THAT ARE "NOTHING THERE" for a value no one wrote as a path
+    (the review of PR #1269, S1 and N1):
+    - `~<user>/...` for a user the machine has not got: `expanduser`
+      raises `RuntimeError`, and the bare path is looked up instead, which
+      names nothing. So does a NUL byte after the `~`: `expanduser` raises
+      `ValueError` (`embedded null byte`), and the bare path, which no file
+      has the name of, names nothing either (NIT A of the second review);
+    - a name over the limit a path component may have (`ENAMETOOLONG`):
+      `stat` cannot open what no file system can hold, as it cannot open
+      what is not there.
+    Every other `OSError` of the `stat` is raised, as `_is_a` raises it."""
+    try:
+        candidate = Path(declared).expanduser()
+    except (RuntimeError, ValueError):
+        candidate = Path(declared)
+    try:
+        return candidate if _is_a(candidate, _anything) else None
+    except OSError as exc:
+        if exc.errno == errno.ENAMETOOLONG:
+            return None
+        raise
+
+
+def pin_source(pin: dict, pin_path: Path) -> str:
+    """The shape pin's `source_repository:`, the `owner/repo` its shape was
+    copied from (`SHAPE_REPOSITORY` where the pin names none), or a refusal
+    in the pin's name, `pin_path` naming the pin.
+
+    ASKED ONCE, IN `prepare`, WHICHEVER WAY THE RUN REACHES THE UPSTREAM
+    (#1203). With no `--upstream` the value is the upstream `open_upstream`
+    opens. With one passed, the value was never asked, and it is still the
+    name `prepare` gives the upstream: the README `Shape:` line is compared
+    with it, and `apply` writes it into its commit subject, its pull
+    request's title and the lines it prints. So `"opensoft/openRepoShape\\n"`
+    made a commit whose subject broke after the name, and a `gh pr create`
+    line split inside its quotes, exit 0. With no `--upstream`, a path that
+    is no repository was `update-upstream-not-a-repo` of `--upstream`, a
+    flag nobody passed.
+
+    THREE QUESTIONS, under the codes these values had (#1139):
+    - something HERE at the value, looked up as `open_upstream` looks it up
+      (`expanduser`, relative to the directory the command runs in), that
+      is no git repository: `update-upstream-not-a-repo`. The pin gets the
+      same answer whether or not `--upstream` is passed. An `owner/repo`
+      spelling that IS a repository here is taken, as it was, and with no
+      `--upstream` it is opened in place. A `~<user>` nobody has (a NUL
+      byte after the `~` too), and a name too long for a path, are nothing
+      there (`_named_here`).
+    - a value `REPOSITORY_RE` does not take WHOLE:
+      `update-upstream-unresolvable`. A path that is not spelled
+      `owner/repo` (`/srv/shape`, `~/shape`, `shape`) is refused here,
+      whether it holds a repository or not: the pin records a repository's
+      name, never where a clone is kept.
+    - `checked_value`'s: `unsafe-value`.
+
+    NOTHING WRITES A VALUE THESE REFUSE. Both pin templates hold
+    `{{SHAPE_REPOSITORY}}`, so each such value is a hand edit, and refusing
+    it costs no root that a tool made.
+    """
+    declared = str(pin.get("source_repository") or SHAPE_REPOSITORY)
+    named = f"{pin_path}: `source_repository:`"
+    candidate = _named_here(declared)
+    if candidate is not None and not _holds_a_repository(candidate.resolve()):
+        raise Refusal(
+            "update-upstream-not-a-repo",
+            f"{named} is {declared!r}, which exists but is not a git "
+            "repository", PIN_SOURCE_NOT_A_REPO_REMEDY)
+    if not REPOSITORY_RE.fullmatch(declared):
+        raise Refusal(
+            "update-upstream-unresolvable",
+            f"{named} is {declared!r}, which is not an `owner/repo` name",
+            PIN_SOURCE_REMEDY)
+    return checked_value(named, declared)
 
 
 # ---------------------------------------------------------------------------
@@ -1711,14 +1811,21 @@ def _is_block_header(line: str, key: str) -> bool:
     line(s)"), or a manifest `update-manifest-no-shape`, saying it has no
     `shape:` block when the reader gives it one. The column is the
     reader's: no space in front, and no tab among the blanks in front,
-    which the reader refuses outright; the text is `.strip()`ped first,
-    as `_tokenise` strips it. A line `_split_key` refuses is one the
-    reader refuses as well, so it is no header here rather than a
-    traceback, and the count that follows says so."""
-    if line.startswith(" ") or "\t" in line[:len(line) - len(line.lstrip())]:
+    which the reader refuses outright; the text is stripped of
+    `_YAML_WHITE` first, as `_significant_text` strips it for `_tokenise`.
+    A BLANK IS A SPACE OR A TAB AND NOTHING ELSE (#1220). `.strip()` with no
+    argument also cuts U+00A0 and U+3000, which the reader keeps as text, so
+    `<U+00A0>shape:` was the header here, where the reader gives it the key
+    `<U+00A0>shape`, and the rewrite wrote the block under a line the reader
+    does not read as one. A line `_split_key` refuses is one the reader
+    refuses as well, so it is no header here rather than a traceback, and
+    the count that follows says so."""
+    blanks = len(line) - len(line.lstrip(_YAML_WHITE))
+    if line.startswith(" ") or "\t" in line[:blanks]:
         return False
     try:
-        return _split_key(_strip_comment(line.strip())) == (key, "")
+        return _split_key(
+            _strip_comment(line.strip(_YAML_WHITE))) == (key, "")
     except YamlError:
         return False
 
@@ -2391,8 +2498,9 @@ def counted(rows: list[Row]) -> dict[str, int]:
 # ---------------------------------------------------------------------------
 
 
-def prepare(args) -> tuple[Path, dict, list[Row], list[Addition], Upstream,
-                           str, str, Kind]:
+def prepare(args, *, ask_source: bool = True
+            ) -> tuple[Path, dict, list[Row], list[Addition], Upstream,
+                       str, str, Kind]:
     """The root, its pin, its rows judged and its additions found, the
     upstream opened, the two commits and the kind of root: everything
     `check` reports and `apply` acts on, read before anything is written.
@@ -2404,7 +2512,19 @@ def prepare(args) -> tuple[Path, dict, list[Row], list[Addition], Upstream,
     answer. The root is asked first: its own `stat` (a folder above it
     this user cannot search), then whether it can be searched at all
     (`_search`). A read refused once the upstream is open closes it
-    first, as a `Refusal` does."""
+    first, as a `Refusal` does.
+
+    THE PIN'S `source_repository:` IS ASKED BEFORE THE UPSTREAM IS OPENED
+    (#1203), by `pin_source`, with or without `--upstream`. `ask_source`
+    False is the doctor's `shape currency` row's alone: it passes its own
+    checkout as the upstream, writes no commit and opens no pull request,
+    and it reads a `Refusal` from here as that checkout unable to answer, so
+    a refusal of the root's own field would be called the standard's, with a
+    `git fetch` for its remedy; `check`, the NEXT that row names where the
+    root is behind, asks the field. The doctor's `pins` row asks it: it
+    names `check` in a sentence that is false where `check` refuses (S2 of
+    the review of PR #1269). With no `--upstream` the field IS the
+    upstream, and is asked whatever `ask_source` says."""
     root = root_of(args)
     if not _is_a(root, stat.S_ISDIR):
         raise Refusal("update-root-missing", f"{root} is not a directory")
@@ -2418,9 +2538,13 @@ def prepare(args) -> tuple[Path, dict, list[Row], list[Addition], Upstream,
     if linked is not None:
         raise rewrite_link_refusal([linked])
     pinned = str(pin["commit"]).lower()
-    declared = str(pin.get("source_repository") or SHAPE_REPOSITORY)
-    upstream = open_upstream(str(args.upstream or declared),
-                             None if args.upstream else root / SHAPE_PIN)
+    # THE PIN'S `source_repository:` IS ASKED HERE, ONCE, before the
+    # upstream is opened and whether or not `--upstream` was passed (#1203):
+    # it names the upstream in what `check` and `apply` print and commit.
+    declared = (pin_source(pin, root / SHAPE_PIN)
+                if ask_source or not args.upstream
+                else str(pin.get("source_repository") or SHAPE_REPOSITORY))
+    upstream = open_upstream(str(args.upstream or declared))
     upstream.repository = declared
     try:
         target = upstream.resolve(checked_value("--at", args.at)
@@ -3213,12 +3337,24 @@ class Rollback:
         every byte back, and lists what it put back under this detail
         (`_rolled_back`), so the detail does not claim it as well.
 
+        A BROKEN PIPE IS STDOUT'S, NOT A WRITE'S (#1218). `_write_copies`
+        prints each `copied` line inside this block, and unbuffered
+        (`PYTHONUNBUFFERED`) into a pipe whose reader has gone, that print
+        raises `BrokenPipeError`. It was refused here as `update-write-failed:
+        writing the copies and the --add files failed: Broken pipe`, blaming
+        the write of a copy for an error of stdout's. Every write in this
+        block is to a file of the root's, never to a pipe, so the error is
+        let through as itself, to `cmd_apply`'s arm for an `OSError` no
+        refusal can name, which puts every byte back and raises it (#1173).
+
         `step` is the refusal's own, not `self.step`, which names the git
         act a `CommandFailed` is reported under.
         """
         try:
             yield
         except OSError as exc:
+            if isinstance(exc, BrokenPipeError):
+                raise
             name = exc.filename
             at = (f" at {self._name(Path(os.fsdecode(name)))}"
                   if isinstance(name, (str, bytes, os.PathLike)) else "")
@@ -5392,6 +5528,30 @@ def cmd_apply(args) -> int:
         upstream.close()
 
 
+def _flush_stdout() -> None:
+    """Flush stdout before a failure is written to stderr, and let a flush
+    that fails go (#1218).
+
+    THE FLUSH KEEPS A MERGED LOG IN ORDER. Piped, stdout is block-buffered
+    and stderr is not, so without it a log that merges the two (`> log
+    2>&1`) shows the refusal above the `copied` and `committed` lines it is
+    about.
+
+    A STDOUT NOBODY READS MUST NOT COST THE REPORT. Into a pipe whose reader
+    has gone, as `apply --yes | head -1` leaves it once `head` has its line,
+    the flush raises `BrokenPipeError`. Raised bare in `_rolled_back` it
+    went over the REFUSED line and the ROLLED BACK list, and in
+    `landing_failed` over the step that failed and the sentence that the
+    commit stands: the tree was put back, or the commit kept, and stderr
+    said neither. The error is let go, because the report on stderr is what
+    the person needs. The bytes stay buffered, and the interpreter tries
+    them once more at exit and says so itself, with its exit 120.
+    `adopt-project.py`'s `_flush_stdout` is the same guard, for the same
+    reason (#171)."""
+    with contextlib.suppress(OSError):
+        sys.stdout.flush()
+
+
 def _rolled_back(exc: Exception, ledger: Rollback) -> int:
     """`apply`'s one failure arm: undo what `ledger` holds, then refuse,
     saying which step failed and what was put back (#202).
@@ -5413,8 +5573,9 @@ def _rolled_back(exc: Exception, ledger: Rollback) -> int:
     if undone is not None:
         # The `copied` / `re-pinned` lines first, then the refusal: a log that
         # merged the two streams would otherwise show the rollback before the
-        # writes it rolled back.
-        sys.stdout.flush()
+        # writes it rolled back. A stdout nobody reads takes nothing, and the
+        # refusal still reaches stderr (`_flush_stdout`, #1218).
+        _flush_stdout()
     if isinstance(exc, Refusal):
         if undone is None:
             raise exc
@@ -5447,13 +5608,13 @@ def _roll_back_before_raising(ledger: Rollback) -> None:
     as it always was.
 
     STDOUT IS FLUSHED FIRST, for `_rolled_back`'s reason, and a flush that
-    fails is let go: the error this answers may be stdout's own, a pipe
-    nobody reads, and what was put back must still reach stderr."""
+    fails is let go (`_flush_stdout`): the error this answers may be
+    stdout's own, a pipe nobody reads, and what was put back must still
+    reach stderr."""
     undone = ledger.undo()
     if undone is None:
         return
-    with contextlib.suppress(OSError):
-        sys.stdout.flush()
+    _flush_stdout()
     print(undone, file=sys.stderr)
 
 
@@ -5494,7 +5655,10 @@ def landing_failed(root: Path, args, exc: CommandFailed, act: str,
     branch origin lacks.
 
     STDOUT IS FLUSHED FIRST, so a combined log reads in the order things
-    happened: the commit and the push above the refusal, not below it.
+    happened: the commit and the push above the refusal, not below it. A
+    flush into a pipe nobody reads is let go (`_flush_stdout`, #1218), so
+    the step that failed and the commit that stands still reach stderr; the
+    NEXT line is stdout's, and goes wherever stdout goes.
     """
     branch = args.branch
     head = (_git_answer(root, ["rev-parse", "HEAD"]) or "").strip()
@@ -5502,7 +5666,7 @@ def landing_failed(root: Path, args, exc: CommandFailed, act: str,
                                   "--points-at", "HEAD", "refs/remotes/origin/"])
                or "").splitlines()
     pushed = bool(head) and f"refs/remotes/origin/{branch}" in at_head
-    sys.stdout.flush()
+    _flush_stdout()
     print(exc.loudly(act), file=sys.stderr)
     left = ("its pull request: the NEXT line opens it" if pushed
             else "the push and the pull request: the NEXT line makes both")
