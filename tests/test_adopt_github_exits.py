@@ -48,6 +48,7 @@ from __future__ import annotations
 
 import importlib.util
 import os
+import re
 import shlex
 import shutil
 import stat
@@ -449,7 +450,15 @@ def test_each_exit_after_the_push_is_exit_2_with_a_command_to_finish_by_hand(
     assert VERIFIED in result.stdout, result.stdout
     assert (f"  pull request https://github.com/{ORG}/{NORTHWIND}/pull/1"
             in result.stdout) is opened, result.stdout
-    assert "  split " in result.stdout, result.stdout
+    # The split line names the assembly as GitHub has it, the url the
+    # split is pushed to, and not the source's own path (#1195).
+    split = [line for line in result.stdout.split("\n")
+             if line.startswith("  split ")]
+    assert len(split) == 1, result.stdout
+    assert re.fullmatch(
+        rf"  split [0-9a-f]{{12}} on {SPLIT_BRANCH} -> "
+        + re.escape(f"https://github.com/{ORG}/{NORTHWIND}.git"),
+        split[0]), split
     assert NOT_BY_HAND not in result.stderr, result.stderr
     # The topic is tried BEFORE the pull request (#481), so a refused pull
     # request no longer leaves it unset: the stub lets it through, and it is
