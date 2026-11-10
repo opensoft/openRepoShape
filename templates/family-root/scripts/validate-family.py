@@ -646,8 +646,14 @@ def _checked_out(checkout: Path, path: str) -> bool:
 # are separate templates, and this file is a pinned copy a holder re-copies
 # one row at a time (#610's skew rule). `tests/test_validate_family_
 # unreadable.py` holds `_member_git_dir` to the gate's `_leg_git_dir` over
-# every shape of `gitdir: ` line the gate's rows write. A `HEAD` file itself
-# at mode 000 is not asked here, since the gate does not ask it either.
+# every shape of `gitdir: ` line the gate's rows write, and holds the open
+# of a member's `HEAD` to the gate's open of a leg's.
+#
+# A `HEAD` FILE ITSELF AT MODE 000 STATS (#1256), so the `stat` of `HEAD`
+# passed it to git, which could not read it: the run ended
+# `member-commit-unresolvable`, with a fetch that cannot help. It is opened
+# as the gate opens a leg's (#1222), and one this user cannot open is
+# `member-unreadable`, naming that `HEAD`.
 
 def _gitfile_opens(path: Path) -> bool:
     """Whether a member's `.git` that is a regular file, a gitfile, can be
@@ -656,7 +662,11 @@ def _gitfile_opens(path: Path) -> bool:
     `OSError` of an open the operating system REFUSED raised, and True for
     a `.git` that is no regular file, a checkout's own directory, which git
     reads itself. Only a regular file is opened, since the open of a FIFO
-    waits for a writer."""
+    waits for a writer.
+
+    A MEMBER'S GIT DIRECTORY'S `HEAD` IS ASKED THE SAME WAY, for the same
+    reason (#1256), as the gate asks a leg's (#1222): see
+    `_refuse_an_unreadable_git_dir`."""
     if not _is_a(path, stat.S_ISREG):
         return True
     try:
@@ -706,7 +716,18 @@ def _refuse_an_unreadable_git_dir(checkout: Path, path: str) -> None:
     checkout's own directory, `.git/modules/<path>` for the one an absorbed
     member's gitfile names, and whole where it is outside the holder. A git
     directory with no `HEAD`, or a gitfile that names none, is left to git,
-    which answers for it as it always did."""
+    which answers for it as it always did.
+
+    A `HEAD` THIS USER CANNOT OPEN STATS (#1256, as #1222 found of a leg's),
+    so a `HEAD` at mode 000 passed, and git, which could not read it, ended
+    the run in `member-commit-unresolvable`, which says the pinned commit
+    is not in that member's object store and prescribes a fetch. A `HEAD`
+    that is there is opened as a gitfile is (`_gitfile_opens`), as the
+    gate opens a leg's: only where it is a regular file, since the open of
+    a FIFO waits for a writer, and an open that finds nothing is a git
+    directory with no `HEAD`. One this user cannot open is named,
+    `.git/modules/<path>/HEAD` or `<path>/.git/HEAD`, with the same
+    remedy."""
     dotgit = checkout / ".git"
     named = f"{path}/.git"
     try:
@@ -717,9 +738,14 @@ def _refuse_an_unreadable_git_dir(checkout: Path, path: str) -> None:
             found = Path(os.path.normpath(gitdir))
             try:
                 named = found.relative_to(holder).as_posix()
+                named_head = f"{named}/HEAD"
             except ValueError:
                 named = str(found)
-            _is_a(gitdir / "HEAD", _any_kind)
+                named_head = str(found / "HEAD")
+            head = gitdir / "HEAD"
+            if _is_a(head, _any_kind):
+                named = named_head
+                _gitfile_opens(head)
     except OSError as exc:
         raise _unreadable(MEMBER_UNREADABLE, named, exc) from exc
 
@@ -1724,9 +1750,10 @@ def _check_member_tree(member: Path, pin: dict, path: str, commit: str,
     that is there. So is a `.git` gitfile this user cannot open
     (`_gitfile_read`, #1221), and a git directory this user cannot search,
     the `.git` itself or the one a gitfile names
-    (`_refuse_an_unreadable_git_dir`, #1221): each passed the `stat` and
-    reached git, and the run ended `member-commit-unresolvable`, which says
-    the pinned commit is missing and prescribes a fetch.
+    (`_refuse_an_unreadable_git_dir`, #1221), or whose `HEAD` it cannot
+    open (#1256): each passed the `stat` and reached git, and the run ended
+    `member-commit-unresolvable`, which says the pinned commit is missing
+    and prescribes a fetch.
 
     The pinned commit's lookup and the digest are read inside `_git_runs`,
     and nothing else here is (#928). All of this ran inside one, the `stat`
