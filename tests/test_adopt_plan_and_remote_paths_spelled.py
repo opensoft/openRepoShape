@@ -53,6 +53,15 @@ now spells the remote and work directories, and `NEXT:`'s clone command,
 before which a NOTE now says when the path in it holds a character a
 terminal does not show as itself.
 
+WITHOUT `git filter-repo` (#1286). `execute` asks for the tool
+(`_require_filter_repo`) once it has read the plan's keys, its names, `org:`
+and `id:`, made the work directory and opened the source, and before it
+compares the plan with its source; `check` never asks. So an `execute` row
+refused after that is `filter-repo-missing` on a machine without the tool.
+`needs_filter_repo` skips those rows, as each row's `reaches_filter_repo`
+says, and the rest run there. A test holds that to the tool, which it hides
+from the child on any machine.
+
 THE TEST SOURCE IS ASCII: every character that is not printable is written as
 an escape.
 """
@@ -268,12 +277,15 @@ class Row(NamedTuple):
     whether `execute` runs under `--local-remote-dir` (GitHub's own rows are
     refused before anything is asked of `gh`), and for each command that
     reaches it the exit and the lines it says, from the path as `_shown`
-    writes it."""
+    writes it. `reaches_filter_repo`: whether `execute` refuses it only
+    after `_require_filter_repo` has asked for `git filter-repo`, and so
+    refuses it `filter-repo-missing` on a machine without the tool."""
     name: str
     source: str
     edit: str
     local: bool
     says: dict[str, tuple[int, Callable[[str], list[Line]]]]
+    reaches_filter_repo: bool = False
 
 
 def in_a_finding(shown: str) -> list[Line]:
@@ -306,17 +318,24 @@ NO_SOURCE = "`source:` names neither a local path nor a repository"
 #: `org:` one character past GitHub's 39, cut in the middle as a refusal
 #: cuts a long name.
 LONG_ORG = "`org:` is oooooooooooo...oooooooooooo, 40 characters"
+#: `reaches_filter_repo`: `execute` refuses the plan for another repository
+#: in `_against_its_source`, a name, `org:` or topic GitHub or a disk will
+#: not hold in `_repository_urls`, and a finding of `check`'s in
+#: `_refuse_what_check_finds` or `_refuse_a_branch_in_the_split_branchs_way`,
+#: each after `_require_filter_repo`. Every other row is refused before it.
 ROWS = [
     Row("mistyped-plan", "plain", "mistyped", False, {
         "check": (1, in_a_finding),
         "execute": (2, refused_as_check_prints("plan-bad-legs"))}),
     Row("uncovered-plan", "plain", "uncovered", True, {
         "check": (1, in_a_finding),
-        "execute": (2, refused_as_check_prints("plan-uncovered"))}),
+        "execute": (2, refused_as_check_prints("plan-uncovered"))},
+        reaches_filter_repo=True),
     Row("split-branch-taken", "taken", "unchanged", True, {
         "check": (1, in_a_finding),
         "execute": (2, lambda shown: [is_line(
-            f"REFUSED plan-split-branch-taken: 1 finding(s) in {shown}:")])}),
+            f"REFUSED plan-split-branch-taken: 1 finding(s) in {shown}:")])},
+        reaches_filter_repo=True),
     Row("plan-wrong-kind", "plain", "wrong-kind", False, {
         "check": (2, a_refusal_naming_the_plan("plan-wrong-kind", KIND)),
         "execute": (2, a_refusal_naming_the_plan("plan-wrong-kind", KIND))}),
@@ -363,33 +382,47 @@ ROWS = [
         "check": (1, a_finding_naming_the_plan(
             "adopt-bad-project-name", "`legs.assembly` is 'NUL'")),
         "execute": (2, a_refusal_naming_the_plan(
-            "adopt-bad-project-name", "`legs.assembly` is 'NUL'"))}),
+            "adopt-bad-project-name", "`legs.assembly` is 'NUL'"))},
+        reaches_filter_repo=True),
     Row("org-with-two-hyphens", "plain", "double-hyphen-org", False, {
         "check": (1, a_finding_naming_the_plan(
             "adopt-bad-org", "`org:` is 'a--b'")),
         "execute": (2, a_refusal_naming_the_plan(
-            "adopt-bad-org", "`org:` is 'a--b'"))}),
+            "adopt-bad-org", "`org:` is 'a--b'"))},
+        reaches_filter_repo=True),
     # The other refusal of the same `org:` sentence, asked first (#1195).
     Row("org-too-long", "plain", "long-org", False, {
         "check": (1, a_finding_naming_the_plan("adopt-org-too-long",
                                                LONG_ORG)),
         "execute": (2, a_refusal_naming_the_plan("adopt-org-too-long",
-                                                 LONG_ORG))}),
+                                                 LONG_ORG))},
+        reaches_filter_repo=True),
     Row("topic-too-long", "plain", "long-id", False, {
         "check": (1, a_finding_naming_the_plan(
             "adopt-topic-too-long", "`id:` is aaaaaaaaaaaa...aaaaaaaaaaaa, "
                                     "40 characters")),
         "execute": (2, a_refusal_naming_the_plan(
             "adopt-topic-too-long", "`id:` is aaaaaaaaaaaa...aaaaaaaaaaaa, "
-                                    "40 characters"))}),
+                                    "40 characters"))},
+        reaches_filter_repo=True),
     Row("plan-not-the-source", "github", "another-repository", False, {
         "check": (1, in_a_finding),
         "execute": (2, a_refusal_naming_the_plan(
             "plan-not-the-source", "the plan's `org: testorg` with its "
                                    "`legs.assembly: Other` names "
-                                   "testorg/Other"))}),
+                                   "testorg/Other"))},
+        reaches_filter_repo=True),
 ]
-CASES = [pytest.param(row, command, id=f"{row.name}-{command}")
+
+
+def guarded(row: Row, command: str) -> tuple:
+    """`needs_filter_repo` for an `execute` row that reaches the tool."""
+    return ((needs_filter_repo,)
+            if command == "execute" and row.reaches_filter_repo else ())
+
+
+CASES = [pytest.param(row, command, id=f"{row.name}-{command}",
+                      marks=guarded(row, command))
          for row in ROWS for command in row.says]
 
 
@@ -412,6 +445,30 @@ def assert_the_lines(stream: str, wanted: list[Line]) -> None:
         assert found, f"no line {how} {text!r} in\n{stream}"
 
 
+def run_the_row(request, tmp_path: Path, row: Row, command: str, path: Path,
+                over: dict | None = None) -> tuple[int, str, str]:
+    """`command` over the row's plan, written at `path`: `execute` with
+    `--yes` and a work directory, and under `--local-remote-dir` where the
+    row says so. `over` as `run_adopt` takes it."""
+    planned = request.getfixturevalue(row.source)
+    path.write_bytes(os.fsencode(EDITS[row.edit](planned.text,
+                                                 planned.source)))
+    arguments = [command, "--plan", str(path)]
+    if command == "execute":
+        arguments += ["--yes", "--work-dir", str(tmp_path / "work")]
+    if row.local and command == "execute":
+        arguments += ["--local-remote-dir", str(tmp_path / "remotes")]
+    return run_adopt(*arguments, over=over)
+
+
+def assert_the_row_says(row: Row, command: str, shown: str, code: int,
+                        stdout: str, stderr: str) -> None:
+    exit_status, says = row.says[command]
+    assert code == exit_status, stdout + stderr
+    assert "Traceback" not in stderr, stderr
+    assert_the_lines(stderr, says(shown))
+
+
 @pytest.mark.parametrize("typed, spelled", CHARACTERS)
 @pytest.mark.parametrize("row, command", CASES)
 def test_the_plan_is_named_as_a_path_is(request, tmp_path, row, command,
@@ -421,22 +478,64 @@ def test_the_plan_is_named_as_a_path_is(request, tmp_path, row, command,
     its escape or its byte raw, or its line feed splitting the line. Now it
     is the one line `_shown` writes, between backticks."""
     skip_where_cannot_carry(typed, tmp_path)
-    planned = request.getfixturevalue(row.source)
     path, shown = where_the_plan_is(tmp_path, typed, spelled)
-    path.write_bytes(os.fsencode(EDITS[row.edit](planned.text,
-                                                 planned.source)))
-    arguments = [command, "--plan", str(path)]
-    if command == "execute":
-        arguments += ["--yes", "--work-dir", str(tmp_path / "work")]
-    if row.local and command == "execute":
-        arguments += ["--local-remote-dir", str(tmp_path / "remotes")]
-    code, stdout, stderr = run_adopt(*arguments)
-    exit_status, says = row.says[command]
-    assert code == exit_status, stdout + stderr
-    assert "Traceback" not in stderr, stderr
-    assert_the_lines(stderr, says(shown))
+    code, stdout, stderr = run_the_row(request, tmp_path, row, command, path)
+    assert_the_row_says(row, command, shown, code, stdout, stderr)
     if typed not in ("", "\n"):
         assert typed not in stdout + stderr, stdout + stderr
+
+
+@pytest.fixture(scope="module")
+def no_filter_repo(tmp_path_factory) -> dict:
+    """`run_adopt`'s `over` for a child that finds no `git filter-repo`,
+    whether or not this machine has one: PATH less each directory that holds
+    a `git-filter-repo`, and, where that took `git` too, a directory of its
+    own holding a link to it. Skipped where git still finds the tool, in its
+    own exec path, which no PATH hides: `_require_filter_repo` asks
+    `git filter-repo --version` too."""
+    kept = [entry for entry in os.environ.get("PATH", "").split(os.pathsep)
+            if shutil.which("git-filter-repo", path=entry) is None]
+    if shutil.which("git", path=os.pathsep.join(kept)) is None:
+        alone = tmp_path_factory.mktemp("git-alone")
+        (alone / "git").symlink_to(shutil.which("git"))
+        kept.append(os.fspath(alone))
+    path = os.pathsep.join(kept)
+    assert shutil.which("git-filter-repo", path=path) is None, path
+    probe = subprocess.run(["git", "filter-repo", "--version"],
+                           capture_output=True, env={**os.environ,
+                                                     "PATH": path},
+                           stdin=subprocess.DEVNULL, check=False)
+    if probe.returncode == 0:
+        pytest.skip("git finds git-filter-repo in its own exec path, which "
+                    "no PATH hides")
+    return {"PATH": path}
+
+
+#: Each of `CASES` with its marks taken off, so that it runs wherever this
+#: file runs, and whether `needs_filter_repo` guards it there.
+GUARDS = [pytest.param(*case.values, needs_filter_repo in case.marks,
+                       id=case.id) for case in CASES]
+
+
+@pytest.mark.parametrize("row, command, is_guarded", GUARDS)
+def test_the_guard_skips_the_rows_that_reach_filter_repo_and_no_other(
+        request, tmp_path, no_filter_repo, row, command, is_guarded):
+    """On a machine without `git filter-repo` each `execute` row above that
+    reaches `_require_filter_repo` failed `filter-repo-missing`, with no
+    guard (#1286). A guard on every `execute` row would skip the eight
+    `execute` refuses before it asks for the tool, and one on too few leaves
+    a row failing there. So each row runs here once, at a plain path, with
+    the tool hidden from the child: one the guard skips is refused
+    `filter-repo-missing`, and every other says what it says with the
+    tool."""
+    path, shown = where_the_plan_is(tmp_path, "", "")
+    code, stdout, stderr = run_the_row(request, tmp_path, row, command, path,
+                                       over=no_filter_repo)
+    if is_guarded:
+        assert code == 2, stdout + stderr
+        assert_the_lines(stderr, [begins("REFUSED filter-repo-missing: ")])
+    else:
+        assert_the_row_says(row, command, shown, code, stdout, stderr)
 
 
 #: A `--plan` whose every character is printable: `typed`, given whole
