@@ -55,8 +55,9 @@ from pathlib import Path
 
 import pytest
 
-from conftest import (IDENTITY_CONFIG, git, run_script,
-                      skip_where_a_name_cannot_be_not_utf_8)
+from conftest import (IDENTITY_CONFIG, PRINTED_AS_ITSELF, git, run_script,
+                      skip_where_a_name_cannot_be_not_utf_8,
+                      skip_where_the_locale_does_not_spell_it_as_utf_8)
 from test_bootstrap_after_bump import (  # noqa: F401
     ADDED, EDITED, MAIN, NOTHING_ELSE, bootstrapped, bumped,
     failing_post_checkout, head_ref, left_branch, moved_and_refused, rev,
@@ -528,6 +529,8 @@ def test_a_branch_made_under_a_failing_hook_is_said_to_be_made(
     result = run_script(root / "scripts" / "bootstrap.py", "--skip-validators",
                         cwd=root, env=failing_post_checkout(tmp_path))
     assert result.returncode == 0, result.stderr + result.stdout
+    skip_where_the_locale_does_not_spell_it_as_utf_8("\u2014",
+                                                     PRINTED_AS_ITSELF)
     assert (f"  [spec] spec: branch main created at {pin[:12]} — at the "
             "pin\n" + left + "          checked out, and then git said:\n"
             "          post-checkout hook failed\n") in result.stdout, (

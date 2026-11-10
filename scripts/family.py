@@ -307,8 +307,10 @@ HEADS_PREFIX = "refs/heads/"
 #: holder only through `update-shape.py`. `tests/test_family_member_name.py`
 #: reads every spelling and fails when they differ, so it is one rule kept in
 #: three places and never three rules. Change one and the test names the rest.
+#: It ends in `\Z` with them (#1139). `--member` is stripped before it is
+#: asked, so no line feed reached this copy's `$`.
 MEMBER_RE = re.compile(
-    r"^[A-Za-z0-9][A-Za-z0-9_.-]*/[A-Za-z0-9][A-Za-z0-9_.-]*$")
+    r"^[A-Za-z0-9][A-Za-z0-9_.-]*/[A-Za-z0-9][A-Za-z0-9_.-]*\Z")
 
 #: The suffix a LEG's name carries after its assembly root's — the
 #: `(?:-spec|-code)?` that `contracts/repository-naming.yaml`'s leg pattern
@@ -1128,7 +1130,11 @@ def _read_member_project(path: Path, project: str, repository: str,
         raise Refusal("member-manifest-unreadable",
                       f"{repository}: project.yaml is not a mapping")
     project_id = str(manifest.get("id") or "")
-    if not PROJECT_ID_RE.match(project_id):
+    # `fullmatch`, NOT `match` (#1139): `$` also matches just before a
+    # trailing line feed, so a member whose `project.yaml` read `id:
+    # "irqs\n"` was mounted, and its row recorded that id, which the
+    # holder's gate compares with the same manifest and passed.
+    if not PROJECT_ID_RE.fullmatch(project_id):
         raise Refusal(
             "member-bad-id",
             f"{repository}: project.yaml `id:` is {manifest.get('id')!r}, "
@@ -2276,15 +2282,95 @@ def _family_script() -> str:
         return str(here)
 
 
+def _family_line(verb: str, holder: Path, *words: str) -> str:
+    """`<python> <this file> <verb> --family-root <holder> <words>`: ONE line
+    of this file's own, as `init`'s NEXT STEPS and every remedy that names a
+    verb print it, each value spelled by `shell_quoted` for the reader's
+    shell (#486, #1127).
+
+    THE ONE SPELLING OF THESE LINES (#1127, RV1117's N2 and N4 on #1117).
+    `_add_command` printed the interpreter and this file's path from where
+    the person stands (`_family_script`); the remedies that named `bump`,
+    `remove` and `add` said a bare `family.py`, which runs only from
+    `scripts/` and only where the file is executable, and printed a row's
+    `project:` raw, two words where it held a space. A placeholder
+    (`<commit>`, `<org>/...`) is the caller's to add after the line, bare:
+    quoted, it would read as a value.
+
+    THE VERB IS A STRING AT EVERY CALL, and
+    `tests/test_readme_windows_quoting_sentence.py` reads each one: README
+    lists the verbs whose lines are quoted for the shell they are printed
+    in, and a call naming a verb it does not list fails there."""
+    return " ".join([PYTHON, shell_quoted(_family_script()), verb,
+                     "--family-root", shell_quoted(holder),
+                     *(shell_quoted(word) for word in words)])
+
+
+def _cited(command: str) -> str:
+    """`command` between backticks, as a remedy's prose names a command, or
+    bare where the command holds a backtick of its own (#1127, RV1117's
+    N6): a holder under a folder named with one closed the quotation inside
+    its path, so the text between the marks was half the command. Every
+    shell reads the line the same either way."""
+    return command if "`" in command else f"`{command}`"
+
+
+def _off_the_tracking_branch(family: "Family", refuses: str,
+                             suggested: str) -> str:
+    """The clause a remedy puts before the line of this file it names, where
+    the refusal is said before `_checked_branch` asks the holder's branch
+    (#1127, RV1117's N1): `bump`'s `member-unknown`, and `add`'s
+    `member-already-present`. On the tracking branch, where a fresh clone
+    stands, the line that followed was refused `family-on-tracking-branch`.
+    So the clause says where the line runs and names the `switch -c` that
+    makes a branch, as the holder's `validate-family.py` does before the
+    `remove` its `member-duplicate-id` prints; the remedy ends with
+    `BRANCH_LEFT` (#607). In words true on any branch: the refusal is said
+    before the branch is read, and reading it here could refuse in its
+    place. `refuses` names the verb or verbs the branch is refused by and
+    says so: "`add` refuses", or "`bump` and `remove` refuse"."""
+    switch = _cited(_switch_command(family.root, suggested))
+    return ("on a branch other than the holder's tracking branch, which "
+            f"{refuses} ({switch} makes one), ")
+
+
 def _add_command(holder: Path, org: str) -> str:
     """The `add` that grows the holder at `holder`, as `init` prints it:
     ONE line, so it pastes into PowerShell too, with this file's path, the
     holder's and the organisation each spelled by `shell_quoted` for the
-    reader's shell (#486). A holder under `my work/` used to print
-    `--family-root .../my work/Orbit`, two arguments to argparse.
-    `<Project>` is left for the person to fill in."""
-    return (f"{PYTHON} {shell_quoted(_family_script())} add --family-root "
-            f"{shell_quoted(holder)} --member {shell_quoted(org)}/<Project>")
+    reader's shell (#486), by `_family_line`, as every remedy's line is
+    (#1127). A holder under `my work/` used to print `--family-root .../my
+    work/Orbit`, two arguments to argparse. `<Project>` is left for the
+    person to fill in."""
+    return (f"{_family_line('add', holder)} --member "
+            f"{shell_quoted(org)}/<Project>")
+
+
+def _unknown_members_repository(family: "Family", typed: str,
+                                project: str) -> str:
+    """The `--member` value of the `add` that `bump`'s `member-unknown`
+    names: `<org>/<Project>` with the owner filled in where it is known
+    (#1127, RV1117's N3), as ONE word for the reader's shell.
+
+    THE OWNER, IN THIS ORDER: the one the person typed, where `bump
+    --member` was given as `<org>/<Project>`; else `family.yaml`'s `org:`,
+    the organisation `init` made the holder in and its NEXT STEPS' `add`
+    names; else the blank `<org>`, which is left only where neither is
+    there. The blank pasted unfilled is a redirection in every shell, not a
+    value: `family.py` never runs, and where a file named `org` is in the
+    working directory the shell tries to create the path after it. A member
+    may live in another organisation than the family's (`MEMBER_RE`), so
+    the family's is the likeliest owner, not a certain one; an `add` of a
+    repository that is not there refuses before it touches the holder.
+    Either owner is used only where `<owner>/<project>` is a `--member`
+    `add` takes."""
+    typed = typed.strip()
+    org = family.data.get("org")
+    for owner in (typed.rpartition("/")[0], org):
+        if isinstance(owner, str) and MEMBER_RE.fullmatch(
+                f"{owner}/{project}"):
+            return shell_quoted(f"{owner}/{project}")
+    return f"<org>/{shell_quoted(project)}"
 
 
 def _standard_checkout(start: Path) -> Path | None:
@@ -6454,17 +6540,25 @@ def _checked_add_target(family: Family, repository: str, project: str,
     """
     held = family.holding(repository, project)
     if held is not None:
-        # THE `bump` IT NAMES RUNS AS PRINTED (#927): `bump` requires
-        # `--family-root`, so the line names this holder, spelled by
-        # `shell_quoted` as `_add_command`'s is.
+        # THE `bump` AND THE `remove` IT NAMES RUN AS PRINTED (#927, #1127),
+        # each a `_family_line` with this holder's `--family-root` and the
+        # row's own name, quoted. Said before `_checked_branch`, so a person
+        # on the tracking branch is told the branch both verbs need first.
+        name = str(held.get("project"))
+        suggested = _suggested_branch("bump", str(held.get("id") or name))
         raise Refusal(
             "member-already-present",
             f"{project} is already a member of {family.data.get('name')}: "
             f"the row {held.get('project')} pins {held.get('repository')}",
-            "Remediation: `family.py bump --family-root "
-            f"{shell_quoted(family.root)} --member {held.get('project')} "
-            "--to <commit>` moves an existing member; `remove` takes it "
-            "out. Adding it twice is not a way to move it.")
+            "Remediation: "
+            + _off_the_tracking_branch(family, "`bump` and `remove` refuse",
+                                       suggested)
+            + _cited(_family_line("bump", family.root, "--member", name)
+                     + " --to <commit>")
+            + " moves an existing member and "
+            + _cited(_family_line("remove", family.root, "--member", name))
+            + " takes it out. Adding it twice is not a way to move it. "
+            + BRANCH_LEFT)
     # Everything the mount's `--force` would otherwise let past git, but the
     # cached store, which is asked below (#242).
     _checked_mount_path(family.root, project, path,
@@ -6581,8 +6675,10 @@ def _checked_member_id(family: Family, repository: str, project: str,
     row = _row_recording(family, project_id)
     if row is not None:
         name = row["project"]
-        # THE `bump` IT NAMES RUNS AS PRINTED (#927), with this holder's
-        # `--family-root`, as `member-already-present`'s does.
+        # THE `remove` AND THE `bump` IT NAMES RUN AS PRINTED (#1005, #927),
+        # each a `_family_line` with this holder's `--family-root`, which
+        # both verbs require, and the row's own name, quoted (#1127). A real
+        # `add` asks this after `_checked_branch`, so no branch is named.
         raise Refusal(
             "member-duplicate-id",
             f"{project} is already a member of {family.data.get('name')} "
@@ -6592,13 +6688,14 @@ def _checked_member_id(family: Family, repository: str, project: str,
             "project twice, which `validate-family.py` refuses",
             "Remediation: a family pins each project once. If "
             f"{repository} is {row.get('repository')} renamed at the forge, "
-            f"`family.py remove --member {name}` takes the old row out and "
-            "this `add` then pins it under the new name; `family.py bump "
-            f"--family-root {shell_quoted(family.root)} --member {name} "
-            "--to <commit>` moves the row that is there instead. Two "
-            "projects that record one id are a fault in one of their "
-            "`project.yaml` files, mended in that project, not in the "
-            "family.")
+            + _cited(_family_line("remove", family.root, "--member", name))
+            + " takes the old row out and this `add` then pins it under the "
+            "new name; "
+            + _cited(_family_line("bump", family.root, "--member", name)
+                     + " --to <commit>")
+            + " moves the row that is there instead. Two projects that "
+            "record one id are a fault in one of their `project.yaml` files, "
+            "mended in that project, not in the family.")
 
 
 def _probe_member(url: str, protocol: list[str], repository: str,
@@ -7642,9 +7739,24 @@ def _store_git_uses(root: Path, path: str) -> tuple[str, Path] | None:
 #: `PinRollback._work_tree_by_hand` (which types the store's update for it,
 #: and calls no store-less checkout) route on this code; the only refusal
 #: either can meet with it is `_unrestorable`'s, since `_storeless` reads
-#: nothing else of the disk. `tests/test_family_py_unreadable.py` pins the
-#: two to one value.
+#: nothing else of the disk but the `.gitmodules` that names the store,
+#: whose own code is `GITMODULES_UNREAD_CODE`.
+#: `tests/test_family_py_unreadable.py` pins the two to one value.
 STORE_UNREADABLE = "member-unreadable"
+#: The code `_gitmodules_on_disk` raises for a work tree's `.gitmodules`
+#: this user may not read (#1110): the code `add` already gives the same
+#: file where git cannot read it (`_submodule_paths`), so one file has one
+#: name, and the cure follows the cause. A CODE, NOT `GITMODULES_UNREADABLE`,
+#: which is the remediation `_submodule_paths` gives a file git cannot parse.
+GITMODULES_UNREAD_CODE = "gitmodules-unreadable"
+#: What the rollback's restore may meet where a path it must read cannot be
+#: read (#430, #1110): the store `git submodule update` checks the member
+#: out of, or the `.gitmodules` that tells git which store that is. Neither
+#: is a store that is gone. Once the cure is given, the checkout comes back
+#: from that store with no network, so `PinRollback` makes the mount again,
+#: empty, and types the update after the cure; it never says the checkout
+#: comes back only from its remote.
+READABLE_ONCE_CURED = (STORE_UNREADABLE, GITMODULES_UNREAD_CODE)
 
 
 def _unrestorable(root: Path, path: str, commit: str | None) -> str | None:
@@ -8184,11 +8296,23 @@ class PinRollback:
         # without it: it would clone (#365). One this user may not read is
         # raised from here, named, and the commands typed by hand bring the
         # checkout back from it once it can be read (#430); the directory is
-        # made again first, as for a store that is gone.
+        # made again first, as for a store that is gone. So is a
+        # `.gitmodules` this user may not read, which names that store
+        # (#1110): it is no section gone.
         try:
             why = self._storeless()
         except Refusal as exc:
-            if exc.code == STORE_UNREADABLE and self._made_again_if_can():
+            if exc.code == GITMODULES_UNREAD_CODE:
+                # With its cure, as a store's detail carries its own: the
+                # sentence prints no remediation (r1164's NIT-1). Not
+                # "inside the holder": a link can lead out of it.
+                exc.detail += ": " + (
+                    "`chmod u+r` on it, and `chmod u+rx` on every directory "
+                    "above it, lets git read it"
+                    if isinstance(exc.__cause__, PermissionError)
+                    else OTHER_CURE)
+            if exc.code in READABLE_ONCE_CURED and \
+                    self._made_again_if_can():
                 exc.detail += f", and {self.path} was made again, empty"
             raise
         if why is not None:
@@ -8254,15 +8378,23 @@ class PinRollback:
         """The commands that put `name` back: its index entries, then its
         bytes from them where they are what the index held. Bytes git does
         not have — an edit nobody had staged — have no command, and the
-        sentence's `git status` shows them."""
+        sentence's `git status` shows them.
+
+        BYTES THIS USER MAY NOT READ ARE NOT TAKEN FOR THE RECORDED ONES
+        (#1110). A `pre-commit` hook that made `.gitmodules` unreadable (a
+        link into a folder at mode 000, or the file at 000) and refused left
+        the copy `git rm` wrote, the member's section gone, so the update
+        typed after the cure said `No url found for submodule path`. Typed
+        after the cure, the checkout from the index writes the recorded
+        bytes back, and where they were there already it writes the same.
+        """
         data, entries = self.files[name]
         typed = [_entries_by_hand(name, entries)]
         try:
             same = self._bytes(name) == data
         except OSError:
-            # Named by the step that met it (#430); the index entry is still
-            # this command's to type, and the bytes are `git status`'s.
-            return typed
+            # Named by the step that met it, with its cure (#430).
+            same = False
         if same:
             return typed
         if data is None:
@@ -8316,7 +8448,9 @@ class PinRollback:
         except Refusal as exc:
             # A store this user may not read is one the checkout comes back
             # from once it can (#430): its update is typed, after the cure.
-            storeless = exc.code != STORE_UNREADABLE
+            # So is one named by a `.gitmodules` this user may not read
+            # (#1110), which said "no section, so only from its remote".
+            storeless = exc.code not in READABLE_ONCE_CURED
         except CommandFailed:
             storeless = True
         if storeless:
@@ -8674,6 +8808,10 @@ def _checked_bumped_id(family: Family, row: dict, commit: str,
     if held is None:
         return
     repository = row.get("repository")
+    # THE `remove` IT NAMES RUNS AS PRINTED (#1005): `remove` requires
+    # `--family-root`, so the line is a `_family_line` naming this holder and
+    # the other row's own name, quoted, as every remedy's line is (#1127). A
+    # real `bump` asks this after `_checked_branch`, so no branch is named.
     raise Refusal(
         "member-duplicate-id",
         f"{repository} at {commit[:12]} is already a member of "
@@ -8684,10 +8822,12 @@ def _checked_bumped_id(family: Family, row: dict, commit: str,
         "Remediation: a family pins each project once. Pass `--to` a commit "
         f"of {repository} whose project.yaml records an id no other row "
         f"records. If {repository} and {held.get('repository')} are one "
-        f"project, `family.py remove --member {held['project']}` takes the "
-        "other row out first. Two projects that record one id are a fault in "
-        "one of their `project.yaml` files, mended in that project, not in "
-        "the family.")
+        "project, "
+        + _cited(_family_line("remove", family.root, "--member",
+                              held["project"]))
+        + " takes the other row out first. Two projects that record one id "
+        "are a fault in one of their `project.yaml` files, mended in that "
+        "project, not in the family.")
 
 
 def _head_oid(root: Path, path: str) -> str | None:
@@ -9370,11 +9510,21 @@ def cmd_bump(args) -> int:
     project = checked_value("--member", repo_basename(args.member))
     row = family.member(project)
     if row is None:
+        # THE `add` IT NAMES RUNS AS PRINTED (#1005): `add` requires
+        # `--family-root`, so the line is a `_family_line` naming this
+        # holder (#1127), with the member's owner where it is known
+        # (`_unknown_members_repository`). Said before `_checked_branch`, so
+        # a person on the tracking branch is told the branch `add` needs.
         raise Refusal(
             "member-unknown",
             f"{project} is not a member of {family.data.get('name')}",
-            "Remediation: `family.py add --member <org>/" + project
-            + "` puts it in the family first.")
+            "Remediation: "
+            + _off_the_tracking_branch(family, "`add` refuses",
+                                       _suggested_branch("add", project))
+            + _cited(_family_line("add", family.root) + " --member "
+                     + _unknown_members_repository(family, args.member,
+                                                   project))
+            + " puts it in the family first. " + BRANCH_LEFT)
     project = str(row["project"])
     commit = checked_value("--to", args.to).lower()
     if not COMMIT_RE.match(commit):
@@ -9499,6 +9649,57 @@ def _suspicious_name(name: str) -> bool:
     return not name or ".." in re.split(r"[/\\]", name)
 
 
+#: What `gitmodules-unreadable` says each verb reads the work tree's
+#: `.gitmodules` for, where `_gitmodules_on_disk` refuses it (#1110): `remove`
+#: through its two readers and `_stages_as`, `add` through `_stages_as`.
+GITMODULES_READ_FOR = {
+    "remove": (f"`remove` reads the work tree's {GITMODULES} before it writes "
+               "anything, for the section `git rm` takes out and the object "
+               "store the member would come back from, and its rollback "
+               "reads it again to bring the member back."),
+    "add": (f"`add` reads the work tree's {GITMODULES} before it writes "
+            "anything, to find out whether it is the copy the index holds: "
+            "`git submodule add` writes the member's section into it and "
+            "the commit takes all of it."),
+}
+
+
+def _gitmodules_on_disk(root: Path, verb: str = "remove") -> bool:
+    """Whether the work tree of `root` has a `.gitmodules` that is a file,
+    asked as `_is_a` asks for the two readers of it below and for
+    `_stages_as`, so one this user may not read is `gitmodules-unreadable`
+    (#1110), never one that is not there; its remedy says what `verb`
+    reads it for (`GITMODULES_READ_FOR`).
+
+    A `.gitmodules` THAT IS A LINK INTO A FOLDER THIS USER CANNOT SEARCH was
+    asked with `Path.is_file()`, which raised `PermissionError` on Python
+    3.12 and from 3.14 answers False. Measured: a `pre-commit` hook that
+    made it such a link and refused the commit ended `remove`'s rollback in
+    that traceback on 3.12, with the member's directory gone; on 3.14 the
+    rollback read no section, said the checkout came back only from its
+    remote, and typed no command for the object store it had. And with its
+    `stat` refused in a work tree whose copy git still reads as the index's
+    (in process), `remove --dry-run` said no section is removed, exit 0.
+
+    Nothing at the name is no file, as it always was. A `stat` the
+    operating system refuses, and a file whose `stat` it answers but that
+    this user may not open (`os.access`, as `_checked_mount_readable` asks a
+    store's `HEAD`: git could not read it either), are refused by name,
+    with the cure for the cause. The directories above it are not said to
+    be inside the holder: a link can lead out of it.
+    """
+    path = root / GITMODULES
+    try:
+        there = _is_a(path, stat.S_ISREG)
+        if there and not os.access(path, os.R_OK):
+            raise PermissionError(errno.EACCES, os.strerror(errno.EACCES),
+                                  str(path))
+    except OSError as exc:
+        raise _unreadable(GITMODULES_UNREAD_CODE, GITMODULES, exc,
+                          GITMODULES_READ_FOR[verb], where="") from exc
+    return there
+
+
 def _gitmodules_names(root: Path, path: str) -> tuple[str | None, list[str]]:
     """`(the name whose sections `git rm` drops for the gitlink at `path`,
     or None, every other name with a `path = <path>` line)` (#326).
@@ -9522,9 +9723,11 @@ def _gitmodules_names(root: Path, path: str) -> tuple[str | None, list[str]]:
     The file is read by `git config --list`, never by a parser of this
     tool's, as `add`'s `_submodule_paths` reads it; the rules are git's, as
     git 2.43 applies them and as the tests check them against a real
-    `remove` on every runner.
+    `remove` on every runner. A file this user may not read is refused,
+    `gitmodules-unreadable` (`_gitmodules_on_disk`, #1110), never read as
+    giving no section.
     """
-    if not (root / GITMODULES).is_file():
+    if not _gitmodules_on_disk(root):
         return None, []
     listed = _git_bytes(["config", "-z", "--file", GITMODULES, "--list"],
                         root)
@@ -9576,9 +9779,11 @@ def _sections_giving(root: Path, path: str
     the path and then moves on took the path out of git's lookup altogether,
     so `git rm` took out nothing and the member's own section stayed. Read
     where `git rm` reads, the work tree's file, by `git config --list`, as
-    `_gitmodules_names` reads it.
+    `_gitmodules_names` reads it, and refused where this user may not read
+    it (`_gitmodules_on_disk`, #1110), never read as giving the path to no
+    section.
     """
-    if not (root / GITMODULES).is_file():
+    if not _gitmodules_on_disk(root):
         return []
     listed = _git_bytes(["config", "-z", "--file", GITMODULES, "--list"],
                         root)
@@ -9616,12 +9821,22 @@ def _gitmodules_in_index(root: Path) -> list[tuple[str, str, int]]:
     return found
 
 
-def _stages_as(root: Path, blob: str) -> bool:
+def _stages_as(root: Path, blob: str, verb: str) -> bool:
     """Whether git would stage the work tree's `.gitmodules` as `blob`: a
     regular file, not a link, whose bytes `git hash-object` reads as that
     blob through the file's own attributes, which is how `git add` reads
-    them. Without `-w` it writes nothing."""
-    if not stat.S_ISREG(os.lstat(root / GITMODULES).st_mode):
+    them. Without `-w` it writes nothing.
+
+    A FILE THIS USER MAY NOT READ IS `gitmodules-unreadable` HERE TOO
+    (`_gitmodules_on_disk`, #1110), before `git hash-object` is asked. A
+    `.gitmodules` at mode 000 was refused by `remove` one of two ways, by
+    git's stat cache (r1164's SHOULD-2): where `git ls-files -m` had to read
+    the file, could not and listed it as modified, the refusal was `a git or
+    gh command failed`, quoting `git hash-object`; where git's cache spared
+    the read, `_gitmodules_names` named it `gitmodules-unreadable`. A link
+    is not regular, so it is `gitmodules-unstaged`'s first, as before."""
+    if not stat.S_ISREG(os.lstat(root / GITMODULES).st_mode) or \
+            not _gitmodules_on_disk(root, verb):
         return False
     hashed = _git_bytes(["hash-object", f"--path={GITMODULES}", "--",
                          GITMODULES], root)
@@ -9775,7 +9990,7 @@ def _checked_gitmodules_as_staged(root: Path, verb: str) -> None:
     # `add` cannot stage a skip-worktree `.gitmodules` at all; `remove`
     # commits a clean one on disk rightly, as it did before #407.
     if tag.upper() == "S" and (verb == "add" or not on_disk
-                               or not _stages_as(root, blob)):
+                               or not _stages_as(root, blob, verb)):
         raise Refusal(
             "gitmodules-sparse",
             f"the index marks {GITMODULES} skip-worktree, as a sparse "
@@ -9815,10 +10030,10 @@ def _checked_gitmodules_as_staged(root: Path, verb: str) -> None:
                 "holds: git lists it as modified, a change nobody has staged"
                 + (", though `git add` would stage the index's own content "
                    "from it: the difference may be its line endings alone"
-                   if _stages_as(root, blob) else ""))
+                   if _stages_as(root, blob, verb) else ""))
         remedy = keep_or_drop.format(
             stage=f"stage it first, `git add {GITMODULES}`")
-    elif tag.islower() and not _stages_as(root, blob):
+    elif tag.islower() and not _stages_as(root, blob, verb):
         said = (f"the work tree's {GITMODULES} is not the copy the index "
                 "holds, a change nobody has staged, and git does not list it "
                 "as modified: the index marks it assume-unchanged, so git "

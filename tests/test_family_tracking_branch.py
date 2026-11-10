@@ -42,8 +42,9 @@ import subprocess
 
 import pytest
 
-from conftest import (NOT_UTF_8_BRANCH_NAMED, REPO, git, held_by_git,
-                      on_a_branch_that_is_not_utf_8, run_script)
+from conftest import (A_NAME_HELD_AS_UTF_8, NOT_UTF_8_BRANCH_NAMED, REPO, git,
+                      held_by_git, on_a_branch_that_is_not_utf_8, run_script,
+                      skip_where_the_locale_does_not_spell_it_as_utf_8)
 #: The names no line may print raw, and how a line spells them (#766).
 from conftest import (SHOWN_NAMES, UNSAFE_NAMES, copied_under, named_as,
                       refusal_detail, spelt)
@@ -215,6 +216,8 @@ def test_a_branch_ending_in_a_no_break_space_is_pushed_as_itself(family,
     run, pushes that commit there and leaves `feat` alone."""
     holder = on_main
     name = "feat" + chr(0xA0)
+    skip_where_the_locale_does_not_spell_it_as_utf_8(name,
+                                                     A_NAME_HELD_AS_UTF_8)
     git("branch", "feat", cwd=holder)
     git("switch", "-q", "-c", name, cwd=holder)
 
