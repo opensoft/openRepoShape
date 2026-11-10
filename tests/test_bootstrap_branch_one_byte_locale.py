@@ -57,10 +57,10 @@ from pathlib import Path
 
 import pytest
 
-from conftest import REPO, git, git_answer_bytes
+from conftest import REPO, git, git_answer_bytes, load_without_bytecode
 from test_bootstrap_after_bump import failing_post_checkout
-from test_bootstrap_spelling import (DASH, bootstrap_of, edit,
-                                     needs_a_byte_name, run)
+from test_bootstrap_spelling import (ASSEMBLY_TEMPLATE, DASH, bootstrap_of,
+                                     edit, needs_a_byte_name, run)
 from test_stdout_encoding import child_environ
 
 sys.path.insert(0, str(REPO / "scripts"))
@@ -431,3 +431,45 @@ def test_a_leg_on_the_branch_with_no_commit_yet_is_not_said_to_leave_it(
                      created("code", printed, pin["code"])], lines
     assert on_the_branch(spec) == (b"refs/heads/" + raw + b"\n",
                                         pin["spec"])
+
+
+class LegacyWindowsCodePage:
+    """`os` as `bootstrap.py` reads it on Windows under
+    `PYTHONLEGACYWINDOWSFSENCODING=1`: `nt`, with `os.fsencode` and
+    `os.fsdecode` as `mbcs` with `replace`, `cp1252` standing in for the
+    code page, so a lone surrogate is written as the one byte `?`.
+    Everything else is this system's `os`. An emulation, as
+    `tests/test_bootstrap_pasteable_lines.py`'s `LegacyMbcsOs` is: Windows
+    is not run here."""
+
+    name = "nt"
+
+    @staticmethod
+    def fsencode(name: str) -> bytes:
+        return name.encode("cp1252", "replace")
+
+    @staticmethod
+    def fsdecode(raw: bytes) -> str:
+        return raw.decode("cp1252", "replace")
+
+    def __getattr__(self, attr: str):
+        return getattr(os, attr)
+
+
+def test_a_name_git_cannot_be_handed_is_compared_as_its_text(monkeypatch):
+    """On Windows under `PYTHONLEGACYWINDOWSFSENCODING=1` (emulated),
+    `_argument_fault` lets `tb\\udcffx` through, since `replace` writes
+    U+DCFF as `?`, one byte; but git is handed UTF-8 there
+    (`_handed_to_git`), which has no bytes for it. `_branch_ref` compares
+    HEAD's ref with the name's text, as every check did before #1283, and
+    as `_paste_word` keeps its text. At dfd69ff7 it raised
+    `UnicodeEncodeError` instead, out of step (a), after `create_at_pin`'s
+    `checkout -b` had run. A name git can be handed is still read back as
+    `_head_of` reads git's UTF-8 in that mode: `caf` U+00E9 as the code
+    page reads its two bytes."""
+    module = load_without_bytecode(ASSEMBLY_TEMPLATE,
+                                   "bootstrap_one_byte_locale")
+    monkeypatch.setattr(module, "os", LegacyWindowsCodePage())
+    assert module._argument_fault("tb\udcffx") is None
+    assert module._branch_ref("tb\udcffx") == "refs/heads/tb\udcffx"
+    assert module._branch_ref("caf\xe9") == "refs/heads/caf\xc3\xa9"

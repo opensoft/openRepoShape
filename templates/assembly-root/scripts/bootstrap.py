@@ -698,10 +698,14 @@ def _argument_fault(branch: str) -> str | None:
     that is not UTF-8 with U+DC80 to U+DCFF and `os.fsencode` writes each back
     as the single byte it stands for, so git is handed that byte, as it was
     before this check. Any other surrogate has no byte: `os.fsencode` raises,
-    or (`surrogatepass`, Windows) writes the three bytes of a sequence that
-    is not UTF-8 for ANY of them, so a lone surrogate is never handed to git
-    there either, where a `CreateProcess` would pass it on mangled. The answer
-    is `os.fsencode`'s own, so it is the system's and not a list kept here.
+    or (`surrogatepass`, Windows' default) writes the three bytes of a
+    sequence that is not UTF-8 for ANY of them, so a lone surrogate is never
+    handed to git there either, where a `CreateProcess` would pass it on
+    mangled. The answer is `os.fsencode`'s own, so it is the system's and not
+    a list kept here. Under `PYTHONLEGACYWINDOWSFSENCODING=1` it is `mbcs`'s
+    with `replace`, which writes ANY lone surrogate as the one byte `?`, so
+    there one is let through, as before this check, and `_branch_ref`, which
+    has no UTF-8 for it, compares HEAD's ref with the name's text.
 
     NOR IS A CHARACTER THAT DOES NOT PRINT, OR WHITE SPACE (#715), `UNSEEN`,
     which `validate-manifest.py` refuses in a branch too (`siblings.py` asks
@@ -864,9 +868,33 @@ def _head_of(sub: Path) -> tuple[str | None, str | None]:
 def _branch_ref(branch: str) -> str:
     """`refs/heads/<branch>` as `_head_of` reads that ref back from git: the
     bytes git is handed for it (`_handed_to_git`), decoded as `_head_of`
-    decodes HEAD's ref (#1283). Every check of whether HEAD is on the
-    tracking branch compares `_head_of`'s ref with this, never with the
-    manifest's text, which the lines go on printing (`spelled`).
+    decodes HEAD's ref (#1283). The eight checks of whether HEAD is on the
+    tracking branch compare `_head_of`'s ref with this, never with the
+    manifest's text, which the lines go on printing (`spelled`):
+    `_check_out`'s after `checkout`; `place_at_pin`'s `already` and its
+    `the leg was on` check; `fast_forward_to_pin`'s two, `merge --ff-only`
+    or `branch -f`; `_stays`'s; and `create_at_pin`'s after `checkout -b`
+    and its `the leg was on` check.
+
+    `_folded_twin` is the one check that still compares text: HEAD's ref,
+    as `_head_of` decodes it, with the manifest's text, as they are and
+    folded. So a twin in case whose bytes this locale reads as other text
+    is missed (`TB<ff>x` for `tb\\udcffx` under Latin-1, `CAF<c3 a9>` for
+    `caf\\udcc3\\udca9` under UTF-8). What a twin is for a name that is not
+    UTF-8 is a question of its own: folded as read back, Latin-1 would make
+    the bytes 0xC4 and 0xE4 twins, which UTF-8 calls none.
+
+    A NAME GIT CANNOT BE HANDED, which `_handed_to_git` raises
+    `UnicodeEncodeError` on, is compared as its text, `refs/heads/<branch>`,
+    as every check compared it before, and as `_paste_word` keeps
+    `spelled`'s text for one. On POSIX no such name gets here:
+    `_argument_fault` refuses each character `os.fsencode` cannot write. On
+    Windows under `PYTHONLEGACYWINDOWSFSENCODING=1` one does: `os.fsencode`
+    is `mbcs` with `replace`, which writes a lone surrogate as the one byte
+    `?`, so `_argument_fault` lets `tb\\udcffx` through, and git is handed
+    UTF-8 there, which has no bytes for it. Read back as the others are, it
+    would raise out of step (a), a traceback after `create_at_pin`'s
+    `checkout -b` had run.
 
     WHAT WAS WRONG. The checks compared it with `refs/heads/<branch>` as the
     manifest spells it, and the two are one text only where `os.fsdecode`
@@ -883,7 +911,11 @@ def _branch_ref(branch: str) -> str:
     `bootstrap ok`. Under UTF-8, a name that spells UTF-8's own bytes as
     surrogates (`caf\\udcc3\\udca9`, read back as `caf` U+00E9) met the
     same lines."""
-    return os.fsdecode(_handed_to_git(f"refs/heads/{branch}"))
+    try:
+        raw = _handed_to_git(f"refs/heads/{branch}")
+    except UnicodeEncodeError:
+        return f"refs/heads/{branch}"
+    return os.fsdecode(raw)
 
 
 def _is_ancestor(sub: Path, commit: str | None, of: str | None) -> bool:
