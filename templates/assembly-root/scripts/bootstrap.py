@@ -66,7 +66,11 @@ WHAT IT DOES, in order:
       run bootstrap under a UTF-8 locale, and where git refuses it there
       too, the line gives git's words. Every name git prints back is read
       as bytes and decoded so that it reaches git again as the bytes it
-      was (#710). The commands it prints for a person to paste (the
+      was (#710), and HEAD's ref is compared with the tracking branch as
+      the bytes git was handed for it, read back the same way, so a locale
+      that reads those bytes as other text (Latin-1's U+00FF for the byte
+      0xFF) still finds HEAD on the branch it made (#1283). The commands
+      it prints for a person to paste (the
       `merge --ff-only` that brings a moved-back branch forward, the
       `--continue` and `--abort` of an operation in progress, and the
       `git submodule update --init --` of a leg that is not there) name
@@ -694,10 +698,14 @@ def _argument_fault(branch: str) -> str | None:
     that is not UTF-8 with U+DC80 to U+DCFF and `os.fsencode` writes each back
     as the single byte it stands for, so git is handed that byte, as it was
     before this check. Any other surrogate has no byte: `os.fsencode` raises,
-    or (`surrogatepass`, Windows) writes the three bytes of a sequence that
-    is not UTF-8 for ANY of them, so a lone surrogate is never handed to git
-    there either, where a `CreateProcess` would pass it on mangled. The answer
-    is `os.fsencode`'s own, so it is the system's and not a list kept here.
+    or (`surrogatepass`, Windows' default) writes the three bytes of a
+    sequence that is not UTF-8 for ANY of them, so a lone surrogate is never
+    handed to git there either, where a `CreateProcess` would pass it on
+    mangled. The answer is `os.fsencode`'s own, so it is the system's and not
+    a list kept here. Under `PYTHONLEGACYWINDOWSFSENCODING=1` it is `mbcs`'s
+    with `replace`, which writes ANY lone surrogate as the one byte `?`, so
+    there one is let through, as before this check, and `_branch_ref`, which
+    has no UTF-8 for it, compares HEAD's ref with the name's text.
 
     NOR IS A CHARACTER THAT DOES NOT PRINT, OR WHITE SPACE (#715), `UNSEEN`,
     which `validate-manifest.py` refuses in a branch too (`siblings.py` asks
@@ -844,10 +852,10 @@ def _head_of(sub: Path) -> tuple[str | None, str | None]:
 
     The ref is read as BYTES and decoded as this system decodes a name it
     is given (`os.fsdecode`), so a branch whose name is not UTF-8 reads
-    back as the `refs/heads/<branch>` built from the same name. `git_out`'s
-    strict decoding raised `UnicodeDecodeError` over it: a second run with
-    `--branch` such a name ended in a traceback in `place_at_pin`, and the
-    check of where `checkout -b` left HEAD would end the first (#704)."""
+    back as `_branch_ref` of the same name. `git_out`'s strict decoding
+    raised `UnicodeDecodeError` over it: a second run with `--branch` such
+    a name ended in a traceback in `place_at_pin`, and the check of where
+    `checkout -b` left HEAD would end the first (#704)."""
     try:
         ref = git_out(["symbolic-ref", "--quiet", "HEAD"], cwd=sub,
                       binary=True)
@@ -855,6 +863,59 @@ def _head_of(sub: Path) -> tuple[str | None, str | None]:
         ref = None
     return (_try_git(["rev-parse", "--verify", "--quiet", "HEAD"], sub),
             None if ref is None else os.fsdecode(ref.rstrip(b"\r\n")))
+
+
+def _branch_ref(branch: str) -> str:
+    """`refs/heads/<branch>` as `_head_of` reads that ref back from git: the
+    bytes git is handed for it (`_handed_to_git`), decoded as `_head_of`
+    decodes HEAD's ref (#1283). The eight checks of whether HEAD is on the
+    tracking branch compare `_head_of`'s ref with this, never with the
+    manifest's text, which the lines go on printing (`spelled`):
+    `_check_out`'s after `checkout`; `place_at_pin`'s `already` and its
+    `the leg was on` check; `fast_forward_to_pin`'s two, `merge --ff-only`
+    or `branch -f`; `_stays`'s; and `create_at_pin`'s after `checkout -b`
+    and its `the leg was on` check.
+
+    `_folded_twin` is the one check that still compares text: HEAD's ref,
+    as `_head_of` decodes it, with the manifest's text, as they are and
+    folded. So a twin in case whose bytes this locale reads as other text
+    is missed (`TB<ff>x` for `tb\\udcffx` under Latin-1, `CAF<c3 a9>` for
+    `caf\\udcc3\\udca9` under UTF-8). What a twin is for a name that is not
+    UTF-8 is a question of its own: folded as read back, Latin-1 would make
+    the bytes 0xC4 and 0xE4 twins, which UTF-8 calls none.
+
+    A NAME GIT CANNOT BE HANDED, which `_handed_to_git` raises
+    `UnicodeEncodeError` on, is compared as its text, `refs/heads/<branch>`,
+    as every check compared it before, and as `_paste_word` keeps
+    `spelled`'s text for one. On POSIX no such name gets here:
+    `_argument_fault` refuses each character `os.fsencode` cannot write. On
+    Windows under `PYTHONLEGACYWINDOWSFSENCODING=1` one does: `os.fsencode`
+    is `mbcs` with `replace`, which writes a lone surrogate as the one byte
+    `?`, so `_argument_fault` lets `tb\\udcffx` through, and git is handed
+    UTF-8 there, which has no bytes for it. Read back as the others are, it
+    would raise out of step (a), a traceback after `create_at_pin`'s
+    `checkout -b` had run.
+
+    WHAT WAS WRONG. The checks compared it with `refs/heads/<branch>` as the
+    manifest spells it, and the two are one text only where `os.fsdecode`
+    reads the bytes `os.fsencode` wrote as the text they came from. Under a
+    locale of one byte to a character, Latin-1 say, `tracking_branch:
+    "tb\\udcffx"`, the byte 0xFF (#715), is handed to git as `tb<ff>x`, and
+    that ref reads back as `tb` U+00FF `x`. So step (a) made the branch,
+    with HEAD on it at the pin, then said `could not create branch` (git
+    `exited 0`) and set no upstream; every later run said `git refused to
+    check it out` over the same HEAD; a branch behind the pin with HEAD on
+    it was given to `branch -f`, which git refuses for the branch HEAD is
+    on, where it is fast-forwarded; and a branch with a commit of its own
+    was said to stay `at <sha> (on tb` U+00FF `x)`. The run still ended
+    `bootstrap ok`. Under UTF-8, a name that spells UTF-8's own bytes as
+    surrogates (`caf\\udcc3\\udca9`, read back as `caf` U+00E9) met the
+    same lines."""
+    try:
+        raw = _handed_to_git(f"refs/heads/{branch}")
+    except UnicodeEncodeError:
+        return f"refs/heads/{branch}"
+    return os.fsdecode(raw)
 
 
 def _is_ancestor(sub: Path, commit: str | None, of: str | None) -> bool:
@@ -919,7 +980,7 @@ def _check_out(sub: Path, branch: str,
     untracked one; with it, git refuses both, in the same words.
     """
     why = _git_says(["checkout", "-q", "--no-overwrite-ignore", branch], sub)
-    if _head_of(sub) == (pin, f"refs/heads/{branch}"):
+    if _head_of(sub) == (pin, _branch_ref(branch)):
         return True, why
     return False, why or [
         "`git checkout` exited 0, and HEAD is not on the branch at the pin"]
@@ -1498,14 +1559,15 @@ def place_at_pin(sub: Path, label: str, path: str, branch: str,
         _say_neither(label, f"branch {named} is at the pin {_short(pin)}",
                      head, current)
         return
-    already = (head, current) == (pin, f"refs/heads/{branch}")
+    ref = _branch_ref(branch)
+    already = (head, current) == (pin, ref)
     placed, why = _check_out(sub, branch, pin)
     if not placed:
         _say_refused(f"  {label}: branch {named} is at the pin "
                      f"{_short(pin)}, and git refused to check it out:", why)
         return
     print(f"  {label}: on {named} at {_short(pin)} (branch tip == pin)")
-    if current not in (None, f"refs/heads/{branch}"):
+    if current not in (None, ref):
         _say_left(head, current, named)
     _say_after(why, moved=not already)
 
@@ -1581,9 +1643,9 @@ def fast_forward_to_pin(sub: Path, label: str, path: str, branch: str,
                   f"branch {named} tip {_short(local)} is behind the PIN "
                   f"{_short(pin)}", "move")
         return
-    other_branch = (_on_a_branch(current)
-                    and current != f"refs/heads/{branch}")
-    if current == f"refs/heads/{branch}":
+    ref = _branch_ref(branch)
+    other_branch = _on_a_branch(current) and current != ref
+    if current == ref:
         why = _git_says(["-c", "merge.autostash=false", "merge", "--ff-only",
                          "--no-overwrite-ignore", "-q", pin], sub)
         moved = placed = why is None
@@ -1676,7 +1738,7 @@ def _stays(sub: Path, branch: str, pin: str) -> str:
     `_say_neither` names the place. The line said `at the pin` whatever the
     checkout was, which was false for a HEAD on the branch itself."""
     head, current = _head_of(sub)
-    if current == f"refs/heads/{branch}":
+    if current == _branch_ref(branch):
         return f"on {spelled(branch)} at its tip"
     if current is None and head == pin:
         return "at the pin"
@@ -1752,7 +1814,8 @@ def create_at_pin(sub: Path, label: str, path: str, branch: str, pin: str,
         return
     why = _git_says(["checkout", "-q", "--no-overwrite-ignore", "-b", branch,
                      pin], sub)
-    if _head_of(sub) != (pin, f"refs/heads/{branch}"):
+    ref = _branch_ref(branch)
+    if _head_of(sub) != (pin, ref):
         stays = "detached" if current is None else f"it {_place_of(current)}"
         _say_refused(f"  {label}: could not create branch {branch!r} at "
                      f"the pin {_short(pin)}; leaving {stays}", why or [
@@ -1768,7 +1831,7 @@ def create_at_pin(sub: Path, label: str, path: str, branch: str, pin: str,
                  f"the pin deliberately does NOT follow")
     print(f"  {label}: branch {named} created at "
           f"{_short(pin)} — {state}")
-    if current not in (None, f"refs/heads/{branch}"):
+    if current not in (None, ref):
         _say_left(head, current, named)
     _say_after(why)
 
