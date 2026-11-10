@@ -715,7 +715,8 @@ def _refuse_an_unreadable_git_dir(checkout: Path, path: str) -> None:
     a FIFO waits for a writer, and an open that finds nothing is a git
     directory with no `HEAD`. One this user cannot open is named,
     `.git/modules/<path>/HEAD` or `<path>/.git/HEAD`, with the same
-    remedy."""
+    remedy. So is one git cannot read as a `HEAD`, a FIFO among them
+    (#1290): see `_a_head_git_cannot_read`."""
     dotgit = checkout / ".git"
     named = f"{path}/.git"
     try:
@@ -734,8 +735,58 @@ def _refuse_an_unreadable_git_dir(checkout: Path, path: str) -> None:
             if _is_a(head, _any_kind):
                 named = named_head
                 _gitfile_opens(head)
+                _a_head_git_cannot_read(head)
     except OSError as exc:
         raise _unreadable(MEMBER_UNREADABLE, named, exc) from exc
+
+
+# A GIT DIRECTORY'S `HEAD` THAT GIT CANNOT READ AS ONE (#1290, RV1239 on
+# #1239, W1256 on #1263). The guard above opens a `HEAD` only where it is a
+# regular file, since the open of a FIFO waits for a writer; but git's own
+# open of it, in the pinned commit's `git rev-parse`, waited, and `git_out`
+# has no timeout, so the gate gave no answer at all. A `HEAD` that `stat`,
+# which follows a link, finds neither a file nor a directory (a FIFO, a
+# socket or a device, or a symlink to one) is refused by name before git
+# is asked. A socket, or a symlink to a FIFO or a device, which git does
+# not wait on, ended the run in `member-commit-unresolvable`, which says the
+# pinned commit is missing; git reads a symlinked `HEAD` only where it
+# names `refs/`. A directory, a symlink to a file or a directory, and a
+# symlink that leads nowhere are left to git, as they were. The holder's
+# own `HEAD` is not asked here (#1172's).
+#
+# HERE, AND NOT AS A TIMEOUT IN `git_out` (#1290's choice (b)). `git_out` is
+# `scripts/repo_shape.py`'s, a shape copy every root pins on its own and
+# may hold older than this file (#370, #610), so a timeout there reaches no
+# root whose copy predates it; it is shared by every tool, `tree_digest`'s
+# `ls-tree -r` over a whole leg among them, with no flag to say how long is
+# too long; and a call that timed out raises `subprocess.TimeoutExpired`,
+# which no caller here catches (a traceback, exit 1, a finding's code), or,
+# made a `git-failed` refusal, reads as `member-commit-unresolvable` again.
+# What else in a git directory git waits on, its `config` a FIFO among
+# them (measured: no answer), is not asked here.
+
+#: What a `stat` mode that is neither a file nor a directory names, as
+#: `validate-pins.py`'s `_KINDS` names it (#1290). A device is either kind.
+_HEAD_KINDS = (
+    (stat.S_ISFIFO, "a FIFO"), (stat.S_ISSOCK, "a socket"),
+    (stat.S_ISCHR, "a device"), (stat.S_ISBLK, "a device"))
+
+
+def _a_head_git_cannot_read(head: Path) -> None:
+    """Raise an `OSError` whose reason says what stands there, in
+    `validate-pins.py`'s words for a leg's, for a member git directory's
+    `HEAD` that is neither a file nor a directory (#1290), so
+    `_refuse_an_unreadable_git_dir` names it as it names a `HEAD` this user
+    cannot open: `<HEAD>: cannot be read (a FIFO, not a file)`, or `(a
+    symlink to a device, not a file)`, with the remedy for a cause that is
+    no permission, which says to put a regular file back in its place. Its
+    `stat`, then its own `lstat`, as that gate's `_what_stands` asks."""
+    mode = head.stat().st_mode
+    if stat.S_ISREG(mode) or stat.S_ISDIR(mode):
+        return
+    link = "a symlink to " if stat.S_ISLNK(head.lstat().st_mode) else ""
+    kind = next((name for test, name in _HEAD_KINDS if test(mode)), None)
+    raise OSError(None, f"{link}{kind}, not a file" if kind else "not a file")
 
 
 def _checkout_gone(root: Path, path: str) -> bool:
