@@ -59,7 +59,8 @@ from pathlib import Path
 
 import pytest
 
-from conftest import REPO, git, load_without_bytecode, run_script
+from conftest import (REPO, git, load_without_bytecode, run_script,
+                      skip_where_the_environment_cannot_carry)
 from test_stdout_encoding import child_environ, run_tool_bytes, shown
 
 sys.path.insert(0, str(REPO / "scripts"))
@@ -69,6 +70,10 @@ ASSEMBLY_TEMPLATE = (REPO / "templates" / "assembly-root" / "scripts"
                      / "bootstrap.py")
 FAMILY_TEMPLATE = (REPO / "templates" / "family-root" / "scripts"
                    / "bootstrap.py")
+#: The holder's gate, the copy every family holder carries: it prints each
+#: member's note, and one ends a digest in U+2026 (#1214).
+FAMILY_VALIDATOR = (REPO / "templates" / "family-root" / "scripts"
+                    / "validate-family.py")
 FAMILY_TOOL = REPO / "scripts" / "family.py"
 FAMILY_NAME = "InkRouter"
 
@@ -531,6 +536,7 @@ def test_a_register_and_its_path_are_spelled_when_it_cannot_be_read(
     that HOLDS a line separator, so a raw one would be written raw."""
     edit(project, "project.yaml", '    path: "spec"',
          r'    path: "sp\u2028ec"')
+    skip_where_the_environment_cannot_carry("sp\u2028ec")
     register = (project / "sp\u2028ec" / "governance" / "review-authority"
                 / "register.yaml")
     register.parent.mkdir(parents=True)
@@ -552,6 +558,7 @@ def test_a_roots_own_directory_name_is_spelled(project, tmp_path):
     """The second thing the first line prints. Under a stdout that HOLDS a
     line separator, so a raw one would be written raw."""
     renamed = tmp_path / "At\u2028las"
+    skip_where_the_environment_cannot_carry(renamed.name)
     shutil.move(str(project), str(renamed))
     code, out, err = run(bootstrap_of(renamed), "--skip-validators",
                          encoding="utf-8:strict", tmp_path=tmp_path,
@@ -647,6 +654,7 @@ def test_a_family_roots_own_directory_name_is_spelled(holder, tmp_path):
     """The second thing the family's first line prints, under a stdout that
     HOLDS a line separator, so a raw one would be written raw."""
     renamed = tmp_path / "Ink\u2028Router"
+    skip_where_the_environment_cannot_carry(renamed.name)
     shutil.move(str(holder), str(renamed))
     code, out, err = run(bootstrap_of(renamed), "--no-fetch", "--skip-members",
                          encoding="utf-8:strict", tmp_path=tmp_path,
@@ -681,6 +689,7 @@ def test_a_members_row_and_the_make_target_are_spelled(holder, tmp_path):
         "    path: members/Fail\n"))
     members = holder / "members"
     target = "ta\u2028rget.py"
+    skip_where_the_environment_cannot_carry(target)
     for name in ("Box", "Make", "Fail"):
         (members / name / ".git").mkdir(parents=True)
     for name in ("Make", "Fail"):
@@ -922,11 +931,13 @@ def test_each_root_runs_repo_shapes_own_function(template, name):
     assert getattr(template, name) is getattr(repo_shape, name), name
 
 
-@pytest.mark.parametrize("path", [ASSEMBLY_TEMPLATE, FAMILY_TEMPLATE],
-                         ids=["assembly-root", "family-root"])
+@pytest.mark.parametrize(
+    "path", [ASSEMBLY_TEMPLATE, FAMILY_TEMPLATE, FAMILY_VALIDATOR],
+    ids=["assembly-root", "family-root", "validate-family"])
 def test_main_escapes_stdout_before_it_prints_or_parses_anything(path):
     """The reconfigure is `main`'s FIRST statement: `--help` and an argument
-    error print too."""
+    error print too. The holder's gate, `validate-family.py`, is held to it
+    as the two roots' `bootstrap.py` are (#1214)."""
     text = path.read_text(encoding="utf-8")
     main = next(node for node in ast.parse(text).body
                 if isinstance(node, ast.FunctionDef) and node.name == "main")
