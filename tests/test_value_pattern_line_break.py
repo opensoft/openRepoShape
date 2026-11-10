@@ -35,7 +35,8 @@ there would reach only through `update-shape.py`. So the three callers that
 read an id out of a file ask it with `fullmatch`: the two validators, and
 `family.py`'s reading of a member's `project.yaml`, which is `member-bad-id`
 now. `update-shape.py` names the pin's `source_repository:`, under the codes
-it had, where no `--upstream` was passed.
+it had, and since #1203 asks it whether or not `--upstream` is passed
+(`tests/test_update_shape_pin_source.py`).
 
 LEFT AS THEY ARE, AND WHY:
 
@@ -164,7 +165,9 @@ ID_READERS = {
     ("templates/assembly-root/scripts/validate-manifest.py", "fullmatch"): (
         1, "the manifest's `id:`"),
     ("templates/family-root/scripts/validate-family.py", "fullmatch"): (
-        1, "the family's `id:`"),
+        2, "the family's `id:`; and `_is_project_id`, the one reader of a "
+           "member's row `id:` and of its mounted `project.yaml` `id:` "
+           "(#1204)"),
     ("scripts/family.py", "fullmatch"): (
         1, "a member's `project.yaml` `id:`, as `add` mounts it"),
     ("scripts/family.py", "match"): (
@@ -386,11 +389,15 @@ def pin_of(project: Path) -> Path:
     return project.resolve() / "contracts" / "shape-pin.yaml"
 
 
-#: What a pin's `source_repository:` that is no `owner/repo` is told.
+#: What a pin's `source_repository:` that is no `owner/repo` is told. Since
+#: #1203 it is asked with `--upstream` passed too, so passing a path there is
+#: no remedy for it, and the words no longer offer one.
 WRITE_THE_PIN = (
     "Remediation: write `source_repository:` in the pin as the `owner/repo` "
     "its shape was copied from, `opensoft/openRepoShape` for this "
-    "standard's, or pass `--upstream` a path to a clone of openRepoShape.")
+    "standard's. It is asked with `--upstream` passed too, because `apply` "
+    "names it in its commit and its pull request; a path to a clone goes "
+    "to `--upstream`.")
 
 
 @pytest.mark.parametrize("value, read", [
@@ -403,13 +410,15 @@ def test_a_pins_source_that_is_no_owner_repo_is_named_as_the_pins(
     """THE ISSUE'S ROW, and one the pattern refused on main too. On main the
     line feed passed `REPOSITORY_RE` and was `unsafe-value` of `--upstream`,
     and the space was `update-upstream-unresolvable` of `--upstream`, with
-    no `--upstream` passed. Both are that code now, naming the pin."""
+    no `--upstream` passed. Both are that code now, naming the pin. Since
+    #1203 a path is never what the pin holds, so the words no longer say
+    "neither a path on this machine"."""
     result = check_with_source(project, value)
     assert result.returncode == 2, result.stdout + result.stderr
     assert result.stderr.splitlines() == [
         f"REFUSED update-upstream-unresolvable: {pin_of(project)}: "
-        f"`source_repository:` is {read}, which is neither a path on this "
-        "machine nor an `owner/repo` name", WRITE_THE_PIN], result.stderr
+        f"`source_repository:` is {read}, which is not an `owner/repo` name",
+        WRITE_THE_PIN], result.stderr
 
 
 def test_a_pins_source_checked_value_refuses_is_named_as_the_pins(project):
@@ -426,9 +435,13 @@ def test_a_pins_source_checked_value_refuses_is_named_as_the_pins(project):
 def test_an_upstream_passed_with_a_line_feed_is_named_as_passed(project):
     """`--upstream` itself takes no line feed either: on main the pattern
     took it and `checked_value` refused it as `unsafe-value`; it is not an
-    `owner/repo` name now, and is named as passed, whatever the pin says."""
-    result = check_with_source(project, "-opensoft/openRepoShape",
-                               "--upstream", "opensoft/openRepoShape" + LF)
+    `owner/repo` name now, and is named as passed. The pin is as scaffolded:
+    since #1203 its own value is asked first, `--upstream` or not, and one
+    it refuses is named before the flag
+    (`tests/test_update_shape_pin_source.py`)."""
+    result = run_script(UPDATE, "check", "--root", str(project),
+                        "--upstream", "opensoft/openRepoShape" + LF,
+                        cwd=project)
     assert result.returncode == 2, result.stdout + result.stderr
     assert result.stderr.splitlines()[0] == (
         "REFUSED update-upstream-unresolvable: --upstream "

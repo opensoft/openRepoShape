@@ -11391,3 +11391,26 @@ def test_the_pin_alone_clause_and_the_readme_note_never_say_opposite_things(
     assert row["detail"]["behind_pin_only"] is True, row
     assert "note:" in row["reason"], row
     assert "`apply` would move the pin alone" in row["reason"], row
+
+
+@pytest.mark.parametrize("content", [
+    "kind: domain-contract\n",
+    "kind: domain-contract\n  broken: [\n"])
+def test_ignored_legacy_contract_link_stays_in_its_leg(
+        standard, project, content):
+    """Neither a domain kind nor its YAML grammar is the root's gate."""
+    target = project / "spec/contracts/legacy.yaml"
+    target.parent.mkdir(parents=True, exist_ok=True)
+    target.write_text(content, encoding="utf-8")
+    alias = project / "contracts/legacy.yaml"
+    alias.symlink_to("../spec/contracts/legacy.yaml")
+    exclude = project / ".git/info/exclude"
+    with exclude.open("a", encoding="utf-8") as stream:
+        stream.write("\n/contracts/legacy.yaml\n")
+    row = rows_of(doctor(standard, project, "--json"))["manifest-kinds"]
+    assert row["status"] == "ok", row
+    assert alias.read_text(encoding="utf-8") == content
+    # A committed link represents a root declaration and must still be read.
+    git("add", "-f", "--", "contracts/legacy.yaml", cwd=project)
+    row = rows_of(doctor(standard, project, "--json"))["manifest-kinds"]
+    assert row["status"] == "FINDING", row
