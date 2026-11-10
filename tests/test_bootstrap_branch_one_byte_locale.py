@@ -772,7 +772,8 @@ PAIRS = [
                  (printf_word("TB\\304x"), printf_word("TB\\304x-kept")),
                  id="TB-c4-for-tb-e4"),
     # No reading drops the byte 0xFF, or folds U+00C4 to U+00FF: each pair
-    # differs by more than case (`"replace"` and `"ignore"` fold them).
+    # differs by more than case (`"ignore"` folds both; `"replace"` the
+    # second).
     pytest.param("byte-0xff", b"TBx", None, id="CONTROL-TBx-for-tb-ff"),
     pytest.param("byte-0xff", b"TB\xc4x", None, id="CONTROL-TB-c4-for-tb-ff"),
     # git for Windows writes the byte 0x84 as `84`, so `tb<84>x` is the file
@@ -1038,6 +1039,10 @@ XUTFTOWCSN = {
     b"\xf4\x90\x80\x80": "\u00f4908080",
     b"\xf0\x8f\xbf\xbf": "\u00f08f\u00bf\u00bf",
     b"\xf0\x9f\x98": "\u00f09f98", b"\xf5\x80": "\u00f580",
+    b"\xc1\xbf": "\u00c1\u00bf", b"\xc1\x81": "\u00c181",
+    b"\xf5\x80\x80\x80": "\u00f5808080",
+    b"\xf7\xbf\xbf\xbf": "\u00f7\u00bf\u00bf\u00bf",
+    b"CAF\xc3\x89": "CAF\u00c9",
 }
 
 

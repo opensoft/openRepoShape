@@ -1127,9 +1127,9 @@ def _continues(raw: bytes, at: int, count: int) -> bool:
 def _as_git_for_windows_names(raw: bytes) -> str:
     """The name git for Windows gives the file of a ref named by git's bytes
     `raw` on NTFS (#1306): `xutftowcsn` in git's `compat/mingw.c`, which
-    `xutftowcs_path` (`compat/mingw.h`) calls for each path git opens or
-    makes there, a loose ref's file among them. It is followed step for
-    step, one UTF-16 unit for each unit it writes:
+    `xutftowcs_path` and `xutftowcs_long_path` (`compat/mingw.h`) call for
+    each path git opens or makes there, a loose ref's file among them. It
+    is followed step for step, one UTF-16 unit for each unit it writes:
     - a byte below 0x80 is itself;
     - valid UTF-8, a form of 2, 3 or 4 bytes that is not overlong and not
       past U+10FFFF, is the character it spells, one of 4 bytes as a
@@ -1145,8 +1145,10 @@ def _as_git_for_windows_names(raw: bytes) -> str:
     pair as the one character it spells. So `tb<c4>x` and `tb<e4>x` are the
     files `tb` U+00C4 `x` and `tb` U+00E4 `x`, which NTFS folds to one, and
     `tb<c4>x` and `tb<c3 84>x` are one name there before any fold. The
-    bound of `xutftowcs_path`'s buffer, `MAX_PATH` units, is not followed:
-    git refuses a longer path there (`ENAMETOOLONG`)."""
+    bound of the buffer `xutftowcs_path` and `xutftowcs_long_path` write
+    to (`MAX_PATH` units, or more for the second) is not followed: git
+    refuses a longer path there, or, at the buffer's last unit, drops a
+    hex pair's second digit."""
     units, at = [], 0
     while at < len(raw):
         lead, at = raw[at], at + 1
