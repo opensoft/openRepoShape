@@ -658,11 +658,18 @@ HOOK_SAYS = "this remote takes no push"
 #: And a line feed after the byte 0xff, which git names as `run` reads it,
 #: U+FFFD, so the path is looked for as `run` reads it too; and one after an
 #: ESC, which git writes as `?` in its `error:` line (RV1311's SHOULD 1), so
-#: the path is looked for as git writes it too.
+#: the path is looked for as git writes it too. A CR and then a line feed,
+#: which `run` reads as one line feed, so git's `To` line holds `re<LF>mote`
+#: for `re<CR><LF>mote` (RV1311b's SHOULD 1). And a byte 0xff, an ESC and a
+#: line feed, whose `error:` line is `re<U+FFFD>?<LF>mote`: git's form of the
+#: form `run` reads back (RV1311b's NIT 2).
 REFUSED_CHARACTERS = [
     *CHARACTERS,
     pytest.param("\udcff\n", "\\udcff\\n", id="byte-0xff-then-line-feed"),
     pytest.param("\x1b\n", "\\x1b\\n", id="escape-then-line-feed"),
+    pytest.param("\r\n", "\\r\\n", id="carriage-return-then-line-feed"),
+    pytest.param("\udcff\x1b\n", "\\udcff\\x1b\\n",
+                 id="byte-0xff-then-escape-then-line-feed"),
 ]
 
 #: What git writes as `?` in its `error:` and `fatal:` lines, as measured on
@@ -710,7 +717,8 @@ def test_a_refused_command_names_the_remote_and_work_dirs_spelled(
     of the path's: the path is spelled whole where git names it now, so
     the `To` line names the remote on one line and no line is the path's
     (#1233, RV1225's N1), after a byte 0xff as well, which git names
-    U+FFFD."""
+    U+FFFD, and after a CR, which `run` reads as a line feed: `re<CR><LF>mote`
+    is `re<LF>mote` in the `To` line (RV1311b's SHOULD 1)."""
     skip_where_cannot_carry(typed, tmp_path)
     planned = a_source_and_its_plan(tmp_path / "src", NO_SPECS)
     plan = tmp_path / "plan.yaml"
@@ -860,6 +868,46 @@ def test_an_argument_of_nothing_but_line_feeds_spells_no_line_break(
                                     "line1\nline2\n\nline3")
     assert the_output_lines_of(adopter._loudly(refused, "x")) == [
         "line1", "line2", "", "line3"]
+
+
+@pytest.mark.parametrize("path, as_run_reads", [
+    pytest.param("/re\r\nmote/Thing-spec.git", "/re\nmote/Thing-spec.git",
+                 id="carriage-return-then-line-feed"),
+    pytest.param("/re\rmote/Thing-spec.git", "/re\nmote/Thing-spec.git",
+                 id="carriage-return"),
+])
+def test_a_path_with_a_carriage_return_is_spelled_as_run_reads_it(
+        adopter, path, as_run_reads):
+    """`run` reads a command's output with universal newlines, so a CR in a
+    path, with the line feed after it or not, is a line feed in git's `To`
+    line, which is not sanitized, and split it. It is spelled whole as the
+    path holds it, with no line feed left; git's `error:` line writes the CR
+    as `?`, and only a CR and a line feed gives it a line feed to spell
+    (RV1311b's SHOULD 1). What git said is fixed text, as `run` returns it,
+    so the row does not ask git."""
+    git_form = GIT_WRITES_AS_QUERY.sub("?", path)
+    refused = adopter.CommandFailed(
+        ["git", "push", "-q", path, SPLIT_BRANCH], "/re\rmote", 1,
+        f"To {as_run_reads}\nerror: failed to push some refs to "
+        f"'{git_form}'\n")
+    assert the_output_lines_of(adopter._loudly(refused, "pushing")) == [
+        f"To {adopter._unacted(path)}",
+        f"error: failed to push some refs to '{adopter._unacted(git_form)}'"]
+
+
+@pytest.mark.parametrize("argument", ["\x1b\n", "\r\n"])
+def test_an_argument_of_only_controls_and_line_feeds_spells_no_question_mark(
+        adopter, argument):
+    """git writes an ESC or a CR as `?`, so `<ESC><LF>` is `?<LF>` in git's
+    `error:` line: looked for, it would spell every `?` that ends a line of
+    what the command printed, and two lines would be one. A form of nothing
+    but `?` and line feeds is not looked for (RV1311b's NIT 1); a CR and a
+    line feed is not either, being nothing but a line feed as `run` reads
+    it."""
+    refused = adopter.CommandFailed(["git", "x", argument], None, 1,
+                                    "Is this it?\nyes")
+    assert the_output_lines_of(adopter._loudly(refused, "x")) == [
+        "Is this it?", "yes"]
 
 
 # --- a mount git will not add: `adopt-mount-unaddable` (#1233) --------------

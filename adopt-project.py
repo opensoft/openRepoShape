@@ -15091,6 +15091,13 @@ def _unacted(text: str, kept: str = "") -> str:
 GIT_WRITES_AS_QUERY = re.compile(r"[\x00-\x08\x0b-\x1f\x7f]")
 
 
+def _as_run_reads(text: str) -> str:
+    """`text` as `run` (`scripts/shape_materialize.py`) reads what a command
+    printed back: with `text=True`, universal newlines, so CR+LF, and a lone
+    CR, are a line feed there."""
+    return text.replace("\r\n", "\n").replace("\r", "\n")
+
+
 def _output_unacted(exc: CommandFailed) -> str:
     """What `exc`'s command printed, `_unacted` but for its line breaks,
     which it keeps, so it still reads a line to a line: except where it
@@ -15100,25 +15107,36 @@ def _output_unacted(exc: CommandFailed) -> str:
     was refused at, so under `--local-remote-dir <D>/re<LF>mote` the block
     held a line `mote/Thing-spec.git` the path had put in it. Each is also
     looked for as `run` reads it back: a byte that is not UTF-8, which the
-    path holds as a surrogate, is U+FFFD there. And each is looked for as
-    git's own `error:` and `fatal:` lines write it, with every control
-    character but a tab and a line feed a `?` (`GIT_WRITES_AS_QUERY`):
-    `wo<ESC><LF>rk` is `wo?<LF>rk` there, which is spelled `wo?\\nrk`, so
-    git's `?` stays as git wrote it and only the line feed is spelled. The
-    longest, of all those forms, is spelled first, so one that holds
-    another is spelled whole. An argument of nothing but line feeds is not
+    path holds as a surrogate, is U+FFFD there, and a CR is a line feed
+    there, with the line feed that follows it or not (`_as_run_reads`), so
+    `re<CR><LF>mote` is `re<LF>mote` in git's `To` line, which is spelled
+    `re\\r\\nmote`, as the path holds it (RV1311b's SHOULD 1). And each is
+    looked for as git's own `error:` and `fatal:` lines write it, with every
+    control character but a tab and a line feed a `?`
+    (`GIT_WRITES_AS_QUERY`): `wo<ESC><LF>rk` is `wo?<LF>rk` there, which is
+    spelled `wo?\\nrk`, so git's `?` stays as git wrote it and only the line
+    feed is spelled. A form of nothing but `?` and line feeds is not looked
+    for, since it would spell every `?` that ends a line. The longest, of
+    all those forms, is spelled first, so one that holds another is spelled
+    whole. An argument of nothing but line feeds, as `run` reads it, is not
     looked for: it would spell every line break the command printed."""
     output = exc.output
-    named = set()
+    spelled: dict[str, str] = {}
     for part in {str(given) for given in (*exc.args_list, exc.cwd) if given}:
-        if "\n" in part and part.strip("\n"):
-            forms = {part}
-            with contextlib.suppress(UnicodeError):
-                forms.add(os.fsencode(part).decode("utf-8", "replace"))
-            named |= forms | {GIT_WRITES_AS_QUERY.sub("?", form)
-                              for form in forms}
-    for part in sorted(named, key=lambda part: (-len(part), part)):
-        output = output.replace(part, _unacted(part))
+        read_back = _as_run_reads(part)
+        if "\n" not in read_back or not read_back.strip("\n"):
+            continue
+        forms = {part}
+        with contextlib.suppress(UnicodeError):
+            forms.add(os.fsencode(part).decode("utf-8", "replace"))
+        for form in forms:
+            for found in (form, _as_run_reads(form)):
+                spelled.setdefault(found, _unacted(form))
+            git_form = GIT_WRITES_AS_QUERY.sub("?", form)
+            if git_form.strip("?\n"):
+                spelled.setdefault(git_form, _unacted(git_form))
+    for found in sorted(spelled, key=lambda found: (-len(found), found)):
+        output = output.replace(found, spelled[found])
     return _unacted(output, kept="\n")
 
 
