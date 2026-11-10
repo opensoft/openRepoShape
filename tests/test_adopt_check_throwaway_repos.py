@@ -1082,19 +1082,45 @@ def test_a_file_beside_the_twins_is_asked_as_without_the_setting(tmp_path):
     assert finding_lines(ignored) == finding_lines(without), ignored.stderr
 
 
-def test_twins_git_would_store_as_other_bytes_are_the_set_alone(tmp_path):
+@pytest.mark.parametrize(("prefix", "answers", "where"), [
+    pytest.param("", {"A.md": ROOT, "a.md": ROOT}, ROOT_TWINS, id="root"),
+    pytest.param("src/", {}, CODE_TWINS, id="code-leg"),
+])
+def test_twins_git_would_store_as_other_bytes_are_the_set_alone(
+        tmp_path, prefix, answers, where):
     """`A.md` and `a.md`, each CRLF under `* text eol=lf`, and each its own
-    blob: on f981468b `check` named them as `plan-file-reencoded` too, after
-    `plan-case-twins`. The rename `plan-case-twins` asks for comes first,
-    and the `plan` and `check` after it ask about the renamed files."""
-    source = a_source(tmp_path, files={ROOT_ATTRIBUTES: TEXT_EOL_LF,
-                                       "A.md": CRLF, "a.md": b"three\r\n"})
-    plan = planned(source, tmp_path, {"A.md": ROOT, "a.md": ROOT})
+    blob, in the root or in the code leg: on f981468b `check` named them as
+    `plan-file-reencoded` too, after `plan-case-twins`, the root's by their
+    names and the leg's as files the plan moves. The rename
+    `plan-case-twins` asks for comes first, and the `plan` and `check` after
+    it ask about the renamed files."""
+    source = a_source(tmp_path, files={
+        ROOT_ATTRIBUTES: TEXT_EOL_LF, f"{prefix}A.md": CRLF,
+        f"{prefix}a.md": b"three\r\n"})
+    plan = planned(source, tmp_path, answers)
     for env in (None, ignoring_case(tmp_path)):
         result = checked(plan, env)
-        assert finding_lines(result) == [
-            twins_kept("1 set", ROOT_TWINS, "2 paths", "`A.md` and `a.md`")
-        ], result.stderr
+        assert finding_lines(result) == [twins_kept(
+            "1 set", where, "2 paths",
+            f"`{prefix}A.md` and `{prefix}a.md`")], result.stderr
+
+
+def test_the_twins_rules_still_reach_the_files_beside_them(tmp_path):
+    """Twin `.gitattributes` files stay checked out, and the files in the
+    folders that hold twins stay asked: `D/` and `d/` each keep the rule
+    `*.txt text eol=lf` and a CRLF `.txt`, and `check` names the two files
+    as `plan-file-reencoded` after `plan-case-twins`, with the setting as
+    without it."""
+    rule = b"*.txt text eol=lf\n"
+    paths = ("D/.gitattributes", "d/.gitattributes", "D/n.txt", "d/m.txt")
+    source = a_source(tmp_path, files=dict(zip(paths,
+                                               (rule, rule, CRLF, CRLF))))
+    plan = planned(source, tmp_path, dict.fromkeys(paths, ROOT))
+    without, ignored = checked(plan), checked(plan, ignoring_case(tmp_path))
+    assert codes(without) == [PLAN_CASE_TWINS, REENCODED_FILES], \
+        without.stderr
+    assert "`D/n.txt` and `d/m.txt`" in finding_lines(without)[1]
+    assert finding_lines(ignored) == finding_lines(without), ignored.stderr
 
 
 def test_a_set_the_note_takes_is_still_asked(tmp_path):
