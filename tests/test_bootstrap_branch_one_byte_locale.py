@@ -811,9 +811,10 @@ def test_a_name_git_cannot_be_handed_is_compared_as_its_text(monkeypatch):
     U+DCFF as `?`, one byte; but git is handed UTF-8 there
     (`_handed_to_git`), which has no bytes for it. `_branch_ref` compares
     HEAD's ref with the name's text, as every check did before #1283, and
-    as `_paste_word` keeps its text. At dfd69ff7 it raised
-    `UnicodeEncodeError` instead, out of step (a), after `create_at_pin`'s
-    `checkout -b` had run. A name git can be handed is still read back as
+    as `_paste_word` keeps its text. Without the fallback, `_branch_ref`
+    raised `UnicodeEncodeError` instead, out of step (a), after
+    `create_at_pin`'s `checkout -b` had run. A name git can be handed is
+    still read back as
     `_head_of` reads git's UTF-8 in that mode: `caf` U+00E9 as the code
     page reads its two bytes."""
     module = load_without_bytecode(ASSEMBLY_TEMPLATE,
