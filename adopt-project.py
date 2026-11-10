@@ -6815,6 +6815,16 @@ def _coverage_findings(entry_paths: list[str], tree_paths: list[str]) -> list[st
     return findings
 
 
+def _unanswered_finding(entry: dict) -> str:
+    """`check`'s `plan-unresolved` for one entry whose `leg:` is null: its
+    path, `_spelled`, and the question it repeats, `_shown` (#328). The one
+    spelling of it, read by `_leg_findings` and by `_against_its_source`,
+    which `check` lists it from (#1197)."""
+    return (f"FINDING plan-unresolved: {_spelled(str(entry.get('path')))} "
+            "still has `leg: null`. The question was: "
+            f"{_shown(str(entry.get('question')))}")
+
+
 def _leg_findings(plan: Plan, tree: list | None,
                   named_links: frozenset | set = frozenset()) -> list[str]:
     """`leg:` is answered with one of the four words, each leg's mount path
@@ -6869,9 +6879,7 @@ def _leg_findings(plan: Plan, tree: list | None,
         leg = entry.get("leg")
         path = _spelled(str(entry.get("path")))
         if leg is None:
-            findings.append(
-                f"FINDING plan-unresolved: {path} still has `leg: null`. The "
-                f"question was: {_shown(str(entry.get('question')))}")
+            findings.append(_unanswered_finding(entry))
         elif str(leg) not in LEG_VALUES:
             findings.append(
                 f"FINDING plan-bad-leg: {path} declares leg {leg!r}; it is "
@@ -9299,7 +9307,10 @@ def _entry_findings(plan: Plan, source: Source,
     NUL byte among them (#388), which no answer in the plan
     fixes: the fix is a commit in the source, and the fresh `plan` after it
     takes back every answer given before, so they are listed before the
-    findings about those answers (`_source_path_findings`). Their
+    findings about those answers (`_source_path_findings`). (`check` lists
+    an unanswered entry before every finding here, with the plan's problems
+    against its source, as `execute` refuses it first: #1197,
+    `_against_its_source`.) Their
     remediation is said once after the findings, with the others. The
     same goes for each symlink whose target holds a NUL byte after its
     first, or is longer than Linux takes (#908), as
@@ -12341,8 +12352,9 @@ def cmd_check(args) -> int:
     # THE PLAN AGAINST ITS SOURCE, FIRST OF WHAT IT LISTS (#1113): each
     # problem of `_against_its_source`, the one list `execute` refuses the
     # first of, in its order and in this command's words, before the split
-    # branch and the entries: another repository, a refused name and a moved
-    # source. An unanswered entry is listed with the entries, after them.
+    # branch and the entries: another repository, a refused name, a moved
+    # source and an unanswered entry, each by its path (#1197), which is not
+    # listed again with the entries.
     names = plan.names()
     pins = set(plan.pins)
     unmended = list(_against_its_source(plan, source, names, naming, pins))
@@ -12363,7 +12375,9 @@ def cmd_check(args) -> int:
     local_remote_dir = getattr(args, "local_remote_dir", None)
     entry_findings, remediation, notes = _entry_findings(plan, source,
                                                          local_remote_dir)
-    findings.extend(entry_findings)
+    # An unanswered entry the rule listed above is not listed again (#1197).
+    said = {line for problem in unmended for line in problem.found}
+    findings.extend(line for line in entry_findings if line not in said)
     # What is printed once after the findings, in their order.
     remediation = [fix for problem in unmended for fix in problem.fixes] + (
         taken_remediation + remediation)
@@ -12568,10 +12582,29 @@ def _against_its_source(plan: Plan, source: Source, names: dict,
     no plan path, and with `_own_name_remediation` saying nothing of legs,
     which `check` never makes; a refused name with the rename-first remedy
     only where the source is adopted in place under that name (#716); a
-    moved source as `check` said it; and an unanswered entry not here but
-    with the entries, each by its path (`_leg_findings`), after these.
+    moved source as `check` said it; and an unanswered entry each by its
+    path, as `_leg_findings` says it, which `check` then does not list
+    again with the entries.
     The plan's `org:` and `id:` are asked before all four, by both
     (`_checked_org_and_id`, #1020).
+
+    AN UNANSWERED ENTRY BEFORE WHAT `check` LISTS AFTER THE RULE (#1197).
+    `execute` refuses it here, before the plan's values, the split branch
+    and the entries; `check` listed it with the entries, after the split
+    branch taken (`plan-split-branch-taken`), the source's own paths
+    (`plan-unsafe-path`, `plan-empty-symlink`), the coverage
+    (`plan-uncovered`, `plan-empty-entry`, `plan-duplicate-path`,
+    `plan-covered-twice`), the leg paths (`plan-bad-leg-path`,
+    `plan-leg-path-collides`) and a bad `leg:` on an entry before it
+    (`plan-bad-leg`), so beside any of them the two named different
+    problems first. Listed here, it is first in both. Each of those is
+    mended in the plan, or by deleting a branch, and an answer given first
+    is kept; only a path the source must rename, or a symlink it must
+    mend, is mended by `plan` run again, which `check` listed first for
+    that reason (#303), and which `execute` has refused after an
+    unanswered entry since #168. Where the source has moved on, the moved
+    source is the rule's problem, and an unanswered entry is listed with
+    the entries, as before: the fresh plan asks it again.
     """
     # The plan names the source, or `execute` acts on another repository
     # (#499): said before the names' own findings, as `execute` refuses it.
@@ -12607,8 +12640,12 @@ def _against_its_source(plan: Plan, source: Source, names: dict,
         _refuse_an_unrunnable_plan(plan, source)
     except Refusal as exc:
         if exc.code != "plan-stale":
-            # Listed by `check` with the entries, each by its path.
-            yield _Unmended(exc)
+            # Listed by `check` here, each entry by its path, as
+            # `_leg_findings` lists it, and not again with the entries
+            # (#1197).
+            yield _Unmended(exc, tuple(
+                _unanswered_finding(entry) for entry in plan.entries
+                if entry.get("leg") is None))
         else:
             # `commit:` is a plan value people and AIs edit: sliced first,
             # so the spelling stays bounded, and `_shown`, so a real hash

@@ -507,9 +507,10 @@ def test_plan_asks_about_a_path_execute_refuses(adopter, tmp_path, name,
     question saying `execute` will not extract the path as it is named, why,
     and that `root` or `drop` is the only answer; it prints that question
     with the paths still to answer. `check` and `execute` say of the plan as
-    written what they say of any entry still asked: `plan-unsafe-path`
-    (`leg: null`, judged so the person knows what `spec` would meet) and
-    `plan-unresolved`, and `execute` refuses before any leg exists."""
+    written what they say of any entry still asked: `plan-unresolved`, first
+    to both (#1197), and then `check`'s `plan-unsafe-path` (`leg: null`,
+    judged so the person knows what `spec` would meet), and `execute`
+    refuses before any leg exists."""
     text_name = name.decode(UTF8, "surrogateescape")
     in_the_file = in_the_file.replace(
         "{byte}", adopter._spelled_character("\udce9").replace("\\", "\\\\"))
@@ -542,11 +543,12 @@ def test_plan_asks_about_a_path_execute_refuses(adopter, tmp_path, name,
     found = [line for line in checked.stderr.splitlines()
              if line.startswith("FINDING ")]
     named = adopter._spelled(text_name)
-    assert found[0] == (
+    # The unanswered entry first, as `execute` refuses it (#1197).
+    assert found[0].startswith(f"FINDING plan-unresolved: {named} still has "
+                               "`leg: null`. The question was: ")
+    assert found[1] == (
         f"FINDING {UNSAFE}: {named} has leg: null, and `execute` will not "
         f"extract it into a leg: {adopter.entry_path_problem(text_name)}")
-    assert found[1].startswith(f"FINDING plan-unresolved: {named} still has "
-                               "`leg: null`. The question was: ")
     assert len(found) == 2, found
     with pytest.raises(adopter.Refusal) as caught:
         adopter.cmd_execute(execute_args(tmp_path, plan))
