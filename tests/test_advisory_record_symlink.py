@@ -39,13 +39,15 @@ THE CHANGE, in two parts.
     of it, `check` still exits 1, and the doctor's audit of a leg's index
     reads it as before.
 
-Every case here makes a symlink, and skips where none can be made
-(`symlink`, #1159's).
+Every case that needs a symlink makes one, and skips where none can be made
+(`symlink`, #1159's). The controls of regular files, and of a git that
+cannot list the commit or follow a link, need none and run everywhere.
 """
 
 from __future__ import annotations
 
 import os
+import subprocess
 import sys
 from pathlib import Path
 
@@ -369,14 +371,18 @@ def test_a_record_link_whose_path_is_spelled_as_a_record_is_no_record(
     assert code == UNRESOLVED
 
 
-@pytest.mark.parametrize("target, rule", [
-    pytest.param(Path("docs", "record.yaml"), GENERAL,
+@pytest.mark.parametrize("target, rule, in_head", [
+    pytest.param(Path("docs", "record.yaml"), GENERAL, False,
                  id="to-a-record-in-the-leg"),
-    pytest.param("kind: single-repository-record", RULE,
+    pytest.param("kind: single-repository-record", RULE, False,
                  id="spelled-as-a-record"),
+    pytest.param(Path("docs", "record.yaml"), GENERAL, True,
+                 id="to-a-record-in-the-leg-committed-too"),
+    pytest.param("kind: single-repository-record", RULE, True,
+                 id="spelled-as-a-record-committed-too"),
 ])
 def test_the_doctors_audit_of_a_legs_index_reads_a_record_link_as_before(
-        adopter, doctor, tmp_path, target, rule):
+        adopter, doctor, tmp_path, target, rule, in_head):
     """CONTROLS, true on #1270's head as here: the doctor's placement row
     asks `ask_about_a_record_only` of a leg's INDEX (`Source(mount, None,
     "", "")`, #691), and reads a link there as its blob, never followed.
@@ -388,14 +394,23 @@ def test_the_doctors_audit_of_a_legs_index_reads_a_record_link_as_before(
     leg's index still reads the PATH as a record, the record's question,
     where `plan` names the link and asks the general one. Left as it is, as
     the doctor documents it, until the ruling on following a linked record
-    settles both readers."""
+    settles both readers.
+
+    `[...-committed-too]` commits the link in the leg as well as staging it,
+    so HEAD holds the link where the index does. The index is still what is
+    read: `Tree.is_link` must not ask HEAD for the listing it cannot make of
+    the index. Were it to, the spelled link would silence nothing and the
+    audit would ask the general question, where it asks the record's."""
     def link(leg) -> None:
         (leg / "docs").mkdir()
         (leg / "docs" / "record.yaml").write_text(record_text(),
                                                   encoding="utf-8")
         (leg / RECORD).unlink()
         symlink(leg / RECORD, target)
-        git("add", "-A", "--", ".", cwd=leg)
+        if in_head:
+            commit_all(leg, "Link the record")
+        else:
+            git("add", "-A", "--", ".", cwd=leg)
 
     _, review = leg_audited(adopter, doctor, tmp_path, record_text(), link)
     [row] = [row for row in review if row["path"] == f"code/{RECORD}"]
@@ -456,5 +471,34 @@ def test_a_git_that_cannot_list_the_commit_reads_a_regular_file_as_before(
     root = repository(tmp_path / "Atlas", files)
     env = no_workspace(tmp_path)
     monkeypatch.setattr(shape_advisory, "git_out", git_out)
+    reading = committed(root, env)
+    assert reading.state == state, reading.as_dict()
+
+
+@pytest.mark.parametrize("files, state", [
+    pytest.param({PROJECT: TRIAD}, TRIAD_ROOT, id="project-yaml"),
+    pytest.param({FAMILY: HOLDER}, FAMILY_HOLDER, id="family-yaml"),
+])
+def test_a_git_that_cannot_follow_a_link_reads_a_regular_manifest_as_before(
+        tmp_path, monkeypatch, files, state):
+    """CONTROLS, true on #1270's head as here, and the stand-in of #1270's
+    `test_a_git_that_cannot_follow_the_link_is_silence_not_advice` for a
+    REGULAR manifest: a git whose `cat-file --follow-symlinks` exits 128
+    cannot follow a link, and a manifest that is no link is not asked to.
+    `_read_mapping` reads it as the blob it is (`Tree.text`), so the commit
+    still says `triad-root` and `family-holder`. A reading that sent every
+    manifest through the follow would read it as no manifest (the `Refusal`
+    is swallowed) and advise the clone, which a git that can follow never
+    shows: the two differ only here."""
+    root = repository(tmp_path / "Atlas", files)
+    real = subprocess.run
+
+    def run(args, *rest, **kwargs):
+        if "--follow-symlinks" in args:
+            return subprocess.CompletedProcess(args, 128, b"", b"fatal: no")
+        return real(args, *rest, **kwargs)
+
+    env = no_workspace(tmp_path)
+    monkeypatch.setattr(subprocess, "run", run)
     reading = committed(root, env)
     assert reading.state == state, reading.as_dict()
