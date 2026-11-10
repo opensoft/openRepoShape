@@ -876,13 +876,12 @@ def _branch_ref(branch: str) -> str:
     or `branch -f`; `_stays`'s; and `create_at_pin`'s after `checkout -b`
     and its `the leg was on` check.
 
-    `_folded_twin` is the one check that still compares text: HEAD's ref,
-    as `_head_of` decodes it, with the manifest's text, as they are and
-    folded. So a twin in case whose bytes this locale reads as other text
-    is missed (`TB<ff>x` for `tb\\udcffx` under Latin-1, `CAF<c3 a9>` for
-    `caf\\udcc3\\udca9` under UTF-8). What a twin is for a name that is not
-    UTF-8 is a question of its own: folded as read back, Latin-1 would make
-    the bytes 0xC4 and 0xE4 twins, which UTF-8 calls none.
+    `_folded_twin` compares with neither this nor the manifest's text: it
+    asks whether two names are one file on a disk that folds case, which
+    reads a name's bytes as UTF-8, so it reads both HEAD's ref and the
+    branch as git's bytes decoded as UTF-8, whatever the locale (#1306).
+    Folded as this reads them back, Latin-1 would make the bytes 0xC4 and
+    0xE4 twins, which UTF-8 calls none.
 
     A NAME GIT CANNOT BE HANDED, which `_handed_to_git` raises
     `UnicodeEncodeError` on, is compared as its text, `refs/heads/<branch>`,
@@ -1114,6 +1113,27 @@ def _fold(name: str) -> str:
     return unicodedata.normalize("NFC", name).casefold()
 
 
+def _as_a_folding_disk_reads(*names: str) -> tuple[str, ...]:
+    """Each of `names` as a disk that folds case reads it (#1306): the bytes
+    git is handed for it (`_handed_to_git`), decoded as UTF-8 whatever this
+    system's locale, a byte that is not UTF-8 as its surrogate escape. That
+    decoding is one to one, so two of them are equal text exactly where
+    they are equal bytes. A name `_head_of` or `_heads` read back is git's
+    own bytes again, since `_handed_to_git` undoes their decoding on POSIX.
+
+    WHERE GIT CANNOT BE HANDED ONE OF THEM, which `_handed_to_git` raises
+    `UnicodeEncodeError` on, each is left its text, as `_branch_ref` falls
+    back for such a name, so they are compared as before #1306. On POSIX no
+    name step (a) reaches gets there (`_argument_fault` refuses one first);
+    on Windows under `PYTHONLEGACYWINDOWSFSENCODING=1` a lone surrogate
+    does, and it is no traceback."""
+    try:
+        return tuple(_handed_to_git(name).decode("utf-8", "surrogateescape")
+                     for name in names)
+    except UnicodeEncodeError:
+        return names
+
+
 def _folded_twin(current: str | None, branch: str) -> bool:
     """Whether HEAD's ref is a TWIN of the tracking branch: a branch under
     `refs/heads/` whose name is the branch's under `_fold` and not byte for
@@ -1133,16 +1153,47 @@ def _folded_twin(current: str | None, branch: str) -> bool:
     `create_at_pin`.
 
     A detached HEAD (`None`) and a ref outside `refs/heads/` are never a
-    twin. The names after `refs/heads/` are compared, and a name this
-    system holds as surrogate escapes (a branch that is not UTF-8, #704)
-    folds as the text it is, so no name raises here. NFC and NFD spellings
-    of one name are twins: APFS reads those as one file too, so a leg on
-    the NFD spelling did #896's harm (#962).
+    twin. The names after `refs/heads/` are compared, and a name that is
+    not UTF-8 (#704) folds as its surrogate escapes, so no name raises
+    here. NFC and NFD spellings of one name are twins: APFS reads those as
+    one file too, so a leg on the NFD spelling did #896's harm (#962).
+
+    BOTH NAMES ARE GIT'S BYTES, READ AS UTF-8, WHATEVER THE LOCALE (#1306):
+    HEAD's ref and the tracking branch are each folded as
+    `_as_a_folding_disk_reads` gives them, and the "not byte for byte" is
+    asked of those too. A disk that folds case (APFS, NTFS) reads a ref's
+    file name as Unicode from UTF-8, so whether two names are one file
+    there is a question about their bytes read as UTF-8, and not about how
+    this locale reads them. So in every locale:
+    - `TB<ff>x` is a twin of `tracking_branch: "tb\\udcffx"`, the byte 0xFF
+      folding as its surrogate escape, and `CAF<c3 a9>` is a twin of
+      `caf\\udcc3\\udca9`, the two bytes of U+00E9;
+    - HEAD on `tb<ff>x` is that branch itself, and no twin of it, though
+      Latin-1 reads the ref as `tb` U+00FF `x`;
+    - `tb<e4>x` is no twin of `tb\\udcc4x`: a surrogate escape folds to
+      nothing but itself. Read as Latin-1, as U+00E4 and U+00C4, the two
+      would be twins, where UTF-8 and ASCII call them none; and no disk
+      that folds case reads two names that are not UTF-8 as one file (APFS
+      refuses such a name). Nor, under Latin-1, is `tb<c4>x` a twin of
+      `tracking_branch: "tb` U+00E4 `x"`, which is handed to git as those
+      same bytes, `tb<e4>x`; the text compare called it one.
+
+    WHAT WAS WRONG. HEAD's ref, as `_head_of` decodes it, was folded with
+    the manifest's text. Where this locale reads a twin's bytes as other
+    text than the manifest's surrogate escapes, the twin was missed, and
+    step (a) made the branch beside it with `checkout -b` and said
+    `created`: `TB<ff>x` (`TB` U+00FF `x`) for `tb\\udcffx` under Latin-1,
+    and `CAF<c3 a9>` (`CAF` U+00E9) for `caf\\udcc3\\udca9` under UTF-8, as
+    under Latin-1. `_folded_spelling` missed the same twins with HEAD
+    elsewhere. On Windows the answer is the text compare's, as it was:
+    `_handed_to_git` writes UTF-8 there, which reads back as the text it
+    was written from.
     """
     if current is None or not current.startswith("refs/heads/"):
         return False
-    held = current[len("refs/heads/"):]
-    return held != branch and _fold(held) == _fold(branch)
+    held, mine = _as_a_folding_disk_reads(current[len("refs/heads/"):],
+                                          branch)
+    return held != mine and _fold(held) == _fold(mine)
 
 
 def _twin_words(twin: str, branch: str) -> tuple[str, str, str]:
@@ -1150,7 +1201,12 @@ def _twin_words(twin: str, branch: str) -> tuple[str, str, str]:
     what a name must differ in to be no twin, as the lines of `_say_fold`
     word them (#962). A twin that is one under `str.casefold()` alone is
     #896's, in #896's words, byte for byte; any other differs in its
-    Unicode form too (NFC and NFD), which only macOS folds."""
+    Unicode form too (NFC and NFD), which only macOS folds. The two are
+    read as `_folded_twin` folds them (`_as_a_folding_disk_reads`, #1306),
+    so a twin it found in case alone is said to differ in case alone, in
+    every locale: under Latin-1 `TB<ff>x` reads as `TB` U+00FF `x`, which
+    `casefold()` holds apart from `tb\\udcffx`."""
+    twin, branch = _as_a_folding_disk_reads(twin, branch)
     if twin.casefold() == branch.casefold():
         return ("only in case", "a disk that folds case (macOS, Windows)",
                 "case")
@@ -1246,7 +1302,13 @@ def _folded_spelling(sub: Path, branch: str) -> str | None:
     commits (a tag, a remote-tracking ref, another branch, or the pin, which
     the new branch holds): the ref made is the one bootstrap never makes, a
     file a disk that folds case reads as a branch that is already there.
-    `_say_spelling` names it and gives the rename that ends the refusal."""
+    `_say_spelling` names it and gives the rename that ends the refusal.
+
+    EACH NAME IS FOLDED AS GIT'S BYTES (#1306), as HEAD's ref is, with no
+    second read of them here: `_heads` reads them by `_try_git`'s rule,
+    which `_handed_to_git` undoes on every system, so `_folded_twin` gets
+    the bytes back from the text. The name returned is that text, so the
+    lines print it as git's name and paste its bytes."""
     for ref in _heads(sub):
         if _folded_twin(ref, branch):
             return ref[len("refs/heads/"):]

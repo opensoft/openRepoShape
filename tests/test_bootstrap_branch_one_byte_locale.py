@@ -34,6 +34,17 @@ bytes, which UTF-8 reads back as `caf` U+00E9 and not as the surrogates the
 manifest wrote, so on 0354a7e7 it met the same two lines under UTF-8 as
 well. No other line changes under UTF-8 or ASCII.
 
+A CASE TWIN IS ONE IN EVERY LOCALE (#1306). On cb9ed806 `_folded_twin`
+folded HEAD's ref, as `_head_of` decodes it, with the manifest's text, so
+where the locale read a twin's bytes as other text it missed the twin, and
+step (a) made the branch beside it and said `created`: `TB<ff>x` for
+`tb\\udcffx` under Latin-1, and `CAF<c3 a9>` for `caf\\udcc3\\udca9` under
+UTF-8 and Latin-1, with HEAD on the twin, beside it at the pin, or on it
+beside the branch. Both names are now folded as git's bytes read as UTF-8,
+whatever the locale: a disk that folds case reads a name's bytes as UTF-8.
+The rows over the twins, and their controls, are the ones after
+`test_a_leg_on_the_branch_with_no_commit_yet_is_not_said_to_leave_it`.
+
 Every row runs `bootstrap.py` in a CHILD under the locale it names, so a
 suite run under UTF-8, as CI's is, measures Latin-1. Each git command a row
 runs itself names a branch by the bytes the child hands git. The Latin-1
@@ -95,6 +106,12 @@ NAMES = {
     # UTF-8's two bytes of U+00E9 spelled as surrogates.
     "utf-8-bytes-as-surrogates": (r'"caf\udcc3\udca9"', "caf\udcc3\udca9",
                                   r"caf\udcc3\udca9"),
+    # The byte 0xC4, Latin-1's U+00C4, whose small letter is 0xE4 (#1306).
+    "byte-0xc4": (r'"tb\udcc4x"', "tb\udcc4x", r"tb\udcc4x"),
+    # U+00E4 itself: the byte 0xE4 in Latin-1, two bytes in UTF-8 (#1306).
+    "u00e4-itself": (r'"tb\xe4x"', "tb\u00e4x", "tb\u00e4x"),
+    # U+00E9 itself, in NFC (#962).
+    "nfc": (r'"caf\xe9"', "caf\u00e9", "caf\u00e9"),
 }
 STEP_A = "(a) legs on tracking branches, pins untouched"
 STEP_B = "(b) neutral validators"
@@ -433,6 +450,338 @@ def test_a_leg_on_the_branch_with_no_commit_yet_is_not_said_to_leave_it(
                                         pin["spec"])
 
 
+#: The case twin of each name, by its bytes: the name's own, its ASCII
+#: letters in capitals, as #1306 measured them.
+TWINS = {"byte-0xff": b"TB\xffx", "utf-8-bytes-as-surrogates": b"CAF\xc3\xa9"}
+#: The twin rows (#1306): each name in each locale. On cb9ed806 Latin-1
+#: missed both twins and UTF-8 the second; the others are the CONTROLS.
+TWIN_ROWS = [
+    pytest.param("byte-0xff", "latin1", id="byte-0xff-latin1"),
+    pytest.param("byte-0xff", "utf-8", id="CONTROL-byte-0xff-utf-8"),
+    pytest.param("byte-0xff", "ascii", id="CONTROL-byte-0xff-ascii"),
+    pytest.param("utf-8-bytes-as-surrogates", "latin1",
+                 id="utf-8-bytes-as-surrogates-latin1"),
+    pytest.param("utf-8-bytes-as-surrogates", "utf-8",
+                 id="utf-8-bytes-as-surrogates-utf-8"),
+    pytest.param("utf-8-bytes-as-surrogates", "ascii",
+                 id="CONTROL-utf-8-bytes-as-surrogates-ascii"),
+]
+#: Each name in each locale, where every side gives one answer.
+EVERY_LOCALE = [pytest.param(name, where, id=f"CONTROL-{name}-{where}")
+                for name in TWINS for where in ("latin1", "utf-8", "ascii")]
+#: What `_twin_words` says a twin differs in, what reads the two as one, and
+#: what a name must differ in to be no twin (#896, #962).
+CASE = ("only in case", "a disk that folds case (macOS, Windows)", "case")
+FORM = ("only in case or Unicode form",
+        "a disk that folds case or Unicode forms (macOS folds both, Windows "
+        "folds case)", "case or Unicode form")
+#: The second twin line's harm, by what step (a) would have done (#896).
+MAKE = ("making {b} could hide the commits a branch spelled like {b} holds "
+        "behind the new ref")
+PLACE = ("the leg is already on {b} there, and bootstrap would say it left a "
+         "branch that keeps its commits")
+
+
+def as_read(raw: bytes, where: str) -> str:
+    """The name git holds as `raw` as a child in `where` reads it back and
+    the lines print it (#391): git's name, in this locale."""
+    return spelled(raw.decode(CODECS[where], "surrogateescape"))
+
+
+def printf_word(escaped: str) -> str:
+    """The word `_paste_word` writes for a name it gives as bytes (#932)."""
+    return f"\"$(printf -- '{escaped}')\""
+
+
+def renamed(name: str, where: str) -> tuple[str, str]:
+    """The two words of the rename the third twin line gives for `TWINS`'s
+    twin of `name`: a `printf` of its bytes, but under UTF-8 for `CAF`
+    U+00E9, which the child prints as those very bytes."""
+    if name == "byte-0xff":
+        return printf_word("TB\\377x"), printf_word("TB\\377x-kept")
+    if where == "utf-8":
+        return "'CAF\u00e9'", "'CAF\u00e9-kept'"
+    return printf_word("CAF\\303\\251"), printf_word("CAF\\303\\251-kept")
+
+
+def twin_lines(state: str, where_held: str, twin: str, printed: str,
+               act: str, way: str, kind: tuple = CASE) -> list[str]:
+    """The three lines step (a) prints of the `spec` leg with a twin of the
+    branch, byte for byte: `where_held` says how the leg has it, `act` is
+    the harm and `way` the way out's line, its command between backticks."""
+    how, reads, _ = kind
+    return [f"  [spec] spec: {state}, and {where_held} {twin}, which differs "
+            f"from {printed} {how}",
+            f"          {reads} reads {twin} and {printed} as one branch, so "
+            f"{act.format(b=printed)}; the leg is left as it is", way]
+
+
+def rename_line(twin: str, printed: str, words: tuple[str, str],
+                kind: tuple = CASE) -> str:
+    """`_say_spelling`'s way out: rename the twin, `words` being the two
+    names as the line words them."""
+    return (f"          rename {twin} to a name that differs from {printed} "
+            f"by more than {kind[2]}, its commits staying on it: `git -C spec "
+            f"branch -m {words[0]} {words[1]}`, and run bootstrap again.")
+
+
+def shell_reads(line: str) -> list[bytes]:
+    """The arguments `/bin/sh` hands `git` from the command between the
+    backticks of `line`, `git` being a function that prints them, each
+    ended by a NUL: the bytes a paste of the line names (#932). The command
+    is handed over as the bytes the child wrote, its stdout being UTF-8,
+    and not as this process's locale would write the text."""
+    command = line.split("`")[1].encode("utf-8")
+    read = subprocess.run(
+        [b"/bin/sh", b"-c", b'git() { printf "%s\\0" "$@"; }\n' + command],
+        capture_output=True, check=True, stdin=subprocess.DEVNULL).stdout
+    return read.split(b"\0")[:-1]
+
+
+def heads(leg: Path) -> bytes:
+    """Every branch of the leg, as git's bytes, one to a line."""
+    return git_answer_bytes(leg, "for-each-ref", "--format=%(refname)",
+                            "refs/heads/")
+
+
+@pytest.mark.parametrize("name, child_locale", TWIN_ROWS,
+                         indirect=["child_locale"])
+def test_a_leg_on_a_case_twin_of_the_branch_is_left_in_every_locale(
+        project, tmp_path, name, child_locale):
+    """#1306's second box: the branch not there, HEAD on its case twin at the
+    pin (`TB<ff>x` for `tb\\udcffx`, `CAF<c3 a9>` for `caf\\udcc3\\udca9`).
+    In every locale: the three twin lines, the twin named as git's name in
+    that locale, the rename pasting its bytes, and the leg left on it. On
+    cb9ed806, under Latin-1 for both and under UTF-8 for the second: the
+    branch made beside the twin, `created`, and `the leg was on` the twin."""
+    where, changes = child_locale
+    printed, _ = tracking(project, tmp_path, name, where)
+    twin = TWINS[name]
+    pin = pins(project)
+    spec = project / "spec"
+    git("checkout", "-q", "-b", os.fsdecode(twin), pin["spec"], cwd=spec)
+    shown = as_read(twin, where)
+
+    lines = step_a(project, tmp_path, changes)
+    assert lines == [
+        *twin_lines(f"branch {printed} does not exist (the pin is "
+                    f"{pin['spec'][:12]})", "the checkout is on", shown,
+                    printed, MAKE, rename_line(shown, printed,
+                                               renamed(name, where))),
+        created("code", printed, pin["code"])], lines
+    assert shell_reads(lines[2]) == [b"-C", b"spec", b"branch", b"-m", twin,
+                                     twin + b"-kept"]
+    assert on_the_branch(spec) == (b"refs/heads/" + twin + b"\n", pin["spec"])
+    assert heads(spec) == b"refs/heads/" + twin + b"\nrefs/heads/main\n"
+
+
+@pytest.mark.parametrize("name, child_locale", TWIN_ROWS,
+                         indirect=["child_locale"])
+def test_a_leg_detached_beside_a_case_twin_is_left_in_every_locale(
+        project, tmp_path, name, child_locale):
+    """#1306's third box, `_folded_spelling`: the branch not there, the leg
+    detached at the pin, and its case twin a branch there. In every locale:
+    the three lines that the leg has the twin, and the leg left detached. On
+    cb9ed806, under Latin-1 for both and under UTF-8 for the second: the
+    branch made beside the twin, and `created`."""
+    where, changes = child_locale
+    printed, _ = tracking(project, tmp_path, name, where)
+    twin = TWINS[name]
+    pin = pins(project)
+    spec = project / "spec"
+    git("branch", "-q", os.fsdecode(twin), pin["spec"], cwd=spec)
+    assert on_the_branch(spec) == (b"", pin["spec"]), "detached at the pin"
+    shown = as_read(twin, where)
+
+    lines = step_a(project, tmp_path, changes)
+    assert lines == [
+        *twin_lines(f"branch {printed} does not exist (the pin is "
+                    f"{pin['spec'][:12]})", "the leg has the branch", shown,
+                    printed, MAKE, rename_line(shown, printed,
+                                               renamed(name, where))),
+        created("code", printed, pin["code"])], lines
+    assert shell_reads(lines[2]) == [b"-C", b"spec", b"branch", b"-m", twin,
+                                     twin + b"-kept"]
+    assert on_the_branch(spec) == (b"", pin["spec"])
+    assert heads(spec) == b"refs/heads/" + twin + b"\nrefs/heads/main\n"
+
+
+@pytest.mark.parametrize("name, child_locale", TWIN_ROWS,
+                         indirect=["child_locale"])
+def test_a_leg_on_a_case_twin_of_the_branch_at_the_pin_is_left(
+        project, tmp_path, name, child_locale):
+    """`place_at_pin` (#896's P9): the branch at the pin, and HEAD on its case
+    twin there, on a disk that keeps case. In every locale: the three twin
+    lines, the `switch` pasting the branch's bytes, and the leg left on the
+    twin. On cb9ed806, under Latin-1 for both and under UTF-8 for the second:
+    the branch checked out, and `the leg was on` the twin, which a disk that
+    folds case reads as the branch itself."""
+    where, changes = child_locale
+    printed, raw = tracking(project, tmp_path, name, where)
+    twin = TWINS[name]
+    pin = pins(project)
+    spec = project / "spec"
+    git("branch", "-q", os.fsdecode(raw), pin["spec"], cwd=spec)
+    if git("checkout", "-q", "-b", os.fsdecode(twin), pin["spec"], cwd=spec,
+           check=False).returncode != 0:
+        pytest.skip("this disk folds case: the twin is the branch here")
+    shown = as_read(twin, where)
+    switch = printf_word("tb\\377x" if name == "byte-0xff"
+                         else "caf\\303\\251")
+
+    lines = step_a(project, tmp_path, changes)
+    assert lines == [
+        *twin_lines(f"branch {printed} is at the pin {pin['spec'][:12]}",
+                    "the checkout is on", shown, printed, PLACE,
+                    f"          run `git -C spec switch {switch}`, which "
+                    "moves no branch, and then run bootstrap again."),
+        created("code", printed, pin["code"])], lines
+    assert shell_reads(lines[2]) == [b"-C", b"spec", b"switch", raw]
+    assert on_the_branch(spec) == (b"refs/heads/" + twin + b"\n", pin["spec"])
+
+
+@pytest.mark.parametrize("name, child_locale", EVERY_LOCALE,
+                         indirect=["child_locale"])
+def test_a_leg_on_the_branch_itself_has_no_twin_in_any_locale(
+        project, tmp_path, name, child_locale):
+    """#1306's fourth box: HEAD on the tracking branch itself, with no commit
+    yet (`tb<ff>x`, `caf<c3 a9>`), is no twin in any locale, though Latin-1
+    reads the first as `tb` U+00FF `x` and UTF-8 the second as `caf` U+00E9:
+    `created`, and no line that the leg left a branch. Passes on cb9ed806
+    too."""
+    where, changes = child_locale
+    printed, raw = tracking(project, tmp_path, name, where)
+    pin = pins(project)
+    spec = project / "spec"
+    git("symbolic-ref", "HEAD", ref(raw), cwd=spec)
+
+    lines = step_a(project, tmp_path, changes)
+    assert lines == [created("spec", printed, pin["spec"]),
+                     created("code", printed, pin["code"])], lines
+    assert on_the_branch(spec) == (b"refs/heads/" + raw + b"\n", pin["spec"])
+
+
+@pytest.mark.parametrize("child_locale", ["latin1", "utf-8", "ascii"],
+                         indirect=True, ids=lambda where: f"CONTROL-{where}")
+def test_the_bytes_0xc4_and_0xe4_are_no_twins_in_any_locale(
+        project, tmp_path, child_locale):
+    """w1283a's Latin-1 objection (#1306): HEAD on `tb<e4>x` with
+    `tracking_branch: "tb\\udcc4x"`. Latin-1 reads the bytes as U+00E4 and
+    U+00C4, which fold alike, and UTF-8 and ASCII as two surrogate escapes,
+    which do not. Folded as git's bytes read as UTF-8, they are no twins in
+    any locale: `created`, and the leg left `tb<e4>x`. Passes on cb9ed806
+    too."""
+    where, changes = child_locale
+    printed, raw = tracking(project, tmp_path, "byte-0xc4", where)
+    other = b"tb\xe4x"
+    pin = pins(project)
+    spec = project / "spec"
+    git("checkout", "-q", "-b", os.fsdecode(other), pin["spec"], cwd=spec)
+
+    lines = step_a(project, tmp_path, changes)
+    assert lines == [
+        created("spec", printed, pin["spec"]),
+        f"          the leg was on {as_read(other, where)}, which keeps its "
+        f"commits; it is on {printed} now",
+        created("code", printed, pin["code"])], lines
+    assert on_the_branch(spec) == (b"refs/heads/" + raw + b"\n", pin["spec"])
+
+
+@pytest.mark.parametrize("child_locale", ["latin1", "utf-8", "ascii"],
+                         indirect=True, ids=lambda where: f"CONTROL-{where}")
+def test_main_is_a_twin_of_main_in_every_locale(project, tmp_path,
+                                                 child_locale):
+    """#896's twin, in every locale: HEAD on `Main`, `main` not there. The
+    three twin lines and the rename, byte for byte as on cb9ed806."""
+    where, changes = child_locale
+    pin = pins(project)
+    spec = project / "spec"
+    git("branch", "-q", "-D", "main", cwd=spec)
+    git("checkout", "-q", "-b", "Main", pin["spec"], cwd=spec)
+
+    lines = step_a(project, tmp_path, changes)
+    assert lines == [
+        *twin_lines(f"branch main does not exist (the pin is "
+                    f"{pin['spec'][:12]})", "the checkout is on", "Main",
+                    "main", MAKE,
+                    rename_line("Main", "main", ("Main", "Main-kept"))),
+        placed("code", "main", pin["code"])], lines
+    assert on_the_branch(spec) == (b"refs/heads/Main\n", pin["spec"])
+
+
+@pytest.mark.parametrize("child_locale", ["utf-8"], indirect=True,
+                         ids=["CONTROL-utf-8"])
+def test_the_nfd_spelling_is_a_twin_of_the_nfc_under_utf_8(
+        project, tmp_path, child_locale):
+    """#962's twin under UTF-8: HEAD on the NFD spelling of `caf` U+00E9, the
+    NFC branch not there. The three lines of a twin in case or Unicode form,
+    byte for byte as on cb9ed806. Skips on a disk that reads the two
+    spellings as one file."""
+    where, changes = child_locale
+    nfd = "cafe\u0301"
+    # Named by their UTF-8 bytes, so a pytest in any locale names them.
+    (tmp_path / os.fsdecode(b"caf\xc3\xa9")).write_bytes(b"")
+    if (tmp_path / os.fsdecode(nfd.encode("utf-8"))).exists():
+        pytest.skip("this disk reads NFC and NFD as one file")
+    printed, raw = tracking(project, tmp_path, "nfc", where)
+    pin = pins(project)
+    spec = project / "spec"
+    git("checkout", "-q", "-b", os.fsdecode(nfd.encode("utf-8")), pin["spec"],
+        cwd=spec)
+
+    lines = step_a(project, tmp_path, changes)
+    assert lines == [
+        *twin_lines(f"branch {printed} does not exist (the pin is "
+                    f"{pin['spec'][:12]})", "the checkout is on", nfd,
+                    printed, MAKE,
+                    rename_line(nfd, printed, (f"'{nfd}'", f"'{nfd}-kept'"),
+                                FORM), FORM),
+        created("code", printed, pin["code"])], lines
+    assert on_the_branch(spec) == (
+        b"refs/heads/" + nfd.encode("utf-8") + b"\n", pin["spec"])
+    assert raw == b"caf\xc3\xa9"
+
+
+@pytest.mark.parametrize("child_locale", [
+    pytest.param("latin1", id="latin1"),
+    pytest.param("utf-8", id="CONTROL-utf-8")], indirect=True)
+def test_a_latin1_capital_is_a_twin_only_where_its_bytes_are_utf_8(
+        project, tmp_path, child_locale):
+    """`tracking_branch: "tb\\xe4x"`, U+00E4 itself, and HEAD on U+00C4's
+    spelling in the child's own codec, the branch not there (#1306). Under
+    UTF-8 the bytes are UTF-8, and the twin lines follow. Under Latin-1 they
+    are `tb<c4>x` beside `tb<e4>x`: the very bytes of the 0xC4 and 0xE4
+    row, which no disk that folds case reads as one file, so the branch is
+    made, and `the leg was on` U+00C4's spelling. On cb9ed806, under
+    Latin-1, the text compare called it a twin and left the leg."""
+    where, changes = child_locale
+    printed, raw = tracking(project, tmp_path, "u00e4-itself", where)
+    capital = "tb\u00c4x"
+    twin = capital.encode(CODECS[where])
+    pin = pins(project)
+    spec = project / "spec"
+    git("checkout", "-q", "-b", os.fsdecode(twin), pin["spec"], cwd=spec)
+
+    lines = step_a(project, tmp_path, changes)
+    if where == "latin1":
+        assert lines == [
+            created("spec", printed, pin["spec"]),
+            f"          the leg was on {capital}, which keeps its commits; "
+            f"it is on {printed} now",
+            created("code", printed, pin["code"])], lines
+        assert on_the_branch(spec) == (b"refs/heads/tb\xe4x\n", pin["spec"])
+        return
+    assert lines == [
+        *twin_lines(f"branch {printed} does not exist (the pin is "
+                    f"{pin['spec'][:12]})", "the checkout is on", capital,
+                    printed, MAKE,
+                    rename_line(capital, printed,
+                                (f"'{capital}'", f"'{capital}-kept'"))),
+        created("code", printed, pin["code"])], lines
+    assert on_the_branch(spec) == (b"refs/heads/" + twin + b"\n", pin["spec"])
+    assert raw == b"tb\xc3\xa4x"
+
+
 class LegacyWindowsCodePage:
     """`os` as `bootstrap.py` reads it on Windows under
     `PYTHONLEGACYWINDOWSFSENCODING=1`: `nt`, with `os.fsencode` and
@@ -473,3 +822,31 @@ def test_a_name_git_cannot_be_handed_is_compared_as_its_text(monkeypatch):
     assert module._argument_fault("tb\udcffx") is None
     assert module._branch_ref("tb\udcffx") == "refs/heads/tb\udcffx"
     assert module._branch_ref("caf\xe9") == "refs/heads/caf\xc3\xa9"
+
+
+def test_a_twin_git_cannot_be_handed_is_folded_as_its_text(monkeypatch,
+                                                           capsys):
+    """The twin path in the same emulated mode (#1306): `_folded_twin` and
+    `_twin_words` fold the bytes `_handed_to_git` gives, which have no UTF-8
+    for `tb\\udcffx`, so each folds the names as their text, as every check
+    did before, and raises nothing; `_folded_spelling` and the lines it
+    leads to raise nothing either. A name git can be handed is folded as
+    its UTF-8, the bytes git stores there, which `_heads` reads back as the
+    text it was (`CAF` U+00C9 for `caf` U+00E9), and not as the code page
+    writes it."""
+    module = load_without_bytecode(ASSEMBLY_TEMPLATE,
+                                   "bootstrap_one_byte_locale")
+    monkeypatch.setattr(module, "os", LegacyWindowsCodePage())
+    monkeypatch.setattr(module, "_heads", lambda sub: [
+        "refs/heads/main", "refs/heads/TB\udcffx"])
+    assert module._folded_twin("refs/heads/TB\udcffx", "tb\udcffx") is True
+    assert module._folded_twin("refs/heads/tb\udcffx", "tb\udcffx") is False
+    assert module._twin_words("TB\udcffx", "tb\udcffx")[0] == "only in case"
+    assert module._folded_spelling(Path("spec"), "tb\udcffx") == "TB\udcffx"
+    assert module._folded_twin("refs/heads/CAF\xc9", "caf\xe9") is True
+    module._say_spelling(Path("spec"), "[spec] spec", "spec", "tb\udcffx",
+                         "TB\udcffx", "branch tb\\udcffx does not exist")
+    out = capsys.readouterr().out.splitlines()
+    assert out[0] == ("  [spec] spec: branch tb\\udcffx does not exist, and "
+                      "the leg has the branch TB\\udcffx, which differs from "
+                      "tb\\udcffx only in case"), out
