@@ -431,12 +431,15 @@ def test_a_pin_as_scaffolded_hands_its_owner_repo_to_open_upstream(
         return real(str(upstream_and_project["upstream"]))
 
     monkeypatch.setattr(update_shape, "open_upstream", opening)
-    # THIS PROCESS READS `LANES_LANE`, THE SUBPROCESS BELOW DOES NOT (#1299).
+    # THIS PROCESS READS `LANES_LANE`, THE CHILD READS A BLANK (#1299).
     # `update_shape.main` prints its NEXT through `lane_trailer_argument`,
-    # which reads this process's environment, where conftest's `run` hands
-    # the child a blank lane. In a shell that exports one, only the in-process
-    # NEXT ended `--trailer 'Lane: <lane>'`, and the two answers differed by
-    # that alone. Unset is no lane, as the blank is: the two read the same.
+    # which reads this process's environment. This module's `run` goes
+    # through `conftest.run_script`, which blanks the child's lane. In a
+    # shell that exports one, only the in-process NEXT ended
+    # `--trailer 'Lane: <lane>'`, and the two answers differed by that
+    # alone. Unset is no lane, as the blank is: the two read the same. With
+    # the guard in place the child gets no lane even without that blank,
+    # because `run_script` copies `os.environ` after the guard has run.
     monkeypatch.delenv("LANES_LANE", raising=False)
     code = update_shape.main(["check", "--root", str(root)])
     out = capsys.readouterr().out
