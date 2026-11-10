@@ -762,10 +762,10 @@ def test_the_bytes_0xc4_and_0xe4_are_twins_in_every_locale(
     assert heads(spec) == b"refs/heads/main\nrefs/heads/" + other + b"\n"
 
 
-#: Pairs that differ in a byte that is not UTF-8 and in ASCII case (r1308a's
-#: F3 on #1308): `(the tracking branch, HEAD's branch by its bytes, the two
-#: words of the rename where the pair is a twin, or None where it is none)`.
-#: Each answer is the same in every locale.
+#: Pairs that differ in a byte that is not UTF-8, and most in ASCII case too
+#: (r1308a's F3 on #1308): `(the tracking branch, HEAD's branch by its
+#: bytes, the two words of the rename where the pair is a twin, or None
+#: where it is none)`. Each answer is the same in every locale.
 PAIRS = [
     # git for Windows names the files `TB` U+00C4 `x` and `tb` U+00E4 `x`.
     pytest.param("byte-0xe4", b"TB\xc4x",
@@ -779,6 +779,11 @@ PAIRS = [
     # `tb84x` on NTFS, which folds `TB84X` to it.
     pytest.param("byte-0x84", b"TB84X", ("TB84X", "TB84X-kept"),
                  id="TB84X-for-tb-84"),
+    # ... and `tb84x` is that very name, in no other case: only git for
+    # Windows' reading holds the two alike, and it is not one to one, so
+    # the bytes are compared as UTF-8 reads them (mutant W2 on #1308).
+    pytest.param("byte-0x84", b"tb84x", ("tb84x", "tb84x-kept"),
+                 id="tb84x-for-tb-84"),
 ]
 
 
