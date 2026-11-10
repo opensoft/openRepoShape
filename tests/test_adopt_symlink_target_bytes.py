@@ -42,6 +42,11 @@ order. A twin after a named link at the copy, the manifest or a pin's file
 went unnamed, as did one beside a link git makes at the copy, a file after
 a link or a second file above the copy, and a file after a submodule.
 
+#1161 (#1189) names each set of case twins a plan keeps in one repository
+as `plan-case-twins`, so each such row of #1138's meets that finding too,
+once, naming the pair it keeps in the root (`apart_from_the_twins`), beside
+every finding the row counts. Two files of one blob there are a NOTE.
+
 The links are made in the INDEX with `git update-index --cacheinfo`, so no
 test builds a source on a disk that holds a NUL in a target, and all but the
 three that ask git to check a link out (marked `needs_disk_symlinks`) run on
@@ -817,6 +822,33 @@ def test_a_named_link_at_the_pin_is_found_there_and_no_case_twin_is_asked(
     assert "once case is ignored" in alone
 
 
+#: `check`'s finding for the case twins a plan keeps in one repository
+#: (#1161), which every row below that keeps a set in the root meets too.
+CASE_TWINS = "plan-case-twins"
+
+
+def apart_from_the_twins(result, *twins: str) -> list[str]:
+    """`result`'s findings but `plan-case-twins`. Since #1161 (#1189) a row
+    that keeps a pair of case twins in the root, `twins` in tree order, gets
+    that finding too: one for the root, naming the pair, before the findings
+    about where the shape writes. It is the pair's, whose fix is a rename in
+    the source, and not a second finding for what each path blocks there,
+    which the row goes on to count. Fewer than two paths are no pair, and
+    then no such finding is made."""
+    found = findings_of(result)
+    sets = [f for f in found if f.startswith(f"FINDING {CASE_TWINS}: ")]
+    if len(twins) < 2:
+        assert sets == [], found
+        return found
+    assert len(sets) == 1, found
+    named, = sets
+    assert named.startswith(
+        f"FINDING {CASE_TWINS}: the plan keeps 1 set of case twins in the "
+        f"assembly root, {len(twins)} paths, "), named
+    assert ": " + " and ".join(f"`{path}`" for path in twins) + ". " in named
+    return [f for f in found if f != named]
+
+
 #: Where a named link sits beside a SECOND path the shape also writes, kept
 #: in the root, so that `check` makes two findings and not one: the link's
 #: own and the second path's (#1089, SHOULD-2 of r1070). What the skips leave
@@ -876,13 +908,16 @@ def test_a_named_link_leaves_out_its_own_finding_and_no_other(
     """Left out for the link's own sake, the second path is still asked: its
     finding is made, and its remedy (send it to a leg, `drop` it) helps the
     file it names. The link is named once, by its own finding, and
-    #908's remediation is said once after the findings."""
+    #908's remediation is said once after the findings. A link with a case
+    twin beside it is one of a pair the root keeps, which `plan-case-twins`
+    names as well (#1189): that finding is the pair's, not the link's."""
     _, plan = planned_root(tmp_path, files, {link: LATE_NUL}, kept)
     if declared:
         declare(plan, A_PIN)
     result = check_root(plan)
     assert result.returncode == 1, result.stdout + result.stderr
-    found = findings_of(result)
+    found = apart_from_the_twins(result, *sorted(
+        path for path in {*files, link} if path.casefold() == link.casefold()))
     assert len(found) == 2, f"the second finding is lost: {found}"
     own, made = found
     assert own.startswith(
@@ -941,7 +976,7 @@ def test_a_case_twin_beside_a_link_git_makes_at_the_copy_is_named_too(
                            {"shape/README.md": NAMED}, kept)
     result = check_root(plan)
     assert result.returncode == 1, result.stdout + result.stderr
-    found = findings_of(result)
+    found = apart_from_the_twins(result, *sorted([twin, "shape/README.md"]))
     assert len(found) == 2, f"the twin is not named: {found}"
     link, made = found
     assert link.startswith(f"FINDING {COPY}: ")
@@ -977,7 +1012,7 @@ def test_a_link_twin_at_the_copy_is_named_once_by_the_copys_finding(
     _, plan = planned_root(tmp_path, files, links, kept)
     result = check_root(plan)
     assert result.returncode == 1, result.stdout + result.stderr
-    found = findings_of(result)
+    found = apart_from_the_twins(result, *sorted({**files, **links}))
     assert len(found) == len(says), found
     for finding, said in zip(found, says):
         assert finding.startswith(f"FINDING {COPY}: ")
@@ -1020,7 +1055,9 @@ def test_each_file_twin_above_a_place_the_shape_writes_is_named(
     _, plan = planned_root(tmp_path, files, links, kept)
     result = check_root(plan)
     assert result.returncode == 1, result.stdout + result.stderr
-    found = findings_of(result)
+    # Two files of one blob, beside no link, are #1189's NOTE, no finding.
+    found = apart_from_the_twins(
+        result, *(sorted({**files, **links}) if links else ()))
     own = [f"FINDING {CODE}: `{link}` is a symlink " for link in links]
     assert len(found) == len(own) + len(named), found
     for finding, head in zip(found, own):
@@ -1040,7 +1077,7 @@ def test_a_case_twin_after_a_submodule_at_the_copy_is_named(tmp_path):
                            ("shape/README.md",))
     result = check_root(plan)
     assert result.returncode == 1, result.stdout + result.stderr
-    found = findings_of(result)
+    found = apart_from_the_twins(result, "shape/README.md", "shape/readme.md")
     assert len(found) == 2, found
     made, submodule = found
     assert made.startswith(f"FINDING {COPY}: ")
@@ -1085,7 +1122,7 @@ def test_each_case_twin_at_the_manifest_is_named(
                            {path: ROOT for path in {**files, **links}})
     result = check_root(plan)
     assert result.returncode == 1, result.stdout + result.stderr
-    found = findings_of(result)
+    found = apart_from_the_twins(result, *sorted({**files, **links}))
     assert len(found) == 2, found
     link, made = found
     assert link.startswith(first)
@@ -1103,7 +1140,8 @@ def test_a_case_twin_after_a_named_link_at_a_pin_file_is_named(tmp_path):
         {"contracts/SHAPE-pin.yaml": LATE_NUL}, {"contracts/": ROOT})
     result = check_root(plan)
     assert result.returncode == 1, result.stdout + result.stderr
-    found = findings_of(result)
+    found = apart_from_the_twins(
+        result, "contracts/SHAPE-pin.yaml", "contracts/Shape-pin.yaml")
     assert len(found) == 2, found
     own, made = found
     assert own.startswith(f"FINDING {CODE}: `contracts/SHAPE-pin.yaml` ")
