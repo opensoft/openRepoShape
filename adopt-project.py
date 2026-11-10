@@ -4473,6 +4473,13 @@ def _makefile_follow_up(surviving: set[str]) -> str:
     of a kept directory `GNUmakefile/`, where GNU make stops for every
     target. The name is `_make_reads_first`'s, and the clause
     `_make_reads_first_clause`'s, which says GNU make stops there.
+
+    NOR CAN A MAKEFILE BE MERGED INTO THE DIRECTORY THAT TAKES THE NAME ON A
+    DISK THAT IGNORES CASE (#1206): a kept `makefile/` is the path the
+    shape's Makefile is written beside there, and the line said "the
+    source's `makefile` is that path, until the two are merged". It names
+    "the source's directory `makefile/`" and says nothing of a merge: the
+    clause that follows says what GNU make does there, and what it takes.
     """
     aside = _root_keeps(surviving, SHAPE_MAKEFILE)
     folded = (not aside
@@ -4492,10 +4499,15 @@ def _makefile_follow_up(surviving: set[str]) -> str:
             f"that block waits in {copy} until the two are merged, and the "
             "run adds none of it to the root's Makefile")
     elif folded:
+        # A DIRECTORY takes the name all the same, but nothing merges a
+        # Makefile into it: the clause that follows says what it takes.
+        directory = f"{twins[0]}/" in surviving and twins[0] not in surviving
+        taking = (f"directory {_spelled(twins[0] + '/')}" if directory
+                  else _spelled(twins[0]))
         said += (
             f"; it is written as the root's `{SHAPE_MAKEFILE}`, or as {copy}"
-            f"{_CASE_ASIDE}, where the source's {_spelled(twins[0])} is that "
-            "path, until the two are merged")
+            f"{_CASE_ASIDE}, where the source's {taking} is that path"
+            + ("" if directory else ", until the two are merged"))
     elif first:
         said += f"; it is written as the root's `{SHAPE_MAKEFILE}`"
     if first:
