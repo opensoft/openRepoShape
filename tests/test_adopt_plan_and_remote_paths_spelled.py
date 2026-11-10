@@ -651,7 +651,12 @@ HOOK_SAYS = "this remote takes no push"
 #: `CHARACTERS`. The line feed is one again (#1233): git's own `To` and
 #: `error:` lines name the remote with it, and it split them, as the line
 #: breaks in what a command printed are kept; a path there is spelled whole.
-REFUSED_CHARACTERS = CHARACTERS
+#: And a line feed after the byte 0xff, which git names as `run` reads it,
+#: U+FFFD, so the path is looked for as `run` reads it too.
+REFUSED_CHARACTERS = [
+    *CHARACTERS,
+    pytest.param("\udcff\n", "\\udcff\\n", id="byte-0xff-then-line-feed"),
+]
 
 
 def a_global_config_whose_hook_refuses_every_push(tmp_path: Path) -> Path:
@@ -691,7 +696,8 @@ def test_a_refused_command_names_the_remote_and_work_dirs_spelled(
     `To` and `error:` lines, each into a line `<D>/re` and a line `mote/...`
     of the path's: the path is spelled whole where git names it now, so
     the `To` line names the remote on one line and no line is the path's
-    (#1233, RV1225's N1)."""
+    (#1233, RV1225's N1), after a byte 0xff as well, which git names
+    U+FFFD."""
     skip_where_cannot_carry(typed, tmp_path)
     planned = a_source_and_its_plan(tmp_path / "src", NO_SPECS)
     plan = tmp_path / "plan.yaml"
@@ -721,10 +727,10 @@ def test_a_refused_command_names_the_remote_and_work_dirs_spelled(
     assert told[0].startswith(f"To {base}/re"), stderr
     assert told[0].endswith("mote/Thing-spec.git"), stderr
     assert not [line for line in said if line.startswith("mote/")], stderr
-    if typed == "\n":
+    if "\n" in typed:
         for raw in (f"re{typed}mote", f"wo{typed}rk"):
             assert raw not in stdout + stderr, stdout + stderr
-    elif typed:
+    if typed not in ("", "\n"):
         assert typed not in stdout + stderr, stdout + stderr
 
 

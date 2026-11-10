@@ -14495,13 +14495,19 @@ def _output_unacted(exc: CommandFailed) -> str:
     holds a line feed, which is spelled whole there, as the command line
     spells it (#1233). git's `To` and `error:` lines name the remote a push
     was refused at, so under `--local-remote-dir <D>/re<LF>mote` the block
-    held a line `mote/Thing-spec.git` the path had put in it. The longest
-    is spelled first, so one that holds another is spelled whole."""
+    held a line `mote/Thing-spec.git` the path had put in it. Each is also
+    looked for as `run` reads it back: a byte that is not UTF-8, which the
+    path holds as a surrogate, is U+FFFD there. The longest is spelled
+    first, so one that holds another is spelled whole."""
     output = exc.output
-    named = {str(part) for part in (*exc.args_list, exc.cwd) if part}
-    for part in sorted(named, key=lambda part: (-len(part), part)):
+    named = set()
+    for part in {str(given) for given in (*exc.args_list, exc.cwd) if given}:
         if "\n" in part:
-            output = output.replace(part, _unacted(part))
+            named.add(part)
+            with contextlib.suppress(UnicodeError):
+                named.add(os.fsencode(part).decode("utf-8", "replace"))
+    for part in sorted(named, key=lambda part: (-len(part), part)):
+        output = output.replace(part, _unacted(part))
     return _unacted(output, kept="\n")
 
 
