@@ -210,10 +210,12 @@ def test_the_refusal_follows_this_pythons_setting(tmp_path, default_digits):
 #: `(the file, the line the number is on, how many digits it holds)`, by test
 #: id: W1212's decimal and the same with a minus sign, in each shape a plain
 #: value is read in, and the three edges: the decimal a digit under half the
-#: smallest float, one in the digits of another script, and one whose nonzero
+#: smallest float, one in the digits of another script, one whose nonzero
 #: digit is not the last, with more digits than the default limit lets
 #: `int()` read in one piece (a test of the last digit alone, or of all the
-#: digits as one integer, reads that one wrong). Every one has a nonzero digit
+#: digits as one integer, reads that one wrong), and one whose nonzero digit
+#: has thousands of zeros after it and hundreds before it (a test of only
+#: the last few digits reads that one wrong). Every one has a nonzero digit
 #: and a float of zero.
 TOO_SMALL = {
     "block-value": (f"a: 1\nk: {TINY}\n", 2, 402),
@@ -232,6 +234,10 @@ TOO_SMALL = {
         402),
     "nonzero-digit-not-last": (f"k: 0.{'0' * 4400}10\n", 1, 4403),
     "nonzero-digit-not-last-negative": (f"k: -0.{'0' * 4400}10\n", 1, 4403),
+    "nonzero-digit-then-many-zeros": (
+        f"k: 0.{'0' * 323}1{'0' * 4400}\n", 1, 4725),
+    "nonzero-digit-then-many-zeros-negative": (
+        f"k: -0.{'0' * 323}1{'0' * 4400}\n", 1, 4725),
 }
 
 
@@ -242,8 +248,8 @@ def test_a_decimal_a_float_can_only_make_zero_of_is_refused_by_its_line(
     words that say it would be zero, as the large end's say it would be
     infinite: in every place a plain value is read, with a minus sign or
     none, where the digits are another script's, and where the nonzero digit
-    is not the last: read at Python's default limit on an integer's digits,
-    whatever this host's setting is."""
+    is not the last, or is followed by thousands of zeros: read at Python's
+    default limit on an integer's digits, whatever this host's setting is."""
     text, line, digits = TOO_SMALL[case]
     refusal = refusal_of(tmp_path, text)
     assert refusal.code == "yaml-unparsable"

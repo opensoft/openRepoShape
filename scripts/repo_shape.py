@@ -599,6 +599,27 @@ _UNMADE_NUMBER_REMEDY = (
     "run the command again.")
 
 
+def _plain_decimal(text: str) -> float:
+    """The float of the plain decimal `text` that `_scalar` read, refused
+    where a 64-bit float cannot hold it: infinite (#1212) or zero with a
+    nonzero digit (#1260). `_scalar`'s docstring says why."""
+    number = float(text)
+    if math.isinf(number):
+        raise YamlError(f"a plain decimal of {len(text.lstrip('-')) - 1} "
+                        "digits is too large to read as a number: a "
+                        "64-bit float cannot hold it, so it would be "
+                        "infinite", _UNMADE_NUMBER_REMEDY)
+    # A float is falsy exactly when it is 0.0 or -0.0: the pattern makes no
+    # nan and inf is refused above, so `not number` asks whether it is zero.
+    if not number and any(
+            int(digit) for digit in text.lstrip("-").replace(".", "")):
+        raise YamlError(f"a plain decimal of {len(text.lstrip('-')) - 1} "
+                        "digits is too small to read as a number: a "
+                        "64-bit float cannot hold it, so it would be "
+                        "zero", _UNMADE_NUMBER_REMEDY)
+    return number
+
+
 def _scalar(raw: str) -> Any:
     """One scalar's value: null, a quoted scalar's text, a bool, a number, or
     a plain scalar's text.
@@ -656,19 +677,7 @@ def _scalar(raw: str) -> Any:
                             "digits is too long for this Python to read as a "
                             "number", _UNMADE_NUMBER_REMEDY) from exc
     if re.fullmatch(r"-?\d+\.\d+", text):
-        number = float(text)
-        if math.isinf(number):
-            raise YamlError(f"a plain decimal of {len(text.lstrip('-')) - 1} "
-                            "digits is too large to read as a number: a "
-                            "64-bit float cannot hold it, so it would be "
-                            "infinite", _UNMADE_NUMBER_REMEDY)
-        if number == 0.0 and any(
-                int(digit) for digit in text.lstrip("-").replace(".", "")):
-            raise YamlError(f"a plain decimal of {len(text.lstrip('-')) - 1} "
-                            "digits is too small to read as a number: a "
-                            "64-bit float cannot hold it, so it would be "
-                            "zero", _UNMADE_NUMBER_REMEDY)
-        return number
+        return _plain_decimal(text)
     return text
 
 
