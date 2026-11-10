@@ -28,11 +28,19 @@ did. Ten places print a name or a sentence that quotes it, and each has a row:
 - the `naming-unclassified` finding.
 
 THE ROWS. The shipped contract classifies none of the three names (#1202), so
-the table, the `--explain` header and the finding are asked of it. Two more
-names, asked of the table and the finding, pin `spelled` ITSELF and not only
-that the gate calls it: a name with a CR, which a gate that escaped just a line
-feed and an ESC would print raw, and a name with a backslash, which prints as
-it is and which `repr` would double. The other sites print a CLASSIFIED name,
+the table, the `--explain` header and the finding are asked of it. Four more
+names pin `spelled` ITSELF and not only that the gate calls it, so that a
+rival escaper fails a row: a name with a CR, which a gate that escaped just a
+line feed and an ESC would print raw; a name with a backslash, which prints as
+it is and which `repr` would double; a name with U+202E (a right-to-left
+override, a bidirectional control that is no C0 or C1 control, which a gate
+that escaped controls only, or a table of LF, CR and ESC, would print raw); and
+a name with U+200D (a zero-width joiner, which `spelled` leaves as it is and
+which a gate that escaped every character `str.isprintable` refuses would
+write as `\\u200d`). The first three are asked of the table and the finding.
+The joiner is asked of the finding only: it takes no column, so a table that
+pads by display width would not keep its label where a plain name's is. The
+other sites print a CLASSIFIED name,
 which only a fork whose patterns take an ESC and a line feed can have, so
 those rows read the shipped contract with its character classes widened
 (`loosened`). A descendant name ends in its product, which the direct pin
@@ -67,15 +75,32 @@ NAMES = [pytest.param(*ENDS_IN_LF, id="ends-in-lf"),
          pytest.param(*INNER_LF, id="inner-lf"),
          pytest.param(*WITH_ESC, id="esc")]
 
-#: Two names that pin `spelled` itself. A gate that escaped only a line feed
-#: and an ESC would print the CR raw, and one that spelled with `repr` would
-#: double the backslash: `spelled` writes a CR as `\r` and leaves a backslash
-#: as it is (the line feed beside it is still `\n`), so the name holding it
+#: Names that pin `spelled` itself. A gate that escaped only a line feed and
+#: an ESC would print the CR raw, and one that spelled with `repr` would
+#: double the backslash: `spelled` writes a CR as `\\r` and leaves a backslash
+#: as it is (the line feed beside it is still `\\n`), so the name holding it
 #: is not doubled.
 ENDS_IN_CR = ("Atlas" + CR, "Atlas\\r")
 WITH_BACKSLASH = ("At\\las" + LF, "At\\las\\n")
+#: U+202E (RLO) is a bidirectional control that reorders the text around it, so
+#: a name holding it can read as another name. `spelled` writes it as
+#: `\\u202e`, and a rival that escaped only the C0 controls, only the category
+#: Cc, or only LF, CR and ESC would print it raw. It is ASCII once spelled, so
+#: the table row can hold it too.
+RLO = chr(0x202E)
+WITH_RLO = ("At" + RLO + "las", "At\\u202elas")
 SPELLED_ITSELF = [pytest.param(*ENDS_IN_CR, id="ends-in-cr"),
-                  pytest.param(*WITH_BACKSLASH, id="backslash")]
+                  pytest.param(*WITH_BACKSLASH, id="backslash"),
+                  pytest.param(*WITH_RLO, id="rlo")]
+
+#: U+200D (ZWJ) is a format character `spelled` leaves as it is, so a person's
+#: emoji sequence or Indic name reads as typed; a rival built on
+#: `str.isprintable` would write it as `\\u200d`. It takes no column, so only
+#: the finding is asked of it, never the table (a table padded by display width
+#: would not keep its label in the plain rows' column).
+ZWJ = chr(0x200D)
+KEPT_AS_IT_IS = [pytest.param("At" + ZWJ + "las", "At" + ZWJ + "las",
+                              id="zwj")]
 
 
 def spelled_of(raw: str) -> str:
@@ -130,13 +155,14 @@ def loose(tmp_path_factory) -> str:
 
 # --- the shipped contract: the table, the header and the finding --------------
 
-@pytest.mark.parametrize("raw, said", NAMES + SPELLED_ITSELF)
+@pytest.mark.parametrize("raw, said", NAMES + SPELLED_ITSELF + KEPT_AS_IT_IS)
 def test_the_finding_prints_the_spelled_name_on_one_line(raw, said,
                                                          unclassified_tail):
     """THE ISSUE'S ROW: on 09697e9c5 `Atlas` plus a line feed gave a blank
     line after `FINDING naming-unclassified: Atlas`, and an ESC reached the
-    terminal. The last two names pin what `spelled` writes: `\\r`, and a
-    backslash as it is."""
+    terminal. The last four names pin what `spelled` writes: `\\r`, a
+    backslash as it is, a right-to-left override as `\\u202e`, and a
+    zero-width joiner as it is."""
     result = run_script(VALIDATOR, raw)
     assert result.returncode == 1, result.stdout + result.stderr
     assert result.stderr.splitlines() == [
