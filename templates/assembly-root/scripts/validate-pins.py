@@ -405,7 +405,10 @@ def _gitfile_opens(path: Path) -> bool:
     git could not read where the leg's objects are, and the run ended in
     `pin-commit-unresolvable` under THE LOCKSTEP RULE, which says the
     pinned commit is missing (RV827's N6). Only a regular file is opened,
-    since the open of a FIFO waits for a writer."""
+    since the open of a FIFO waits for a writer.
+
+    A LEG'S GIT DIRECTORY'S `HEAD` IS ASKED THE SAME WAY, for the same
+    reason (#1222): see `_refuse_an_unreadable_git_dir`."""
     if not _is_a(path, stat.S_ISREG):
         return True
     try:
@@ -458,13 +461,25 @@ def _refuse_an_unreadable_git_dir(root: Path, dotgit: Path,
     missing. Each is named, `spec/.git` or `.git/modules/spec`, with the
     leg checkout's remedy that #712 gives a checkout this user cannot
     search. A git directory with no `HEAD`, or a gitfile that names none,
-    is left to git, which answers for it as it always did."""
+    is left to git, which answers for it as it always did.
+
+    A `HEAD` THIS USER CANNOT OPEN STATS (#1222, RV1200's N2), so a `HEAD`
+    at mode 000 passed, and git, which could not read it, ended the run in
+    `pin-commit-unresolvable`, which says the pinned commit is not in the
+    leg's object store. A `HEAD` that is there is opened as a gitfile is
+    (`_gitfile_opens`): only where it is a regular file, and an open that
+    finds nothing is a git directory with no `HEAD`. One this user cannot
+    open is named, `.git/modules/spec/HEAD` or `spec/.git/HEAD`, with the
+    same remedy."""
     named = dotgit
     try:
         gitdir = _leg_git_dir(dotgit)
         if gitdir is not None:
             named = Path(os.path.normpath(gitdir))
-            _is_there(gitdir / "HEAD")
+            head = gitdir / "HEAD"
+            if _is_there(head):
+                named = named / "HEAD"
+                _gitfile_opens(head)
     except OSError as exc:
         raise _unreadable_file(code, _named(root, named), exc, reads) from exc
 
@@ -650,18 +665,27 @@ def _load(root: Path, path: Path):
     start named relative to the root. Asked of the refusal and not of new
     words in `repo_shape`, so a root whose `scripts/repo_shape.py` is older
     than this file names the file the same way (#370, #610): `load_yaml`
-    has raised its refusal `from` the `OSError` since it was written."""
+    has raised its refusal `from` the `OSError` since it was written.
+
+    THE PATH AT ITS START IS LOOKED FOR IN BOTH SPELLINGS (#1168). Since
+    #1168 `load_yaml` names the file as `shown_path` names it, which is
+    `repr` for a path that is not printable (a root under a folder whose
+    name holds an ESC or a line feed), and before it, raw. A root re-copies
+    its pinned files one row at a time, so this file may meet either: the
+    raw prefix and `_shown`'s are both asked, and either is named relative
+    to the root. For a printable path the two are one."""
     try:
         return load_yaml(path)
     except Refusal as exc:
         if isinstance(exc.__cause__, OSError):
             raise _unreadable_file("yaml-unreadable", _named(root, path),
                                    exc.__cause__) from exc.__cause__
-        absolute = f"{path}: "
-        if not exc.detail.startswith(absolute):
-            raise
-        raise Refusal(exc.code, _named(root, path) + ": "
-                      + exc.detail[len(absolute):], exc.remediation) from exc
+        for absolute in (f"{path}: ", f"{_shown(str(path))}: "):
+            if exc.detail.startswith(absolute):
+                raise Refusal(exc.code, _named(root, path) + ": "
+                              + exc.detail[len(absolute):],
+                              exc.remediation) from exc
+        raise
 
 
 def _workflows_unlistable(root: Path, workflows: Path,
@@ -1275,7 +1299,8 @@ def _check_pin_digest(root: Path, path: str, commit: str, pin: dict, rel: str,
     Python 3.14's `exists()` would have said of it. So is a `.git` gitfile
     this user cannot open (#919): see `_gitfile_opens`; and a git directory
     this user cannot search, the `.git` itself or the one a gitfile names
-    (#968): see `_refuse_an_unreadable_git_dir`.
+    (#968), or whose `HEAD` it cannot open (#1222): see
+    `_refuse_an_unreadable_git_dir`.
     """
     submodule = root / path
     named = _shown(path)

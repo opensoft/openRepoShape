@@ -35,18 +35,32 @@ with no remedy, whatever `--tracking-branch` said. Now that clone is refused
 by name, with both ways through, and `--tracking-branch dev` reads it at
 `dev`. A default branch outside the alphabet a command line may carry, such
 as `café`, is refused as before, and the refusal now says the way past it.
+
+A branch git could not list is no branch the source lacks (#1219). A
+directory of the source's refs this user cannot list was read as holding
+none, and a ref git could not reach as not there, so a clone whose
+`.git/refs/heads` was at mode 000 was refused as having no branch of its
+own, "(its branches: none)". Each is `source-unreadable` now, naming the
+directory, with the `chmod` cure; the rows are at the end of this file.
 """
 
 from __future__ import annotations
 
+import contextlib
+import errno
+import os
 import shutil
+import stat
+import subprocess
 import sys
 from pathlib import Path
 
 import pytest
 
-from conftest import (ADOPT, FILE_PROTOCOL, REPO, git, make_source_repo,
-                      run_script, write_plan)
+from conftest import (ADOPT, FILE_PROTOCOL, REPO, git, load_without_bytecode,
+                      make_source_repo, run_script, spelled, write_plan)
+from test_adopt_unsearchable_source import (CURE, DENIED, UNREADABLE,
+                                            needs_a_mode, recording_gh, said)
 
 sys.path.insert(0, str(REPO / "scripts"))
 from repo_shape import load_yaml  # noqa: E402
@@ -520,3 +534,451 @@ def test_a_default_branch_outside_the_alphabet_names_the_way_past_it(
     assert written["tracking_branch"] == "main"
     checked = check(plan)
     assert checked.returncode == 0, checked.stdout + checked.stderr
+
+
+# --- a directory of the source's refs git cannot list (#1219) ---------------
+#
+# `git for-each-ref` passes over a directory of refs it cannot list, without
+# a word and exit 0; `git symbolic-ref -q` exits 128, "No such ref", of a
+# ref it cannot reach, where it exits 1 of one that is not there. ON
+# 50ce8ab1 (2026-10-23), git 2.43.0, Python 3.12.3, uid 1000, a stub `gh`
+# and local remotes:
+#
+# - `.git/refs/heads` at mode 000 or `--x`, or `.git/refs` at `--x`: `plan
+#   --source`, and `check` and `execute` of a plan recording `cloned: true`,
+#   were `source-default-branch-not-local`, "the source's `origin/HEAD`
+#   names `main` ... (its branches: none)"; so was a clone on `release/v1`
+#   with `refs/heads/release` at 000 or `--x`.
+# - `refs/heads/feature` at `--x`, HEAD on `feature/x` beside `main`: "its
+#   HEAD is on `feature/x`, which has no commit yet"; at 000, HEAD was read
+#   as detached and `plan` written at `main`, and `check` found `plan-stale`.
+# - `refs/remotes/origin` at 000, `origin/HEAD` naming `main` and only a
+#   `dev` of the source's own: `plan` written at `dev`, its `origin/HEAD`
+#   passed over; at `--x`, the remote's branches fetched loose, refused
+#   saying `origin` has no `main` "either", and to ask it again.
+#
+# Now each is `source-unreadable`, naming the directory, with the `chmod`
+# cure, before anything is cloned or made, and `gh` is never asked. A real
+# mode runs in a child, skipped on Windows and as root (`needs_a_mode`); the
+# same questions are asked in-process too, which runs everywhere.
+
+#: The modes a directory of refs is put at: no listing and no search, a
+#: search alone, a listing alone.
+REF_MODES = [pytest.param(0o000, id="000"), pytest.param(0o100, id="x-only"),
+             pytest.param(0o400, id="r-only")]
+#: What `source-unreadable` cannot tell, by the refs git could not list.
+BRANCHES_UNTOLD = "the source's branches"
+ORIGIN_UNTOLD = "the branches of the source's remote `origin`"
+#: What 50ce8ab1 said of a clone whose `.git/refs/heads` it could not list.
+NO_BRANCHES = "(its branches: none)"
+#: The GitHub url the source's `origin` names, which `plan` records.
+NORTHWIND_URL = "https://github.com/testorg/Northwind.git"
+#: `plan`'s flags after `--source <it>`, as `write_plan` passes them.
+PLAN_FLAGS = ("--project", "Northwind", "--org", "testorg", "--elected-by",
+              "Test Human", "--elected-on", "2026-09-02")
+
+
+@pytest.fixture(scope="module")
+def adopter():
+    return load_without_bytecode(ADOPT, "adopt_tracking_branch")
+
+
+@contextlib.contextmanager
+def refs_at(directory: Path, mode: int):
+    """`directory` at `mode` for the `with`, its mode given back in a
+    `finally`. The mode is asserted to bite: this user can no longer both
+    list and search it, which a file system that ignores modes would let
+    pass for the wrong reason."""
+    before = stat.S_IMODE(directory.stat().st_mode)
+    directory.chmod(mode)
+    try:
+        assert not os.access(directory, os.R_OK | os.X_OK), directory
+        yield directory
+    finally:
+        directory.chmod(before)
+
+
+def refs_refused(source: Path, part: str, untold: str,
+                 reason: str = DENIED) -> str:
+    """The detail `source-unreadable` names `part` of the refs in the
+    source's `.git` with, and the directory whole."""
+    whole = os.path.join(os.path.realpath(source), ".git", *part.split("/"))
+    return (f"the source's `{part}`, {spelled(whole)}: {reason}, so "
+            f"{untold} cannot be told")
+
+
+def a_clone(root: Path, default: str = "main") -> Path:
+    """`git clone` of a repository whose default branch is `default`, with a
+    `dev` beside it: `origin/HEAD` names `default`, the clone's one branch,
+    and its `origin` is the GitHub url `plan` records."""
+    seed = make_source_repo(root / "seed", tree=TREE, edits=(),
+                            branch=default)
+    git("branch", "dev", cwd=seed)
+    remote = root / "testorg" / "Northwind.git"
+    git(*FILE_PROTOCOL, "clone", "-q", "--bare", str(seed), str(remote),
+        cwd=root)
+    source = root / "Northwind"
+    git(*FILE_PROTOCOL, "clone", "-q", str(remote), str(source), cwd=root)
+    git("remote", "set-url", "origin", NORTHWIND_URL, cwd=source)
+    return source
+
+
+def a_fetched_source(root: Path, own: str) -> Path:
+    """A source as `git init`, `git remote add` and `git fetch` leave one:
+    its remote's branches, `main` and `dev`, loose in `refs/remotes/origin`
+    (a clone packs them), `origin/HEAD` naming `main`, and one branch of its
+    own, `own`, made from its remote's."""
+    seed = make_source_repo(root / "seed", tree=TREE, edits=())
+    git("branch", "dev", cwd=seed)
+    remote = root / "testorg" / "Northwind.git"
+    git(*FILE_PROTOCOL, "clone", "-q", "--bare", str(seed), str(remote),
+        cwd=root)
+    source = root / "Northwind"
+    source.mkdir()
+    git("init", "-q", "-b", own, ".", cwd=source)
+    git("remote", "add", "origin", str(remote), cwd=source)
+    git(*FILE_PROTOCOL, "fetch", "-q", "origin", cwd=source)
+    git("remote", "set-head", "origin", "main", cwd=source)
+    git("checkout", "-q", "-B", own, f"origin/{own}", cwd=source)
+    git("remote", "set-url", "origin", NORTHWIND_URL, cwd=source)
+    assert not (source / ".git" / "packed-refs").exists()
+    return source
+
+
+def a_repository_on(root: Path, branch: str) -> Path:
+    """A repository with no remote: `main`, and HEAD on `branch`, a commit
+    ahead of it."""
+    source = make_source_repo(root / "Northwind", tree=TREE, edits=())
+    git("switch", "-q", "-c", branch, cwd=source)
+    git("commit", "-q", "--allow-empty", "-m", "Ahead", cwd=source)
+    return source
+
+
+def planned_as_cloned(root: Path, source: Path, *flags: str) -> Path:
+    """`plan --source <source>` while git reads it whole, and the plan it
+    wrote, recorded as a clone `plan` made (`source.cloned: true`), as `plan
+    --source <org/repo>` records its clone."""
+    plan = root / PLAN_NAME
+    result = write_plan(source, plan, extra=(
+        "--work-dir", str(root / "plan-work"), *flags))
+    assert result.returncode == 0, result.stdout + result.stderr
+    assert MISSING not in result.stdout + result.stderr
+    text = plan.read_bytes()
+    assert text.count(b"\n  cloned: false\n") == 1, text
+    plan.write_bytes(text.replace(b"\n  cloned: false\n",
+                                  b"\n  cloned: true\n"))
+    return plan
+
+
+def asked_of(root: Path, verb: str, source: Path, plan: Path | None,
+             env: dict, *flags: str) -> subprocess.CompletedProcess:
+    """`plan --source <source> <flags>`, or `<verb> --plan <plan>` with a
+    work directory and local remotes of its own."""
+    if verb == "plan":
+        return run_script(ADOPT, "plan", "--source", str(source),
+                          *PLAN_FLAGS, *flags, "--out",
+                          str(root / "again.yaml"), "--work-dir",
+                          str(root / "again-work"), env=env)
+    return run_script(ADOPT, verb, "--plan", str(plan),
+                      *(["--yes"] if verb == "execute" else []),
+                      "--work-dir", str(root / f"{verb}-work"),
+                      "--local-remote-dir", str(root / "remotes"), env=env)
+
+
+def assert_refs_refused(proc, detail: str, root: Path, log: Path, *,
+                        written: bool = False) -> None:
+    """Exit 2, `source-unreadable` with `detail` and the cure, none of the
+    answers 50ce8ab1 gave, `gh` never asked and nothing made; and no plan
+    written again unless `written`, `plan` having written it before the
+    report's last reads."""
+    text = said(proc)
+    assert proc.returncode == 2, text
+    assert f"{UNREADABLE}{detail}" in proc.stderr, text
+    assert CURE in proc.stderr, text
+    for words in (NOT_LOCAL, NO_BRANCHES, ASK_AGAIN, MISSING, "plan-stale",
+                  "Traceback"):
+        assert words not in text, (words, text)
+    assert log.read_bytes() == b""
+    assert (root / "again.yaml").exists() is written
+    assert not (root / "remotes").exists()
+
+
+@needs_a_mode
+@pytest.mark.parametrize("mode", REF_MODES)
+@pytest.mark.parametrize("verb", ["plan", "check", "execute"])
+def test_a_clone_whose_branches_git_cannot_list_is_refused_by_name(
+        tmp_path, verb, mode):
+    """RV1186's case: a clone `plan` made, its `.git/refs/heads` at mode 000,
+    `--x` or `r--`. On 50ce8ab1 `plan`, `check` and `execute` alike were
+    `source-default-branch-not-local`, "(its branches: none)", with a `git
+    branch` to run as the way out. Now `source-unreadable`, naming the
+    directory, exit 2."""
+    source = a_clone(tmp_path)
+    plan = planned_as_cloned(tmp_path, source)
+    env, log = recording_gh(tmp_path / "gh-bin")
+
+    with refs_at(source / ".git" / "refs" / "heads", mode):
+        proc = asked_of(tmp_path, verb, source, plan, env)
+
+    assert_refs_refused(proc, refs_refused(source, "refs/heads",
+                                           BRANCHES_UNTOLD), tmp_path, log)
+
+
+@needs_a_mode
+def test_a_clone_whose_refs_git_can_search_and_not_list_is_named(tmp_path):
+    """`.git/refs` at `--x`: git takes the repository for one, since it
+    asks `refs` with a search, and lists nothing in it, so on 50ce8ab1 the
+    clone had no branch of its own. Now `refs` is named."""
+    source = a_clone(tmp_path)
+    env, log = recording_gh(tmp_path / "gh-bin")
+
+    with refs_at(source / ".git" / "refs", 0o100):
+        proc = asked_of(tmp_path, "plan", source, None, env)
+
+    assert_refs_refused(proc, refs_refused(source, "refs", BRANCHES_UNTOLD),
+                        tmp_path, log)
+
+
+@needs_a_mode
+@pytest.mark.parametrize("mode", REF_MODES)
+@pytest.mark.parametrize("verb", ["plan", "check"])
+@pytest.mark.parametrize(("layout", "part"), [
+    pytest.param("origin-names-it", "refs/heads/release",
+                 id="origin-names-it"),
+    pytest.param("head-is-on-it", "refs/heads/feature", id="head-is-on-it"),
+])
+def test_a_nested_directory_of_branches_git_cannot_list_is_named(
+        tmp_path, layout, part, verb, mode):
+    """A branch named `release/v1` is kept in `refs/heads/release`, which git
+    lists apart. A clone on it, `origin/HEAD` naming it, and a repository
+    with no remote, its HEAD on `feature/x` beside `main`, with that
+    directory at mode 000, `--x` or `r--`: on 50ce8ab1 refused as having no
+    such branch, or, HEAD on it at 000, read at `main`. Now that directory
+    is named."""
+    source = (a_clone(tmp_path, "release/v1") if layout == "origin-names-it"
+              else a_repository_on(tmp_path, "feature/x"))
+    plan = planned_as_cloned(tmp_path, source)
+    env, log = recording_gh(tmp_path / "gh-bin")
+
+    with refs_at(source / ".git" / Path(*part.split("/")), mode):
+        proc = asked_of(tmp_path, verb, source, plan, env)
+
+    assert_refs_refused(proc, refs_refused(source, part, BRANCHES_UNTOLD),
+                        tmp_path, log)
+
+
+@needs_a_mode
+@pytest.mark.parametrize("mode", REF_MODES)
+def test_a_remote_whose_branches_git_cannot_list_is_named(tmp_path, mode):
+    """A source whose `origin/HEAD` names `main`, which only its remote has:
+    read whole, it is `source-default-branch-not-local`, with `git branch
+    main origin/main` as the way through. Its `refs/remotes/origin` at mode
+    000: on 50ce8ab1 git said "No such ref" of the `origin/HEAD`, which was
+    passed over, and the plan written at `dev`; at `--x`, `origin` had no
+    `main` "either", and was to be asked again. Now the directory is
+    named."""
+    source = a_fetched_source(tmp_path, "dev")
+    env, log = recording_gh(tmp_path / "gh-bin")
+    whole = asked_of(tmp_path, "plan", source, None, env)
+    assert (f"{NOT_LOCAL}the source's `origin/HEAD` names `main`") in \
+        whole.stderr, said(whole)
+    assert MAKE_IT_LOCAL in whole.stderr, said(whole)
+
+    with refs_at(source / ".git" / "refs" / "remotes" / "origin", mode):
+        proc = asked_of(tmp_path, "plan", source, None, env)
+
+    assert_refs_refused(proc, refs_refused(source, "refs/remotes/origin",
+                                           ORIGIN_UNTOLD), tmp_path, log)
+
+
+@needs_a_mode
+@pytest.mark.parametrize("verb", ["check", "execute"])
+def test_an_origin_head_git_cannot_reach_is_not_passed_over(tmp_path, verb):
+    """The same source planned with `--tracking-branch dev`, recorded as a
+    clone `plan` made, and its `refs/remotes/origin` then at mode 000: on
+    50ce8ab1 `check` read it at HEAD's branch, `plan ok`, what its
+    `origin/HEAD` names untold. Now `check` and `execute` are refused."""
+    source = a_fetched_source(tmp_path, "dev")
+    plan = planned_as_cloned(tmp_path, source, TRACKING, "dev")
+    env, log = recording_gh(tmp_path / "gh-bin")
+
+    with refs_at(source / ".git" / "refs" / "remotes" / "origin", 0o000):
+        proc = asked_of(tmp_path, verb, source, plan, env)
+
+    assert_refs_refused(proc, refs_refused(source, "refs/remotes/origin",
+                                           ORIGIN_UNTOLD), tmp_path, log)
+
+
+@needs_a_mode
+@pytest.mark.parametrize("verb", ["plan", "check"])
+def test_a_tracking_branch_git_cannot_list_is_not_called_missing(tmp_path,
+                                                                 verb):
+    """A source on a `main` of its own, tracking `dev`, which only its
+    remote has, fetched loose; its `refs/remotes/origin` at `--x`, so
+    `origin/HEAD` is read and `origin`'s branches are not listed. On
+    50ce8ab1 `plan` noted, and `check` found, `plan-tracking-branch-missing`:
+    `dev` "is no branch of the source (its branches: `main`; ...)", read
+    from its own branches. Now `source-unreadable`; `plan` has written the
+    plan by then, as before any of the report's last reads."""
+    source = a_fetched_source(tmp_path, "main")
+    plan = planned_as_cloned(tmp_path, source, TRACKING, "dev")
+    env, log = recording_gh(tmp_path / "gh-bin")
+
+    with refs_at(source / ".git" / "refs" / "remotes" / "origin", 0o100):
+        proc = asked_of(tmp_path, verb, source, plan, env, TRACKING, "dev")
+
+    assert_refs_refused(proc, refs_refused(source, "refs/remotes/origin",
+                                           ORIGIN_UNTOLD), tmp_path, log,
+                        written=verb == "plan")
+
+
+def test_a_source_with_no_branch_of_its_own_is_still_said_to_have_none(
+        tmp_path):
+    """A source whose HEAD is detached and whose one branch was deleted has
+    no branch: git lists each directory and finds none. It is
+    `source-default-branch-not-local`, "(its branches: none)", as on
+    50ce8ab1, and never `source-unreadable`."""
+    source = make_source_repo(tmp_path / "Northwind", tree=TREE, edits=())
+    git("checkout", "-q", "--detach", cwd=source)
+    git("branch", "-q", "-D", "main", cwd=source)
+
+    result = write_plan(source, tmp_path / PLAN_NAME)
+
+    assert result.returncode == 2, result.stdout + result.stderr
+    assert (f"{NOT_LOCAL}the source names no branch of its own to read: it "
+            "has no `origin/HEAD` naming a branch of its remote `origin`, "
+            "its HEAD is detached, and it has no branch `main`, which this "
+            f"tool reads then {NO_BRANCHES}.") in result.stderr, result.stderr
+    assert "source-unreadable" not in result.stderr, result.stderr
+
+
+# --- the same questions, in-process (as root and on Windows too) ------------
+
+def unlisted_here(adopter, monkeypatch, directory: Path,
+                  code: int = errno.EACCES) -> None:
+    """In this process, as git and the system answer where `directory`
+    cannot be listed: `git for-each-ref` printing nothing, and `os.scandir`
+    of `directory` refused with `code`; every other call is the real one."""
+    locked = os.path.normcase(os.path.realpath(directory))
+    real_scandir = os.scandir
+    real_git_out = adopter.git_out
+
+    def refusing(path="."):
+        if not isinstance(path, int) and os.path.normcase(
+                os.path.realpath(path)) == locked:
+            raise OSError(code, os.strerror(code), os.fspath(path))
+        return real_scandir(path)
+
+    def listing_nothing(args, cwd, *rest, **kwargs):
+        if args[:1] == ["for-each-ref"]:
+            return b""
+        return real_git_out(args, cwd, *rest, **kwargs)
+
+    monkeypatch.setattr(os, "scandir", refusing)
+    monkeypatch.setattr(adopter, "git_out", listing_nothing)
+
+
+@pytest.mark.parametrize(("code", "cure", "not_said"), [
+    pytest.param(errno.EACCES, CURE, "which no `chmod`", id="eacces"),
+    pytest.param(errno.EIO, "which no `chmod` puts right", "chmod u+rx",
+                 id="eio"),
+])
+def test_a_directory_the_system_will_not_list_is_named_everywhere(
+        adopter, monkeypatch, tmp_path, code, cure, not_said):
+    """`Source.open` of a clone on `release/v1` whose `refs/heads/release`
+    the system will not list: `source-unreadable`, naming it, with the cure
+    for a permission and none for another reason."""
+    source = a_clone(tmp_path, "release/v1")
+    unlisted_here(adopter, monkeypatch,
+                  source / ".git" / "refs" / "heads" / "release", code)
+
+    with pytest.raises(adopter.Refusal) as raised:
+        adopter.Source.open(str(source), tmp_path / "work")
+
+    refusal = raised.value
+    assert refusal.code == "source-unreadable"
+    assert refusal.detail == refs_refused(
+        source, "refs/heads/release", BRANCHES_UNTOLD,
+        f"cannot be read ({os.strerror(code)})")
+    assert cure in refusal.remediation
+    assert not_said not in refusal.remediation
+
+
+def test_a_head_git_cannot_reach_is_asked_about_everywhere(
+        adopter, monkeypatch, tmp_path):
+    """`git symbolic-ref -q HEAD` exiting 128, "No such ref", as git does
+    where it cannot reach the branch HEAD names, and `refs/heads/feature`
+    refused to `os.scandir`: a repository on `feature/x` is
+    `source-unreadable`, naming it. On 50ce8ab1 HEAD was read as detached
+    and the source read at `main`."""
+    source = a_repository_on(tmp_path, "feature/x")
+    unlisted_here(adopter, monkeypatch,
+                  source / ".git" / "refs" / "heads" / "feature")
+    real_run = subprocess.run
+
+    def unreached(args, *rest, **kwargs):
+        if list(args) == ["git", "symbolic-ref", "-q", "HEAD"]:
+            return subprocess.CompletedProcess(
+                args, 128, b"", b"fatal: No such ref: HEAD\n")
+        return real_run(args, *rest, **kwargs)
+
+    monkeypatch.setattr(subprocess, "run", unreached)
+
+    with pytest.raises(adopter.Refusal) as raised:
+        adopter.Source.open(str(source), tmp_path / "work")
+
+    assert raised.value.code == "source-unreadable"
+    assert raised.value.detail == refs_refused(source, "refs/heads/feature",
+                                               BRANCHES_UNTOLD)
+
+
+def test_the_branch_a_clone_checks_out_is_not_guessed_past_an_unlisted_one(
+        adopter, monkeypatch, tmp_path):
+    """`_cloned_branch` reads HEAD's branch, `feature/x`, and on 50ce8ab1
+    took a list without it for a HEAD on no branch, so `check` guessed what
+    `git clone` would write. Now that list is asked about first."""
+    source = a_repository_on(tmp_path, "feature/x")
+    opened = adopter.Source(Path(os.path.realpath(source)), None,
+                            "feature/x", "")
+    assert adopter._cloned_branch(opened) == "feature/x"
+    unlisted_here(adopter, monkeypatch,
+                  source / ".git" / "refs" / "heads" / "feature")
+
+    with pytest.raises(adopter.Refusal) as raised:
+        adopter._cloned_branch(opened)
+
+    assert raised.value.code == "source-unreadable"
+    assert raised.value.detail == refs_refused(source, "refs/heads/feature",
+                                               BRANCHES_UNTOLD)
+
+
+def test_a_source_git_reads_whole_is_asked_nothing_more(adopter, monkeypatch,
+                                                        tmp_path):
+    """A source git reads whole costs nothing new: a clone, a clone on a
+    branch in a directory of its own, a repository with no remote on
+    `feature/x`, and one whose HEAD is detached are each read at the branch
+    they were read at before, and their tracking branch found, and
+    `_refuse_unlisted_refs`, which runs `git rev-parse` and lists
+    directories, is never asked."""
+    asked = []
+    monkeypatch.setattr(adopter, "_refuse_unlisted_refs",
+                        lambda *args: asked.append(args))
+    detached = make_source_repo(tmp_path / "detached" / "Northwind",
+                                tree=TREE, edits=())
+    git("checkout", "-q", "--detach", cwd=detached)
+    sources = {"clone": a_clone(tmp_path / "clone"),
+               "nested": a_clone(tmp_path / "nested", "release/v1"),
+               "no-remote": a_repository_on(tmp_path / "local", "feature/x"),
+               "detached": detached}
+    read = {}
+    for name, source in sources.items():
+        opened = adopter.Source.open(str(source), tmp_path / "work")
+        read[name] = opened.branch
+        assert adopter._tracking_branch_problem(opened, "it",
+                                                opened.branch) is None
+        assert adopter._cloned_branch(opened) == (
+            None if name == "detached" else opened.branch)
+
+    assert read == {"clone": "main", "nested": "release/v1",
+                    "no-remote": "feature/x", "detached": "main"}
+    assert asked == []
