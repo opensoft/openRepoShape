@@ -22,6 +22,13 @@ is not a `Makefile` the line already names. Each kept name in the rows below
 has its own `which` target, so `make which` at the root of a real adoption
 prints the name of the file GNU make read, and the line names that file.
 
+Where the source keeps `Makefile` and `makefile` side by side (the rows
+`Makefile+makefile` and `all-three`), the plan keeps a set of case twins in
+the root. Since #1161 `check` names it as `plan-case-twins` on every disk and
+exits 1, and `execute` refuses it before any leg exists, so those two rows ask
+`check` for the finding beside the line and `execute` for its refusal, and
+are in no clone: there is none to run `make` in.
+
 README.md's sentence (#977's (b)) said "the root Makefile it materializes
 exports `CONTRACTS_DIR`", untrue where the source keeps a `Makefile` of its
 own. Its section is bound to the handbook's `adopt` section
@@ -44,8 +51,9 @@ from pathlib import Path
 
 import pytest
 
-from conftest import (ADOPT, REPO, git, load_without_bytecode,
-                      make_source_repo, run_script, write_plan)
+from conftest import (ADOPT, REPO, findings, git, load_without_bytecode,
+                      make_source_repo, refused_before_any_leg, run_script,
+                      write_plan)
 from test_adopt_contracts_dir import (EDITS, MAKEFILE_FOLLOW_UP,
                                       OWN_MAKEFILE_FOLLOW_UP, PROJECT,
                                       SPEC_PATH, SPLIT_BRANCH, TREE,
@@ -100,6 +108,16 @@ def reads(name: str, joint: str = "; and") -> str:
             "or includes a Makefile that does")
 
 
+def stops_at(name: str, joint: str = "; and") -> str:
+    """The clause naming a DIRECTORY `name/` the root keeps, which GNU make
+    finds first and stops at (#1132)."""
+    return (f"{joint} GNU make at the root stops at the source's directory "
+            f"`{name}/`, the first of `GNUmakefile`, `makefile` and "
+            f"`Makefile` it finds (`{name}: Is a directory.`), so `make` "
+            "there exports `CONTRACTS_DIR` only once the root keeps no "
+            "directory of that name")
+
+
 #: `(the root files the plan keeps, the line, the file GNU make reads first
 #: at the root of a clone on a disk that keeps case)`.
 ROWS = [
@@ -126,6 +144,29 @@ ROWS = [
                  "GNUmakefile", id="all-three"),
 ]
 
+#: The code of the finding #1161 adds and of `execute`'s refusal, and what
+#: `check` says first of the one set the rows that keep `Makefile` and
+#: `makefile` side by side hold.
+PLAN_CASE_TWINS = "plan-case-twins"
+TWINS_FINDING = (
+    f"FINDING {PLAN_CASE_TWINS}: the plan keeps 1 set of case twins in the "
+    "assembly root, 2 paths, the paths of a set differing only in case, or "
+    "one naming in another case a folder above another: `Makefile` and "
+    "`makefile`. A disk that ignores case")
+
+
+def keeps_twins(kept: tuple) -> bool:
+    """Whether the source keeps `Makefile` and `makefile` side by side."""
+    return {"Makefile", "makefile"} <= set(kept)
+
+
+#: The rows that keep both names, which `check` and `execute` meet as case
+#: twins, by their kept names; and the rows `execute` splits that keep a
+#: `Makefile` or one of the other two names, which a clone can run `make` in.
+TWIN_ROWS = [pytest.param(row.values[0], id=row.id)
+             for row in ROWS if keeps_twins(row.values[0])]
+CLONE_ROWS = [row for row in ROWS[1:] if not keeps_twins(row.values[0])]
+
 #: `(path, leg)` rows no shipped rule writes, which a `--path-policy` rule can
 #: (a person's answer in the plan changes no follow-up): `MAKEFILE` kept in
 #: the root, a name GNU make never reads where case is kept and one a disk
@@ -135,15 +176,16 @@ ROWS = [
 #: `_root_keeps` finds by its directory form and `twins` must read without
 #: the slash, or be empty and have `twins[0]` raise in `plan` (#1061's (a):
 #: no test failed on it). GNU make 4.3 stops on it with `makefile: Is a
-#: directory.` (r1046's measure), so the case is contrived, and the line it
-#: gets is the one a kept `makefile` file gets.
+#: directory.` (r1046's measure), so the case is contrived, and since #1132
+#: the line says GNU make stops there, where it said what a kept `makefile`
+#: file gets.
 ANSWERED = [
     pytest.param((("MAKEFILE", "root"),), SHAPES + written_as("MAKEFILE"),
                  id="MAKEFILE"),
     pytest.param((("makefile", "code"), ("GNUmakefile", "spec")),
                  MAKEFILE_FOLLOW_UP, id="sent-to-legs"),
     pytest.param((("makefile/", "root"),),
-                 SHAPES + written_as("makefile") + reads("makefile"),
+                 SHAPES + written_as("makefile") + stops_at("makefile"),
                  id="makefile-directory"),
 ]
 
@@ -181,9 +223,10 @@ def test_a_name_only_a_disk_that_ignores_case_takes_for_makefile(
     shape's `Makefile` is the root's there; where case is ignored `place`
     finds `Makefile` taken by it and writes the shape's to `shape/Makefile`.
     A name sent to a leg is in no root at all. A kept directory is the entry
-    `makefile/`, no file: the line names it `makefile` all the same, both as
-    the name a disk that ignores case takes for `Makefile` and as the one
-    GNU make reads, so `twins` must read the entry without its slash."""
+    `makefile/`, no file: the line names it `makefile` all the same as the
+    name a disk that ignores case takes for `Makefile`, so `twins` must read
+    the entry without its slash, and says GNU make stops at the directory
+    `makefile/` (#1132)."""
     assert makefile_lines(follow_ups_of(adopter, monkeypatch, rows)) == [said]
 
 
@@ -231,7 +274,9 @@ def test_plan_writes_the_line_and_check_prints_it(tmp_path, kept, said,
                                                   first):
     """The rules keep each of GNU make's three names in the root
     (`root-project-makefile`), so `plan` writes the line for the source as
-    it is, and `check` prints it as the plan holds it."""
+    it is, and `check` prints it as the plan holds it. Where the source
+    keeps `Makefile` and `makefile` side by side, `check` also names them as
+    case twins (`plan-case-twins`) and exits 1, on every disk."""
     if not disk_keeps_case(tmp_path):
         pytest.skip("this disk ignores case: it cannot hold the rows apart")
     source = make_source_repo(tmp_path / "Thing", tree_keeping(kept),
@@ -242,8 +287,39 @@ def test_plan_writes_the_line_and_check_prints_it(tmp_path, kept, said,
     follow_ups = [str(item) for item in load_yaml(plan)["follow_ups"]]
     assert makefile_lines(follow_ups) == [said]
     checked = run_script(ADOPT, "check", "--plan", str(plan))
-    assert checked.returncode == 0, checked.stderr + checked.stdout
+    if keeps_twins(kept):
+        found = [line for line in checked.stderr.splitlines()
+                 if line.startswith("FINDING ")]
+        assert checked.returncode == 1, checked.stderr + checked.stdout
+        assert len(found) == 1 and found[0].startswith(TWINS_FINDING), found
+    else:
+        assert checked.returncode == 0, checked.stderr + checked.stdout
     assert f"  follow-up: {said}" in checked.stdout
+
+
+@pytest.mark.parametrize("kept", TWIN_ROWS)
+def test_execute_refuses_makefile_beside_makefile_before_any_leg(
+        adopter, monkeypatch, tmp_path, kept):
+    """A disk that ignores case holds the root's `Makefile` and `makefile`
+    as one name, so `execute` refuses them on every disk, as it does any set
+    of case twins (#1161), before it makes a leg: no bare repository, no
+    clone of the assembly or a leg in the work directory, and no split
+    branch in the source. Before #1161 the same source was split and
+    verified on a disk that keeps case, which left all three."""
+    if not disk_keeps_case(tmp_path):
+        pytest.skip("this disk ignores case: it cannot hold the rows apart")
+    source = make_source_repo(tmp_path / "Thing", tree_keeping(kept),
+                              edits=EDITS)
+    plan = tmp_path / "adoption-plan.yaml"
+    written = write_plan(source, plan, project=PROJECT)
+    assert written.returncode == 0, written.stderr + written.stdout
+    assert [code for code, _ in findings(plan)] == [PLAN_CASE_TWINS]
+    refusal = refused_before_any_leg(adopter, monkeypatch, plan, tmp_path)
+    assert refusal.code == PLAN_CASE_TWINS
+    assert "`Makefile` and `makefile`" in refusal.detail
+    assert git("branch", "--list", SPLIT_BRANCH,
+               cwd=source).stdout.strip() == ""
+    assert not list((tmp_path / "work").glob(f"{PROJECT}*"))
 
 
 def make(clone: Path, *args: str) -> subprocess.CompletedProcess:
@@ -255,7 +331,7 @@ def make(clone: Path, *args: str) -> subprocess.CompletedProcess:
 
 @needs_filter_repo
 @needs_make
-@pytest.mark.parametrize("kept, said, first", ROWS[1:])
+@pytest.mark.parametrize("kept, said, first", CLONE_ROWS)
 def test_the_split_message_names_the_file_make_reads_in_the_clone(
         tmp_path, kept, said, first):
     """The measurement the line rests on, on a disk that keeps case. After a
@@ -264,7 +340,8 @@ def test_the_split_message_names_the_file_make_reads_in_the_clone(
     says GNU make reads; `make contracts-dir` there has no rule, for that
     file is the source's; and the block is in the file the line says the
     shape's Makefile is written as, where the same target prints the spec
-    leg's `contracts/`."""
+    leg's `contracts/`. The rows that keep `Makefile` and `makefile` side by
+    side are not here: `execute` refuses them (#1161)."""
     if not disk_keeps_case(tmp_path):
         pytest.skip("this disk ignores case: it cannot hold the rows apart")
     adopted = adopt_with_legs_mounted_away(tmp_path, by_hand=False,

@@ -70,7 +70,7 @@ PROBE = "probe"
 CALLERS = [
     pytest.param(
         lambda tmp_path, adopter: stdout_encoding
-        .test_a_name_that_is_not_utf8_still_comes_out_as_its_own_bytes(
+        .test_a_name_that_is_not_utf8_is_spelled_and_the_report_still_comes_out(
             tmp_path, "utf-8:surrogateescape"),
         True, id="stdout-encoding"),
     pytest.param(

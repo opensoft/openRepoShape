@@ -51,6 +51,7 @@ import pytest
 
 from conftest import (appended_to_command_scope, cloned_just_pushed, git,
                       run_script)
+from repo_shape import shell_quoted
 #: The trailer lines a lane's run lands, from the file that owns them.
 from test_commit_trailers import TRAILERS, trailers_of
 #: The family fixture, its names and the offline environment, imported from
@@ -71,6 +72,8 @@ from test_family_member_path import (
     GLOB, MEMBER, OTHER, hand_edit, older, raw, recorded,
 )
 from test_family_member_path import isolated as member_path_env
+#: The sentence every remedy that names a `switch -c` ends with (#607).
+from test_validate_family_branch_step import BRANCH_LEFT
 
 #: GIT'S AUTOMATIC MAINTENANCE, OFF for the gits `isolated()` below hands an
 #: environment to: `family.py`'s children and the snapshot's gits. A `git
@@ -1082,10 +1085,12 @@ def a_renamed_copy_of_a_member(root: Path) -> Path:
 #: Each refusal `add` makes before its first write that a fixture provokes
 #: cheaply, in `add`'s own order, as `(--member, more arguments, set-up,
 #: what stderr starts with)`: the holder's own refusals first, then the
-#: member's, which need the probe's throwaway clone, and last the member's
-#: `id:` against the rows (#330), which needs what that clone read. A
-#: set-up that needs the member read from somewhere other than the family's
-#: remotes returns that directory of remotes; the others return None.
+#: member's, which need the probe's throwaway clone. A set-up that needs the
+#: member read from somewhere other than the family's remotes returns that
+#: directory of remotes; the others return None. The last refusal, the
+#: member's `id:` against the rows (#330), which needs what that clone read,
+#: is the one whose remedy the dry run says apart, and has a row of its own
+#: after these (#1228).
 ADD_REFUSALS = {
     "malformed": (SPARE, (), None, "REFUSED member-malformed: "),
     "malformed-dot": (f"{ORG}/..", (), None, "REFUSED member-malformed: "),
@@ -1129,8 +1134,6 @@ ADD_REFUSALS = {
               "REFUSED member-not-a-project: "),
     "unreadable": (f"{ORG}/IRNOPE", (), None,
                    f"REFUSED reading {ORG}/IRNOPE. THE EXACT COMMAND WAS:"),
-    "duplicate-id": (f"{ORG}/{RENAMED}", (), a_renamed_copy_of_a_member,
-                     "REFUSED member-duplicate-id: "),
 }
 
 
@@ -1152,7 +1155,8 @@ def test_a_refusal_add_makes_before_it_mounts_is_the_same_under_dry_run(
     of the probe's throwaway clone). The real run and the dry run, over the
     same holder, print the same stdout and the same stderr, and leave the
     holder as it was, every hand edit a set-up made still in place, and no
-    temporary clone behind."""
+    temporary clone behind. The one refusal whose remedy the two say apart
+    has the next row (#1228)."""
     env = isolated(offline, tmp_path)
     remotes = family["remotes"]
     if set_up is not None:
@@ -1166,6 +1170,39 @@ def test_a_refusal_add_makes_before_it_mounts_is_the_same_under_dry_run(
     assert dry.stdout == real.stdout
     assert scratch_free(dry.stderr) == scratch_free(real.stderr)
     assert dry.stderr.startswith(said), dry.stderr
+    assert_add_as_it_was(holder, env, before)
+    offline.assert_left_nothing()
+
+
+def test_add_dry_runs_duplicate_id_names_the_branch_the_real_run_has_read(
+        family, holder, offline, tmp_path):
+    """THE RULING'S ONE DIFFERENCE (#1228). The member's `id:` against the
+    rows (#330) is asked last, of what the probe's clone read, and the dry
+    run refuses it as the real run does: the same code, exit 2, the same
+    detail and stdout, the holder as it was and no temporary clone behind.
+    A real `add` asks it after `_checked_branch`, so its remedy names no
+    branch; the dry run reads no branch, so its remedy says, before the two
+    lines, the branch they need, the one the `remove` line's own refusal
+    names, and ends with `BRANCH_LEFT`."""
+    env = isolated(offline, tmp_path)
+    remotes = a_renamed_copy_of_a_member(holder)
+    before = add_state(holder, env)
+
+    real = add(holder, env, remotes, member=f"{ORG}/{RENAMED}")
+    dry = add(holder, env, remotes, "--dry-run", member=f"{ORG}/{RENAMED}")
+
+    assert dry.returncode == real.returncode == 2, dry.stdout + dry.stderr
+    assert dry.stdout == real.stdout
+    said, remedy = refusal(real.stderr)
+    assert said.startswith("REFUSED member-duplicate-id: "), said
+    forge = " renamed at the forge, "
+    assert remedy.count(forge) == 1, remedy
+    clause = ("on a branch other than the holder's tracking branch, which "
+              f"`bump` and `remove` refuse (`git -C "
+              f"{shell_quoted(holder.resolve())} switch -c "
+              f"family/remove-{PINNED.lower()}` makes one), ")
+    assert refusal(dry.stderr) == (
+        said, f"{remedy.replace(forge, forge + clause)} {BRANCH_LEFT}")
     assert_add_as_it_was(holder, env, before)
     offline.assert_left_nothing()
 

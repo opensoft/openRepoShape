@@ -2760,12 +2760,18 @@ def naming_script_refusal(shape: Path, whole: str) -> Refusal | None:
     file: a project whose own path holds this checkout's, a flag, the
     `project.yaml` the script was asked to read -- each is about what the
     script was asked, and is not this.
+
+    IN EITHER SPELLING (#1168): `load_yaml` and `policy-unreadable` name the
+    file as `shown_path` does, `repr`'d where this checkout's path holds a
+    character that is not printable, and `policy-wrong-kind` names it raw.
+    For a printable path the two are one.
     """
     policy = f"{shape / NAMING_COPY}: "
+    spelt = f"{shown_path(shape / NAMING_COPY)}: "
     for line in (line.strip() for line in whole.splitlines()):
         if line.startswith("REFUSED "):
             code, _, detail = line.removeprefix("REFUSED ").partition(": ")
-            if detail.startswith(policy):
+            if detail.startswith((policy, spelt)):
                 return Refusal(code, detail)
     return None
 
@@ -3342,8 +3348,9 @@ def refusals_ahead(ctx: Context, us) -> dict | None:
     NONE WHERE THE QUESTION CANNOT BE ASKED: the pin does not read, the
     checkout of the standard is a partial clone short of what the
     comparison reads, where `prepare` would fetch (`partial_clone_row`,
-    #683), or `prepare` refuses. The `shape currency` row says which, and
-    the `pins` row keeps its gate.
+    #683), or `prepare` refuses or cannot read what it asks, the root's own
+    `source_repository:` among its reasons (#1203). The `shape currency` row
+    says which of the others, and the `pins` row keeps its gate.
     """
     try:
         pin, _rows = us.read_pin(ctx.root)
@@ -3354,9 +3361,24 @@ def refusals_ahead(ctx: Context, us) -> dict | None:
     args = argparse.Namespace(root=str(ctx.root), upstream=str(ctx.shape),
                               at=None)
     try:
+        # THE PIN'S `source_repository:` IS ASKED HERE, unlike in
+        # `check_shape_currency` (#1203, the review of PR #1269, S2): the
+        # `pins` row says `update-shape.py check` reports the copies
+        # `merged-away` and the `apply` it prints drops their rows, and for
+        # a root whose field that `check` refuses it exits 2 and does
+        # neither. A refusal here is "cannot ask", below, and the row keeps
+        # the gate's finding.
+        #
+        # AN `OSError` OF THAT ASK IS "CANNOT ASK" TOO (NIT B of the second
+        # review of PR #1269): `pin_source` stats the value as a path from
+        # the directory the doctor runs in, and a stat the system refuses
+        # (`locked/x` with `locked` unsearchable) is raised out of `prepare`
+        # as the `update-unreadable` that `check` names. Caught as
+        # `Refusal` alone it left here, and the row read `could not be run:
+        # [Errno 13] ...` where it had kept the gate's finding.
         root, _pin, rows, _added, upstream, _pinned, _target, kind = \
             us.prepare(args)
-    except Refusal:
+    except (Refusal, OSError):
         return None
     try:
         ahead = {row.path: row.state for row in rows if row.is_conflict}
@@ -3475,11 +3497,13 @@ GITLINK_UNREAD = "gitlink_cannot_be_read"
 def root_git_read(root: Path) -> tuple | None:
     """`(the gate's line, the OSError)` where this user cannot read the
     root's own repository, else None (#1146): the `stat` of its `.git`, the
-    open of a `.git` that is a gitfile, and the `stat` of the `HEAD` in the
-    git directory that `.git` is or names -- what `validate-pins.py` asks
-    before it reads a gitlink (`_refuse_an_unreadable_root`), in its words:
-    `.git: cannot be read (<reason>)`, or the git directory a gitfile names,
-    relative to the root where it is inside it and whole where it is not.
+    open of a `.git` that is a gitfile, and the `stat` and then the open of
+    the `HEAD` in the git directory that `.git` is or names -- what
+    `validate-pins.py` asks before it reads a gitlink
+    (`_refuse_an_unreadable_root`), in its words: `.git: cannot be read
+    (<reason>)`, or the git directory a gitfile names, relative to the root
+    where it is inside it and whole where it is not, or that directory's
+    `HEAD` where it is the open that was refused (`.git/HEAD`).
 
     GIT SAID NOTHING IS RECORDED. `recorded_gitlink` reads the index through
     git and takes a listing git refused for no gitlink, so a `.git` linked
@@ -3488,9 +3512,21 @@ def root_git_read(root: Path) -> tuple | None:
     at the pin)`, about gitlinks nobody read. A `.git` that answers absent
     (nothing there, a link that leads nowhere or to itself), a gitfile that
     names no directory, and a git directory with no `HEAD` are None, left to
-    git as they always were."""
+    git as they always were.
+
+    A `HEAD` THIS USER CANNOT OPEN STATS (#1222, rv1248's S1), so a root's
+    `.git/HEAD` at mode 000 passed the `stat`, git could not read the root,
+    and the `legs` row said `no gitlink recorded` of every leg and the
+    verdict DRIFTED, while the gate refused `git-repo-unreadable` naming
+    that `HEAD`. A `HEAD` that is there is now opened as the gate opens it
+    (`regular_file_opens`, `_refuse_an_unreadable_git_dir`): only where it
+    is a regular file, so a directory or a FIFO is left to git, and an open
+    that finds nothing is a git directory with no `HEAD`. One this user
+    cannot open is named after its git directory, as the gate names it:
+    `.git/HEAD: cannot be read (<reason>)`. A refused `stat` of it still
+    names the git directory."""
     dotgit = root / ".git"
-    named = Path(".git")
+    named = dotgit
     try:
         if not is_a(dotgit, lambda _mode: True):
             return None
@@ -3502,7 +3538,10 @@ def root_git_read(root: Path) -> tuple | None:
             gitdir = dotgit.parent / os.fsdecode(
                 data[len(b"gitdir: "):].rstrip(b"\r\n"))
             named = Path(os.path.normpath(gitdir))
-        is_a(gitdir / "HEAD", lambda _mode: True)
+        head = gitdir / "HEAD"
+        if is_a(head, lambda _mode: True):
+            named = named / "HEAD"
+            regular_file_opens(head)
     except OSError as exc:
         if refused_read(exc) is None:
             return None
@@ -3547,6 +3586,37 @@ def git_dir_named(root: Path, rel: str, gitdir: Path) -> str:
     if path == mount or mount in path.parents:
         return named
     return f"{rel}: {named}"
+
+
+def regular_file_opens(path: Path) -> bool:
+    """Whether `path` can be opened where it is a regular file, asked as
+    `validate-pins.py`'s `_gitfile_opens` asks it (#919, #1222): False where
+    the open finds nothing there (`ABSENT_ERRNOS`, `ABSENT_WINERRORS`), the
+    `OSError` of an open the operating system REFUSED raised, and True for
+    anything that is no regular file, which is not opened.
+
+    A FILE AT MODE 000 STATS, so a `stat` alone passes one this user cannot
+    open. Only a regular file is opened, since the open of a FIFO waits for
+    a writer, and what is no regular file is left to git, as the gate
+    leaves it.
+
+    ITS TWO CALLERS ASK IT ONLY FOR ITS RAISE (rv1248's N3): `mount_read`
+    and `root_git_read` open a git directory's `HEAD` once its `stat` has
+    found it, so an open that finds nothing is a `HEAD` gone since, left to
+    git whatever this answers. The answer is kept, False and True as
+    `_gitfile_opens` gives them, because the gate reads that function's
+    answer of a leg's gitfile (`initialized`, #919): one question with one
+    answer in both files, which a parity row holds, so a later caller here
+    that asks a gitfile reads what the gate reads."""
+    if not is_a(path, stat.S_ISREG):
+        return True
+    try:
+        path.open("rb").close()
+    except OSError as exc:
+        if refused_read(exc) is None:
+            return False
+        raise
+    return True
 
 
 def mount_read(root: Path, rel: str, git_dir: bool = True) -> tuple:
@@ -3594,6 +3664,17 @@ def mount_read(root: Path, rel: str, git_dir: bool = True) -> tuple:
     this user was refused: it is left to git, which answers for it as it
     always did.
 
+    A `HEAD` THIS USER CANNOT OPEN STATS (#1222), so a `HEAD` at mode 000
+    passed the `stat`, git in the mount could not read it, and the `legs`
+    and `members` rows counted the mount as drift. The gate's
+    `_refuse_an_unreadable_git_dir` now opens it, and so does this: a
+    `HEAD` that is there is opened as the gate opens it
+    (`regular_file_opens`): only where it is a regular file, and an open
+    that finds nothing is a git directory with no `HEAD`. One this user
+    cannot open is named as the gate names it, after the mount where it is
+    outside it: `<rel>: .git/modules/<rel>/HEAD: cannot be read (<reason>)`,
+    or `<rel>/.git/HEAD: cannot be read (<reason>)`.
+
     `git_dir=False` ASKS NO GIT DIRECTORY, for the `leg shape files` row,
     which compares a leg's files on disk and runs no git: a git directory
     this user cannot search keeps no file in the mount from being read, so
@@ -3622,7 +3703,10 @@ def mount_read(root: Path, rel: str, git_dir: bool = True) -> tuple:
         gitdir = git_dir_of(dotgit) if git_dir else None
         if gitdir is not None:
             named = git_dir_named(root, rel, gitdir)
-            is_a(gitdir / "HEAD", lambda _mode: True)
+            head = gitdir / "HEAD"
+            if is_a(head, lambda _mode: True):
+                named = git_dir_named(root, rel, head)
+                regular_file_opens(head)
     except OSError as exc:
         return True, False, (cannot_be_read(named, exc), exc, False)
     return True, True, None
@@ -4248,6 +4332,18 @@ def taking_out(ctx: Context, names: list, states: dict, judged: list,
     return command, ". ".join([*said, *ways])
 
 
+def less_the_path(detail: str, path: Path) -> str:
+    """`detail`, a `load_yaml` refusal's, less the `<path>: ` it opens with,
+    in either spelling (#1168): as `shown_path` names the path, `repr`'d
+    where it holds a character that is not printable, which `load_yaml`
+    gives since #1168, or raw, as a `repo_shape.py` older than that gave.
+    For a printable path the two are one."""
+    for opening in (f"{shown_path(path)}: ", f"{path}: "):
+        if detail.startswith(opening):
+            return detail[len(opening):]
+    return detail
+
+
 def check_manifest_kinds(ctx: Context) -> Row:
     """Every `kind:`-bearing manifest in this root, against the registry.
 
@@ -4383,7 +4479,7 @@ def check_manifest_kinds(ctx: Context) -> Row:
                 continue
             unreadable.append(rel)
             refusals[rel] = {"code": exc.code,
-                             "detail": exc.detail.removeprefix(f"{path}: ")}
+                             "detail": less_the_path(exc.detail, path)}
             continue
         if not isinstance(data, dict):
             unreadable.append(rel)
@@ -6359,8 +6455,14 @@ def check_shape_currency(ctx: Context) -> Row:
     if partial is not None:
         return partial
     try:
+        # THE PIN'S `source_repository:` IS NOT ASKED HERE (#1203). A
+        # `Refusal` out of `prepare` is this checkout unable to answer
+        # (below), and that field is the root's: asked here, a hand edit of
+        # it was CANNOT ANSWER with a `fetch --all` that mends nothing.
+        # `update-shape.py check`, this row's NEXT where the root is behind,
+        # asks it, in the pin's name.
         _root, _pin, rows, additions, upstream, pinned, target, _kind = \
-            us.prepare(args)
+            us.prepare(args, ask_source=False)
     except Refusal as exc:
         if exc.code == us.UPSTREAM_UNREADABLE:
             # A READ THAT FAILED, NOT A COMMIT THAT IS NOT HERE (#683), so
@@ -11211,6 +11313,38 @@ def members_verdict(ctx: Context, detail: dict, members_dir: str,
                detail)
 
 
+def members_git_unread_row(ctx: Context, members: list, members_dir: str,
+                           line: str, exc: OSError) -> Row:
+    """The `members` row of a holder whose own `.git` this user cannot read
+    (#1148), as the `legs` row of such an assembly root (`root_git_unread_row`,
+    #1146): the gate's `line` ONCE, since it is one fact about the holder and
+    not one per member, and what it leaves unasked. A FINDING, because the
+    holder's `validate-family.py` refuses the same path by name; this doctor
+    again as the NEXT and the gate's advice for the cause as the `why`,
+    because a person mends a mode or an owner and no git line reaches it.
+
+    Each member's entry carries `line` in `gitlink_cannot_be_read`, so
+    `drifted_reasons` counts none of them, and has every key a member's
+    entry has, each null that this row did not ask: what stands beside the
+    holder is the workstation's, said once the holder can be read."""
+    entries = []
+    for row in members:
+        project = str(row.get("project") or "?")
+        entries.append({
+            "project": project,
+            "path": str(row.get("path") or f"{members_dir}/{project}"),
+            "pin": None, "populated": None, "head": None, "own_git": None,
+            "unborn": None, "detached": None, "mounted_from": None,
+            "sibling": None, "working_clone": None, "other_origin": None,
+            GITLINK_UNREAD: line})
+    return Row("members", "members", FINDING,
+               f"{line}, so no gitlink is read and no member is compared "
+               "with its pin", doctor_line(ctx),
+               {"members": entries, "without_working_clone": [],
+                "on_a_branch": []},
+               why=cannot_read_why([exc]))
+
+
 def check_members(ctx: Context) -> Row:
     """Each member pinned under `members/`, and the working clone beside it.
 
@@ -11225,6 +11359,15 @@ def check_members(ctx: Context) -> Row:
     AND THE WORDING IS `members_verdict`'s, so that this loop reads as the
     one sentence it is: every member is looked at, and each is either a fault
     or a state worth saying.
+
+    A HOLDER WHOSE OWN `.git` THIS USER CANNOT READ IS NAMED ONCE, AND IS NO
+    DRIFT (#1148), as an assembly root's is in the `legs` row (#1146). A
+    member's repository lives under the holder's `.git/modules/`, so with a
+    `.git` linked into a folder this user cannot search, or a `.git`
+    directory at mode 000, each member read `checked out at ?` and the
+    verdict `DRIFTED (a member is not at its pin)`; on Python 3.12 the link
+    raised out of the row instead. `root_git_read` asks it as the gate does,
+    and the row says the gate's line once (`members_git_unread_row`).
     """
     # NOT "no members yet", which is an `ok` about an empty family: a holder
     # whose `family.yaml` does not load has members nobody can name (#205),
@@ -11242,6 +11385,10 @@ def check_members(ctx: Context) -> Row:
         return Row("members", "members", OK,
                    "no members yet: a family with none is empty, not wrong",
                    None, {"members": []})
+    root_unread = root_git_read(ctx.root)
+    if root_unread is not None:
+        return members_git_unread_row(ctx, members, members_dir,
+                                      *root_unread)
     rows: list[dict] = []
     problems: list[str] = []
     siblings_absent: list[str] = []
@@ -12648,10 +12795,13 @@ def drifted_reasons(by_id: dict, detail: dict) -> list:
     be read (`gitlink_cannot_be_read`, #1146): its `legs` row said `no
     gitlink recorded` of each leg, and the verdict was DRIFTED. The
     `members` row is drift only where a member this user CAN reach has a
-    problem. Such a row goes on down the ladder, to the gate that refuses
-    the path (`invalid_verdict`) or to the catch-all, which names it: INVALID,
-    never DRIFTED, and never CANNOT ANSWER, because a path in the root this
-    user cannot reach is a statement about the repository.
+    problem: not one whose mount cannot be read, nor one of a holder whose
+    own `.git` cannot be (`gitlink_cannot_be_read`, #1148), which read
+    `checked out at ?` and DRIFTED. Such a row goes on down the ladder, to
+    the gate that refuses the path (`invalid_verdict`) or to the catch-all,
+    which names it: INVALID, never DRIFTED, and never CANNOT ANSWER, because
+    a path in the root this user cannot reach is a statement about the
+    repository.
 
     Split out of `verdict_for` for #134.
     """
@@ -12669,7 +12819,8 @@ def drifted_reasons(by_id: dict, detail: dict) -> list:
             reasons.append(f"{len(off) or 1} leg(s) not at the pin")
     members = by_id.get("members")
     if members is not None and members.status == FINDING and any(
-            MOUNT_UNREAD not in entry and member_problem(entry)
+            MOUNT_UNREAD not in entry and GITLINK_UNREAD not in entry
+            and member_problem(entry)
             for entry in members.detail.get("members") or []):
         reasons.append("a member is not at its pin")
     return reasons

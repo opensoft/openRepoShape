@@ -43,8 +43,8 @@ from conftest import (ADOPT, load_without_bytecode, make_source_repo,
 from test_adopt_contracts_dir import EDITS, TREE, needs_filter_repo
 from test_adopt_e2e import (BOTH_ASIDE, kept_scripts, local_next, next_block,
                             pasted)
-from test_adopt_make_reads_first import (disk_keeps_case, make, needs_make,
-                                         own_makefile)
+from test_adopt_make_reads_first import (disk_keeps_case, keeps_twins, make,
+                                         needs_make, own_makefile)
 
 PROJECT = "Northwind"
 SCRIPT = "scripts/bootstrap.py"
@@ -61,12 +61,13 @@ def adopter():
 #: The command NEXT prints wherever `make bootstrap` at the root does not
 #: reach the shape's Makefile.
 PYTHON = "    python3 scripts/bootstrap.py"
-#: #480's NOTE, for a root that keeps only its own `Makefile`: unchanged.
+#: #480's NOTE, for a root that keeps only its own `Makefile`, which names
+#: `python` on Windows too since #1132.
 OWN_MAKEFILE_NOTE = (
     "NOTE the root keeps its own Makefile and the shape's is shape/Makefile, "
     "so `make bootstrap` and the shape's other make targets arrive only once "
-    "the follow-up merges the two; `python3 scripts/bootstrap.py` is what "
-    "`make bootstrap` runs.")
+    "the follow-up merges the two; `python3 scripts/bootstrap.py` (`python` "
+    "on Windows) is what `make bootstrap` runs.")
 #: #493's NOTE, for a root that keeps only its own `scripts/bootstrap.py`:
 #: unchanged.
 OWN_SCRIPT_NOTE = (
@@ -75,8 +76,8 @@ OWN_SCRIPT_NOTE = (
     "scripts/bootstrap.py` runs the shape's bootstrap yet: merge "
     "shape/scripts/bootstrap.py into scripts/bootstrap.py first, and then "
     "run `make bootstrap`.")
-RUNS = ("; `python3 scripts/bootstrap.py` is what the shape's `make "
-        "bootstrap` runs.")
+RUNS = ("; `python3 scripts/bootstrap.py` (`python` on Windows) is what "
+        "the shape's `make bootstrap` runs.")
 
 
 def reads(name: str) -> str:
@@ -115,7 +116,7 @@ def script_aside(name: str, makefile: bool) -> str:
     return (f"NOTE the root keeps {kept}, so neither `make bootstrap` nor "
             "`python3 scripts/bootstrap.py` runs the shape's bootstrap yet: "
             f"merge {merges} first, and then run `python3 "
-            f"scripts/bootstrap.py`; {reads(name)}.")
+            f"scripts/bootstrap.py` (`python` on Windows); {reads(name)}.")
 
 
 #: `(what the root keeps, NEXT's lines after the clone, the file GNU make
@@ -272,7 +273,8 @@ def executed_and_cloned(tmp_path: Path, kept: tuple, answer=None):
 @needs_filter_repo
 @needs_make
 @pytest.mark.parametrize("kept, said, first",
-                         [row for row in ROWS if row.values[2] != "Makefile"])
+                         [row for row in ROWS if row.values[2] != "Makefile"
+                          and not keeps_twins(row.values[0])])
 def test_the_printed_bootstrap_runs_in_the_clone_next_makes(
         tmp_path, kept, said, first):
     """The measurement, on a disk that keeps case. After a real `execute`,
@@ -288,7 +290,14 @@ def test_the_printed_bootstrap_runs_in_the_clone_next_makes(
     includes a Makefile holding the shape's targets (the root's `Makefile`,
     once the follow-up's merge is made where the source kept its own),
     `make -n bootstrap` runs the shape's recipe. The merge alone does not:
-    that is what the NOTE said before."""
+    that is what the NOTE said before.
+
+    The rows that keep `Makefile` and `makefile` side by side,
+    `Makefile+makefile` and `all-three`, are left out: the plan keeps a set
+    of case twins in the root, which `execute` refuses before any leg as
+    `plan-case-twins` (#1161), so there is no clone to run `make` in.
+    `test_execute_refuses_makefile_beside_makefile_before_any_leg`, in
+    `test_adopt_make_reads_first.py`, pins that refusal for those trees."""
     if not disk_keeps_case(tmp_path):
         pytest.skip("this disk ignores case: it cannot hold the rows apart")
     lines, clone = executed_and_cloned(
