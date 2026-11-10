@@ -618,7 +618,15 @@ def a_config_whose_hook_refuses_every_push(base: Path, says: str) -> Path:
     """A global git config holding the session's and a `core.hooksPath`
     whose `pre-receive` hook says `says` and refuses every push. Given as
     `GIT_CONFIG_GLOBAL`, it reaches the `receive-pack` a push to a local
-    path starts, so the first push of the run is refused."""
+    path starts, so the first push of the run is refused.
+
+    It also sets git's `sideband.allowControlCharacters`. A git that masks
+    the control characters a remote sends (its default is `color`, which lets
+    only ANSI colour sequences through; the runner's 2.56.0 hands the tool an
+    ESC as `^[`) would change the hook's words before the tool read them, and
+    a row would judge git's masking and not the tool's spelling. `true` hands
+    them over as the hook wrote them, on every git; an older git ignores the
+    key."""
     hooks = base / "hooks"
     hooks.mkdir()
     hook = hooks / "pre-receive"
@@ -628,7 +636,8 @@ def a_config_whose_hook_refuses_every_push(base: Path, says: str) -> Path:
     config = base / "gitconfig"
     config.write_text(
         f'[include]\n\tpath = "{os.environ["GIT_CONFIG_GLOBAL"]}"\n'
-        f'[core]\n\thooksPath = "{hooks}"\n', encoding="utf-8")
+        f'[core]\n\thooksPath = "{hooks}"\n'
+        '[sideband]\n\tallowControlCharacters = true\n', encoding="utf-8")
     return config
 
 
