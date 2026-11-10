@@ -48,8 +48,8 @@ EXIT CODES
        an unresolvable commit, an unreadable pin, manifest, workflow file or
        pinned shape copy (one that is not UTF-8, or that this user cannot
        open or reach, #712), or a `.github/workflows/` directory this user
-       cannot list or search (#434). An unanswerable pin question is never an
-       implicit pass.
+       cannot list or search (#434), or the root's own `.git` (#1146). An
+       unanswerable pin question is never an implicit pass.
        No git to run is one too (`git-not-runnable`, #412), a git that is
        missing, will not run or cannot be executed: the gitlinks and the
        digests are read through git.
@@ -405,7 +405,10 @@ def _gitfile_opens(path: Path) -> bool:
     git could not read where the leg's objects are, and the run ended in
     `pin-commit-unresolvable` under THE LOCKSTEP RULE, which says the
     pinned commit is missing (RV827's N6). Only a regular file is opened,
-    since the open of a FIFO waits for a writer."""
+    since the open of a FIFO waits for a writer.
+
+    A LEG'S GIT DIRECTORY'S `HEAD` IS ASKED THE SAME WAY, for the same
+    reason (#1222): see `_refuse_an_unreadable_git_dir`."""
     if not _is_a(path, stat.S_ISREG):
         return True
     try:
@@ -440,10 +443,14 @@ def _leg_git_dir(dotgit: Path) -> Path | None:
     return dotgit.parent / os.fsdecode(data[len(b"gitdir: "):].rstrip(b"\r\n"))
 
 
-def _refuse_an_unreadable_git_dir(root: Path, dotgit: Path) -> None:
+def _refuse_an_unreadable_git_dir(root: Path, dotgit: Path,
+                                  code: str = "pin-submodule-unreadable",
+                                  reads: str = CHECKOUT_READ) -> None:
     """`pin-submodule-unreadable`, by name, for a leg whose git directory
     this user cannot search (#968), asked as `_is_there` asks: the `stat`
-    of its `HEAD`, which a git directory at mode 000 or r-- refuses.
+    of its `HEAD`, which a git directory at mode 000 or r-- refuses. `code`
+    and `reads` are the refusal's, for the root's own repository
+    (`_refuse_an_unreadable_root`, #1146).
 
     TWO STATES REACHED GIT, AND GIT SAID THE WRONG THING. A `.git` that is a
     directory at mode 000 is passed over by git, which walks up to the
@@ -454,16 +461,71 @@ def _refuse_an_unreadable_git_dir(root: Path, dotgit: Path) -> None:
     missing. Each is named, `spec/.git` or `.git/modules/spec`, with the
     leg checkout's remedy that #712 gives a checkout this user cannot
     search. A git directory with no `HEAD`, or a gitfile that names none,
-    is left to git, which answers for it as it always did."""
+    is left to git, which answers for it as it always did.
+
+    A `HEAD` THIS USER CANNOT OPEN STATS (#1222, RV1200's N2), so a `HEAD`
+    at mode 000 passed, and git, which could not read it, ended the run in
+    `pin-commit-unresolvable`, which says the pinned commit is not in the
+    leg's object store. A `HEAD` that is there is opened as a gitfile is
+    (`_gitfile_opens`): only where it is a regular file, and an open that
+    finds nothing is a git directory with no `HEAD`. One this user cannot
+    open is named, `.git/modules/spec/HEAD` or `spec/.git/HEAD`, with the
+    same remedy."""
     named = dotgit
     try:
         gitdir = _leg_git_dir(dotgit)
         if gitdir is not None:
             named = Path(os.path.normpath(gitdir))
-            _is_there(gitdir / "HEAD")
+            head = gitdir / "HEAD"
+            if _is_there(head):
+                named = named / "HEAD"
+                _gitfile_opens(head)
     except OSError as exc:
-        raise _unreadable_file("pin-submodule-unreadable", _named(root, named),
-                               exc, CHECKOUT_READ) from exc
+        raise _unreadable_file(code, _named(root, named), exc, reads) from exc
+
+
+#: The refusal of a root whose own repository this user cannot read (#1146),
+#: and what that repository is read for, as `_unreadable_file`'s remedy
+#: names it. `validate-manifest.py` refuses its `.git` by the same code.
+ROOT_UNREADABLE = "git-repo-unreadable"
+ROOT_READ = ("the root's own repository, where it finds the root and each "
+             "leg's gitlink")
+
+
+def _refuse_an_unreadable_root(start: Path) -> None:
+    """`git-repo-unreadable`, by name, where this user cannot read the
+    `.git` that `find_repo_root` stops at, at `start` or above it (#1146).
+
+    `find_repo_root` ASKS `exists()`, AND IS A SHAPE COPY THIS FILE MAY NOT
+    RELY ON BEING NEWER THAN ITSELF (#370, #610), so each `.git` it would ask
+    is asked here first, as `_is_there` asks a path. A root whose `.git` is a
+    link into a folder this user cannot search ended in a `PermissionError`
+    traceback on Python 3.12, exit 1, which the doctor read as a validator
+    that crashed; from 3.14 `exists()` answers False, and the run refused
+    `not-a-git-repo` (`no .git found`) under the submodule remedy, about a
+    root that has one. A `.git` that answers absent (nothing there, a link
+    that leads nowhere or to itself) is passed over, as `exists()` passes it.
+
+    THE FIRST `.git` THAT IS THERE IS ASKED WHAT A LEG'S IS (#968), because
+    this validator reads every gitlink from it: a gitfile it cannot open, or
+    a git directory whose `HEAD` it cannot reach -- `.git` itself at mode
+    000, or the directory a gitfile names inside a folder this user cannot
+    search. git said of each that the root records no gitlink, and the run
+    refused `pin-gitlink-absent` under the lockstep remedy. Each is named, in
+    the gate's words, with the advice for the cause. Where nothing is
+    refused, `find_repo_root` answers as it always did."""
+    path = Path(start).resolve()
+    for candidate in [path, *path.parents]:
+        dotgit = candidate / ".git"
+        try:
+            there = _is_there(dotgit)
+        except OSError as exc:
+            raise _unreadable_file(ROOT_UNREADABLE, _named(path, dotgit), exc,
+                                   ROOT_READ) from exc
+        if there:
+            _refuse_an_unreadable_git_dir(path, dotgit, ROOT_UNREADABLE,
+                                          ROOT_READ)
+            return
 
 
 #: What a `stat` mode names (#919, #968), as the line about the file or the
@@ -603,18 +665,27 @@ def _load(root: Path, path: Path):
     start named relative to the root. Asked of the refusal and not of new
     words in `repo_shape`, so a root whose `scripts/repo_shape.py` is older
     than this file names the file the same way (#370, #610): `load_yaml`
-    has raised its refusal `from` the `OSError` since it was written."""
+    has raised its refusal `from` the `OSError` since it was written.
+
+    THE PATH AT ITS START IS LOOKED FOR IN BOTH SPELLINGS (#1168). Since
+    #1168 `load_yaml` names the file as `shown_path` names it, which is
+    `repr` for a path that is not printable (a root under a folder whose
+    name holds an ESC or a line feed), and before it, raw. A root re-copies
+    its pinned files one row at a time, so this file may meet either: the
+    raw prefix and `_shown`'s are both asked, and either is named relative
+    to the root. For a printable path the two are one."""
     try:
         return load_yaml(path)
     except Refusal as exc:
         if isinstance(exc.__cause__, OSError):
             raise _unreadable_file("yaml-unreadable", _named(root, path),
                                    exc.__cause__) from exc.__cause__
-        absolute = f"{path}: "
-        if not exc.detail.startswith(absolute):
-            raise
-        raise Refusal(exc.code, _named(root, path) + ": "
-                      + exc.detail[len(absolute):], exc.remediation) from exc
+        for absolute in (f"{path}: ", f"{_shown(str(path))}: "):
+            if exc.detail.startswith(absolute):
+                raise Refusal(exc.code, _named(root, path) + ": "
+                              + exc.detail[len(absolute):],
+                              exc.remediation) from exc
+        raise
 
 
 def _workflows_unlistable(root: Path, workflows: Path,
@@ -1228,7 +1299,8 @@ def _check_pin_digest(root: Path, path: str, commit: str, pin: dict, rel: str,
     Python 3.14's `exists()` would have said of it. So is a `.git` gitfile
     this user cannot open (#919): see `_gitfile_opens`; and a git directory
     this user cannot search, the `.git` itself or the one a gitfile names
-    (#968): see `_refuse_an_unreadable_git_dir`.
+    (#968), or whose `HEAD` it cannot open (#1222): see
+    `_refuse_an_unreadable_git_dir`.
     """
     submodule = root / path
     named = _shown(path)
@@ -2191,7 +2263,10 @@ def main(argv: list[str] | None = None) -> int:
 
     report = Report()
     try:
-        root = find_repo_root(args.root or Path(__file__).resolve().parents[1])
+        start = args.root or Path(__file__).resolve().parents[1]
+        # A `.git` this user cannot read is refused by name first (#1146).
+        _refuse_an_unreadable_root(start)
+        root = find_repo_root(start)
         _run_all_checks(root, report, args.pin_source)
     except Refusal as exc:
         # THE LOCKSTEP REMEDY IS THIS VALIDATOR'S (#370). `repo_shape` gives a

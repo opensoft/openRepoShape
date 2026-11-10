@@ -46,11 +46,14 @@ from pathlib import Path
 
 import pytest
 
-from conftest import (ADOPT, REPO, SCAFFOLD, SYNTHETIC_TREE, WINDOWS_SKIP,
+from conftest import (A_BYTE_READ_AS_A_SURROGATE, ADOPT, PRINTED_AS_ITSELF,
+                      REPO, SCAFFOLD, SYNTHETIC_TREE, WINDOWS_SKIP,
                       as_human, cloned_just_pushed, findings, git,
                       make_source_repo, planned, refused_before_any_leg,
                       resolve, rmtree, run_script,
-                      skip_where_a_name_cannot_be_not_utf_8)
+                      skip_where_a_name_cannot_be_not_utf_8,
+                      skip_where_the_environment_cannot_carry,
+                      skip_where_the_locale_does_not_spell_it_as_utf_8)
 
 sys.path.insert(0, str(REPO / "scripts"))
 import shape_materialize  # noqa: E402
@@ -935,6 +938,9 @@ def test_a_pin_source_check_would_refuse_is_refused_by_plan(
     """Before any digest is read, so the path need not exist: in `check`'s
     terms and #270's words, with the value `repr`'d, so the refusal is one
     line of the tool's and nothing of the path's reaches the terminal raw."""
+    if "\udcff" in name:
+        skip_where_the_locale_does_not_spell_it_as_utf_8(
+            name, A_BYTE_READ_AS_A_SURROGATE)
     typed = str(tmp_path / name)
     out = tmp_path / "plan.yaml"
     result = plan_with(source_repo, out, "openGlass@" + "0" * 40,
@@ -968,6 +974,7 @@ def test_a_clone_at_a_path_check_would_refuse_is_refused_by_plan(
     that is not UTF-8 are #450's two, which the scaffold, recording no path,
     scaffolds from (`tests/test_pin_source_unreadable.py`)."""
     path, commit, _ = glass
+    skip_where_the_environment_cannot_carry(name)
     if "\udcff" in name:
         skip_where_a_name_cannot_be_not_utf_8(tmp_path)
     clone = tmp_path / name
@@ -1009,6 +1016,8 @@ def test_a_clone_the_plan_records_is_printed_as_how_it_was_read(
         == (digest, f"local-clone ({clone})")
     said = result.stdout + result.stderr
     assert UNREAD not in said, said
+    skip_where_the_locale_does_not_spell_it_as_utf_8("\u2026",
+                                                     PRINTED_AS_ITSELF)
     assert [line for line in result.stdout.splitlines()
             if line.startswith("pin ")] == [
         f"pin        opensoft/openGlass @ {commit[:12]} tree {digest[:12]}… "
@@ -1029,6 +1038,7 @@ def test_a_pin_source_no_pin_reads_is_refused(source_repo, tmp_path, gh_env,
     exit 2, before a plan exists and before anything is read, in the
     scaffold's words; the path need not exist, and is named spelled, as
     every path a refusal here names is."""
+    skip_where_the_environment_cannot_carry(name)
     typed = str(tmp_path / name)
     out = tmp_path / "plan.yaml"
     result = plan_with(source_repo, out, extra=("--pin-source", typed),
@@ -1075,6 +1085,10 @@ def test_a_pin_source_refused_by_its_flags_is_refused_before_anything_exists(
     `gh repo clone`d, whose own refusal came instead. Here the temporary
     directory is a fresh one, `GIT_TRACE` names a file any git process would
     write, and the `gh` stub logs every call."""
+    skip_where_the_environment_cannot_carry(name)
+    if "\udcff" in name:
+        skip_where_the_locale_does_not_spell_it_as_utf_8(
+            name, A_BYTE_READ_AS_A_SURROGATE)
     temp, trace, work = (tmp_path / "tmp", tmp_path / "git-trace.log",
                          tmp_path / "work")
     temp.mkdir()
@@ -1118,6 +1132,8 @@ def test_check_passes_the_clone_a_plan_records_and_writes_no_path(
         source="local-clone (open\\u00a0Glass)"))
     checked = check_plan(plan, env=gh_env)
     assert checked.returncode == 0, checked.stdout + checked.stderr
+    skip_where_the_locale_does_not_spell_it_as_utf_8("\u2026",
+                                                     PRINTED_AS_ITSELF)
     assert [line for line in checked.stdout.splitlines()
             if line.startswith("  write ")] == [
         f"  write {PIN_FILE}: opensoft/openGlass @ {commit[:12]} tree "
@@ -1148,6 +1164,8 @@ def test_the_pin_and_write_lines_say_how_and_not_where(source_repo, tmp_path,
     assert result.returncode == 0, result.stdout + result.stderr
     assert load_yaml(out)["pins"][0]["digest_source"] \
         == f"local-clone ({path})"
+    skip_where_the_locale_does_not_spell_it_as_utf_8("\u2026",
+                                                     PRINTED_AS_ITSELF)
     assert [line for line in result.stdout.splitlines()
             if line.startswith("pin ")] == [
         f"pin        opensoft/openGlass @ {commit[:12]} tree {digest[:12]}… "
@@ -1248,6 +1266,17 @@ def malformed(glass) -> dict:
                                                digest=digest[:12]),
                          f"{entry} `tree_sha256: '{digest[:12]}'`, which is "
                          "not 64 hex"),
+        # `$` matched just before a trailing line feed (#1017), so the
+        # double-quoted `\n` after the hex, which the plan's reader reads
+        # as a line feed, was a well formed commit and a well formed digest.
+        "commit-line-break": ("pins:\n" + pin_entry(commit=commit + "\\n",
+                                                   digest=digest),
+                              f"{entry} `commit: '{commit}\\n'`, which is "
+                              "not 40 hex"),
+        "digest-line-break": ("pins:\n" + pin_entry(commit=commit,
+                                                   digest=digest + "\\n"),
+                              f"{entry} `tree_sha256: '{digest}\\n'`, which "
+                              "is not 64 hex"),
         "another-product": ("pins:\n" + pin_entry(
                                 repository="opensoft/openPane",
                                 commit=commit, digest=digest),
@@ -1295,13 +1324,15 @@ def malformed(glass) -> dict:
                              f"{entry} `digest_source: 'local-clone "
                              f"(/x\\x00y)'`, {HOW_NOT_WHERE}"),
         # Unquoted, the reader reads a number: `not text`, and never a
-        # `TypeError` out of `COMMIT_RE` (N3).
+        # `TypeError` out of `COMMIT_RE` (N3). Said as `_read_as` says what
+        # the reader read, and not as Python spells it (#1114).
         "a-number-commit": ("pins:\n  - product: openGlass\n"
                             "    repository: opensoft/openGlass\n"
                             "    commit: 1234567\n"
                             f'    tree_sha256: "{digest}"\n'
                             '    digest_source: "local-clone (openGlass)"\n',
-                            f"{entry} `commit: 1234567`, which is not text"),
+                            f"{entry} `commit:` as the number 1234567, "
+                            "which is not text"),
     }
 
 
@@ -1356,9 +1387,9 @@ CASE_IDS = [("plan-pin-unrecorded", name) for name in (
     "old-plan-forged")]
 CASE_IDS += [("plan-pin-malformed", name) for name in (
     "not-a-list", "a-number", "short-commit", "short-digest",
-    "another-product", "no-owner", "no-source", "source-line-break",
-    "source-bare-path", "source-no-space", "source-by-hand",
-    "source-clone-nul", "a-number-commit")]
+    "commit-line-break", "digest-line-break", "another-product", "no-owner",
+    "no-source", "source-line-break", "source-bare-path", "source-no-space",
+    "source-by-hand", "source-clone-nul", "a-number-commit")]
 CASE_IDS += [("plan-pin-collides", name)
              for name in ("case-pair", "shape", "variable-pair")]
 
@@ -1763,6 +1794,8 @@ def test_an_upper_cased_hand_edit_is_written_lower_cased(adopter, source_repo,
                                           digest=digest.upper()))
     checked = check_plan(plan, env=gh_env)
     assert checked.returncode == 0, checked.stdout + checked.stderr
+    skip_where_the_locale_does_not_spell_it_as_utf_8("\u2026",
+                                                     PRINTED_AS_ITSELF)
     assert (f"  write {PIN_FILE}: opensoft/openGlass @ {commit[:12]} tree "
             f"{digest[:12]}… (local-clone)") in checked.stdout
     recorded = adopter._recorded_pins(adopter.Plan.load(plan))

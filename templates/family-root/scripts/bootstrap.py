@@ -181,7 +181,10 @@ WHAT IT DOES, in order:
       and was skipped, and the run said `family bootstrap ok`; before it,
       the run ended in a `PermissionError` traceback. A `family.yaml` whose
       `stat` is refused is `family-manifest-unreadable`, never
-      `family-manifest-missing`.
+      `family-manifest-missing`. And a holder whose own `.git`, or the git
+      directory it names, this user cannot read is refused
+      `git-repo-unreadable`, exit 2, before (a) (#1148): it was a traceback,
+      a holder with no `.git`, or a fetch said to want a credential.
 
 THE FAMILY CONFERS NOTHING and neither does this command. It fetches, it
 delegates, and it says what it could not reach.
@@ -391,6 +394,70 @@ def unreadable(code: str, named: str, exc: OSError, what: str) -> Refusal:
         f"Remediation: {what} A path this command cannot read is a question "
         f"it cannot answer, never a pass. {advice}Then run the same command "
         "again.")
+
+
+#: The refusal of a holder whose own `.git` this user cannot read (#1148),
+#: the code `validate-family.py` refuses it by, and what was not done.
+ROOT_UNREADABLE = "git-repo-unreadable"
+ROOT_UNDONE = (
+    "The holder's own repository is where this command finds the holder, and "
+    "where git finds each member it fetches and each member's own "
+    "repository, and it could not be read, so nothing was fetched or run.")
+
+
+def _refuse_an_unreadable_root(start: Path) -> None:
+    """`git-repo-unreadable`, by name, exit 2, where this user cannot read
+    the `.git` that `find_repo_root` stops at, at `start` or above it, before
+    (a) (#1148).
+
+    `find_repo_root` ASKS `exists()`, AND IS A SHAPE COPY THIS FILE MAY NOT
+    RELY ON BEING NEWER THAN ITSELF (#370, #610), so each `.git` it would ask
+    is asked here first, with `_is_a`, in the same order. A holder whose
+    `.git` is a link into a folder this user cannot search ended `make
+    bootstrap` in a `PermissionError` traceback on Python 3.12, exit 1; from
+    3.14 `exists()` answers False, and the run refused `not-a-git-repo` (`no
+    .git found`) about a holder that has one. A `.git` that answers absent
+    (nothing there, a link that leads nowhere or to itself) is passed over,
+    as `exists()` passes it.
+
+    THE FIRST `.git` THAT IS THERE IS ASKED WHAT `validate-pins.py` ASKS
+    ITS ROOT'S (#1146), since (a) runs git's update in it and (b) runs each
+    member's bootstrap in a checkout whose repository is under it: a
+    gitfile it cannot open, or a git directory whose `HEAD` it cannot
+    reach. A `.git` directory at mode 000 passed the `stat`, and (a) said
+    `FETCH INCOMPLETE` over git's `not a git repository` with the advice to
+    set a credential, which cures nothing here, and (b) failed each member
+    on its own pins; with `--no-fetch --skip-members` the run said `family
+    bootstrap ok`. Each is named relative to where the walk starts, or
+    whole where it is not under it. A gitfile that names no directory, and
+    a git directory with no `HEAD`, are left to git, as they always were.
+
+    `siblings.py` does not import it: it asks with its own, as each pinned
+    copy does (#370, #610)."""
+    path = Path(start).resolve()
+    for candidate in [path, *path.parents]:
+        dotgit = candidate / ".git"
+        named = dotgit
+        try:
+            if not _is_a(dotgit, _anything):
+                continue
+            gitdir = dotgit
+            if _is_a(dotgit, stat.S_ISREG):
+                data = dotgit.read_bytes()
+                if not data.startswith(b"gitdir: "):
+                    return
+                gitdir = dotgit.parent / os.fsdecode(
+                    data[len(b"gitdir: "):].rstrip(b"\r\n"))
+                named = Path(os.path.normpath(gitdir))
+            _is_a(gitdir / "HEAD", _anything)
+        except OSError as exc:
+            try:
+                shown = named.relative_to(path).as_posix()
+            except ValueError:
+                shown = str(named)
+            raise unreadable(ROOT_UNREADABLE, spelled(shown), exc,
+                             ROOT_UNDONE) from exc
+        return
 
 
 def checked_out(root: Path, row: dict) -> bool:
@@ -856,10 +923,13 @@ def credential_advice(denied: bool, stopper: str | None,
     NOR WHERE GIT'S UPDATE MET A SIGNAL (`died`, `signal_met`, #998,
     #1056): a crash or a kill is no want of a credential, and the run
     fails on it. A fetch git could not make may have failed in the same
-    update: a member's fetch that fails ends it with 128, but a clone that
-    fails, a member's or a leg's, gives 1, and git's update goes on (rv996's
-    NIT 2 on #1045), and the advice is not said beside the signal then
-    either. A run made again, where nothing is killed, says it.
+    update: a member's fetch that fails ends it with 128, and a member's
+    clone that fails a second time, git having retried it, ends it with 1
+    before any gitlink at that level is checked out (`quickstop`, git's
+    `update_submodules`), but a leg's clone that fails gives its member's
+    update 1, and git's update goes on (rv996's NIT 2 on #1045). The
+    advice is not said beside the signal then either. A run made again,
+    where nothing is killed, says it.
 
     WITH A TOKEN IN USE A SIGNAL IS TOLD ONLY WHERE ITS CODE IS GIT'S
     LAST (#1056). Git's update is not traced then (`run_update`, #996),
@@ -919,7 +989,16 @@ def ended_on(returncode: int) -> int | None:
       replaces it (#1056) (measured, git 2.43.0: `submodule--helper died
       of signal 11` on a member's own `.gitmodules` giving a `branch` no
       value, exit 139, and exit 128 with a member after it whose pin moved
-      past what git could fetch);
+      past what git could fetch). A member's `git submodule--helper
+      clone` that dies of signal N never gives that code: git's update
+      retries it where it left no `.git` at the member's path, and where
+      the retry fails too ends in `quickstop`'s 1, before any gitlink at
+      that level is checked out, so the code is 1 even with no gitlink
+      after it; where its own `git clone` lived on and wrote that `.git`,
+      git retries nothing (`BUG: submodule considered for cloning,
+      doesn't need cloning any more?`) and goes on, and exits 0 with every
+      gitlink checked out (measured, git 2.43.0 and 2.47.1, offline, a
+      remote helper that kills the clone, rv1088 on #1088);
     - `-N`, where git itself was killed by signal N, as Python gives it.
     Not 128, git's `die`, which `stopped_below` asks about, nor a code from
     `128 + signal.NSIG` on, which numbers no signal this system has, as
@@ -927,10 +1006,13 @@ def ended_on(returncode: int) -> int | None:
     read as before, the advice and `ok` where nothing else is told.
 
     WHERE GIT'S UPDATE WAS TRACED, its trace says a signal a later code
-    replaced (`died_in`), and `signal_met` asks it first. WITH A TOKEN IN
-    USE it was not (#996), and this is all there is: a signal git's update
-    met before a later gitlink failed is not told, as `credential_advice`
-    says, where it says why no trace is read then (#1056)."""
+    replaced (`died_in`), and `signal_met` asks it first: it tells the
+    signal a member's clone died of, `git submodule--helper clone` being a
+    git the update ran. WITH A TOKEN IN USE it was not (#996), and this is
+    all there is: a signal git's update met before a later gitlink failed
+    is not told, as `credential_advice` says, where it says why no trace
+    is read then (#1056), and a member's clone that dies of one and fails
+    again reads as the 1, the credential's skip, the advice and `ok`."""
     if returncode < 0:
         return -returncode
     return died_of(returncode)
@@ -954,17 +1036,19 @@ def killed_said(died: Died, returncode: int) -> str:
     code that gives it. Where that is git's update's own, it ended on it:
     a code past 128 is a git it ran that died of it, whose own words git
     printed above, and a negative one is git itself killed. Where it is
-    not, git's trace gave it, for a git git's update ran, and git's update
-    went on past it, and ended with its own code (`died_in`)."""
+    not, git's trace gave it, for a git git's update ran (`died_in`), and
+    git's update went on past it and ended with its own code, or was
+    itself killed, which a negative code says: it did not go on then."""
     try:
         name = f"{signal.Signals(died.signum).name}, "
     except ValueError:
         name = ""
     said = f"signal {died.signum} ({name}exit {died.code})"
     if died.code != returncode:
+        then = (f"was itself killed (exit {returncode})" if returncode < 0
+                else f"went on and ended with exit {returncode}")
         return (f"a git that git's update ran died of {said}, and git's "
-                f"update went on and ended with exit {returncode}. "
-                + WHERE_SAID)
+                f"update {then}. " + WHERE_SAID)
     if returncode < 0:
         return f"git's update ended on {said}, which killed it."
     return (f"git's update ended on {said}, which a git it ran died of. "
@@ -2324,7 +2408,10 @@ def main(argv: list[str] | None = None) -> int:
     args = parser.parse_args(argv)
 
     try:
-        root = find_repo_root(args.root or Path(__file__).resolve().parents[1])
+        start = args.root or Path(__file__).resolve().parents[1]
+        # A `.git` this user cannot read is refused by name first (#1148).
+        _refuse_an_unreadable_root(start)
+        root = find_repo_root(start)
         name, rows = members_of(root)
     except Refusal as exc:
         print(str(exc), file=sys.stderr)

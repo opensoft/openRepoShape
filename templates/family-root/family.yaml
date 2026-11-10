@@ -42,7 +42,13 @@ created_on: "{{CREATED_ON}}"
 
 # `private`, `public` or `internal`. NOT ENFORCED HERE — GitHub is the source
 # of truth for what a repository's visibility actually is — but recording it
-# is what lets a reader tell why the members need a credential in CI.
+# is what lets a reader tell why the members need a credential in CI. It is
+# the visibility the `family.py init` run that wrote this file ASKED FOR, not
+# a reading of any repository: `--visibility`, which is `private` unless the
+# run was given another. It is the HOLDER's alone, since each member has its
+# own, and a holder the run REUSES keeps the visibility it already has — the
+# run changes no repository's visibility — so this can differ from what
+# GitHub says of the holder.
 visibility: "{{VISIBILITY}}"
 
 # The HOLDER's own branch: the one a new holder is created on, and the one
