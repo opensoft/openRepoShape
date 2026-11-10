@@ -2,7 +2,7 @@
 """Five refusal texts of `scripts/family.py` name the holder's path as
 `shown_path` names it (#1317, its first part).
 
-#1288 spelled `family-unreadable` and `family-wrong-kind` in `Family.open`.
+#1310 spells `family-unreadable` and `family-wrong-kind` in `Family.open`.
 The refusals beside them still named the holder raw, so that a bidi override,
 U+202E, in a `--family-root`'s name reordered the line, an ESC reached the
 terminal as the control it is, and a line feed began a line of the path's
