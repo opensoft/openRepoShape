@@ -91,7 +91,7 @@ NAMES = {
     # A name that is ASCII, which every locale hands git alike.
     "ascii-name": ('"feature/x"', "feature/x", "feature/x"),
     # U+00FF itself, not a surrogate: one byte in Latin-1, two in UTF-8.
-    "u00ff-itself": (r'"tb\xffx"', "tbÿx", "tbÿx"),
+    "u00ff-itself": (r'"tb\xffx"', "tb\u00ffx", "tb\u00ffx"),
     # UTF-8's two bytes of U+00E9 spelled as surrogates.
     "utf-8-bytes-as-surrogates": (r'"caf\udcc3\udca9"', "caf\udcc3\udca9",
                                   r"caf\udcc3\udca9"),
