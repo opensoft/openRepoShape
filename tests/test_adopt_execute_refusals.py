@@ -440,53 +440,68 @@ def test_a_path_that_is_a_git_option_is_still_unsafe_not_uncovered(adopter,
 
 # --- plan values `execute` read late ---------------------------------------
 
-#: `follow_ups:` and every item under it, as `plan` writes the block; the
-#: edits below replace the whole of it.
-FOLLOW_UPS_BLOCK = re.compile(r"^follow_ups:\n(?:  - .*\n)*", re.M)
 BAD_FOLLOW_UPS_CODE = "plan-bad-follow-ups"
 
-#: What a hand edit can leave `follow_ups:` holding that is not a list of
-#: text, by test id: the block it is written as, and what the finding must say
-#: of it (#293). The scalars ended `check` in `TypeError: ... is not iterable`
-#: with no FINDING, and on main ended `execute` the same way after both legs
-#: were pushed; `abc` went into the split commit's message as three
-#: follow-ups, `a`, `b` and `c`, and an item `true` as `True`.
-BAD_FOLLOW_UPS = {
-    "int": ("follow_ups: 5\n", "`follow_ups:` is the number 5, not a list"),
-    "true": ("follow_ups: true\n",
-             "`follow_ups:` is the boolean true, not a list"),
-    "false": ("follow_ups: false\n",
-              "`follow_ups:` is the boolean false, not a list"),
-    "float": ("follow_ups: 1.5\n",
-              "`follow_ups:` is the number 1.5, not a list"),
-    "text": ("follow_ups: abc\n",
-             "`follow_ups:` is the text 'abc', not a list"),
-    "mapping": ("follow_ups: {a: 1}\n",
-                "`follow_ups:` is a mapping of 1 key(s), not a list"),
-    "item-int": ("follow_ups:\n  - 5\n",
-                 "item 1 of `follow_ups:` is the number 5, not text"),
-    "item-true": ('follow_ups:\n  - "keep"\n  - true\n',
-                  "item 2 of `follow_ups:` is the boolean true, not text"),
-    "item-null": ("follow_ups:\n  - null\n",
-                  "item 1 of `follow_ups:` is null, not text"),
-}
+def held(read: str) -> str:
+    """What the finding says of a plan whose `follow_ups:` holds what the
+    plan's reader reads as `read` (`_read_as`)."""
+    return (f"the plan holds `follow_ups:`, {read}, and the follow-ups are "
+            "no longer stored in the plan")
 
-#: What `check` and `execute` still take, by test id, and the follow-ups each
-#: reads: an empty list, a bare key, and a list of text as `plan` writes it.
-GOOD_FOLLOW_UPS = {
-    "empty-list": ("follow_ups: []\n", []),
-    "bare-key": ("follow_ups:\n", []),
+
+#: What a hand edit, or a plan written before #1206, can leave `follow_ups:`
+#: holding, by test id: the block it is written as, and what the finding
+#: must say of it. The scalars ended `check` in `TypeError: ... is not
+#: iterable` with no FINDING, and on main ended `execute` the same way after
+#: both legs were pushed; `abc` went into the split commit's message as three
+#: follow-ups, `a`, `b` and `c`, and an item `true` as `True` (#293). Since
+#: #1206 no command reads the key, and any value with something in it is one
+#: finding, the list of text `plan` wrote among them (`text-items`).
+BAD_FOLLOW_UPS = {
+    "int": ("follow_ups: 5\n", held("the number 5")),
+    "true": ("follow_ups: true\n", held("the boolean true")),
+    "false": ("follow_ups: false\n", held("the boolean false")),
+    "float": ("follow_ups: 1.5\n", held("the number 1.5")),
+    "text": ("follow_ups: abc\n", held("the text 'abc'")),
+    "mapping": ("follow_ups: {a: 1}\n",
+                held("a mapping of 1 key(s)")),
+    "item-int": ("follow_ups:\n  - 5\n", held("a list of 1 item(s)")),
+    "item-true": ('follow_ups:\n  - "keep"\n  - true\n',
+                  held("a list of 2 item(s)")),
+    "item-null": ("follow_ups:\n  - null\n",
+                  held("a list of 1 item(s)")),
     "text-items": ('follow_ups:\n  - "Re-point CI at code/"\n'
                    '  - "merge shape/README.md"\n',
-                   ["Re-point CI at code/", "merge shape/README.md"]),
+                   held("a list of 2 item(s)")),
+    # An item no file can hold was `plan-unwritable-value` before #1206; it
+    # is never read now, and the finding never prints it.
+    "item-surrogate": ('follow_ups:\n  - "fix x\\ud800"\n',
+                       held("a list of 1 item(s)")),
 }
+
+#: The stored items above, none of which `check` may print beside the
+#: follow-ups it works out from the plan as it stands.
+STORED_ITEMS = ("keep", "Re-point CI at code/", "merge shape/README.md", "a",
+                "b", "c", "abc")
+
+#: What `check` and `execute` still take, by test id: an empty list and a
+#: bare key, which hold nothing to lose.
+GOOD_FOLLOW_UPS = {
+    "empty-list": "follow_ups: []\n",
+    "bare-key": "follow_ups:\n",
+}
+
+#: How the remediation for the key begins (#1206).
+FOLLOW_UPS_REMEDY = ("Remediation: the follow-ups are no longer stored in "
+                     "the plan, so delete `follow_ups:`")
 
 
 def with_follow_ups(text: str, block: str) -> str:
-    """`text` with its `follow_ups:` block replaced by `block`."""
-    edited, done = FOLLOW_UPS_BLOCK.subn(lambda _: block, text, count=1)
-    assert done == 1, "the plan has no `follow_ups:` block to edit"
-    return edited
+    """`text` with `block` added, a `follow_ups:` as a plan written
+    before #1206 held one, or as a hand edit leaves it: `plan` writes none
+    since."""
+    assert "\nfollow_ups:" not in text, "the plan already holds one"
+    return text + "\n" + block
 
 
 def assert_no_traceback(result) -> None:
@@ -530,12 +545,12 @@ def test_check_finds_a_follow_ups_that_is_not_a_list_of_text(world, edit):
     assert len(found) == 1, found
     assert found[0].startswith(f"FINDING {BAD_FOLLOW_UPS_CODE}: {said}: "), \
         found
-    assert "Remediation: write `follow_ups:` in the plan file" in \
-        result.stderr
-    shown = [line for line in result.stdout.splitlines()
+    assert FOLLOW_UPS_REMEDY in " ".join(result.stderr.split())
+    shown = [line[len("  follow-up: "):]
+             for line in result.stdout.splitlines()
              if line.startswith("  follow-up: ")]
-    assert shown == (["  follow-up: keep"] if '"keep"' in block else []), \
-        shown
+    assert shown, result.stdout
+    assert not set(shown).intersection(STORED_ITEMS), shown
 
 
 @pytest.mark.parametrize("edit", sorted(BAD_FOLLOW_UPS))
@@ -551,23 +566,20 @@ def test_execute_refuses_a_follow_ups_that_is_not_a_list_of_text_and_creates_no_
     refusal = refused_by(adopter, execute_args(world.tmp, world.plan))
     assert refusal.code == BAD_FOLLOW_UPS_CODE
     assert f"FINDING {BAD_FOLLOW_UPS_CODE}: {said}" in refusal.detail
-    assert "write `follow_ups:` in the plan file" in refusal.remediation
+    assert FOLLOW_UPS_REMEDY in " ".join(refusal.remediation.split())
     no_leg_was_created(world.tmp)
     assert source_branches(world.source) == ["main"]
 
 
 @pytest.mark.parametrize("edit", sorted(GOOD_FOLLOW_UPS))
-def test_a_list_of_text_an_empty_list_and_a_bare_key_still_pass(adopter,
-                                                                world, edit):
-    """The controls: what `plan` writes, and the two ways of writing none,
-    pass `check` and `execute`'s refusal, and the follow-ups read are the
-    items as written."""
-    block, items = GOOD_FOLLOW_UPS[edit]
-    text = with_follow_ups(world.answered, block)
+def test_an_empty_list_and_a_bare_key_still_pass(adopter, world, edit):
+    """The controls: the two ways of writing none, which hold nothing a
+    person could lose, pass `check` and `execute`'s refusal, and `check`
+    prints the follow-ups it works out from the plan as it stands."""
+    text = with_follow_ups(world.answered, GOOD_FOLLOW_UPS[edit])
     checked = run_check(write_edited(world, text))
     assert checked.returncode == 0, checked.stderr + checked.stdout
-    for item in items:
-        assert f"  follow-up: {item}" in checked.stdout
+    assert "  follow-up: " in checked.stdout
     plan, source = open_plan(adopter, world, text)
     assert adopter._refuse_what_check_finds(plan, source) is None
 
@@ -809,8 +821,8 @@ def test_both_findings_are_listed_and_the_code_is_the_first(adopter, world):
         assert finding in caught.value.detail
     assert caught.value.remediation.count("Remediation: edit `elected_on:`") \
         == 1
-    assert caught.value.remediation.count(
-        "Remediation: write `follow_ups:`") == 1
+    assert " ".join(caught.value.remediation.split()).count(
+        FOLLOW_UPS_REMEDY) == 1
 
 
 # --- the keys a plan is opened by (#386) -------------------------------------
@@ -959,7 +971,7 @@ def test_every_key_that_is_wrong_is_named_in_one_run(adopter, world):
         assert f"  {finding}" in refusal.detail
     for key in ("legs", "pins", "paths"):
         assert refusal.remediation.count(KEY_REMEDIATION[key]) == 1
-    assert refusal.remediation.count("Remediation: write `follow_ups:`") == 1
+    assert " ".join(refusal.remediation.split()).count(FOLLOW_UPS_REMEDY) == 1
     no_leg_was_created(world.tmp)
 
 

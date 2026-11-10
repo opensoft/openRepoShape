@@ -58,7 +58,8 @@ from pathlib import Path
 import pytest
 
 from conftest import (ADOPT, FILE_PROTOCOL, REPO, git, load_without_bytecode,
-                      make_source_repo, run_script, spelled, write_plan)
+                      make_source_repo, printed_follow_ups, run_script,
+                      spelled, write_plan)
 from test_adopt_unsearchable_source import (CURE, DENIED, UNREADABLE,
                                             needs_a_mode, recording_gh, said)
 
@@ -126,11 +127,10 @@ def test_plan_records_the_branch_it_reads_the_source_at(tmp_path):
     written = load_yaml(plan)
     assert written["source"]["default_branch"] == "master"
     assert written["tracking_branch"] == "master", written
-    assert written["follow_ups"][-1] == PULL_REQUEST_FOLLOW_UP, \
-        written["follow_ups"]
-    assert not [item for item in written["follow_ups"]
-                if OPEN_THE_SPLIT in item or "seeded" in item], \
-        written["follow_ups"]
+    printed = printed_follow_ups(result.stdout)
+    assert printed[-1] == PULL_REQUEST_FOLLOW_UP, printed
+    assert not [item for item in printed
+                if OPEN_THE_SPLIT in item or "seeded" in item], printed
     assert MISSING not in result.stdout + result.stderr
 
     result, plan = planned(tmp_path / "explicit", source,
@@ -141,8 +141,10 @@ def test_plan_records_the_branch_it_reads_the_source_at(tmp_path):
 
 
 def test_the_follow_up_names_no_branch_a_hand_edit_can_leave_behind(tmp_path):
-    """The follow-ups are written once, by `plan`, and `execute` copies them
-    into the split commit, which is also the pull request's body. The last
+    """The follow-ups were written once, by `plan`, and `execute` copied
+    them into the split commit, which is also the pull request's body (since
+    #1206 `check` and `execute` work them out from the plan as it stands,
+    and the line still names the key). The last
     one named the branch, so a plan made with `--tracking-branch develop`
     and then edited to `master`, as `plan-tracking-branch-missing`'s
     remediation asks, checked ok saying `develop`, and its pull request

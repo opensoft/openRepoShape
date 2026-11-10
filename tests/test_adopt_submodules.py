@@ -20,8 +20,8 @@ from pathlib import Path
 import pytest
 
 from conftest import (ADOPT, FILE_PROTOCOL, REPO, clone_just_pushed,
-                      cloned_just_pushed, git, make_source_repo, resolve,
-                      run_script, write_plan)
+                      cloned_just_pushed, git, make_source_repo,
+                      printed_follow_ups, resolve, run_script, write_plan)
 
 sys.path.insert(0, str(REPO / "scripts"))
 from repo_shape import load_yaml, parse_yaml  # noqa: E402
@@ -806,14 +806,16 @@ def test_a_submodule_takes_nothing_from_what_the_rules_imply(tmp_path,
     and called the code leg empty, and `contracts/: null` lost both."""
     plain = make_source_repo(tmp_path / "plain",
                              tree={**SMALL_TREE, **HARNESS})
-    without = load_yaml(planned(plain, tmp_path)[0])
+    plain_plan, plain_written = planned(plain, tmp_path)
+    without = load_yaml(plain_plan)
     held = tmp_path / "held"
     plan, written = planned(registered_source(held, registered=(gitlink,),
                                               extra=HARNESS), held)
     assert plan_rows(plan)[entry]["leg"] is None
     data = load_yaml(plan)
-    follow_ups = data["follow_ups"]
-    assert follow_ups == without["follow_ups"]
+    # What `plan` prints: the plan stores no follow-ups since #1206.
+    follow_ups = printed_follow_ups(written.stdout)
+    assert follow_ups == printed_follow_ups(plain_written.stdout)
     assert [item.split(" ", 1)[0] for item in follow_ups
             if "`contracts/`" in item or "CONTRACTS_DIR" in item] \
         == ["src/app/harness.py", "the"], follow_ups

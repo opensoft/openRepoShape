@@ -360,24 +360,16 @@ def with_line(text: str, line: str) -> str:
     return text
 
 
-def edited_plan(base: Path, answered: tuple[Path, str], line: str,
-                follow_up: bool = False) -> None:
+def edited_plan(base: Path, answered: tuple[Path, str], line: str) -> None:
     """The answered plan, its `local_path:` a copy of the source made for
     this test alone (on main `execute` pushes its split branch into the
-    source), with `line` in place of the line of its key -- or, as
-    `follow_up`, added as the first `follow_ups:` item -- written LF as
+    source), with `line` in place of the line of its key, written LF as
     `plan` writes it."""
     source, text = answered
     copy = base / "Thing"
     shutil.copytree(source, copy, symlinks=True)
     text = with_line(text, f"  local_path: {double_quoted(str(copy))}")
-    if follow_up:
-        text, done = re.subn(r"^follow_ups:$",
-                             lambda _: f"follow_ups:\n{line}", text, count=1,
-                             flags=re.M)
-        assert done == 1
-    else:
-        text = with_line(text, line)
+    text = with_line(text, line)
     with (base / PLAN_FILE).open("w", encoding="utf-8",
                                  newline="\n") as handle:
         handle.write(text)
@@ -387,7 +379,10 @@ def edited_plan(base: Path, answered: tuple[Path, str], line: str,
 #: the plan by `double_quoted`, as the plan writer escapes it and as a person
 #: editing the plan would. A name-only `pins:` item is #273's to name, as
 #: `plan-pin-unrecorded`, and since #901 that is its one finding: #255 asks
-#: only the pins `execute` writes (`PIN_UNRECORDED`).
+#: only the pins `execute` writes (`PIN_UNRECORDED`). A `follow_ups:` item is
+#: no plan value since #1206: the plan stores none, and a `follow_ups:`
+#: holding one is `plan-bad-follow-ups`, whatever it holds
+#: (`tests/test_adopt_execute_refusals.py`).
 EDITS = [
     ("elected_by-surrogate", "elected_by", "T\ud800", "elected_by"),
     ("elected_by-byte", "elected_by", "T\udce9", "elected_by"),
@@ -401,22 +396,15 @@ EDITS = [
     ("reference-nul", "reference", "x\x00", "reference"),
     ("visibility-surrogate", "visibility", "priv\ud800ate", "visibility"),
     ("pins-surrogate", "pins", "openX\ud800", "`pins:` entry 1,"),
-    ("follow_ups-surrogate", "follow_ups", "fix x\ud800",
-     "a `follow_ups:` item"),
     ("elected_by-override", "elected_by", "\u202eevil", "elected_by"),
     ("visibility-override", "visibility", "private\u202e", "visibility"),
-    ("follow_ups-isolate", "follow_ups", "fix \u2066x",
-     "a `follow_ups:` item"),
 ]
 
 
 def edit(base: Path, answered: tuple[Path, str], key: str,
          value: str) -> None:
     """The answered plan, with `key` given `value`."""
-    if key == "follow_ups":
-        edited_plan(base, answered, f"  - {double_quoted(value)}",
-                    follow_up=True)
-    elif key == "pins":
+    if key == "pins":
         edited_plan(base, answered, f"pins: [{double_quoted(value)}]")
     else:
         edited_plan(base, answered, f"{key}: {double_quoted(value)}")
