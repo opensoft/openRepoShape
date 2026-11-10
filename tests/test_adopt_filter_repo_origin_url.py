@@ -26,12 +26,13 @@ clone that has no url to unset. Without `--file`, `GIT_CONFIG` in the
 environment names the file `git config` writes, and the unset took
 `remote.origin.url` out of a file of the person's, outside the clone
 (RV1251's SHOULD-1); `--local` is no way round it, since git 2.43 exits 129
-with `GIT_CONFIG` set. And a global `clone.defaultRemoteName` gives the clone
-a remote that is not `origin`, so there is no url and git exits 5: the unset
-goes on from that exit and from no other, so that `execute` fails where main
-fails (`mounting the legs`, `No such remote 'origin'`, both legs pushed), not
-earlier and with no words (RV1251's NIT-1). That setting is its own defect,
-not this file's.
+with `GIT_CONFIG` set. And a clone with no `remote.origin.url` makes git exit
+5: the unset goes on from that exit and from no other. A global
+`clone.defaultRemoteName` was the cause (the clone had another remote, and
+`execute` failed where main failed, at `mounting the legs`, not here with no
+words: RV1251's NIT-1), until #1261: every clone `execute` makes names its
+remote `origin` now, so no known cause remains and the row that pins the
+tolerance makes the clone as main did, without that `-c`.
 
 WHY NO TEST ELSEWHERE SAW IT. CI and the bench run UTF-8, where the decode
 replaces nothing. And `test_adopt_template_values.py`'s
@@ -334,13 +335,15 @@ def test_execute_leaves_the_file_git_config_names_alone(tmp_path):
 @needs_filter_repo
 def test_a_clone_with_no_origin_url_goes_on_to_filter_repo(
         adopter, tmp_path, monkeypatch):
-    """A global `clone.defaultRemoteName` gives the clone a remote that is
-    not `origin`, so `git config --unset remote.origin.url` has no key and
+    """A clone that a global `clone.defaultRemoteName` gave a remote that is
+    not `origin` has no key for `git config --unset remote.origin.url`, which
     exits 5. `_extract_leg` goes on from that, as main went on, and the leg
-    is made and pushed: `execute` then fails where main fails, at `mounting
-    the legs`, not here before any leg is pushed, with nothing said. The
-    unset's exit is recorded as it is raised, so that the row says what it
-    saw: 5, and the url of the other remote."""
+    is made and pushed, not stopped here before any leg is pushed, with
+    nothing said. Every clone `execute` makes names its remote `origin`
+    since #1261 (`REMOTE_NAMED_ORIGIN`), so no known cause of that exit
+    remains: the row makes the clone as main did, without that `-c`, to pin
+    the tolerance. The unset's exit is recorded as it is raised, so that the
+    row says what it saw: 5, and the url of the other remote."""
     origin = make_source_repo(tmp_path / "Thing")
     config_lines(tmp_path / "global.gitconfig", "[clone]",
                  f"defaultRemoteName = {ELSEWHERE}")
@@ -357,6 +360,7 @@ def test_a_clone_with_no_origin_url_goes_on_to_filter_repo(
             raise
 
     monkeypatch.setattr(adopter, "run", spied)
+    monkeypatch.setattr(adopter, "REMOTE_NAMED_ORIGIN", [])
     work, leg = extract_the_code_leg(adopter, tmp_path, origin)
 
     assert exits == [KEY_ABSENT], exits

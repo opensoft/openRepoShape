@@ -24,6 +24,7 @@ run, and nothing here says what it does.
 from __future__ import annotations
 
 import importlib.util
+import io
 import re
 import shlex
 import shutil
@@ -447,6 +448,46 @@ def test_the_bare_form_a_failed_push_prints_carries_the_words_too(
                       "shape/x", "--title", title, "--body", body]
     assert title == f"Re-sync the shape copies to o/r @ {'cd' * 6}"
     assert LOCAL in body
+
+
+class ClosedPipe(io.StringIO):
+    """A stdout whose reader has gone away, as under `... | true`: it takes
+    what is printed, and its flush raises, as the one
+    `tests/test_adopt_late_failure.py` gives `adopt-project.py`."""
+
+    def flush(self) -> None:
+        raise BrokenPipeError(32, "Broken pipe")
+
+
+def test_a_refused_push_is_reported_on_stderr_whatever_stdout_is(
+        update_shape, repository, tmp_path, monkeypatch):
+    """A PUSH ORIGIN REFUSES, after the commit, and nobody reads stdout any
+    more (#1218). `landing_failed` flushed stdout bare before it said
+    anything, so the flush's `BrokenPipeError` went over its whole report:
+    stderr said neither which step failed nor that the commit stands. Both
+    reach stderr, and the run ends as a landing that is not complete. The
+    NEXT line is stdout's, handed to stdout whatever it does with it."""
+    git("checkout", "-q", "-b", "shape/x", cwd=repository)
+    git("remote", "add", "origin", str(tmp_path / "no-such-remote.git"),
+        cwd=repository)
+    head = git("rev-parse", "HEAD", cwd=repository).stdout.strip()
+    stdout, stderr = ClosedPipe(), io.StringIO()
+    monkeypatch.setattr(sys, "stdout", stdout)
+    monkeypatch.setattr(sys, "stderr", stderr)
+    args = SimpleNamespace(branch="shape/x", push=True, pr=False)
+
+    with pytest.raises(update_shape.LandingIncomplete):
+        update_shape.push_branch(repository, args, ["gh", "pr", "create"])
+
+    said = stderr.getvalue()
+    assert said.startswith(
+        "REFUSED pushing shape/x. THE EXACT COMMAND WAS:\n"
+        "    git push -q -u -- origin refs/heads/shape/x:refs/heads/shape/x"
+        "\n"), said
+    assert (f"shape/x carries the re-pin at {head[:12]}, and origin does not "
+            "have it yet: that commit stands and nothing was rolled back."
+            ) in said, said
+    assert stdout.getvalue().startswith("\nNEXT  git -C "), stdout.getvalue()
 
 
 # --- the words are true in every state (review of PR #558) -------------------
