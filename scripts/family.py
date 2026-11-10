@@ -2319,19 +2319,41 @@ def _off_the_tracking_branch(family: "Family", refuses: str,
                              suggested: str) -> str:
     """The clause a remedy puts before the line of this file it names, where
     the refusal is said before `_checked_branch` asks the holder's branch
-    (#1127, RV1117's N1): `bump`'s `member-unknown`, and `add`'s
-    `member-already-present`. On the tracking branch, where a fresh clone
-    stands, the line that followed was refused `family-on-tracking-branch`.
-    So the clause says where the line runs and names the `switch -c` that
-    makes a branch, as the holder's `validate-family.py` does before the
-    `remove` its `member-duplicate-id` prints; the remedy ends with
-    `BRANCH_LEFT` (#607). In words true on any branch: the refusal is said
-    before the branch is read, and reading it here could refuse in its
-    place. `refuses` names the verb or verbs the branch is refused by and
-    says so: "`add` refuses", or "`bump` and `remove` refuse"."""
-    switch = _cited(_switch_command(family.root, suggested))
+    (#1127, RV1117's N1): `bump`'s `member-unknown` and `add`'s
+    `member-already-present` in either run, and the two
+    `member-duplicate-id` remedies in a dry run, which asks no branch
+    (#1228; a real `add` or `bump` asks them after `_checked_branch`). On
+    the tracking branch, where a fresh clone stands, the line that followed
+    was refused `family-on-tracking-branch`. So the clause says where the
+    line runs and names the `switch -c` that makes a branch, as the
+    holder's `validate-family.py` does before the `remove` its
+    `member-duplicate-id` prints; the remedy ends with `BRANCH_LEFT`
+    (#607). In words true on any branch: the refusal is said before the
+    branch is read, and reading it here could refuse in its place.
+    `refuses` names the verb or verbs the branch is refused by and says so:
+    "`add` refuses", or "`bump` and `remove` refuse"."""
+    return _branch_clause(_switch_command(family.root, suggested), refuses)
+
+
+def _branch_clause(switch: str, refuses: str) -> str:
+    """`_off_the_tracking_branch`'s words, around a `switch -c` line already
+    spelled: `init`'s `family-holder-already-here` names a holder it has
+    not opened, by its path, and its branch is `init`'s placeholder
+    (`_add_branch_switch`), which `_switch_command` would quote (#1228)."""
     return ("on a branch other than the holder's tracking branch, which "
-            f"{refuses} ({switch} makes one), ")
+            f"{refuses} ({_cited(switch)} makes one), ")
+
+
+def _add_branch_switch(holder: Path) -> str:
+    """`git -C <holder> switch -c family/add-<Project>`: the branch `init`
+    says to make before the `add` it prints, in its NEXT STEPS block and in
+    the remedy of `family-holder-already-here` (#487, #1228). The holder is
+    spelled by `shell_quoted` for the reader's shell (#486). The branch is
+    left bare: its `<Project>` is the placeholder the `--member` of that
+    `add` says (#607), and quoted it would read as a value (`_family_line`).
+    `add`'s own refusal names the branch lowercased."""
+    return (shell_line(["git", "-C", holder, "switch", "-c"])
+            + " family/add-<Project>")
 
 
 def _add_command(holder: Path, org: str) -> str:
@@ -2500,15 +2522,24 @@ def _landing(args, family: str) -> tuple[Path | None, Path]:
     # names it (#609's rule: a refusal by name, never a traceback). The two
     # paths are named as `shown_path` names a path (#766): `--into`, or the
     # directory the person stands in, can hold an ESC or a line break.
+    # THE `add` THE REMEDY NAMES RUNS AS PRINTED (#1228): after the branch
+    # it needs, as `init`'s NEXT STEPS print the two, since a holder `init`
+    # made stands on its tracking branch, where `add` refuses; and `_cited`,
+    # so under a folder named with a backtick the line is printed whole
+    # (#1127, RV1117's N6).
     if into.name == family and os.path.isfile(into / family / MANIFEST):
+        clause = _branch_clause(_add_branch_switch(into / family),
+                                "`add` refuses")
         raise Refusal(
             "family-holder-already-here",
             f"{shown_path(into)} is already the {family} family folder and "
             f"its holder is at {shown_path(into / family)}, so there is "
             "nothing to init",
-            f"Remediation: `{_add_command(into / family, args.org)}` grows "
-            "it, and `make siblings` in the holder puts each member's "
-            "working clone beside it. There is no --force.")
+            f"Remediation: {clause}"
+            + _cited(_add_command(into / family, args.org))
+            + " grows it, and `make siblings` in the holder puts each "
+            "member's working clone beside it. There is no --force. "
+            + BRANCH_LEFT)
     folder, holder = ((into, into / family) if into.name == family else
                       (into / family, into / family / family))
     if args.into is None:
@@ -3500,7 +3531,6 @@ def _print_next_steps(args, work: Path, folder: Path | None) -> None:
     clones anything in a holder whose parent folder is not named after the
     family (#543), so there the block says so instead of promising clones.
     """
-    switch = shell_line(["git", "-C", work, "switch", "-c"])
     beside = ("`make siblings` then puts each member's WORKING clone\n"
               "beside the holder, in the family folder, on its tracking "
               "branch.")
@@ -3516,7 +3546,7 @@ def _print_next_steps(args, work: Path, folder: Path | None) -> None:
     print(f"""
 NEXT STEPS
 
-    {switch} family/add-<Project>
+    {_add_branch_switch(work)}
     {_add_command(work, args.org)}
     cd {shell_quoted(work)}
     make siblings
@@ -6646,7 +6676,7 @@ def _row_recording(family: Family, project_id: str,
 
 
 def _checked_member_id(family: Family, repository: str, project: str,
-                       project_id: str) -> None:
+                       project_id: str, *, dry_run: bool = False) -> None:
     """Refused when a row already records the `id` the member's own
     `project.yaml` does (#330): the project is a member under another name.
 
@@ -6671,6 +6701,11 @@ def _checked_member_id(family: Family, repository: str, project: str,
     and nothing it would pass. The validator keeps its own spelling of the
     rule, as it keeps `member-path`'s: it ships INTO every holder, and a
     shared copy would move every holder's pin.
+
+    `dry_run` IS `add --dry-run`'s ASK (#1228), which reads no branch: its
+    remedy says the branch its two lines need, as `member-already-present`
+    says it. A real `add` asks this after `_checked_branch`, so its remedy
+    names none.
     """
     row = _row_recording(family, project_id)
     if row is not None:
@@ -6678,7 +6713,16 @@ def _checked_member_id(family: Family, repository: str, project: str,
         # THE `remove` AND THE `bump` IT NAMES RUN AS PRINTED (#1005, #927),
         # each a `_family_line` with this holder's `--family-root`, which
         # both verbs require, and the row's own name, quoted (#1127). A real
-        # `add` asks this after `_checked_branch`, so no branch is named.
+        # `add` asks this after `_checked_branch`, which refuses the
+        # tracking branch, so no branch is named. A dry run asks it before
+        # the branch is read, so it names the branch first: the one the
+        # `remove` line's own refusal would name, and `BRANCH_LEFT` (#1228).
+        branch, left = "", ""
+        if dry_run:
+            branch = _off_the_tracking_branch(
+                family, "`bump` and `remove` refuse",
+                _suggested_branch("remove", str(row.get("id") or name)))
+            left = " " + BRANCH_LEFT
         raise Refusal(
             "member-duplicate-id",
             f"{project} is already a member of {family.data.get('name')} "
@@ -6688,6 +6732,7 @@ def _checked_member_id(family: Family, repository: str, project: str,
             "project twice, which `validate-family.py` refuses",
             "Remediation: a family pins each project once. If "
             f"{repository} is {row.get('repository')} renamed at the forge, "
+            + branch
             + _cited(_family_line("remove", family.root, "--member", name))
             + " takes the old row out and this `add` then pins it under the "
             "new name; "
@@ -6695,7 +6740,7 @@ def _checked_member_id(family: Family, repository: str, project: str,
                      + " --to <commit>")
             + " moves the row that is there instead. Two projects that "
             "record one id are a fault in one of their `project.yaml` files, "
-            "mended in that project, not in the family.")
+            "mended in that project, not in the family." + left)
 
 
 def _probe_member(url: str, protocol: list[str], repository: str,
@@ -7609,10 +7654,13 @@ def cmd_add(args) -> int:
         print(UNREADABLE_HINT, file=sys.stderr)
         return 2
     if probed_id is not None:
-        _checked_member_id(family, repository, project, probed_id)
+        _checked_member_id(family, repository, project, probed_id,
+                           dry_run=args.dry_run)
 
     # Every refusal above is the same under `--dry-run`, which leaves here,
-    # before `MountRollback` is taken and anything is mounted (#326).
+    # before `MountRollback` is taken and anything is mounted (#326), but
+    # that `member-duplicate-id`'s remedy there names a branch first: the
+    # real run has read the branch by then, and the dry run has not (#1228).
     if args.dry_run:
         return _add_dry_run(family, repository, project, path, url,
                             protocol, commit, at, args.trailer, suggested)
@@ -8782,7 +8830,7 @@ def _member_id_at(member: Path, commit: str, project: str,
 
 
 def _checked_bumped_id(family: Family, row: dict, commit: str,
-                       project_id: str) -> None:
+                       project_id: str, *, dry_run: bool = False) -> None:
     """`member-duplicate-id` for a `bump` whose `--to` records, in the
     member's own `project.yaml`, the `id` another row already records
     (#541): the question `add` asks since #330 (`_checked_member_id`), asked
@@ -8802,6 +8850,10 @@ def _checked_bumped_id(family: Family, row: dict, commit: str,
     bump replaces it, so the id it records today is no other project's.
     Every other row is asked as `add` asks it, so `bump` refuses what the
     gate would refuse and nothing it would pass.
+
+    `dry_run` IS `bump --dry-run`'s ASK (#1228), which reads no branch
+    first: its remedy says the branch its `remove` line needs. A real
+    `bump` asks this after `_checked_branch`, so its remedy names none.
     """
     project = str(row["project"])
     held = _row_recording(family, project_id, besides=project)
@@ -8811,7 +8863,17 @@ def _checked_bumped_id(family: Family, row: dict, commit: str,
     # THE `remove` IT NAMES RUNS AS PRINTED (#1005): `remove` requires
     # `--family-root`, so the line is a `_family_line` naming this holder and
     # the other row's own name, quoted, as every remedy's line is (#1127). A
-    # real `bump` asks this after `_checked_branch`, so no branch is named.
+    # real `bump` asks this after `_checked_branch`, which refuses the
+    # tracking branch, so no branch is named. A dry run asks it before the
+    # branch is read, so it names the branch first: the one the `remove`
+    # line's own refusal would name, and `BRANCH_LEFT` (#1228).
+    branch, left = "", ""
+    if dry_run:
+        branch = _off_the_tracking_branch(
+            family, "`remove` refuses",
+            _suggested_branch("remove",
+                              str(held.get("id") or held["project"])))
+        left = " " + BRANCH_LEFT
     raise Refusal(
         "member-duplicate-id",
         f"{repository} at {commit[:12]} is already a member of "
@@ -8823,11 +8885,12 @@ def _checked_bumped_id(family: Family, row: dict, commit: str,
         f"of {repository} whose project.yaml records an id no other row "
         f"records. If {repository} and {held.get('repository')} are one "
         "project, "
+        + branch
         + _cited(_family_line("remove", family.root, "--member",
                               held["project"]))
         + " takes the other row out first. Two projects that record one id "
         "are a fault in one of their `project.yaml` files, mended in that "
-        "project, not in the family.")
+        "project, not in the family." + left)
 
 
 def _head_oid(root: Path, path: str) -> str | None:
@@ -9300,10 +9363,12 @@ def _bump_dry_run(family: Family, row: dict, path: str, commit: str,
     resolved as the checkout would take it (`^{commit}`, which is what `git
     checkout` accepts). The manifest is read by `_member_id_at`, its id is
     asked against the other rows by `_checked_bumped_id` as the real run
-    asks it (#541), and the digest is computed by `tree_digest`, which reads
-    objects and never a checkout, so the digest printed is the one the real
-    run computes, never a guess. The rows are `_bumped_rows`', and
-    `family.rewritten` asks `family-members-unrecognised` without writing.
+    asks it (#541), its remedy naming a branch first, which the real run
+    has read by then (#1228), and the digest is computed by `tree_digest`,
+    which reads objects and never a checkout, so the digest printed is the
+    one the real run computes, never a guess. The rows are `_bumped_rows`',
+    and `family.rewritten` asks `family-members-unrecognised` without
+    writing.
 
     `nothing to do` IS THE REAL RUN'S OWN RULE (#210), asked without the
     write: the commit would record nothing when HEAD's gitlink is already
@@ -9331,7 +9396,7 @@ def _bump_dry_run(family: Family, row: dict, path: str, commit: str,
     if linked:
         project_id = str(row.get("id") or "")
     else:
-        _checked_bumped_id(family, row, commit, project_id)
+        _checked_bumped_id(family, row, commit, project_id, dry_run=True)
     digest = tree_digest(member, commit)
     new, rows = _bumped_rows(family, row, project_id, commit, digest)
     text = family.rewritten(rows)
