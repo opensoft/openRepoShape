@@ -663,13 +663,17 @@ UNNAMED = [
                  id="EIO-naming-no-path"),
 ]
 
-#: What stderr says first when every byte `apply --at B` wrote went back:
-#: the copy, then the pin and the manifest, in the order they were written.
-ROLLED_BACK = (
-    "ROLLED BACK: every byte this command wrote has been put back, and the "
-    "tree is exactly as it was:\n"
-    + "".join(f"    restored  {path}\n"
-              for path in (CHANGED, PIN, "project.yaml")))
+def rolled_back(*paths: str) -> str:
+    """What stderr says first when every byte `apply --at B` wrote went
+    back: each of `paths` restored, in the order they were written."""
+    return ("ROLLED BACK: every byte this command wrote has been put back, "
+            "and the tree is exactly as it was:\n"
+            + "".join(f"    restored  {path}\n" for path in paths))
+
+
+#: ... once all of them were written: the copy, then the pin and the
+#: manifest.
+ROLLED_BACK = rolled_back(CHANGED, PIN, "project.yaml")
 
 
 @pytest.mark.parametrize("error", UNNAMED)
@@ -697,32 +701,87 @@ def test_any_oserror_after_the_writes_rolls_them_back_and_is_raised(
     assert_same_tree(before, snapshot(root, {}))
 
 
-def test_a_stdout_nobody_reads_is_rolled_back_under_its_broken_pipe(
-        root, upstream_and_project):
-    """THE TOOL AS A PERSON RUNS IT, no stand-in (#1173): its stdout a pipe
-    whose reader is gone, as `apply --yes | head -1` leaves it once `head`
-    has its line. The flush before the root's validators raised over the
-    written tree. It still raises, over a tree as it was, and what went
-    back reaches stderr, above the traceback, though stdout will not take
-    the flush that comes first. `PYTHONUNBUFFERED` is blanked so stdout is
-    block-buffered whoever runs the test: unbuffered, the `copied` print
-    breaks the pipe first, and the refusal for it answers instead."""
-    before = snapshot(root, {})
+def apply_b_into_a_closed_pipe(root: Path, project: dict, *,
+                               unbuffered: bool
+                               ) -> subprocess.CompletedProcess:
+    """THE TOOL AS A PERSON RUNS IT, no stand-in: `apply --at B --yes`, its
+    stdout a pipe whose reader is gone, as `apply --yes | head -1` leaves it
+    once `head` has its line, and its stderr read. `PYTHONUNBUFFERED` is set
+    or blanked, so stdout is unbuffered or block-buffered as the row says,
+    whoever runs the test."""
     reader, writer = os.pipe()
     os.close(reader)
     try:
-        proc = subprocess.run(
+        return subprocess.run(
             [sys.executable, str(UPDATE), "apply", "--root", str(root),
-             "--yes", "--upstream", str(upstream_and_project["upstream"]),
-             "--at", upstream_and_project["b"]],
+             "--yes", "--upstream", str(project["upstream"]),
+             "--at", project["b"]],
             stdin=subprocess.DEVNULL, stdout=writer, stderr=subprocess.PIPE,
             text=True, check=False,
-            env={**os.environ, "LANES_LANE": "", "PYTHONUNBUFFERED": ""})
+            env={**os.environ, "LANES_LANE": "",
+                 "PYTHONUNBUFFERED": "1" if unbuffered else ""})
     finally:
         os.close(writer)
+
+
+def test_a_stdout_nobody_reads_is_rolled_back_under_its_broken_pipe(
+        root, upstream_and_project):
+    """A stdout nobody reads (#1173). The flush before the root's
+    validators raised over the written tree. It still raises, over a tree
+    as it was, and what went back reaches stderr, above the traceback,
+    though stdout will not take the flush that comes first. Block-buffered:
+    unbuffered, the `copied` print breaks the pipe first, which is
+    `test_a_broken_pipe_at_a_copied_line_is_not_a_failed_write`'s case."""
+    before = snapshot(root, {})
+    proc = apply_b_into_a_closed_pipe(root, upstream_and_project,
+                                      unbuffered=False)
     assert proc.returncode != 0, proc.stderr
     assert proc.stderr.startswith(
         ROLLED_BACK + "Traceback (most recent call last):\n"), proc.stderr
+    assert_same_tree(before, snapshot(root, {}))
+
+
+@needs_a_mode
+def test_a_refusal_after_the_writes_reaches_stderr_when_stdout_is_unread(
+        root, upstream_and_project):
+    """A REFUSAL OVER A STDOUT NOBODY READS (#1218). A pin this user cannot
+    write is `update-write-failed` once the copy is written, and the
+    rollback flushed stdout before it said so. Into a pipe whose reader had
+    gone, that flush raised over the tree it had just put back: exit 120,
+    a traceback, and neither the REFUSED line nor the ROLLED BACK list on
+    stderr. The flush is let go, and stderr says both. The bytes stdout
+    never took are the interpreter's to report at exit, which it does."""
+    (root / PIN).chmod(0o444)
+    before = snapshot(root, {})
+    proc = apply_b_into_a_closed_pipe(root, upstream_and_project,
+                                      unbuffered=False)
+    assert proc.returncode != 0, proc.stderr
+    assert proc.stderr.startswith(
+        "REFUSED update-write-failed: re-pinning contracts/shape-pin.yaml "
+        f"and project.yaml failed at {PIN}: {DENIED}\n"
+        + rolled_back(CHANGED)), proc.stderr
+    assert_same_tree(before, snapshot(root, {}))
+
+
+def test_a_broken_pipe_at_a_copied_line_is_not_a_failed_write(
+        root, upstream_and_project):
+    """UNBUFFERED, THE `copied` PRINT BREAKS THE PIPE (#1218), inside
+    `Rollback.writing`, which refused it as `update-write-failed: writing
+    the copies and the --add files failed: Broken pipe`, blaming the write
+    of a copy for an error of stdout's. It is raised as itself, through the
+    arm for an `OSError` no refusal can name (#1173): the one copy written
+    goes back, stderr says so above the traceback, and the traceback is the
+    broken pipe's."""
+    before = snapshot(root, {})
+    proc = apply_b_into_a_closed_pipe(root, upstream_and_project,
+                                      unbuffered=True)
+    assert proc.returncode != 0, proc.stderr
+    assert "update-write-failed" not in proc.stderr, proc.stderr
+    assert proc.stderr.startswith(
+        rolled_back(CHANGED) + "Traceback (most recent call last):\n"), \
+        proc.stderr
+    assert proc.stderr.endswith(
+        "BrokenPipeError: [Errno 32] Broken pipe\n"), proc.stderr
     assert_same_tree(before, snapshot(root, {}))
 
 
