@@ -913,8 +913,9 @@ def test_a_linked_attributes_file_checked_out_as_a_plain_file_adopts(
     its own lines was changed" and then failed `adopt-lost: .gitattributes`
     after both legs were pushed; main verified the same source (#471's
     review, MUST-1). Now nothing is written through, the split holds the
-    source's link as it was, and the plan's follow-up says no block was
-    appended and lists the lines a regular file needs (SHOULD-2)."""
+    source's link as it was, and the follow-up `check` prints says no block
+    was appended and lists the lines a regular file needs (SHOULD-2); the
+    plan stores none since #1206."""
     source = make_source_repo(tmp_path / "Thing", tree=LINKED_ATTRIBUTES_TREE)
     blob = subprocess.run(["git", "hash-object", "-w", "--stdin"],
                           cwd=str(source), input=b"config/attributes",
@@ -926,9 +927,13 @@ def test_a_linked_attributes_file_checked_out_as_a_plain_file_adopts(
     env = command_scope("core.symlinks", "false")
     plan = planned_and_checked(source, tmp_path, env,
                                keep=(ATTRIBUTES, "config/"))
-    planned = plan.read_text(encoding="utf-8")
+    checked = run_script(ADOPT, "check", "--plan", str(plan), env=env)
+    assert checked.returncode == 0, checked.stderr + checked.stdout
+    (planned,) = [line for line in checked.stdout.splitlines()
+                  if line.startswith(f"  follow-up: keep {ATTRIBUTES}")
+                  or f"{ATTRIBUTES} is a symlink" in line]
     assert f"{ATTRIBUTES} is a symlink, so the split appended nothing" \
-        in planned, planned
+        in planned, checked.stdout
     assert EOL_BLOCK_HEAD in planned
 
     result = run_script(ADOPT, "execute", "--plan", str(plan), "--yes",
