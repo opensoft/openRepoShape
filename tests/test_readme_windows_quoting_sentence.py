@@ -71,7 +71,10 @@ NAMED = {
         "_add_command": 1,         # `init`'s `add`: its `--member <org>/...`
         # `bump`'s `member-unknown`: its `add` line's `--member` (#1127)
         "_unknown_members_repository": 2,
-        "_print_next_steps": 2,    # `init`'s block: its `switch -c` and `cd`
+        "_print_next_steps": 1,    # `init`'s block: its `cd`
+        # `init`'s `switch -c family/add-<Project>`, in its block and in
+        # `family-holder-already-here`'s remedy (#1228)
+        "_add_branch_switch": 1,
         "_checked_mount_path": 1,  # the `git rm -r --cached -- <path>` remedy
     },
 }
@@ -88,7 +91,8 @@ FAMILY_LINES = {
     "_family_line": None,
     "_add_command": {"add"},
     "_unknown_members_repository": {"add"},
-    "_print_next_steps": {"switch -c", "cd"},
+    "_print_next_steps": {"cd"},
+    "_add_branch_switch": {"switch -c"},
     "_checked_mount_path": {"git rm -r --cached"},
 }
 

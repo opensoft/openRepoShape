@@ -16,6 +16,17 @@ WHAT IS CHECKED
 
   - the envelope: `schema_version`, `kind: family-manifest`, `id`, `name`,
     `org`, `created_by` / `created_on`, `visibility`, `members_dir`
+  - that no text value holds a character it may not (#1205), named with
+    the key and the character's code point. `name` and `created_by`, which
+    a person types, are held to #255's rule, the one `family.py init` asks
+    of the value before it writes it: no line break, lone surrogate,
+    bidirectional control or other control character; a joiner or a
+    no-break space a name needs is kept. `org`, the holder's own
+    `repository`, `tracking_branch`, `shape.repository`,
+    `shape.digest_algorithm` and each member pin's `digest_algorithm` hold
+    only characters that print (`str.isprintable`). A key whose own check
+    refuses such a value already is not asked twice. It reads `family.yaml`
+    alone, as the rest of the envelope does, so `--no-members` asks it too.
   - the family NAME against `contracts/repository-naming.yaml`, in the
     `family` form. That form is DECLARED-ONLY: `InkRouter` is spelled exactly
     like an assembly root and `family.yaml` is what tells them apart, so the
@@ -29,6 +40,12 @@ WHAT IS CHECKED
     alone, so `--no-members` asks it too.
   - that every entry of `members:` is a mapping, the `member-row` finding
     (#864). It reads `family.yaml` alone, so `--no-members` asks it too.
+  - that every row's `id:` is a project id, `PROJECT_ID_RE` asked of the
+    whole of it, the `member-id-malformed` finding (#1204): an id that ends
+    in a line feed or holds a space names no project. It reads
+    `family.yaml` alone, so `--no-members` asks it too; with the members
+    checked, each member's own `project.yaml` `id:` is asked as `family.py
+    add` asks it.
   - EVERY MEMBER, three ways:
       1. the GITLINK this repository records at `members/<Project>` equals
          `members[].pin.commit` — the same lockstep rule an assembly root
@@ -185,6 +202,7 @@ import re
 import shlex
 import stat
 import sys
+import unicodedata
 from collections import Counter
 from contextlib import contextmanager
 from pathlib import Path
@@ -613,6 +631,99 @@ def _checked_out(checkout: Path, path: str) -> bool:
                   f"{path}/.git")
 
 
+# A member's `.git` and the git directory it names, asked before git is
+# (#1221). `_checked_out` only `stat`s the `.git`, and three states pass
+# that `stat` and reach the pinned commit's lookup, which git then failed:
+# a gitfile at mode 000, which stats; a `.git` directory at mode 000, which
+# git passes over, walking up to the holder's own repository; and the
+# directory a readable gitfile names, at mode 000. Each was refused
+# `member-commit-unresolvable`, "the pinned commit ... is not in that
+# member's object store", with a fetch that cannot help. Each is now
+# `member-unreadable`, naming the part, with its `chmod`.
+#
+# `validate-pins.py`'s `_gitfile_opens` (#919), `_leg_git_dir` (#968) and
+# `_refuse_an_unreadable_git_dir` (#968), COPIED, NOT SHARED: the two roots
+# are separate templates, and this file is a pinned copy a holder re-copies
+# one row at a time (#610's skew rule). `tests/test_validate_family_
+# unreadable.py` holds `_member_git_dir` to the gate's `_leg_git_dir` over
+# every shape of `gitdir: ` line the gate's rows write. A `HEAD` file itself
+# at mode 000 is not asked here, since the gate does not ask it either.
+
+def _gitfile_opens(path: Path) -> bool:
+    """Whether a member's `.git` that is a regular file, a gitfile, can be
+    opened (#1221), as `validate-pins.py` asks a leg's (#919): False where
+    nothing is there to open (`_ABSENT_ERRNOS`, `_ABSENT_WINERRORS`), the
+    `OSError` of an open the operating system REFUSED raised, and True for
+    a `.git` that is no regular file, a checkout's own directory, which git
+    reads itself. Only a regular file is opened, since the open of a FIFO
+    waits for a writer."""
+    if not _is_a(path, stat.S_ISREG):
+        return True
+    try:
+        path.open("rb").close()
+    except OSError as exc:
+        if (exc.errno in _ABSENT_ERRNOS
+                or getattr(exc, "winerror", None) in _ABSENT_WINERRORS):
+            return False
+        raise
+    return True
+
+
+def _gitfile_read(checkout: Path, path: str) -> bool:
+    """`_gitfile_opens` of the `.git` in `checkout`, the gitlink path `path`,
+    or `member-unreadable` naming `<path>/.git` where its open was refused
+    (#1221)."""
+    try:
+        return _gitfile_opens(checkout / ".git")
+    except OSError as exc:
+        raise _unreadable(MEMBER_UNREADABLE, f"{path}/.git", exc) from exc
+
+
+def _member_git_dir(dotgit: Path) -> Path | None:
+    """The git directory of a member whose `.git` is `dotgit`, as
+    `validate-pins.py`'s `_leg_git_dir` finds a leg's (#968, #1221): `dotgit`
+    itself where it is no regular file (a checkout's own directory); the
+    directory a gitfile's `gitdir: ` line names, joined to the gitfile's own
+    directory as git joins it, its `..` left for the system to follow; and
+    None where the gitfile names none, which git refuses as it always did.
+    Raises the `OSError` of a `stat` or a read the operating system
+    refused."""
+    if not _is_a(dotgit, stat.S_ISREG):
+        return dotgit
+    data = dotgit.read_bytes()
+    if not data.startswith(b"gitdir: "):
+        return None
+    return dotgit.parent / os.fsdecode(data[len(b"gitdir: "):].rstrip(b"\r\n"))
+
+
+def _refuse_an_unreadable_git_dir(checkout: Path, path: str) -> None:
+    """`member-unreadable`, by name, for a member at the gitlink path `path`
+    whose git directory this user cannot search (#1221), asked as
+    `validate-pins.py` asks a leg's (#968): the `stat` of its `HEAD`, which
+    a git directory at mode 000 or r-- refuses.
+
+    NAMED AS THE GATE NAMES IT, relative to the holder: `<path>/.git` for a
+    checkout's own directory, `.git/modules/<path>` for the one an absorbed
+    member's gitfile names, and whole where it is outside the holder. A git
+    directory with no `HEAD`, or a gitfile that names none, is left to git,
+    which answers for it as it always did."""
+    dotgit = checkout / ".git"
+    named = f"{path}/.git"
+    try:
+        gitdir = _member_git_dir(dotgit)
+        if gitdir is not None:
+            holder = Path(os.path.normpath(
+                checkout.parents[len(Path(path).parts) - 1]))
+            found = Path(os.path.normpath(gitdir))
+            try:
+                named = found.relative_to(holder).as_posix()
+            except ValueError:
+                named = str(found)
+            _is_a(gitdir / "HEAD", _any_kind)
+    except OSError as exc:
+        raise _unreadable(MEMBER_UNREADABLE, named, exc) from exc
+
+
 def _checkout_gone(root: Path, path: str) -> bool:
     """`_gone` of the `.git` at the gitlink path `path`, or
     `member-unreadable` naming it where its `stat` was refused for any
@@ -666,6 +777,102 @@ def _check_schema_kind_and_id(manifest: dict, report: Report) -> None:
                        f"{PROJECT_ID_RE.pattern}")
 
 
+#: #255'S RULE AS DATA (#1205): what `unwritable_reason` in openRepoShape's
+#: `scripts/shape_materialize.py` refuses past a line break, the question
+#: `scaffold-project.py`, `adopt-project.py` and `family.py init` ask of a
+#: name, an elector and a reference before they write one. Each kind, in the
+#: order it asks, as `(what the character is, as a finding says it, the
+#: categories or code points it is)`: a byte that is not UTF-8 (the lone
+#: surrogate `sys.argv` keeps one as, #247), any other lone surrogate, the
+#: nine bidirectional embedding, override and isolate controls (#255's
+#: `BIDI_CONTROLS`, U+202A to U+202E and U+2066 to U+2069) and any other
+#: control character. NOT `str.isprintable`, which refuses U+200C ZERO WIDTH
+#: NON-JOINER, which a Persian name joins its parts with, and a no-break
+#: space: the tools write both, and this file passed both before, so
+#: refusing either would refuse a manifest the tools wrote. Copied, since
+#: this file imports nothing new from `repo_shape.py`, which may be older
+#: than it (#370, #610). `validate-manifest.py` holds the same copy, and
+#: `tests/test_manifest_validator.py` holds both to the original.
+UNWRITABLE = (
+    ("a byte that is not UTF-8, which no UTF-8 file, commit message or "
+     "console can hold", {*range(0xDC80, 0xDD00)}),
+    ("a lone surrogate, which no UTF-8 file, commit message or console can "
+     "hold", {"Cs"}),
+    ("a bidirectional control, which shows the rest of the line it is "
+     "printed in in another order than it is written",
+     {*range(0x202A, 0x202F), *range(0x2066, 0x206A)}),
+    ("a control character, which does not print", {"Cc", "Zl", "Zp"}),
+)
+#: What a line break is, which no value holds, and a character that does not
+#: print, which no value but a typed one holds, as a finding says each.
+LINE_BREAK = ("a line break, and the value is one line: what prints it is "
+              "split in two there")
+UNPRINTABLE = ("a character that does not print, or a space other than ` `: "
+               "a person reading the value cannot tell what it holds")
+
+
+def _held_kind(char: str, typed: bool) -> str | None:
+    """What `char` is, as a finding says it, where a value may not hold it;
+    None where it may (#1205). No value holds a line break (one
+    `str.splitlines` ends a line at: CR, U+0085 and U+2028 among them). A
+    value a person types (`typed`) holds nothing else #255 refuses
+    (`UNWRITABLE`), and any other value only characters that print
+    (`str.isprintable`). `validate-manifest.py` asks the same."""
+    if char.splitlines() != [char]:
+        return LINE_BREAK
+    if not typed:
+        return None if char.isprintable() else UNPRINTABLE
+    category = unicodedata.category(char)
+    return next((kind for kind, held in UNWRITABLE
+                 if category in held or ord(char) in held), None)
+
+
+def _first_held(value: str, typed: bool) -> tuple[str, str] | None:
+    """The character of `value` its key may not hold, and what it is
+    (`_held_kind`); None where it holds none (#1205). A line break first,
+    wherever it is, as #255 names it: `InkRouter\\x1b\\n` holds the line
+    break a person is told to take out first."""
+    held = [(char, kind) for char in value
+            if (kind := _held_kind(char, typed))]
+    return next((pair for pair in held if pair[1] == LINE_BREAK),
+                held[0] if held else None)
+
+
+def _held_character(what: str, value, typed: bool = False) -> str | None:
+    """The finding's words where `value` holds a character its key may not,
+    or None: none does, or it is not text, which is another check's to
+    name (#1205).
+
+    A LINE FEED WAS `family ok` IN EVERY KEY NO PATTERN READS. A
+    double-quoted `"InkRouter\\n"` (or a block scalar) passed, and `name`
+    split its `ok` note in two, while `family.py add` refused the
+    `tracking_branch` this said was fine. `typed` is a value a person
+    types, held to #255's rule; any other is held to `str.isprintable`
+    (`_held_kind`). The character is named by its code point, and the
+    value by `repr`, so the line says what is there. The way through is
+    said by kind: a line break is taken out by writing the value on one
+    line, and any other character by writing the value without it.
+    """
+    found = _first_held(value, typed) if isinstance(value, str) else None
+    if found is None:
+        return None
+    char, kind = found
+    remedy = ("Write it on one line." if kind == LINE_BREAK
+              else "Write it without that character.")
+    return (f"{what} is {value!r}, which holds U+{ord(char):04X}, {kind}. "
+            f"{remedy}")
+
+
+def _held_finding(report: Report, code: str, what: str, value,
+                  typed: bool = False) -> bool:
+    """`_held_character`'s finding under `code`, where there is one, and
+    whether there was (#1205)."""
+    held = _held_character(what, value, typed)
+    if held:
+        report.finding(code, held)
+    return bool(held)
+
+
 def _check_family_name(manifest: dict, policy: NamingPolicy,
                        report: Report) -> None:
     """The one field in the envelope that is also a naming-policy question:
@@ -677,6 +884,10 @@ def _check_family_name(manifest: dict, policy: NamingPolicy,
     name = manifest.get("name")
     if not isinstance(name, str) or not name.strip():
         report.finding("family-name", f"name is {name!r}")
+        return
+    # #255's rule (#1205), said alone: the classifier reads the name
+    # stripped, so `InkRouter\n` was a family, and its note split in two.
+    if _held_finding(report, "family-name", "name", name, typed=True):
         return
     # THE DECLARED-ONLY FORM, ASKED FOR BY NAME. This manifest IS the
     # declaration, so the classifier is given `family` rather than being
@@ -701,14 +912,20 @@ def _check_family_name(manifest: dict, policy: NamingPolicy,
 def _check_org_visibility_and_dates(manifest: dict, report: Report) -> None:
     """`org`, `created_by`, `created_on`, `visibility` and `members_dir` —
     five independent fields, none of them read by any other check, split from
-    `_check_envelope` for #137."""
+    `_check_envelope` for #137. `org` prints, and `created_by` is held to
+    #255's rule (#1205)."""
     if not isinstance(manifest.get("org"), str) or not manifest.get("org"):
         report.finding("family-org", f"org is {manifest.get('org')!r}")
+    else:
+        _held_finding(report, "family-org", "org", manifest["org"])
     if not isinstance(manifest.get("created_by"), str) or \
             not manifest["created_by"].strip():
         report.finding("family-created-by",
                        "created_by is empty. Creating a family is a human's "
                        "act and the manifest records whose.")
+    else:
+        _held_finding(report, "family-created-by", "created_by",
+                      manifest["created_by"], typed=True)
     created_on = manifest.get("created_on")
     if not isinstance(created_on, str) or not DATE_RE.match(created_on):
         report.finding("family-created-on",
@@ -758,15 +975,46 @@ def _check_shape_block(manifest: dict, report: Report) -> None:
                        f"{TREE_DIGEST_DEFINITION!r}")
 
 
+def _check_characters(manifest: dict, report: Report) -> None:
+    """The holder's own `repository`, `tracking_branch`,
+    `shape.repository`, `shape.digest_algorithm` and each member pin's
+    `digest_algorithm`: each holds only characters that print (#1205), and
+    nothing else here reads any of them. `family.py add` refused the
+    `tracking_branch` `main\\n` (`unsafe-value`) that this said was `family
+    ok`. A row or a pin that is not a mapping is another check's to name,
+    and what `digest_algorithm` may be otherwise is not asked here."""
+    for key, code in (("repository", "family-repository"),
+                      ("tracking_branch", "family-tracking-branch")):
+        _held_finding(report, code, key, manifest.get(key))
+    shape = manifest.get("shape")
+    if isinstance(shape, dict):
+        for key, code in (("repository", "family-shape-repository"),
+                          ("digest_algorithm",
+                           "family-shape-digest-algorithm")):
+            _held_finding(report, code, f"shape.{key}", shape.get(key))
+    members = manifest.get("members")
+    for index, row in enumerate(members if isinstance(members, list)
+                                else ()):
+        pin = row.get("pin") if isinstance(row, dict) else None
+        if isinstance(pin, dict):
+            _held_finding(report, "member-pin-digest-algorithm",
+                          f"members[{index}]: pin.digest_algorithm",
+                          pin.get("digest_algorithm"))
+
+
 def _check_envelope(manifest: dict, policy: NamingPolicy,
                     report: Report) -> None:
     """`schema_version`, `kind: family-manifest`, `id`, `name`, `org`,
     `created_by` / `created_on`, `visibility`, `members_dir` and `shape` — in
-    that order, unchanged; each is now its own decision (#137)."""
+    that order, unchanged; each is now its own decision (#137). Then the
+    text values nothing above reads, held to characters that print
+    (`_check_characters`, #1205): here, because this is what `family.py
+    init` asks of the manifest it would write."""
     _check_schema_kind_and_id(manifest, report)
     _check_family_name(manifest, policy, report)
     _check_org_visibility_and_dates(manifest, report)
     _check_shape_block(manifest, report)
+    _check_characters(manifest, report)
 
 
 def _member_project_name(row: dict, seen: dict, report: Report) -> str | None:
@@ -1473,14 +1721,19 @@ def _check_member_tree(member: Path, pin: dict, path: str, commit: str,
     `.git` (`_checked_out`, #430): it ended the run in a traceback up to
     Python 3.13, and on 3.14 was `member-uninitialized`, whose update then
     failed (`could not open '<path>/.git' for writing`) on the checkout
-    that is there.
+    that is there. So is a `.git` gitfile this user cannot open
+    (`_gitfile_read`, #1221), and a git directory this user cannot search,
+    the `.git` itself or the one a gitfile names
+    (`_refuse_an_unreadable_git_dir`, #1221): each passed the `stat` and
+    reached git, and the run ended `member-commit-unresolvable`, which says
+    the pinned commit is missing and prescribes a fetch.
 
     The pinned commit's lookup and the digest are read inside `_git_runs`,
     and nothing else here is (#928). All of this ran inside one, the `stat`
     of the checkout's `.git` too: on Python 3.12, a refused one met here
     was `git-not-runnable`, which says to put git on PATH.
     """
-    if not _checked_out(member, path):
+    if not (_checked_out(member, path) and _gitfile_read(member, path)):
         raise Refusal(
             "member-uninitialized",
             f"{path} is not an initialized submodule checkout, so neither the "
@@ -1490,6 +1743,7 @@ def _check_member_tree(member: Path, pin: dict, path: str, commit: str,
             f"Remediation: {stop}`git submodule update --init --recursive`, "
             "or `make bootstrap`, which resolves a credential for private "
             "members first.")
+    _refuse_an_unreadable_git_dir(member, path)
     unread = (f"{project}'s pinned commit and its tree digest could not be "
               f"read in {path}")
     # `_git_runs` OUTSIDE the `try`, as `validate-pins.py` has it: the
@@ -1619,12 +1873,12 @@ def _check_member_checkout(root: Path, asked: Gitlinked, report: Report,
         return
     _check_member_tree(member, asked.pin, asked.path, asked.commit,
                        asked.project, report, asked.rule, stop)
-    _check_member_identity(member, asked.row, asked.project, asked.path,
+    _check_member_identity(root, member, asked.row, asked.project, asked.path,
                            report)
 
 
-def _check_member_identity(member: Path, row: dict, project: str, path: str,
-                           report: Report) -> None:
+def _check_member_identity(root: Path, member: Path, row: dict, project: str,
+                           path: str, report: Report) -> None:
     """The mounted tree is the PROJECT this row claims, not just a commit.
 
     A member is an assembly root, so it carries `project.yaml`, and that file
@@ -1642,6 +1896,17 @@ def _check_member_identity(member: Path, row: dict, project: str, path: str,
     (`load_yaml`'s `yaml-unreadable` line), and gave no cure. `path` is the
     row's path as `_check_member_repository_and_path` resolved it, so a
     row that gives none is named at `members/<P>`, not `None` (r956's NIT 1).
+
+    THE MEMBER'S OWN `id:` IS ASKED AS `family.py add` ASKS IT (#1204),
+    `PROJECT_ID_RE` of the whole of `str(id or "")` (`_read_member_project`'s
+    `member-bad-id`), so the gate refuses, members checked, every mounted
+    member `add` would refuse: `member-id-malformed`, naming the file, as
+    the source, and the `bump` that pins it once it is mended. A row that
+    spelled the same malformed text was `ok`, since the two compared equal.
+    Where either id is malformed, `member-id-mismatch` is not said as well:
+    the row's own finding, made in every mode, or this one, is the fault,
+    and a mismatch would send the person to copy a malformed id. `root` is
+    the holder each remedy names.
     """
     manifest_path = member / "project.yaml"
     named = f"{path}/project.yaml"
@@ -1673,11 +1938,32 @@ def _check_member_identity(member: Path, row: dict, project: str, path: str,
         return
     recorded_id = row.get("id")
     actual_id = manifest.get("id")
+    source_bad = not _is_project_id(str(actual_id or ""))
+    if source_bad:
+        word = str(recorded_id or project)
+        report.finding(
+            "member-id-malformed",
+            f"{named}: the member's own `id:` is {actual_id!r}, which does "
+            f"not match {PROJECT_ID_RE.pattern}, so the tree mounted at "
+            f"{path} is no project, and `family.py add` and `bump` refuse "
+            "it as `member-bad-id`. That file is the source every row pins, "
+            "so it is mended in the member's own repository, whose "
+            "validate-manifest.py refuses it as `manifest-id`; then, from a "
+            "checkout of openRepoShape and on a branch other than the "
+            "holder's tracking branch, which `bump` refuses "
+            f"(`{_switch_line(root, 'bump', word)}` makes one), "
+            f"`{_bump_to(root, project, None)}` pins the mended commit and "
+            f"writes the row's `id:` from it. {BRANCH_LEFT}")
     if recorded_id is None:
         report.finding(
             "member-id-absent",
             f"{project}: the row records no `id:`, so nothing checks that the "
             "tree mounted here is the project this row claims")
+    elif source_bad or not _is_project_id(str(recorded_id)):
+        # ONE FINDING FOR ONE FAULT (#1204): the member's own id was named
+        # just above, or the row's by `_check_member_ids_well_formed`, in
+        # every mode, with the `bump` that writes the row from the source.
+        return
     elif str(recorded_id) != str(actual_id):
         report.finding(
             "member-id-mismatch",
@@ -1942,6 +2228,101 @@ def _check_member_ids_unique(root: Path, members: list,
             f"--family-root {shlex.quote(str(root))} --member "
             f"{shlex.quote(project)}` takes the later row, {project}, out; "
             f"name {first} there instead to keep {project}. {BRANCH_LEFT}")
+
+
+def _is_project_id(text: str) -> bool:
+    """Whether `text` is a project id: `PROJECT_ID_RE` asked of the WHOLE
+    text (#1204).
+
+    `fullmatch`, NOT `match` (#1139): the pattern ends in `$`, which also
+    matches just before a trailing line feed, so `match` takes `irrs\\n`.
+    The pattern is the holder's own `repo_shape.py`'s, whose text each
+    finding prints, so it is asked whole, not respelled. ONE reader for
+    the two places a member's id is asked, its row's `id:`
+    (`_check_member_ids_well_formed`) and its mounted `project.yaml`'s
+    (`_check_member_identity`), so the two cannot drift into two
+    questions."""
+    return PROJECT_ID_RE.fullmatch(text) is not None
+
+
+def _bump_to(root: Path, project: str, commit: str | None) -> str:
+    """`family.py bump` of `project` in this holder, `--to commit`, or `--to
+    <commit>` where no commit can be named, as THE LOCKSTEP RULE says it:
+    POSIX-quoted, as every line this file prints is (#1204)."""
+    to = "<commit>" if commit is None else shlex.quote(commit)
+    return (f"{PYTHON} scripts/family.py bump --family-root "
+            f"{shlex.quote(str(root))} --member {shlex.quote(project)} "
+            f"--to {to}")
+
+
+def _check_member_ids_well_formed(root: Path, members: list,
+                                  report: Report) -> None:
+    """Every row's `id:` is a project id: the `member-id-malformed` finding
+    (#1204).
+
+    Nothing asked it. A row's id met two checks, the mounted `project.yaml`
+    compared with it as text and `_check_member_ids_unique`, and neither is
+    a pattern, so under `--no-members` an id that ended in a line feed, held
+    a space or opened with `-` was `family ok`, and with the members checked
+    so was one the mounted `project.yaml` spelled the same: the row a
+    `family.py add` older than #1166 wrote for a member whose own `id:` read
+    `"irqs\\n"`. It reads `family.yaml` alone, so it runs under
+    `--no-members` too, as `--pins` and a full run do.
+
+    THE ROWS IT ASKS ARE `_check_member_ids_unique`'s: a row that is no
+    mapping (`member-row`), has no `project:` (`member-project`) or spells
+    an earlier row's `project:` exactly (`member-duplicate`) is skipped, so
+    every row `_check_member_identity` reaches has been asked here. A row
+    with no `id:`, or `id: null`, is `member-id-absent`'s, as before. Any
+    other `id:` is asked as its text, `str()`, the text the identity check
+    compares: a number reads as its digits, so a row a holder written before
+    #259 keeps as `id: 2026` is an id, as `family.py`'s `_member_id` says
+    it passes; `true`, `1.5`, `-3`, a list and a mapping read as text no
+    id is, and are refused, each named as the reader read it.
+
+    THE REMEDY IS `family.py bump` TO THE COMMIT THE ROW PINS, runnable as
+    printed: `bump` reads the member's own `project.yaml` at that commit,
+    asks its `id:` as `add` does (`member-bad-id`) and writes the row from
+    it, and the pin does not move. Not `remove` and then `add`, which the
+    issue suggested: in a holder with the member checked out, `remove`
+    leaves the member's object store under `.git/modules/` on purpose, and
+    `add` then refuses `member-git-dir-cached`, so the two as printed did
+    not run (measured for #1204); and `add` would clone the member again
+    and move the pin to its tip without an `--at`. `bump` needs the member
+    checked out, and its own `member-uninitialized` names the line that
+    checks it out. A pin that is no 40-hex commit is named `--to <commit>`;
+    where members are checked, `member-pin-commit` refuses the run first, and
+    this finding follows once the pin is mended.
+    """
+    projects: set[str] = set()
+    for row in members:
+        if not isinstance(row, dict):
+            continue
+        project = row.get("project")
+        if not isinstance(project, str) or not project or project in projects:
+            continue
+        projects.add(project)
+        member_id = row.get("id")
+        if member_id is None or _is_project_id(str(member_id)):
+            continue
+        pin = row.get("pin")
+        commit = pin.get("commit") if isinstance(pin, dict) else None
+        if not isinstance(commit, str) or not COMMIT_RE.fullmatch(commit):
+            commit = None
+        report.finding(
+            "member-id-malformed",
+            f"{project}: the row records id {member_id!r}, which does not "
+            f"match {PROJECT_ID_RE.pattern}, so it names no project. The "
+            "member's own project.yaml `id:` is the source this row pins. "
+            "From a checkout of openRepoShape, with the member checked out, "
+            "and on a branch other than the holder's tracking branch, which "
+            "`bump` refuses "
+            f"(`{_switch_line(root, 'bump', str(member_id))}` makes one), "
+            f"`{_bump_to(root, project, commit)}` writes the row's `id:` "
+            "from that file at the commit the row pins, and the pin stays "
+            "where it is. Where that file's `id:` is no project id either, "
+            "`bump` refuses it as `member-bad-id`: mend it in the member's "
+            f"own repository first, and give `--to` that commit. {BRANCH_LEFT}")
 
 
 def _gitmodules_sections(root: Path) -> dict[str, dict[str, str]]:
@@ -4468,7 +4849,8 @@ def _check_members(root: Path, members: list, no_members: bool,
 
     Split from `main` for #137. Every check that needs no member checked
     out comes first, so `--no-members` asks them too: the ones that read a
-    file alone, `family.yaml`'s names (#331) and ids (#206) and the paths
+    file alone, `family.yaml`'s names (#331), ids (#206) and each id's
+    form, `member-id-malformed` (#1204), and the paths
     `.gitmodules` gives twice (#300), then the gitlinks and sections no row
     names, which read the index and HEAD as well (#361), the gitlinks no
     section of HEAD's `.gitmodules` gives (#611) or gives a url, and a
@@ -4513,6 +4895,7 @@ def _check_members(root: Path, members: list, no_members: bool,
     """
     _check_member_names_unique(members, report)
     _check_member_ids_unique(root, members, report)
+    _check_member_ids_well_formed(root, members, report)
     # A ROW THAT IS NOT A MAPPING reads `family.yaml` alone too, so it is
     # found here, in both modes (#864): found only in the loop below, past
     # the `--no-members` return, it was counted as a member there, and the
