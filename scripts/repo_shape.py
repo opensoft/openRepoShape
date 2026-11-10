@@ -49,6 +49,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import math
 import os
 import re
 import stat
@@ -187,10 +188,11 @@ class YamlError(Exception):
 
     `line` AND `remediation` ARE FOR `load_yaml`, WHICH NAMES A FILE (#708).
     Where the fix is one edit of the value, the same in every file, the
-    refusal carries it (`_indicator_refusal`); every other refusal carries
-    none. Such a refusal is raised where the value is read, which knows no
-    line, so the block reader records the line it read the value on
-    (`_block_value`), and `load_yaml` names it. It stays out of the words:
+    refusal carries it (`_indicator_refusal`, and `_scalar`'s for a number
+    it cannot make, #1212); every other refusal carries none. Such a
+    refusal is raised where the value is read, which knows no line, so the
+    block reader records the line it read the value on (`_block_value`),
+    and `load_yaml` names it. It stays out of the words:
     a tool that asks the reader about ONE rendered line (`k: @a`) quotes
     those words in a sentence of its own, where `line 1:` would be noise.
     """
@@ -220,6 +222,13 @@ class YamlError(Exception):
 # wrong answer with a confident tone. The indicator's meaning is YAML's, but
 # it was accepted and never read, and no tool writes one, so it is refused
 # rather than read: see `_refuse_indentation_indicator`.
+#
+# A PLAIN NUMBER THIS READER CANNOT MAKE IS REFUSED BY ITS LINE (#1212): an
+# integer of more digits than `int()` takes (`sys.get_int_max_str_digits()`,
+# 4300 by default), which ended every tool in a `ValueError` traceback, and
+# a decimal too large for a 64-bit float to hold, which was read as the float
+# `inf`, a number this reader reads no plain scalar as (`inf` is text). See
+# `_scalar`.
 #
 # A BLOCK SCALAR'S BODY IS READ AS YAML READS IT, OR REFUSED BY ITS LINE
 # (#1004). `+` keeps the empty lines at the block's end, where it was read
@@ -580,6 +589,15 @@ def _indicator_refusal(text: str) -> YamlError:
                      f"{_INDICATOR_ROLES[char]} in YAML: {text!r}", remedy)
 
 
+#: The remedy `_scalar` gives a plain number it cannot make (#1212): one
+#: edit of the value, the same in every file, so `load_yaml` names its line.
+_UNMADE_NUMBER_REMEDY = (
+    "Remediation: unquoted, YAML reads this value as a number, and this "
+    "reader cannot make one of it, so it refuses it rather than guess. Write "
+    "it in double quotes if it is text, or as a number of fewer digits, and "
+    "run the command again.")
+
+
 def _scalar(raw: str) -> Any:
     """One scalar's value: null, a quoted scalar's text, a bool, a number, or
     a plain scalar's text.
@@ -595,6 +613,16 @@ def _scalar(raw: str) -> Any:
     reads `[-]` as the text `-`, as PyYAML does. The same characters later in
     a scalar (`k: a]`, `- see [1]`, `k: a, b`), and every quoted scalar
     (`k: "]"`), read as before.
+
+    A PLAIN NUMBER IT CANNOT MAKE IS REFUSED, WITH A REMEDY (#1212): an
+    integer of more digits than `int()` converts, which raises `ValueError`
+    past whatever `sys.set_int_max_str_digits` allows (4300 by default), and
+    a decimal too large to be finite, which `float()` makes `inf` (that
+    limit is the 64-bit float's, not this Python's, so its refusal does not
+    say "this Python"). The first was a traceback out of every tool, and the
+    second "the number inf". The value can be thousands of characters long,
+    so the refusal says how many digits it holds, and `load_yaml` names its
+    line.
     """
     text = raw.strip(_YAML_WHITE)
     if text == "" or text in ("null", "~", "Null", "NULL"):
@@ -610,9 +638,20 @@ def _scalar(raw: str) -> Any:
     if text in ("false", "False", "FALSE"):
         return False
     if re.fullmatch(r"-?\d+", text):
-        return int(text)
+        try:
+            return int(text)
+        except ValueError as exc:
+            raise YamlError(f"a plain integer of {len(text.lstrip('-'))} "
+                            "digits is too long for this Python to read as a "
+                            "number", _UNMADE_NUMBER_REMEDY) from exc
     if re.fullmatch(r"-?\d+\.\d+", text):
-        return float(text)
+        number = float(text)
+        if math.isinf(number):
+            raise YamlError(f"a plain decimal of {len(text.lstrip('-')) - 1} "
+                            "digits is too large to read as a number: a "
+                            "64-bit float cannot hold it, so it would be "
+                            "infinite", _UNMADE_NUMBER_REMEDY)
+        return number
     return text
 
 
@@ -1268,10 +1307,11 @@ def _block_value(text: str, line: int) -> Any:
     a backtick was `REFUSED yaml-unparsable: <plan>: a plain scalar cannot
     open with a backtick ...`, among the hundreds of lines a plan holds.
     The line is recorded on the refusal (`YamlError.line`), never put in
-    its words, where the refusal carries a remedy (`_indicator_refusal`'s):
-    one that tells a person to edit a value says where it is. The others
-    keep the words they had, which the naming gate's `declared-unverified`
-    reason and the root's `validate-pins.py` print, and tests quote, whole.
+    its words, where the refusal carries a remedy (`_indicator_refusal`'s,
+    or `_UNMADE_NUMBER_REMEDY`, #1212): one that tells a person to edit a
+    value says where it is. The others keep the words they had, which the
+    naming gate's `declared-unverified` reason and the root's
+    `validate-pins.py` print, and tests quote, whole.
     """
     try:
         if text[0] in "[{":
