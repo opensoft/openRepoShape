@@ -206,13 +206,16 @@ def test_a_forks_leg_pattern_with_no_dollar_is_read_as_the_whole_name(role_id):
 def test_the_naming_gate_refuses_a_leg_repository_that_ends_in_a_line_feed(
         project, repository):
     """On main `validate-repository-naming.py --project` exited 0 over each
-    of the three legs, with the name and its family on two lines."""
+    of the three legs, with the name and its family on two lines. The finding
+    names it as `repo_shape.spelled` does, `Atlas\\n` (#1267): printed raw it
+    read as the finding for `Atlas`, with a blank line after it."""
     name = repository.split("/")[1]
     rewritten(project / "project.yaml", f"    repository: {repository}\n",
               f'    repository: "{repository}\\n"\n')
     result = run_script(VALIDATOR, "--project", str(project / "project.yaml"))
     assert result.returncode == 1, result.stdout + result.stderr
-    assert findings(result.stderr) == [f"FINDING naming-unclassified: {name}"]
+    assert findings(result.stderr) == [
+        f"FINDING naming-unclassified: {name}\\n"]
 
 
 def test_the_naming_gate_takes_a_leg_repository_double_quoted(project):
@@ -236,7 +239,9 @@ def test_the_naming_gate_takes_an_argv_name(name):
 @pytest.mark.parametrize("name", ARGV_NAMES)
 def test_the_naming_gate_refuses_an_argv_name_that_ends_in_a_line_feed(name):
     """A name from the command line is not stripped (a name from stdin is):
-    on main each was classified, its name and family on two lines."""
+    on main each was classified, its name and family on two lines. The
+    finding names it spelled, `Atlas\\n` (#1267)."""
     result = run_script(VALIDATOR, name + LF)
     assert result.returncode == 1, result.stdout + result.stderr
-    assert findings(result.stderr) == [f"FINDING naming-unclassified: {name}"]
+    assert findings(result.stderr) == [
+        f"FINDING naming-unclassified: {name}\\n"]

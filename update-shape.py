@@ -209,8 +209,9 @@ from shape_materialize import SHAPE_PIN  # noqa: E402
 from shape_materialize import readable_branch  # noqa: E402
 
 #: `owner/repo`, the only remote spelling `--upstream` accepts, and the
-#: shape pin's `source_repository:` where no `--upstream` is passed. `\Z`,
-#: NEVER `$` (#1139): `$` also matches just before a trailing line feed.
+#: shape pin's `source_repository:`, whether or not `--upstream` is passed
+#: (`pin_source`, #1203). `\Z`, NEVER `$` (#1139): `$` also matches just
+#: before a trailing line feed.
 REPOSITORY_RE = re.compile(r"^[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+\Z")
 
 #: How `--branch` may be spelled: the alphabet `checked_value` already
@@ -645,9 +646,20 @@ def unreadable_upstream(said: str, proc: subprocess.CompletedProcess
         "openRepoShape.")
 
 
-def open_upstream(spec: str, pin_path: Path | None = None) -> Upstream:
+def _holds_a_repository(path: Path) -> bool:
+    """Whether `path` is a git repository by the two questions
+    `open_upstream` asks of a path: a `.git` there, or, only where there is
+    none, a bare repository's `HEAD` file. Asked of the shape pin's
+    `source_repository:` too (`pin_source`), so the pin's value and
+    `--upstream` are one question (#1203)."""
+    return (_is_a(path / ".git", _anything)
+            or _is_a(path / "HEAD", stat.S_ISREG))
+
+
+def open_upstream(spec: str) -> Upstream:
     """`--upstream` as a repository this tool can read, or the shape pin's
-    `source_repository:` where none was passed, read from `pin_path`.
+    `source_repository:` where none was passed, once `pin_source` has asked
+    it.
 
     A PATH IS USED IN PLACE AND THIS TOOL FETCHES NOTHING INTO IT. That is
     deliberate: it is what lets the tests run with no network, and it is
@@ -672,19 +684,17 @@ def open_upstream(spec: str, pin_path: Path | None = None) -> Upstream:
     then cloned from github.com; a checkout it cannot search was
     `update-upstream-not-a-repo`.
 
-    A VALUE THE PIN HOLDS IS REFUSED IN THE PIN'S NAME (#1139). The pin's
-    `source_repository:` read as `opensoft/openRepoShape` and a line feed
-    passed `REPOSITORY_RE`, whose `$` took the line feed, and was refused
-    by `checked_value` as `unsafe-value` of `--upstream`, a flag nobody had
-    passed. The pattern takes no line feed now, so the value is
-    `update-upstream-unresolvable`, and that refusal and `checked_value`'s
-    name the pin and its field.
+    THE PIN'S VALUE IS ASKED BEFORE IT REACHES HERE (#1139, #1203).
+    `pin_source` asks it in `prepare`, whether or not `--upstream` was
+    passed, and refuses in the pin's name a value that is no `owner/repo`,
+    or one that names something here that is no git repository. So where
+    `spec` is the pin's, none of the refusals below is reached for it, and
+    each of them names the flag.
     """
     candidate = Path(spec).expanduser()
     if _is_a(candidate, _anything):
         path = candidate.resolve()
-        if (not _is_a(path / ".git", _anything)
-                and not _is_a(path / "HEAD", stat.S_ISREG)):
+        if not _holds_a_repository(path):
             raise Refusal(
                 "update-upstream-not-a-repo",
                 f"--upstream {spec} exists but is not a git repository",
@@ -692,23 +702,13 @@ def open_upstream(spec: str, pin_path: Path | None = None) -> Upstream:
                 "`--upstream opensoft/openRepoShape` to clone one.")
         return Upstream(path, str(path))
     if not REPOSITORY_RE.match(spec):
-        if pin_path is not None:
-            raise Refusal(
-                "update-upstream-unresolvable",
-                f"{pin_path}: `source_repository:` is {spec!r}, which is "
-                "neither a path on this machine nor an `owner/repo` name",
-                "Remediation: write `source_repository:` in the pin as the "
-                "`owner/repo` its shape was copied from, "
-                f"`{SHAPE_REPOSITORY}` for this standard's, or pass "
-                "`--upstream` a path to a clone of openRepoShape.")
         raise Refusal(
             "update-upstream-unresolvable",
             f"--upstream {spec!r} is neither a path on this machine nor an "
             "`owner/repo` name",
             "Remediation: pass a path to a clone of openRepoShape, or "
             "`--upstream opensoft/openRepoShape`.")
-    checked_value("--upstream" if pin_path is None
-                  else f"{pin_path}: `source_repository:`", spec)
+    checked_value("--upstream", spec)
     temporary = Path(tempfile.mkdtemp(prefix="openreposhape-upstream-"))
     url = f"https://github.com/{spec}.git"
     args = ["git", "clone", "--quiet", "--bare", url, str(temporary / "shape.git")]
@@ -725,6 +725,103 @@ def open_upstream(spec: str, pin_path: Path | None = None) -> Upstream:
             "network. Clone the shape once by hand and pass `--upstream "
             "<path>` instead; nothing after it fetches the shape again.")
     return Upstream(temporary / "shape.git", spec, temporary=temporary)
+
+
+#: What a shape pin's `source_repository:` that `pin_source` refuses is told.
+PIN_SOURCE_REMEDY = (
+    "Remediation: write `source_repository:` in the pin as the `owner/repo` "
+    f"its shape was copied from, `{SHAPE_REPOSITORY}` for this standard's. "
+    "It is asked with `--upstream` passed too, because `apply` names it in "
+    "its commit and its pull request; a path to a clone goes to "
+    "`--upstream`.")
+#: The same, for a value that names something HERE that is no repository:
+#: the value is looked up as a path from the directory the command runs in,
+#: so a value that is already right, `owner/repo` with a folder of that name
+#: where the command runs, needs the command run elsewhere (N2 of the review
+#: of PR #1269). The sentence is added to this refusal's remedy alone.
+PIN_SOURCE_NOT_A_REPO_REMEDY = (
+    PIN_SOURCE_REMEDY + " The value is also looked up as a path from the "
+    "directory this runs in: if it is already right, run this from a "
+    "directory where nothing is at that path.")
+
+
+def _named_here(declared: str) -> Path | None:
+    """The path `declared` names on this machine, spelled as `open_upstream`
+    looks it up (`expanduser`), or None where it names nothing there.
+
+    TWO ANSWERS THAT ARE "NOTHING THERE" for a value no one wrote as a path
+    (the review of PR #1269, S1 and N1):
+    - `~<user>/...` for a user the machine has not got: `expanduser`
+      raises `RuntimeError`, and the bare path is looked up instead, which
+      names nothing. So does a NUL byte after the `~`: `expanduser` raises
+      `ValueError` (`embedded null byte`), and the bare path, which no file
+      has the name of, names nothing either (NIT A of the second review);
+    - a name over the limit a path component may have (`ENAMETOOLONG`):
+      `stat` cannot open what no file system can hold, as it cannot open
+      what is not there.
+    Every other `OSError` of the `stat` is raised, as `_is_a` raises it."""
+    try:
+        candidate = Path(declared).expanduser()
+    except (RuntimeError, ValueError):
+        candidate = Path(declared)
+    try:
+        return candidate if _is_a(candidate, _anything) else None
+    except OSError as exc:
+        if exc.errno == errno.ENAMETOOLONG:
+            return None
+        raise
+
+
+def pin_source(pin: dict, pin_path: Path) -> str:
+    """The shape pin's `source_repository:`, the `owner/repo` its shape was
+    copied from (`SHAPE_REPOSITORY` where the pin names none), or a refusal
+    in the pin's name, `pin_path` naming the pin.
+
+    ASKED ONCE, IN `prepare`, WHICHEVER WAY THE RUN REACHES THE UPSTREAM
+    (#1203). With no `--upstream` the value is the upstream `open_upstream`
+    opens. With one passed, the value was never asked, and it is still the
+    name `prepare` gives the upstream: the README `Shape:` line is compared
+    with it, and `apply` writes it into its commit subject, its pull
+    request's title and the lines it prints. So `"opensoft/openRepoShape\\n"`
+    made a commit whose subject broke after the name, and a `gh pr create`
+    line split inside its quotes, exit 0. With no `--upstream`, a path that
+    is no repository was `update-upstream-not-a-repo` of `--upstream`, a
+    flag nobody passed.
+
+    THREE QUESTIONS, under the codes these values had (#1139):
+    - something HERE at the value, looked up as `open_upstream` looks it up
+      (`expanduser`, relative to the directory the command runs in), that
+      is no git repository: `update-upstream-not-a-repo`. The pin gets the
+      same answer whether or not `--upstream` is passed. An `owner/repo`
+      spelling that IS a repository here is taken, as it was, and with no
+      `--upstream` it is opened in place. A `~<user>` nobody has (a NUL
+      byte after the `~` too), and a name too long for a path, are nothing
+      there (`_named_here`).
+    - a value `REPOSITORY_RE` does not take WHOLE:
+      `update-upstream-unresolvable`. A path that is not spelled
+      `owner/repo` (`/srv/shape`, `~/shape`, `shape`) is refused here,
+      whether it holds a repository or not: the pin records a repository's
+      name, never where a clone is kept.
+    - `checked_value`'s: `unsafe-value`.
+
+    NOTHING WRITES A VALUE THESE REFUSE. Both pin templates hold
+    `{{SHAPE_REPOSITORY}}`, so each such value is a hand edit, and refusing
+    it costs no root that a tool made.
+    """
+    declared = str(pin.get("source_repository") or SHAPE_REPOSITORY)
+    named = f"{pin_path}: `source_repository:`"
+    candidate = _named_here(declared)
+    if candidate is not None and not _holds_a_repository(candidate.resolve()):
+        raise Refusal(
+            "update-upstream-not-a-repo",
+            f"{named} is {declared!r}, which exists but is not a git "
+            "repository", PIN_SOURCE_NOT_A_REPO_REMEDY)
+    if not REPOSITORY_RE.fullmatch(declared):
+        raise Refusal(
+            "update-upstream-unresolvable",
+            f"{named} is {declared!r}, which is not an `owner/repo` name",
+            PIN_SOURCE_REMEDY)
+    return checked_value(named, declared)
 
 
 # ---------------------------------------------------------------------------
@@ -2401,8 +2498,9 @@ def counted(rows: list[Row]) -> dict[str, int]:
 # ---------------------------------------------------------------------------
 
 
-def prepare(args) -> tuple[Path, dict, list[Row], list[Addition], Upstream,
-                           str, str, Kind]:
+def prepare(args, *, ask_source: bool = True
+            ) -> tuple[Path, dict, list[Row], list[Addition], Upstream,
+                       str, str, Kind]:
     """The root, its pin, its rows judged and its additions found, the
     upstream opened, the two commits and the kind of root: everything
     `check` reports and `apply` acts on, read before anything is written.
@@ -2414,7 +2512,19 @@ def prepare(args) -> tuple[Path, dict, list[Row], list[Addition], Upstream,
     answer. The root is asked first: its own `stat` (a folder above it
     this user cannot search), then whether it can be searched at all
     (`_search`). A read refused once the upstream is open closes it
-    first, as a `Refusal` does."""
+    first, as a `Refusal` does.
+
+    THE PIN'S `source_repository:` IS ASKED BEFORE THE UPSTREAM IS OPENED
+    (#1203), by `pin_source`, with or without `--upstream`. `ask_source`
+    False is the doctor's `shape currency` row's alone: it passes its own
+    checkout as the upstream, writes no commit and opens no pull request,
+    and it reads a `Refusal` from here as that checkout unable to answer, so
+    a refusal of the root's own field would be called the standard's, with a
+    `git fetch` for its remedy; `check`, the NEXT that row names where the
+    root is behind, asks the field. The doctor's `pins` row asks it: it
+    names `check` in a sentence that is false where `check` refuses (S2 of
+    the review of PR #1269). With no `--upstream` the field IS the
+    upstream, and is asked whatever `ask_source` says."""
     root = root_of(args)
     if not _is_a(root, stat.S_ISDIR):
         raise Refusal("update-root-missing", f"{root} is not a directory")
@@ -2428,9 +2538,13 @@ def prepare(args) -> tuple[Path, dict, list[Row], list[Addition], Upstream,
     if linked is not None:
         raise rewrite_link_refusal([linked])
     pinned = str(pin["commit"]).lower()
-    declared = str(pin.get("source_repository") or SHAPE_REPOSITORY)
-    upstream = open_upstream(str(args.upstream or declared),
-                             None if args.upstream else root / SHAPE_PIN)
+    # THE PIN'S `source_repository:` IS ASKED HERE, ONCE, before the
+    # upstream is opened and whether or not `--upstream` was passed (#1203):
+    # it names the upstream in what `check` and `apply` print and commit.
+    declared = (pin_source(pin, root / SHAPE_PIN)
+                if ask_source or not args.upstream
+                else str(pin.get("source_repository") or SHAPE_REPOSITORY))
+    upstream = open_upstream(str(args.upstream or declared))
     upstream.repository = declared
     try:
         target = upstream.resolve(checked_value("--at", args.at)

@@ -98,9 +98,24 @@ person's. A project's own runs pass neither.
 Every `--link-source` and `--link-remedy` value and path this prints, and
 the path of a `SHAPE_PIN_SOURCE_<PRODUCT>` or of a checkout beside the
 project it names, is named as it is, or as Python's `repr` spells it where a
-character in it is not printable (`_shown`). A caller's FLAG and the words
-it offers for a link, a chain link's name, and the `--project` and
-`--policy` paths are printed as given.
+character in it is not printable (`_shown`). The one exception is the WORDS of
+a `--link-remedy` where a `declared-unverified` WARNING offers them: they stand
+inside its sentence and are spelled with it, as the next paragraph says, so a
+TAB or an ESC in them is `\\t` or `\\x1b`, without quotes. A caller's FLAG and
+the `--project` and `--policy` paths are printed as given.
+Every name this classifies or refuses is `repo_shape.spelled` (#1267): in the
+plain listing, in `--explain`, in the `naming-unclassified` and role
+findings, and in a WARNING, a broken-chain finding or an `--explain` line
+whose sentence quotes it. A sentence that quotes a name is spelled WHOLE, so
+a chain link or the words a caller offers for one (`--link-remedy`) inside it
+is spelled too. A chain link that stands outside such a sentence is printed
+as given: in the `CHAIN` line, in `link-source-unreadable` and in the NOTEs
+that name one. A line feed, an ESC or another control in a name is written as
+the escape Python spells it (`Atlas\\n`), so a name stays on its line, a
+listing holds one row per name with its columns where a plain name's are, and
+a finding for `Atlas` plus a line feed cannot read as one for `Atlas`. A name
+with no such character prints as it did. `spelled` is in every
+`scripts/repo_shape.py` this file can meet, unlike `shown_path`.
 
 EXIT CODES, the same three in every validator this standard ships:
     0  every name classified (and, with `--project`, every declared role and
@@ -148,7 +163,7 @@ from repo_shape import (  # noqa: E402
     CHAIN_RECORD_FIELD, LINK_SOURCE_ABSENT, LINK_SOURCE_NO_MANIFEST,
     UNAMBIGUOUS_FORMS, Classification, NamingPolicy, Refusal,
     link_pins_from_trees, load_yaml, pin_product_key,
-    pin_source_env_collisions, repo_basename,
+    pin_source_env_collisions, repo_basename, spelled,
 )
 
 DEFAULT_POLICY = Path(__file__).resolve().parents[1] / "contracts" / "repository-naming.yaml"
@@ -862,7 +877,7 @@ def _no_family_lines(policy: NamingPolicy, name: str) -> list[str]:
     one question, answered once, so the per-family row below never has to
     guard against a `found` that does not exist.
     """
-    lines = [f"  {name}: NO FAMILY"]
+    lines = [f"  {spelled(name)}: NO FAMILY"]
     lines.append(f"    the {len(policy.families)} families are: " + ", ".join(
         f["id"] for f in policy.families))
     for family in policy.families:
@@ -904,7 +919,7 @@ def _referent_claim_note(policy: NamingPolicy, family: dict, name: str) -> str:
     (2026-09-05).
     """
     return (" [a CLAIM: needs a declared pin on " + " or ".join(
-        policy.descendant_referents(name))
+        map(spelled, policy.descendant_referents(name)))
         + ", or a declared chain (`"
         + str(policy.chain_rule().get("record_field")
               or CHAIN_RECORD_FIELD)
@@ -1008,9 +1023,9 @@ def _referent_lines(target: Target, matches: list,
         lines.append("    CHAIN " + " → ".join(target.chain)
                      + f"   [{found.referent.status}]")
     for warning in found.referent.warnings:
-        lines.append("    WARNING " + warning)
+        lines.append("    WARNING " + spelled(warning))
     if len(matches) > 1:
-        lines.append("    OVERLAP " + found.reason)
+        lines.append("    OVERLAP " + spelled(found.reason))
         lines.append("    also_matches: " + ", ".join(found.also_matches))
     return lines
 
@@ -1028,7 +1043,8 @@ def _describe(policy: NamingPolicy, target: Target, link_pins: dict) -> list[str
     if not matches:
         return _no_family_lines(policy, name)
     found = policy.classify(name, role, pins, target.chain, link_pins)
-    lines = [f"  {name}: {found[0]}" + (f" / {found[1]}" if found[1] else "")]
+    lines = [f"  {spelled(name)}: {found[0]}"
+             + (f" / {found[1]}" if found[1] else "")]
     for family in policy.families:
         lines.append(_family_row(policy, family, matches, role, name, found))
     lines.extend(_referent_lines(target, matches, found))
@@ -1185,14 +1201,14 @@ def _leg_target(policy: NamingPolicy, path: Path, leg, root: Path,
     # true by declaring it.
     if found and found[0] == "project-leg" and declared and found[1] != declared:
         findings.append(
-            f"{name}: declared role {declared!r} but the name is the "
-            f"{found[1]!r} form of the project-leg family"
+            f"{spelled(name)}: declared role {declared!r} but the name is "
+            f"the {found[1]!r} form of the project-leg family"
         )
     # A RECORDED chain that does not hold is drift in the record, and the
     # finding names the link. Unverified is not this: it is a warning,
     # printed by the caller, and never an exit code.
     if found and found.referent.status == "broken":
-        findings.append(f"{name}: {found.referent.reason}")
+        findings.append(spelled(f"{name}: {found.referent.reason}"))
     return target, findings
 
 
@@ -1372,7 +1388,7 @@ def _print_classification(name: str, found: Classification | None) -> None:
         if found and found.also_matches else ""
     # Padded by the columns the name takes as stdout writes it (#1217), so
     # a wide or combining name's label starts under every other row's.
-    print(f"  {_padded(_printed(name), 32)} {label}{also}")
+    print(f"  {_padded(_printed(spelled(name)), 32)} {label}{also}")
 
 
 def _classify_targets(policy: NamingPolicy, targets: list, args,
@@ -1396,7 +1412,7 @@ def _classify_targets(policy: NamingPolicy, targets: list, args,
         elif not args.quiet:
             _print_classification(name, found)
         if found:
-            warnings.extend(f"{name}: {text}"
+            warnings.extend(spelled(f"{name}: {text}")
                             for text in found.referent.warnings)
         else:
             unclassified.append(name)
@@ -1433,7 +1449,7 @@ def _emit_reports(args, unclassified: list[str], warnings: list[str],
     if unclassified:
         print(
             "FINDING naming-unclassified: "
-            + ", ".join(unclassified)
+            + ", ".join(map(spelled, unclassified))
             + "\n  These names match none of the families in "
             + str(args.policy)
             + ".\n  A project's three repositories are `<Project>`, "

@@ -2729,3 +2729,38 @@ def assert_a_copy_answers_as_the_rule_does(copy: str, end: str, said: str,
     assert answered == said, (
         f"{copy} answers {answered!r} for a value that ends in {end!r}, and "
         f"the table says {said!r}")
+
+
+# --- a manifest's scalar lines, each ending in a line feed (#1205) -----------
+
+#: A scalar line of a `project.yaml` or a `family.yaml`: its indent and any
+#: `- `, its key, and a value that opens no block or flow collection.
+SCALAR_LINE = re.compile(
+    r"^(?P<lead> *(?:- )?)(?P<key>[a-z_]+): (?P<value>[^\[{].*)$")
+
+
+def scalar_lines_not_refused(manifest: Path, validate) -> tuple[int, list]:
+    """THE GUARD'S SWEEP (#1205's part 2), one loop for
+    `tests/test_manifest_validator.py` and `tests/test_family.py`: every
+    scalar line of `manifest`, rewritten one at a time as its value
+    double-quoted with a trailing `\\n`, and `validate()` run on each. It
+    gives how many lines were swept, and each that was not refused by name
+    (a finding, exit 1, or a refusal, exit 2): exit 0, or a traceback. The
+    file is put back as it was."""
+    text = manifest.read_text(encoding="utf-8")
+    lines = text.split("\n")
+    swept, passed = 0, []
+    for index, line in enumerate(lines):
+        match = SCALAR_LINE.match(line)
+        if match is None:
+            continue
+        value = match["value"].strip('"')
+        lines[index] = f'{match["lead"]}{match["key"]}: "{value}\\n"'
+        manifest.write_text("\n".join(lines), encoding="utf-8")
+        lines[index] = line
+        result = validate()
+        swept += 1
+        if result.returncode == 0 or "Traceback" in result.stderr:
+            passed.append(f"{line.strip()}: exit {result.returncode}")
+    manifest.write_text(text, encoding="utf-8")
+    return swept, passed
