@@ -59,7 +59,11 @@ path is spelled whole there now, and the refused push's row holds a line
 feed too; git's `adopt-mount-unaddable` words, which can name the work
 directory, are said the same way. And rows for three mutants that passed
 all 188: a printable character outside ASCII in a refused command, a tab
-in what it printed, and a source path outside ASCII that is printable.
+in what it printed, and a source path outside ASCII that is printable. And
+(RV1311) git's own `error:` and `fatal:` lines write each control character
+but a tab and a line feed as `?`, so a path that holds a line feed beside an
+ESC or a CR is looked for as git writes it too, and an argument of nothing
+but line feeds is not looked for at all.
 
 THE TEST SOURCE IS ASCII: every character that is not printable is written as
 an escape.
@@ -652,11 +656,20 @@ HOOK_SAYS = "this remote takes no push"
 #: `error:` lines name the remote with it, and it split them, as the line
 #: breaks in what a command printed are kept; a path there is spelled whole.
 #: And a line feed after the byte 0xff, which git names as `run` reads it,
-#: U+FFFD, so the path is looked for as `run` reads it too.
+#: U+FFFD, so the path is looked for as `run` reads it too; and one after an
+#: ESC, which git writes as `?` in its `error:` line (RV1311's SHOULD 1), so
+#: the path is looked for as git writes it too.
 REFUSED_CHARACTERS = [
     *CHARACTERS,
     pytest.param("\udcff\n", "\\udcff\\n", id="byte-0xff-then-line-feed"),
+    pytest.param("\x1b\n", "\\x1b\\n", id="escape-then-line-feed"),
 ]
+
+#: What git writes as `?` in its `error:` and `fatal:` lines, as measured on
+#: git 2.43 (`vreportf`): every control character but a tab and a line feed.
+#: Its `To` line is not sanitized. The rule is the rows' own and not the
+#: tool's, so a row cannot pass by sharing the tool's mistake.
+GIT_WRITES_AS_QUERY = re.compile(r"[\x00-\x08\x0b-\x1f\x7f]")
 
 
 def a_global_config_whose_hook_refuses_every_push(tmp_path: Path) -> Path:
@@ -810,13 +823,60 @@ def test_a_path_that_holds_another_is_spelled_whole_where_git_names_it(
         "--- end output ---"]
 
 
+def the_output_lines_of(block: str) -> list[str]:
+    """The lines between `--- output ---` and `--- end output ---` of a
+    REFUSED block."""
+    lines = block.split("\n")
+    return lines[lines.index("--- output ---") + 1:
+                 lines.index("--- end output ---")]
+
+
+def test_a_path_is_spelled_as_git_writes_it_in_its_own_lines(adopter):
+    """git's `error:` and `fatal:` lines write each control character but a
+    tab and a line feed as `?` (`GIT_WRITES_AS_QUERY`), and its `To` line as
+    it is: `/re<ESC><LF>mote` is `/re?<LF>mote` in the one and itself in the
+    other. Each is spelled whole, git's `?` as git wrote it and the line
+    feed as `\\n`, so neither line splits (RV1311's SHOULD 1). What git said
+    is fixed text here, so the row does not ask git."""
+    path = "/re\x1b\nmote/Thing-spec.git"
+    git_form = GIT_WRITES_AS_QUERY.sub("?", path)
+    assert git_form == "/re?\nmote/Thing-spec.git"
+    refused = adopter.CommandFailed(
+        ["git", "push", "-q", path, SPLIT_BRANCH], "/re\x1b\nmote", 1,
+        f"To {path}\nerror: failed to push some refs to '{git_form}'\n")
+    assert the_output_lines_of(adopter._loudly(refused, "pushing")) == [
+        "To /re\\x1b\\nmote/Thing-spec.git",
+        "error: failed to push some refs to '/re?\\nmote/Thing-spec.git'"]
+
+
+@pytest.mark.parametrize("argument", ["\n", "\n\n"])
+def test_an_argument_of_nothing_but_line_feeds_spells_no_line_break(
+        adopter, argument):
+    """An argument that is only line feeds is not looked for in what the
+    command printed: spelled there, it would spell every line break the
+    command printed, and three lines would be one (RV1311's NIT 1). The
+    output holds a blank line, which `\\n\\n` is found in as well as `\\n`."""
+    refused = adopter.CommandFailed(["git", "x", argument], None, 1,
+                                    "line1\nline2\n\nline3")
+    assert the_output_lines_of(adopter._loudly(refused, "x")) == [
+        "line1", "line2", "", "line3"]
+
+
 # --- a mount git will not add: `adopt-mount-unaddable` (#1233) --------------
 
 #: What `adopt-mount-unaddable` begins with, for the spec leg at `spec`.
 UNADDABLE = "git will not add the leg mount path spec: "
 
+#: `CHARACTERS`, and a line feed beside a control git writes as `?` in its
+#: `fatal:` line, which the line feed alone did not split (RV1311's SHOULD 1).
+MOUNT_CHARACTERS = [
+    *CHARACTERS,
+    pytest.param("\x1b\n", "\\x1b\\n", id="escape-then-line-feed"),
+    pytest.param("\r\n", "\\r\\n", id="carriage-return-then-line-feed"),
+]
 
-@pytest.mark.parametrize("typed, spelled", CHARACTERS)
+
+@pytest.mark.parametrize("typed, spelled", MOUNT_CHARACTERS)
 def test_a_mount_git_will_not_add_is_said_spelled(
         adopter, tmp_path, typed, spelled):
     """`adopt-mount-unaddable` ends in git's own words, and they can name
@@ -826,7 +886,10 @@ def test_a_mount_git_will_not_add_is_said_spelled(
     U+202E in the work directory reached the terminal raw, and a line feed
     split the line (#1233, RV1225's N4); they are said now as a refused
     command's block says them. git writes ESC as `?` there itself, and the
-    byte 0xff as `run` decodes it, U+FFFD. The mount path cannot hold such
+    byte 0xff as `run` decodes it, U+FFFD. So a work directory that holds a
+    line feed beside an ESC or a CR is `wo?<LF>rk` in git's line, which is
+    said `wo?\\nrk`: git's own form, with its `?` as it wrote it and its
+    line feed spelled (RV1311's SHOULD 1). The mount path cannot hold such
     a character: `leg_path_problem` holds it to `SAFE_ARG_RE`. No child
     holds the lock at that moment, so the guard is called in this process,
     as `_create_leg_remote` is above."""
@@ -841,7 +904,12 @@ def test_a_mount_git_will_not_add_is_said_spelled(
     detail = caught.value.detail
     assert detail.startswith(UNADDABLE), detail
     assert f"{PROJECT}/.git/index.lock" in detail, detail
+    git_form = GIT_WRITES_AS_QUERY.sub("?", typed)
+    # git's own form, spelled: its `?` as it wrote it, its line feed as `\n`
+    said = git_form.replace("\n", "\\n") if "\n" in typed else spelled
     if typed not in ("\x1b", "\udcff"):
-        assert f"/wo{spelled}rk/{PROJECT}/.git/index.lock" in detail, detail
+        assert f"/wo{said}rk/{PROJECT}/.git/index.lock" in detail, detail
     if typed:
         assert f"wo{typed}rk" not in detail, detail
+    if "\n" in typed:
+        assert f"wo{git_form}rk" not in detail, detail

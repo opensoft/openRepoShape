@@ -14488,6 +14488,12 @@ def _unacted(text: str, kept: str = "") -> str:
                    else _spelled_character(char) for char in text)
 
 
+#: What git's `vreportf` writes for a control character in every `error:` and
+#: `fatal:` line: a `?`, for each but a tab and a line feed (measured on git
+#: 2.43: ESC, CR, VT, FF and DEL). Its `To` line is not sanitized.
+GIT_WRITES_AS_QUERY = re.compile(r"[\x00-\x08\x0b-\x1f\x7f]")
+
+
 def _output_unacted(exc: CommandFailed) -> str:
     """What `exc`'s command printed, `_unacted` but for its line breaks,
     which it keeps, so it still reads a line to a line: except where it
@@ -14497,15 +14503,23 @@ def _output_unacted(exc: CommandFailed) -> str:
     was refused at, so under `--local-remote-dir <D>/re<LF>mote` the block
     held a line `mote/Thing-spec.git` the path had put in it. Each is also
     looked for as `run` reads it back: a byte that is not UTF-8, which the
-    path holds as a surrogate, is U+FFFD there. The longest is spelled
-    first, so one that holds another is spelled whole."""
+    path holds as a surrogate, is U+FFFD there. And each is looked for as
+    git's own `error:` and `fatal:` lines write it, with every control
+    character but a tab and a line feed a `?` (`GIT_WRITES_AS_QUERY`):
+    `wo<ESC><LF>rk` is `wo?<LF>rk` there, which is spelled `wo?\\nrk`, so
+    git's `?` stays as git wrote it and only the line feed is spelled. The
+    longest, of all those forms, is spelled first, so one that holds
+    another is spelled whole. An argument of nothing but line feeds is not
+    looked for: it would spell every line break the command printed."""
     output = exc.output
     named = set()
     for part in {str(given) for given in (*exc.args_list, exc.cwd) if given}:
-        if "\n" in part:
-            named.add(part)
+        if "\n" in part and part.strip("\n"):
+            forms = {part}
             with contextlib.suppress(UnicodeError):
-                named.add(os.fsencode(part).decode("utf-8", "replace"))
+                forms.add(os.fsencode(part).decode("utf-8", "replace"))
+            named |= forms | {GIT_WRITES_AS_QUERY.sub("?", form)
+                              for form in forms}
     for part in sorted(named, key=lambda part: (-len(part), part)):
         output = output.replace(part, _unacted(part))
     return _unacted(output, kept="\n")
