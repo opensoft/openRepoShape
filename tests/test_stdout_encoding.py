@@ -52,7 +52,8 @@ import pytest
 
 from conftest import (ADOPT, ORG, PROJECT, REPO, SCAFFOLD,
                       blank_unnamed_pin_sources, git, make_source_repo,
-                      skip_where_a_name_cannot_be_not_utf_8)
+                      skip_where_a_name_cannot_be_not_utf_8,
+                      skip_where_the_environment_cannot_carry)
 
 sys.path.insert(0, str(REPO / "scripts"))
 import shape_materialize  # noqa: E402
@@ -145,7 +146,10 @@ def run_tool_bytes(script: Path, *args: str, encoding: str | None,
 
 def plan_arguments(tmp_path: Path) -> tuple[Path, tuple[str, ...]]:
     """`(the plan file, the arguments)` of a `plan` over a source holding
-    `日本.md` (answered) and `東京.ipynb` (asked)."""
+    `日本.md` (answered) and `東京.ipynb` (asked). Skipped where this
+    process cannot name either file, as under Latin-1 or ASCII (#1214)."""
+    for name in (ANSWERED, ASKED):
+        skip_where_the_environment_cannot_carry(name)
     source = make_source_repo(tmp_path / "Thing", tree={
         "README.md": "# Thing\n", ANSWERED: "x\n", ASKED: "{}\n",
         "src/main.py": "x = 1\n"}, edits=())
@@ -301,6 +305,7 @@ def test_plan_on_the_windows_default_stdout(tmp_path):
 
 def _adopt_check(tmp_path: Path, request) -> tuple:
     """`check` names the source path in `WHAT WILL HAPPEN, against`."""
+    skip_where_the_environment_cannot_carry(NAME)
     source = make_source_repo(tmp_path / NAME / "Thing", tree={
         "README.md": "# Thing\n", "src/main.py": "x = 1\n"}, edits=())
     plan = tmp_path / "adoption-plan.yaml"
@@ -317,6 +322,7 @@ def _doctor(tmp_path: Path, request) -> tuple:
     """The doctor's `root` line names the root as it is. (Its rows spell a
     name too since #785: as itself where stdout can show it, escaped in a
     command and `?` in a sentence where it cannot.)"""
+    skip_where_the_environment_cannot_carry(NAME)
     root = tmp_path / NAME
     root.mkdir()
     (root / "README.md").write_text("# here\n", encoding="utf-8")
@@ -325,6 +331,7 @@ def _doctor(tmp_path: Path, request) -> tuple:
 
 def _update_shape_check(tmp_path: Path, request) -> tuple:
     """`check` prints the `--root` it was given as its first line."""
+    skip_where_the_environment_cannot_carry(NAME)
     project = request.getfixturevalue("project")
     root = tmp_path / NAME / project.name
     root.parent.mkdir()
@@ -335,6 +342,7 @@ def _update_shape_check(tmp_path: Path, request) -> tuple:
 def _scaffold_dry_run(tmp_path: Path, request) -> tuple:
     """A display name and an elector are a person's text. Local remotes,
     so nothing asks `gh` whether the repositories exist."""
+    skip_where_the_environment_cannot_carry(NAME)
     return SCAFFOLD, ("--org", ORG, "--project", "Borea", "--name", NAME,
                       "--elected-by", NAME, "--elected-on", "2026-09-02",
                       "--local-remote-dir", str(tmp_path / "remotes"),
@@ -346,6 +354,7 @@ def _family_init_dry_run(tmp_path: Path, request) -> tuple:
     the name: the holder's own `validate-family.py` refuses one that is not a
     CamelCase token (`family.py init` asks it, #307, and refuses before the
     plan prints), so only `--created-by` can carry text no code page holds."""
+    skip_where_the_environment_cannot_carry(NAME)
     return FAMILY, ("init", "--org", ORG, "--family", "Contoso",
                     "--created-by", NAME,
                     "--local-remote-dir", str(tmp_path / "remotes"),
@@ -379,6 +388,7 @@ def _bootstrap_shim(tmp_path: Path, request) -> tuple:
     repository with no manifest, one that has not elected the schema, which
     is what the shim is for. Not a shape copy: no project holds it, so it
     calls the helper the six tools call, before it hands over."""
+    skip_where_the_environment_cannot_carry(NAME)
     root = tmp_path / NAME
     root.mkdir()
     git("init", "-q", cwd=root)

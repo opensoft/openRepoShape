@@ -86,10 +86,22 @@ WHAT IS CHECKED
     Neither record is checked against the legs: this runs where they are
     not checked out, so a directory's row written without its `/`, which
     names a file, is the doctor's to say (#655).
+  - that no text value holds a character it may not (#1205), named with
+    the key and the character's code point. `name`, `elected_by` and
+    `reference`, which a person types, are held to #255's rule, the one
+    the tools ask of the value before they write it: no line break, lone
+    surrogate, bidirectional control or other control character; a joiner
+    or a no-break space a name needs is kept. A spec or code leg's `path`,
+    `shape.repository` and `shape.digest_algorithm` hold only characters
+    that print (`str.isprintable`). A key whose own check refuses such a
+    value already is not asked twice, and the two records' `path` and
+    `resolution` hold what the source held, which `adopt-project.py`
+    writes as it found it.
 
 EXIT CODES: 0 valid · 1 findings · 2 refusal (the file is missing or unreadable)
             -- and a declared referent's pin file this user cannot reach is
-            a refusal too, never a finding that it is missing (#430)
+            a refusal too, never a finding that it is missing (#430), and
+            so is a root whose `.git` this user cannot reach (#1146)
 """
 
 from __future__ import annotations
@@ -101,6 +113,7 @@ import os
 import re
 import stat
 import sys
+import unicodedata
 from collections.abc import Callable
 from pathlib import Path
 
@@ -113,8 +126,12 @@ from repo_shape import (  # noqa: E402
     pin_source_env_name, pin_source_env_shared, repo_basename,
 )
 
-DATE_RE = re.compile(r"^\d{4}-\d{2}-\d{2}$")
-QUALIFIED_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_.-]*/[A-Za-z0-9][A-Za-z0-9_.-]*$")
+#: BOTH END IN `\Z`, NEVER `$` (#1139): `$` also matches just before a
+#: trailing line feed, so an `elected_on:` or a leg's `repository:` read as
+#: the value and a line feed (a double-quoted `\n`, or a block scalar) passed
+#: `.match` as well formed and the manifest was `manifest ok`.
+DATE_RE = re.compile(r"^\d{4}-\d{2}-\d{2}\Z")
+QUALIFIED_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_.-]*/[A-Za-z0-9][A-Za-z0-9_.-]*\Z")
 REQUIRED_ROLES = {"assembly", "spec", "code"}
 
 #: The `OSError`s that `Path.is_file()` answered False to on Python 3.9 to
@@ -163,10 +180,18 @@ def _is_a(path: Path, kind: Callable[[int], bool]) -> bool:
     return kind(mode)
 
 
-def _unreadable_file(root: Path, path: Path, exc: OSError) -> Refusal:
+#: What this validator reads, as `_unreadable_file`'s remedy says it.
+FILES_READ = ("project.yaml, the naming policy and the pin file each "
+              "declared referent needs")
+
+
+def _unreadable_file(root: Path, path: Path, exc: OSError,
+                     code: str = "yaml-unreadable",
+                     reads: str = FILES_READ) -> Refusal:
     """`yaml-unreadable` for a file this validator must read or find and the
     operating system will not let it (#430): its `stat` refused, or its
-    open. `validate-pins.py`'s `_unreadable_file`, in its words.
+    open. `validate-pins.py`'s `_unreadable_file`, in its words. `code` and
+    `reads` are the refusal's, for the root's `.git` (#1146).
 
     NAMED ONCE, RELATIVE TO THE ROOT, POSIX on every platform, or whole
     where it is not under the root (a `--policy` given elsewhere), and
@@ -185,12 +210,46 @@ def _unreadable_file(root: Path, path: Path, exc: OSError) -> Refusal:
         "it inside the root), or fix who owns it. "
         if isinstance(exc, PermissionError) else OTHER_REASON)
     return Refusal(
-        "yaml-unreadable",
+        code,
         f"{named}: cannot be read ({exc.strerror or type(exc).__name__})",
-        "Remediation: this validator reads project.yaml, the naming policy "
-        "and the pin file each declared referent needs, and one it cannot "
-        "read is a question it cannot answer, never a pass. " + advice
+        f"Remediation: this validator reads {reads}, and one it cannot read "
+        "is a question it cannot answer, never a pass. " + advice
         + "Then run the same command again.")
+
+
+#: The refusal of a root whose `.git` this user cannot read (#1146), and what
+#: the `.git` is read for. `validate-pins.py` refuses it by the same code.
+ROOT_UNREADABLE = "git-repo-unreadable"
+ROOT_READ = "the root's `.git`, which is how it finds the root"
+
+
+def _refuse_an_unreadable_root(start: Path) -> None:
+    """`git-repo-unreadable`, by name, where this user cannot `stat` a
+    `.git` that `find_repo_root` would ask, at `start` or above it, before
+    the first that is there (#1146).
+
+    `find_repo_root` ASKS `exists()`, AND IS A SHAPE COPY THIS FILE MAY NOT
+    RELY ON BEING NEWER THAN ITSELF (#370, #610), so each `.git` it would ask
+    is asked here first, with `_is_a`. A root whose `.git` is a link into a
+    folder this user cannot search ended in a `PermissionError` traceback on
+    Python 3.12, exit 1, which the doctor read as a validator that crashed;
+    from 3.14 `exists()` answers False, and the run refused `not-a-git-repo`
+    (`no .git found`) about a root that has one. A `.git` that answers
+    absent (nothing there, a link that leads nowhere or to itself) is passed
+    over, as `exists()` passes it.
+
+    ONLY THE `stat` THAT `exists()` ASKS. This validator runs no git: a
+    `.git` that is there tells it where the root is, and what git could read
+    inside it is `validate-pins.py`'s question, which asks it."""
+    path = Path(start).resolve()
+    for candidate in [path, *path.parents]:
+        dotgit = candidate / ".git"
+        try:
+            if _is_a(dotgit, lambda _mode: True):
+                return
+        except OSError as exc:
+            raise _unreadable_file(path, dotgit, exc, ROOT_UNREADABLE,
+                                   ROOT_READ) from exc
 
 
 def _is_file(root: Path, path: Path) -> bool:
@@ -760,6 +819,93 @@ def _finding(code: str, detail: str) -> str:
     return f"FINDING {code}: {detail}"
 
 
+#: #255'S RULE AS DATA (#1205): what `unwritable_reason` in openRepoShape's
+#: `scripts/shape_materialize.py` refuses past a line break, the question
+#: `scaffold-project.py`, `adopt-project.py` and `family.py init` ask of a
+#: name, an elector and a reference before they write one. Each kind, in the
+#: order it asks, as `(what the character is, as a finding says it, the
+#: categories or code points it is)`: a byte that is not UTF-8 (the lone
+#: surrogate `sys.argv` keeps one as, #247), any other lone surrogate, the
+#: nine bidirectional embedding, override and isolate controls (#255's
+#: `BIDI_CONTROLS`, U+202A to U+202E and U+2066 to U+2069) and any other
+#: control character. NOT `str.isprintable`, which refuses U+200C ZERO WIDTH
+#: NON-JOINER, which a Persian name joins its parts with, and a no-break
+#: space: the tools write both, and this file passed both before, so
+#: refusing either would refuse a manifest the tools wrote. Copied, since
+#: this file imports nothing new from `repo_shape.py`, which may be older
+#: than it (#370, #610). `validate-family.py` holds the same copy, and
+#: `tests/test_manifest_validator.py` holds both to the original.
+UNWRITABLE = (
+    ("a byte that is not UTF-8, which no UTF-8 file, commit message or "
+     "console can hold", {*range(0xDC80, 0xDD00)}),
+    ("a lone surrogate, which no UTF-8 file, commit message or console can "
+     "hold", {"Cs"}),
+    ("a bidirectional control, which shows the rest of the line it is "
+     "printed in in another order than it is written",
+     {*range(0x202A, 0x202F), *range(0x2066, 0x206A)}),
+    ("a control character, which does not print", {"Cc", "Zl", "Zp"}),
+)
+#: What a line break is, which no value holds, and a character that does not
+#: print, which no value but a typed one holds, as a finding says each.
+LINE_BREAK = ("a line break, and the value is one line: what prints it is "
+              "split in two there")
+UNPRINTABLE = ("a character that does not print, or a space other than ` `: "
+               "a person reading the value cannot tell what it holds")
+
+
+def _held_kind(char: str, typed: bool) -> str | None:
+    """What `char` is, as a finding says it, where a value may not hold it;
+    None where it may (#1205). No value holds a line break (one
+    `str.splitlines` ends a line at: CR, U+0085 and U+2028 among them). A
+    value a person types (`typed`) holds nothing else #255 refuses
+    (`UNWRITABLE`), and any other value only characters that print
+    (`str.isprintable`). `validate-family.py` asks the same."""
+    if char.splitlines() != [char]:
+        return LINE_BREAK
+    if not typed:
+        return None if char.isprintable() else UNPRINTABLE
+    category = unicodedata.category(char)
+    return next((kind for kind, held in UNWRITABLE
+                 if category in held or ord(char) in held), None)
+
+
+def _first_held(value: str, typed: bool) -> tuple[str, str] | None:
+    """The character of `value` its key may not hold, and what it is
+    (`_held_kind`); None where it holds none (#1205). A line break first,
+    wherever it is, as #255 names it: `Atlas\\x1b\\n` holds the line break
+    a person is told to take out first."""
+    held = [(char, kind) for char in value
+            if (kind := _held_kind(char, typed))]
+    return next((pair for pair in held if pair[1] == LINE_BREAK),
+                held[0] if held else None)
+
+
+def _held_character(what: str, value, typed: bool = False) -> str | None:
+    """The finding's words where `value` holds a character its key may not,
+    or None: none does, or it is not text, which is another check's to
+    name (#1205).
+
+    A LINE FEED WAS `manifest ok` IN EVERY KEY NO PATTERN READS. A
+    double-quoted `"spec\\n"` or `"Atlas\\n"` (or a block scalar) passed,
+    and `name` split the `manifest ok` line in two, while a leg's path so
+    read met `validate-pins.py`'s `pin-gitlink-absent` two steps later,
+    with this step silent. `typed` is a value a person types, held to
+    #255's rule; any other is held to `str.isprintable` (`_held_kind`). The
+    character is named by its code point, and the value by `repr`, so the
+    line says what is there. The way through is said by kind: a line break
+    is taken out by writing the value on one line, and any other character
+    by writing the value without it.
+    """
+    found = _first_held(value, typed) if isinstance(value, str) else None
+    if found is None:
+        return None
+    char, kind = found
+    remedy = ("Write it on one line." if kind == LINE_BREAK
+              else "Write it without that character.")
+    return (f"{what} is {value!r}, which holds U+{ord(char):04X}, {kind}. "
+            f"{remedy}")
+
+
 def _envelope_findings(manifest: dict) -> list[str]:
     """schema_version, kind and schema: the envelope that says what KIND of
     document this is, checked before anything about its content.
@@ -791,7 +937,13 @@ def _id_findings(manifest: dict) -> tuple[list[str], str | None]:
     as `_findings` used to null out its local `project_id` on that path.
     """
     project_id = manifest.get("id")
-    if not isinstance(project_id, str) or not PROJECT_ID_RE.match(project_id):
+    # `fullmatch`, NOT `match` (#1139): `PROJECT_ID_RE` ends in `$`, which
+    # also matches just before a trailing line feed, so `id: "atlas\n"` was
+    # an id and the finding was the topic's, "expected 'xf-project-atlas\n'".
+    # The pattern is the project's own `repo_shape.py`'s, whose text the
+    # finding prints, so it is asked whole here rather than respelled.
+    if not isinstance(project_id, str) or not PROJECT_ID_RE.fullmatch(
+            project_id):
         return ([_finding(
             "manifest-id",
             f"id is {project_id!r}; it must match {PROJECT_ID_RE.pattern}")],
@@ -829,13 +981,15 @@ def _name_finding(manifest: dict) -> list[str]:
             "surrogate: no UTF-8 file, commit message or console can hold "
             "it. Write each character as itself, or as one `\\U` escape "
             "(`\\U0001F600`, not the pair `\\uD83D\\uDE00`).")]
-    return []
+    # #255's rule (#1205), past the surrogate, which is said above alone.
+    held = _held_character("name", name, typed=True)
+    return [_finding("manifest-name", held)] if held else []
 
 
 def _elected_by_finding(manifest: dict) -> list[str]:
     """`elected_by`.
 
-    Split from `_findings` for #132.
+    Split from `_findings` for #132. Held to #255's rule (#1205).
     """
     if not isinstance(manifest.get("elected_by"), str) or \
             not manifest["elected_by"].strip():
@@ -843,7 +997,8 @@ def _elected_by_finding(manifest: dict) -> list[str]:
             "manifest-elected-by",
             "elected_by is empty. Electing the shape is a human's act and "
             "the manifest records whose.")]
-    return []
+    held = _held_character("elected_by", manifest["elected_by"], typed=True)
+    return [_finding("manifest-elected-by", held)] if held else []
 
 
 def _elected_on_finding(manifest: dict) -> list[str]:
@@ -879,7 +1034,7 @@ def _topic_finding(manifest: dict, policy: NamingPolicy,
 def _reference_finding(manifest: dict) -> list[str]:
     """`reference`, OPTIONAL.
 
-    Split from `_findings` for #132.
+    Split from `_findings` for #132. Held to #255's rule (#1205).
     """
     reference = manifest.get("reference")
     if reference is not None and (not isinstance(reference, str) or not reference.strip()):
@@ -887,7 +1042,8 @@ def _reference_finding(manifest: dict) -> list[str]:
             "manifest-reference",
             f"reference is {reference!r}; drop the key or name the document "
             "the election followed")]
-    return []
+    held = _held_character("reference", reference, typed=True)
+    return [_finding("manifest-reference", held)] if held else []
 
 
 def _visibility_finding(manifest: dict) -> list[str]:
@@ -985,6 +1141,14 @@ def _shape_findings(manifest: dict) -> list[str]:
     if not isinstance(shape.get("repository"), str):
         out.append(_finding("manifest-shape-repository",
                             f"shape.repository is {shape.get('repository')!r}"))
+    # Each holds only characters that print (#1205); what
+    # `digest_algorithm` may be otherwise is not asked here.
+    for key, code in (("repository", "manifest-shape-repository"),
+                      ("digest_algorithm",
+                       "manifest-shape-digest-algorithm")):
+        held = _held_character(f"shape.{key}", shape.get(key))
+        if held:
+            out.append(_finding(code, held))
     if shape.get("revision_kind") != "commit":
         out.append(_finding(
             "pin-tag-only",
@@ -1087,6 +1251,14 @@ def _leg_path_findings(role, path, paths: dict[str, str]) -> list[str]:
     """
     if not isinstance(path, str) or not path:
         return [_finding("manifest-leg-path", f"leg {role!r}: path is {path!r}")]
+    # A spec or code leg's path holds only characters that print (#1205):
+    # `spec\n` was `manifest ok`, and `validate-pins.py` then found no
+    # gitlink at it. Said alone, as what is wrong with the path first. The
+    # assembly leg's path is `.` or its own finding.
+    held = (_held_character(f"leg {role!r}: path", path)
+            if role != "assembly" else None)
+    if held:
+        return [_finding("manifest-leg-path", held)]
     out = []
     if role == "assembly" and path != ".":
         out.append(_finding(
@@ -1366,7 +1538,10 @@ def main(argv: list[str] | None = None) -> int:
     args = parser.parse_args(argv)
 
     try:
-        root = find_repo_root(args.root or Path(__file__).resolve().parents[1])
+        start = args.root or Path(__file__).resolve().parents[1]
+        # A `.git` this user cannot read is refused by name first (#1146).
+        _refuse_an_unreadable_root(start)
+        root = find_repo_root(start)
         manifest_path = root / "project.yaml"
         # A `project.yaml` this user cannot reach or open is refused by name,
         # `yaml-unreadable`, never `manifest-missing` (#430).
