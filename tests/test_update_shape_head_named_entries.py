@@ -106,7 +106,9 @@ def test_the_commit_head_pins_is_read_over_a_file_spelled_as_the_argument(
 
 
 @pytest.mark.parametrize(
-    "spelled", [None, "refs/remotes/origin/{base}:" + PIN],
+    "spelled", [
+        None, pytest.param("refs/remotes/origin/{base}:" + PIN,
+                           marks=NOT_ON_WINDOWS)],
     ids=["no-such-file", "a-file-spelled-as-the-argument"])
 def test_the_copies_a_run_kept_are_read_over_a_file_spelled_as_the_argument(
         standard, root, update_shape, spelled):

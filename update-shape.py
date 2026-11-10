@@ -5290,9 +5290,10 @@ def _land(root: Path, args, paths: list[str], added: list[str], target: str,
     # a first commit lists its files too. Should git not answer, or list
     # nothing, the line keeps the paths it was asked to commit, as it always
     # printed. `--` ENDS THE ARGV (#1215): `diff-tree` reads `HEAD` as a path
-    # too where the root tracks a file of that name, and refuses it as
-    # ambiguous; git then answered nothing, and the line named the paths it
-    # was asked to commit, which #674 had just stopped it doing.
+    # too where the root's work tree holds an entry of that name, tracked or
+    # not, and refuses it as ambiguous; git then answered nothing, and the
+    # line named the paths it was asked to commit, which #674 had just
+    # stopped it doing.
     held = _git_answer(root, ["diff-tree", "--root", "--no-commit-id", "-r",
                               "--name-only", "--no-renames", "-z", "HEAD",
                               "--"])
@@ -5872,7 +5873,8 @@ def _committed_pin(root: Path, pin: str) -> str:
     """The `commit:` HEAD's shape pin names, or "" when that pin does not
     read as a mapping (#333). Said in the refusal, never decided on."""
     # `--` ENDS THE ARGV (#1215): `show` reads `HEAD:<pin>` as a path too
-    # where the root tracks a file spelled so, and refuses it as ambiguous.
+    # where the root's work tree holds an entry spelled so, tracked or not,
+    # and refuses it as ambiguous.
     try:
         parsed = parse_yaml(
             _git_answer(root, ["show", f"HEAD:{pin}", "--"]) or "")
