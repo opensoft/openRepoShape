@@ -53,6 +53,14 @@ now spells the remote and work directories, and `NEXT:`'s clone command,
 before which a NOTE now says when the path in it holds a character a
 terminal does not show as itself.
 
+THE FOLLOW-UPS OF #1225 (#1233, from RV1225's review). A line feed in a
+path git names in what a refused command printed split that line, so the
+path is spelled whole there now, and the refused push's row holds a line
+feed too; git's `adopt-mount-unaddable` words, which can name the work
+directory, are said the same way. And rows for three mutants that passed
+all 188: a printable character outside ASCII in a refused command, a tab
+in what it printed, and a source path outside ASCII that is printable.
+
 THE TEST SOURCE IS ASCII: every character that is not printable is written as
 an escape.
 """
@@ -779,3 +787,40 @@ def test_a_refused_command_no_step_said_is_said_spelled(
     assert adopter.main(["check", "--plan", str(tmp_path / "plan.yaml")]) == 2
     assert capsys.readouterr().err == the_block_of(
         "a git or gh command failed", typed, spelled) + "\n"
+
+
+# --- a mount git will not add: `adopt-mount-unaddable` (#1233) --------------
+
+#: What `adopt-mount-unaddable` begins with, for the spec leg at `spec`.
+UNADDABLE = "git will not add the leg mount path spec: "
+
+
+@pytest.mark.parametrize("typed, spelled", CHARACTERS)
+def test_a_mount_git_will_not_add_is_said_spelled(
+        adopter, tmp_path, typed, spelled):
+    """`adopt-mount-unaddable` ends in git's own words, and they can name
+    the assembly, which is under `--work-dir`: `git add --dry-run` takes the
+    index's lock, so a held one is `Unable to create
+    '<work>/Thing/.git/index.lock'`. They were printed as they were, so a
+    U+202E in the work directory reached the terminal raw, and a line feed
+    split the line (#1233, RV1225's N4); they are said now as a refused
+    command's block says them. git writes ESC as `?` there itself, and the
+    byte 0xff as `run` decodes it, U+FFFD. The mount path cannot hold such
+    a character: `leg_path_problem` holds it to `SAFE_ARG_RE`. No child
+    holds the lock at that moment, so the guard is called in this process,
+    as `_create_leg_remote` is above."""
+    skip_where_cannot_carry(typed, tmp_path)
+    assembly = tmp_path / f"wo{typed}rk" / PROJECT
+    assembly.mkdir(parents=True)
+    git("init", "-q", ".", cwd=assembly)
+    (assembly / ".git" / "index.lock").write_bytes(b"")
+    with pytest.raises(adopter.Refusal) as caught:
+        adopter._refuse_an_unmountable_path(assembly, "spec")
+    assert caught.value.code == "adopt-mount-unaddable"
+    detail = caught.value.detail
+    assert detail.startswith(UNADDABLE), detail
+    assert f"{PROJECT}/.git/index.lock" in detail, detail
+    if typed not in ("\x1b", "\udcff"):
+        assert f"/wo{spelled}rk/{PROJECT}/.git/index.lock" in detail, detail
+    if typed:
+        assert f"wo{typed}rk" not in detail, detail

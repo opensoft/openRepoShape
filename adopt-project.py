@@ -15542,9 +15542,14 @@ def _refuse_an_unmountable_path(assembly: Path, path: str) -> None:
         run(["git", "add", "--dry-run", "--ignore-missing", "-f",
              "--no-warn-embedded-repo", "--", path], cwd=assembly)
     except CommandFailed as exc:
+        # git's words `_output_unacted`, as a refused command's block says
+        # them (#1233): a held `index.lock` is named under the assembly, so
+        # under `--work-dir`, which can hold a control character. The mount
+        # path cannot: `leg_path_problem` held it to `SAFE_ARG_RE`.
         raise Refusal(
             "adopt-mount-unaddable",
-            f"git will not add the leg mount path {path}: {exc.output}",
+            f"git will not add the leg mount path {path}: "
+            f"{_output_unacted(exc)}",
             MOUNT_REMEDIATION) from exc
     for entry in entries:
         if entry[1].casefold() in on_the_way:
