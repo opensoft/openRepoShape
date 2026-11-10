@@ -252,6 +252,7 @@ from repo_shape import (  # noqa: E402
     parse_yaml, redacted, remote_is_a_path, remote_key, remote_local_path,
     shown_path, spelled as spelled_as_git_out, tree_digest,
 )
+from repo_shape import DEFAULT_IGNORABLE, code_point_escaped  # noqa: E402
 from shape_materialize import (  # noqa: E402
     PLACEHOLDER_RE, SHAPE_REPOSITORY, SYMLINK_HOPS,
     TEMPLATED, TOO_MANY_SYMLINKS, CommandFailed, Materialized,
@@ -504,7 +505,10 @@ def _pin_row_problem(row: dict) -> tuple[str, str, str] | None:
     Each value is held to what `plan` writes there: the commit to
     `COMMIT_RE`, the repository and the commit together to the scaffold's own
     `PIN_ARG_RE`, owner-qualified, with the product its name, the digest to
-    `SHA256_RE`, and the digest's source to `_a_digest_source`.
+    `SHA256_RE`, and the digest's source to `_a_digest_source`. A value that
+    is not text is said as `_read_as` says what the plan's reader read, the
+    number 7 or the boolean true, and a text value as Python spells it
+    (#1114).
 
     THE DIGEST'S SOURCE IS ONE OF THREE SPELLINGS (#540). It was held to one
     printable line, and `execute` wrote it into the root's pin file as it
@@ -528,9 +532,15 @@ def _pin_row_problem(row: dict) -> tuple[str, str, str] | None:
     not_text = [key for key, _ in PIN_FIELDS
                 if not isinstance(row.get(key), str)]
     if not_text:
-        why = "records " + ", ".join(
-            f"`{key}: {row[key]!r}`" for key in not_text) + ", which " + (
-            "is" if len(not_text) == 1 else "are") + " not text"
+        # Said as `_read_as` says what the plan's reader read (#1114), as
+        # `_read_pins` says a `pins:` that is no list: `commit: 7` is the
+        # number 7 and `true` the boolean true, not Python's `True`. A null
+        # or a blank is `missing` above, and a text is held to its form
+        # below, so only a number, a boolean, a list or a mapping is here.
+        why = ("records " + ", ".join(
+            f"`{key}:` as {_read_as(row[key])}" for key in not_text)
+               + ", which " + ("is" if len(not_text) == 1 else "are")
+               + " not text")
         return PIN_MALFORMED, why, _pin_written_from(not_text)
     product, repository, commit, digest, how = (
         row[key] for key, _ in PIN_FIELDS)
@@ -1149,6 +1159,19 @@ SYMLINK_MODE = "120000"
 FILE_MODES = ("100644", "100755")
 LEG_VALUES = ("spec", "code", "root", "drop")
 FILE_PROTOCOL = ["-c", "protocol.file.allow=always"]
+#: Each clone `execute` makes names its remote `origin`, whatever
+#: `clone.defaultRemoteName` says (#1261). `git clone` names the remote
+#: after it, and with `upstream` in the global config `_mount_the_legs`'
+#: `git remote set-url origin` ended `execute` in `REFUSED mounting the
+#: legs`, exit 2, after both legs were pushed. A `-c` reaches the clone
+#: `git submodule add` makes as well as `git clone`'s own, and outranks
+#: the global file, a template's `config`, `GIT_CONFIG_COUNT` and a
+#: parent's `GIT_CONFIG_PARAMETERS` (each measured with git 2.43).
+#: `Source.clone` hands `gh repo clone` `--origin origin` instead, a `git
+#: clone` flag gh passes on after its `--` as it passes `--quiet`, so the
+#: clone `_default_branch` and `_branches_of` read as `origin`'s names its
+#: remote so.
+REMOTE_NAMED_ORIGIN = ["-c", "clone.defaultRemoteName=origin"]
 #: The file `git submodule add` records a mount in. `_mount_the_legs` checks,
 #: writes, stages and edits it, and `check` and `execute` ask which leg the
 #: plan gave the source's own -- named once so those uses cannot spell it
@@ -1912,6 +1935,31 @@ def _is_there(path: Path) -> bool:
     return _is_a(path, lambda _mode: True)
 
 
+def _is_itself_a(path: str | bytes, kind: Callable[[int], bool]) -> bool:
+    """Whether `path` is itself there and of `kind` (`stat.S_ISLNK`,
+    `stat.S_ISDIR`), asked with `os.lstat`, which follows no symlink, as
+    `_is_a` asks `stat` (#430): nothing there is False, and the `OSError`
+    of an `lstat` the operating system REFUSED is raised, never read as
+    nothing there. NOT `Path.is_symlink()` or `is_dir()`, which from 3.14
+    answer False to ANY `OSError`. `path` is a `str` or the bytes
+    `_path_argument` hands git, so that no locale is in the way (#527)."""
+    try:
+        mode = os.lstat(path).st_mode
+    except OSError as exc:
+        if _absent(exc):
+            return False
+        raise
+    except ValueError:
+        # a name the operating system cannot take at all (a NUL in it)
+        return False
+    return kind(mode)
+
+
+def _is_a_symlink(path: str | bytes) -> bool:
+    """Whether `path` is itself a symlink (`_is_itself_a`)."""
+    return _is_itself_a(path, stat.S_ISLNK)
+
+
 def _os_reason(exc: OSError) -> str:
     """The operating system's own words for `exc` (`Permission denied`), or
     the exception's name where it gave none, as `validate-pins.py`'s
@@ -2133,7 +2181,26 @@ def _github_name(written: str) -> str | None:
     `source-unclonable`, with a remedy about `gh auth status`. GitHub reads
     a repository's name without regard to case, and so does a disk that
     ignores case, where `source-readonly/.GIT` is `source-readonly/.git`;
-    so the trailing `.git` is dropped in any case too."""
+    so the trailing `.git` is dropped in any case too.
+
+    NOR IS EITHER PART LONGER THAN GITHUB LETS IT BE (#1129): an owner of
+    more than `GITHUB_OWNER_MAX` characters, the longest name GitHub gives
+    a user or an organisation, or a repository of more than
+    `GITHUB_NAME_MAX`, counted once the `.git` is dropped. Such a spelling
+    names nothing GitHub holds, and every reader of this answer now says
+    so alike. On main `plan --source <50 b's>/Thing`, with nothing there,
+    was handed to `gh repo clone`; with `--org testorg` it was refused
+    `adopt-not-the-source` and told to pass `--org <50 b's>`, which
+    `execute` refuses; and a plan that recorded it as `source.repository`
+    was cloned from it again by `check` and `execute`, or held to it with
+    the same `--org` for a remedy. Now it is a path, read in place where it
+    is one, as any other spelling that names no `owner/repo` is
+    (`_source_spec`), and refused where it is not; a url of it names no
+    `owner/repo` on GitHub (`_repository_in_url`); a plan's record of it
+    names no repository (`_recorded_repository`, `_held_repository`); and
+    beside a directory this user cannot search it is offered no url
+    (`_source_there`, #1003). Asked of the name and not of the disk, it
+    holds on Windows as well, where no error is `File name too long`."""
     segments = [part for part in written.split("/") if part]
     if len(segments) != 2:
         return None
@@ -2143,6 +2210,8 @@ def _github_name(written: str) -> str | None:
     if owner.startswith(("-", ".")) or repo.lower() == ".git" or not all(
             GITHUB_SEGMENT_RE.fullmatch(part) and part not in (".", "..")
             for part in (owner, repo)):
+        return None
+    if len(owner) > GITHUB_OWNER_MAX or len(repo) > GITHUB_NAME_MAX:
         return None
     return f"{owner}/{repo}"
 
@@ -2200,22 +2269,24 @@ def _source_there(spec: str, candidate: Path, name: str | None) -> bool:
 
     A NAME GITHUB CANNOT HOLD NAMES NO GITHUB REPOSITORY EITHER (#1003): an
     owner over `GITHUB_OWNER_MAX` characters, or a repository over
-    `GITHUB_NAME_MAX`. It is refused as a path is, with no url, whatever
-    reason the operating system gave. `--source <300 a's>/Thing`, `File
-    name too long`, was "whether it names the path ... here, or only the
-    GitHub repository ..., cannot be told", and was offered
-    `https://github.com/<300 a's>/Thing`, which can never clone; and so was
-    `testorg/<300 a's>` beside a `./testorg` this user cannot search, whose
-    `stat` stops at `Permission denied` before it reaches the long part. The
-    name decides, never the reason: `testorg/Thing`, with `./testorg` a
-    symlink to a name too long, is `File name too long` as well, and names
-    a repository GitHub can hold, so its url is offered."""
+    `GITHUB_NAME_MAX`. `_github_name` gives no `name` for it (#1129), the
+    one question every reader of a name asks, so here it is refused as a
+    path is, with no url, whatever reason the operating system gave; and a
+    `github.com/` spelling of it never reaches here, since
+    `_repository_in_url` refuses it first, as naming no `owner/repo`.
+    `--source <300 a's>/Thing`, `File name too long`, was "whether it names
+    the path ... here, or only the GitHub repository ..., cannot be told",
+    and was offered `https://github.com/<300 a's>/Thing`, which can never
+    clone; and so was `testorg/<300 a's>` beside a `./testorg` this user
+    cannot search, whose `stat` stops at `Permission denied` before it
+    reaches the long part. The name decides, never the reason:
+    `testorg/Thing`, with `./testorg` a symlink to a name too long, is `File
+    name too long` as well, and names a repository GitHub can hold, so its
+    url is offered."""
     try:
         return _is_there(candidate)
     except OSError as exc:
-        owner, _, repo = (name or "").partition("/")
-        if (name is None or len(owner) > GITHUB_OWNER_MAX
-                or len(repo) > GITHUB_NAME_MAX):
+        if name is None:
             raise _source_unreadable(f"--source {spec!r}", exc,
                                      REPOSITORY_UNTOLD) from exc
         here = _spelled("./" + spec.rstrip("/"))
@@ -3208,7 +3279,7 @@ class Source:
             print(f"cloning {repository} (read only) into "
                   f"{_shown(str(path))}")
             run(["gh", "repo", "clone", repository, str(path), "--",
-                 "--quiet"])
+                 "--quiet", "--origin", "origin"])
         except BaseException as exc:
             if made is None:
                 with contextlib.suppress(OSError, _NotTheClone):
@@ -4099,8 +4170,15 @@ def _shown(path: str) -> str:
     ENDS IN A SPACE, which reads as nothing: `git commit` strips it from
     the end of each line of the split commit's message, which lists names
     `_shown`, so `trail.md ` was listed as `trail.md`, and `plan`'s table
-    pads `trail.md ` and `trail.md` to the same row."""
-    if (path.isprintable() and not path.endswith(" ")
+    pads `trail.md ` and `trail.md` to the same row.
+
+    AND SO IS ONE THAT HOLDS A DEFAULT-IGNORABLE CHARACTER (#1128), which a
+    terminal draws as nothing (`DEFAULT_IGNORABLE`): `str.isprintable`
+    passes 267 of them, among them U+034F, the variation selectors and the
+    Hangul filler U+3164, so the branch `ma<U+034F>in` printed as `main`.
+    It is spelled `` `ma\\u034fin` `` now."""
+    if (path.isprintable() and not DEFAULT_IGNORABLE.search(path)
+            and not path.endswith(" ")
             and not (path.startswith("`") and path.endswith("`"))):
         return path
     return _spelled(path)
@@ -4119,9 +4197,15 @@ def _spelled_character(char: str) -> str:
     U+2028, and `\\udc85` for the byte 0x85, which `Source.tree` keeps as
     the surrogate U+DC00 plus the byte -- except a backtick, which the plan
     holds as it is and `_spelled` wraps a name in: `SPELLED_BACKTICK`, the
-    escape the plan's reader takes for one (#900)."""
+    escape the plan's reader takes for one (#900); and a default-ignorable
+    character (`DEFAULT_IGNORABLE`, #1128), which a terminal draws as
+    nothing: its code-point escape, `\\u034f` for U+034F, which the plan's
+    reader takes for that character, where the plan holds one
+    `str.isprintable` passes as it is."""
     if char == "`":
         return SPELLED_BACKTICK
+    if DEFAULT_IGNORABLE.match(char):
+        return code_point_escaped(char)
     return double_quoted(char)[1:-1]
 
 
@@ -7286,7 +7370,7 @@ class Plan:
         self.data = data
         if data.get("kind") != PLAN_KIND:
             detail = (f"{_shown(str(path))}: kind is "
-                      f"{data.get('kind')!r}, expected {PLAN_KIND!r}")
+                      f"{_plan_key_said(data, 'kind')}, expected {PLAN_KIND!r}")
             if data.get("kind") == PLACEMENT_PLAN_KIND:
                 # A REFUSAL THAT SAYS WHERE THE FILE GOES INSTEAD. This one is
                 # reachable by an honest mistake -- the two files look alike,
@@ -7306,7 +7390,7 @@ class Plan:
         if data.get("mode") != "in-place":
             raise Refusal(
                 "plan-unsupported-mode",
-                f"{_shown(str(path))}: mode is {data.get('mode')!r}; "
+                f"{_shown(str(path))}: mode is {_plan_key_said(data, 'mode')}; "
                 "v0.2 implements `in-place` only",
                 "Remediation: re-run `plan`, which writes `mode: in-place`. "
                 "A `new-root` mode is described in the tool's own docstring "
@@ -7649,7 +7733,9 @@ class Plan:
         boolean (`id: 007`) was `str` of what was read, `7`, which the
         pattern takes: it is refused by what was read (L1-K3). And an `id:`
         the pattern refuses is told what an id may hold, as `plan` tells a
-        passed `--id` (`PASSED_ID_REMEDIATION`).
+        passed `--id` (`PASSED_ID_REMEDIATION`). A list or a mapping is
+        named by what was read too, `a list of 2 item(s)`, where it was the
+        quoted text `"['a', 'b']"` that `str` made of it (#1199).
         """
         set_id, pattern = self.get("id"), PROJECT_ID_RE.pattern
         if set_id is None:
@@ -7670,7 +7756,7 @@ class Plan:
         if not PROJECT_ID_RE.match(project_id):
             raise Refusal(
                 "plan-bad-id",
-                f"{_shown(str(self.path))}: `id:` is {project_id!r} and "
+                f"{_shown(str(self.path))}: `id:` is {_plan_value_said(set_id)} and "
                 f"must match {pattern}", PLAN_ID_REMEDIATION)
         return project_id
 
@@ -7836,8 +7922,8 @@ def _leg_findings(plan: Plan, tree: list | None,
                 f"question was: {_shown(str(entry.get('question')))}")
         elif str(leg) not in LEG_VALUES:
             findings.append(
-                f"FINDING plan-bad-leg: {path} declares leg {leg!r}; it is "
-                f"one of {list(LEG_VALUES)}")
+                f"FINDING plan-bad-leg: {path} declares leg "
+                f"{_plan_value_said(leg)}; it is one of {list(LEG_VALUES)}")
     if isinstance(plan.legs, dict):
         findings += _root_shape_findings(plan, tree, named_links)
         # THE PINS, LAST (#273): each `pins:` entry `execute` cannot write a
@@ -9360,6 +9446,29 @@ def _read_as(value) -> str:
     return f"a value of type {type(value).__name__}"
 
 
+def _plan_value_said(value) -> str:
+    """A plan value that a refusal names, said as the plan's other refusals
+    say one (#1199, which follows #1114).
+
+    A value the plan's reader read as text is spelled as Python spells it,
+    quoted, as it always was (`kind is 'placement-plan'`, a leg `'Spec'`), so
+    no refusal of a text changes by a byte. Any other is said as `_read_as`
+    says what was read: `the number 7`, `the boolean true`, `null`, `a list
+    of 2 item(s)`. It was `repr` of every one, which spells a number `7`, a
+    boolean `True`, a null `None`, and a list or a mapping as Python does,
+    with no word that the plan holds one."""
+    return repr(value) if isinstance(value, str) else _read_as(value)
+
+
+def _plan_key_said(data: dict, key: str) -> str:
+    """The plan's top-level `key:` said by `_plan_value_said`, or `absent`
+    where the plan has no `key:` line at all. `data.get` gives None for that
+    and for a bare `key:`, which `_read_as` calls `null`: a plan with a line
+    is sent to that line, and one without is told it has none (`_not_the_source`
+    tells an absent `org:` from a null one the same way)."""
+    return "absent" if key not in data else _plan_value_said(data[key])
+
+
 def _plan_follow_ups(plan: Plan) -> list[str]:
     """The plan's follow-ups as `execute` writes them into the split commit's
     message: each item of a `follow_ups:` LIST that is text, and nothing for a
@@ -10236,7 +10345,14 @@ def _unsafe_path_findings(plan: Plan) -> tuple[list[str], list[str]]:
 # set kept as it was in the repository made. Twins in the code leg were
 # adopted so in 2 runs, and in 3 others, for #1189's review, `execute`
 # stopped after both legs were pushed, mounting them, at `git rm -r` ("the
-# following files have local modifications").
+# following files have local modifications"), until #1183. Measured again
+# for #1237's review with this finding taken out, 1 run each: twins kept in
+# one leg (`A` and `a` in the code leg, and in the spec leg; `D/x` and
+# `d/x`; `F/x` and `f`; `src/A` and `src/a`) were adopted; in the root,
+# `A` and `a` were adopted, `F/x` beside `f` was still `adopt-lost` after
+# both legs were pushed, and `D/x` beside `d/x` met `will not add file
+# alias` in `check` (`plan-file-reencoded`). So the finding names the
+# root's `adopt-lost`, and no `git rm`.
 #
 # So `check` names them, on every disk, as #520 names a branch in another
 # case: one plan is then not good on one machine and lost on another.
@@ -10249,8 +10365,10 @@ def _unsafe_path_findings(plan: Plan) -> tuple[list[str], list[str]]:
 # path git refuses is `plan-path-git-refuses`'s alone, and a path no entry
 # answers once is another finding's. Twins the plan sends to DIFFERENT
 # repositories, and a twin it drops beside one it keeps, are not asked
-# either, though `execute` on a disk that ignores case loses them too, as
-# `adopt-lost` after both legs are pushed (#1183).
+# either: no repository the split makes holds two of them, and `execute`
+# mounts the legs so that a disk that ignores case loses none of them
+# (`_split_case_twins`, #1183), where it lost them as `adopt-lost`, or
+# stopped at `git rm`, after both legs were pushed.
 #
 # A set of ONE NAME whose paths hold one blob in one mode loses nothing on
 # such a disk: the one path it checks out holds what each path holds. In a
@@ -10283,10 +10401,11 @@ CASE_TWINS = "plan-case-twins"
 #: as `plan-case-twins` names it, in the order it is asked.
 TWIN_REPOSITORIES = {"root": "the assembly root", "spec": "the spec leg",
                      "code": "the code leg"}
-#: What a plan holding such twins is told to do, once after every finding.
-#: It offers no answer that sends the twins of a set into different
-#: repositories, or drops one: on a disk that ignores case `execute` loses
-#: those too, after both legs are pushed (#1183).
+#: What a plan holding such twins is told to do, once after every finding:
+#: a rename in the source. It was written while an answer that sends the
+#: twins of a set into different repositories, or drops all of a set but
+#: one, was lost by `execute` on a disk that ignores case too, after both
+#: legs were pushed; `_mount_the_legs` keeps those since #1183.
 CASE_TWINS_REMEDIATION = (
     "Remediation: rename paths in the source until no two that one "
     "repository would hold differ only in case -- each twin of a set but "
@@ -10383,8 +10502,8 @@ def _case_twin_findings(plan: Plan, tree: list,
             "macOS or Windows disk does by default, holds each set as one "
             "name: a clone made there checks out only one path of each set, "
             "and `execute` could stop there before any leg exists, at git's "
-            "`will not add file alias`, or after both legs are pushed, as "
-            "`adopt-lost` or at `git rm` mounting the legs, so `execute` "
+            "`will not add file alias`, or, for a set in the assembly root, "
+            "after both legs are pushed, as `adopt-lost`, so `execute` "
             "refuses them on every disk.")
     return found, [CASE_TWINS_REMEDIATION] if found else [], notes
 
@@ -12981,16 +13100,17 @@ def _split_clone_asked(source: Source) -> None:
     hash, where each throwaway `git init`, which names its branch and the
     source's format, makes its repository. So `check` said `plan ok`, and
     `execute` stopped after both legs existed. Asked as that clone is made,
-    the answer is the split's on every version of git: with `FILE_PROTOCOL`,
-    as `execute` gives each of its clones, the template this machine's git
-    copies in, as `_extract_leg`'s clone takes it, and the `-c` settings a
-    parent git hands this process (`_split_clone_env`). Left out is only
-    what the other questions ask, or what would run or write here:
-    `--no-checkout`, as the rehearsal asks what a checkout makes of each
-    file and `_paths_git_refuses` which paths git holds at all; any hook of
-    this machine's (`core.hooksPath` an empty directory), as in every
-    throwaway; and each variable that names another repository, which
-    `_split_clone_env()` leaves out.
+    the answer is the split's on every version of git: with `FILE_PROTOCOL`
+    and `REMOTE_NAMED_ORIGIN`, as `execute` gives each of its clones (a
+    `clone.defaultRemoteName` git refuses, `a..b`, stops neither, #1261),
+    the template this machine's git copies in, as `_extract_leg`'s clone
+    takes it, and the `-c` settings a parent git hands this process
+    (`_split_clone_env`). Left out is only what the other questions ask,
+    or what would run or write here: `--no-checkout`, as the rehearsal
+    asks what a checkout makes of each file and `_paths_git_refuses` which
+    paths git holds at all; any hook of this machine's (`core.hooksPath`
+    an empty directory), as in every throwaway; and each variable that
+    names another repository, which `_split_clone_env()` leaves out.
 
     `--shared` copies no object of a source that is not shallow: the clone
     borrows the source's. git ignores it for a shallow source, and says
@@ -13009,7 +13129,8 @@ def _split_clone_asked(source: Source) -> None:
         with _asked_there(scratch.parent):
             empty.mkdir()
             cloned = subprocess.run(
-                ["git", *FILE_PROTOCOL, "-c", f"core.hooksPath={empty}",
+                ["git", *FILE_PROTOCOL, *REMOTE_NAMED_ORIGIN,
+                 "-c", f"core.hooksPath={empty}",
                  "clone", "-q", "--no-checkout", "--shared",
                  str(source.path), str(scratch / THROWAWAY_REPOSITORY)],
                 cwd=str(scratch), env=env, capture_output=True, check=False)
@@ -13758,13 +13879,17 @@ def _reencoded_attributes_findings(plan: Plan, source: Source,
 # and every `.gitattributes` are checked out with the source's rules, as the
 # split's clone writes them; the mount's side is asked as `git rm` asks it, a
 # content compare (`update-index --refresh`) in which a conversion git cannot
-# make is no change (a file sent to a leg that its encoding refuses adopted);
-# the split's side as `git add` stores it, a plain `git add -u` (never
-# `--renormalize`, which skips git's protection of a blob that already holds
-# CRLF, and so re-stored files `core.autocrlf=true` leaves alone), once the
-# moved `.gitattributes` are gone and the root's is written as the split
-# writes it; and then each pinned copy, its own bytes where `_pinned_landings`
-# lands it. What git refuses on the way is a finding in git's own words.
+# make is no change (a file sent to a leg that its encoding refuses adopted),
+# of what it removes alone: each `.gitattributes` it leaves is held for its
+# rules and marked unchanged, so a filter that fails for one, which `git rm`
+# never runs, no longer stops the compare there and leaves every file after
+# it listed as changed (#1192); the split's side as `git add` stores it, a
+# plain `git add -u` (never `--renormalize`, which skips git's protection of
+# a blob that already holds CRLF, and so re-stored files `core.autocrlf=true`
+# leaves alone), once the moved `.gitattributes` are gone and the root's is
+# written as the split writes it; and then each pinned copy, its own bytes
+# where `_pinned_landings` lands it. What git refuses on the way is a finding
+# in git's own words.
 #
 # ONE FINDING PER GROUP, each naming `NAMED_PATHS` paths in the tree's order
 # and counting the rest: what the root keeps, what goes to a leg or is
@@ -13811,24 +13936,45 @@ READ_AGAIN = ("each one git reads again (every file of a small source; of a "
 #: refusal's own fixtures and the check that refuses them patched out (#906).
 #: A clone of the source meets the rule that refuses a checkout the first
 #: time `execute` makes one: extracting a leg (`REFUSED extracting the spec
-#: leg`, where both legs are extracted, before either is pushed). The split's
-#: `git add -A` stops it at `REFUSED committing the split`, a step the push
-#: of the split branch follows, unless a step before it meets the same rule:
-#: the extraction, on a filter that fails; the seeding of a leg, which runs
-#: a `git add -A` of its own (`REFUSED seeding the code leg`); or the mount,
-#: where a rule over every file reaches the `.gitmodules` it writes
-#: (`REFUSED mounting the legs`, `failed to encode '.gitmodules'`).
+#: leg`, before either is pushed: each leg is extracted and then pushed in
+#: turn, the spec leg first). The split's `git add -A` stops it at `REFUSED
+#: committing the split`, a step the push of the split branch follows,
+#: unless a step before it meets the same rule: the extraction, on a filter
+#: that fails; the seeding of a leg, which runs a `git add -A` of its own
+#: (`REFUSED seeding the code leg`); or the mount, where a rule over every
+#: file reaches the `.gitmodules` it writes (`REFUSED mounting the legs`,
+#: `failed to encode '.gitmodules'`).
 STOPS_AT_A_CLONE = "at its first clone of the source"
 STOPS_AT_THE_SPLIT = (
     "no later than committing the split, and sooner where a step before it "
     "meets the same rule: extracting or seeding a leg, or mounting the legs, "
     "where the rule reaches the `.gitmodules` it writes")
+#: Where it stops for a filter that fails for a file the mount's `git rm`
+#: compares (#1192): at the first step that reads that file again, which
+#: the clock decides (`READ_AGAIN`). Each leg's extraction, and then the
+#: split's own clone once both legs are pushed, clones the whole source and
+#: runs `git checkout -q -B` in it, which can read the file; the mount's own
+#: `git rm`, which the compare asks as, comes after all three. Measured with
+#: git 2.43, under a failing required clean filter for a `notes.txt` sent to
+#: either leg or dropped, with the check patched out: in 47 of 48 runs,
+#: extracting the spec leg; in one, extracting the code leg, once the spec
+#: leg was pushed; and with the filter kept out of both extractions, in 24
+#: of 24, cloning the source for the split (#1253's review).
+STOPS_AT_A_READ = (
+    "at the first step that reads that file again: extracting the spec leg, "
+    "extracting the code leg once the spec leg is pushed, or, once both legs "
+    "are pushed, cloning the source for the split or mounting the legs")
 
 #: What git refused, where `execute` would stop, and the way out, for each
 #: step a refusal can stop.
 CHECKOUT_REFUSED = (
     "to check the source's commit out as the split's clone does",
     STOPS_AT_A_CLONE,
+    "Change the rule or the setting git names, and re-run `plan`.")
+COMPARE_REFUSED = (
+    "to compare what the plan sends to a leg or drops with its blob, as the "
+    "mount's `git rm` does",
+    STOPS_AT_A_READ,
     "Change the rule or the setting git names, and re-run `plan`.")
 STORE_REFUSED = (
     "to store again what the plan keeps in the assembly root, as the split's "
@@ -14229,17 +14375,29 @@ def _reencoded_files_findings(plan: Plan, source: Source, tree: list,
         said = asked.checkout(CHECKED_OUT)
         if said is not None:
             return [_refused_finding(CHECKOUT_REFUSED, said)]
-        # The mount's side: `git rm`'s own compare, which writes nothing.
+        # The mount's side: `git rm`'s own compare, which writes nothing, of
+        # what it removes alone. Each `.gitattributes` it leaves is marked
+        # unchanged: a filter that failed for one stopped the refresh there,
+        # exit 128, and `diff-files` then listed each file it had not
+        # reached as changed (#1192). Where git refuses the compare, that is
+        # the finding, in git's words, and no list is read.
         moved = {row[0] for row in wanted if row[0] not in kept}
         asked.hold(TAKEN, {*[row for row in wanted if row[0] in moved],
                            *rules})
-        asked.git(["update-index", "-q", "--refresh"], TAKEN)
-        taken = [path for path in asked.listed(
-            ["diff-files", "--name-only", "-z"], TAKEN) if path in moved]
+        asked.asked(["update-index", "-z", "--assume-unchanged", "--stdin"],
+                    TAKEN, b"".join(_nul(path) for path, _, _ in rules
+                                    if path not in moved))
+        compare_said = asked.refused(["update-index", "-q", "--refresh"],
+                                     TAKEN)
+        taken = [] if compare_said is not None else [
+            path for path in asked.listed(
+                ["diff-files", "--name-only", "-z"], TAKEN) if path in moved]
         # The split's side: its `git add`, over the root it writes.
         try:
             _as_the_split_writes(asked, rules, kept, own, written, landings)
         except OSError:
+            if compare_said is not None:
+                return [_refused_finding(COMPARE_REFUSED, compare_said)]
             return [_moved_finding(taken)] if taken else []
         held = {*[row for row in wanted if row[0] in kept],
                 *[row for row in rules
@@ -14254,7 +14412,8 @@ def _reencoded_files_findings(plan: Plan, source: Source, tree: list,
     return _grouped_findings(
         sorted(stored, key=order.get), sorted(taken, key=order.get),
         copies, at_the_root,
-        ((STORE_REFUSED, stored_said), (COPY_REFUSED, copies_said)))
+        ((STORE_REFUSED, stored_said), (COMPARE_REFUSED, compare_said),
+         (COPY_REFUSED, copies_said)))
 
 
 def _grouped_findings(stored: list[str], taken: list[str], copies: list[str],
@@ -14585,17 +14744,18 @@ def cmd_check(args) -> int:
     _print_triad_advisory(source.path,
                           plan.source_commit or source.commit)
 
-    if plan.source_commit and source.commit != plan.source_commit:
-        # `commit:` is a plan value people and AIs edit: sliced first, so the
-        # spelling stays bounded, and `_shown`, so a real hash reads as it did
-        # and a line break or an ESC in it (#328) cannot leave the line.
-        findings.append(
-            f"FINDING plan-stale: the plan was written against "
-            f"{_shown(plan.source_commit[:12])} but "
-            f"{_spelled(source.branch)} is now at {source.commit[:12]}. "
-            "Re-run `plan`: a coverage check "
-            "against a tree that has moved proves nothing about the tree that "
-            "will be split.")
+    # THE PLAN AGAINST ITS SOURCE, FIRST OF WHAT IT LISTS (#1113): each
+    # problem of `_against_its_source`, the one list `execute` refuses the
+    # first of, in its order and in this command's words, before the split
+    # branch and the entries: another repository, a refused name and a moved
+    # source. An unanswered entry is listed with the entries, after them.
+    names = plan.names()
+    pins = set(plan.pins)
+    unmended = list(_against_its_source(plan, source, names, naming, pins))
+    for problem in unmended:
+        findings.extend(problem.found)
+    named = not {UNCLASSIFIED, ROLE_MISMATCH}.intersection(
+        problem.refusal.code for problem in unmended)
 
     # Before the entries (#320): the history scan their findings make reads
     # a split branch the source keeps, and the branch is named first.
@@ -14610,41 +14770,15 @@ def cmd_check(args) -> int:
     entry_findings, remediation, notes = _entry_findings(plan, source,
                                                          local_remote_dir)
     findings.extend(entry_findings)
-    remediation = taken_remediation + remediation
+    # What is printed once after the findings, in their order.
+    remediation = [fix for problem in unmended for fix in problem.fixes] + (
+        taken_remediation + remediation)
 
-    names = plan.names()
-    pins = set(plan.pins)
-    # The plan names the source, or `execute` acts on another repository
-    # (#499): said before the names' own findings, as `execute` refuses it.
-    another = _not_the_source(plan, source, names)
-    if another:
-        findings.append(f"FINDING {PLAN_NOT_THE_SOURCE}: {another}")
-        remediation.append(_own_name_remediation(
-            _held_repository(plan, source), naming, pins, ""))
-    # THE SOURCE IS HANDED TO `_check_names` WHERE `execute` HANDS IT (#716):
-    # when the plan does not name another repository, so that a refusal of
-    # the assembly root's own name says to rename it first, as `execute`
-    # says it on the same plan. Where the plan does name another,
-    # `execute` stops at `plan-not-the-source` and never asks the names, and
-    # a refusal of the plan's name is then about a name that is not the
-    # source's: `_own_name_remediation` has said what to do.
-    in_place = source.repository if not another else None
-    try:
-        _check_names(naming, names, pins, None if another else source)
+    if named:
         for role, name in names.items():
             found = naming.classify(name, role, pins)
             print(f"  {role:<9} {name:<28} {found.family}"
                   + (f"/{found.role}" if found.role else ""))
-    except Refusal as exc:
-        findings.append(f"FINDING {exc.code}: {exc.detail}")
-        # Only the rename-first remedy is printed, once after the findings:
-        # it is the one `check` was missing. `--project takes ...` is not,
-        # and `check` never printed it (#716). It says the rule its new name
-        # follows first, as `_check_names` says it (#902).
-        if in_place is not None and exc.remediation == _name_remedy(
-                exc.code, in_place):
-            remediation.append(exc.remediation)
-    else:
         # WHAT THE DISK OR GITHUB WILL NOT HOLD (#863): the names, the
         # organisation and the topic, `execute`'s one list, which it refuses
         # the first of before either leg exists, each a finding here under
@@ -14757,16 +14891,14 @@ def _refuse_an_unrunnable_plan(plan: Plan, source: Source) -> None:
     An unanswered question is never an implicit `root`, and a plan written
     against a tree that has since moved proves nothing about the tree that
     would be split — which is how a path goes missing.
+
+    THE MOVED SOURCE FIRST (#1113), as `_against_its_source` asks the two,
+    the last of its four problems: a moved source is mended by running
+    `plan` again, and the fresh plan takes back every answer given before,
+    so an answer given first to an entry of the stale one is lost. `check`
+    listed the moved source first, and `execute` refused the unanswered
+    entry first, so the two named different problems first.
     """
-    unresolved = [e for e in plan.entries if e.get("leg") is None]
-    if unresolved:
-        raise Refusal(
-            "plan-unresolved",
-            f"{len(unresolved)} path(s) still have `leg: null`: "
-            + _listed([str(e.get("path")) for e in unresolved[:8]]),
-            "Remediation: answer each entry's `question:` by setting `leg:` "
-            "and adding a `resolution:` line, then run `check`. An unanswered "
-            "question is never an implicit `root`.")
     if plan.source_commit and source.commit != plan.source_commit:
         # `commit:` is `_shown` as `check` shows it (#328).
         raise Refusal(
@@ -14777,6 +14909,125 @@ def _refuse_an_unrunnable_plan(plan: Plan, source: Source) -> None:
             "Remediation: re-run `plan`, re-answer anything new, then "
             "`check`. Splitting a tree the plan has not seen is how a path "
             "goes missing.")
+    unresolved = [e for e in plan.entries if e.get("leg") is None]
+    if unresolved:
+        raise Refusal(
+            "plan-unresolved",
+            f"{len(unresolved)} path(s) still have `leg: null`: "
+            + _listed([str(e.get("path")) for e in unresolved[:8]]),
+            "Remediation: answer each entry's `question:` by setting `leg:` "
+            "and adding a `resolution:` line, then run `check`. An unanswered "
+            "question is never an implicit `root`.")
+
+
+class _Unmended(NamedTuple):
+    """One problem of a plan against its source, as `_against_its_source`
+    yields it, in each command's own words: the `Refusal` `execute` refuses
+    it with, and the FINDING lines `check` lists it as and what `check`
+    prints once after its findings."""
+    refusal: Refusal
+    found: tuple = ()
+    fixes: tuple = ()
+
+
+def _against_its_source(plan: Plan, source: Source, names: dict,
+                        naming: NamingPolicy, pins: set[str]):
+    """Each problem of the plan against its source (`_Unmended`), in the
+    order a person mends them (#1113): a plan for another repository
+    (`plan-not-the-source`), a name the naming policy refuses
+    (`_check_names`), and then `_refuse_an_unrunnable_plan`'s two, a source
+    that has moved on since `plan` (`plan-stale`) and an unanswered entry
+    (`plan-unresolved`), of which it refuses the first.
+
+    ONE ORDER, TWO READERS (#1113). `execute` refuses the first problem,
+    once the work directory and the source are opened; `check` lists
+    each, in this order, before the split branch and the plan's entries.
+    Each command had an order of its own: `check` listed a moved source
+    first, then the entries, each unanswered one among them, then another
+    repository and then the names; `execute` refused another repository,
+    then a refused name, then an unanswered entry and then a moved source.
+    So for five of the six pairs of the four, `check`'s first finding was
+    not `execute`'s refusal: a moved source beside an unanswered entry,
+    another repository beside either, and a refused name beside either.
+    Read from here by both, it is. A plan with one of the four is named as
+    before by each command, in the same words.
+
+    IN THE ORDER A PERSON MENDS THEM. Each of the first three is mended by
+    running `plan` again, as its remediation says, and a fresh plan takes
+    back every answer given before, so the unanswered entry, mended by an
+    answer in the plan, is named last: an answer given first is lost. Of
+    the three:
+    - another repository first. Nothing in such a plan is this source's
+      own: it is mended by `plan` under the source's own name, or from the
+      source it is about (`_own_name_remediation`), and its commit and its
+      entries are of what it was written from. And `execute` asks the naming
+      policy nothing about the plan's names, and no remote anything, before
+      it refuses it (`_refuse_a_plan_for_another_repository`, #499): this
+      is a generator, so `execute` asks nothing after the first problem.
+    - then a refused name, as `execute` asked it: it is mended by `plan`
+      given another `--project`, or after the source is renamed on GitHub
+      (`_rename_first`), and that run reads the source as it is now, so it
+      mends a moved source too, where `plan` run again as it was for the
+      moved source would leave the name to mend.
+    - then a moved source, mended by `plan` run again as it was.
+
+    `check` SAYS EACH IN ITS OWN WORDS, as it did: another repository with
+    no plan path, and with `_own_name_remediation` saying nothing of legs,
+    which `check` never makes; a refused name with the rename-first remedy
+    only where the source is adopted in place under that name (#716); a
+    moved source as `check` said it; and an unanswered entry not here but
+    with the entries, each by its path (`_leg_findings`), after these.
+    The plan's `org:` and `id:` are asked before all four, by both
+    (`_checked_org_and_id`, #1020).
+    """
+    # The plan names the source, or `execute` acts on another repository
+    # (#499): said before the names' own findings, as `execute` refuses it.
+    another = None
+    try:
+        _refuse_a_plan_for_another_repository(plan, source, names, naming,
+                                              pins)
+    except Refusal as exc:
+        another = _not_the_source(plan, source, names)
+        yield _Unmended(exc, (f"FINDING {PLAN_NOT_THE_SOURCE}: {another}",),
+                        (_own_name_remediation(_held_repository(plan, source),
+                                               naming, pins, ""),))
+    # THE SOURCE IS HANDED TO `_check_names` WHERE `execute` HANDS IT (#716):
+    # when the plan does not name another repository, so that a refusal of
+    # the assembly root's own name says to rename it first, as `execute`
+    # says it on the same plan. Where the plan does name another,
+    # `execute` stops at `plan-not-the-source` and never asks the names, and
+    # a refusal of the plan's name is then about a name that is not the
+    # source's: `_own_name_remediation` has said what to do.
+    in_place = source.repository if not another else None
+    try:
+        _check_names(naming, names, pins, None if another else source)
+    except Refusal as exc:
+        # Only the rename-first remedy is printed by `check`, once after the
+        # findings: it is the one `check` was missing. `--project takes ...`
+        # is not, and `check` never printed it (#716). It says the rule its
+        # new name follows first, as `_check_names` says it (#902).
+        yield _Unmended(
+            exc, (f"FINDING {exc.code}: {exc.detail}",),
+            (exc.remediation,) if in_place is not None
+            and exc.remediation == _name_remedy(exc.code, in_place) else ())
+    try:
+        _refuse_an_unrunnable_plan(plan, source)
+    except Refusal as exc:
+        if exc.code != "plan-stale":
+            # Listed by `check` with the entries, each by its path.
+            yield _Unmended(exc)
+        else:
+            # `commit:` is a plan value people and AIs edit: sliced first,
+            # so the spelling stays bounded, and `_shown`, so a real hash
+            # reads as it did and a line break or an ESC in it (#328) cannot
+            # leave the line.
+            yield _Unmended(exc, (
+                f"FINDING plan-stale: the plan was written against "
+                f"{_shown(plan.source_commit[:12])} but "
+                f"{_spelled(source.branch)} is now at "
+                f"{source.commit[:12]}. Re-run `plan`: a coverage check "
+                "against a tree that has moved proves nothing about the tree "
+                "that will be split.",))
 
 
 #: The adoption's own ruleset hint (#177). `RULESET_HINT` is the scaffold's,
@@ -14990,6 +15241,34 @@ def _nothing_rolled_back(urls: dict, pushed: list, work_root: Path,
     return notice
 
 
+def _unacted(text: str, kept: str = "") -> str:
+    """`text` with each character a terminal would act on -- one
+    `str.isprintable` refuses, other than those in `kept` -- spelled as
+    `_spelled_character` spells it, and every other as it is, with no
+    backticks around it: what `_first_said` does to the line gh said."""
+    return "".join(char if char.isprintable() or char in kept
+                   else _spelled_character(char) for char in text)
+
+
+def _loudly(exc: CommandFailed, step: str) -> str:
+    """`exc.loudly(step)`, the REFUSED block `CommandFailed` prints, with
+    each argument of the command, the directory it ran in and what it
+    printed `_unacted`, as `_first_said` spells what gh said (#1195). What
+    it printed keeps its line breaks, so it still reads a line to a line.
+
+    `CommandFailed` is `scripts/shape_materialize.py`'s, shared by every
+    tool, and names all three as they are. A command names what was typed:
+    under `--local-remote-dir <D>/re<U+202E>mote`, a leg push a hook refused
+    printed the override raw three times, in the command and in git's own
+    `To` and `error:` lines, below the `bare` lines and above the notice,
+    which spell it (#1152). A character that is printable prints as it is,
+    so a command of plain paths prints the block it printed before."""
+    return CommandFailed(
+        [_unacted(str(argument)) for argument in exc.args_list],
+        _unacted(str(exc.cwd)) if exc.cwd else exc.cwd, exc.code,
+        _unacted(exc.output, kept="\n")).loudly(step)
+
+
 def _failed_loudly(step: str, exc: BaseException) -> str:
     """What failed during `step`, as the REFUSED block `CommandFailed` prints.
 
@@ -15003,7 +15282,7 @@ def _failed_loudly(step: str, exc: BaseException) -> str:
     follows.
     """
     if isinstance(exc, CommandFailed):
-        return exc.loudly(step)
+        return _loudly(exc, step)
     if isinstance(exc, Refusal):
         said = f"REFUSED {step}. {exc.code}: {exc.detail}"
         return said if exc.remediation in ("", REMEDIATION) \
@@ -15741,7 +16020,8 @@ def _extract_leg(role: str, source: Source, work: Path, paths: list[str],
     PLAN's commit rather than to whatever the default branch is now, so the
     extraction and the coverage check are about the same tree.
     """
-    run(["git", *FILE_PROTOCOL, "clone", "-q", str(source.path), str(work)])
+    run(["git", *FILE_PROTOCOL, *REMOTE_NAMED_ORIGIN, "clone", "-q",
+         str(source.path), str(work)])
     run(["git", "checkout", "-q", "-B", branch, source.commit], cwd=work)
     # THE CLONE'S `origin` URL GOES FIRST (#1247). It is the source's path,
     # byte for byte, and `git filter-repo` prints it as it removes `origin`
@@ -15769,10 +16049,14 @@ def _extract_leg(role: str, source: Source, work: Path, paths: list[str],
     # with both legs made. `--local` is no way round that: with `GIT_CONFIG`
     # set, git 2.43 exits 129. `.git` is a directory, made by the `git clone`
     # above, and `work` is an absolute path (`_work_root`).
-    # A CLONE WITH NO `origin` URL IS NOT A FAILURE (git exits 5): a global
-    # `clone.defaultRemoteName` gives the clone another remote, and `execute`
-    # then fails where main fails, at `mounting the legs`, not here with no
-    # words and before any leg is pushed. That setting is its own defect.
+    # EXIT 5 (git: no such key) IS TOLERATED, AND NO KNOWN CAUSE REMAINS. Its
+    # one cause was a clone that a global `clone.defaultRemoteName` gave
+    # another remote than `origin` (#1261): it has no `remote.origin.url` to
+    # unset. The clone above carries `REMOTE_NAMED_ORIGIN`, which outranks
+    # that setting in the global file, a template's `config`,
+    # `GIT_CONFIG_COUNT` and `GIT_CONFIG_PARAMETERS` (git 2.43), so this clone
+    # always has an `origin` URL and the unset exits 0. The tolerance stays as
+    # a guard, and is harmless: a clone with no url is what the unset makes.
     # Every other exit is refused.
     try:
         run(["git", GIT_CONFIG, "--file", str(work / ".git" / "config"),
@@ -15866,7 +16150,7 @@ def _push_the_leg(step: str, work: Path, url: str, tracking: str,
         run(["git", "push", "-q", url, f"HEAD:refs/heads/{tracking}"], cwd=work)
     except CommandFailed as exc:
         _flush_stdout()
-        print(exc.loudly(step), file=sys.stderr)
+        print(_loudly(exc, step), file=sys.stderr)
         print(ADOPT_RULESET_HINT.format(repo=repository, tracking=tracking),
               file=sys.stderr)
         exc.reported = True
@@ -16019,22 +16303,229 @@ def _refuse_an_unmountable_path(assembly: Path, path: str) -> None:
 #: still a pathspec, where `*` and `?` are wildcards and a leading `:` is
 #: magic -- `git rm -- ':!keep.md'` removes every other path in the tree.
 GIT_RM = ("git", "--literal-pathspecs", "rm", "-r", "-q", "--")
+#: `GIT_RM` with `-f`, for a path at or above a case twin (#1183): see
+#: `_split_case_twins`. `-f` skips git's question whether the file on the
+#: disk still holds what the index holds, and that question was also what
+#: kept git from removing a file through a symlink: given a path beyond a
+#: symlink the disk holds on the way to it, `git rm -f` unlinks the file
+#: the symlink leads to, wherever that is (r1237). The path itself counts
+#: too where the index holds a gitlink there: git removes the folder at a
+#: gitlink's path with all it holds, and follows a symlink there, so `git
+#: rm -f` of a gitlink whose path is a symlink empties the folder it leads
+#: to (r1237b). So it is never given either: `_taken_beyond_a_symlink`
+#: takes each such path first.
+GIT_RM_FORCED = ("git", "--literal-pathspecs", "rm", "-r", "-q", "-f", "--")
+#: `GIT_RM` with `--cached`, for a path the index holds beyond a symlink
+#: the disk holds on the way to it, or a gitlink whose path the disk holds
+#: as no folder: git takes it out of the index and touches nothing on the
+#: disk (r1237, r1237b). See `_taken_beyond_a_symlink`.
+GIT_RM_CACHED = ("git", "--literal-pathspecs", "rm", "-r", "-q", "--cached",
+                 "--")
 
 
-def _git_rm(assembly: Path, path: str) -> None:
+def _git_rm(assembly: Path, path: str, forced: bool = False,
+            cached: bool = False) -> None:
     """`git rm` of `path`, an entry's path as the plan holds it, in the
     assembly: what `run` does, with `path` handed to git as the bytes the
-    tree holds (`_path_argument`, #527).
+    tree holds (`_path_argument`, #527). `forced` is `GIT_RM_FORCED`, for a
+    path a case twin is at or under (#1183), and `cached` `GIT_RM_CACHED`,
+    for one the index holds beyond a symlink (r1237), or a gitlink whose
+    path the disk holds as no folder (r1237b).
 
     `run` takes only text (`check_program`), so this asks `check_program` of
     the command as the person reads it, and a git that refuses raises
     `CommandFailed` with that command, as `run` raises it: what `execute`
     reports after both legs exist is unchanged.
     """
-    command = [*GIT_RM, path]
+    removal = GIT_RM_CACHED if cached else GIT_RM_FORCED if forced \
+        else GIT_RM
+    command = [*removal, path]
     check_program(command)
-    proc = subprocess.run([*GIT_RM, _path_argument(path)], cwd=str(assembly),
-                          capture_output=True, check=False)
+    proc = subprocess.run([*removal, _path_argument(path)],
+                          cwd=str(assembly), capture_output=True, check=False)
+    if proc.returncode != 0:
+        raise CommandFailed(command, assembly, proc.returncode,
+                            (proc.stderr + proc.stdout).decode("utf-8",
+                                                               "replace"))
+
+
+#: `git checkout-index`, writing each path it reads from its input, each
+#: ended by a NUL, from the index over whatever the disk holds there.
+CHECKOUT_INDEX = ("git", "checkout-index", "-f", "-z", "--stdin")
+
+
+def _at_or_under(path: str, top: str) -> bool:
+    """Whether `path` is `top` or a path under it, both as git spells them:
+    case counts, as it does in the index."""
+    return path == top or path.startswith(top + "/")
+
+
+def _index_modes(assembly: Path) -> dict[str, str]:
+    """Each path the assembly's index holds, in its order, as `_git_path`
+    spells it, and its mode (`GITLINK_MODE` for a gitlink): `git ls-files
+    -s -z`, which writes nothing, read as `_index_entries` reads it."""
+    raw = git_out(["ls-files", "-s", "-z"], cwd=assembly, binary=True)
+    modes = {}
+    for record in raw.split(b"\x00"):
+        head, _, name = record.partition(b"\t")
+        if name:
+            modes[_git_path(name)] = head.split()[0].decode("ascii")
+    return modes
+
+
+def _split_case_twins(held: list[str],
+                      removed: list[str]) -> list[list[str]]:
+    """Each set of case twins of `held`, the paths the assembly's index
+    holds (`_index_modes`, `_case_twin_sets`), that has a path at or under
+    one of `removed`, the paths `_mount_the_legs` takes out of the root: a
+    set the plan sends into different repositories, or drops a path of
+    (#1183); and a set it keeps whole in one leg, which reaches the mount
+    only as one of one blob in one mode, the NOTE `check` prints for it
+    (`_one_blob_twins`), every other being `plan-case-twins`. The paths of
+    such a set are removed from the root with `-f` too, and none is written
+    back, since the root keeps none of them (#1237's review, NIT 1).
+
+    A DISK THAT IGNORES CASE HOLDS EACH SUCH SET AS ONE FILE. Measured for
+    #1183 with git 2.43, on a FUSE disk that ignores case and keeps it: the
+    split's clone checks out one file per set, holding the bytes of the twin
+    git wrote last, in the index's order (`a` after `A`, `d/x` after `D/x`),
+    git saying `the following paths have collided`. The mount's `git rm` of
+    a twin then meets that file:
+    - where the twin that goes sorts last (`A` kept in the root, `a` sent to
+      the code leg or dropped, and `F/x` kept beside `f`), `git rm` deletes
+      the one file both names share, `git add -A` stages the kept twin's
+      deletion, and `execute` stopped after both legs and the split were
+      pushed, as `adopt-lost`;
+    - where it sorts first (`A` sent to a leg or dropped, `a` kept), `git
+      rm` refused, `the following file has local modifications: A`, and
+      `execute` stopped mounting the legs after both were pushed: also with
+      BOTH twins dropped, or one sent to each leg.
+    So each path such a set has at or under it is removed with `-f`, and
+    the paths of these sets that the root keeps are written back from the
+    index after the last `git rm`.
+
+    The list is asked of the index, which holds the source commit's tree,
+    once, and on every disk: on a disk that keeps case, the same commands
+    rewrite the bytes each kept twin already holds. A source with no such
+    set, as nearly every one is, gets the `git rm` of each path it always
+    got and nothing written back: that listing, which writes nothing, is
+    the one command added."""
+    return [named for named in _case_twin_sets(held)
+            if any(_at_or_under(twin, top)
+                   for twin in named for top in removed)]
+
+
+def _on_the_disk(assembly: Path, path: str) -> str | bytes:
+    """`path`, as git spells it, in the assembly, as `os.lstat` is handed
+    it: the bytes the tree holds (`_path_argument`), so that no locale is
+    in the way (#527), or the text on Windows."""
+    here = _path_argument(path)
+    return (os.path.join(os.fsencode(assembly), here)
+            if isinstance(here, bytes) else os.path.join(assembly, here))
+
+
+def _beyond_a_symlink(assembly: Path, path: str) -> str | None:
+    """The first folder on the way to `path`, a path the assembly's index
+    holds, from the top, that the disk holds as a symlink, as git spells
+    it; None where there is none (r1237). Each folder is asked with
+    `lstat` (`_is_a_symlink`, `_on_the_disk`), and none beyond the first
+    symlink, which would be asked in the folder it leads to. `path` itself
+    is not asked here: `git rm` of a file's or a symlink's entry unlinks
+    what is at the path, never what a symlink there leads to. A gitlink's
+    entry is another matter, and `_taken_beyond_a_symlink` asks a
+    gitlink's own path (r1237b)."""
+    parts = path.split("/")
+    for end in range(1, len(parts)):
+        above = "/".join(parts[:end])
+        if _is_a_symlink(_on_the_disk(assembly, above)):
+            return above
+    return None
+
+
+def _taken_beyond_a_symlink(assembly: Path, top: str,
+                            held: dict[str, str]) -> bool:
+    """`git rm --cached` (`GIT_RM_CACHED`) of each path of `held`, the
+    paths the assembly's index holds and their modes (`_index_modes`), at
+    or under `top` that the disk holds beyond a symlink
+    (`_beyond_a_symlink`), asked before `top` is removed with `-f`: of the
+    symlink's own path where that is at or under `top`, which takes each
+    path beyond it at once, else of the path; and of each gitlink there
+    whose own path the disk holds as no folder (`_is_itself_a`): a
+    symlink, a file, or nothing. Whether that took every path `held` at or
+    under `top`, leaving none for `-f`.
+
+    WHERE A FOLDER ON THE WAY IS A SYMLINK (#1237's review, r1237). A disk
+    that ignores case holds a folder `D/` and a symlink `d` as one name,
+    and the split's clone writes `d` last, so `D` is that symlink. Measured
+    with git 2.43 on a FUSE disk that ignores case, for a plan that sends
+    `D/` to the code leg, or drops it, and keeps `d` in the root, `check`
+    printing `plan ok`: `git rm -f -- D` unlinked `D/x` through the
+    symlink, the file `x` in the folder it leads to, outside the work
+    directory for `d` leading to an absolute path or to `../../victim`,
+    and `execute` printed `adoption verified`; for `d` leading to `E`, a
+    folder the root keeps, `E/x` was gone, and `execute` stopped as
+    `adopt-lost` after both legs and the split were pushed. Without `-f`,
+    git refused `D/x` as a local modification. So such a path is taken out
+    of the index alone, and no file on the disk is touched: git counts a
+    path beyond a symlink as gone from the work tree, `git add -A` does not
+    follow a symlink into a folder, and the symlink is the twin the root
+    keeps, written back from the index. The root's tree is the plan's, as
+    is each leg's, which `git filter-repo` made from the objects.
+
+    WHERE THE INDEX HOLDS A GITLINK (#1237's second review, r1237b). `git
+    rm` of a gitlink's entry is no unlink: git removes the folder at its
+    path with everything in it, and opens that path as a folder, following
+    a symlink there. Measured with git 2.43, for a gitlink `D` the disk
+    holds as a symlink to a folder outside, `git rm -f -- D` emptied that
+    folder and then said `fatal: could not remove 'D'`; on a FUSE disk that
+    ignores case, for a plan that drops the gitlink `D` and `.gitmodules`
+    and keeps `d`, a symlink, in the root (or drops the folder `M/` that
+    holds both), `check` printed `plan ok` and `execute` emptied the folder
+    `d` leads to after both legs were pushed. For a gitlink the disk holds
+    as a file, or below one (`M` a file, `M/D` the gitlink), `git rm -f`
+    stopped at the same `could not remove`, and deleted nothing. So the
+    gitlink's own path is asked too, once no folder on the way is a
+    symlink, and where it is no folder it is taken out of the index alone:
+    `git rm --cached` touched nothing there in each case. A folder there,
+    the empty one a clone writes for a gitlink, is removed with `-f` as
+    before.
+
+    REFUSING THERE WAS REJECTED: it would come after both legs are pushed,
+    for a plan that is good on every disk, and a re-run then meets
+    `leg-remote-exists`."""
+    under = [path for path in held if _at_or_under(path, top)]
+    taken: list[str] = []
+    for path in under:
+        if any(_at_or_under(path, gone) for gone in taken):
+            continue
+        link = _beyond_a_symlink(assembly, path)
+        if link is not None:
+            gone = link if _at_or_under(link, top) else path
+        elif held[path] == GITLINK_MODE and not _is_itself_a(
+                _on_the_disk(assembly, path), stat.S_ISDIR):
+            gone = path
+        else:
+            continue
+        _git_rm(assembly, gone, cached=True)
+        taken.append(gone)
+    return bool(taken) and all(any(_at_or_under(path, gone)
+                                   for gone in taken) for path in under)
+
+
+def _write_from_the_index(assembly: Path, paths: list[str]) -> None:
+    """`git checkout-index` of `paths`, which the assembly's index holds,
+    over whatever the disk holds at each (#1183): handed to git on its
+    input as the bytes the tree holds, each `_git_path` undone, so that no
+    locale and no length of a command line is in the way.
+
+    `CommandFailed` where git refuses, naming the command as `_git_rm`
+    names its own; what git said names the path."""
+    command = list(CHECKOUT_INDEX)
+    check_program(command)
+    proc = subprocess.run(
+        command, cwd=str(assembly), capture_output=True, check=False,
+        input=b"".join(path.encode("utf-8", "surrogateescape") + b"\x00"
+                       for path in paths))
     if proc.returncode != 0:
         raise CommandFailed(command, assembly, proc.returncode,
                             (proc.stderr + proc.stdout).decode("utf-8",
@@ -16051,13 +16542,31 @@ def _mount_the_legs(assembly: Path, work_root: Path, names: dict, urls: dict,
 
     Each path is the source tree's, so `_git_rm` hands it to git as the bytes
     the tree holds (#527). The mount paths are `checked_value`s, ASCII.
+
+    CASE TWINS THE PLAN SPLITS (#1183): a path with a twin at or under it
+    is removed with `-f`, and each twin the root keeps is written back from
+    the index after the last `git rm` (`_split_case_twins`), so that a disk
+    that ignores case loses none of them. Before that `-f`, each path the
+    index holds at or under it beyond a symlink the disk holds on the way,
+    and each gitlink there whose own path the disk holds as no folder, is
+    taken out of the index alone (`_taken_beyond_a_symlink`, r1237,
+    r1237b), so that `-f` removes nothing through a symlink.
     """
     removed = sorted((p.rstrip("/") for p in (paths_for["spec"]
                                               + paths_for["code"]
                                               + paths_for["drop"])),
                      key=lambda p: (p != GITMODULES, p))
+    held = _index_modes(assembly)
+    split = [twin for named in _split_case_twins(list(held), removed)
+             for twin in named]
     for path in removed:
-        _git_rm(assembly, path)
+        forced = any(_at_or_under(twin, path) for twin in split)
+        if not (forced and _taken_beyond_a_symlink(assembly, path, held)):
+            _git_rm(assembly, path, forced)
+    kept = [twin for twin in split
+            if not any(_at_or_under(twin, path) for path in removed)]
+    if kept:
+        _write_from_the_index(assembly, kept)
     # The plan moved (or dropped) the source's own .gitmodules, so its deletion
     # is staged, and `git submodule add` refuses to write into a file the index
     # says is going away. Give the assembly a fresh, EMPTY, staged one for its
@@ -16099,8 +16608,9 @@ def _mount_the_legs(assembly: Path, work_root: Path, names: dict, urls: dict,
         # a name already in use can only meet a `.gitmodules` the plan KEPT
         # here, which verification never passes (#165).
         _refuse_an_unmountable_path(assembly, path)
-        run(["git", *FILE_PROTOCOL, "submodule", "add", "--force", "-q",
-             str(work_root / names[role]), path], cwd=assembly)
+        run(["git", *FILE_PROTOCOL, *REMOTE_NAMED_ORIGIN, "submodule",
+             "add", "--force", "-q", str(work_root / names[role]), path],
+            cwd=assembly)
         run(["git", GIT_CONFIG, "-f", GITMODULES, f"submodule.{path}.url",
              urls[role]], cwd=assembly)
         run(["git", "remote", "set-url", "origin", urls[role]],
@@ -17180,8 +17690,8 @@ def _commit_the_split(plan: Plan, source: Source, assembly: Path,
         # HOOKS a template installs no longer run on the split's commit and
         # push, as they did before #243; hooks set with `core.hooksPath` still
         # do, and the legs keep their template's hooks.
-        run(["git", *FILE_PROTOCOL, "clone", "-q", "--template=",
-             str(source.path), str(assembly)])
+        run(["git", *FILE_PROTOCOL, *REMOTE_NAMED_ORIGIN, "clone", "-q",
+             "--template=", str(source.path), str(assembly)])
         run(["git", "checkout", "-q", "-B", branch, source.commit],
             cwd=assembly)
         step = "mounting the legs"
@@ -17271,9 +17781,15 @@ def cmd_execute(args) -> int:
     _require_filter_repo()
 
     pins = set(plan.pins)
-    _refuse_a_plan_for_another_repository(plan, source, names, naming, pins)
-    _check_names(naming, names, pins, source)
-    _refuse_an_unrunnable_plan(plan, source)
+    # THE PLAN AGAINST ITS SOURCE (#1113): the first problem of
+    # `_against_its_source`, which `check` lists first, in the order a person
+    # mends them: another repository, refused before the naming policy is
+    # asked about the plan's names or any remote anything (#499), then a
+    # refused name, a moved source and an unanswered entry.
+    unmended = next(_against_its_source(plan, source, names, naming, pins),
+                    None)
+    if unmended is not None:
+        raise unmended.refusal
 
     # THE PLAN IS UNTRUSTED INPUT. It is a file a human or an AI edited, and
     # every value below becomes an argument to `git` or `gh`, so each one is
@@ -17981,6 +18497,17 @@ def _next_steps(names: dict, collisions: list,
     pasting the line did in #582's review. Without `split`, the block is
     what it was, byte for byte.
 
+    A PATH A TERMINAL DOES NOT SHOW AS ITSELF GETS A NOTE (#1195). The url
+    is the source's own path, and `_refuse_an_unwritable_clone_url` lets
+    one through that holds a `Cf` character other than the nine bidi
+    controls, or a space other than ASCII's, as #255 rules: U+200B, the
+    joiner a Persian name needs, the marks U+200E and U+200F. `shlex.quote`
+    neutralises no character, so `'<D>/so<U+200B>urce/Thing'` read as
+    `<D>/source/Thing`. The command stays as it is, since `sh` reads a
+    quoted path and not a spelled one (`_branch_deletion`'s rule), and a
+    NOTE before the block names the path as the `split` line does,
+    `_spelled`. A url whose every character is printable gets none.
+
     `collisions` is each `(intended, actual)` the materializer wrote beside a
     file the source kept: where the shape's files WENT, and not a second
     look at the tree. `make bootstrap` is a target of the SHAPE's Makefile. A
@@ -18052,6 +18579,11 @@ def _next_steps(names: dict, collisions: list,
         clone = " ".join(["git", *FILE_PROTOCOL, "clone",
                           "--recurse-submodules", "-b", shlex.quote(branch),
                           shlex.quote(url)])
+        if not url.isprintable():
+            print("\nNOTE the path in the clone command below holds a "
+                  "character a terminal does not show as itself, so it can "
+                  f"read as another path: it is {_spelled(url)}, as the "
+                  "`split` line names it.")
     print(f"\nNEXT: review {review}, then\n    {clone}{bootstrap}")
     merged = (" once the follow-up merges the two, and" if makefile
               and stops and not script else "")
@@ -19808,7 +20340,8 @@ def main(argv: list[str] | None = None) -> int:
     except CommandFailed as exc:
         _flush_stdout()
         if not _reported(exc):
-            print(exc.loudly("a git or gh command failed"), file=sys.stderr)
+            print(_loudly(exc, "a git or gh command failed"),
+                  file=sys.stderr)
         return 2
     except (OSError, UnicodeError) as exc:
         # A step that reported one has printed it as REFUSED, with what it

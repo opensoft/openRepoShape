@@ -31,7 +31,8 @@ import pytest
 from conftest import ADOPT, REPO, make_source_repo, run_script, write_plan
 
 sys.path.insert(0, str(REPO / "scripts"))
-from repo_shape import double_quoted, parse_yaml  # noqa: E402
+from repo_shape import (DEFAULT_IGNORABLE, code_point_escaped,  # noqa: E402
+                        double_quoted, parse_yaml)
 
 PROJECT = "Northwind"
 UTF8 = "utf-8"
@@ -110,6 +111,11 @@ def test_a_character_is_spelled_as_the_plan_writes_it(adopter):
     for code in [*range(0x10000), 0x10000, 0x1F600, 0xE0001, 0x10FFFF]:
         char = chr(code)
         if char == "`":
+            continue
+        if DEFAULT_IGNORABLE.match(char):
+            # Escaped where the plan may hold one as it is (#1128).
+            assert adopter._spelled_character(char) == (
+                code_point_escaped(char)), f"U+{code:04X}"
             continue
         assert adopter._spelled_character(char) == double_quoted(char)[1:-1], (
             f"U+{code:04X}")
@@ -198,6 +204,12 @@ def test_python_repr_and_a_spelled_name_agree_on_every_character(adopter):
     for code in [*range(0x10000), 0x10000, 0x1F600, 0xE0001, 0x10FFFF]:
         char = chr(code)
         if char in '`"':
+            continue
+        if DEFAULT_IGNORABLE.match(char):
+            # `repr` prints some as they are; `_spelled` escapes each
+            # (#1128).
+            assert adopter._spelled(char)[1:-1] == (
+                code_point_escaped(char)), f"U+{code:04X}"
             continue
         assert repr(char)[1:-1] == adopter._spelled(char)[1:-1], (
             f"U+{code:04X}")

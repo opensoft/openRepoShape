@@ -178,7 +178,8 @@ def its_org(origin: str) -> str:
 def in_another_org(plan: Path, org: str) -> Path:
     """`plan` with its `org:` edited by hand to `org`: legs in another
     organisation than the source's, which no `plan` writes since #499, so
-    `check` finds the plan `plan-not-the-source` beside anything else."""
+    `check` finds the plan `plan-not-the-source` beside anything else, and
+    lists it first, as `execute` refuses it before anything else (#1113)."""
     text = plan.read_bytes().decode()
     line = f"\norg: {ORG}\n"
     assert line in text, text
@@ -292,7 +293,8 @@ def test_check_keeps_a_relative_url_its_github_leg_resolves_alike(
     remediation once after it. A url with a scheme is printed through
     `redacted`, which hides its user too (`ssh://***@github.com:22/...`).
     Only a hand edit puts the legs in another organisation than the
-    source's, which `check` finds too (#499)."""
+    source's, which `check` finds too (#499), first, as `execute` refuses
+    it first (#1113)."""
     source = source_with(tmp_path, SIBLING, origin)
     same = check(planned(source, tmp_path))
     passes(same)
@@ -302,7 +304,7 @@ def test_check_keeps_a_relative_url_its_github_leg_resolves_alike(
     result = check(in_another_org(
         planned(source, tmp_path, name=f"plan-{OTHER_ORG}"), OTHER_ORG))
     assert result.returncode == 1, result.stderr + result.stdout
-    relative, (other, _) = found(result.stderr)
+    (other, _), relative = found(result.stderr)
     assert relative == (RELATIVE, moved(
         adopter, SIBLING, adopter.redacted(origin), ITS_ORIGIN,
         f"to `{adopter.redacted(resolved)}`", CODE_LEG.format(org=OTHER_ORG),
@@ -435,7 +437,7 @@ def test_a_credential_in_the_source_remote_is_never_printed(adopter,
     result = check(in_another_org(
         planned(source, tmp_path, name=f"plan-{OTHER_ORG}"), OTHER_ORG))
     assert secret not in result.stderr + result.stdout
-    relative, (other, _) = found(result.stderr)
+    (other, _), relative = found(result.stderr)
     assert relative == (RELATIVE, moved(
         adopter, SIBLING,
         "https://***@github.com/testorg/Thing.git", ITS_ORIGIN,
@@ -812,3 +814,28 @@ def test_check_and_execute_given_one_local_remote_dir_agree(tmp_path, local):
     assert cloned.returncode == 0, cloned.stderr
     assert (clone / "code" / DEPENDENCY / VALUE).read_text() \
         == DEPENDENCY_TREE[VALUE]
+
+
+@needs_filter_repo
+def test_check_names_another_repository_first_as_execute_refuses_it(
+        tmp_path):
+    """A plan for another repository beside a relative url its leg resolves
+    elsewhere (#1113): `execute` refuses `plan-not-the-source` before it
+    resolves any url (#499), so `check`, given the same `--local-remote-dir`
+    or none, lists that first and the url after it. On #1125's head `check`
+    listed the url first, so its first finding was not `execute`'s refusal.
+    Neither makes a leg."""
+    source = source_with(tmp_path, SIBLING, HTTPS_ORIGIN)
+    plan = in_another_org(
+        planned(source, tmp_path, name=f"plan-{OTHER_ORG}"), OTHER_ORG)
+    remotes = tmp_path / REMOTES
+    for checked in (check(plan), check(plan, remotes)):
+        assert checked.returncode == 1, checked.stderr + checked.stdout
+        assert [code for code, _ in found(checked.stderr)] \
+            == [NOT_THE_SOURCE, RELATIVE], checked.stderr
+    result = execute(plan, tmp_path / WORK, remotes)
+    assert result.returncode == 2, result.stderr + result.stdout
+    [refused] = [line for line in result.stderr.splitlines()
+                 if line.startswith("REFUSED ")]
+    assert refused.startswith(f"REFUSED {NOT_THE_SOURCE}: "), refused
+    assert not remotes.exists(), "a refused plan made the remotes directory"
