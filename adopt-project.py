@@ -3286,9 +3286,13 @@ class Source:
                     _remove_a_tree(claim)
             if not isinstance(exc, CommandFailed):
                 raise
+            # gh's own words, as many as 400 characters of them, each
+            # character a terminal acts on spelled and the line breaks kept
+            # (#1213): the cut is made first, so that a spelling is never cut.
+            said = _unacted(exc.output.strip()[:400], kept="\n")
             raise Refusal(
                 "source-unclonable",
-                f"could not clone {repository}: {exc.output.strip()[:400]}",
+                f"could not clone {repository}: {said}",
                 "Remediation: check `gh auth status` and the repository "
                 "name, or clone it yourself and pass the path.") from exc
         return cls._at(path, repository, work_root, True, instead)
@@ -5723,8 +5727,11 @@ def _refuse_a_tracking_branch_the_remote_lacks(urls: dict, tracking: str,
     try:
         listed = run(["git", "ls-remote", urls["assembly"], ref])
     except (CommandFailed, OSError) as exc:
-        why = (f"exit {exc.code}: {' '.join(exc.output.split())}"
-               if isinstance(exc, CommandFailed) else str(exc))
+        # What git said on one line, or what stopped it from running, each
+        # character a terminal acts on spelled (#1213): the url above is
+        # `_spelled`, and git writes a path it was given back as it is.
+        why = (f"exit {exc.code}: {_unacted(' '.join(exc.output.split()))}"
+               if isinstance(exc, CommandFailed) else _unacted(str(exc)))
         raise Refusal(
             REMOTE_UNREADABLE,
             f"`git ls-remote` could not read {remote}, the repository the "
@@ -12519,8 +12526,14 @@ class _SymlinkProbe:
 
 def _init_refused(exc: "CommandFailed | Refusal") -> str:
     """Why `git init` of a probe's throwaway repository failed, in git's
-    words, as a `_SymlinkProbe` NOTE says it (#910)."""
-    return (f"`{' '.join(exc.args_list)}` exited {exc.code}: "
+    words, as a `_SymlinkProbe` NOTE says it (#910).
+
+    THE COMMAND IS `_unacted` AS THE OUTPUT IS `_spelled` (#1213). Its last
+    argument is the probe, a directory `tempfile.mkdtemp` made under the
+    `--work-dir`, so a bidirectional control or an ESC in that path reached
+    the terminal in the NOTE, where the line above it names the same
+    directory `_spelled`; a line feed in it split the NOTE in two."""
+    return (f"`{_unacted(' '.join(exc.args_list))}` exited {exc.code}: "
             f"{_spelled(exc.output)}"
             if isinstance(exc, CommandFailed) else exc.detail)
 
@@ -15649,7 +15662,7 @@ def _in_the_way_on_github(role: str, repository: str) -> tuple | None:
             return None
         how = f"`{shown}` exited {exc.code}{_first_said(exc.output)}"
     except OSError as exc:
-        how = f"`gh` could not be run: {exc}"
+        how = f"`gh` could not be run: {_unacted(str(exc))}"
     else:
         found = _name_with_owner(answer)
         if found is None:
