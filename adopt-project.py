@@ -4417,11 +4417,12 @@ GNU_MAKE_READS = ("GNUmakefile", "makefile", "Makefile")
 
 
 def _make_reads_first(surviving) -> str | None:
-    """The source's name GNU make finds at the root before the shape's
-    `Makefile`: the first of `GNUmakefile` and `makefile` the root keeps, in
-    `GNU_MAKE_READS`' order and asked as `_root_keeps` asks it, with a `/`
-    where the root keeps a DIRECTORY of that name; None where it keeps
-    neither. `surviving` is each path the plan's entries send to the root.
+    """The source's name GNU make finds at the root where the shape's
+    `Makefile` would be the root's: the first of `GNUmakefile`, `makefile`
+    and a DIRECTORY `Makefile/` the root keeps, in `GNU_MAKE_READS`' order
+    and asked as `_root_keeps` asks it, with a `/` where the root keeps a
+    DIRECTORY of that name; None where it keeps none of them. `surviving`
+    is each path the plan's entries send to the root.
 
     A DIRECTORY OF THAT NAME IS WHAT GNU MAKE FINDS FIRST ALL THE SAME, and
     it stops there, `GNUmakefile: Is a directory.  Stop.`, exit 2, for every
@@ -4446,7 +4447,8 @@ def _make_reads_first(surviving) -> str | None:
                  and (name != SHAPE_MAKEFILE or name not in kept)), None)
 
 
-def _make_reads_first_clause(first: str, reach: str, has: str) -> str:
+def _make_reads_first_clause(first: str, reach: str, has: str, *,
+                             moved: bool = False) -> str:
     """What a text says of `first`, the source's name `_make_reads_first`
     found: `reach` is what then reaches `make` at the root, and `has` how a
     FILE of that name would hold it.
@@ -4458,14 +4460,30 @@ def _make_reads_first_clause(first: str, reach: str, has: str) -> str:
     target, so nothing that file "does" can be true of it, and the clause
     says `make` stops there, in GNU make's own words, and that `reach`
     holds only once the root keeps no directory of that name (#1132).
+
+    `moved` says the root keeps a DIRECTORY `Makefile/` and no `Makefile`
+    FILE (#1314), so the shape's Makefile is `shape/Makefile` and no
+    removal of a directory brings it to the root: GNU make then says `No
+    rule to make target` until it is moved to `Makefile` (measured with GNU
+    make 4.3). Said of a directory `first`, `reach` holds only once the
+    root keeps no directory of that name, and `shape/Makefile` is moved to
+    `Makefile`; and where `first` is another directory GNU make finds before
+    `Makefile/`, no `Makefile/` either, which it stops at next. A FILE
+    `first` is read as it was: the file can include `shape/Makefile`.
     """
     listed = _and_listed([f"`{name}`" for name in GNU_MAKE_READS])
     name = first.rstrip("/")
     if name != first:
+        keeps = "keeps no directory of that name"
+        if moved:
+            keeps += ("" if name == SHAPE_MAKEFILE
+                      else f" or `{SHAPE_MAKEFILE}/`,")
+            keeps += (f" and `{COLLISION_DIR}/{SHAPE_MAKEFILE}` is moved to "
+                      f"`{SHAPE_MAKEFILE}`")
         return (f"GNU make at the root stops at the source's directory "
                 f"{_spelled(first)}, the first of {listed} it finds "
                 f"(`{name}: Is a directory.`), so {reach} only once the root "
-                "keeps no directory of that name")
+                + keeps)
     return (f"GNU make at the root reads the source's {_spelled(first)}, the "
             f"first of {listed} it finds, so {reach} only once "
             f"{_spelled(first)} {has}, or includes a Makefile that does")
@@ -4525,7 +4543,11 @@ def _makefile_follow_up(surviving: set[str]) -> str:
     `Makefile/` is that path, in the words a kept `makefile/` gets, and then
     `_make_reads_first_clause` for the name `_make_reads_first` gives, which
     says GNU make stops there where it finds it first, as it says of
-    `GNUmakefile/`.
+    `GNUmakefile/`. And it says what brings the shape's targets, which the
+    directory's removal alone never does (RV1314's SHOULD-1): with it gone
+    `make` says `No rule to make target` until `shape/Makefile` is moved to
+    `Makefile`, so the clause asks both (`moved`), beside a `GNUmakefile/`
+    or `makefile/` that `make` stops at first as well.
     """
     aside = _root_keeps(surviving, SHAPE_MAKEFILE)
     directory_aside = aside and SHAPE_MAKEFILE not in surviving
@@ -4568,7 +4590,8 @@ def _makefile_follow_up(surviving: set[str]) -> str:
     if first:
         said += (f"{'; and' if aside or folded else ', but'} "
                  + _make_reads_first_clause(
-                     first, "`make` there exports `CONTRACTS_DIR`", "does"))
+                     first, "`make` there exports `CONTRACTS_DIR`", "does",
+                     moved=directory_aside))
     return said
 
 
@@ -18296,8 +18319,10 @@ def _next_steps(names: dict, collisions: list,
     at the directory and nothing merges a Makefile into one. So no NOTE
     names a merge of the Makefile there: `_make_reads_first` names the
     directory where GNU make finds it first, and the NOTE says "the shape's
-    Makefile is shape/Makefile, and" then what the clause says; where the
-    script went aside too, only the script's merge comes first.
+    Makefile is shape/Makefile, and" then what the clause says, with the
+    directory's removal AND the move of `shape/Makefile` to `Makefile` as
+    what brings the targets (`moved`, RV1314's SHOULD-1); where the script
+    went aside too, only the script's merge comes first.
 
     A NOTE THAT NAMES `python3 scripts/bootstrap.py` FOR A PERSON TO RUN
     names `python` on Windows too, as the template's `scripts/bootstrap.py`
@@ -18332,7 +18357,7 @@ def _next_steps(names: dict, collisions: list,
               and stops and not script and not directory_aside else "")
     reads = _make_reads_first_clause(
         first, "`make bootstrap` and the shape's other make targets run "
-        f"there{merged}", "has them") if first else ""
+        f"there{merged}", "has them", moved=directory_aside) if first else ""
     if script:
         kept = [path for path in (SHAPE_MAKEFILE, BOOTSTRAP)
                 if path in aside

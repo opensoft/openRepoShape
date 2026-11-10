@@ -1089,6 +1089,19 @@ def collision_follow_up(intended: str, actual: str,
     reads `directory`: a directory at another shape path's name is told what
     a file there is.
 
+    THE DIRECTORY'S REMOVAL IS NOT ENOUGH (RV1314's SHOULD-1). The copy is
+    at `shape/Makefile`, so with the directory gone GNU make says `No rule
+    to make target 'bootstrap'` until the copy is moved to `Makefile`
+    (measured in a clone of a real adoption, GNU make 4.3). Where `make`
+    stops at the directory, the follow-up says the targets arrive only once
+    the root keeps no directory of that name AND the copy is moved to
+    `Makefile`, and then what `update-shape.py check` reports of its pin
+    row, as for a merged file: with the copy moved, `shape/Makefile` is gone
+    and the root holds a file at `Makefile`, so `check` reports the row
+    `merged-away` and `apply` drops it (measured, `update-shape.py` at the
+    pinned commit). With a `reads_first` it says neither: the targets reach
+    `make` through that file, which can include the copy where it is.
+
     AND A PINNED COPY'S FOLLOW-UP SAYS WHAT HAPPENS TO ITS ROW (#502). The
     shape pin has a row for a copied file at the path it landed on, so once
     the merged copy is removed that row names a file that is not there, and
@@ -1138,15 +1151,16 @@ def collision_follow_up(intended: str, actual: str,
             f"merge {actual} into {intended}: the source repository already "
             "has that name, so the shape's copy was written beside it and "
             "NOTHING was overwritten")
-    if not directory and (intended in COPIED_VERBATIM
-                          or any(rel == intended
-                                 for _, rel in COPIED_FROM_SHAPE)):
+    pinned = (intended in COPIED_VERBATIM
+              or any(rel == intended for _, rel in COPIED_FROM_SHAPE))
+    if not directory and pinned:
         head += (f". Then remove {actual}: `update-shape.py check` reports "
                   "its pin row `merged-away`, and `apply` drops the row")
     if intended != "Makefile":
         return head
     targets = ", ".join(f"`{target}`" for target in SHAPE_MAKE_TARGETS)
     script = (beside or {}).get(BOOTSTRAP)
+    pin_row = ""
     if reads_first is None and not directory:
         arrive = (f"The shape's make targets ({targets}) arrive only with "
                   "that merge")
@@ -1163,7 +1177,12 @@ def collision_follow_up(intended: str, actual: str,
                 f"`{intended}/`, the first of {listed} it finds "
                 f"(`{intended}: Is a directory.`), so the shape's make "
                 f"targets ({targets}) reach `make` there only once the root "
-                "keeps no directory of that name")
+                f"keeps no directory of that name and `{actual}` is moved "
+                f"to `{intended}`")
+            if pinned:
+                pin_row = (f". Once {actual} is moved to {intended}, "
+                           "`update-shape.py check` reports its pin row "
+                           "`merged-away`, and `apply` drops the row")
         else:
             arrive = (
                 f"GNU make at the root reads the source's `{reads_first}`, "
@@ -1177,9 +1196,10 @@ def collision_follow_up(intended: str, actual: str,
                 f"shape's bootstrap until then, and then {BOOTSTRAP_COMMAND} "
                 "runs it")
     if script is None:
-        return f"{head}. {arrive}; until then {meanwhile}"
+        return f"{head}. {arrive}; until then {meanwhile}{pin_row}"
     return (f"{head}. {arrive}{joint} the root's {BOOTSTRAP} is the source's "
-            f"own until {script} is merged into it as well, so {then}")
+            f"own until {script} is merged into it as well, so {then}"
+            f"{pin_row}")
 
 
 def _attributes_link_follow_up(intended: str, actual: str,
