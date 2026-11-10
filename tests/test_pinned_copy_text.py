@@ -833,3 +833,28 @@ def test_no_pinned_script_imports_what_an_older_library_lacks(name):
     assert imported, f"{script.name} imports nothing from repo_shape?"
     for newer in NEWER_THAN_A_KEPT_LIBRARY:
         assert newer not in imported, (script, newer)
+
+
+def test_siblings_keeps_its_own_shown_and_takes_none_from_bootstrap():
+    """THE #536 CHOICE, held by itself. `siblings.py` takes names from
+    `bootstrap.py` already, and a holder that kept its own `bootstrap.py`
+    (`update-shape.py apply --accept-local`) is refused
+    `update-accept-local-missing-name` for each name `siblings.py` takes that
+    its kept copy does not define. So `siblings.py` defines its own `_shown`,
+    as `validate-manifest.py` does, and takes none from `bootstrap.py`: not
+    by a `from bootstrap import` at module level or inside a function, and
+    not as `bootstrap._shown`."""
+    tree = ast.parse(PINNED_IMPORTERS["siblings"].read_text(encoding="utf-8"))
+    defined = [node for node in tree.body
+               if isinstance(node, ast.FunctionDef) and node.name == "_shown"]
+    assert len(defined) == 1, "siblings.py defines no `_shown` of its own"
+    taken = [alias.name
+             for node in ast.walk(tree)
+             if isinstance(node, ast.ImportFrom) and node.module == "bootstrap"
+             for alias in node.names]
+    assert "_shown" not in taken, "siblings.py imports `_shown` from bootstrap"
+    reached = [node for node in ast.walk(tree)
+               if isinstance(node, ast.Attribute) and node.attr == "_shown"
+               and isinstance(node.value, ast.Name)
+               and node.value.id == "bootstrap"]
+    assert not reached, "siblings.py reads `bootstrap._shown`"

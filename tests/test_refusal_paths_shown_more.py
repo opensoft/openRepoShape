@@ -40,6 +40,7 @@ session's `gh` guard first on PATH for every tool run.
 
 from __future__ import annotations
 
+import ast
 import shlex
 import shutil
 import sys
@@ -136,24 +137,31 @@ def holder_bootstrap(text: str | None) -> Callable:
     return build
 
 
-#: A holder's `bootstrap.py` whose `members_of` reads no `family.yaml`, with
-#: the holder's own beside it as `bootstrap_real.py` for every other name
-#: `siblings.py` imports: past it, `siblings.py`'s own read of `family.yaml`
-#: is the one that refuses.
-MEMBERS_UNREAD = (
-    "from bootstrap_real import (  # noqa: F401\n"
-    "    REWRITE_TARGETS, credential, member_make_environment, member_path,\n"
-    "    untraced,\n"
-    ")\n\n\n"
-    "def members_of(root):\n"
-    "    return 'Acme', []\n"
-)
+def members_unread() -> str:
+    """A holder's `bootstrap.py` whose `members_of` reads no `family.yaml`,
+    with the holder's own beside it as `bootstrap_real.py` for every other
+    name `siblings.py` imports from `bootstrap`: past it, `siblings.py`'s own
+    read of `family.yaml` is the one that refuses. The names are read from
+    `siblings.py`'s own `from bootstrap import ...`, by `ast`, so a name a
+    later change adds is answered too and these rows keep testing what they
+    say."""
+    tree = ast.parse((FAMILY_SCRIPTS / "siblings.py").read_text(
+        encoding="utf-8"))
+    names = [alias.name
+             for node in ast.walk(tree)
+             if isinstance(node, ast.ImportFrom) and node.module == "bootstrap"
+             for alias in node.names if alias.name != "members_of"]
+    assert names, "siblings.py imports nothing but members_of from bootstrap?"
+    return ("from bootstrap_real import (  # noqa: F401\n    "
+            + ",\n    ".join(names) + ",\n)\n\n\n"
+            "def members_of(root):\n"
+            "    return 'Acme', []\n")
 
 
 def holder_siblings(members_read: bool) -> Callable:
     """A holder's own `siblings.py --dry-run`, `family.yaml` a list, beside
     the holder's `bootstrap.py` (`members_read`), whose `members_of` refuses
-    it first, or beside `MEMBERS_UNREAD`, which does not."""
+    it first, or beside `members_unread()`'s, which does not."""
     def build(folder: Path, library: bytes) -> tuple:
         bootstrap = FAMILY_SCRIPTS / "bootstrap.py"
         root = a_repository(
@@ -161,7 +169,7 @@ def holder_siblings(members_read: bool) -> Callable:
                              *((bootstrap,) if members_read else ())), library)
         if not members_read:
             shutil.copyfile(bootstrap, root / "scripts" / "bootstrap_real.py")
-            holding(root / "scripts" / "bootstrap.py", MEMBERS_UNREAD)
+            holding(root / "scripts" / "bootstrap.py", members_unread())
         return holding(root / "family.yaml", A_LIST), (
             root / "scripts" / "siblings.py", "--root", str(root),
             "--dry-run")
@@ -349,9 +357,12 @@ COPIES = ("family-manifest-unreadable-bootstrap",
 @pytest.mark.parametrize("site", COPIES)
 def test_each_copy_spells_the_path_beside_an_older_library(
         tmp_path, site, name):
-    """THE SKEW RULE: each copy beside a `repo_shape.py` from before #1168,
-    as a root or a holder has one that kept its own (`update-shape.py apply
-    --accept-local`). The copy spells the path with its own `_shown`, so it
-    runs, refuses by name, and spells the path as it does beside this
-    checkout's library."""
+    """EACH COPY REFUSES WITH THE PATH SPELLED beside a `repo_shape.py` from
+    before #1168, as a root or a holder has one that kept its own
+    (`update-shape.py apply --accept-local`): it runs, refuses by name, and
+    spells the path as it does beside this checkout's library. That library
+    (`51a9c5f10`) already defines `shown_path`, so these rows do not forbid
+    a copy from importing it. The row that does is
+    `test_pinned_copy_text.py`'s
+    `test_no_pinned_script_imports_what_an_older_library_lacks`."""
     refused_at(tmp_path, site, name, older_library())
