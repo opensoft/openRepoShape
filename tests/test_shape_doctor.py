@@ -9765,6 +9765,17 @@ ORIGIN_ORGS = [
     pytest.param("file:///srv/git/opensoft/Atlas.git", None, id="file-url"),
     pytest.param(r"D:\a\_work\1\s\Atlas.git", None, id="windows-path"),
     pytest.param(NOT_UTF8 + b"Atlas.git", None, id="not-utf8"),
+    # A pair GitHub cannot hold, an owner over 39 characters or a repository
+    # over 100, names no organisation either (#1211): `plan` read
+    # `<40 c's>` and the line carried no `--org`. The control: at 39.
+    pytest.param("https://github.com/" + "c" * 40 + "/Atlas.git", None,
+                 id="owner-40"),
+    pytest.param("https://gitlab.com/" + "c" * 40 + "/Atlas.git", None,
+                 id="gitlab-owner-40"),
+    pytest.param("git@github.com:opensoft/" + "r" * 101 + ".git", None,
+                 id="repository-101"),
+    pytest.param("https://github.com/" + "c" * 39 + "/Atlas.git", "c" * 39,
+                 id="owner-39"),
 ]
 
 

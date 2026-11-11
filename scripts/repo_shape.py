@@ -75,6 +75,13 @@ SHA256_RE = re.compile(r"^[0-9a-fA-F]{64}\Z")
 PROJECT_ID_RE = re.compile(r"^[a-z0-9][a-z0-9-]*$")
 TOPIC_PREFIX = "xf-project-"
 
+#: The longest name GitHub gives a repository, in characters. Here, with the
+#: owner's below, so that `url_repository` reads an `origin` by them
+#: (`github_can_hold`, #1211); `shape_materialize.py` imports both.
+GITHUB_NAME_MAX = 100
+#: The longest name GitHub gives a user or an organisation, in characters.
+GITHUB_OWNER_MAX = 39
+
 #: The digest definition recorded in every pin this standard writes. Bumping
 #: the algorithm bumps this string, so a pin never silently means something
 #: else than it did when it was written.
@@ -3063,10 +3070,27 @@ def origin_is_a_path(url: str) -> bool:
     return remote_is_a_path(url) or FILE_URL_RE.match(url) is not None
 
 
+def github_can_hold(owner: str, repo: str) -> bool:
+    """Whether GitHub can hold a repository `repo` under the owner `owner`,
+    by their lengths: an owner of at most `GITHUB_OWNER_MAX` characters and
+    a repository of at most `GITHUB_NAME_MAX`, counted once one trailing
+    `.git`, in any case, is dropped (#1129, #1211).
+
+    THE ONE RULE FOR EVERY READING OF A NAME. `adopt-project.py`'s
+    `_github_name` asks it of an `owner/repo` that is typed, recorded or in
+    a `--source` url, and `url_repository` of a source's `origin`. A name
+    past either limit names no repository on GitHub, so neither reading
+    gives one, and no remedy offers it."""
+    if repo.lower().endswith(".git") and len(repo) > len(".git"):
+        repo = repo[:-len(".git")]
+    return len(owner) <= GITHUB_OWNER_MAX and len(repo) <= GITHUB_NAME_MAX
+
+
 def url_repository(url: str) -> str | None:
     """`<org>/<repo>`: the last two segments of the path a url names, case
-    kept, however the url ends; None for a url whose path has fewer, and for
-    a filesystem PATH, however it is written (#521).
+    kept, however the url ends; None for a url whose path has fewer, for a
+    pair GitHub cannot hold (#1211), and for a filesystem PATH, however it is
+    written (#521).
 
     THE ONE READING OF AN `origin`, for both tools that need one:
     `adopt-project.py plan` takes `--org` from it and compares `--org` and
@@ -3097,6 +3121,18 @@ def url_repository(url: str) -> str | None:
     separator, and `plan` says so in a NOTE; nor does one give `plan` an
     organisation, so it asks for `--org` (`adopt-no-org`), and so does the
     doctor's adoption line.
+
+    NOR DOES A PAIR GITHUB CANNOT HOLD (#1211): an organisation over
+    `GITHUB_OWNER_MAX` characters, or a repository over `GITHUB_NAME_MAX`,
+    by the rule `adopt-project.py` reads a typed or recorded `owner/repo`
+    by (`github_can_hold`, #1129). A clone whose `origin` is
+    `https://gitlab.com/<40 c's>/Thing.git`, planned with `--org testorg`,
+    was refused `adopt-not-the-source` and told to pass `--org <40 c's>`,
+    which `execute` refuses; and `check` held a plan to that name while
+    `origin` was there, and to nothing once it was gone. Such an `origin`
+    names no repository now, as a path does: `plan` records none and
+    compares nothing with it, and with no `--org` it asks for one, as the
+    doctor's adoption line does.
     """
     if origin_is_a_path(url):
         return None
@@ -3109,11 +3145,16 @@ def url_repository(url: str) -> str | None:
     else:
         path = url.partition(":")[2]
     path = path.rstrip("/")
+    # The repository as written, `.git` and all, as `_github_name` hands it
+    # to `github_can_hold`, which drops one `.git` itself.
+    written = path.rpartition("/")[2]
     if path.endswith(".git"):
         path = path[:-4]
     above, _, name = path.rpartition("/")
     org = above.rpartition("/")[2]
-    return f"{org}/{name}" if org and name else None
+    if org and name and github_can_hold(org, written):
+        return f"{org}/{name}"
+    return None
 
 
 def remote_local_path(url: str) -> str | None:

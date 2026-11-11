@@ -393,8 +393,12 @@ from repo_shape import SHA256_RE, repo_basename  # noqa: E402
 # Whether a recorded `--pin-source` is a clone's top level, asked as `plan`
 # asks it (#800).
 from shape_materialize import pin_source_not_top_level  # noqa: E402
-# One reading of an `origin`, shared with `shape-doctor.py` (#521).
-from repo_shape import origin_is_a_path, url_repository  # noqa: E402
+# One reading of an `origin`, shared with `shape-doctor.py` (#521), and the
+# one rule for a name GitHub can hold, which it and `_github_name` ask
+# (#1129, #1211).
+from repo_shape import (  # noqa: E402
+    github_can_hold, origin_is_a_path, url_repository,
+)
 # The one spelling of a `neutral_product_pins:` entry, which
 # `scaffold-project.py` calls too, and the plain scalar it and `y` write a
 # text bare by (#924).
@@ -2200,7 +2204,9 @@ def _github_name(written: str) -> str | None:
     names no repository (`_recorded_repository`, `_held_repository`); and
     beside a directory this user cannot search it is offered no url
     (`_source_there`, #1003). Asked of the name and not of the disk, it
-    holds on Windows as well, where no error is `File name too long`."""
+    holds on Windows as well, where no error is `File name too long`. The
+    rule is `github_can_hold`'s, which a source's `origin` is read by too
+    (`url_repository`, #1211)."""
     segments = [part for part in written.split("/") if part]
     if len(segments) != 2:
         return None
@@ -2211,7 +2217,8 @@ def _github_name(written: str) -> str | None:
             GITHUB_SEGMENT_RE.fullmatch(part) and part not in (".", "..")
             for part in (owner, repo)):
         return None
-    if len(owner) > GITHUB_OWNER_MAX or len(repo) > GITHUB_NAME_MAX:
+    # The repository as written: `github_can_hold` drops its `.git` itself.
+    if not github_can_hold(owner, segments[1]):
         return None
     return f"{owner}/{repo}"
 
