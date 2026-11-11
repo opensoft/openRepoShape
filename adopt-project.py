@@ -14501,15 +14501,8 @@ def _reencoded_files_findings(plan: Plan, source: Source, tree: list,
              and path.rsplit("/", 1)[-1].casefold() == ATTRIBUTES]
     # What the mount removes with `-f`, and the twins it writes back, asked
     # as `_mount_the_legs` asks them (#1298).
-    paths_for = _leg_paths(plan)
-    removed = [path.rstrip("/") for leg in ("spec", "code", "drop")
-               for path in paths_for[leg]]
-    split = [twin for named in _split_case_twins(
-        [path for path, _, _, _ in tree], removed) for twin in named]
-    forced = [top for top in removed
-              if any(_at_or_under(twin, top) for twin in split)]
-    written_back = {twin for twin in split
-                    if not any(_at_or_under(twin, top) for top in removed)}
+    _, forced, written_back = _the_mounts_removals(
+        [path for path, _, _, _ in tree], _leg_paths(plan))
     if probe is None:
         probe = _SymlinkProbe(source.work_root)
     walks = _PlannedRoot(plan, source, tree, probe=probe).walks()
@@ -16583,6 +16576,31 @@ def _split_case_twins(held: list[str],
                    for twin in named for top in removed)]
 
 
+def _the_mounts_removals(held: list[str], paths_for: dict
+                         ) -> tuple[list[str], set[str], list[str]]:
+    """`(removed, forced, written_back)` for the mount of a root whose index
+    holds `held` (`_index_modes`' paths, or the source tree's, which are the
+    same), `paths_for` its plan's leg paths (`_leg_paths`): each path the
+    mount takes out of the root, the source's `.gitmodules` first; those of
+    them that a case twin of a set the plan splits is at or under, which it
+    removes with `-f` (`_split_case_twins`, #1183); and each twin of those
+    sets at or under none of them, which the root keeps and the mount writes
+    back from the index after the last `git rm`. `_mount_the_legs` asks it,
+    and so does `check`'s rehearsal of the mount (#1298), so that the two
+    cannot drift apart (r1298a's NIT 2)."""
+    removed = sorted((path.rstrip("/") for path in (paths_for["spec"]
+                                                    + paths_for["code"]
+                                                    + paths_for["drop"])),
+                     key=lambda path: (path != GITMODULES, path))
+    split = [twin for named in _split_case_twins(held, removed)
+             for twin in named]
+    forced = {path for path in removed
+              if any(_at_or_under(twin, path) for twin in split)}
+    return removed, forced, [twin for twin in split
+                             if not any(_at_or_under(twin, path)
+                                        for path in removed)]
+
+
 def _on_the_disk(assembly: Path, path: str) -> str | bytes:
     """`path`, as git spells it, in the assembly, as `os.lstat` is handed
     it: the bytes the tree holds (`_path_argument`), so that no locale is
@@ -16720,19 +16738,12 @@ def _mount_the_legs(assembly: Path, work_root: Path, names: dict, urls: dict,
     taken out of the index alone (`_taken_beyond_a_symlink`, r1237,
     r1237b), so that `-f` removes nothing through a symlink.
     """
-    removed = sorted((p.rstrip("/") for p in (paths_for["spec"]
-                                              + paths_for["code"]
-                                              + paths_for["drop"])),
-                     key=lambda p: (p != GITMODULES, p))
     held = _index_modes(assembly)
-    split = [twin for named in _split_case_twins(list(held), removed)
-             for twin in named]
+    removed, forced, kept = _the_mounts_removals(list(held), paths_for)
     for path in removed:
-        forced = any(_at_or_under(twin, path) for twin in split)
-        if not (forced and _taken_beyond_a_symlink(assembly, path, held)):
-            _git_rm(assembly, path, forced)
-    kept = [twin for twin in split
-            if not any(_at_or_under(twin, path) for path in removed)]
+        if not (path in forced
+                and _taken_beyond_a_symlink(assembly, path, held)):
+            _git_rm(assembly, path, path in forced)
     if kept:
         _write_from_the_index(assembly, kept)
     # The plan moved (or dropped) the source's own .gitmodules, so its deletion
