@@ -494,8 +494,12 @@ options:
   --org ORG             the organisation the source repository is in, which
                         the plan records as `org:` (default: the organisation
                         of an `org/repo` --source, or the one a local source's
-                        `origin` url names). A source whose `origin` is a
-                        path, or that has none, names no organisation: `plan`
+                        `origin` url names; where it has no `origin` and
+                        exactly one remote, the one that remote's url names,
+                        unless its name is not printable ASCII or starts with
+                        `-`). A source with no remote, with two or more
+                        remotes and no `origin`, or whose `origin` (or only
+                        remote) is a path, names no organisation: `plan`
                         refuses it as `adopt-no-org` unless --org is given.
                         `execute` refuses one over 39 characters without
                         --local-remote-dir, GitHub's limit on an
