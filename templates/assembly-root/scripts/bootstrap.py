@@ -655,7 +655,7 @@ UNSEEN = "a character that does not print or is white space"
 #: escapes, so no such character is in this file raw, and asked of no
 #: `unicodedata`, so Python 3.12 and 3.14 read one table. Written here
 #: rather than imported, for the skew rule's reason: a root's
-#: `scripts/repo_shape.py` may be older than this file (#715).
+#: `scripts/repo_shape.py` may be older than this file (#610).
 #: `tests/test_default_ignorables_spelled.py` holds it to the library's.
 DEFAULT_IGNORABLE = re.compile(
     r"[\u00ad\u034f\u061c\u115f-\u1160\u17b4-\u17b5\u180b-\u180f"
