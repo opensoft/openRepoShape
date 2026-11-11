@@ -13932,6 +13932,25 @@ def _reencoded_attributes_findings(plan: Plan, source: Source,
 # though their rules still reach the files beside them. The files the split
 # renders from values it knows only once the legs are pushed (the manifest,
 # the pin files, the README) and the mounts' `.gitmodules` are not asked.
+#
+# THE MOUNT'S `-f` AND ITS WRITE-BACK ARE ASKED AS IT MAKES THEM (#1298).
+# Since #1183 the mount removes with `git rm -f` each path that a case twin
+# of a set the plan splits is at or under, and writes back from the index
+# each twin of those sets that the root keeps (`_split_case_twins`). The
+# rehearsal still asked plain `git rm`'s compare of those paths, and stored
+# a kept twin as the one file a disk that ignores case leaves of the set.
+# Measured by r1237e with git 2.43, root `* text eol=lf`, `A` committed as
+# CRLF and sent to the code leg, its twin `a` kept: `check` named `A`, and
+# `execute`, with the check patched out, said `adoption verified`. And with
+# the source's `* text=auto`, on a disk that ignores case simulated as
+# `as_one_file` makes the mount's, `check` named `A` with either twin sent,
+# where `execute` verified. So the compare leaves each path the mount
+# removes with `-f` out, as `git rm -f` compares nothing, and the kept
+# twins are written back before `git add -u`, as the mount writes them.
+# Those paths are still compared, in an index of their own whose list is
+# never read: a filter that fails for one stops each clone of the source
+# that reads it again, though the mount no longer does
+# (`FORCED_COMPARE_REFUSED`, r1237e's NIT 1).
 
 #: `check`'s finding, and the code of `execute`'s refusal, for a file the
 #: plan keeps or moves, or a pinned copy, that this machine's git would store
@@ -13960,6 +13979,9 @@ NAMED_PATHS = 10
 AS_HELD, AS_SPLIT = "index-as-held", "index-as-split"
 CHECKED_OUT, TAKEN, STORED = "index-checked-out", "index-taken", "index-stored"
 PATHS_HELD = "index-paths"
+#: What the mount takes with `git rm -f` (#1298): compared only for git's
+#: refusal (`FORCED_COMPARE_REFUSED`), and never listed.
+TAKEN_WITH_F = "index-taken-with-f"
 
 #: How a finding says which files git reads again.
 READ_AGAIN = ("each one git reads again (every file of a small source; of a "
@@ -14009,6 +14031,24 @@ COMPARE_REFUSED = (
     "to compare what the plan sends to a leg or drops with its blob, as the "
     "mount's `git rm` does",
     STOPS_AT_A_READ,
+    "Change the rule or the setting git names, and re-run `plan`.")
+#: Where it stops for a filter that fails for a file the mount removes with
+#: `git rm -f` (#1298, r1237e's NIT 1), which compares nothing: the mount
+#: is no such step, and `STOPS_AT_A_READ`'s others are, where the clock
+#: has them read the file again (`READ_AGAIN`). Measured by r1237e with git
+#: 2.43, root `/A filter=w1136` failing, `A` sent to the code leg and its
+#: twin `a` kept, with the check patched out: `REFUSED extracting the spec
+#: leg`, and with the filter kept out of both extractions, `REFUSED cloning
+#: the source for the split`. Where none reads it, nothing stops for it.
+STOPS_AT_A_CLONES_READ = (
+    "at the first step that reads that file again, if one does: extracting "
+    "the spec leg, extracting the code leg once the spec leg is pushed, or, "
+    "once both legs are pushed, cloning the source for the split")
+FORCED_COMPARE_REFUSED = (
+    "to compare with its blob what the plan sends to a leg or drops at or "
+    "under a path the mount removes with `git rm -f`, which compares "
+    "nothing, as a clone of the source does where it reads that file again",
+    STOPS_AT_A_CLONES_READ,
     "Change the rule or the setting git names, and re-run `plan`.")
 STORE_REFUSED = (
     "to store again what the plan keeps in the assembly root, as the split's "
@@ -14306,6 +14346,9 @@ def _kept_finding(paths: list[str]) -> str:
 
 
 def _moved_finding(paths: list[str]) -> str:
+    """The finding for `paths` the mount's `git rm` would refuse: never one
+    it removes with `-f`, which compares nothing (#1298), so that its words
+    hold of each path it names."""
     count, stored, way_out = _stored_otherwise(paths)
     them = "it" if len(paths) == 1 else "them"
     return (f"FINDING {REENCODED_FILES}: the plan sends {count} to a leg or "
@@ -14357,6 +14400,18 @@ def _refused_finding(step: tuple[str, str, str], said: str) -> str:
             f"leg repositories exist, {stops}. {way_out}")
 
 
+def _compare_refused(asked: _SplitRehearsal, index: str, wanted: list,
+                     rules: list, moved: set[str]) -> str | None:
+    """`git rm`'s own compare of `moved`, `wanted`'s rows, over `index`,
+    which writes nothing: None, or git's refusal. Each `.gitattributes` of
+    `rules` it leaves is held for its rules and marked unchanged (#1192)."""
+    asked.hold(index, {*[row for row in wanted if row[0] in moved], *rules})
+    asked.asked(["update-index", "-z", "--assume-unchanged", "--stdin"],
+                index, b"".join(_nul(path) for path, _, _ in rules
+                                if path not in moved))
+    return asked.refused(["update-index", "-q", "--refresh"], index)
+
+
 def _reencoded_files_findings(plan: Plan, source: Source, tree: list,
                               probe: _SymlinkProbe | None = None,
                               refused: list[str] | None = None
@@ -14390,6 +14445,17 @@ def _reencoded_files_findings(plan: Plan, source: Source, tree: list,
     rules = [(path, mode, oid) for path, mode, oid, _ in tree
              if mode in (*FILE_MODES, SYMLINK_MODE)
              and path.rsplit("/", 1)[-1].casefold() == ATTRIBUTES]
+    # What the mount removes with `-f`, and the twins it writes back, asked
+    # as `_mount_the_legs` asks them (#1298).
+    paths_for = _leg_paths(plan)
+    removed = [path.rstrip("/") for leg in ("spec", "code", "drop")
+               for path in paths_for[leg]]
+    split = [twin for named in _split_case_twins(
+        [path for path, _, _, _ in tree], removed) for twin in named]
+    forced = [top for top in removed
+              if any(_at_or_under(twin, top) for twin in split)]
+    written_back = {twin for twin in split
+                    if not any(_at_or_under(twin, top) for top in removed)}
     if probe is None:
         probe = _SymlinkProbe(source.work_root)
     walks = _PlannedRoot(plan, source, tree, probe=probe).walks()
@@ -14419,30 +14485,39 @@ def _reencoded_files_findings(plan: Plan, source: Source, tree: list,
         # unchanged: a filter that failed for one stopped the refresh there,
         # exit 128, and `diff-files` then listed each file it had not
         # reached as changed (#1192). Where git refuses the compare, that is
-        # the finding, in git's words, and no list is read.
-        moved = {row[0] for row in wanted if row[0] not in kept}
-        asked.hold(TAKEN, {*[row for row in wanted if row[0] in moved],
-                           *rules})
-        asked.asked(["update-index", "-z", "--assume-unchanged", "--stdin"],
-                    TAKEN, b"".join(_nul(path) for path, _, _ in rules
-                                    if path not in moved))
-        compare_said = asked.refused(["update-index", "-q", "--refresh"],
-                                     TAKEN)
+        # the finding, in git's words, and no list is read. What the mount
+        # removes with `-f` is no part of that compare (#1298), and is asked
+        # in an index of its own for git's refusal alone.
+        compared = {row[0] for row in wanted if row[0] not in kept}
+        with_f = {path for path in compared
+                  if any(_at_or_under(path, top) for top in forced)}
+        moved = compared - with_f
+        compare_said = _compare_refused(asked, TAKEN, wanted, rules, moved)
         taken = [] if compare_said is not None else [
             path for path in asked.listed(
                 ["diff-files", "--name-only", "-z"], TAKEN) if path in moved]
+        forced_said = None if not with_f else _compare_refused(
+            asked, TAKEN_WITH_F, wanted, rules, with_f)
+        refusals = ((COMPARE_REFUSED, compare_said),
+                    (FORCED_COMPARE_REFUSED, forced_said))
         # The split's side: its `git add`, over the root it writes.
         try:
             _as_the_split_writes(asked, rules, kept, own, written, landings)
         except OSError:
-            if compare_said is not None:
-                return [_refused_finding(COMPARE_REFUSED, compare_said)]
-            return [_moved_finding(taken)] if taken else []
+            return _grouped_findings([], taken, [], at_the_root, refusals)
         held = {*[row for row in wanted if row[0] in kept],
                 *[row for row in rules if row[0] in kept
                   and row[0] != at_the_top and row[0] not in twins]}
         asked.hold(STORED, held)
-        stored_said = asked.refused(["add", "-u"], STORED)
+        # Each twin the mount writes back from the index, over the one file
+        # a disk that ignores case left of its set, before `git add` (#1298).
+        back = sorted((path for path, _, _ in held if path in written_back),
+                      key=order.get)
+        stored_said = None if not back else asked.refused(
+            ["checkout-index", "-f", "-z", "--stdin"], STORED,
+            b"".join(map(_nul, back)))
+        if stored_said is None:
+            stored_said = asked.refused(["add", "-u"], STORED)
         blobs = {path: oid for path, _, oid in held}
         stored = [] if stored_said is not None else [
             path for path, oid in asked.staged(STORED).items()
@@ -14451,7 +14526,7 @@ def _reencoded_files_findings(plan: Plan, source: Source, tree: list,
     return _grouped_findings(
         sorted(stored, key=order.get), sorted(taken, key=order.get),
         copies, at_the_root,
-        ((STORE_REFUSED, stored_said), (COMPARE_REFUSED, compare_said),
+        ((STORE_REFUSED, stored_said), *refusals,
          (COPY_REFUSED, copies_said)))
 
 

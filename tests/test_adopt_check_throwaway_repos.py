@@ -124,6 +124,17 @@ said so again as `plan-file-reencoded`, in 3 of 3 runs each; a CRLF
 `notes.txt` kept beside the folder twins went unnamed, as git stopped
 there. Now the rehearsal asks nothing about the twins `plan-case-twins`
 names, and asks the rest as it does without that setting.
+
+#1298 followed, from r1237e's review of #1237 (#1183) with git 2.43. The
+mount removes with `git rm -f` each path a case twin of a set the plan
+splits is at or under, and writes back from the index each twin of those
+sets the root keeps; the rehearsal still asked plain `git rm`'s compare
+and wrote nothing back. So `check` named a CRLF `A` sent to the code leg
+beside its twin `a` kept, under `* text eol=lf`, and, on a disk that
+ignores case (simulated), either twin under the source's `* text=auto`,
+where `execute` verified with the check patched out. Now the rehearsal
+compares nothing the mount removes with `-f`, except for a filter that
+fails, which the clones still meet, and writes the kept twins back.
 """
 
 from __future__ import annotations
@@ -1181,8 +1192,9 @@ def test_a_set_the_plan_splits_or_drops_is_still_asked(tmp_path, leg):
     """The control the other way: the rehearsal still asks a set #1237 made
     adoptable. `A.md` and `a.md`, each CRLF under `* text eol=lf`, the root
     keeps `A.md` and the plan sends `a.md` to the code leg or drops it, so
-    the CRLF twin kept in the root is named, beside the one the plan moves,
-    as it was on f7f34fb0. Were such sets skipped as the sets
+    the CRLF twin kept in the root is named, as it was on f7f34fb0; the one
+    the plan moves is not since #1298, as the mount removes it with `git rm
+    -f`, which compares nothing. Were such sets skipped as the sets
     `plan-case-twins` names are, `check` would say `plan ok` and `execute`
     would lose `A.md` (`adopt-lost`), after both legs were pushed (r1297d's
     SHOULD-1)."""
@@ -1191,9 +1203,9 @@ def test_a_set_the_plan_splits_or_drops_is_still_asked(tmp_path, leg):
     plan = planned(source, tmp_path, {"A.md": ROOT, "a.md": leg})
     for env in (None, ignoring_case(tmp_path)):
         result = checked(plan, env)
-        assert codes(result) == [REENCODED_FILES, REENCODED_FILES], \
-            result.stderr
+        assert codes(result) == [REENCODED_FILES], result.stderr
         assert "`A.md`" in finding_lines(result)[0]
+        assert "`a.md`" not in result.stderr, result.stderr
 
 
 # ---------------------------------------------------------------------------
@@ -4082,3 +4094,156 @@ def test_each_refusal_is_named_in_the_groups_order(tmp_path):
     assert "`fatal: README.md: clean filter" in store, store
     assert compare == compare_refused(SPEC_MD)
     assert "to store the pinned shape copies the split writes" in copies
+
+
+# ---------------------------------------------------------------------------
+# The mount's `git rm -f` and its write-back, rehearsed (#1298)
+# ---------------------------------------------------------------------------
+
+def a_crlf_twin_sent(base: Path, twin: bool) -> Path:
+    """r1237e's P1: the root's `* text eol=lf`, and `A` committed as CRLF
+    and sent to the code leg; with `twin`, its twin `a` (LF) kept in the
+    root, so that the mount removes `A` with `git rm -f` (#1183)."""
+    files = {ROOT_ATTRIBUTES: TEXT_EOL_LF, "A": CRLF}
+    answers = {"A": "code"}
+    if twin:
+        files["a"] = b"a\n"
+        answers["a"] = ROOT
+    return planned(a_source(base, files=files), base, answers)
+
+
+def test_a_file_the_mount_removes_with_f_is_compared_with_nothing(tmp_path):
+    """P1 of #1298, on a disk that keeps case. `A` goes to the code leg
+    beside its twin `a`, which the root keeps, so the mount removes `A`
+    with `git rm -f`, which compares nothing, and writes `a` back. Measured
+    by r1237e on fa6d189f with git 2.43: `check` named `A`, saying the
+    mount's `git rm` refuses it, and `execute`, with the check patched out,
+    said `adoption verified`. Now `check` says `plan ok`. The control:
+    without the twin the mount's `git rm` of `A` has no `-f`, it refused
+    `A` (`REFUSED mounting the legs`), and `check` still names it."""
+    assert findings(a_crlf_twin_sent(tmp_path / "twin", True)) == []
+    ((code, detail),) = findings(a_crlf_twin_sent(tmp_path / "alone", False))
+    assert code == REENCODED_FILES
+    assert detail.startswith(SENT_CRLF) and ": `A`." in detail, detail
+    assert "The mount's `git rm` refuses" in detail, detail
+
+
+def one_file_rehearsal(adopter, monkeypatch) -> list:
+    """The rehearsal's checkout as a disk that ignores case makes it, on a
+    disk that keeps case: after the checkout of `CHECKED_OUT`, each set of
+    case twins it wrote is ONE FILE, holding the bytes of the twin last in
+    the index's order, as `as_one_file` makes the mount's clone. The list
+    returned is filled with each set made so."""
+    made: list = []
+    real = adopter._SplitRehearsal.checkout
+
+    def checkout(self, index):
+        said = real(self, index)
+        if said is None and index == adopter.CHECKED_OUT:
+            sets: dict = {}
+            for path in self.listed(["ls-files", "-z"], index):
+                sets.setdefault(path.casefold(), []).append(path)
+            twins = tuple(tuple(named) for named in sets.values()
+                          if len(named) > 1)
+            as_one_file(self.work, twins)
+            for named in twins:
+                assert all((self.work / twin).samefile(self.work / named[-1])
+                           for twin in named)
+                made.append(named)
+        return said
+
+    monkeypatch.setattr(adopter._SplitRehearsal, "checkout", checkout)
+    return made
+
+
+def checked_in_process(adopter, capsys, plan: Path) -> tuple:
+    """`check` in this process, as the patched rehearsal needs: its exit
+    and its `FINDING` lines."""
+    try:
+        code = adopter.main(["check", "--plan", str(plan)])
+    except SystemExit as exc:
+        code = exc.code
+    return code, [line for line in capsys.readouterr().err.splitlines()
+                  if line.startswith("FINDING ")]
+
+
+def twins_under_text_auto(base: Path, answers: dict) -> Path:
+    """r1237e's P2: the source's own `* text=auto`, and the twins `A` and
+    `a`, each with an LF blob of its own, so that nothing is re-encoded."""
+    source = a_source(base, files={ROOT_ATTRIBUTES: b"* text=auto\n"})
+    with_paths(source, ("A", "a"), own_blobs=True)
+    return planned(source, base, answers)
+
+
+#: Which twin goes to the code leg and which the root keeps.
+TWIN_SENT = [
+    pytest.param({"A": "code", "a": ROOT}, id="sent-twin-sorts-first"),
+    pytest.param({"A": ROOT, "a": "code"}, id="kept-twin-sorts-first")]
+
+
+@pytest.mark.parametrize("answers", TWIN_SENT)
+def test_on_a_disk_that_ignores_case_check_says_plan_ok_for_twins_split(
+        adopter, monkeypatch, capsys, tmp_path, answers):
+    """P2 of #1298, simulated: the rehearsal's checkout leaves `A` and `a`
+    one file, under the source's `* text=auto`. Measured by r1237e on
+    fa6d189f with git 2.43: `check` named `A`, sent (`git rm` refuses it) or
+    kept (`git add` stores it as `a`'s bytes), and `execute`, with the check
+    patched out and the mount's clone made one file, verified. Now the
+    rehearsal removes the twin that goes with `-f`, comparing nothing, and
+    writes the kept twin back from the index before `git add`, as the
+    mount does, and `check` says `plan ok`."""
+    made = one_file_rehearsal(adopter, monkeypatch)
+    plan = twins_under_text_auto(tmp_path, answers)
+    assert checked_in_process(adopter, capsys, plan) == (0, [])
+    assert made == [("A", "a")]
+
+
+@needs_filter_repo
+@pytest.mark.parametrize("answers", TWIN_SENT)
+def test_on_a_disk_that_ignores_case_execute_adopts_twins_it_splits(
+        adopter, monkeypatch, capsys, tmp_path, answers):
+    """P2's `execute`, as it is, on the same simulated disk, the mount's
+    clone made one file too (`as_one_file`). On fa6d189f it refused
+    `plan-file-reencoded` before any leg, in both orientations; now it
+    verifies."""
+    one_file_rehearsal(adopter, monkeypatch)
+    mount = adopter._mount_the_legs
+
+    def on_one_file(assembly, *args, **kwargs):
+        as_one_file(assembly, (("A", "a"),))
+        return mount(assembly, *args, **kwargs)
+
+    monkeypatch.setattr(adopter, "_mount_the_legs", on_one_file)
+    plan = twins_under_text_auto(tmp_path, answers)
+    args = Namespace(plan=str(plan), source=None,
+                     local_remote_dir=tmp_path / "remotes",
+                     allow_empty_leg=[], yes=True, work_dir=tmp_path / "work")
+    assert adopter.cmd_execute(args) == 0
+    assert "adoption verified" in capsys.readouterr().out
+
+
+def test_a_forced_compare_git_refuses_names_no_step_that_compares_nothing(
+        tmp_path):
+    """r1237e's NIT 1: a filter that fails for `A`, sent to the code leg
+    beside its twin `a`, which the root keeps. The mount removes `A` with
+    `git rm -f`, which reads nothing, so the finding no longer says the
+    mount's `git rm` compares it, nor that `execute` can stop mounting the
+    legs; it names the clones that read it again, where r1237e measured
+    `execute` stop with the check patched out (`READ_AGAIN_STOPS`)."""
+    plan = planned(a_source(tmp_path, files={
+        ROOT_ATTRIBUTES: f"/A filter={FAILING}\n".encode(),
+        "A": b"A\n", "a": b"a\n"}), tmp_path, {"A": "code", "a": ROOT})
+    result = checked(plan, with_parameters(tmp_path, FAILING_FILTER))
+    assert "REFUSED" not in result.stderr, result.stderr
+    assert result.returncode == 1, result.stderr
+    assert finding_lines(result) == [
+        f"FINDING {REENCODED_FILES}: this machine's git refuses to compare "
+        "with its blob what the plan sends to a leg or drops at or under a "
+        "path the mount removes with `git rm -f`, which compares nothing, as "
+        "a clone of the source does where it reads that file again (git "
+        f"said `fatal: A: clean filter '{FAILING}' failed`), so `execute` "
+        "would stop after the leg repositories exist, at the first step "
+        "that reads that file again, if one does: extracting the spec leg, "
+        "extracting the code leg once the spec leg is pushed, or, once both "
+        "legs are pushed, cloning the source for the split. Change the rule "
+        "or the setting git names, and re-run `plan`."]
