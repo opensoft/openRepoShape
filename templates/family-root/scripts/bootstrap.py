@@ -2006,13 +2006,13 @@ def members_of(root: Path) -> tuple[str, list[dict]]:
         rows = []
     if not isinstance(rows, list):
         raise Refusal("family-members-unreadable",
-                      f"{manifest_path}: `members:` is {rows!r}, expected a "
-                      "list")
+                      f"{_shown(manifest_path)}: `members:` is {rows!r}, "
+                      "expected a list")
     unread = [f"a member is not a mapping: {row!r}" for row in rows
               if not isinstance(row, dict)]
     if unread:
         raise Refusal("family-members-unreadable",
-                      f"{manifest_path}: {'; '.join(unread)}")
+                      f"{_shown(manifest_path)}: {'; '.join(unread)}")
     return name, rows
 
 
