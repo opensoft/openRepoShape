@@ -629,12 +629,142 @@ def repository_name(url: str) -> str | None:
     return name or None
 
 
+# ---------------------------------------------------------------------------
+# Which remote a repository's facts are read from (#1276, #1292)
+# ---------------------------------------------------------------------------
+#
+# ONE RULE FOR EVERY TOOL THAT READS A REPOSITORY'S REMOTE (#1292). After
+# #1276 `adopt-project.py plan` read a source's only remote where it has no
+# `origin`, and `shape-doctor.py` still read `origin` alone: for a clone
+# whose only remote is `upstream` the doctor's adoption line said
+# `--project WorkUpstream --org <your-org>`, and that line, filled in as it
+# asks, ended in `plan`'s `adopt-not-the-source`. The rule lives HERE, and
+# both tools import it, so they cannot come to ask two questions.
+#
+# NOT A COPY IN THE DOCTOR HELD BY A PARITY TEST. The doctor kept such a
+# copy of `plan`'s `origin` regex, and when `plan` changed the copy would
+# have sent a person to a line `plan` refuses (#521): a parity test holds
+# only the cases it was written for. NOR `scripts/repo_shape.py`, beside
+# `url_repository`: that file is a SHAPE COPY every assembly root and family
+# holder pins, so a rule added there puts an `upstream-changed
+# scripts/repo_shape.py` row in front of every project for code no project's
+# own copy calls, in a patch (`scripts/shape_materialize.py` says the same
+# of its helpers). This module is in no copy list, and `adopt-project.py`
+# and `shape-doctor.py` already import it.
+
+#: The remote a repository's facts are read from where it has one.
+ORIGIN = "origin"
+
+
+def _remote_names(root: Path) -> list[str]:
+    """The repository's remotes as `git remote` lists them, each decoded as
+    `adopt-project.py`'s `Source.tree` reads a path (`_git_path`: UTF-8,
+    a byte that is not UTF-8 kept as a surrogate); none where git cannot
+    list them."""
+    try:
+        listed = git_out(["remote"], cwd=root, binary=True)
+    except Refusal:
+        return []
+    return [name.decode("utf-8", "surrogateescape")
+            for name in listed.splitlines() if name]
+
+
+def remote_exists(root: Path, name: str) -> bool:
+    """Whether the repository has a remote `name` as `git remote get-url`
+    reads one: listed by `git remote`, or kept as a file in `.git/branches`
+    or `.git/remotes`, which it does not list. `name` is a remote these
+    tools read (`origin`, or one `remotes_of` took), never one that starts
+    with `-`, which git would read as an option. Asked through `git_out`,
+    as every git here is: it refuses exactly where git exits non-zero."""
+    try:
+        git_out(["remote", "get-url", name], cwd=root, binary=True)
+    except Refusal:
+        return False
+    return True
+
+
+def printable_ascii(name: str) -> bool:
+    """Whether `name` is printable ASCII, which every way through can type
+    in a command line in any locale."""
+    return name.isascii() and name.isprintable()
+
+
+def _readable_remote_name(name: str) -> bool:
+    """Whether `name` may be the repository's remote read in `origin`'s
+    place: printable ASCII, and not one that starts with `-`, which git
+    reads as an option (`git remote get-url -x` is an unknown switch, not
+    the remote)."""
+    return printable_ascii(name) and not name.startswith("-")
+
+
+def remotes_of(root: Path) -> tuple[str, list[str]]:
+    """`(remote, passed_over)`: the remote the repository's facts are read
+    from, `source_remote`'s, and the remotes it has where it has no `origin`
+    and none is read in that one's place, which is never guessed among;
+    else `[]`. `adopt-project.py` reads a source with it (`_remotes_of`),
+    and `shape-doctor.py` reads the repository it is run in with it, so
+    the doctor's adoption line names what `plan` will read (#1292).
+
+    A SOURCE CLONED UNDER `clone.defaultRemoteName` HAS NO `origin` (#1276).
+    `git clone` names the remote after that setting, `upstream` say, and
+    `plan` read only a remote named `origin`: it refused `adopt-no-org`
+    with no `--org`, read the branch HEAD was on as the default branch, and
+    asked `--tracking-branch` of the source's own branches, where the same
+    source with `origin` read the organisation, `origin/HEAD` and
+    `origin`'s branches. So the source's ONLY remote is read in `origin`'s
+    place, as git itself reads it (`git ls-remote --get-url`, `git fetch`
+    with no remote named): the current branch's remote, else the only
+    remote, else `origin`, measured with git 2.43.
+
+    A SOURCE THAT HAS AN `origin` IS READ AS IT WAS, whatever other remotes
+    it has: listed by `git remote`, or a file in `.git/branches` or
+    `.git/remotes`, which `git remote` does not list and `git remote
+    get-url origin` reads. A source with no remote is read as it was too.
+
+    NOR IS ONE GUESSED AMONG SEVERAL. The current branch's remote is not
+    asked: it is whichever branch this working copy has checked out, not
+    the branch adopted, which is read from the remote, and `git switch`
+    would change the remote it named, the organisation and the default branch
+    with it, between `plan` and `check`. Nor is `clone.defaultRemoteName`:
+    git reads it in `git clone` alone, and it is this machine's setting
+    now, not the source's. A source with several remotes and no `origin`
+    is read as one with no remote, and `adopt-no-org` and
+    `plan-tracking-branch-missing` name the remotes passed over
+    (`adopt-project.py`'s `_passed_over`) and the ways through, which are
+    no fetch from an `origin` it has not (`_tracking_branch_remediation`);
+    the doctor's adoption line keeps `--org <your-org>`. So is a remote
+    whose name is not printable ASCII, which every way through names in a
+    command line, in any locale, and so is one that starts with `-`, which
+    git reads as an option."""
+    names = _remote_names(root)
+    if not names or ORIGIN in names or remote_exists(root, ORIGIN):
+        return ORIGIN, []
+    if len(names) == 1 and _readable_remote_name(names[0]):
+        return names[0], []
+    return ORIGIN, names
+
+
+def source_remote(root: Path) -> str:
+    """The remote the repository's facts are read from (#1276): `origin`
+    where it has one, else its only remote, else `origin` (`remotes_of`).
+    The doctor's `origin_org` and `origin_name` and `repository_names` below
+    read the url of this one, as `adopt-project.py`'s `_origin_url` does
+    (#1292)."""
+    return remotes_of(root)[0]
+
+
 def repository_names(root: Path) -> list[str]:
     """The names this repository goes by: its directory's, then `origin`'s.
 
     `origin` is asked only when `root` ITSELF carries a `.git`: git walks up
     to an ancestor otherwise, and an ancestor's name is not this directory's
     -- the trap `shape-doctor.py`'s `repo_local_origin_name` guards against.
+
+    WITH NO `origin`, ITS ONLY REMOTE'S (`source_remote`, #1292), as
+    `adopt-project.py`'s `_remote_repository` reads it after #1276: a clone
+    whose only remote is `upstream` and names `Atlas-code` is the code leg
+    of `Atlas` here as the same clone with `origin` is, and not a single
+    repository the doctor offers to adopt.
 
     AN ORIGIN URL THAT IS NOT UTF-8 NAMES NOTHING, as no origin names nothing
     (#385). git keeps a URL as the bytes it was given, so a clone of a
@@ -662,7 +792,8 @@ def repository_names(root: Path) -> list[str]:
     names = [root.name]
     if _is_a(root / ".git", lambda _mode: True):
         try:
-            url = git_out(["remote", "get-url", "origin"], cwd=root)
+            url = git_out(["remote", "get-url", source_remote(root)],
+                          cwd=root)
         except (Refusal, OSError, UnicodeDecodeError):
             url = ""
         name = repository_name(url) if url else None

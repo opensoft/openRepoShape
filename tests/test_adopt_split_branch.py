@@ -168,7 +168,11 @@ def test_check_says_how_to_go_on_once_after_its_findings(adopter, tmp_path):
     result = run_script(ADOPT, "check", "--plan",
                         str(plan_for(source, tmp_path)))
     assert result.returncode == 1, result.stderr + result.stdout
-    assert result.stderr.count(adopter.SPLIT_BRANCH_REMEDIATION) == 1
+    # `small_source` has no remote, so the form with no fetch is the one said
+    # (`_split_branch_remediation(None)`): `SPLIT_BRANCH_REMEDIATION`, the
+    # `origin` form, sends it to fetch from an `origin` it has not (#1276).
+    assert result.stderr.count(adopter._split_branch_remediation(None)) == 1
+    assert "git fetch" not in result.stderr, result.stderr
 
 
 def test_execute_refuses_it_under_the_same_code_before_any_leg_exists(

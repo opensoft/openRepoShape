@@ -11559,9 +11559,20 @@ def origin_name(root: Path) -> str | None:
     above split off could be a fragment of a name. It is the answer
     `shape_advisory.repository_names` gives the same URL, so the `naming`
     row, `the way in` and the `Triad` row read one identity.
+
+    WITH NO `origin`, ITS ONLY REMOTE'S (#1292). `adopt-project.py plan`
+    reads a source's only remote in `origin`'s place since #1276, and a
+    clone made under `clone.defaultRemoteName` has no `origin`: this read
+    `origin` alone, so `the way in` offered `--project WorkUpstream` for a
+    clone of `testorg/Thing` in `work-upstream`, and `plan` refused that
+    line `adopt-not-the-source`. The remote is `shape_advisory.source_remote`,
+    the rule `plan` reads by, not a copy of it: a source with an `origin` is
+    read as before, and one with several remotes and no `origin`, or whose
+    one remote's name is not printable ASCII or starts with `-`, has none.
     """
     try:
-        url = git_out(["remote", "get-url", "origin"], cwd=root)
+        url = git_out(["remote", "get-url",
+                       shape_advisory.source_remote(root)], cwd=root)
     except (Refusal, OSError, UnicodeDecodeError):
         return None
     if _WINDOWS_PATH_RE.match(url):
@@ -11649,11 +11660,19 @@ def origin_org(root: Path) -> str | None:
     `.git` this user cannot reach RAISES (`carries_git`, #1110), where it was
     None, the answer for a folder that is no repository: `the way in` asks
     the `.git` first, and offers no way in over it.
+
+    AND FROM THE REMOTE `plan` READS IT FROM (#1292): `origin`, else the
+    only remote, else none, by `shape_advisory.source_remote`, which
+    `adopt-project.py` imports too, so WHICH remote is not a copy either.
+    Read from `origin` alone, a clone whose only remote is `upstream` was
+    offered `--org <your-org>`, and `plan` read `testorg` and refused the
+    `--project` beside it `adopt-not-the-source`.
     """
     if not carries_git(root):
         return None
     try:
-        url = git_out(["remote", "get-url", "origin"], cwd=root)
+        url = git_out(["remote", "get-url",
+                       shape_advisory.source_remote(root)], cwd=root)
     except (Refusal, OSError, UnicodeDecodeError):
         return None
     pair = url_repository(url)
