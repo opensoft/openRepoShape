@@ -14052,6 +14052,23 @@ FORCED_COMPARE_REFUSED = (
     "nothing, as a clone of the source does where it reads that file again",
     STOPS_AT_A_CLONES_READ,
     "Change the rule or the setting git names, and re-run `plan`.")
+#: Where it stops for a case twin the root keeps of a set the plan splits
+#: that git will not write back from the index (#1298, r1298a's NIT 3):
+#: the mount writes it back after its `git rm`, once both legs are pushed,
+#: with the rules its index and disk hold once the moved `.gitattributes`
+#: are gone, where each clone of the source before it writes the same file
+#: with every rule of the source's, as the rehearsal's checkout did. Not
+#: measured: no rule the rows know of makes git refuse the one and not the
+#: other, and the row pins the words alone.
+STOPS_AT_THE_WRITE_BACK = (
+    "no later than mounting the legs, where the mount writes that file back "
+    "once both legs are pushed")
+WRITE_BACK_REFUSED = (
+    "to write back from the index each case twin the plan keeps in the "
+    "assembly root of a set it splits, as the mount's `git checkout-index` "
+    "does",
+    STOPS_AT_THE_WRITE_BACK,
+    "Change the rule or the setting git names, and re-run `plan`.")
 STORE_REFUSED = (
     "to store again what the plan keeps in the assembly root, as the split's "
     "`git add -A` does",
@@ -14542,16 +14559,19 @@ def _reencoded_files_findings(plan: Plan, source: Source, tree: list,
         back = sorted((path for path, _, _ in {*wanted, *rules}
                        if path in written_back), key=order.get)
         try:
-            stored_said = _as_the_split_writes(asked, rules, kept, own,
-                                               written, landings, back)
+            back_said = _as_the_split_writes(asked, rules, kept, own,
+                                             written, landings, back)
         except OSError:
             return _grouped_findings([], taken, [], at_the_root, refusals)
+        if back_said is not None:
+            # The mount stops there: nothing after it is asked (NIT 3).
+            return _grouped_findings([], taken, [], at_the_root, (
+                *refusals, (WRITE_BACK_REFUSED, back_said)))
         held = {*[row for row in wanted if row[0] in kept],
                 *[row for row in rules if row[0] in kept
                   and row[0] != at_the_top and row[0] not in twins]}
         asked.hold(STORED, held)
-        if stored_said is None:
-            stored_said = asked.refused(["add", "-u"], STORED)
+        stored_said = asked.refused(["add", "-u"], STORED)
         blobs = {path: oid for path, _, oid in held}
         stored = [] if stored_said is not None else [
             path for path, oid in asked.staged(STORED).items()

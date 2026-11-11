@@ -4389,3 +4389,35 @@ def test_a_forced_compare_git_refuses_names_no_step_that_compares_nothing(
         "extracting the code leg once the spec leg is pushed, or, once both "
         "legs are pushed, cloning the source for the split. Change the rule "
         "or the setting git names, and re-run `plan`."]
+
+
+#: What git says where the row below makes it refuse the write-back.
+WRITE_BACK_SAID = "fatal: w1298b: the write-back refused"
+
+
+def test_a_write_back_git_refuses_names_its_own_step(adopter, monkeypatch,
+                                                      capsys, tmp_path):
+    """r1298a's NIT 3: on e3c5c940 a refusal of the write-back was named as
+    the split's `git add -A`'s (`STORE_REFUSED`), whose stops name the
+    mount only for `.gitmodules`. Now it is its own step: the mount's `git
+    checkout-index`, where `execute` stops no later than mounting the legs,
+    and nothing after it is asked. No rule the rows know of makes git refuse
+    it, so git's answer is made here, for that command alone: P1's plan,
+    with its twin `a` kept, which the rehearsal writes back."""
+    real = adopter._SplitRehearsal.refused
+
+    def refused(self, args, index, data=b""):
+        if args[:1] == ["checkout-index"] and "--stdin" in args:
+            return WRITE_BACK_SAID
+        return real(self, args, index, data)
+
+    monkeypatch.setattr(adopter._SplitRehearsal, "refused", refused)
+    plan = a_crlf_twin_sent(tmp_path, True)
+    assert checked_in_process(adopter, capsys, plan) == (1, [
+        f"FINDING {REENCODED_FILES}: this machine's git refuses to write "
+        "back from the index each case twin the plan keeps in the assembly "
+        "root of a set it splits, as the mount's `git checkout-index` does "
+        f"(git said `{WRITE_BACK_SAID}`), so `execute` would stop after "
+        "the leg repositories exist, no later than mounting the legs, where "
+        "the mount writes that file back once both legs are pushed. Change "
+        "the rule or the setting git names, and re-run `plan`."])
