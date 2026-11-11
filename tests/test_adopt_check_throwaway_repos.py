@@ -114,6 +114,16 @@ unchanged in that compare, and a compare git refuses is the finding, in
 git's words. So a `.gitattributes` the plan keeps under `.github/`, whose
 filter fails, is the split's store's refusal alone, its folder named in
 UTF-8 or not (r1253's SHOULD-2).
+
+#1184 followed, measured on f981468b with git 2.43 on a disk that keeps
+case, under a global `core.ignorecase=true`. Where `plan-case-twins` named
+folder twins (`D/x`, `d/x`), three paths of one blob (`AB`, `Ab`, `ab`) or
+two `.gitattributes` in folder twins, all kept in the root, the
+rehearsal's `git add` refused them, `will not add file alias`, and `check`
+said so again as `plan-file-reencoded`, in 3 of 3 runs each; a CRLF
+`notes.txt` kept beside the folder twins went unnamed, as git stopped
+there. Now the rehearsal asks nothing about the twins `plan-case-twins`
+names, and asks the rest as it does without that setting.
 """
 
 from __future__ import annotations
@@ -551,8 +561,9 @@ def test_check_names_each_twin_git_refuses_and_each_set_it_holds(tmp_path):
     repository, so the global setting is the one each throwaway reads.
     `plan` asks about each twin as a path of its own (`planned` answers
     each by name). Under a global `core.ignorecase=true` the #654
-    rehearsal's `git add` refuses the folder twins `D/x` and `d/x` as
-    `plan-file-reencoded`; this row does not see it, because the rehearsal
+    rehearsal's `git add` refused the folder twins `D/x` and `d/x` as
+    `plan-file-reencoded` until #1184, which leaves out the twins
+    `plan-case-twins` names; this row never saw it, because the rehearsal
     asks nothing of a source that holds a path git refuses
     (`_reencoded_files_findings`, `if refused: return []`).
     `refused_paths` meets every twin: `plan-path-git-refuses` names, in the
@@ -1014,6 +1025,175 @@ def test_on_a_disk_that_ignores_case_check_names_the_twins_too(tmp_path):
                      "--work-dir", str(work / "check"))
     assert finding_lines(result) == [
         twins_kept("1 set", ROOT_TWINS, "2 paths", "`A` and `a`")]
+
+
+# ---------------------------------------------------------------------------
+# #1184: one finding for one set, under `core.ignorecase=true`
+# ---------------------------------------------------------------------------
+
+#: What git says where its `git add` will not hold a twin beside another.
+FILE_ALIAS = "fatal: will not add file alias"
+
+#: `(the twins a source commit gains, each with a blob of its own or all
+#: with one, the plan's answers, how `plan-case-twins` names them)`. On
+#: f981468b, with git 2.43 under a global `core.ignorecase=true`, `check`
+#: named each set again, in 3 of 3 runs, as `plan-file-reencoded`, git
+#: saying `will not add file alias` at the rehearsal's `git add`.
+ALIASED_TWINS = [
+    pytest.param(("D/x", "d/x"), True, {"D/": ROOT, "d/": ROOT},
+                 "`D/x` and `d/x`", id="folder-twins"),
+    pytest.param(("D/x", "d/x"), False, {"D/": ROOT, "d/": ROOT},
+                 "`D/x` and `d/x`", id="folder-twins-of-one-blob"),
+    pytest.param(("AB", "Ab", "ab"), False,
+                 dict.fromkeys(("AB", "Ab", "ab"), ROOT),
+                 "`AB`, `Ab` and `ab`", id="three-of-one-blob"),
+    pytest.param(("D/.gitattributes", "d/.gitattributes"), True,
+                 {"D/": ROOT, "d/": ROOT},
+                 "`D/.gitattributes` and `d/.gitattributes`",
+                 id="gitattributes-in-folder-twins"),
+]
+
+
+def ignoring_case(base: Path) -> dict:
+    """A global `core.ignorecase=true`, which a throwaway repository on a
+    disk that keeps case reads, as one on a disk that ignores case reads
+    the `true` its `git init` writes."""
+    return config_with(base, "[core]", "\tignorecase = true")
+
+
+@pytest.mark.parametrize(("twins", "own_blobs", "answers", "named"),
+                         ALIASED_TWINS)
+def test_a_set_git_will_not_add_beside_its_twin_is_named_once(
+        tmp_path, twins, own_blobs, answers, named):
+    """#1184: the #654 rehearsal asks nothing about the twins
+    `plan-case-twins` names, so git's `will not add file alias` for them is
+    not said again as `plan-file-reencoded`, a finding about bytes."""
+    source = a_source(tmp_path)
+    with_paths(source, twins, own_blobs=own_blobs)
+    result = checked(planned(source, tmp_path, answers),
+                     ignoring_case(tmp_path))
+    assert "REFUSED" not in result.stderr, result.stderr
+    assert result.returncode == 1, result.stderr
+    assert finding_lines(result) == [
+        twins_kept("1 set", ROOT_TWINS, f"{len(twins)} paths", named)]
+    assert FILE_ALIAS not in result.stderr, result.stderr
+
+
+def test_execute_refuses_such_a_set_as_its_one_finding(adopter, monkeypatch,
+                                                       tmp_path):
+    """`execute`'s refusal lists `check`'s findings: the set, once."""
+    for name, value in ignoring_case(tmp_path).items():
+        monkeypatch.setenv(name, value)
+    source = a_source(tmp_path)
+    with_paths(source, ("D/x", "d/x"), own_blobs=True)
+    refusal = refused_before_any_leg(
+        adopter, monkeypatch,
+        planned(source, tmp_path, {"D/": ROOT, "d/": ROOT}), tmp_path)
+    assert refusal.code == PLAN_CASE_TWINS
+    assert refusal.detail.splitlines()[1:] == [
+        "  " + twins_kept("1 set", ROOT_TWINS, "2 paths", "`D/x` and `d/x`")]
+
+
+def test_a_file_beside_the_twins_is_asked_as_without_the_setting(tmp_path):
+    """git stopped the rehearsal's `git add` at the alias, and so the CRLF
+    `notes.txt` the root keeps beside the twins, under `* text eol=lf`, went
+    unnamed under `core.ignorecase=true` on f981468b, 3 of 3 runs. Now the
+    rest is asked, and `check` says what it says without the setting, the
+    file's `plan-file-reencoded` included."""
+    source = a_source(tmp_path, files={ROOT_ATTRIBUTES: TEXT_EOL_LF,
+                                       NOTES: CRLF})
+    with_paths(source, ("D/x", "d/x"), own_blobs=True)
+    plan = planned(source, tmp_path, {"D/": ROOT, "d/": ROOT, NOTES: ROOT})
+    without, ignored = checked(plan), checked(plan, ignoring_case(tmp_path))
+    assert codes(without) == [PLAN_CASE_TWINS, REENCODED_FILES], \
+        without.stderr
+    assert KEPT_CRLF in finding_lines(without)[1]
+    assert "`notes.txt`" in finding_lines(without)[1]
+    assert finding_lines(ignored) == finding_lines(without), ignored.stderr
+
+
+@pytest.mark.parametrize(("prefix", "answers", "where"), [
+    pytest.param("", {"A.md": ROOT, "a.md": ROOT}, ROOT_TWINS, id="root"),
+    pytest.param("src/", {}, CODE_TWINS, id="code-leg"),
+])
+def test_twins_git_would_store_as_other_bytes_are_the_set_alone(
+        tmp_path, prefix, answers, where):
+    """`A.md` and `a.md`, each CRLF under `* text eol=lf`, and each its own
+    blob, in the root or in the code leg: on f981468b `check` named them as
+    `plan-file-reencoded` too, after `plan-case-twins`, the root's by their
+    names and the leg's as files the plan moves. The rename
+    `plan-case-twins` asks for comes first, and the `plan` and `check` after
+    it ask about the renamed files."""
+    source = a_source(tmp_path, files={
+        ROOT_ATTRIBUTES: TEXT_EOL_LF, f"{prefix}A.md": CRLF,
+        f"{prefix}a.md": b"three\r\n"})
+    plan = planned(source, tmp_path, answers)
+    for env in (None, ignoring_case(tmp_path)):
+        result = checked(plan, env)
+        assert finding_lines(result) == [twins_kept(
+            "1 set", where, "2 paths",
+            f"`{prefix}A.md` and `{prefix}a.md`")], result.stderr
+
+
+def test_the_twins_rules_still_reach_the_files_beside_them(tmp_path):
+    """Twin `.gitattributes` files stay checked out, and the files in the
+    folders that hold twins stay asked: `D/` and `d/` each keep the rule
+    `*.txt text eol=lf` and a CRLF `.txt`, and `check` names the two files
+    as `plan-file-reencoded` after `plan-case-twins`, with the setting as
+    without it."""
+    rule = b"*.txt text eol=lf\n"
+    paths = ("D/.gitattributes", "d/.gitattributes", "D/n.txt", "d/m.txt")
+    source = a_source(tmp_path, files=dict(zip(paths,
+                                               (rule, rule, CRLF, CRLF))))
+    plan = planned(source, tmp_path, dict.fromkeys(paths, ROOT))
+    without, ignored = checked(plan), checked(plan, ignoring_case(tmp_path))
+    assert codes(without) == [PLAN_CASE_TWINS, REENCODED_FILES], \
+        without.stderr
+    assert "`D/n.txt` and `d/m.txt`" in finding_lines(without)[1]
+    assert finding_lines(ignored) == finding_lines(without), ignored.stderr
+
+
+def test_a_set_the_note_takes_is_still_asked(tmp_path):
+    """The control: the rehearsal leaves out only the sets the finding
+    names. `A.md` and `a.md`, one CRLF blob under `* text eol=lf`, are the
+    NOTE's, and are still `plan-file-reencoded`. Under the setting git's
+    index holds the set under one name, and the finding names that one, as
+    it did on f981468b."""
+    source = a_source(tmp_path, files={ROOT_ATTRIBUTES: TEXT_EOL_LF,
+                                       "A.md": CRLF, "a.md": CRLF})
+    plan = planned(source, tmp_path, {"A.md": ROOT, "a.md": ROOT})
+    for env in (None, ignoring_case(tmp_path)):
+        result = checked(plan, env)
+        assert codes(result) == [REENCODED_FILES], result.stderr
+        assert [line for line in result.stdout.splitlines()
+                if line.startswith("NOTE the plan keeps")] == [
+            one_blob_twins("1 set", ROOT_TWINS, "2 paths",
+                           "`A.md` and `a.md`")]
+        if env is None:
+            assert ("the plan keeps 2 files in the assembly root, and this "
+                    "machine's `git add` would store them as other bytes "
+                    "than their blobs once the split's checkout has written "
+                    "them: `A.md` and `a.md`.") in finding_lines(result)[0]
+
+
+@pytest.mark.parametrize("leg", ["code", "drop"])
+def test_a_set_the_plan_splits_or_drops_is_still_asked(tmp_path, leg):
+    """The control the other way: the rehearsal still asks a set #1237 made
+    adoptable. `A.md` and `a.md`, each CRLF under `* text eol=lf`, the root
+    keeps `A.md` and the plan sends `a.md` to the code leg or drops it, so
+    the CRLF twin kept in the root is named, beside the one the plan moves,
+    as it was on f7f34fb0. Were such sets skipped as the sets
+    `plan-case-twins` names are, `check` would say `plan ok` and `execute`
+    would lose `A.md` (`adopt-lost`), after both legs were pushed (r1297d's
+    SHOULD-1)."""
+    source = a_source(tmp_path, files={ROOT_ATTRIBUTES: TEXT_EOL_LF,
+                                       "A.md": CRLF, "a.md": CRLF})
+    plan = planned(source, tmp_path, {"A.md": ROOT, "a.md": leg})
+    for env in (None, ignoring_case(tmp_path)):
+        result = checked(plan, env)
+        assert codes(result) == [REENCODED_FILES, REENCODED_FILES], \
+            result.stderr
+        assert "`A.md`" in finding_lines(result)[0]
 
 
 # ---------------------------------------------------------------------------

@@ -10390,7 +10390,7 @@ def _unsafe_path_findings(plan: Plan) -> tuple[list[str], list[str]]:
 # executables; and with the rule above, in 2 runs each, files `A` and `a`
 # and files `D/A` and `D/a` in one folder: `check` printed the NOTE and
 # `plan ok`, and `execute` verified. Other sets of one blob in the root met
-# git's `will not add file alias` there, which the #654 rehearsal reports
+# git's `will not add file alias` there, which the #654 rehearsal reported
 # as `plan-file-reencoded`, in 1 run each for the second review: folder
 # twins (`D/x`, `d/x`), alone and beside folders that only merge, in
 # `check`; three paths (`AB`, `Ab`, `ab`) in `execute` alone, before any
@@ -10400,6 +10400,23 @@ def _unsafe_path_findings(plan: Plan) -> tuple[list[str], list[str]]:
 # stay this finding, and its remediation, a rename. A file against a
 # folder is always the finding: such a disk cannot hold a file and a folder
 # under one name, whatever their bytes.
+#
+# ONE FINDING FOR ONE SET (#1184). The rehearsal still asked about the
+# twins this finding names, and git's `will not add file alias` was said
+# again, as `plan-file-reencoded`, a finding about bytes. Measured on
+# f981468b with git 2.43, on a disk that keeps case under a global
+# `core.ignorecase=true`, in 3 of 3 runs each: folder twins (`D/x`, `d/x`)
+# of one blob or two, three paths of one blob (`AB`, `Ab`, `ab`) and two
+# `.gitattributes` in folder twins, all in the root; and as git stops the
+# split's `git add` there, a CRLF `notes.txt` the root keeps beside the
+# folder twins went unnamed, which the same source names without that
+# setting. Twins git would store as other bytes, CRLF under `text`, were
+# named again too, with the setting or without it, and under it in the
+# root as one twin of the two. So the rehearsal asks nothing about the
+# paths this finding names (`_case_twins_kept`), as it asks nothing of a
+# source holding a path git refuses, and asks the rest; the sets the NOTE
+# takes are still asked. The rename this finding asks for comes first, and
+# the `plan` and `check` after it ask about the renamed files.
 
 #: `check`'s finding, and the code of `execute`'s refusal, for paths the
 #: plan keeps in one repository that a disk ignoring case holds as one.
@@ -10462,6 +10479,29 @@ def _one_blob_twins(named: list[str], kinds: dict, leg: str) -> bool:
             and kinds[named[0]][0] != GITLINK_MODE)
 
 
+def _case_twins_kept(plan: Plan, tree: list,
+                     refused: list[str] | tuple = ()
+                     ) -> list[tuple[str, list[list[str]], list[list[str]]]]:
+    """`(where, the sets `plan-case-twins` names, the sets left to its NOTE)`
+    for each repository the split makes, in `TWIN_REPOSITORIES`' order, as
+    `_case_twin_findings` says them and the #654 rehearsal leaves the first
+    out (#1184). Only the paths ONE answered entry sends there are asked
+    (`_answered_legs`), and none git refuses, `refused`."""
+    held = set(refused)
+    kinds = {path: (mode, oid) for path, mode, oid, _ in tree}
+    answered = _answered_legs(plan.entries, [path for path, _, _, _ in tree
+                                             if path not in held])
+    kept = []
+    for leg, where in TWIN_REPOSITORIES.items():
+        sets = _case_twin_sets([path for path, (answer, _) in answered.items()
+                                if answer == leg])
+        alike = [named for named in sets
+                 if _one_blob_twins(named, kinds, leg)]
+        kept.append((where, [named for named in sets if named not in alike],
+                     alike))
+    return kept
+
+
 def _case_twin_findings(plan: Plan, tree: list,
                         refused: list[str] | tuple = ()
                         ) -> tuple[list[str], list[str], list[str]]:
@@ -10474,17 +10514,8 @@ def _case_twin_findings(plan: Plan, tree: list,
     (`_one_blob_twins`), which the finding leaves out. Only the paths ONE
     answered entry sends there are asked (`_answered_legs`), and none git
     refuses, `refused`: `plan-path-git-refuses` names those."""
-    held = set(refused)
-    kinds = {path: (mode, oid) for path, mode, oid, _ in tree}
-    answered = _answered_legs(plan.entries, [path for path, _, _, _ in tree
-                                             if path not in held])
     found, notes = [], []
-    for leg, where in TWIN_REPOSITORIES.items():
-        sets = _case_twin_sets([path for path, (answer, _) in answered.items()
-                                if answer == leg])
-        alike = [named for named in sets
-                 if _one_blob_twins(named, kinds, leg)]
-        sets = [named for named in sets if named not in alike]
+    for where, sets, alike in _case_twins_kept(plan, tree, refused):
         if alike:
             same = [path for named in alike for path in named]
             notes.append(
@@ -13902,9 +13933,12 @@ def _reencoded_attributes_findings(plan: Plan, source: Source,
 # and counting the rest: what the root keeps, what goes to a leg or is
 # dropped, the pinned copies, and then each of git's refusals. The root's own
 # `.gitattributes` is #530's D5(a) question above, and is not asked again; a
-# symlink and a gitlink get no rule applied. The files the split renders
-# from values it knows only once the legs are pushed (the manifest, the pin
-# files, the README) and the mounts' `.gitmodules` are not asked.
+# symlink and a gitlink get no rule applied. The case twins
+# `plan-case-twins` names are that finding's alone, and asked nothing here
+# (#1184): not as files, nor as rules the split's `git add` stores again,
+# though their rules still reach the files beside them. The files the split
+# renders from values it knows only once the legs are pushed (the manifest,
+# the pin files, the README) and the mounts' `.gitmodules` are not asked.
 
 #: `check`'s finding, and the code of `execute`'s refusal, for a file the
 #: plan keeps or moves, or a pinned copy, that this machine's git would store
@@ -14345,7 +14379,10 @@ def _reencoded_files_findings(plan: Plan, source: Source, tree: list,
     asked nothing more, and `_Unasked` is raised where git cannot be asked
     (#910). `refused` is `_paths_git_refuses`' answer, where `_entry_findings`
     has it, so the rehearsal asks no path question of its own; given none,
-    it asks."""
+    it asks. The case twins `plan-case-twins` names are asked nothing
+    (#1184): git's `will not add file alias` for them, under
+    `core.ignorecase=true`, said that finding again as this one, and
+    stopped the split's `git add` before it stored any other file."""
     kept_rows = _kept_in_root(plan.entries, tree)
     kept = {path for path, _, _ in kept_rows}
     disk = _KeptTree(kept_rows, False)
@@ -14353,8 +14390,10 @@ def _reencoded_files_findings(plan: Plan, source: Source, tree: list,
     own = top[0] if top is not None and top[1] in FILE_MODES else None
     at_the_top = top[0] if top is not None else None
     order = {path: at for at, (path, _, _, _) in enumerate(tree)}
+    twins = {path for _, sets, _ in _case_twins_kept(plan, tree, refused or ())
+             for named in sets for path in named}
     files = [(path, mode, oid) for path, mode, oid, _ in tree
-             if mode in FILE_MODES and path != own]
+             if mode in FILE_MODES and path != own and path not in twins]
     rules = [(path, mode, oid) for path, mode, oid, _ in tree
              if mode in (*FILE_MODES, SYMLINK_MODE)
              and path.rsplit("/", 1)[-1].casefold() == ATTRIBUTES]
@@ -14407,8 +14446,8 @@ def _reencoded_files_findings(plan: Plan, source: Source, tree: list,
                 return [_refused_finding(COMPARE_REFUSED, compare_said)]
             return [_moved_finding(taken)] if taken else []
         held = {*[row for row in wanted if row[0] in kept],
-                *[row for row in rules
-                  if row[0] in kept and row[0] != at_the_top]}
+                *[row for row in rules if row[0] in kept
+                  and row[0] != at_the_top and row[0] not in twins]}
         asked.hold(STORED, held)
         stored_said = asked.refused(["add", "-u"], STORED)
         blobs = {path: oid for path, _, oid in held}
