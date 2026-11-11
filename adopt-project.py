@@ -13946,7 +13946,9 @@ def _reencoded_attributes_findings(plan: Plan, source: Source,
 # `as_one_file` makes the mount's, `check` named `A` with either twin sent,
 # where `execute` verified. So the compare leaves each path the mount
 # removes with `-f` out, as `git rm -f` compares nothing, and the kept
-# twins are written back before `git add -u`, as the mount writes them.
+# twins are written back from the checkout's index once the moved rules
+# are gone, before the root's rules are read, as the mount writes them
+# (`_as_the_split_writes`, r1298a's MUST 1).
 # Those paths are still compared, in an index of their own whose list is
 # never read: a filter that fails for one stops each clone of the source
 # that reads it again, though the mount no longer does
@@ -14242,17 +14244,52 @@ def _rules_reaching(asked: _SplitRehearsal, source: Source, tree: list,
 
 def _as_the_split_writes(asked: _SplitRehearsal, rules: list, kept: set[str],
                          own: str | None, written: dict,
-                         landings: list[tuple[str, str]]) -> None:
-    """The root's rules as the split's `git add` reads them: the moved
-    `.gitattributes` gone; the root's own followed by #471's block, or the
-    shape's own where the root keeps none; and the shape's beside it, where
-    the root keeps nothing there (`plan-root-blocks-shape-copy` names what
-    it keeps, #262). The block names each pinned copy of `landings`
-    (`_pinned_landings`') where it lands, the path git tracks, and by its own
-    name where that differs (#807)."""
-    for path, _, _ in rules:
-        if path not in kept:
-            asked.work.joinpath(*path.split("/")).unlink(missing_ok=True)
+                         landings: list[tuple[str, str]],
+                         back: list[str]) -> str | None:
+    """The root's rules as the split's `git add` reads them, made in the
+    mount's order: the moved `.gitattributes` gone, as its `git rm` takes
+    them; then `back`, each case twin the root keeps of a set the plan
+    splits that `CHECKED_OUT` holds, the root's own `.gitattributes`
+    among them, written back from that index as the mount writes them
+    (#1298); and only then the root's own placed (`_root_rules_placed`).
+    None, or git's refusal of the write-back, where nothing is placed.
+
+    THE WRITE-BACK COMES BEFORE THE ROOT'S RULES ARE READ (r1298a's MUST
+    1). On a disk that ignores case, unlinking `.GITATTRIBUTES`, sent to a
+    leg, unlinks the one file it shares with the root's `.gitattributes`.
+    Measured by r1298a on e3c5c940 with git 2.43, that disk simulated, the
+    root's `* text eol=lf` kept beside a CRLF `notes.txt`: the root's own
+    was read after the unlink, `FileNotFoundError` returned before the
+    split's `git add` was asked, and `check` said `plan ok` where `execute`
+    ended `adopt-lost` for `notes.txt` after both legs existed. The mount
+    writes it back after its `git rm`, and `materialize_assembly_root`
+    reads it after that. The moved rules go from `CHECKED_OUT` too, as the
+    mount's `git rm` takes them from its index, so git writes each twin
+    back with the rules the mount's index and disk hold then."""
+    moved = [path for path, _, _ in rules if path not in kept]
+    for path in moved:
+        asked.work.joinpath(*path.split("/")).unlink(missing_ok=True)
+    if back:
+        asked.asked(["update-index", "-z", "--force-remove", "--stdin"],
+                    CHECKED_OUT, b"".join(map(_nul, moved)))
+        said = asked.refused(["checkout-index", "-f", "-z", "--stdin"],
+                             CHECKED_OUT, b"".join(map(_nul, back)))
+        if said is not None:
+            return said
+    _root_rules_placed(asked, kept, own, written, landings)
+    return None
+
+
+def _root_rules_placed(asked: _SplitRehearsal, kept: set[str],
+                       own: str | None, written: dict,
+                       landings: list[tuple[str, str]]) -> None:
+    """The root's rules as the split writes them: the root's own followed
+    by #471's block, or the shape's own where the root keeps none; and the
+    shape's beside it, where the root keeps nothing there
+    (`plan-root-blocks-shape-copy` names what it keeps, #262). The block
+    names each pinned copy of `landings` (`_pinned_landings`') where it
+    lands, the path git tracks, and by its own name where that differs
+    (#807)."""
     beside = f"{COLLISION_DIR}/{ATTRIBUTES}"
     if beside not in written:
         asked.place(ATTRIBUTES, written[ATTRIBUTES])
@@ -14500,22 +14537,19 @@ def _reencoded_files_findings(plan: Plan, source: Source, tree: list,
             asked, TAKEN_WITH_F, wanted, rules, with_f)
         refusals = ((COMPARE_REFUSED, compare_said),
                     (FORCED_COMPARE_REFUSED, forced_said))
-        # The split's side: its `git add`, over the root it writes.
+        # The split's side: its `git add`, over the root it writes once the
+        # mount has written back each case twin the root keeps (#1298).
+        back = sorted((path for path, _, _ in {*wanted, *rules}
+                       if path in written_back), key=order.get)
         try:
-            _as_the_split_writes(asked, rules, kept, own, written, landings)
+            stored_said = _as_the_split_writes(asked, rules, kept, own,
+                                               written, landings, back)
         except OSError:
             return _grouped_findings([], taken, [], at_the_root, refusals)
         held = {*[row for row in wanted if row[0] in kept],
                 *[row for row in rules if row[0] in kept
                   and row[0] != at_the_top and row[0] not in twins]}
         asked.hold(STORED, held)
-        # Each twin the mount writes back from the index, over the one file
-        # a disk that ignores case left of its set, before `git add` (#1298).
-        back = sorted((path for path, _, _ in held if path in written_back),
-                      key=order.get)
-        stored_said = None if not back else asked.refused(
-            ["checkout-index", "-f", "-z", "--stdin"], STORED,
-            b"".join(map(_nul, back)))
         if stored_said is None:
             stored_said = asked.refused(["add", "-u"], STORED)
         blobs = {path: oid for path, _, oid in held}

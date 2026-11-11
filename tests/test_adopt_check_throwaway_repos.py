@@ -134,7 +134,10 @@ beside its twin `a` kept, under `* text eol=lf`, and, on a disk that
 ignores case (simulated), either twin under the source's `* text=auto`,
 where `execute` verified with the check patched out. Now the rehearsal
 compares nothing the mount removes with `-f`, except for a filter that
-fails, which the clones still meet, and writes the kept twins back.
+fails, which the clones still meet, and writes the kept twins back. Its
+first form wrote them back only after reading the root's rules, which on
+such a disk the unlink of `.GITATTRIBUTES` had taken (r1298a's MUST 1):
+now the write-back comes first, from the checkout's index, as the mount's.
 """
 
 from __future__ import annotations
@@ -4220,6 +4223,77 @@ def test_on_a_disk_that_ignores_case_execute_adopts_twins_it_splits(
                      allow_empty_leg=[], yes=True, work_dir=tmp_path / "work")
     assert adopter.cmd_execute(args) == 0
     assert "adoption verified" in capsys.readouterr().out
+
+
+#: The case twin of the root's own `.gitattributes` in r1298a's PH.
+RULES_TWIN = ".GITATTRIBUTES"
+
+
+def a_rules_twin_sent(base: Path) -> Path:
+    """r1298a's PH: the root's own `.gitattributes` (`* text eol=lf`) kept,
+    its case twin `.GITATTRIBUTES` sent to the code leg, and a CRLF
+    `notes.txt` kept, which the split's `git add` stores as LF."""
+    source = a_source(base, files={ROOT_ATTRIBUTES: TEXT_EOL_LF,
+                                   RULES_TWIN: b"# other\n", NOTES: CRLF})
+    return planned(source, base, {RULES_TWIN: "code", NOTES: ROOT})
+
+
+def unlinked_through_each_twin(monkeypatch) -> None:
+    """Each unlink in the rehearsal's work tree takes with it each case twin
+    beside it that is the same file, as a disk that ignores case does,
+    where the names are one file: the hard links `as_one_file` makes leave
+    the other name standing, which hid r1298a's MUST 1 from every row."""
+    real = Path.unlink
+
+    def unlink(self, missing_ok=False):
+        one_file = []
+        if any(part.startswith("openreposhape-reencoded-")
+               for part in self.parts) and self.exists():
+            one_file = [other for other in self.parent.iterdir()
+                        if other.name != self.name
+                        and other.name.casefold() == self.name.casefold()
+                        and other.samefile(self)]
+        real(self, missing_ok=missing_ok)
+        for other in one_file:
+            real(other, missing_ok=True)
+
+    monkeypatch.setattr(Path, "unlink", unlink)
+
+
+#: Whether the rehearsal's checkout is made as a disk that ignores case
+#: makes it: each set of twins one file, which an unlink of either takes.
+DISKS = [pytest.param(False, id="keeps-case"),
+         pytest.param(True, id="ignores-case")]
+
+
+@pytest.mark.parametrize("one_file", DISKS)
+def test_the_roots_own_rules_are_written_back_before_they_are_read(
+        adopter, monkeypatch, capsys, tmp_path, one_file):
+    """r1298a's MUST 1 (PH), on a disk that ignores case, simulated. The
+    rehearsal unlinked `.GITATTRIBUTES`, sent to the code leg, and so the
+    one file it shares with the root's `.gitattributes`, then read the
+    root's: measured on e3c5c940 with git 2.43, `FileNotFoundError`
+    returned before the split's `git add` was asked, `check` said `plan
+    ok`, and `execute`, its check passed, ended `adopt-lost` for the CRLF
+    `notes.txt` the root keeps after both legs existed. Now each twin the
+    root keeps is written back from the checkout's index before the root's
+    rules are read, as the mount writes it back, and `check` names
+    `notes.txt`, which `execute` refuses before any leg. The control: on a
+    disk that keeps case, the same finding, as on e3c5c940."""
+    made = []
+    if one_file:
+        made = one_file_rehearsal(adopter, monkeypatch)
+        unlinked_through_each_twin(monkeypatch)
+    plan = a_rules_twin_sent(tmp_path)
+    code, found = checked_in_process(adopter, capsys, plan)
+    assert code == 1, found
+    (finding,) = found
+    assert finding.startswith(f"FINDING {REENCODED_FILES}: {KEPT_CRLF}"), \
+        finding
+    assert f": `{NOTES}`." in finding, finding
+    assert made == ([(RULES_TWIN, ROOT_ATTRIBUTES)] if one_file else [])
+    refusal = refused_before_any_leg(adopter, monkeypatch, plan, tmp_path)
+    assert refusal.code == REENCODED_FILES
 
 
 def test_a_forced_compare_git_refuses_names_no_step_that_compares_nothing(
