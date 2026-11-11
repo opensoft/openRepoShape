@@ -4131,6 +4131,48 @@ def test_a_file_the_mount_removes_with_f_is_compared_with_nothing(tmp_path):
     assert "The mount's `git rm` refuses" in detail, detail
 
 
+#: r1298a's PA: the file the root keeps in `D/`, beside the folder `d/` the
+#: plan sends to the code leg, where a CRLF `notes.txt` is no case twin of
+#: anything. Each name ends `.txt`, so `plan` asks about each folder whole.
+#: As `D/x.txt`, the twin of `d/x.txt`, the mount removes `d` with `-f`; as
+#: `D/y.txt`, the control, it removes `d` without it.
+BESIDE_THE_TWIN = [pytest.param("D/x.txt", id="a-twin-under-the-folder"),
+                   pytest.param("D/y.txt", id="no-twin-the-control")]
+
+
+def a_crlf_file_under_a_folder_sent(base: Path, kept: str) -> Path:
+    """`kept` in the root as `D/`, and `d/x.txt` and a CRLF `d/notes.txt`
+    sent to the code leg as `d/`, under the root's `* text eol=lf`."""
+    source = a_source(base, files={ROOT_ATTRIBUTES: TEXT_EOL_LF, kept: b"D\n",
+                                   "d/x.txt": b"d\n", f"d/{NOTES}": CRLF})
+    return planned(source, base, {"D/": ROOT, "d/": "code"})
+
+
+@pytest.mark.parametrize("kept", BESIDE_THE_TWIN)
+def test_a_file_under_a_folder_the_mount_removes_with_f_is_never_named(
+        adopter, monkeypatch, tmp_path, kept):
+    """r1298a's SHOULD 1: `d/notes.txt` is no twin, but the mount removes
+    it with `git rm -f -- d`, which compares nothing, as `d/x.txt` is the
+    twin of `D/x.txt`, which the root keeps. Measured by r1298a with git
+    2.43 on eeb5b73e: `check` named `d/notes.txt`, saying the mount's `git
+    rm` refuses it, where `execute`, with the check patched out, said
+    `adoption verified`; and a mutant of e3c5c940 that left out of the
+    compare only the twins themselves (M5) said so again. Now `check` says
+    `plan ok`. The control, `D/y.txt`, is no twin of anything there: the
+    mount's `git rm` of `d` has no `-f` and refused `d/notes.txt`
+    (`REFUSED mounting the legs`), and `check` still names it, which
+    `execute` refuses before any leg."""
+    plan = a_crlf_file_under_a_folder_sent(tmp_path, kept)
+    if kept == "D/x.txt":
+        assert findings(plan) == []
+        return
+    refusal = refused_before_any_leg(adopter, monkeypatch, plan, tmp_path)
+    assert refusal.code == REENCODED_FILES
+    (detail,) = refusal.detail.splitlines()[1:]
+    assert SENT_CRLF in detail and f": `d/{NOTES}`." in detail, detail
+    assert "The mount's `git rm` refuses" in detail, detail
+
+
 def one_file_rehearsal(adopter, monkeypatch) -> list:
     """The rehearsal's checkout as a disk that ignores case makes it, on a
     disk that keeps case: after the checkout of `CHECKED_OUT`, each set of
