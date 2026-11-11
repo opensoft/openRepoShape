@@ -68,6 +68,11 @@ CHARACTERS = {
 }
 EACH_CHARACTER = pytest.mark.parametrize(
     "char", list(CHARACTERS.values()), ids=list(CHARACTERS))
+#: What stands beside the character in a name: nothing but letters, or an
+#: ESC. The table is asked of each character, so the character is escaped
+#: beside a control too, where `repr` has its own work to do (RV1165's S1).
+BESIDE = pytest.mark.parametrize(
+    "beside", ["", "\x1b"], ids=["letters", "escape"])
 
 
 @pytest.fixture(scope="module")
@@ -134,12 +139,13 @@ def test_a_validators_shown_escapes_it_as_the_library_does(
 
 
 @EACH_CHARACTER
-def test_shown_path_and_shown_source_escape_it(char):
-    name = f"ma{char}in"
+@BESIDE
+def test_shown_path_and_shown_source_escape_it(char, beside):
+    name = f"ma{char}{beside}in"
     for said in (repo_shape.shown_path(name),
                  shape_materialize.shown_source(name)):
         assert char not in said, ascii(said)
-        assert said == f"'ma{escaped(char)}in'"
+        assert said == f"'ma{escaped(char)}{repr(beside)[1:-1]}in'"
 
 
 # --- 2. a branch: `readable_branch`, `_branch_finding`, `_argument_fault` ----
@@ -237,13 +243,14 @@ def test_worded_names_it_outside_the_backticks(adopter, char):
 
 
 @EACH_CHARACTER
+@BESIDE
 @pytest.mark.parametrize("where", ["adopt-project", "shape_materialize"])
-def test_line_shown_escapes_it(adopter, where, char):
+def test_line_shown_escapes_it(adopter, where, char, beside):
     line_shown = (adopter._line_shown if where == "adopt-project"
                   else shape_materialize._line_shown)
-    said = line_shown(f"ma{char}in")
+    said = line_shown(f"ma{char}{beside}in")
     assert char not in said, ascii(said)
-    assert said == f"'ma{escaped(char)}in'"
+    assert said == f"'ma{escaped(char)}{repr(beside)[1:-1]}in'"
 
 
 @EACH_CHARACTER

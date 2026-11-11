@@ -783,6 +783,10 @@ def test_the_naming_gate_names_a_printable_link_source_as_typed(tmp_path):
 
 
 @pytest.mark.parametrize("path", [
+    # A default-ignorable character beside printable non-ASCII, beside a
+    # control and before a line feed (RV1165's S1, #1165): a copy that
+    # escapes more or less than `shown_path` does is caught here.
+    "caf\u00e9\u034f", "ma\u034f\x1bin", "ma\u3164in\n",
     "plain/dir", "x\x1b[31mRED", "a\nb", "a\rb", "caf\u00e9", "\udcff",
     "tab\there", "",
 ])
