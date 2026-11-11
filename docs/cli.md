@@ -497,12 +497,13 @@ options:
                         `origin` url names; where it has no `origin` and
                         exactly one remote, the one that remote's url names,
                         unless its name is not printable ASCII or starts with
-                        `-`). A source with no remote, with two or more and no
-                        `origin`, or whose `origin` (or only remote) is a
-                        path, names no organisation: `plan` refuses it as
-                        `adopt-no-org` unless --org is given. `execute`
-                        refuses one over 39 characters without --local-remote-
-                        dir, GitHub's limit on an organisation's name.
+                        `-`). A source with no remote, with two or more
+                        remotes and no `origin`, or whose `origin` (or only
+                        remote) is a path, names no organisation: `plan`
+                        refuses it as `adopt-no-org` unless --org is given.
+                        `execute` refuses one over 39 characters without
+                        --local-remote-dir, GitHub's limit on an
+                        organisation's name.
   --id ID               lowercase project id (default: --project lowercased).
                         `execute` refuses one over 39 characters without
                         --local-remote-dir: GitHub keeps a topic to 50, and
@@ -664,9 +665,10 @@ options:
                         and any other `local_path` that is gone is refused as
                         `plan-source-gone`; one that is a file, or a directory
                         inside a repository, as `source-not-top-level`; and
-                        one this user cannot reach, a clone `plan` made
-                        included, as `source-unreadable`, never cloned again.
-                        Either source, where it is a partial clone (`git clone
+                        one this user cannot reach, or one whose `.git` this
+                        user cannot read, a clone `plan` made included, as
+                        `source-unreadable`, never cloned again. Either
+                        source, where it is a partial clone (`git clone
                         --filter`) that lacks an object its branches, tags or
                         HEAD reach, is refused as `source-partial-clone`
                         before anything reads it: git would fetch that object
@@ -730,9 +732,10 @@ options:
                         and any other `local_path` that is gone is refused as
                         `plan-source-gone`; one that is a file, or a directory
                         inside a repository, as `source-not-top-level`; and
-                        one this user cannot reach, a clone `plan` made
-                        included, as `source-unreadable`, never cloned again.
-                        Either source, where it is a partial clone (`git clone
+                        one this user cannot reach, or one whose `.git` this
+                        user cannot read, a clone `plan` made included, as
+                        `source-unreadable`, never cloned again. Either
+                        source, where it is a partial clone (`git clone
                         --filter`) that lacks an object its branches, tags or
                         HEAD reach, is refused as `source-partial-clone`
                         before anything reads it: git would fetch that object
