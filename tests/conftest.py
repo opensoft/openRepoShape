@@ -1370,8 +1370,9 @@ def skip_where_the_locale_does_not_spell_it_as_utf_8(text: str,
 
     A row asks it of the text its premise is about, and only that. A branch
     whose bytes are not UTF-8 (`on_a_branch_that_is_not_utf_8`) is one in
-    every locale, and a row about it judges there too (#1224's N1). A name
-    the TEST cannot make or pass at all is
+    every locale, but under a one-byte locale its row skips first, at
+    `skip_where_a_name_cannot_be_not_utf_8`'s locale question (#1224's N1).
+    A name the TEST cannot make or pass at all is
     `skip_where_the_environment_cannot_carry`'s."""
     encoding = sys.getfilesystemencoding()
     as_utf_8 = text.encode("utf-8", "surrogateescape")

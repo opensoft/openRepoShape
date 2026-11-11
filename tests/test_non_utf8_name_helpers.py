@@ -26,9 +26,9 @@ one for a child. The helper's first two questions are written once, as
 `an_earlier_question_skips` (#1224's N4), and the rows of it below hold it to
 the helper on each system.
 
-The two tools the tests below are written with are held here too:
+The three tools the tests below are written with are held here too:
 `skip_message`, which every one of them reads a skip with, and
-`windows_fsencode`, the emulation itself.
+`windows_fsencode` and `windows_fsdecode`, the two emulations themselves.
 
 A third helper, `skip_where_the_locale_does_not_spell_it_as_utf_8` (#1214),
 asks three questions of a locale through `os`, and the tests at the end hold
@@ -124,6 +124,34 @@ def test_windows_fsencode_takes_a_path_as_os_fsencode_does():
     the question it is written to hold. A surrogate in a path is the three
     bytes of one in text."""
     assert windows_fsencode(Path("caf\udcff")) == b"caf\xed\xb3\xbf"
+
+
+# --- `windows_fsdecode`: the emulation is Windows' `os.fsdecode` --------------
+#
+# The row that holds the system to be asked before the locale (#1224's N3)
+# stands on this: Windows' `os.fsdecode` raises on the byte 0xFF, where
+# POSIX's reads it back as a surrogate. An emulation that did not raise would
+# let a helper that asked the locale first through that row unseen.
+
+def test_windows_fsdecode_raises_on_a_byte_that_is_not_utf_8():
+    """The byte 0xFF is in no UTF-8 text, so Windows' `os.fsdecode` raises on
+    it, and the emulation must: one that read it back as U+DCFF would not be
+    Windows', and the row that holds the system to be asked before the locale
+    would no longer see a helper that asks the locale first."""
+    with pytest.raises(UnicodeDecodeError):
+        windows_fsdecode(b"\xff")
+
+
+def test_windows_fsdecode_reads_utf_8_back_as_the_text_it_spells():
+    assert windows_fsdecode("caf\u00e9".encode("utf-8")) == "caf\u00e9"
+
+
+def test_windows_fsdecode_passes_text_through_as_os_fsdecode_does():
+    """`os.fsdecode` takes a str on every system and gives it back; the
+    emulation that stands in for it must not fail on one."""
+    text = "caf\udcff"
+    assert os.fsdecode(text) == text
+    assert windows_fsdecode(text) == text
 
 
 # --- the system's question: what `os.fsencode` makes of the surrogate --------
@@ -277,6 +305,8 @@ def windows_answers(monkeypatch) -> None:
                  id="ascii"),
     pytest.param(lambda monkeypatch: locale_of(monkeypatch, LATIN_1), True,
                  id="latin-1"),
+    pytest.param(lambda monkeypatch: locale_of(monkeypatch, CP1251), True,
+                 id="cp1251"),
     pytest.param(windows_answers, True, id="windows"),
 ])
 def test_an_earlier_question_skips_where_the_helper_skips_before_the_disk(
@@ -285,7 +315,10 @@ def test_an_earlier_question_skips_where_the_helper_skips_before_the_disk(
     absent, so before any `mkdir`; where it says false the helper goes on to
     the disk, and the `mkdir` under an absent directory is
     FileNotFoundError. Windows' `os.fsdecode` raises on the byte 0xFF, so a
-    predicate that asked the locale first would raise there."""
+    predicate that asked the locale first would raise there. cp1251 reads
+    0xFF as U+044F, a letter other than Latin-1's U+00FF, so a predicate
+    narrowed to Latin-1's reading would say false there where the helper
+    skips."""
     system(monkeypatch)
     assert an_earlier_question_skips() is earlier
     absent = tmp_path / "absent"
@@ -295,6 +328,30 @@ def test_an_earlier_question_skips_where_the_helper_skips_before_the_disk(
     else:
         with pytest.raises(FileNotFoundError):
             skip_message(skip_where_a_name_cannot_be_not_utf_8, absent)
+
+
+@pytest.mark.parametrize(("system", "skips"), [
+    pytest.param(lambda monkeypatch: locale_of(monkeypatch, UTF_8), False,
+                 id="utf-8"),
+    pytest.param(lambda monkeypatch: locale_of(monkeypatch, ASCII), False,
+                 id="ascii"),
+    pytest.param(lambda monkeypatch: locale_of(monkeypatch, LATIN_1), True,
+                 id="latin-1"),
+])
+def test_the_guard_of_the_rows_that_reach_the_disk_asks_the_predicate(
+        monkeypatch, system, skips):
+    """`skip_where_an_earlier_question_skips` is how each row above that lets
+    the probe through to the real disk starts. It skips where the predicate
+    says true: under Latin-1, and not under UTF-8 or ASCII. The locale is
+    EMULATED, so that a run under UTF-8, which CI is, holds it too: a guard
+    that skipped the other way would skip those rows in silence there, and
+    only a Latin-1 run would fail one."""
+    system(monkeypatch)
+    reason = skip_message(skip_where_an_earlier_question_skips)
+    if skips:
+        assert reason is not None, "the guard let the row through"
+    else:
+        assert reason is None, f"the guard skipped the row: {reason}"
 
 
 # --- the locale's question: does it spell the text as UTF-8 does (#1214) ------
@@ -314,6 +371,11 @@ def test_an_earlier_question_skips_where_the_helper_skips_before_the_disk(
 # real locale of the run.
 
 UTF_8, LATIN_1, ASCII = "utf-8", "iso8859-1", "ascii"
+
+#: A one-byte locale where the byte 0xFF is a letter other than U+00FF
+#: (U+044F, Cyrillic): the first two questions are held to the helper there
+#: as well as under Latin-1 (`an_earlier_question_skips`).
+CP1251 = "cp1251"
 
 #: The questions, by the words the reason says them in.
 CANNOT_SPELL, WRITES_OTHER_BYTES, READS_OTHER_TEXT = (
