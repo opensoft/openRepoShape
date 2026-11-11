@@ -52,8 +52,8 @@ itself is (`_read_as`): the number 7, not `7`.
 
 AND BEFORE `_work_root`'S OTHER REFUSALS AND A GONE SOURCE (#1179, RV1125b's
 NIT-A). The one row that pinned that position against the work directory
-used a directory `chmod` made unwritable. `_work_root` refuses two more
-things before it makes anything, a `--work-dir` that is a file and one every
+used a directory `chmod` made unwritable. `_work_root` refuses more before
+it makes anything, among them a `--work-dir` that is a file and one every
 user can write in, and both commands refuse a plan whose source is gone: a
 bad `id:` or `org:` beside any of them is the value's refusal, in both.
 
@@ -69,19 +69,15 @@ from __future__ import annotations
 
 import os
 import shutil
-import sys
 from pathlib import Path
 
 import pytest
 
-from conftest import (ADOPT, REPO, WINDOWS_SKIP, git, make_source_repo,
-                      planned, run_script)
+from conftest import (ADOPT, WINDOWS_SKIP, git, make_source_repo, planned,
+                      run_script)
 from test_adopt_pins import ANSWERS, pin_entry
 from test_adopt_root_symlinks import unwritable_work  # noqa: F401 - a fixture
-from test_adopt_template_values import with_line
-
-sys.path.insert(0, str(REPO / "scripts"))
-from repo_shape import double_quoted  # noqa: E402
+from test_adopt_template_values import double_quoted, with_line
 
 UTF8 = "utf-8"
 PLAN_FILE = "adoption-plan.yaml"
