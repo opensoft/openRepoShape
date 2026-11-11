@@ -308,8 +308,9 @@ def the_environment_of_a_child_read_as_bytes(tmp_path: Path) -> dict:
     override of the machine running the suite, and an identity git can commit
     with. The run below ends at the clone refusal, before a pin is read or a
     commit is made, so none of the three changes what it says; they are here
-    so that this child is started as every other one is, as
-    `test_stdout_encoding.py`'s `run_tool_bytes` starts its own."""
+    so that this child is started as `run_script` starts every other child
+    (#1224's N5), which sets no `AGENT_PROTOCOL_ROOT`, where
+    `test_stdout_encoding.py`'s `child_environ` does."""
     environment = blank_unnamed_pin_sources(
         {**os.environ, "LANES_LANE": "", **a_gh_that_refuses(tmp_path),
          "PYTHONIOENCODING": "utf-8:surrogateescape"}, {})
@@ -357,6 +358,39 @@ def test_a_work_dir_that_is_not_utf8_is_spelled_and_no_raw_byte_is_written(
         f"cloning {REPOSITORY} (read only) into `{clone}/{PROJECT}`".encode()
     ], stdout
     assert b"\xff" not in stdout, stdout
+
+
+def test_the_child_read_as_bytes_is_started_as_run_script_starts_one(
+        tmp_path, monkeypatch):
+    """`the_environment_of_a_child_read_as_bytes` is the environment
+    `run_script` gives a child, key for key, but for the stand-in `gh`
+    (`PATH`, `GH_STUB_LOG`) and the stdout each asks for
+    (`PYTHONIOENCODING`), as its docstring says (#1224's N5). Asked with a
+    lane, a pin-source override and no git identity in this process, each of
+    which `run_script` changes. Neither child is started: `subprocess.run` is
+    replaced, and the environment it is handed is kept."""
+    monkeypatch.setenv("LANES_LANE", "openRepoShape-9")
+    monkeypatch.setenv("SHAPE_PIN_SOURCE_OPENXDOX", "/somewhere/else")
+    for name in ("GIT_AUTHOR_NAME", "GIT_AUTHOR_EMAIL", "GIT_COMMITTER_NAME",
+                 "GIT_COMMITTER_EMAIL"):
+        monkeypatch.delenv(name, raising=False)
+    handed = {}
+
+    def started(argv, **kwargs):
+        handed.update(kwargs["env"])
+        return subprocess.CompletedProcess(argv, 0, "", "")
+
+    monkeypatch.setattr(subprocess, "run", started)
+    (tmp_path / "run_script").mkdir()
+    run_script(ADOPT, "--help", env=a_gh_that_refuses(tmp_path / "run_script"))
+    (tmp_path / "as_bytes").mkdir()
+    built = the_environment_of_a_child_read_as_bytes(tmp_path / "as_bytes")
+    own = ("PATH", "GH_STUB_LOG", "PYTHONIOENCODING")
+    assert handed, "run_script started no child"
+    assert ({key: value for key, value in built.items() if key not in own}
+            == {key: value for key, value in handed.items()
+                if key not in own})
+    assert built["PYTHONIOENCODING"] == "utf-8:surrogateescape"
 
 
 # --- both at once ------------------------------------------------------------
