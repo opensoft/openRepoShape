@@ -3917,13 +3917,31 @@ READ_AGAIN_STOPS = {
 #: each runs (r1253's probe), which leaves the steps after both legs.
 EXTRACTIONS = [pytest.param(False, id="as-they-run"),
                pytest.param(True, id="as-if-trusting-the-stat")]
+#: The steps a compare git refuses for a path the mount removes with `git
+#: rm -f` names (`STOPS_AT_A_CLONES_READ`, #1298): every one but the mount,
+#: which reads nothing there.
+FORCED_READ_STOPS = {step: named for step, named in READ_AGAIN_STOPS.items()
+                     if step != "mounting the legs"}
+#: `(files, answers, the path the filter fails for, forced)`: `notes.txt`
+#: sent to each leg or dropped, which the mount's `git rm` compares; and
+#: `A` sent to the code leg beside its twin `a`, which the root keeps, so
+#: that the mount removes `A` with `-f` (r1298a's SHOULD 2).
+REFUSED_COMPARES = [
+    *[pytest.param(FILTERED_NOTES, {NOTES: leg}, NOTES, False, id=leg)
+      for leg in SENT_OR_DROPPED],
+    pytest.param({ROOT_ATTRIBUTES: f"/A filter={FAILING}\n".encode(),
+                  "A": b"A\n", "a": b"a\n"}, {"A": "code", "a": ROOT}, "A",
+                 True, id="forced"),
+]
 
 
 @NEEDS_FILTER_REPO
 @pytest.mark.parametrize("trusting", EXTRACTIONS)
-@pytest.mark.parametrize("leg", SENT_OR_DROPPED)
+@pytest.mark.parametrize(("files", "answers", "path", "forced"),
+                         REFUSED_COMPARES)
 def test_execute_stops_at_a_step_the_refused_compare_names(
-        adopter, monkeypatch, capsys, tmp_path, leg, trusting):
+        adopter, monkeypatch, capsys, tmp_path, files, answers, path, forced,
+        trusting):
     """The measurement behind `STOPS_AT_A_READ` (r1253's SHOULD-1): with
     `check`'s refusal patched out, `execute` makes both leg repositories and
     stops at a step the finding names, with the legs pushed that it names
@@ -3932,9 +3950,13 @@ def test_execute_stops_at_a_step_the_refused_compare_names(
     asked for. Where neither extraction reads the file, the split's own
     clone did, in 24 of 24 runs on 18c2aaef (r1253), a step the finding
     left out. Where no step read the file again, nothing stopped for it,
-    as the finding warns, and the row is skipped."""
-    plan = planned(a_source(tmp_path, files=FILTERED_NOTES), tmp_path,
-                   {NOTES: leg})
+    as the finding warns, and the row is skipped.
+
+    And behind `STOPS_AT_A_CLONES_READ` (r1298a's SHOULD 2), which rested
+    on r1237e's one measurement: for `A`, which the mount removes with
+    `git rm -f`, which reads nothing, the step is one that finding names,
+    and never mounting the legs."""
+    plan = planned(a_source(tmp_path, files=files), tmp_path, answers)
     for name, value in with_parameters(tmp_path, FAILING_FILTER).items():
         monkeypatch.setenv(name, value)
     ((code, detail),) = findings(plan)
@@ -3957,15 +3979,19 @@ def test_execute_stops_at_a_step_the_refused_compare_names(
     stopped = adopter.cmd_execute(args)
     said = capsys.readouterr().err
     if stopped == 0:
-        pytest.skip(f"no step read `{NOTES}` again in this run (READ_AGAIN)")
+        pytest.skip(f"no step read `{path}` again in this run (READ_AGAIN)")
     assert stopped == 2, said
     (refused,) = [line for line in said.splitlines()
                   if line.startswith("REFUSED ")]
     step = refused[len("REFUSED "):].split(". THE EXACT COMMAND WAS:")[0]
-    assert step in READ_AGAIN_STOPS, said
-    named, pushed = READ_AGAIN_STOPS[step]
+    stops = FORCED_READ_STOPS if forced else READ_AGAIN_STOPS
+    assert step in stops, said
+    if forced:
+        assert step != "mounting the legs", said
+        assert "mounting the legs" not in detail, detail
+    named, pushed = stops[step]
     assert named in detail, detail
-    assert f"fatal: {NOTES}: clean filter '{FAILING}' failed" in said, said
+    assert f"fatal: {path}: clean filter '{FAILING}' failed" in said, said
     assert f", and {pushed}. " in said, said
     if trusting:
         assert pushed == "both legs are pushed", said
