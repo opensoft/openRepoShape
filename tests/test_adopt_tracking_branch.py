@@ -42,6 +42,13 @@ none, and a ref git could not reach as not there, so a clone whose
 `.git/refs/heads` was at mode 000 was refused as having no branch of its
 own, "(its branches: none)". Each is `source-unreadable` now, naming the
 directory, with the `chmod` cure; the rows are at the end of this file.
+
+So is one that may hold the split branch an earlier run left (#1257):
+with the source's `.git/refs/heads/adopt` at mode 000, `check` said
+`plan ok` over the `adopt/three-repo-shape` it finds as
+`adopt-branch-exists` once it can list that directory, and `execute
+--local-remote-dir` made and pushed both legs before its split push met
+that branch. Their rows follow #1219's.
 """
 
 from __future__ import annotations
@@ -53,6 +60,7 @@ import shutil
 import stat
 import subprocess
 import sys
+from argparse import Namespace
 from pathlib import Path
 
 import pytest
@@ -599,10 +607,13 @@ def refs_at(directory: Path, mode: int):
 
 
 def refs_refused(source: Path, part: str, untold: str,
-                 reason: str = DENIED) -> str:
+                 reason: str = DENIED, *, common: Path | None = None) -> str:
     """The detail `source-unreadable` names `part` of the refs in the
-    source's `.git` with, and the directory whole."""
-    whole = os.path.join(os.path.realpath(source), ".git", *part.split("/"))
+    source's `.git` with, and the directory whole; in `common`, the git
+    directory git names, where that is not the source's `.git`."""
+    home = (os.path.join(os.path.realpath(source), ".git") if common is None
+            else os.path.realpath(common))
+    whole = os.path.join(home, *part.split("/"))
     return (f"the source's `{part}`, {spelled(whole)}: {reason}, so "
             f"{untold} cannot be told")
 
@@ -982,3 +993,405 @@ def test_a_source_git_reads_whole_is_asked_nothing_more(adopter, monkeypatch,
     assert read == {"clone": "main", "nested": "release/v1",
                     "no-remote": "feature/x", "detached": "main"}
     assert asked == []
+
+
+# --- a directory git cannot list where the split branch may be (#1257) ------
+#
+# `check` asks for the plan's split branch, `adopt/three-repo-shape`, among
+# the source's own branches (`_branches_at`) and, where the source's
+# `origin` is the assembly repository, among its remote's as it last
+# fetched them (`_branches_in`); `execute --local-remote-dir` asks the
+# source's own before any leg exists. Each was `git for-each-ref` alone. ON
+# b7a00b31 (#1252 merged into main at dffc4226, 2026-11-08), git 2.43.0,
+# Python 3.12.3, uid 1000, a stub `gh` and local remotes, with an earlier
+# run's split branch at a commit outside `main`:
+#
+# - in `.git/refs/heads/adopt` at mode 000 or `--x`: `check` said `plan ok`;
+#   at `r--`, `adopt-git-unasked`, the split's clone meeting a null OID; and
+#   `execute --local-remote-dir`, at 000, made and pushed both legs and then
+#   failed at the split push.
+# - in `.git/refs/remotes/origin/adopt` at any of those modes: `check` said
+#   `plan ok`.
+#
+# Readable, each is `adopt-branch-exists`. Now each is `source-unreadable`,
+# naming the directory, with the `chmod` cure, before any leg exists; and
+# a source git reads whole runs the same git calls as before, because the
+# directories are read from the disk (`_refuse_unlisted_refs_if_seen`).
+
+#: The plan's split branch, and `check`'s finding for one an earlier run left.
+SPLIT_BRANCH = "adopt/three-repo-shape"
+BRANCH_EXISTS = "adopt-branch-exists"
+#: Where an earlier run's split branch is kept, by the refs `check` reads it
+#: in, and what `source-unreadable` cannot tell where git cannot list it.
+SPLIT_PLACES = {"own": ("refs/heads/adopt", BRANCHES_UNTOLD),
+                "fetched": ("refs/remotes/origin/adopt", ORIGIN_UNTOLD)}
+
+
+def with_a_split_branch_left(source: Path, place: str) -> None:
+    """An earlier run's split branch, a commit outside `main`, loose in the
+    source: one of its own (`own`), or its `origin`'s as it last fetched it
+    (`fetched`)."""
+    git("switch", "-q", "-c", "earlier-run", cwd=source)
+    git("commit", "-q", "--allow-empty", "-m", "An earlier split", cwd=source)
+    tip = git("rev-parse", "HEAD", cwd=source).stdout.strip()
+    git("switch", "-q", "main", cwd=source)
+    git("branch", "-q", "-D", "earlier-run", cwd=source)
+    refs = "refs/heads/" if place == "own" else "refs/remotes/origin/"
+    git("update-ref", refs + SPLIT_BRANCH, tip, cwd=source)
+    assert (source / ".git" / Path(*SPLIT_PLACES[place][0].split("/"))
+            ).is_dir()
+
+
+@pytest.mark.parametrize("place", SPLIT_PLACES)
+def test_a_split_branch_git_lists_is_still_found(tmp_path, place):
+    """Read whole, an earlier run's split branch is `adopt-branch-exists`,
+    as before, and never `source-unreadable`."""
+    source = a_clone(tmp_path)
+    with_a_split_branch_left(source, place)
+    plan = planned_as_cloned(tmp_path, source)
+    env, _ = recording_gh(tmp_path / "gh-bin")
+
+    proc = asked_of(tmp_path, "check", source, plan, env)
+
+    assert proc.returncode == 1, said(proc)
+    assert proc.stderr.count(f"FINDING {BRANCH_EXISTS}: ") == 1, said(proc)
+    assert "source-unreadable" not in said(proc)
+
+
+@needs_a_mode
+@pytest.mark.parametrize("mode", REF_MODES)
+@pytest.mark.parametrize("place", SPLIT_PLACES)
+def test_a_split_branch_git_cannot_list_is_refused_by_check(tmp_path, place,
+                                                            mode):
+    """RV1252's case, and the same for the split branch `origin` last
+    fetched: its directory at mode 000, `--x` or `r--`. On b7a00b31 `check`
+    said `plan ok` (at `r--` in `refs/heads/adopt`, `adopt-git-unasked`).
+    Now `source-unreadable`, naming the directory, exit 2."""
+    source = a_clone(tmp_path)
+    with_a_split_branch_left(source, place)
+    plan = planned_as_cloned(tmp_path, source)
+    env, log = recording_gh(tmp_path / "gh-bin")
+    part, untold = SPLIT_PLACES[place]
+
+    with refs_at(source / ".git" / Path(*part.split("/")), mode):
+        proc = asked_of(tmp_path, "check", source, plan, env)
+
+    assert_refs_refused(proc, refs_refused(source, part, untold), tmp_path,
+                        log)
+    assert "plan ok" not in said(proc)
+
+
+@needs_a_mode
+@pytest.mark.parametrize("mode", REF_MODES[:2])
+def test_a_split_branch_git_cannot_list_is_refused_before_any_leg(tmp_path,
+                                                                  mode):
+    """`execute --local-remote-dir` pushes the split into the source, and
+    asks it first for the branch an earlier run left there
+    (`_refuse_a_split_branch_left_behind`). On b7a00b31, with its
+    `.git/refs/heads/adopt` at mode 000, it made and pushed both legs and
+    then failed at the split push. Now it is refused before any leg exists.
+    At `r--` git lists the branch and cannot read it, and the split's clone
+    meets a null OID first, `adopt-git-unasked`, before any leg, as on
+    b7a00b31: `check`'s own questions come before this one in `execute`."""
+    source = a_clone(tmp_path)
+    with_a_split_branch_left(source, "own")
+    plan = planned_as_cloned(tmp_path, source)
+    env, log = recording_gh(tmp_path / "gh-bin")
+
+    with refs_at(source / ".git" / "refs" / "heads" / "adopt", mode):
+        proc = asked_of(tmp_path, "execute", source, plan, env)
+
+    assert_refs_refused(proc, refs_refused(source, "refs/heads/adopt",
+                                           BRANCHES_UNTOLD), tmp_path, log)
+
+
+# --- the same questions, in-process (as root and on Windows too) ------------
+
+def split_directory_unlisted_here(adopter, monkeypatch, source: Path,
+                                  part: str) -> Path:
+    """The source's directory `part` made, empty, as git lists it, and
+    refused to `os.scandir` in this process, as a mode refuses it
+    (`unlisted_here`, with git left to list what it can)."""
+    directory = source / ".git" / Path(*part.split("/"))
+    directory.mkdir()
+    git_listing = adopter.git_out
+    unlisted_here(adopter, monkeypatch, directory)
+    monkeypatch.setattr(adopter, "git_out", git_listing)
+    return directory
+
+
+def check_args(root: Path, plan: Path) -> Namespace:
+    return Namespace(plan=str(plan), source=None, work_dir=root / "read",
+                     local_remote_dir=root / "remotes")
+
+
+def execute_args(root: Path, plan: Path) -> Namespace:
+    return Namespace(plan=str(plan), source=None,
+                     local_remote_dir=root / "remotes", allow_empty_leg=[],
+                     yes=True, work_dir=root / "execute-work")
+
+
+def stopped_at_the_legs(adopter, monkeypatch) -> None:
+    """`execute` with its probe for `git filter-repo` stubbed, and stopped
+    where it would make the legs: what reaches there was refused by
+    nothing."""
+    def proceeded(*args, **kwargs):
+        raise AssertionError("execute went on to make the legs")
+    monkeypatch.setattr(adopter, "_require_filter_repo", lambda: None)
+    monkeypatch.setattr(adopter, "_create_leg_remotes", proceeded)
+
+
+@pytest.mark.parametrize("place", SPLIT_PLACES)
+def test_check_names_a_split_branch_directory_the_system_will_not_list(
+        adopter, monkeypatch, tmp_path, place):
+    """`check`, in this process, of a clone whose split-branch directory the
+    system will not list: `source-unreadable`, naming it. On b7a00b31 this
+    was `plan ok`."""
+    source = a_clone(tmp_path)
+    plan = planned_as_cloned(tmp_path, source)
+    part, untold = SPLIT_PLACES[place]
+    split_directory_unlisted_here(adopter, monkeypatch, source, part)
+
+    with pytest.raises(adopter.Refusal) as raised:
+        adopter.cmd_check(check_args(tmp_path, plan))
+
+    assert raised.value.code == "source-unreadable"
+    assert raised.value.detail == refs_refused(source, part, untold)
+    assert CURE in raised.value.remediation
+
+
+def test_execute_names_a_split_branch_directory_the_system_will_not_list(
+        adopter, monkeypatch, tmp_path):
+    """`execute --local-remote-dir`, in this process: refused naming the
+    source's `refs/heads/adopt` before any leg exists. On b7a00b31 it went
+    on to make the legs."""
+    source = a_clone(tmp_path)
+    plan = planned_as_cloned(tmp_path, source)
+    split_directory_unlisted_here(adopter, monkeypatch, source,
+                                  "refs/heads/adopt")
+    stopped_at_the_legs(adopter, monkeypatch)
+
+    with pytest.raises(adopter.Refusal) as raised:
+        adopter.cmd_execute(execute_args(tmp_path, plan))
+
+    assert raised.value.code == "source-unreadable"
+    assert raised.value.detail == refs_refused(source, "refs/heads/adopt",
+                                               BRANCHES_UNTOLD)
+    assert not (tmp_path / "remotes").exists()
+
+
+def test_a_source_git_reads_whole_asks_no_git_more_for_its_split_branch(
+        adopter, monkeypatch, tmp_path, capsys):
+    """A source git reads whole runs the same git calls as before (#1257).
+    With no split branch, `check` and `execute` read its directories from
+    the disk, `refs/heads/` and `refs/remotes/origin/` for `check` and
+    `refs/heads/` for each of `execute`'s two questions, and never run
+    `_refuse_unlisted_refs`, whose `git rev-parse` would be one call more
+    each time. With an earlier run's split branch in both places, which git
+    lists, nothing more is asked at all."""
+    refused, walked = [], []
+    real_refuse = adopter._refuse_unlisted_refs
+    real_walk = adopter._unlisted_ref_directory
+
+    def refusing(*args):
+        refused.append(args)
+        return real_refuse(*args)
+
+    def walking(common, prefix):
+        walked.append(prefix)
+        return real_walk(common, prefix)
+
+    clean = a_clone(tmp_path / "clean")
+    clean_plan = planned_as_cloned(tmp_path / "clean", clean)
+    left = a_clone(tmp_path / "left")
+    for place in SPLIT_PLACES:
+        with_a_split_branch_left(left, place)
+    left_plan = planned_as_cloned(tmp_path / "left", left)
+    monkeypatch.setattr(adopter, "_refuse_unlisted_refs", refusing)
+    monkeypatch.setattr(adopter, "_unlisted_ref_directory", walking)
+
+    assert adopter.cmd_check(check_args(tmp_path / "clean", clean_plan)) == 0
+    assert walked == ["refs/heads/", "refs/remotes/origin/"]
+    del walked[:]
+    stopped_at_the_legs(adopter, monkeypatch)
+    with pytest.raises(AssertionError, match="went on to make the legs"):
+        adopter.cmd_execute(execute_args(tmp_path / "clean", clean_plan))
+    assert walked == ["refs/heads/", "refs/heads/"]
+    del walked[:]
+    assert adopter.cmd_check(check_args(tmp_path / "left", left_plan)) == 1
+    assert capsys.readouterr().err.count(f"FINDING {BRANCH_EXISTS}: ") == 2
+    assert walked == []
+    assert refused == []
+
+
+@pytest.mark.parametrize("layout", ["clone", "worktree", "separate",
+                                    "git-dir"])
+def test_the_disk_names_the_common_git_directory_git_names(adopter, tmp_path,
+                                                           layout):
+    """`_common_dir_on_disk` finds the source's refs where git finds them: a
+    clone's `.git`; a linked worktree's `.git` file, then its git
+    directory's `commondir`; the `.git` file `git init --separate-git-dir`
+    leaves; and a git directory read as the source itself."""
+    source = a_clone(tmp_path)
+    path = {"clone": source, "worktree": tmp_path / "worktree",
+            "separate": tmp_path / "separate",
+            "git-dir": source / ".git"}[layout]
+    if layout == "worktree":
+        git("worktree", "add", "-q", "-b", "elsewhere", str(path),
+            cwd=source)
+    elif layout == "separate":
+        git("init", "-q", "--separate-git-dir", str(tmp_path / "kept.git"),
+            str(path), cwd=tmp_path)
+    named = git("rev-parse", "--path-format=absolute", "--git-common-dir",
+                cwd=path).stdout.rstrip("\n")
+
+    found = adopter._common_dir_on_disk(path)
+
+    assert found is not None
+    assert os.path.realpath(found) == os.path.realpath(named)
+
+
+def test_the_disk_is_not_read_where_git_would_not_read_it(adopter,
+                                                          monkeypatch,
+                                                          tmp_path):
+    """Where git is told another git directory, or a `.git` file names
+    none, `_common_dir_on_disk` says nothing, and git is asked."""
+    source = a_clone(tmp_path)
+    for name in ("GIT_DIR", "GIT_COMMON_DIR"):
+        with monkeypatch.context() as told:
+            told.setenv(name, str(source / ".git"))
+            assert adopter._common_dir_on_disk(source) is None
+    odd = tmp_path / "odd"
+    odd.mkdir()
+    (odd / ".git").write_bytes(b"not a gitfile\n")
+    assert adopter._common_dir_on_disk(odd) is None
+
+
+def test_a_linked_worktree_is_asked_in_its_common_git_directory(
+        adopter, monkeypatch, tmp_path):
+    """A linked worktree keeps its branches in its common git directory, the
+    clone's `.git`: there a `refs/heads/adopt` the system will not list is
+    named, as `git rev-parse --git-common-dir` names it."""
+    source = a_clone(tmp_path)
+    worktree = tmp_path / "worktree"
+    git("worktree", "add", "-q", "-b", "elsewhere", str(worktree),
+        cwd=source)
+    split_directory_unlisted_here(adopter, monkeypatch, source,
+                                  "refs/heads/adopt")
+
+    with pytest.raises(adopter.Refusal) as raised:
+        adopter._branches_at(str(worktree), worktree, SPLIT_BRANCH)
+
+    assert raised.value.code == "source-unreadable"
+    assert raised.value.detail == refs_refused(source, "refs/heads/adopt",
+                                               BRANCHES_UNTOLD)
+
+
+# --- the disk's guess at the common git directory, and git asked past it ----
+#
+# `_common_dir_on_disk` only GUESSES where the refs are, and
+# `_refuse_unlisted_refs_if_seen` acts on the guess only by asking git
+# (`_refuse_unlisted_refs`), so a guess that is wrong or missing costs a
+# miss or one more `git rev-parse`, never a refusal of its own (#1265's
+# review, N2). Each row builds a source in one shape, makes the common git
+# directory's `refs/heads/adopt` a directory this process cannot list, and
+# asks `_branches_at` for the split branch: the refusal names that
+# directory as git names it.
+
+#: Shapes the disk reads where git reads them, and shapes it leaves to git.
+DISK_READS = ["submodule", "crlf-gitfile"]
+GIT_IS_ASKED = ["git-dir-set", "git-common-dir-set", "nul-gitfile",
+                "nul-commondir"]
+#: The variable each `*-set` shape tells git its directory with.
+TOLD_BY = {"git-dir-set": "GIT_DIR", "git-common-dir-set": "GIT_COMMON_DIR"}
+
+
+def a_source_in_shape(monkeypatch, tmp_path: Path, shape: str
+                      ) -> tuple[Path, Path, Path]:
+    """`(clone, path, common)`: a clone, the source `shape` makes of it or
+    in it, and the common git directory git names for that source, which is
+    in the clone's `.git`.
+
+    - `submodule`: `sub`, whose `.git` file names its git directory
+      relative to itself, `gitdir: ../.git/modules/sub`;
+    - `crlf-gitfile`, `nul-gitfile`, `nul-commondir`: a linked worktree
+      whose `.git` file ends in CR LF, or in a NUL and more, or whose git
+      directory's `commondir` file holds a NUL (git reads each of the last
+      two up to the NUL);
+    - `git-dir-set`, `git-common-dir-set`: the clone itself, with git told
+      its git directory by the environment."""
+    clone = a_clone(tmp_path)
+    path, common = clone, clone / ".git"
+    if shape == "submodule":
+        inside = make_source_repo(tmp_path / "inside", tree=TREE, edits=())
+        git(*FILE_PROTOCOL, "submodule", "add", "-q", str(inside), "sub",
+            cwd=clone)
+        path, common = clone / "sub", common / "modules" / "sub"
+        assert (path / ".git").read_bytes().startswith(b"gitdir: ../")
+    elif shape.endswith(("gitfile", "commondir")):
+        path = tmp_path / "worktree"
+        git("worktree", "add", "-q", "-b", "elsewhere", str(path), cwd=clone)
+        gitfile = path / ".git"
+        named = gitfile.read_bytes().rstrip(b"\n")
+        if shape == "crlf-gitfile":
+            gitfile.write_bytes(named + b"\r\n")
+        elif shape == "nul-gitfile":
+            gitfile.write_bytes(named + b"\0junk\n")
+        else:
+            (common / "worktrees" / path.name / "commondir").write_bytes(
+                b"../..\0junk\n")
+    answered = git("rev-parse", "--path-format=absolute", "--git-common-dir",
+                   cwd=path).stdout.rstrip("\n")
+    assert os.path.realpath(answered) == os.path.realpath(common), shape
+    if shape in TOLD_BY:
+        monkeypatch.setenv(TOLD_BY[shape], str(common))
+    return clone, path, common
+
+
+def split_branch_asked_of(adopter, monkeypatch, clone: Path, path: Path,
+                          common: Path) -> None:
+    """`_branches_at` of `path` for the split branch, with `common`'s
+    `refs/heads/adopt` a directory the system will not list: it is
+    `source-unreadable`, naming that directory in the git directory git
+    names, `common`."""
+    part = "/".join([*common.relative_to(clone / ".git").parts,
+                     "refs", "heads", "adopt"])
+    split_directory_unlisted_here(adopter, monkeypatch, clone, part)
+
+    with pytest.raises(adopter.Refusal) as raised:
+        adopter._branches_at(str(path), path, SPLIT_BRANCH)
+
+    assert raised.value.code == "source-unreadable"
+    assert raised.value.detail == refs_refused(
+        clone, "refs/heads/adopt", BRANCHES_UNTOLD, common=common)
+
+
+@pytest.mark.parametrize("shape", DISK_READS)
+def test_the_disk_places_a_relative_or_crlf_git_file_where_git_does(
+        adopter, monkeypatch, tmp_path, shape):
+    """A submodule's `.git` file names its git directory relative to the
+    file's own folder, not to where the process runs, and a `.git` file
+    that ends in CR LF names the directory without the CR, as git reads
+    both. The refusal is then git's, `source-unreadable` naming the
+    directory in the clone's `.git`."""
+    clone, path, common = a_source_in_shape(monkeypatch, tmp_path, shape)
+    monkeypatch.chdir(tmp_path)
+
+    found = adopter._common_dir_on_disk(path)
+
+    assert found is not None
+    assert os.path.realpath(found) == os.path.realpath(common)
+    split_branch_asked_of(adopter, monkeypatch, clone, path, common)
+
+
+@pytest.mark.parametrize("shape", GIT_IS_ASKED)
+def test_a_source_the_disk_will_not_place_is_asked_of_git_and_refused(
+        adopter, monkeypatch, tmp_path, shape):
+    """Where git is told its directory, or a `.git` file or a `commondir`
+    holds a NUL, the disk says nothing, and git is asked all the same: the
+    refusal is not skipped, and it is not a traceback from a path with a
+    NUL in it."""
+    clone, path, common = a_source_in_shape(monkeypatch, tmp_path, shape)
+
+    assert adopter._common_dir_on_disk(path) is None
+    split_branch_asked_of(adopter, monkeypatch, clone, path, common)

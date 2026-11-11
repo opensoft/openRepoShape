@@ -86,6 +86,9 @@ from repo_shape import FREE_PLAN_HINT, VISIBILITY_CHOICES  # noqa: E402
 # The topic's fixed prefix, which GitHub's limit on a topic bounds an id by
 # (#838).
 from repo_shape import TOPIC_PREFIX  # noqa: E402
+# GitHub's limits on a repository's name and an owner's (#838), which
+# `repo_shape.url_repository` reads an `origin` by too (#1211).
+from repo_shape import GITHUB_NAME_MAX, GITHUB_OWNER_MAX  # noqa: E402
 
 SHAPE_REPOSITORY = "opensoft/openRepoShape"
 
@@ -6343,12 +6346,11 @@ def refuse_manifest_problems(prefix: str, problems: list[tuple[str, str]],
 #: The longest name a file or a directory may have, in bytes.
 NAME_MAX = 255
 
-#: The longest name GitHub gives a repository, in characters.
-GITHUB_NAME_MAX = 100
+# The longest name GitHub gives a repository, `GITHUB_NAME_MAX`, and a user
+# or an organisation, `GITHUB_OWNER_MAX`, are `repo_shape`'s, imported above,
+# so that its `url_repository` reads an `origin` by them too (#1211).
 #: The longest topic GitHub sets on a repository, in characters.
 GITHUB_TOPIC_MAX = 50
-#: The longest name GitHub gives a user or an organisation, in characters.
-GITHUB_OWNER_MAX = 39
 #: The longest `<Project>` GitHub can hold a project's repositories under:
 #: `<Project>-spec` and `<Project>-code` are five characters longer.
 GITHUB_PROJECT_MAX = GITHUB_NAME_MAX - len("-spec")

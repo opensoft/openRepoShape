@@ -393,8 +393,12 @@ from repo_shape import SHA256_RE, repo_basename  # noqa: E402
 # Whether a recorded `--pin-source` is a clone's top level, asked as `plan`
 # asks it (#800).
 from shape_materialize import pin_source_not_top_level  # noqa: E402
-# One reading of an `origin`, shared with `shape-doctor.py` (#521).
-from repo_shape import origin_is_a_path, url_repository  # noqa: E402
+# One reading of an `origin`, shared with `shape-doctor.py` (#521), and the
+# one rule for a name GitHub can hold, which it and `_github_name` ask
+# (#1129, #1211).
+from repo_shape import (  # noqa: E402
+    github_can_hold, origin_is_a_path, url_repository,
+)
 # The one spelling of a `neutral_product_pins:` entry, which
 # `scaffold-project.py` calls too, and the plain scalar it and `y` write a
 # text bare by (#924).
@@ -2200,7 +2204,9 @@ def _github_name(written: str) -> str | None:
     names no repository (`_recorded_repository`, `_held_repository`); and
     beside a directory this user cannot search it is offered no url
     (`_source_there`, #1003). Asked of the name and not of the disk, it
-    holds on Windows as well, where no error is `File name too long`."""
+    holds on Windows as well, where no error is `File name too long`. The
+    rule is `github_can_hold`'s, which a source's `origin` is read by too
+    (`url_repository`, #1211)."""
     segments = [part for part in written.split("/") if part]
     if len(segments) != 2:
         return None
@@ -2211,7 +2217,8 @@ def _github_name(written: str) -> str | None:
             GITHUB_SEGMENT_RE.fullmatch(part) and part not in (".", "..")
             for part in (owner, repo)):
         return None
-    if len(owner) > GITHUB_OWNER_MAX or len(repo) > GITHUB_NAME_MAX:
+    # The repository as written: `github_can_hold` drops its `.git` itself.
+    if not github_can_hold(owner, segments[1]):
         return None
     return f"{owner}/{repo}"
 
@@ -11020,7 +11027,68 @@ def _listed_by(args: list[str], cwd: Path) -> dict[str, str]:
     return _listed_branches(listed.stdout, BRANCH_REFS)
 
 
-def _branches_at(url: str, cwd: Path) -> dict[str, str]:
+def _refuse_unlisted_refs_if_seen(path: Path, prefix: str) -> None:
+    """`_refuse_unlisted_refs(path, prefix)`, run only where the disk shows
+    a directory of those refs this user cannot list (#1257): where the
+    source's common git directory can be read from the disk
+    (`_common_dir_on_disk`) and each directory git lists for `prefix` there
+    can be listed (`_unlisted_ref_directory`), nothing more is asked.
+
+    FOR THE SPLIT BRANCH, WHICH A SOURCE GIT READS WHOLE MOST OFTEN LACKS.
+    `_branch_names` asks where the default branch is missing, which a
+    readable source never is, but `_branches_at` and `_branches_in` ask
+    where the split branch is missing, which it is in every source no
+    earlier run left one in. `_refuse_unlisted_refs` runs `git rev-parse`
+    for the common git directory, so asked there it was one git call more
+    for each, in every `check` and `execute`; read from the disk it is none.
+    Where the disk shows a directory git could not list, or cannot say
+    where the refs are, git is asked, and the refusal names what git
+    names."""
+    common = _common_dir_on_disk(path)
+    if common is not None and _unlisted_ref_directory(common,
+                                                      prefix) is None:
+        return
+    _refuse_unlisted_refs(path, prefix)
+
+
+def _common_dir_on_disk(path: Path) -> Path | None:
+    """The common git directory of the repository at `path`, the top-level
+    directory or the git directory `_top_level` took, read from the disk
+    without running git, as git 2.43's `read_gitfile_gently` and
+    `get_common_dir_noenv` read it: the git directory is `path/.git` where
+    that is a directory, the one a `.git` file's `gitdir: ` line names,
+    joined to `path`, and otherwise `path` itself; then the one its
+    `commondir` file names, joined to it, where it has that file. None
+    where git is told another (`GIT_DIR` or `GIT_COMMON_DIR` set), where
+    the `.git` file does not begin `gitdir: `, where either file holds a
+    NUL (git reads such a file up to the NUL; this declines to guess), or
+    where the disk refuses a read: `_refuse_unlisted_refs_if_seen` asks
+    git then."""
+    if "GIT_DIR" in os.environ or "GIT_COMMON_DIR" in os.environ:
+        return None
+    dotgit = path / ".git"
+    try:
+        if _is_a(dotgit, stat.S_ISREG):
+            named = dotgit.read_bytes()
+            if not named.startswith(b"gitdir: ") or b"\0" in named:
+                return None
+            git_dir = path / os.fsdecode(
+                named[len(b"gitdir: "):].rstrip(b"\r\n"))
+        else:
+            git_dir = dotgit if _is_a(dotgit, stat.S_ISDIR) else path
+        commondir = git_dir / "commondir"
+        if not _is_a(commondir, stat.S_ISREG):
+            return git_dir
+        named = commondir.read_bytes()
+    except OSError:
+        return None
+    if b"\0" in named:
+        return None
+    return git_dir / os.fsdecode(named.rstrip(b"\r\n"))
+
+
+def _branches_at(url: str, cwd: Path, wanted: str | None
+                 ) -> dict[str, str]:
     """Every branch of the repository at `url`, as a push to it meets them.
     A LOCAL path's are its own refs, `git for-each-ref` (#520): `git
     ls-remote` leaves out a branch the repository hides with `hideRefs`, and
@@ -11029,10 +11097,26 @@ def _branches_at(url: str, cwd: Path) -> dict[str, str]:
     (`_branches_a_clone_gets`). One that cannot be listed fails as `run`
     fails a command, `CommandFailed`, and in `execute` before any leg
     exists: `_refuse_a_split_branch_left_behind` has just asked the same
-    repository, and a failure there is the same."""
+    repository, and a failure there is the same.
+
+    A LOCAL LIST WITHOUT `wanted`, THE SPLIT BRANCH, IS ASKED ABOUT BEFORE
+    IT IS BELIEVED (#1257), as `_branch_names` asks (#1219): `git
+    for-each-ref` passes over a directory it cannot list, and exits 0. On
+    main, with a source's `.git/refs/heads/adopt` at mode 000, `check` said
+    `plan ok` over the `adopt/three-repo-shape` an earlier run left there,
+    which it finds as `adopt-branch-exists` once that directory can be
+    listed, and `execute --local-remote-dir` made and pushed both legs
+    before its split push met that branch. So where `wanted` is not among
+    them, whether git could list each directory of `BRANCH_REFS` is asked
+    first (`_refuse_unlisted_refs_if_seen`), and one it could not is
+    `source-unreadable`, named; where it is, or is None, nothing more is
+    asked."""
     if remote_is_a_path(url):
-        return _listed_by(["git", "for-each-ref", REF_LISTING, BRANCH_REFS],
-                          Path(url))
+        branches = _listed_by(["git", "for-each-ref", REF_LISTING,
+                               BRANCH_REFS], Path(url))
+        if wanted is not None and wanted not in branches:
+            _refuse_unlisted_refs_if_seen(Path(url), BRANCH_REFS)
+        return branches
     return _branches_a_clone_gets(url, cwd)
 
 
@@ -11171,23 +11255,35 @@ def _assembly_repository(plan: Plan) -> str | None:
     return f"{org}/{name}" if org and name else None
 
 
-def _branches_in(path: Path, refs: str) -> dict[str, str]:
+def _branches_in(path: Path, refs: str, wanted: str | None
+                 ) -> dict[str, str]:
     """`_listed_branches` of the refs under `refs` in the repository at
-    `path`, read from it with `git for-each-ref`: no network."""
-    return _listed_branches(
+    `path`, read from it with `git for-each-ref`: no network. Where
+    `wanted`, the split branch, is not among them, whether git could list
+    each directory of `refs` is asked first, as `_branches_at` asks (#1257):
+    on main, with the source's `.git/refs/remotes/origin/adopt` at mode
+    000, `check` said `plan ok` over the `adopt/three-repo-shape` its
+    `origin` last fetched, which it finds as `adopt-branch-exists` once that
+    directory can be listed."""
+    branches = _listed_branches(
         git_out(["for-each-ref", REF_LISTING, refs], cwd=path, binary=True),
         refs)
+    if wanted is not None and wanted not in branches:
+        _refuse_unlisted_refs_if_seen(path, refs)
+    return branches
 
 
-def _places_in_the_source(where: str, path: Path, extracting: bool) -> list:
+def _places_in_the_source(where: str, path: Path, extracting: bool,
+                          branch: str | None) -> list:
     """The source at `path`, named `where`, as the place a run with
     `--local-remote-dir` pushes the split to, `(where, pushed_by, extracted,
     branches)`, as `_split_branch_findings` asks it: its own branches, as
-    the push meets them (`_branches_at`). While `extracting`, those a clone
+    the push meets them (`_branches_at`, which asks about a list without
+    the split branch `branch`, #1257). While `extracting`, those a clone
     of it gets (`_branches_a_clone_gets`) are met by either run's extraction
     too, and one it hides from a clone with `hideRefs` (#520) is met by the
     push alone, a second place, so a finding about it is about that run."""
-    branches = _branches_at(str(path), path)
+    branches = _branches_at(str(path), path, branch)
     if not extracting:
         return [(where, LOCAL_RUN, False, branches)]
     cloned = _branches_a_clone_gets(str(path), path)
@@ -11198,21 +11294,23 @@ def _places_in_the_source(where: str, path: Path, extracting: bool) -> list:
               if name not in cloned})]
 
 
-def _places_check_asks(plan: Plan, source: Source, extracting: bool) -> list:
-    """The places `check` asks for the split branch, `(where, pushed_by,
-    extracted, branches)`: the source, which a run with `--local-remote-dir`
-    pushes to and either run extracts from while `extracting`
-    (`_places_in_the_source`), and, where the source's `origin` is the
-    assembly repository, that repository's branches as the source last
-    fetched them, which a run without it pushes to. `check` reads no
+def _places_check_asks(plan: Plan, source: Source, extracting: bool,
+                       branch: str | None) -> list:
+    """The places `check` asks for the split branch `branch`, `(where,
+    pushed_by, extracted, branches)`: the source, which a run with
+    `--local-remote-dir` pushes to and either run extracts from while
+    `extracting` (`_places_in_the_source`), and, where the source's `origin`
+    is the assembly repository, that repository's branches as the source
+    last fetched them, which a run without it pushes to. `check` reads no
     network for either."""
     places = _places_in_the_source(f"the source {_shown(str(source.path))}",
-                                   source.path, extracting)
+                                   source.path, extracting, branch)
     assembly = _assembly_repository(plan)
     if assembly and (source.repository or "").lower() == assembly.lower():
         places.append((f"`{assembly}` on GitHub, as the source's `origin` "
                        "last fetched it,", GITHUB_RUN, False,
-                       _branches_in(source.path, "refs/remotes/origin/")))
+                       _branches_in(source.path, "refs/remotes/origin/",
+                                    branch)))
     return places
 
 
@@ -11230,7 +11328,7 @@ def _check_split_branch(plan: Plan, source: Source
     branch = checked_value(key, plan.get(key, default))
     extracting = _extracts_a_leg(assigned_paths(plan.entries))
     found = _split_branch_findings(
-        branch, _places_check_asks(plan, source, extracting), source)
+        branch, _places_check_asks(plan, source, extracting, branch), source)
     return found, [SPLIT_BRANCH_REMEDIATION] if found else []
 
 
@@ -11286,13 +11384,15 @@ def _refuse_a_branch_in_the_split_branchs_way(
         return
     the_source = f"the source {_shown(str(source.path))}"
     if local:
-        places = _places_in_the_source(the_source, source.path, extracting)
+        places = _places_in_the_source(the_source, source.path, extracting,
+                                       branch)
     else:
         places = [(the_source, None, True,
                    _branches_a_clone_gets(str(source.path), source.path))
                   ] if extracting else []
         places.append((f"`{repositories['assembly']}` on GitHub", GITHUB_RUN,
-                       False, _branches_at(urls["assembly"], source.path)))
+                       False, _branches_at(urls["assembly"], source.path,
+                                           branch)))
     found = _split_branch_findings(branch, places)
     if found:
         raise Refusal(SPLIT_BRANCH_TAKEN, "\n".join(
@@ -15479,8 +15579,8 @@ def _refuse_a_split_branch_left_behind(source: Source, urls: dict,
         return
     # Under `--local-remote-dir` the push goes into the source, and meets its
     # own refs, a branch it hides from `git ls-remote` too (#520).
-    tip = (_branches_at(urls["assembly"], source.path).get(branch) if local
-           else _tip_at(urls["assembly"], branch))
+    tip = (_branches_at(urls["assembly"], source.path, branch).get(branch)
+           if local else _tip_at(urls["assembly"], branch))
     if tip is None or _in_the_history_of(source, tip):
         return
     raise Refusal(
