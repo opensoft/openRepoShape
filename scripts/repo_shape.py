@@ -466,6 +466,12 @@ def double_quoted(text: str) -> str:
     bidirectional control, inside the quotes, but a person reading the plan
     could not tell it was there, so the same rule spells it. Whatever the
     string, the scalar is one line of printable text.
+
+    SO IS A DEFAULT-IGNORABLE CHARACTER `str.isprintable` PASSES
+    (`DEFAULT_IGNORABLE`, #1165), which a terminal draws as nothing:
+    U+034F, the variation selectors and the Hangul fillers were written as
+    they are, so the plan's `"ma<U+034F>in"` read as `"main"`. It is
+    `"ma\\u034fin"` now, which the reader takes back as the same name.
     """
     return '"' + "".join(map(_escaped, text)) + '"'
 
@@ -475,7 +481,7 @@ def _escaped(char: str) -> str:
     named = _ESCAPE_OF.get(char)
     if named is not None:
         return named
-    if char.isprintable():
+    if char.isprintable() and not DEFAULT_IGNORABLE.match(char):
         return char
     return code_point_escaped(char)
 
@@ -3383,9 +3389,11 @@ def _os_reason(exc: BaseException) -> str:
 
 def shown_path(path) -> str:
     """A path as a line about it names it: as it is, unless a character in
-    it is not printable (`str.isprintable`), and then as Python's `repr`
-    spells it -- `\\x1b`, `\\n`, `\\r`, and `\\udcff` for a byte that is not
-    UTF-8, as `sys.argv` keeps one (#610).
+    it is not printable (`str.isprintable`) or is one a terminal draws as
+    nothing (`DEFAULT_IGNORABLE`, #1165), and then as `visible_repr` spells
+    it -- `\\x1b`, `\\n`, `\\r`, `\\u034f`, and `\\udcff` for a byte that is
+    not UTF-8, as `sys.argv` keeps one (#610). `repr` alone wrote U+034F
+    as it is, so `ma<U+034F>in` was named `main`.
 
     THE SPELLING `pin-source-unreadable` GIVES A `--pin-source` (#339):
     `shape_materialize.shown_source` is this function. Printed raw, an ESC
@@ -3394,7 +3402,9 @@ def shown_path(path) -> str:
     byte as it always was.
     """
     text = str(path)
-    return text if text.isprintable() else repr(text)
+    if text.isprintable() and not DEFAULT_IGNORABLE.search(text):
+        return text
+    return visible_repr(text)
 
 
 def link_manifest_lookup(path) -> tuple[Path | None, str | None]:

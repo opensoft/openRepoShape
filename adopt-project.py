@@ -252,7 +252,7 @@ from repo_shape import (  # noqa: E402
     parse_yaml, redacted, remote_is_a_path, remote_key, remote_local_path,
     shown_path, spelled as spelled_as_git_out, tree_digest,
 )
-from repo_shape import DEFAULT_IGNORABLE, code_point_escaped  # noqa: E402
+from repo_shape import DEFAULT_IGNORABLE, visible_repr  # noqa: E402
 from shape_materialize import (  # noqa: E402
     PLACEHOLDER_RE, SHAPE_REPOSITORY, SYMLINK_HOPS,
     TEMPLATED, TOO_MANY_SYMLINKS, CommandFailed, Materialized,
@@ -3597,8 +3597,10 @@ def _from_the_remote(path: Path, branch: str) -> str:
                 f"{_spelled(branch)} either, as the source last fetched it: "
                 "ask `origin` for its default branch again, `git remote "
                 "set-head origin --auto`, run in the source.")
+    # Nor where a terminal draws part of it as nothing (`_seen`, #1165): for
+    # `ma<U+034F>in` the command read `git branch 'main' 'origin/main'`.
     made = (f"`git branch {shlex.quote(branch)} "
-            f"{shlex.quote('origin/' + branch)}`" if branch.isprintable()
+            f"{shlex.quote('origin/' + branch)}`" if _seen(branch)
             else f"a branch named {_spelled(branch)} made from `origin`'s "
             "branch of that name")
     return ("Remediation: make it a branch of the source's own, from its "
@@ -4136,7 +4138,9 @@ def _spelled(path: str) -> str:
     THE SPELLING IS THE PLAN'S OWN (`_spelled_character`): the byte 0xE9 is
     `\\udce9` and the character U+0085 is `\\x85`, as `path:` writes them
     (`repo_shape.double_quoted`), so that a question or a report that says
-    `caf\\udce9` is the entry `"caf\\udce9"` in the plan. Each escape names
+    `caf\\udce9` is the entry `"caf\\udce9"` in the plan; and U+034F is
+    `\\u034f` in both, as each default-ignorable character is (#1165), where
+    the plan held it raw. Each escape names
     a code point, so a byte and a character never share one. They did: a
     byte was `\\xe9` here, which in YAML is the character U+00E9, and the 32
     C1 controls, U+00A0 and U+00AD were spelled as the bytes of the same
@@ -4204,16 +4208,22 @@ def _spelled_character(char: str) -> str:
     U+2028, and `\\udc85` for the byte 0x85, which `Source.tree` keeps as
     the surrogate U+DC00 plus the byte -- except a backtick, which the plan
     holds as it is and `_spelled` wraps a name in: `SPELLED_BACKTICK`, the
-    escape the plan's reader takes for one (#900); and a default-ignorable
+    escape the plan's reader takes for one (#900). A default-ignorable
     character (`DEFAULT_IGNORABLE`, #1128), which a terminal draws as
-    nothing: its code-point escape, `\\u034f` for U+034F, which the plan's
-    reader takes for that character, where the plan holds one
-    `str.isprintable` passes as it is."""
+    nothing, is its code-point escape, `\\u034f` for U+034F, which
+    `double_quoted` writes in the plan too since #1165."""
     if char == "`":
         return SPELLED_BACKTICK
-    if DEFAULT_IGNORABLE.match(char):
-        return code_point_escaped(char)
     return double_quoted(char)[1:-1]
+
+
+def _seen(text: str) -> bool:
+    """Whether a terminal shows `text` as it is: every character printable
+    (`str.isprintable`), and none of the default-ignorable ones it passes,
+    which a terminal draws as nothing (`DEFAULT_IGNORABLE`, #1165). Where
+    a line asked `str.isprintable` alone, `ma<U+034F>in` printed as
+    `main`."""
+    return text.isprintable() and not DEFAULT_IGNORABLE.search(text)
 
 
 def cross_leg_references(source: "Source",
@@ -5243,10 +5253,12 @@ def _worded(text: str) -> str:
     way only: both show the tab the loader makes of `"CORP\\tom"` as `\\t`,
     the two characters the person typed, and show what they typed with its
     backslash doubled, so each looks like the other. Named, the tab is
-    plainly a tab.
+    plainly a tab. So is a default-ignorable character, which a terminal
+    draws as nothing (`_seen`, #1165): `ma<U+034F>in` sat in the backticks
+    as `main`, and is `` `ma` ``, then the character U+034F, then `` `in` ``.
     """
     parts: list[str] = []
-    for printable, chars in itertools.groupby(text, str.isprintable):
+    for printable, chars in itertools.groupby(text, _seen):
         if printable:
             parts.append(f"`{''.join(chars)}`")
         else:
@@ -5272,9 +5284,11 @@ def _named(what: str, value) -> tuple[str, str]:
 def _line_shown(line: str) -> str:
     """`line` as a sentence quotes it: in backticks, or as Python spells it
     when it holds a character a terminal shows as something else (a line
-    break, a tab), so that one FINDING stays one line. Not `_shown`, which
-    is #199's spelling of a PATH in the plan report, with no backticks."""
-    return f"`{line}`" if line.isprintable() else repr(line)
+    break, a tab), so that one FINDING stays one line; and as `visible_repr`
+    spells it when it holds one a terminal draws as nothing (`_seen`,
+    #1165). Not `_shown`, which is #199's spelling of a PATH in the plan
+    report, with no backticks."""
+    return f"`{line}`" if _seen(line) else visible_repr(line)
 
 
 def manifest_misreads(fields) -> list[str]:
@@ -9063,7 +9077,7 @@ def _first_words(failed: subprocess.CompletedProcess) -> str:
         "utf-8", "replace").splitlines() if line.strip()]
     if not lines:
         return f"`git ls-remote` exited {failed.returncode}"
-    return "".join(char if char.isprintable() else _spelled_character(char)
+    return "".join(char if _seen(char) else _spelled_character(char)
                    for char in _one_line(lines[0]))
 
 
@@ -14604,9 +14618,10 @@ def _objects_lacking(path: Path) -> tuple[int | None, str]:
 
 def _refetch(remote: str) -> str:
     """The command that fetches every object again from `remote`, with no
-    filter, as a person pastes it: the name quoted, where it is printable and
-    no option; otherwise the step in words, as `_from_the_remote` says one."""
-    if remote.isprintable() and not remote.startswith("-"):
+    filter, as a person pastes it: the name quoted, where a terminal shows
+    it as it is (`_seen`, #1165) and it is no option; otherwise the step in
+    words, as `_from_the_remote` says one."""
+    if _seen(remote) and not remote.startswith("-"):
         return f"`git fetch --refetch --no-filter {shlex.quote(remote)}`"
     return ("a `git fetch --refetch --no-filter` from the remote named "
             f"{_spelled(remote)}")
@@ -15252,8 +15267,10 @@ def _unacted(text: str, kept: str = "") -> str:
     """`text` with each character a terminal would act on -- one
     `str.isprintable` refuses, other than those in `kept` -- spelled as
     `_spelled_character` spells it, and every other as it is, with no
-    backticks around it: what `_first_said` does to the line gh said."""
-    return "".join(char if char.isprintable() or char in kept
+    backticks around it: what `_first_said` does to the line gh said. So is
+    each a terminal draws as nothing (`_seen`, #1165): a REFUSED block
+    printed U+034F raw in git's words, a path or an argument (RV1225)."""
+    return "".join(char if _seen(char) or char in kept
                    else _spelled_character(char) for char in text)
 
 
@@ -15715,7 +15732,7 @@ def _first_said(output: str) -> str:
     lines = [line.strip() for line in output.splitlines() if line.strip()]
     if not lines:
         return ""
-    return ": " + "".join(char if char.isprintable()
+    return ": " + "".join(char if _seen(char)
                           else _spelled_character(char) for char in lines[0])
 
 
@@ -17615,7 +17632,8 @@ def submodule_record(entries: list, tree: list, commit: str) -> str:
     the writer of the escapes the reader resolves (#199). Always quoted,
     unlike `y`: a submodule may sit at `null`, `true` or `0001`, which a
     plain scalar reads back as something that is not a path. And a character
-    `str.isprintable` refuses is spelled by its code point: NEL and U+2028
+    `str.isprintable` refuses, or a default-ignorable one a terminal draws
+    as nothing (#1165), is spelled by its code point: NEL and U+2028
     end a line for the reader, a no-break or zero-width space is another name
     than the one it looks like, and the surrogate a byte that is not UTF-8 is
     kept as cannot be written by `write_lf` at all, where `\\udce9` reads
@@ -18002,16 +18020,18 @@ def unwritable_values(fields) -> list[str]:
 
     `what` names the value as the person has it in front of them --
     `--elected-by` to `plan`, `elected_by` read out of a plan -- and `where`
-    is the file `execute` writes it into. The value is spelled as Python
-    spells it, as `unsafe-value` spells one, so the sentence stays one line
-    of text whatever the value holds.
+    is the file `execute` writes it into. The value is spelled as
+    `unsafe-value` spells one, `visible_repr`: as Python spells it, with a
+    default-ignorable character escaped too (#1165), so the sentence stays
+    one line of text whatever the value holds, and `'ma<U+034F>in\\n'` is
+    not read as `'main\\n'`.
     """
     out = []
     for what, value, where in fields:
         reason = unwritable_reason(value)
         if reason:
-            out.append(f"{what} is {value!r}, which `execute` writes into "
-                       f"{where}, and {reason}")
+            out.append(f"{what} is {visible_repr(value)}, which `execute` "
+                       f"writes into {where}, and {reason}")
     return out
 
 
@@ -18065,8 +18085,8 @@ def _refuse_an_unwritable_clone_url(url: str) -> None:
         raise Refusal(
             "adopt-unwritable-value",
             "under --local-remote-dir the assembly root's clone URL is the "
-            f"source's own path, {url!r}, which `execute` writes into its "
-            f"`README.md`, and {reason}",
+            f"source's own path, {visible_repr(url)}, which `execute` writes "
+            f"into its `README.md`, and {reason}",
             "Remediation: nothing was created. Rename or move the source "
             "repository so that its path is one line of UTF-8 text with no "
             "control character in it, then run `plan --source <its new "

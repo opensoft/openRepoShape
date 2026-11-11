@@ -112,11 +112,6 @@ def test_a_character_is_spelled_as_the_plan_writes_it(adopter):
         char = chr(code)
         if char == "`":
             continue
-        if DEFAULT_IGNORABLE.match(char):
-            # Escaped where the plan may hold one as it is (#1128).
-            assert adopter._spelled_character(char) == (
-                code_point_escaped(char)), f"U+{code:04X}"
-            continue
         assert adopter._spelled_character(char) == double_quoted(char)[1:-1], (
             f"U+{code:04X}")
 
