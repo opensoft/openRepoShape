@@ -33,12 +33,14 @@ guard (`tests/gh_guard.py`) as a `gh` with no login.
 from __future__ import annotations
 
 import shutil
+import stat
 import sys
 
 import pytest
 
 from conftest import ADOPT, FILE_PROTOCOL, REPO, git, make_source_repo, \
     run_script
+from test_adopt_unsearchable_source import needs_a_mode
 
 sys.path.insert(0, str(REPO / "scripts"))
 from repo_shape import load_yaml  # noqa: E402
@@ -661,3 +663,28 @@ def test_an_only_remote_named_by_a_byte_that_is_not_utf_8_is_not_read(
     assert ("is not read in that one's place, as its name is not printable "
             "ASCII") in said, said
     assert "Traceback" not in result.stderr, result.stderr
+
+
+@needs_a_mode
+def test_the_only_remotes_refs_git_cannot_list_are_named_as_its(tmp_path):
+    """A source whose only remote is `upstream`, its `.git/refs/remotes/
+    upstream` at mode 000: `plan` is refused `source-unreadable`, naming
+    that directory, and says the branches of `upstream` cannot be told.
+    Main's fixed words named `origin`, a remote the source does not have."""
+    source = cloned_as(tmp_path, UPSTREAM)
+    refs = source / ".git" / "refs" / "remotes" / UPSTREAM
+    before = stat.S_IMODE(refs.stat().st_mode)
+    refs.chmod(0o000)
+    try:
+        result, out = planned(tmp_path, source)
+    finally:
+        refs.chmod(before)
+
+    assert result.returncode == 2, result.stdout + result.stderr
+    said = " ".join(result.stderr.split())
+    assert ("REFUSED source-unreadable: the source's "
+            "`refs/remotes/upstream`, ") in said, said
+    assert ("cannot be read (Permission denied), so the branches of the "
+            "source's remote `upstream` cannot be told") in said, said
+    assert "`origin`" not in said, said
+    assert not out.exists()
