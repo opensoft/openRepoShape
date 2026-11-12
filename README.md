@@ -1487,11 +1487,3 @@ second way in, never a requirement. `tests/test_repo_hygiene.py` enforces it.
 ## Licence
 
 Apache-2.0. See `LICENSE`.
-
-### Reproducible development dependencies
-
-The runtime closure is pinned and hashed in [requirements.txt](requirements.txt).
-Install it with `python3 -m pip install --only-binary=:all: --require-hashes -r requirements.txt`.
-It matches the package's exact git-filter-repo requirement. Release/build tooling
-continues to use [.github/release-build-requirements.txt](.github/release-build-requirements.txt)
-with hashes and without build isolation.
