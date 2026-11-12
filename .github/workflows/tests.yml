@@ -100,7 +100,7 @@ jobs:
       # is a job whose result depends on the day it ran, which is the same
       # objection this standard makes to pinning a tag instead of a commit.
       - name: install the test runner
-        run: python3 -m pip install --disable-pip-version-check pytest==8.3.4
+        run: 'python3 -m pip install --disable-pip-version-check --only-binary=:all: pytest==8.3.4'
 
       # `git filter-repo` is what `adopt-project.py` extracts a leg's history
       # with, and it is a REQUIREMENT rather than a vendored copy: history
@@ -111,7 +111,7 @@ jobs:
       - name: install git-filter-repo
         run: |
           python3 -m pip install --disable-pip-version-check \
-              git-filter-repo==2.47.0
+              --only-binary=:all: --require-hashes -r requirements.txt
 
       # Per-invocation identity, never `git config --global`: a lane that
       # mirrors this step on a workstation must not be able to rewrite the
@@ -230,7 +230,7 @@ jobs:
 
       # `python`, not `python3`: a Windows install has no `python3`.
       - name: install the test runner
-        run: python -m pip install --disable-pip-version-check pytest==8.3.4
+        run: 'python -m pip install --disable-pip-version-check --only-binary=:all: pytest==8.3.4'
 
       # Per-invocation identity, never `git config --global`. PowerShell is
       # the default shell on this runner, so the append is
