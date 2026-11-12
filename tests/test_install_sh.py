@@ -1369,8 +1369,10 @@ def test_it_installs_the_git_filter_repo_ci_runs():
     installs."""
     [pinned] = re.findall(r'^FILTER_REPO_PIN="(git-filter-repo==[^"]+)"$',
                           INSTALLER.read_text(encoding="utf-8"), re.M)
-    ci = re.findall(r"git-filter-repo==[0-9.]+", (
-        REPO / ".github" / "workflows" / "tests.yml").read_text(
-        encoding="utf-8"))
-    assert ci, "tests.yml installs no git-filter-repo"
+    workflow = (REPO / ".github" / "workflows" / "tests.yml").read_text(
+        encoding="utf-8")
+    assert "--require-hashes -r requirements.txt" in workflow
+    ci = re.findall(r"git-filter-repo==[0-9.]+",
+                    (REPO / "requirements.txt").read_text(encoding="utf-8"))
+    assert ci, "the runtime lock installs no git-filter-repo"
     assert set(ci) == {pinned}, (pinned, ci)
