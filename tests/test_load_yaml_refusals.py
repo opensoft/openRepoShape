@@ -318,7 +318,7 @@ def test_each_tool_names_the_file_load_yaml_refuses_as_shown_path_names_it(
     ESC or forged line anywhere in the output. On main each tool printed
     the path raw; a printable one is named as it always was."""
     named, argv = TOOLS[tool](unsafe_folder(tmp_path, name), tmp_path)
-    result = run_script(*argv)
+    result = run_script(*argv, cwd=tmp_path)
     said = result.stdout + result.stderr
     assert result.returncode == 2, said
     assert refused_lines(result.stderr) == [

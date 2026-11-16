@@ -356,6 +356,9 @@ def test_a_naming_policy_the_gate_cannot_open_is_named_on_every_python(
     named whole, and spelled as `repr` spells a name that does not print, as
     `validate-pins.py` spells one (RV958's N3)."""
     policy = tmp_path / "loc\x1bked" / "repository-naming.yaml"
+    # The explicit policy is outside the project but under this invocation
+    # directory, so this assertion reaches the intended read-error boundary.
+    monkeypatch.chdir(tmp_path)
     given_args = ["--policy", str(policy)] if given else []
     failing(monkeypatch, "read_text", {"repository-naming.yaml": failure})
     assert manifest_gate.main(["--root", str(project), *given_args]) == 2
@@ -401,7 +404,9 @@ def test_a_contracts_folder_the_gate_cannot_search_names_the_pin(project,
     policy = tmp_path / "repository-naming.yaml"
     shutil.copy2(project / "contracts" / "repository-naming.yaml", policy)
     with at_mode_000(project, "contracts"):
-        result = validate(project, "--policy", str(policy))
+        result = run_script(
+            project / "scripts/validate-manifest.py",
+            "--root", str(project), "--policy", str(policy), cwd=tmp_path)
     assert result.stderr == refused("yaml-unreadable", PIN, MANIFEST_READS)
     assert result.returncode == 2, result.stdout
 
