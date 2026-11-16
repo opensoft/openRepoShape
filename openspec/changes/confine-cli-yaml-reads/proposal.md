@@ -19,4 +19,5 @@ None.
 
 ## Impact
 
-Naming CLI and assembly manifest CLI, shared boundary helper and regression tests. Authorized by Brett Heap's openXwallet #73 repair instruction on 2026-11-16. Existing identifiers, validation semantics and refusal presentation remain intact; only explicit outside-directory reads are refused. Speckit feature 001 owns implementation tasks.
+Naming CLI and assembly manifest CLI, shared boundary helper and regression tests. Authorized by Brett Heap's openXwallet #73 repair instruction on 2026-11-16. Existing identifiers, validation rules and refusal codes remain intact;
+accepted explicit paths are canonicalized before diagnostics; only explicit outside-directory reads are refused. Speckit feature 001 owns implementation tasks.
