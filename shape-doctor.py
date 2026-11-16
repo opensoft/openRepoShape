@@ -2684,7 +2684,12 @@ def check_naming(ctx: Context) -> Row:
         return Row("naming", "naming", OK,
                    "every leg name classifies, and each declared role agrees "
                    "with its form", None, detail)
-    command = (f"{PYTHON} {quote_arg(script)} --explain --project "
+    # A pasted NEXT must select the same workspace as run_naming_script.
+    launcher = ("import os,runpy,sys; os.chdir(sys.argv[1]); "
+                "script=sys.argv[2]; sys.argv=sys.argv[2:]; "
+                "runpy.run_path(script,run_name='__main__')")
+    command = (f"{PYTHON} -I -S -c {quote_arg(launcher)} {quote_arg(ctx.root)} "
+               f"{quote_arg(script)} --explain --project "
                f"{quote_arg(ctx.root / PROJECT_MANIFEST)}")
     if refusal is not None:
         return naming_policy_row(refusal, command, detail)

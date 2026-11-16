@@ -101,8 +101,8 @@ project it names, is named as it is, or as Python's `repr` spells it where a
 character in it is not printable (`_shown`). The one exception is the WORDS of
 a `--link-remedy` where a `declared-unverified` WARNING offers them: they stand
 inside its sentence and are spelled with it, as the next paragraph says, so a
-TAB or an ESC in them is `\\t` or `\\x1b`, without quotes. A caller's FLAG and
-the `--project` and `--policy` paths are printed as given.
+TAB or an ESC in them is `\\t` or `\\x1b`, without quotes. A caller's FLAG is printed as given.
+Explicit YAML paths are canonicalized after confinement and before diagnostics.
 Every name this classifies or refuses is `repo_shape.spelled` (#1267): in the
 plain listing, in `--explain`, in the `naming-unclassified` and role
 findings, and in a WARNING, a broken-chain finding or an `--explain` line
@@ -165,6 +165,19 @@ from repo_shape import (  # noqa: E402
     link_pins_from_trees, load_yaml, pin_product_key,
     pin_source_env_collisions, repo_basename, spelled,
 )
+
+# Copied CLI files also run beside older libraries. Prefer the shared guard;
+# the legacy branch needs only the standard library and the old Refusal API.
+try:
+    from repo_shape import cli_yaml_path
+except ImportError:
+    def cli_yaml_path(path: Path) -> Path:
+        resolved = Path(os.path.realpath(path))
+        if not resolved.is_relative_to(Path(os.path.realpath(os.getcwd()))):
+            raise Refusal("yaml-path-outside-cwd",
+                          f"{_shown(path)}: resolves outside the invocation directory",
+                          "Invoke from the project or encompassing workspace directory.")
+        return resolved
 
 DEFAULT_POLICY = Path(__file__).resolve().parents[1] / "contracts" / "repository-naming.yaml"
 
@@ -1463,7 +1476,7 @@ def _emit_reports(args, unclassified: list[str], warnings: list[str],
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description=__doc__.splitlines()[0])
     parser.add_argument("names", nargs="*", help="repository names to classify")
-    parser.add_argument("--policy", type=Path, default=DEFAULT_POLICY)
+    parser.add_argument("--policy", type=Path, default=None)
     parser.add_argument("--project", type=Path, default=None,
                         help="read the leg names, their roles and the declared "
                              "neutral-product pins from a project.yaml manifest")
@@ -1546,6 +1559,10 @@ def main(argv: list[str] | None = None) -> int:
     _escape_what_stdout_cannot_encode()
 
     try:
+        args.policy = (cli_yaml_path(args.policy) if args.policy is not None
+                       else DEFAULT_POLICY)
+        if args.project is not None:
+            args.project = cli_yaml_path(args.project)
         policy = NamingPolicy.load(args.policy)
     except Refusal as exc:
         print(str(exc), file=sys.stderr)

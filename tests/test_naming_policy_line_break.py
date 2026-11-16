@@ -212,7 +212,8 @@ def test_the_naming_gate_refuses_a_leg_repository_that_ends_in_a_line_feed(
     name = repository.split("/")[1]
     rewritten(project / "project.yaml", f"    repository: {repository}\n",
               f'    repository: "{repository}\\n"\n')
-    result = run_script(VALIDATOR, "--project", str(project / "project.yaml"))
+    result = run_script(VALIDATOR, "--project", str(project / "project.yaml"),
+                        cwd=project)
     assert result.returncode == 1, result.stdout + result.stderr
     assert findings(result.stderr) == [
         f"FINDING naming-unclassified: {name}\\n"]
@@ -222,7 +223,8 @@ def test_the_naming_gate_takes_a_leg_repository_double_quoted(project):
     """The baseline of the row above: the quotes are not what is refused."""
     rewritten(project / "project.yaml", "    repository: testorg/Atlas\n",
               '    repository: "testorg/Atlas"\n')
-    result = run_script(VALIDATOR, "--project", str(project / "project.yaml"))
+    result = run_script(VALIDATOR, "--project", str(project / "project.yaml"),
+                        cwd=project)
     assert result.returncode == 0, result.stdout + result.stderr
 
 

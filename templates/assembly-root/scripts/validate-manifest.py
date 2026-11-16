@@ -126,6 +126,19 @@ from repo_shape import (  # noqa: E402
     pin_source_env_name, pin_source_env_shared, repo_basename,
 )
 
+# Copied CLI files also run beside older libraries. Prefer the shared guard;
+# the legacy branch needs only the standard library and the old Refusal API.
+try:
+    from repo_shape import cli_yaml_path
+except ImportError:
+    def cli_yaml_path(path: Path) -> Path:
+        resolved = Path(os.path.realpath(path))
+        if not resolved.is_relative_to(Path(os.path.realpath(os.getcwd()))):
+            raise Refusal("yaml-path-outside-cwd",
+                          f"{_shown(path)}: resolves outside the invocation directory",
+                          "Invoke from the project or encompassing workspace directory.")
+        return resolved
+
 #: BOTH END IN `\Z`, NEVER `$` (#1139): `$` also matches just before a
 #: trailing line feed, so an `elected_on:` or a leg's `repository:` read as
 #: the value and a line feed (a double-quoted `\n`, or a block scalar) passed
@@ -1555,7 +1568,8 @@ def main(argv: list[str] | None = None) -> int:
         manifest = _load(root, manifest_path)
         if not isinstance(manifest, dict):
             raise Refusal("manifest-unreadable", f"{manifest_path}: not a mapping")
-        policy_path = args.policy or (root / "contracts" / "repository-naming.yaml")
+        policy_path = (cli_yaml_path(args.policy) if args.policy is not None
+                       else root / "contracts" / "repository-naming.yaml")
         policy = _load(root, policy_path, NamingPolicy.load)
         # Inside the `try`: a declared referent's pin file this user cannot
         # reach is a check that cannot run, so it is refused, exit 2, and no

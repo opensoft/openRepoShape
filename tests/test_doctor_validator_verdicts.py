@@ -57,6 +57,7 @@ from conftest import (WINDOWS_SKIP, clone_just_pushed, git, run_script,
 #: The layer stand-in a chain descendant pins, from the module that scaffolds
 #: one: a second way of building it would test a different one.
 from test_scaffold_pin_and_reuse import layer_repo
+from test_shape_doctor import pasted
 #: A leg clone's builder, from the module that tests the Triad advisory: a
 #: second way of building one would test a different one.
 from test_shape_advisory import rendered_leg_agents
@@ -86,12 +87,12 @@ NOT_THIS_DIRECTORYS_FILE = ("that file is this checkout's, not this "
 
 
 def command_of(row: dict) -> list:
-    """The row's NEXT as the argv it runs; the paths here need no quoting."""
-    return row["next"].split()
+    """The row NEXT as argv, preserving its quoted launcher and paths."""
+    return pasted(row["next"])
 
 
-def run_argv(command: list) -> subprocess.CompletedProcess:
-    return subprocess.run(command, capture_output=True, text=True,
+def run_argv(command: list, *, cwd=None) -> subprocess.CompletedProcess:
+    return subprocess.run(command, capture_output=True, text=True, cwd=cwd,
                           check=False, stdin=subprocess.DEVNULL,
                           env={**os.environ, "PYTHONDONTWRITEBYTECODE": "1"})
 
@@ -268,10 +269,10 @@ def test_a_crashed_naming_script_cannot_answer_for_a_compliant_project(
     assert result.returncode == 3, result.stdout + result.stderr
     assert payload["verdict"].startswith("CANNOT ANSWER (naming: "), payload
     module = doctor_module(standard)
-    assert row["next"] == (
-        f"{module.PYTHON} {module.quote_arg(here.resolve() / NAMING_SCRIPT)} "
-        f"--explain --project {module.quote_arg(root / 'project.yaml')}"), \
-        row["next"]
+    argv = command_of(row)
+    assert argv[:4] == [module.PYTHON, "-I", "-S", "-c"], row["next"]
+    assert argv[5:] == [str(root), str(here.resolve() / NAMING_SCRIPT),
+                        "--explain", "--project", str(root / "project.yaml")], row["next"]
     assert row["why"].startswith("read its output in full"), row
     ran = run_argv(command_of(row))
     assert ran.returncode == row["detail"]["exit"], ran.stdout + ran.stderr
@@ -385,11 +386,16 @@ def test_an_unloadable_naming_policy_cannot_answer_for_a_compliant_project(
     assert result.returncode == 3, result.stdout + result.stderr
     assert payload["verdict"].startswith("CANNOT ANSWER (naming: "), payload
     module = doctor_module(standard)
-    assert row["next"] == (
-        f"{module.PYTHON} {module.quote_arg(here.resolve() / NAMING_SCRIPT)} "
-        f"--explain --project {module.quote_arg(root / 'project.yaml')}"), \
-        row["next"]
-    ran = run_argv(command_of(row))
+    argv = command_of(row)
+    assert argv[:4] == [module.PYTHON, "-I", "-S", "-c"], row["next"]
+    assert argv[5:] == [str(root), str(here.resolve() / NAMING_SCRIPT),
+                        "--explain", "--project", str(root / "project.yaml")], row["next"]
+    away = tmp_path / "unrelated-invocation"
+    away.mkdir()
+    assert not root.is_relative_to(away)
+    # Even a hostile module beside the pasted command cannot shadow stdlib.
+    (away / "runpy.py").write_text("raise RuntimeError('untrusted cwd import')\n")
+    ran = run_argv(command_of(row), cwd=away)
     assert ran.returncode == 2, ran.stdout + ran.stderr
     assert "tab used for indentation" in ran.stdout + ran.stderr
     text = doctor(here, root)

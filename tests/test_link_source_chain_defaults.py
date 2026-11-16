@@ -319,7 +319,7 @@ def two(tmp_path) -> dict:
     return {"root": project(tmp_path / "ws" / "codexInk", "openXdox",
                             "openXdox, openInk"),
             "x": tree(tmp_path / "trees" / "openXdox", "openInk"),
-            "elsewhere": tmp_path / "trees"}
+            "elsewhere": tmp_path}
 
 
 @pytest.mark.parametrize("value,said", [

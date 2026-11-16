@@ -1377,6 +1377,25 @@ def parse_yaml(text: str) -> Any:
     return value
 
 
+def cli_yaml_path(path: Path) -> Path:
+    """Confine an explicit CLI YAML argument to the invocation directory.
+
+    Internal readers and compiled-in defaults have their own known roots.
+    Normalize symlinks and traversal before the separator-delimited check;
+    a prefix sibling must never count as a child.
+    """
+    resolved = os.path.realpath(path)
+    base = os.path.realpath(os.getcwd())
+    compared = os.path.normcase(resolved)
+    allowed = os.path.normcase(base)
+    if compared != allowed and not compared.startswith(os.path.join(allowed, "")):
+        raise Refusal(
+            "yaml-path-outside-cwd",
+            f"{shown_path(path)}: resolves outside the invocation directory",
+            "Invoke from the project or encompassing workspace directory.")
+    return Path(resolved)
+
+
 def load_yaml(path: Path) -> Any:
     """Read and parse one YAML file, or raise a `Refusal` that names the file.
 

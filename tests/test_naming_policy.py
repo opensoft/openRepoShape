@@ -379,13 +379,13 @@ def test_cli_refuses_with_no_target():
 def test_cli_refuses_a_file_that_is_not_a_naming_policy(tmp_path):
     bogus = tmp_path / "not-a-policy.yaml"
     bogus.write_text("schema_version: 1\nkind: something-else\n")
-    result = run_script(VALIDATOR, "--policy", str(bogus), "Atlas")
+    result = run_script(VALIDATOR, "--policy", str(bogus), "Atlas", cwd=tmp_path)
     assert result.returncode == 2
     assert "policy-wrong-kind" in result.stderr
 
 
 def test_cli_reads_a_project_manifest(project):
-    result = run_script(VALIDATOR, "--project", str(project / "project.yaml"))
+    result = run_script(VALIDATOR, "--project", str(project / "project.yaml"), cwd=project)
     assert result.returncode == 0, result.stderr
     assert "project-leg/assembly" in result.stdout
 
@@ -398,12 +398,12 @@ def test_cli_reads_the_declared_pins_out_of_the_manifest(project):
         "repository: testorg/Atlas\n    path: \".\"",
         "repository: testorg/MedxChart\n    path: \".\"")
     manifest.write_text(text)
-    without = run_script(VALIDATOR, "--project", str(manifest))
+    without = run_script(VALIDATOR, "--project", str(manifest), cwd=project)
     assert "MedxChart                        project-leg/assembly" in without.stdout
 
     manifest.write_text(text.replace("neutral_product_pins: []",
                                      "neutral_product_pins:\n  - openChart"))
-    with_pin = run_script(VALIDATOR, "--project", str(manifest))
+    with_pin = run_script(VALIDATOR, "--project", str(manifest), cwd=project)
     assert "MedxChart                        domain-descendant" in with_pin.stdout
 
 
@@ -412,7 +412,7 @@ def test_cli_finds_a_role_that_disagrees_with_its_name(project):
     manifest.write_text(manifest.read_text().replace(
         "  - role: spec\n    repository: testorg/Atlas-spec",
         "  - role: spec\n    repository: testorg/Atlas-code"))
-    result = run_script(VALIDATOR, "--project", str(manifest))
+    result = run_script(VALIDATOR, "--project", str(manifest), cwd=project)
     assert result.returncode == 1
     assert "declared role 'spec'" in result.stderr
 
@@ -981,7 +981,7 @@ def test_cli_reads_the_chain_out_of_a_project_manifest(project, tmp_path):
         "      referent_chain: [openXdox, openDox]")
     manifest.write_text(text)
     _tree(project.parent / "openXdox", "openDox")
-    result = run_script(VALIDATOR, "--project", str(manifest))
+    result = run_script(VALIDATOR, "--project", str(manifest), cwd=project)
     assert result.returncode == 0, result.stderr
     assert "codexDox                         domain-descendant" in result.stdout
     assert "WARNING" not in result.stderr
@@ -1001,7 +1001,7 @@ def test_cli_finds_a_recorded_chain_that_does_not_hold(project, tmp_path):
                         "      referent_chain: [openInk, openDox]")
     manifest.write_text(text)
     _tree(project.parent / "openInk", "openQuill")
-    result = run_script(VALIDATOR, "--project", str(manifest))
+    result = run_script(VALIDATOR, "--project", str(manifest), cwd=project)
     assert result.returncode == 1
     assert "openInk declares openQuill, not openDox" in result.stderr
 
