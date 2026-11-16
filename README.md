@@ -613,16 +613,16 @@ flowchart LR
   assembly -.->|"contracts/shape-pin.yaml"| shape
 ```
 
-The six naming families live in `contracts/repository-naming.yaml`: neutral
+The six naming families in `contracts/repository-naming.yaml` are neutral
 products `open<Product>`, domain descendants `<Domainx><Product>`, installs
-`<X>-Install`, project legs as above, family holders (below), and one form that
-is no repository of a project at all — a person's own workspace repository
-`<user>-wip` (#81, and
-[below](#carrying-in-flight-work-to-another-workstation)). The leg suffixes are
-lowercase and hyphenated precisely so they sit in a different visual class from
-the neutral-product, domain-descendant and family forms, all of which are
-CamelCase words. Every repository of a project also carries the GitHub topic
-`xf-project-<id>`.
+`<X>-Install`, project legs, family holders, and a person's workspace
+`<user>-wip` (#81, [below](#carrying-in-flight-work-to-another-workstation)).
+Lowercase, hyphenated leg suffixes differ visually from the CamelCase neutral,
+descendant and family forms. Project repositories carry `xf-project-<id>`.
+
+Explicit CLI `--project` and `--policy` YAML paths must resolve beneath cwd.
+Traversal and symlink escapes refuse; invoke from an external project to read it.
+[CLI boundary details and repair plan](specs/001-cli-yaml-boundaries/plan.md).
 
 ### Reading private legs in CI: a GitHub App first, `SHAPE_LEGS_TOKEN` as fallback
 

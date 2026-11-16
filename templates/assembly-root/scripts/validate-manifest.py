@@ -121,7 +121,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent))
 from repo_shape import (  # noqa: E402
     CHAIN_RECORD_FIELD, COMMIT_RE, PATH_NOT_CANONICAL, PROJECT_ID_RE,
     SHA256_RE, TREE_DIGEST_DEFINITION, VISIBILITY_CHOICES, NamingPolicy,
-    Refusal, accepts_role, find_repo_root, link_pins_from_trees, load_yaml,
+    Refusal, accepts_role, cli_yaml_path, find_repo_root, link_pins_from_trees, load_yaml,
     path_spelling_fault, pin_product_key, pin_source_env_collisions,
     pin_source_env_name, pin_source_env_shared, repo_basename,
 )
@@ -1555,7 +1555,8 @@ def main(argv: list[str] | None = None) -> int:
         manifest = _load(root, manifest_path)
         if not isinstance(manifest, dict):
             raise Refusal("manifest-unreadable", f"{manifest_path}: not a mapping")
-        policy_path = args.policy or (root / "contracts" / "repository-naming.yaml")
+        policy_path = (cli_yaml_path(args.policy) if args.policy is not None
+                       else root / "contracts" / "repository-naming.yaml")
         policy = _load(root, policy_path, NamingPolicy.load)
         # Inside the `try`: a declared referent's pin file this user cannot
         # reach is a check that cannot run, so it is refused, exit 2, and no

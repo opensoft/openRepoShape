@@ -161,7 +161,7 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 from repo_shape import (  # noqa: E402
     CHAIN_RECORD_FIELD, LINK_SOURCE_ABSENT, LINK_SOURCE_NO_MANIFEST,
-    UNAMBIGUOUS_FORMS, Classification, NamingPolicy, Refusal,
+    UNAMBIGUOUS_FORMS, Classification, NamingPolicy, Refusal, cli_yaml_path,
     link_pins_from_trees, load_yaml, pin_product_key,
     pin_source_env_collisions, repo_basename, spelled,
 )
@@ -1463,7 +1463,7 @@ def _emit_reports(args, unclassified: list[str], warnings: list[str],
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description=__doc__.splitlines()[0])
     parser.add_argument("names", nargs="*", help="repository names to classify")
-    parser.add_argument("--policy", type=Path, default=DEFAULT_POLICY)
+    parser.add_argument("--policy", type=Path, default=None)
     parser.add_argument("--project", type=Path, default=None,
                         help="read the leg names, their roles and the declared "
                              "neutral-product pins from a project.yaml manifest")
@@ -1546,6 +1546,10 @@ def main(argv: list[str] | None = None) -> int:
     _escape_what_stdout_cannot_encode()
 
     try:
+        args.policy = (cli_yaml_path(args.policy) if args.policy is not None
+                       else DEFAULT_POLICY)
+        if args.project is not None:
+            args.project = cli_yaml_path(args.project)
         policy = NamingPolicy.load(args.policy)
     except Refusal as exc:
         print(str(exc), file=sys.stderr)
