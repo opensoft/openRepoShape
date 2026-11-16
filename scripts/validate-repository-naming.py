@@ -166,6 +166,19 @@ from repo_shape import (  # noqa: E402
     pin_source_env_collisions, repo_basename, spelled,
 )
 
+# Copied CLI files also run beside older libraries. Prefer the shared guard;
+# the legacy branch needs only the standard library and the old Refusal API.
+try:
+    from repo_shape import cli_yaml_path
+except ImportError:
+    def cli_yaml_path(path: Path) -> Path:
+        resolved = Path(os.path.realpath(path))
+        if not resolved.is_relative_to(Path(os.path.realpath(os.getcwd()))):
+            raise Refusal("yaml-path-outside-cwd",
+                          f"{_shown(path)}: resolves outside the invocation directory",
+                          "Invoke from the project or encompassing workspace directory.")
+        return resolved
+
 DEFAULT_POLICY = Path(__file__).resolve().parents[1] / "contracts" / "repository-naming.yaml"
 
 #: What the plain listing and `--explain`'s family rows pad a text by (#1217)
@@ -195,24 +208,6 @@ def _shown(path) -> str:
     it classified a name."""
     text = str(path)
     return text if text.isprintable() else repr(text)
-
-
-def cli_yaml_path(path: Path) -> Path:
-    """Confine explicit YAML inputs to the invocation workspace.
-
-    Keep this guard local: copied validators also run beside library versions
-    from before the shared helper existed.
-    """
-    resolved = os.path.realpath(path)
-    base = os.path.realpath(os.getcwd())
-    compared = os.path.normcase(resolved)
-    allowed = os.path.normcase(base)
-    if compared != allowed and not compared.startswith(os.path.join(allowed, "")):
-        raise Refusal(
-            "yaml-path-outside-cwd",
-            f"{_shown(path)}: resolves outside the invocation directory",
-            "Invoke from the project or encompassing workspace directory.")
-    return Path(resolved)
 
 
 def _char_columns(char: str) -> int:

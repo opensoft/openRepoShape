@@ -70,3 +70,27 @@ def test_manifest_cli_refuses_outside_policy(project, tmp_path):
     assert result.returncode == 2
     assert "yaml-path-outside-cwd" in result.stderr
     assert "not UTF-8" not in result.stderr
+
+
+@pytest.mark.parametrize("script", ["validate-repository-naming.py", "validate-manifest.py"])
+@pytest.mark.parametrize("spelling", ["absolute", "traversal", "prefix-sibling", "symlink"])
+def test_legacy_library_fallback_refuses_outside_policy(project, tmp_path, script, spelling):
+    from test_chain_pin_sources import V1_1_1, library_at
+
+    (project / "scripts/repo_shape.py").write_bytes(library_at(V1_1_1))
+    outside = tmp_path / "outside.yaml"
+    outside.write_bytes(bytes([255]))
+    sibling = project.parent / (project.name + "-secret")
+    sibling.mkdir()
+    (sibling / "data.yaml").write_bytes(bytes([255]))
+    link = project / "escaped.yaml"
+    if spelling == "symlink":
+        link.symlink_to(outside)
+    paths = {"absolute": outside, "traversal": Path("..") / outside.name,
+             "prefix-sibling": sibling / "data.yaml", "symlink": link}
+    result = run_script(project / "scripts" / script, "--policy",
+                        str(paths[spelling]), cwd=project)
+    assert result.returncode == 2, result.stdout + result.stderr
+    assert "yaml-path-outside-cwd" in result.stderr
+    assert "not UTF-8" not in result.stderr
+    assert "Traceback" not in result.stderr
