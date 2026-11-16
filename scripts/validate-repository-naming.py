@@ -161,7 +161,7 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 from repo_shape import (  # noqa: E402
     CHAIN_RECORD_FIELD, LINK_SOURCE_ABSENT, LINK_SOURCE_NO_MANIFEST,
-    UNAMBIGUOUS_FORMS, Classification, NamingPolicy, Refusal, cli_yaml_path,
+    UNAMBIGUOUS_FORMS, Classification, NamingPolicy, Refusal,
     link_pins_from_trees, load_yaml, pin_product_key,
     pin_source_env_collisions, repo_basename, spelled,
 )
@@ -195,6 +195,24 @@ def _shown(path) -> str:
     it classified a name."""
     text = str(path)
     return text if text.isprintable() else repr(text)
+
+
+def cli_yaml_path(path: Path) -> Path:
+    """Confine explicit YAML inputs to the invocation workspace.
+
+    Keep this guard local: copied validators also run beside library versions
+    from before the shared helper existed.
+    """
+    resolved = os.path.realpath(path)
+    base = os.path.realpath(os.getcwd())
+    compared = os.path.normcase(resolved)
+    allowed = os.path.normcase(base)
+    if compared != allowed and not compared.startswith(os.path.join(allowed, "")):
+        raise Refusal(
+            "yaml-path-outside-cwd",
+            f"{_shown(path)}: resolves outside the invocation directory",
+            "Invoke from the project or encompassing workspace directory.")
+    return Path(resolved)
 
 
 def _char_columns(char: str) -> int:

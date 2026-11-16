@@ -90,8 +90,8 @@ def command_of(row: dict) -> list:
     return row["next"].split()
 
 
-def run_argv(command: list) -> subprocess.CompletedProcess:
-    return subprocess.run(command, capture_output=True, text=True,
+def run_argv(command: list, *, cwd=None) -> subprocess.CompletedProcess:
+    return subprocess.run(command, capture_output=True, text=True, cwd=cwd,
                           check=False, stdin=subprocess.DEVNULL,
                           env={**os.environ, "PYTHONDONTWRITEBYTECODE": "1"})
 
@@ -389,7 +389,7 @@ def test_an_unloadable_naming_policy_cannot_answer_for_a_compliant_project(
         f"{module.PYTHON} {module.quote_arg(here.resolve() / NAMING_SCRIPT)} "
         f"--explain --project {module.quote_arg(root / 'project.yaml')}"), \
         row["next"]
-    ran = run_argv(command_of(row))
+    ran = run_argv(command_of(row), cwd=root)
     assert ran.returncode == 2, ran.stdout + ran.stderr
     assert "tab used for indentation" in ran.stdout + ran.stderr
     text = doctor(here, root)

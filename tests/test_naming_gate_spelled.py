@@ -53,6 +53,8 @@ offline.
 
 from __future__ import annotations
 
+from pathlib import Path
+
 import pytest
 
 from conftest import REPO, run_script
@@ -235,7 +237,7 @@ def test_a_name_on_stdin_is_spelled_too(unclassified_tail):
 def test_a_classified_name_has_one_row_in_the_listing(raw, said, loose):
     """The same print site as the table above, for a name a fork classifies:
     on 09697e9c5 the row split after the name, and the ESC was raw."""
-    result = run_script(VALIDATOR, "--policy", loose, raw)
+    result = run_script(VALIDATOR, "--policy", loose, raw, cwd=Path(loose).parent.parent)
     assert result.returncode == 0, result.stdout + result.stderr
     assert result.stdout == f"  {said:<32} project-leg/assembly\n"
 
@@ -243,7 +245,7 @@ def test_a_classified_name_has_one_row_in_the_listing(raw, said, loose):
 @pytest.mark.parametrize("raw, said", NAMES)
 def test_explain_names_the_spelled_name_in_the_header_of_a_classified_name(
         raw, said, loose):
-    result = run_script(VALIDATOR, "--policy", loose, "--explain", raw)
+    result = run_script(VALIDATOR, "--policy", loose, "--explain", raw, cwd=Path(loose).parent.parent)
     assert result.returncode == 0, result.stdout + result.stderr
     assert result.stdout.splitlines()[0] == f"  {said}: project-leg / assembly"
     assert not_indented(lines_after_the_header(result.stdout)) == []
@@ -268,7 +270,7 @@ def test_the_claim_note_spells_the_referents_it_derives_from_the_name(
     quotes two names made from the product, and the product holds the
     control."""
     result = run_script(VALIDATOR, "--policy", loose, "--explain", "--role",
-                        "assembly", raw)
+                        "assembly", raw, cwd=Path(loose).parent.parent)
     assert result.returncode == 0, result.stdout + result.stderr
     claim = [line for line in result.stdout.splitlines() if "a CLAIM" in line]
     assert len(claim) == 1, result.stdout
@@ -301,7 +303,7 @@ def test_the_warning_on_stderr_spells_the_name_it_starts_with_and_quotes(
     """`WARNING <name>: <sentence>`, and the sentence says the name again
     (`but <name> would need`): spelling the first leaves the second raw."""
     said = spelled_of(raw)
-    result = run_script(VALIDATOR, "--policy", loose, *PINS, raw)
+    result = run_script(VALIDATOR, "--policy", loose, *PINS, raw, cwd=Path(loose).parent.parent)
     assert result.returncode == 0, result.stdout + result.stderr
     assert result.stderr == (
         f"WARNING {said}: {broken_said(said, 'openDox', DIRECT)}\n")
@@ -312,7 +314,7 @@ def test_the_warning_on_stderr_spells_the_name_it_starts_with_and_quotes(
 @pytest.mark.parametrize("raw", STEMS)
 def test_explain_spells_the_warning_that_quotes_the_name(raw, loose):
     said = spelled_of(raw)
-    result = run_script(VALIDATOR, "--policy", loose, "--explain", *PINS, raw)
+    result = run_script(VALIDATOR, "--policy", loose, "--explain", *PINS, raw, cwd=Path(loose).parent.parent)
     assert result.returncode == 0, result.stdout + result.stderr
     assert result.stdout.splitlines()[0] == f"  {said}: domain-descendant"
     assert (f"    WARNING {broken_said(said, 'openDox', DIRECT)}"
@@ -326,7 +328,7 @@ def test_explain_spells_the_overlap_sentence_that_quotes_the_name(raw, loose):
     OVERLAP line quotes the broken chain's sentence, name included."""
     said = spelled_of(raw)
     result = run_script(VALIDATOR, "--policy", loose, "--explain",
-                        *NO_DIRECT_PINS, raw)
+                        *NO_DIRECT_PINS, raw, cwd=Path(loose).parent.parent)
     assert result.returncode == 0, result.stdout + result.stderr
     overlap = [line for line in result.stdout.splitlines()
                if line.startswith("    OVERLAP ")]
@@ -354,7 +356,7 @@ def test_the_role_finding_spells_the_name(raw, said, loose, tmp_path):
     the project-leg family`: the leg is declared `code` and named like an
     assembly root."""
     manifest = write_manifest(tmp_path, raw, "code")
-    result = run_script(VALIDATOR, "--policy", loose, "--project", manifest)
+    result = run_script(VALIDATOR, "--policy", loose, "--project", manifest, cwd=Path(loose).parent.parent)
     assert result.returncode == 1, result.stdout + result.stderr
     assert result.stderr == (
         f"FINDING {said}: declared role 'code' but the name is the "
@@ -370,7 +372,7 @@ def test_the_broken_chain_finding_spells_the_name_it_starts_with_and_quotes(
         tmp_path, raw, "assembly",
         naming="    naming:\n      referent_chain: [openAdox, openQ]\n",
         pins="neutral_product_pins:\n  - openAdox\n")
-    result = run_script(VALIDATOR, "--policy", loose, "--project", manifest)
+    result = run_script(VALIDATOR, "--policy", loose, "--project", manifest, cwd=Path(loose).parent.parent)
     assert result.returncode == 1, result.stdout + result.stderr
     assert result.stderr == (
         f"FINDING {said}: {broken_said(said, 'openAdox')}\n")

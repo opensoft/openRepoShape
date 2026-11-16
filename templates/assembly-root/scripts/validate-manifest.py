@@ -121,7 +121,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent))
 from repo_shape import (  # noqa: E402
     CHAIN_RECORD_FIELD, COMMIT_RE, PATH_NOT_CANONICAL, PROJECT_ID_RE,
     SHA256_RE, TREE_DIGEST_DEFINITION, VISIBILITY_CHOICES, NamingPolicy,
-    Refusal, accepts_role, cli_yaml_path, find_repo_root, link_pins_from_trees, load_yaml,
+    Refusal, accepts_role, find_repo_root, link_pins_from_trees, load_yaml,
     path_spelling_fault, pin_product_key, pin_source_env_collisions,
     pin_source_env_name, pin_source_env_shared, repo_basename,
 )
@@ -483,6 +483,24 @@ def _shown(path) -> str:
     for themselves."""
     text = str(path)
     return text if text.isprintable() else repr(text)
+
+
+def cli_yaml_path(path: Path) -> Path:
+    """Confine explicit YAML inputs to the invocation workspace.
+
+    Keep this guard local: copied validators also run beside library versions
+    from before the shared helper existed.
+    """
+    resolved = os.path.realpath(path)
+    base = os.path.realpath(os.getcwd())
+    compared = os.path.normcase(resolved)
+    allowed = os.path.normcase(base)
+    if compared != allowed and not compared.startswith(os.path.join(allowed, "")):
+        raise Refusal(
+            "yaml-path-outside-cwd",
+            f"{_shown(path)}: resolves outside the invocation directory",
+            "Invoke from the project or encompassing workspace directory.")
+    return Path(resolved)
 
 
 def _sources_there(link: str, asked) -> tuple[list[str], set[str]]:

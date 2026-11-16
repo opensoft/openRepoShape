@@ -3317,9 +3317,12 @@ def test_a_pinned_copy_kept_as_a_link_is_drifted_by_name(standard, project,
 
 
 def keep_as_committed_link(root: Path, linked: str, tmp_path: Path) -> Path:
-    """`linked` moved beside the root, a symlink to it left in its place and
-    committed, so the link is what git holds. Returns where it points."""
-    end = tmp_path / "outside" / Path(linked).name
+    """Keep the bytes inside the invocation boundary and commit a link.
+
+    This probes structural link refusal independently of an escaped YAML path.
+    Returns where the link points.
+    """
+    end = root / ".linked-record-bytes" / Path(linked).name
     end.parent.mkdir(exist_ok=True)
     shutil.move(str(root / linked), str(end))
     (root / linked).symlink_to(end, target_is_directory=end.is_dir())
