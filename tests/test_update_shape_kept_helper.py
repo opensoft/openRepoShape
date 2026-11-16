@@ -71,6 +71,7 @@ so no platform's newline reaches a digest.
 
 from __future__ import annotations
 
+import ast
 import os
 import re
 import shlex
@@ -560,10 +561,39 @@ def test_every_name_a_shipped_importer_takes_is_found_defined(update_shape,
     spelled = set().union(*spelled_imports(data.decode("utf-8")))
     taken = update_shape._names_imported(data).get("repo_shape", set())
     assert spelled, f"{importer} no longer spells `from repo_shape import`"
-    assert taken == spelled, sorted(taken ^ spelled)
+    optional = ({"cli_yaml_path"} if importer in (
+        "templates/assembly-root/scripts/validate-manifest.py",
+        "scripts/validate-repository-naming.py") else set())
+    assert optional <= spelled, "the shipped fallback import moved"
+    required = spelled - optional
+    assert taken == required, sorted(taken ^ required)
     defined = update_shape._names_defined(REPO / REPO_SHAPE)
     assert defined is not None, f"{REPO_SHAPE} reads as one it cannot tell"
-    assert taken <= defined, sorted(taken - defined)
+    # Current helpers must define optional names too; only an older kept
+    # helper may rely on the importer's explicit compatible fallback.
+    assert spelled <= defined, sorted(spelled - defined)
+
+
+
+@pytest.mark.parametrize("importer", [
+    "templates/assembly-root/scripts/validate-manifest.py",
+    "scripts/validate-repository-naming.py",
+])
+def test_the_shipped_yaml_helper_is_required_without_its_fallback(update_shape, importer):
+    data = (REPO / importer).read_bytes()
+    guarded = update_shape._names_imported(data).get("repo_shape", set())
+    assert "cli_yaml_path" not in guarded
+    guard = next(node for node in ast.parse(data).body
+                 if isinstance(node, ast.Try) and any(
+                     isinstance(child, ast.ImportFrom) and child.module == "repo_shape"
+                     and any(alias.name == "cli_yaml_path" for alias in child.names)
+                     for child in node.body))
+    lines = data.splitlines(keepends=True)
+    unguarded = (b"".join(lines[:guard.lineno - 1])
+                 + b"from repo_shape import cli_yaml_path\n"
+                 + b"".join(lines[guard.end_lineno:]))
+    required = update_shape._names_imported(unguarded).get("repo_shape", set())
+    assert "cli_yaml_path" in required, "an unguarded import must remain required"
 
 
 def test_the_reader_finds_all_three_of_validate_pins_statements(update_shape):
