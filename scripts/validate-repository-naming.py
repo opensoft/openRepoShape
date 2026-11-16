@@ -101,8 +101,8 @@ project it names, is named as it is, or as Python's `repr` spells it where a
 character in it is not printable (`_shown`). The one exception is the WORDS of
 a `--link-remedy` where a `declared-unverified` WARNING offers them: they stand
 inside its sentence and are spelled with it, as the next paragraph says, so a
-TAB or an ESC in them is `\\t` or `\\x1b`, without quotes. A caller's FLAG and
-explicit YAML paths are canonicalized after confinement and before diagnostics.
+TAB or an ESC in them is `\\t` or `\\x1b`, without quotes. A caller's FLAG is printed as given.
+Explicit YAML paths are canonicalized after confinement and before diagnostics.
 Every name this classifies or refuses is `repo_shape.spelled` (#1267): in the
 plain listing, in `--explain`, in the `naming-unclassified` and role
 findings, and in a WARNING, a broken-chain finding or an `--explain` line
