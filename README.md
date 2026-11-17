@@ -1487,3 +1487,5 @@ second way in, never a requirement. `tests/test_repo_hygiene.py` enforces it.
 ## Licence
 
 Apache-2.0. See `LICENSE`.
+
+Source-quality maintenance: [shape source clarity plan](specs/002-source-clarity/plan.md), coordinated by [wallet issue #82](https://github.com/opensoft/openXwallet/issues/82).
