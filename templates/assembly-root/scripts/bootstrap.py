@@ -151,6 +151,8 @@ from repo_shape import (  # noqa: E402
     recorded_gitlink, spelled,
 )
 
+BRANCH_REF_PREFIX = "refs/heads/"
+
 DEGRADE_LINE = "authority is not wallet-carried in this org"
 
 #: The two OFFLINE ways this command can learn where the upstream shape is.
@@ -996,7 +998,7 @@ def _place_of(current: str | None) -> str:
     with the branch spelled (#391)."""
     if current is None:
         return "detached"
-    return "on " + spelled(current.split("refs/heads/", 1)[-1])
+    return "on " + spelled(current.split(BRANCH_REF_PREFIX, 1)[-1])
 
 
 def _say_left(head: str | None, current: str, named: str) -> None:
@@ -1042,7 +1044,7 @@ def _say_neither(label: str, state: str, head: str | None,
 def _on_a_branch(current: str | None) -> bool:
     """Whether HEAD is on a branch, `refs/heads/<name>`, one with no commit
     yet included: the one checkout besides the pin a move starts from."""
-    return current is not None and current.startswith("refs/heads/")
+    return current is not None and current.startswith(BRANCH_REF_PREFIX)
 
 
 def _fold(name: str) -> str:
@@ -1078,9 +1080,9 @@ def _folded_twin(current: str | None, branch: str) -> bool:
     of one name are twins: APFS reads those as one file too, so a leg on
     the NFD spelling did #896's harm (#962).
     """
-    if current is None or not current.startswith("refs/heads/"):
+    if current is None or not current.startswith(BRANCH_REF_PREFIX):
         return False
-    held = current[len("refs/heads/"):]
+    held = current[len(BRANCH_REF_PREFIX):]
     return held != branch and _fold(held) == _fold(branch)
 
 
@@ -1135,7 +1137,7 @@ def _say_twin(label: str, path: str, branch: str, current: str, state: str,
     the no-op checkout of `place_at_pin`; where the two are branches, it
     puts the leg on the real one, and `Main` keeps its commits.
     """
-    twin = current[len("refs/heads/"):]
+    twin = current[len(BRANCH_REF_PREFIX):]
     _say_fold(label, state, "the checkout is on", twin, branch, act)
     command = f"git -C {_paste_word(path)} switch {_paste_word(branch)}"
     print(f"          run `{command}`, which moves no branch, and then run "
@@ -1163,7 +1165,7 @@ def _heads(sub: Path) -> list[str]:
     """Every ref under `refs/heads/`, packed or loose, as `git for-each-ref`
     lists them, or none where git says nothing (#962)."""
     listed = _try_git(["for-each-ref", "--format=%(refname)",
-                       "refs/heads/"], sub)
+                       BRANCH_REF_PREFIX], sub)
     return (listed or "").splitlines()
 
 
@@ -1188,7 +1190,7 @@ def _folded_spelling(sub: Path, branch: str) -> str | None:
     `_say_spelling` names it and gives the rename that ends the refusal."""
     for ref in _heads(sub):
         if _folded_twin(ref, branch):
-            return ref[len("refs/heads/"):]
+            return ref[len(BRANCH_REF_PREFIX):]
     return None
 
 
@@ -1227,7 +1229,7 @@ def _kept_name(sub: Path, spelling: str) -> str:
     names it, so `for-each-ref` does not list it. Nor does it ask the file
     system: a name too long once `-kept` and git's `.lock` are added is
     refused as well."""
-    held = {_fold(ref[len("refs/heads/"):]) for ref in _heads(sub)}
+    held = {_fold(ref[len(BRANCH_REF_PREFIX):]) for ref in _heads(sub)}
     name, turn = f"{spelling}-kept", 1
     while _taken(held, name):
         turn += 1
@@ -1722,7 +1724,7 @@ def create_at_pin(sub: Path, label: str, path: str, branch: str, pin: str,
     head, current = _head_of(sub)
     if _folded_twin(current, branch):
         _say_spelling(sub, label, path, branch,
-                      current[len("refs/heads/"):],
+                      current[len(BRANCH_REF_PREFIX):],
                       f"branch {named} does not exist (the pin is "
                       f"{_short(pin)})", "the checkout is on")
         return

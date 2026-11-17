@@ -106,11 +106,12 @@ jobs:
               key=${rec%%"$us"*}
               section=${key%.*}
               case $section in submodule.?*) ;; *) continue ;; esac
-              case /${section#submodule.}/ in *[/\\]..[/\\]*) continue ;; esac
+              case /${section#submodule.}/ in *[/\\]..[/\\]*) continue ;; *) : ;; esac
               field=${key##*.}
               case $field in
                 path|url|ignore|update|branch)
                   [ -z "$bare" ] || { case $field in ignore|update) a=an ;; *) a=a ;; esac; cause "$a $field key with no value"; break; } ;;
+                *) : ;;
               esac
               case $field in
                 update)
@@ -119,6 +120,7 @@ jobs:
                   git -c "x.y=$value" config --type=bool --get x.y >/dev/null 2>&1 || { cause "a shallow that is not a boolean"; break; } ;;
                 fetchrecursesubmodules)
                   [ "$value" = on-demand ] || git -c "x.y=$value" config --type=bool --get x.y >/dev/null 2>&1 || { cause "a fetchRecurseSubmodules that is neither a boolean nor on-demand"; break; } ;;
+                *) : ;;
               esac
             done || true)
             if [ -n "$refusal" ]; then
@@ -129,7 +131,7 @@ jobs:
               case $key in submodule.?*.url) ;; *) continue ;; esac
               name=${key#submodule.}
               name=${name%.url}
-              case /$name/ in *[/\\]..[/\\]*) continue ;; esac
+              case /$name/ in *[/\\]..[/\\]*) continue ;; *) : ;; esac
               # A value beginning with - is ignored, that value alone: git keeps an earlier one.
               url=$(git config --file .gitmodules --get -- "$key" '^([^-]|$)') || continue
               git config --file .gitmodules --get -- "submodule.$name.path" '^([^-]|$)' >/dev/null || continue
@@ -260,11 +262,12 @@ jobs:
                 key=${rec%%"$us"*}
                 section=${key%.*}
                 case $section in submodule.?*) ;; *) continue ;; esac
-                case /${section#submodule.}/ in *[/\\]..[/\\]*) continue ;; esac
+                case /${section#submodule.}/ in *[/\\]..[/\\]*) continue ;; *) : ;; esac
                 field=${key##*.}
                 case $field in
                   path|url|ignore|update|branch)
                     [ -z "$bare" ] || { case $field in ignore|update) a=an ;; *) a=a ;; esac; cause "$a $field key with no value"; break; } ;;
+                  *) : ;;
                 esac
                 case $field in
                   update)
@@ -273,6 +276,7 @@ jobs:
                     git -c "x.y=$value" config --type=bool --get x.y >/dev/null 2>&1 || { cause "a shallow that is not a boolean"; break; } ;;
                   fetchrecursesubmodules)
                     [ "$value" = on-demand ] || git -c "x.y=$value" config --type=bool --get x.y >/dev/null 2>&1 || { cause "a fetchRecurseSubmodules that is neither a boolean nor on-demand"; break; } ;;
+                  *) : ;;
                 esac
               done || true)
               if [ -n "$refusal" ]; then
@@ -286,7 +290,7 @@ jobs:
                 case $key in submodule.?*.url) ;; *) continue ;; esac
                 name=${key#submodule.}
                 name=${name%.url}
-                case /$name/ in *[/\\]..[/\\]*) continue ;; esac
+                case /$name/ in *[/\\]..[/\\]*) continue ;; *) : ;; esac
                 # A value beginning with - is ignored, that value alone: git keeps an earlier one.
                 url=$(git config --file .gitmodules --get -- "$key" '^([^-]|$)') || continue
                 git config --file .gitmodules --get -- "submodule.$name.path" '^([^-]|$)' >/dev/null || continue
@@ -348,7 +352,7 @@ jobs:
               case $key in submodule.?*.url) ;; *) continue ;; esac
               name=${key#submodule.}
               name=${name%.url}
-              case /$name/ in *[/\\]..[/\\]*) continue ;; esac
+              case /$name/ in *[/\\]..[/\\]*) continue ;; *) : ;; esac
               # A value beginning with - is ignored, that value alone: git keeps an earlier one.
               url=$(git config --file .gitmodules --get -- "$key" '^([^-]|$)') || continue
               git config --file .gitmodules --get -- "submodule.$name.path" '^([^-]|$)' >/dev/null || continue

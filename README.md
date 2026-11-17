@@ -1480,9 +1480,9 @@ scripts/render-cli-reference.py   renders docs/cli.md; never hand-edit that file
 tests/                            pytest; scaffolds into bare repos in /tmp
 ```
 
-**Python 3 standard library only.** No tool needs `pip` or any dependency, so
-the shape runs where nothing can be installed; the `openreposhape` package is a
-second way in, never a requirement. `tests/test_repo_hygiene.py` enforces it.
+**Python 3 standard library only.** No tool needs `pip` or any dependency, so the shape runs where nothing
+can be installed; the `openreposhape` package is a second way in, never a requirement.
+`tests/test_repo_hygiene.py` enforces it. [Source maintenance](specs/002-source-clarity/plan.md).
 
 ## Licence
 

@@ -333,6 +333,14 @@ def _quote_end(text: str, start: int) -> int | None:
     return None
 
 
+def _next_scalar_start(ch, begins, spaced, flow, depth):
+    """Beginning-state after one unquoted character."""
+    if ch in " \t" or ch == "-" and begins and spaced:
+        return begins
+    return (ch in "[{," and (flow or depth > 0)
+            or ch == ":" and spaced)
+
+
 def _unquoted(text: str, flow: bool = False):
     """Each `(index, character)` of `text` that no quoted scalar holds: the
     characters `_strip_comment`, `_split_key` and `_split_flow` may read as
@@ -370,9 +378,7 @@ def _unquoted(text: str, flow: bool = False):
         elif ch in "]}" and depth:
             depth -= 1
         spaced = text[i:i + 1] in ("", " ", "\t")
-        if ch not in " \t" and not (ch == "-" and begins and spaced):
-            begins = (ch in "[{," and (flow or depth > 0)
-                      or ch == ":" and spaced)
+        begins = _next_scalar_start(ch, begins, spaced, flow, depth)
 
 
 def _strip_comment(text: str) -> str:
@@ -1924,7 +1930,7 @@ class ReferentResolution:
     because "the chain is invalid" sends the reader to read four manifests.
     """
 
-    REACHED = ("direct", "verified", CHAIN_UNVERIFIED)
+    REACHED_STATUSES = ("direct", "verified", CHAIN_UNVERIFIED)
 
     def __init__(self, status: str = "none", referent: str | None = None,
                  chain=(), reason: str = "", warnings=(), unverified=()):
@@ -1938,7 +1944,7 @@ class ReferentResolution:
     @property
     def reached(self) -> bool:
         """Is the referent reached — by a direct pin or by a held chain?"""
-        return self.status in self.REACHED
+        return self.status in self.REACHED_STATUSES
 
     @property
     def by_chain(self) -> bool:
@@ -2051,6 +2057,29 @@ def _link_declarations(link_pins) -> dict[str, set[str]]:
             if pins_of is not None}
 
 
+def _chain_unavailable_warning(holder, held, why, remedies, shared):
+    """Distinguish a reached unreadable tree from an unreachable link."""
+    if why is not None:
+        # A source REACHED this tree and could not read a declaration out
+        # of it, so "not reachable here" would be untrue (#338).
+        return (
+            f"{CHAIN_UNVERIFIED}: {holder} declaring a pin on {held} "
+            f"is a fact in {holder}'s own tree, which was reached but "
+            f"could not be read as a declaration ({why}). The recorded "
+            "chain still classifies.")
+    remedy = remedies.get(pin_product_key(holder))
+    if remedy is None:
+        variable = ("" if pin_product_key(holder) in shared
+                    else f", {pin_source_env_name(holder)},")
+        remedy = (f"a sibling checkout{variable} or --link-source "
+                  f"{holder}=<path> would let it be read")
+    return (
+        f"{CHAIN_UNVERIFIED}: {holder} declaring a pin on {held} "
+        f"is a fact in {holder}'s own tree, which is not "
+        f"reachable here ({remedy}). The recorded chain still "
+        "classifies.")
+
+
 def _chain_link_findings(chain, link_pins) -> tuple:
     """What each link of a recorded chain says about the next one along it.
 
@@ -2096,29 +2125,10 @@ def _chain_link_findings(chain, link_pins) -> tuple:
     for holder, held in zip(chain, chain[1:]):
         declared = available.get(pin_product_key(holder))
         why = unreadable.get(pin_product_key(holder))
-        if declared is None and why is not None:
-            # A source REACHED this tree and could not read a declaration out
-            # of it, so "not reachable here" would be untrue (#338).
-            unverified.append(holder)
-            warnings.append(
-                f"{CHAIN_UNVERIFIED}: {holder} declaring a pin on {held} "
-                f"is a fact in {holder}'s own tree, which was reached but "
-                f"could not be read as a declaration ({why}). The recorded "
-                "chain still classifies.")
-            continue
         if declared is None:
             unverified.append(holder)
-            remedy = remedies.get(pin_product_key(holder))
-            if remedy is None:
-                variable = ("" if pin_product_key(holder) in shared
-                            else f", {pin_source_env_name(holder)},")
-                remedy = (f"a sibling checkout{variable} or --link-source "
-                          f"{holder}=<path> would let it be read")
-            warnings.append(
-                f"{CHAIN_UNVERIFIED}: {holder} declaring a pin on {held} "
-                f"is a fact in {holder}'s own tree, which is not "
-                f"reachable here ({remedy}). The recorded chain still "
-                "classifies.")
+            warnings.append(_chain_unavailable_warning(
+                holder, held, why, remedies, shared))
             continue
         if pin_product_key(held) not in {pin_product_key(pin)
                                          for pin in declared}:

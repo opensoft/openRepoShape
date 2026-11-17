@@ -87,6 +87,10 @@ from repo_shape import REMEDIATION  # noqa: E402
 # (2026-09-05). Two definitions of one variable name is how the second one
 # starts disagreeing with the first.
 
+MISSING_SUFFIX = " does not exist"
+TWO_BUMP_LINES = "the two bump-leg.py lines"
+AND_SEPARATOR = " and "
+
 #: `owner/repo[/path]@<40 hex>` as it appears in a `uses:` line.
 WORKFLOW_REF_RE = re.compile(
     r"(?P<repo>[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+)(?P<path>/[^@\s'\"]*)?"
@@ -807,7 +811,7 @@ def _load_leg_pin(root: Path, role, path: str, repository: str,
         raise _no_file(
             "pin-missing", root, pin_path,
             f"leg {role!r} declares {_shown(repository)} at {path!r} but "
-            f"{rel}", " does not exist")
+            f"{rel}", MISSING_SUFFIX)
     pin = _load(root, pin_path)
     if not isinstance(pin, dict):
         raise Refusal("pin-unreadable", f"{rel}: not a mapping")
@@ -1061,7 +1065,7 @@ def _held_then(lines: str, whom: str, back: Back | None,
 
 
 def _gitlink_repairs_held_back(paths: list[str], others: list[str],
-                               lines: str = "the two bump-leg.py lines",
+                               lines: str = TWO_BUMP_LINES,
                                back: Back | None = None,
                                other_legs: dict[str, list[str]] | None = None
                                ) -> str:
@@ -1086,12 +1090,12 @@ def _gitlink_repairs_held_back(paths: list[str], others: list[str],
     """
     what, first, whom = [], [], "that leg"
     if len(paths) > 1:
-        what.append(" and ".join(_shown(path) for path in paths)
+        what.append(AND_SEPARATOR.join(_shown(path) for path in paths)
                     + (" are both" if len(paths) == 2 else " are all")
                     + " off their pins")
         whom = "the leg that is left"
     elif other_legs:
-        whom = " and ".join(_shown(path) for path in other_legs)
+        whom = AND_SEPARATOR.join(_shown(path) for path in other_legs)
     elif back is not None:
         what.append(f"{_shown(back.path)} is off its pin")
         whom = _shown(paths[0])
@@ -1104,7 +1108,7 @@ def _gitlink_repairs_held_back(paths: list[str], others: list[str],
     if len(paths) > 1 or back is not None:
         first.append(_put_back(paths if len(paths) > 1 else [back.path]))
     return ("No single bump-leg.py line can commit while "
-            + " and ".join(what) + ": bump-leg.py moves one leg and runs "
+            + AND_SEPARATOR.join(what) + ": bump-leg.py moves one leg and runs "
             "this validator before it commits, rolling the bump back when it "
             "is red. First " + ", and ".join(first) + "; this validator then "
             + _held_then(lines, whom, back, other_legs))
@@ -1147,7 +1151,7 @@ def _end_gitlink_mismatches(root: Path, report: Report) -> object:
                                                             gitlink, commit)
         return role
     paths = [path for _, _, path, _, _ in report.mismatches]
-    lines, back = "the two bump-leg.py lines", None
+    lines, back = TWO_BUMP_LINES, None
     if other_legs:
         lines = ("the bump-leg.py line" if all(
             code == "pin-digest-mismatch" for codes in other_legs.values()
@@ -1246,7 +1250,7 @@ def _curable_ending(root: Path, one: Curable, legs: list,
     if untagged or back:
         return _gitlink_repairs_held_back(
             [one.path], untagged, "the bump-leg.py line"
-            if one.reference is None else "the two bump-leg.py lines",
+            if one.reference is None else TWO_BUMP_LINES,
             back[0] if back else None)
     if one.reference is None:
         return _digest_repair(root, one.role, one.commit)
@@ -1428,7 +1432,7 @@ def _check_shape_pin_header(root: Path, manifest: dict, report: Report
     rel = _named(root, pin_path)
     if not _is_file(root, pin_path):
         raise _no_file("shape-pin-missing", root, pin_path, rel,
-                       " does not exist")
+                       MISSING_SUFFIX)
     pin = _load(root, pin_path)
     if not isinstance(pin, dict):
         raise Refusal("shape-pin-unreadable", f"{rel}: not a mapping")
@@ -1828,7 +1832,7 @@ def _check_neutral_pin_entry_and_load(root: Path, product, report: Report
         raise _no_file(
             "neutral-pin-missing", root, pin_path,
             f"project.yaml declares a pin on {product!r} but {rel}",
-            " does not exist",
+            MISSING_SUFFIX,
             "Remediation: `scaffold-project.py --pin "
             f"{_shown(product)}@<commit>` writes that file. A declaration in "
             "project.yaml with no pin file beside it is a claim with no "
@@ -2016,7 +2020,7 @@ def _report_pin_source_collisions(products, report: Report) -> None:
     are the manifest's own text and may hold a newline, and a note is one
     line."""
     for variable, group in pin_source_env_collisions(products).items():
-        names = " and ".join(repr(product) for product in group)
+        names = AND_SEPARATOR.join(repr(product) for product in group)
         report.advise(
             "neutral-pin-source-collides: project.yaml neutral_product_pins "
             f"declares {names}, and one variable, {variable}, names the local "
