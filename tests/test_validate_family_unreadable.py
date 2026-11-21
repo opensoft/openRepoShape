@@ -53,6 +53,14 @@ with a fetch. It is opened as the gate opens a leg's, only where it is a
 regular file, and refused `member-unreadable`, naming that `HEAD`; a
 parity row holds the name to the gate's.
 
+A MEMBER GIT DIRECTORY'S `HEAD` THAT GIT CANNOT READ AS ONE (#1290), as
+the gate's leg's: a FIFO is not opened by #1256's guard, but git's open of
+it waits for a writer, and the gate gave no answer in 60 s. A `HEAD` that
+is neither a file nor a directory (a FIFO, a socket or a device, or a
+symlink to one) is `member-unreadable`, naming it and what stands there,
+before git is asked; each run over a FIFO is bounded, and a parity row
+holds the line to the gate's.
+
 WHAT IS ON DISK IS ASKED ONLY WHERE IT IS SAID (round 2, r956's SHOULD 1
 on #956): `_forced` and `_staged_over` ask git first, and where HEAD
 records a gitlink at the index's own commit, the disk under it is never
@@ -97,6 +105,9 @@ from test_family_head_lost_gitmodules import case_sensitive_disk  # noqa: F401
 from test_validate_family_typed_states import OTHER, ROW, VARIANT_PATH
 from test_validate_family_unnamed_mounts import (
     codes, commands, findings, spare_commits, stage_gitlink,
+)
+from test_validate_pins_spelled_and_named import (
+    FIFO_HEADS, NOT_HEADS, bounded,
 )
 
 OTHER_ROW = f"members/{OTHER}"
@@ -1027,6 +1038,26 @@ def test_a_member_git_directory_head_whose_open_is_refused_is_refused(
     assert "member-commit-unresolvable" not in err
 
 
+@pytest.mark.parametrize("make, reason", FIFO_HEADS)
+@pytest.mark.parametrize("made,head", HEADS)
+def test_a_member_fifo_head_is_refused_by_name_within_a_bound(
+        holder, request, made, head, make, reason):
+    """#1290, W1256 on #1263: the holder's own gate, the member's git
+    directory's `HEAD` a FIFO, or a symlink to one. #1256's guard does not
+    open it, but `git rev-parse` did, and waited for a writer: the gate gave
+    no answer in 60 s. It is `member-unreadable`, exit 2, naming that `HEAD`
+    and what stands there, with the advice for a cause that is no
+    permission, before git is asked."""
+    extra = made(holder, request)
+    (holder / head).rename(holder / (head + "-aside"))
+    make(holder / head)
+    result = bounded(holder / "scripts" / "validate-family.py", holder,
+                     *extra)
+    assert_refused(result.returncode, result.stderr, MEMBER_UNREADABLE, head,
+                   reason)
+    assert "member-commit-unresolvable" not in result.stderr
+
+
 def test_the_member_tree_asked_alone_names_a_head_whole_outside(
         holder, request, monkeypatch):
     """`_check_member_tree` asked alone, the open of the `HEAD` refused: it
@@ -1183,27 +1214,49 @@ def test_a_member_head_is_named_as_the_gate_names_a_leg_s(
 
 
 @pytest.mark.parametrize("own_directory", OWN_DIRECTORY)
-@pytest.mark.parametrize("make", [
-    pytest.param(lambda head: head.mkdir(), id="directory"),
-    pytest.param(lambda head: os.mkfifo(head), id="fifo",
-                 marks=pytest.mark.skipif(not hasattr(os, "mkfifo"),
-                                          reason="no FIFO on this platform")),
-])
-def test_a_member_head_that_is_no_regular_file_is_not_opened(
-        sources, tmp_path, monkeypatch, own_directory, make):
+def test_a_member_head_that_is_a_directory_is_left_to_git(
+        sources, tmp_path, monkeypatch, own_directory):
     """Only a `HEAD` that is a regular file is opened (#1256), in the family
-    gate as in the leg gate (#1222): one that is anything else is git's to
-    answer for, and the open of a FIFO would wait for a writer. An open of
-    either fails the row rather than hanging it."""
+    gate as in the leg gate (#1222), and one that is a directory is git's to
+    answer for, as it always was: the control for #1290's rows. An open
+    fails the row."""
     gitdir = member_git_directory(tmp_path, own_directory)
     head = gitdir / "HEAD"
     head.rename(gitdir / "HEAD-aside")
-    make(head)
+    head.mkdir()
     failing(monkeypatch, "open", "HEAD", OSError(errno.EIO, "opened"))
     assert sources.family._refuse_an_unreadable_git_dir(tmp_path / ROW,
                                                         ROW) is None
     assert sources.gate._refuse_an_unreadable_git_dir(
         tmp_path, tmp_path / ROW / ".git") is None
+
+
+@pytest.mark.parametrize("own_directory", OWN_DIRECTORY)
+@pytest.mark.parametrize("make, reason", NOT_HEADS)
+def test_a_member_head_git_cannot_read_is_named_as_the_gate_names_a_leg_s(
+        sources, tmp_path, monkeypatch, own_directory, make, reason):
+    """PARITY (#1290): a `HEAD` that `stat`, which follows a link, finds
+    neither a file nor a directory, a FIFO, a socket, or a symlink to a FIFO
+    or a device, is refused unopened, and the family gate's line is the leg
+    gate's, naming the same `HEAD` and what stands there. The guards are
+    asked alone, so that where one lets it through, the row fails and git
+    is never started on a FIFO."""
+    gitdir = member_git_directory(tmp_path, own_directory)
+    head = gitdir / "HEAD"
+    head.rename(gitdir / "HEAD-aside")
+    make(head)
+    failing(monkeypatch, "open", "HEAD", OSError(errno.EIO, "opened"))
+    family_refusal = refusal_of(
+        sources.family, sources.family._refuse_an_unreadable_git_dir,
+        tmp_path / ROW, ROW)
+    gate_refusal = refusal_of(
+        sources.gate, sources.gate._refuse_an_unreadable_git_dir, tmp_path,
+        tmp_path / ROW / ".git")
+    named = head.relative_to(tmp_path).as_posix()
+    assert family_refusal.code == MEMBER_UNREADABLE
+    assert family_refusal.detail == f"{named}: cannot be read ({reason})"
+    assert gate_refusal.code == "pin-submodule-unreadable"
+    assert gate_refusal.detail == family_refusal.detail
 
 
 def test_a_member_head_no_system_call_can_name_is_left_to_git(sources,
