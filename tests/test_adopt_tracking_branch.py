@@ -49,6 +49,13 @@ with the source's `.git/refs/heads/adopt` at mode 000, `check` said
 `adopt-branch-exists` once it can list that directory, and `execute
 --local-remote-dir` made and pushed both legs before its split push met
 that branch. Their rows follow #1219's.
+
+A source git keeps on the reftable backend is read as git reads it
+(#1291). Its refs are in the tables of `.git/reftable`, and its `.git/refs`
+holds only a `refs/heads` that is a file, so with `.git/refs` at `--x` git
+lists every ref; #1252's walk listed `refs` all the same, and once #1265
+asked it in every `check`, `check` refused such a source
+`source-unreadable`. Its rows are last.
 """
 
 from __future__ import annotations
@@ -69,6 +76,9 @@ from conftest import (ADOPT, FILE_PROTOCOL, REPO, git, load_without_bytecode,
                       make_source_repo, run_script, spelled, write_plan)
 from test_adopt_unsearchable_source import (CURE, DENIED, UNREADABLE,
                                             needs_a_mode, recording_gh, said)
+# The reftable backend's mark and its skip, as #904's rows make one (#1291).
+from test_adopt_root_symlinks import (REF_FORMAT, needs_reftable,
+                                      refs_on_reftable)
 
 sys.path.insert(0, str(REPO / "scripts"))
 from repo_shape import load_yaml  # noqa: E402
@@ -1395,3 +1405,144 @@ def test_a_source_the_disk_will_not_place_is_asked_of_git_and_refused(
 
     assert adopter._common_dir_on_disk(path) is None
     split_branch_asked_of(adopter, monkeypatch, clone, path, common)
+
+
+# --- a source git keeps on the reftable backend (#1291) ---------------------
+#
+# The reftable backend (git 2.45 and later) keeps every ref in the tables of
+# the common git directory's `reftable`, and leaves `refs` holding only a
+# `refs/heads` that is a FILE. git lists no directory under `refs` then.
+# Measured with git 2.47.1, uid 1000, a stub `gh` and local remotes, a
+# reftable clone `plan` made, its `.git/refs` at `--x`: git listed every
+# ref and exited 0; on 39b21c07 (#1265) `check` and `execute
+# --local-remote-dir` were refused `source-unreadable`, "the source's
+# `refs`", by #1252's walk, which #1265 asks for the split branch in every
+# `check`; on b7a00b31 `check` said `plan ok`. Now the walk is skipped
+# where the common git directory holds both marks
+# (`_keeps_refs_in_a_reftable`); with only one of them, it walks as before.
+# At 000 or `r--` git cannot search `refs`, takes the source for no
+# repository, and it is refused by name before any walk, as before.
+
+#: What git 2.47.1's reftable backend writes in `refs/heads`.
+REFTABLE_HEADS = "this repository uses the reftable format\n"
+#: The refs the walk is asked for: the source's own branches, and its
+#: `origin`'s as it last fetched them.
+WALKED = [pytest.param("refs/heads/", id="own"),
+          pytest.param("refs/remotes/origin/", id="fetched")]
+
+
+@needs_a_mode
+@needs_filter_repo
+@pytest.mark.parametrize("verb", ["check", "execute"])
+@pytest.mark.parametrize("backend", [
+    pytest.param("reftable", marks=needs_reftable), "files"])
+def test_refs_git_can_search_and_not_list_are_asked_as_their_backend_reads(
+        tmp_path, monkeypatch, backend, verb):
+    """rv1265's N1: a clone `plan` made, its `.git/refs` at `--x`. On the
+    reftable backend git lists every ref from the tables and exits 0, so
+    `check` says `plan ok`, as on b7a00b31, and `execute
+    --local-remote-dir` adopts; on 39b21c07 each was `source-unreadable`,
+    naming `refs`. On the files backend git lists nothing in `refs`, and
+    each is still refused naming it."""
+    if backend == "reftable":
+        refs_on_reftable(monkeypatch)
+    else:
+        monkeypatch.delenv(REF_FORMAT, raising=False)
+    source = a_clone(tmp_path)
+    assert (source / ".git" / "refs" / "heads").is_file() is (
+        backend == "reftable")
+    plan = planned_as_cloned(tmp_path, source)
+    env, log = recording_gh(tmp_path / "gh-bin")
+
+    with refs_at(source / ".git" / "refs", 0o100):
+        proc = asked_of(tmp_path, verb, source, plan, env)
+
+    if backend == "files":
+        assert_refs_refused(proc, refs_refused(source, "refs",
+                                               BRANCHES_UNTOLD),
+                            tmp_path, log)
+        return
+    assert proc.returncode == 0, said(proc)
+    assert ("plan ok" if verb == "check"
+            else "adoption verified") in proc.stdout, said(proc)
+    assert "source-unreadable" not in said(proc)
+    assert log.read_bytes() == b""
+
+
+def a_common_directory(root: Path, heads: str, tables: bool) -> Path:
+    """A common git directory made by hand, so that it is made by any git:
+    a `refs/heads` that is a FILE holding what the reftable backend writes
+    there (`heads` "file"), or a directory holding `adopt` ("directory"); a
+    `reftable` directory beside `refs` where `tables`; and a
+    `refs/remotes/origin/adopt`, as a fetch on the files backend leaves
+    one."""
+    common = root / "common"
+    (common / "refs" / "remotes" / "origin" / "adopt").mkdir(parents=True)
+    if heads == "file":
+        (common / "refs" / "heads").write_text(REFTABLE_HEADS)
+    else:
+        (common / "refs" / "heads" / "adopt").mkdir(parents=True)
+    if tables:
+        (common / "reftable").mkdir()
+    return common
+
+
+@pytest.mark.parametrize(("refused", "prefix"), [
+    pytest.param("refs", "refs/heads/", id="refs-own"),
+    pytest.param("refs", "refs/remotes/origin/", id="refs-fetched"),
+    pytest.param("refs/remotes/origin", "refs/remotes/origin/",
+                 id="stray-origin-fetched"),
+])
+def test_a_reftable_common_directory_is_not_walked(adopter, monkeypatch,
+                                                   tmp_path, refused, prefix):
+    """Both of the reftable backend's marks, in a common git directory made
+    by hand, so this runs on any git and as root: with `refs` refused to
+    `os.scandir`, as at `--x`, or a `refs/remotes/origin` left there and
+    refused, `_unlisted_ref_directory` is None for the source's own
+    branches and for `origin`'s, as git 2.47.1 listed them all from the
+    tables. On 39b21c07 it named the refused directory. The walk is skipped
+    whole: one that skipped only `refs` would still name
+    `refs/remotes/origin`, which git never reads there."""
+    common = a_common_directory(tmp_path, "file", tables=True)
+    unlisted_here(adopter, monkeypatch, common / Path(*refused.split("/")))
+
+    assert adopter._unlisted_ref_directory(common, prefix) is None
+
+
+@pytest.mark.parametrize("prefix", WALKED)
+@pytest.mark.parametrize(("heads", "tables"), [
+    pytest.param("file", False, id="heads-file-alone"),
+    pytest.param("directory", True, id="reftable-alone"),
+])
+def test_a_common_directory_with_one_reftable_mark_is_walked_as_before(
+        adopter, monkeypatch, tmp_path, heads, tables, prefix):
+    """One mark alone is no reftable: git 2.47.1 read each on the files
+    backend, listing loose refs in the directories under `refs` (with a
+    `reftable` directory made by hand and `refs` at `--x`, it left out
+    `main`). With `refs` refused to `os.scandir`, the walk names `refs`
+    with the system's refusal, as on 39b21c07."""
+    common = a_common_directory(tmp_path, heads, tables)
+    unlisted_here(adopter, monkeypatch, common / "refs")
+
+    found = adopter._unlisted_ref_directory(common, prefix)
+
+    assert found is not None
+    assert found[0].as_posix() == "refs"
+    assert found[1].errno == errno.EACCES
+
+
+@needs_a_mode
+@pytest.mark.parametrize("prefix", WALKED)
+def test_a_reftable_common_directory_git_cannot_search_is_walked_as_before(
+        adopter, tmp_path, prefix):
+    """Both marks, and `refs` at 000: its `refs/heads` cannot be `stat`ed,
+    and git takes the directory for no repository, since it asks `refs`
+    for a search. It is walked as before, and `refs` named."""
+    common = a_common_directory(tmp_path, "file", tables=True)
+
+    with refs_at(common / "refs", 0o000):
+        found = adopter._unlisted_ref_directory(common, prefix)
+
+    assert found is not None
+    assert found[0].as_posix() == "refs"
+    assert found[1].errno == errno.EACCES
