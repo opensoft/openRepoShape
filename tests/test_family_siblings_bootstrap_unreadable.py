@@ -150,6 +150,31 @@ def placed(placed_folder, tmp_path) -> Path:
     return folder / NAME
 
 
+# --- siblings.py: `member_unreadable`, its parts in their order --------------
+
+@pytest.mark.parametrize("then", [None, "Then do this."],
+                         ids=["default", "given"])
+def test_a_member_refusal_keeps_its_parts_in_their_order(placement, then):
+    """`member_unreadable`'s whole refusal for a permission: what was not
+    done, the question it cannot answer, the cure, and the step after it,
+    the one given or else a second run of the same command. The holder's own
+    `.git` is `path_unreadable`'s and no longer reaches it (#1287), so no
+    row of the holder holds this order; the rows below hold each site."""
+    refusal = placement.member_unreadable(
+        "members/X/project.yaml", PermissionError(errno.EACCES, DENIED),
+        "What was not done.", *([then] if then else []))
+
+    assert refusal.code == MEMBER_UNREADABLE
+    assert refusal.detail == (f"members/X/project.yaml: cannot be read "
+                              f"({DENIED})")
+    assert refusal.remediation == (
+        "Remediation: What was not done. A path this command cannot read is "
+        "a question it cannot answer, never a pass. Make what this user may "
+        "not open readable by this user: `chmod u+r` on a file, `chmod u+rx` "
+        "on a directory (and on every directory above it), or fix who owns "
+        f"it. {then or 'Then run the same command again.'}")
+
+
 # --- siblings.py: `tracking_branch`, the pinned copy's project.yaml ----------
 
 @ABSENT_ROWS

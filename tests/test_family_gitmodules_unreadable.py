@@ -46,6 +46,10 @@ off `family.yaml` and refuses left the file as the verb had rewritten it, and
 the commands typed after the cure left it ` M` (r1164b's SHOULD-1). One row
 holds it under each verb (`..._family_yaml_at_000_types_the_index_copy`).
 
+WHERE THE HOLDER'S `.git` AND `.gitmodules` CANNOT BOTH BE READ, `siblings.py`
+refuses once, as `git-repo-unreadable` (#1148): its `.git` is asked first and
+its `.gitmodules` never. One row holds that order (#1287).
+
 EACH SITE HAS ITS ROWS: the control (nothing there, or a link this user can
 read); a refused `stat`, an I/O error or a refused `os.access` in process,
 on every Python and platform and as root (`refused`, `refused_stat`,
@@ -85,6 +89,8 @@ from test_family_siblings_bootstrap_unreadable import (  # noqa: F401
     placed, placed_folder,
 )
 from test_family_siblings_placement import placement  # noqa: F401
+from test_root_git_unreadable import linked_into
+from test_validate_pins_unreadable_workflows_dir import mode_of
 
 MEMBER = MEMBERS[0]
 PATH = f"members/{MEMBER}"
@@ -728,6 +734,27 @@ def test_make_park_runs_in_no_member_past_a_locked_gitmodules(placed,
     assert refusal_detail(result.stderr, CODE) == [
         f"REFUSED {CODE}: {DENIED}"]
     assert "(a) make help" not in result.stdout
+
+
+@needs_a_mode
+def test_a_holder_whose_git_and_gitmodules_cannot_be_read_is_refused_once(
+        estate, tmp_path):  # noqa: F811
+    """Both at once: the holder's `.git` is asked first (#1148) and the run
+    stops there, exit 2, by that one code with nothing printed; its
+    `.gitmodules` is never asked (#1110)."""
+    holder = estate["holder"]
+    locked = linked_into_locked(holder, tmp_path)
+    linked_into(holder)
+
+    with at_000(locked), mode_of(holder.parent, "locked", 0):
+        result = siblings(holder, "--dry-run")
+
+    assert result.returncode == 2, result.stdout + result.stderr
+    assert refusal_detail(result.stderr, "git-repo-unreadable") == [
+        "REFUSED git-repo-unreadable: .git: cannot be read "
+        "(Permission denied)"]
+    assert "gitmodules-unreadable" not in result.stderr
+    assert result.stdout == ""
 
 
 def test_make_siblings_reads_a_gitmodules_linked_into_a_readable_folder(
