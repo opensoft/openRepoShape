@@ -5425,9 +5425,14 @@ def _land(root: Path, args, paths: list[str], added: list[str], target: str,
     # Asked of the plumbing, `-z` so no name comes back quoted, `--root` so
     # a first commit lists its files too. Should git not answer, or list
     # nothing, the line keeps the paths it was asked to commit, as it always
-    # printed.
+    # printed. `--` ENDS THE ARGV (#1215): `diff-tree` reads `HEAD` as a path
+    # too where the root's work tree holds an entry of that name, tracked or
+    # not, and refuses it as ambiguous; git then answered nothing, and the
+    # line named the paths it was asked to commit, which #674 had just
+    # stopped it doing.
     held = _git_answer(root, ["diff-tree", "--root", "--no-commit-id", "-r",
-                              "--name-only", "--no-renames", "-z", "HEAD"])
+                              "--name-only", "--no-renames", "-z", "HEAD",
+                              "--"])
     named = [path for path in (held or "").split("\0") if path]
     print(f"\n  committed on {args.branch}: " + ", ".join(named or paths))
     if args.push:
@@ -6031,8 +6036,12 @@ def _blob_of(root: Path, data: bytes) -> str:
 def _committed_pin(root: Path, pin: str) -> str:
     """The `commit:` HEAD's shape pin names, or "" when that pin does not
     read as a mapping (#333). Said in the refusal, never decided on."""
+    # `--` ENDS THE ARGV (#1215): `show` reads `HEAD:<pin>` as a path too
+    # where the root's work tree holds an entry spelled so, tracked or not,
+    # and refuses it as ambiguous.
     try:
-        parsed = parse_yaml(_git_answer(root, ["show", f"HEAD:{pin}"]) or "")
+        parsed = parse_yaml(
+            _git_answer(root, ["show", f"HEAD:{pin}", "--"]) or "")
     except YamlError:
         return ""
     return (str(parsed.get("commit") or "").lower()
@@ -6071,8 +6080,9 @@ def _accepted_in_the_pin(root: Path, upstream: Upstream, target: str,
     `_accepted_local` is.
     """
     base = tracking_branch_of(load_yaml(root / kind.manifest))
+    # `--` ENDS THE ARGV (#1215), as in `_committed_pin`.
     landed = _git_answer(root, ["show", f"refs/remotes/origin/{base}:"
-                                f"{SHAPE_PIN}"])
+                                f"{SHAPE_PIN}", "--"])
     try:
         held = {str(row["path"]): str(row["sha256"]).lower()
                 for row in parse_yaml(landed or "")["files"]}
