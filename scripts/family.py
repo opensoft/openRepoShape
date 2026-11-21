@@ -556,7 +556,8 @@ class Family:
         if not _manifest_there(root):
             raise Refusal(
                 "family-root-missing",
-                f"{path} does not exist, so this is not a family root",
+                f"{shown_path(path)} does not exist, so this is not a "
+                "family root",
                 "Remediation: `family.py init --org <org> --family <Name>` "
                 "creates one. A PROJECT is scaffolded with "
                 "`scaffold-project.py` and adopted with `adopt-project.py`; "
@@ -775,13 +776,14 @@ def _checked_members_readable(path: Path, members) -> None:
         return
     if not isinstance(members, list):
         raise Refusal("family-members-unreadable",
-                      f"{path}: `members:` is {members!r}, expected a list",
-                      MEMBERS_UNREADABLE)
+                      f"{shown_path(path)}: `members:` is {members!r}, "
+                      "expected a list", MEMBERS_UNREADABLE)
     unread = [f"a member is not a mapping: {row!r}" for row in members
               if not isinstance(row, dict)]
     if unread:
         raise Refusal("family-members-unreadable",
-                      f"{path}: {'; '.join(unread)}", MEMBERS_UNREADABLE)
+                      f"{shown_path(path)}: {'; '.join(unread)}",
+                      MEMBERS_UNREADABLE)
 
 
 def _member_id(value) -> str:
@@ -10607,7 +10609,8 @@ def cmd_siblings(args) -> int:
     if not _manifest_there(root):
         raise Refusal(
             "family-root-missing",
-            f"{root / MANIFEST} does not exist, so this is not a family root",
+            f"{shown_path(root / MANIFEST)} does not exist, so this is not a "
+            "family root",
             "Remediation: `family.py init --org <org> --family <Name>` creates "
             "one; point --family-root at the HOLDER (the `<Family>/<Family>` "
             "clone), not at the family folder around it.")
@@ -10627,9 +10630,10 @@ def cmd_siblings(args) -> int:
         raise Refusal(
             "siblings-script-missing",
             f"family.py siblings needs {SIBLINGS_SCRIPT}, which this holder "
-            f"does not have: there is no {script}. It runs the holder's own "
-            "copy, as `make siblings` does, and has no second implementation "
-            "to fall back on, so nothing was cloned or fetched.",
+            f"does not have: there is no {shown_path(script)}. It runs the "
+            "holder's own copy, as `make siblings` does, and has no second "
+            "implementation to fall back on, so nothing was cloned or "
+            "fetched.",
             "Remediation: update-shape.py copies a changed Makefile but adds "
             "a new file only on the human's word, so a holder updated without "
             f"--add {SIBLINGS_SCRIPT} lands here. From a checkout of "
