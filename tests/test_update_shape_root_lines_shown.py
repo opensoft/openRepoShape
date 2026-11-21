@@ -26,8 +26,8 @@ shell quotes: `update-branch-not-utf8`'s own remedy, `check`'s NEXT line, and
 the rest that #1318's Scope paragraph calls a decision to make, not a given
 (#766 left such lines raw on purpose). So a row over `check` reads the header
 and the report above the NEXT line, and a row over `update-branch-not-utf8`
-reads its `REFUSED` line alone, where the remedy under it still holds the
-root as typed.
+reads the detail above its remedy, which is its `REFUSED` line alone, where
+the remedy under it still holds the root as typed.
 
 NO NETWORK AND NO GITHUB: temporary files, local repositories, and the
 session's `gh` guard first on PATH for every tool run.
@@ -42,7 +42,7 @@ import pytest
 
 from conftest import (
     NOT_UTF_8_BRANCH_NAMED, assert_shown_safe, copied_under, named_as,
-    on_a_branch_that_is_not_utf_8, run_script, unsafe_folder,
+    on_a_branch_that_is_not_utf_8, refusal_detail, run_script, unsafe_folder,
 )
 from test_load_yaml_refusals import NAMES, refused_lines
 from test_update_shape import UPDATE, upstream_and_project  # noqa: F401
@@ -126,9 +126,11 @@ def test_a_root_on_a_branch_that_is_not_utf8_is_named_as_shown_path_names_it(
         upstream_and_project, tmp_path, name):
     """`update-branch-not-utf8`'s `REFUSED` line over a root whose folder
     holds U+202E, an ESC or a line feed, with HEAD on `caf<0xE9>`. Exit 2
-    before the first write, as before. Only the `REFUSED` line is read: the
-    remedy under it is a line a person pastes and names the root as typed,
-    in shell quotes (#1318's Scope paragraph)."""
+    before the first write, as before. The detail above the remedy is ONE
+    line, the `REFUSED` line (`refusal_detail`): a second line that named the
+    root raw would be a line the path chose (rv1329's X2). The remedy under
+    it is a line a person pastes and names the root as typed, in shell
+    quotes, so nothing is asserted about it (#1318's Scope paragraph)."""
     standard = upstream_and_project
     root = project_under(standard, tmp_path, name)
     on_a_branch_that_is_not_utf_8(root)
@@ -137,15 +139,14 @@ def test_a_root_on_a_branch_that_is_not_utf8_is_named_as_shown_path_names_it(
                  str(standard["upstream"]), "--at", standard["b"],
                  "--branch", BRANCH, cwd=tmp_path)
 
-    said = result.stderr.splitlines()[0]
+    detail = refusal_detail(result.stderr, "update-branch-not-utf8")
     assert result.returncode == 2, ascii(result.stdout + result.stderr)
     assert result.stdout == "", ascii(result.stdout)
-    assert said == (
+    assert detail == [
         f"REFUSED update-branch-not-utf8: {named_as(root, name)} is on the "
-        f"branch {NOT_UTF_8_BRANCH_NAMED}{NOT_UTF_8_SAID}"), ascii(said)
-    assert chr(0x202E) not in said, ascii(said)
-    assert_shown_safe(said)
-    assert "Remediation: " in result.stderr, ascii(result.stderr)
+        f"branch {NOT_UTF_8_BRANCH_NAMED}{NOT_UTF_8_SAID}"], ascii(detail)
+    assert chr(0x202E) not in "".join(detail), ascii(detail)
+    assert_shown_safe(*detail)
 
 
 @pytest.mark.parametrize("name", NAMES)
@@ -165,6 +166,29 @@ def test_a_typed_upstream_that_is_no_repository_is_named_as_shown_path_does(
     assert_refused_as(
         result, "update-upstream-not-a-repo",
         f"--upstream {named_as(folder, name)} exists but is not a git "
+        "repository")
+
+
+@pytest.mark.parametrize("name", NAMES)
+def test_a_relative_upstream_is_named_as_it_was_typed_and_spelled(
+        upstream_and_project, tmp_path, name):
+    """`update-upstream-not-a-repo` for a `--upstream` TYPED RELATIVE,
+    `./<name>`, run from the folder that holds it: the line names the flag's
+    value as typed, `./` and all, spelled as `shown_path` spells it, and not
+    the absolute path `open_upstream` resolves it to (rv1329's X1). The row
+    above types an absolute, resolved path, which both spellings give alike,
+    so it cannot tell the two apart; here they differ."""
+    standard = upstream_and_project
+    root = project_under(standard, tmp_path, "root")
+    unsafe_folder(tmp_path, name)
+    typed = f"./{name}"
+
+    result = run("check", "--root", str(root), "--upstream", typed,
+                 cwd=tmp_path)
+
+    assert_refused_as(
+        result, "update-upstream-not-a-repo",
+        f"--upstream {named_as(typed, name)} exists but is not a git "
         "repository")
 
 
