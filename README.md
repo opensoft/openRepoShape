@@ -816,7 +816,7 @@ has one correct implementation, and a copy is a second one that drifts.
 The contracts decision costs something, and the plan says so up front:
 `scripts/validate.py` reads `contracts/*.yaml` from beside it and must now read
 ACROSS the root. `plan` finds every such file with `git grep` and lists up to
-eight per directory in `follow_ups:`, counting the rest; the shape's Makefile
+eight per directory in its follow-ups, counting the rest; the shape's Makefile
 exports `CONTRACTS_DIR`, pointing at the `contracts/` of the spec leg where the
 plan mounts it (`$(CURDIR)/spec/contracts` by default); it is the root's
 Makefile, or, where the source keeps a `Makefile` of its own, `shape/Makefile`,

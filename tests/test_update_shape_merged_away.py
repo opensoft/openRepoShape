@@ -40,7 +40,7 @@ from pathlib import Path
 import pytest
 
 from conftest import REPO, WINDOWS_SKIP, clone_just_pushed, git, \
-    make_source_repo, run_script
+    make_source_repo, printed_follow_ups, run_script
 from test_shape_doctor import (  # noqa: F401
     DOCTOR, commit_all, doctor, keep_as_committed_link, rows_of, standard,
     standard_ahead, standard_of_another_history, verdict_line,
@@ -110,7 +110,8 @@ def adopted_with_attributes(standard, tmp_path_factory) -> dict:
 
 def adopt_and_clone(standard: Path, base: Path, tree: dict) -> dict:
     """`tree` adopted with the standard's own `adopt-project.py` in `base`,
-    its pull request merged, and a recursive clone of it: the plan and the
+    its pull request merged, and a recursive clone of it: the plan, the
+    follow-ups `plan` printed (the plan stores none since #1206) and the
     clone."""
     source = make_source_repo(base / PROJECT, tree=tree, edits=())
     plan = base / "adoption-plan.yaml"
@@ -130,7 +131,8 @@ def adopt_and_clone(standard: Path, base: Path, tree: dict) -> dict:
     clone = base / "clone" / PROJECT
     cloned = clone_just_pushed(source, clone)
     assert cloned.returncode == 0, cloned.stderr
-    return {"plan": plan, "clone": clone}
+    return {"plan": plan, "follow_ups": printed_follow_ups(planned.stdout),
+            "clone": clone}
 
 
 @pytest.fixture
@@ -720,7 +722,7 @@ def test_the_plans_follow_up_says_what_happens_to_the_row(adopted_here):
     """The follow-up for each pinned collision copy says that its row goes,
     and by which step; `shape/README.md`, a rendered file with no row, is
     told nothing about one."""
-    follow_ups = load_yaml(adopted_here["plan"])["follow_ups"]
+    follow_ups = adopted_here["follow_ups"]
     for path, original in MERGED.items():
         (said,) = [item for item in follow_ups
                    if item.startswith(f"merge {path} into {original}")]
@@ -745,7 +747,7 @@ def test_a_merged_away_attributes_copys_row_goes_and_the_root_file_stays(
     row and nothing else, the root file stays as the merge left it, block
     and all, and the gate and the doctor are green."""
     copy = f"shape/{ATTRIBUTES}"
-    follow_ups = load_yaml(adopted_with_attributes["plan"])["follow_ups"]
+    follow_ups = adopted_with_attributes["follow_ups"]
     opening = f"keep the block at the end of {ATTRIBUTES}"
     (said,) = [item for item in follow_ups if item.startswith(opening)]
     assert said.endswith(

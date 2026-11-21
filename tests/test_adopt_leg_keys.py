@@ -41,7 +41,8 @@ from pathlib import Path
 import pytest
 
 from conftest import (ADOPT, ORG, REPO, git, load_without_bytecode,
-                      make_source_repo, run_script, write_plan)
+                      make_source_repo, printed_follow_ups, run_script,
+                      write_plan)
 from test_adopt_contracts_dir import (EDITS, PROJECT, READER, SPLIT_BRANCH,
                                       TREE, needs_filter_repo)
 from test_adopt_literal_names import follow_up
@@ -181,7 +182,8 @@ def adopt_after_the_hand_edit(base: Path, plan_time: tuple, *, github: bool,
         arguments = logged.decode("utf-8").split("\0")[:-1]
         body = arguments[arguments.index("--body") + 1]
     return {"check": checked.stdout, "message": message, "body": body,
-            "plan": load_yaml(plan)}
+            "plan": load_yaml(plan),
+            "planned": printed_follow_ups(written.stdout)}
 
 
 def read_across_in(items: list[str]) -> list[str]:
@@ -210,7 +212,7 @@ def test_a_hand_edited_mount_leaves_no_plan_time_path_in_a_follow_up(
                   for line in ran["check"].splitlines()
                   if line.startswith("  follow-up: ")],
         "the split commit's message": follow_ups_in(ran["message"]),
-        "the plan": [str(item) for item in ran["plan"]["follow_ups"]]}
+        "`plan`'s report": ran["planned"]}
     if github:
         assert ran["body"].rstrip("\n") == ran["message"].rstrip("\n")
         surfaces["the pull request's body"] = follow_ups_in(ran["body"])

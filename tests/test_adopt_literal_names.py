@@ -40,7 +40,8 @@ from pathlib import Path
 
 import pytest
 
-from conftest import ADOPT, REPO, git, make_source_repo, write_plan
+from conftest import (ADOPT, REPO, git, make_source_repo, printed_follow_ups,
+                      write_plan)
 
 sys.path.insert(0, str(REPO / "scripts"))
 from repo_shape import load_yaml  # noqa: E402
@@ -78,7 +79,8 @@ def planned(source: Path, base: Path) -> dict:
     out = base / "adoption-plan.yaml"
     result = write_plan(source, out)
     assert result.returncode == 0, result.stderr + result.stdout
-    return load_yaml(out)
+    # The follow-ups `plan` printed: the plan stores none since #1206.
+    return {**load_yaml(out), "follow_ups": printed_follow_ups(result.stdout)}
 
 
 def named(plan: dict) -> list[str]:

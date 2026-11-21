@@ -55,9 +55,15 @@ def adopted(tmp_path_factory) -> dict:
                         "--local-remote-dir", str(base / "remotes"),
                         "--work-dir", str(base / "work"))
     assert result.returncode == 0, result.stderr + result.stdout
+    # The follow-ups `check` printed of the answered plan, which `execute`
+    # writes into the split commit's message: the plan stores none (#1206).
+    follow_ups = [line[len("  follow-up: "):]
+                  for line in checked.stdout.splitlines()
+                  if line.startswith("  follow-up: ")]
     return {"base": base, "source": source, "plan": plan,
             "remotes": base / "remotes", "work": base / "work",
-            "stdout": result.stdout, "stderr": result.stderr}
+            "stdout": result.stdout, "stderr": result.stderr,
+            "follow_ups": follow_ups}
 
 
 @pytest.fixture
@@ -305,7 +311,7 @@ def test_the_makefile_follow_up_says_the_shapes_targets_arrive_with_it(
     assert "bootstrap" in targets, targets
     message = git("log", "-1", "--format=%B", "adopt/three-repo-shape",
                   cwd=adopted["source"]).stdout
-    (planned,) = [item for item in load_yaml(adopted["plan"])["follow_ups"]
+    (planned,) = [item for item in adopted["follow_ups"]
                   if item.startswith("merge shape/Makefile into Makefile")]
     for text in (planned, " ".join(message.split())):
         assert ("The shape's make targets ("
@@ -462,7 +468,7 @@ def test_the_agent_file_collision_says_add_a_line_not_merge(adopted):
     """A merge is the wrong instruction for an instruction file: it is how a
     project's own agent instructions end up inside the shape's. The follow-up
     names the one line to add, and the reason it is not a replacement."""
-    follow_ups = " ".join(load_yaml(adopted["plan"])["follow_ups"])
+    follow_ups = " ".join(adopted["follow_ups"])
     message = git("log", "-1", "--format=%B", "adopt/three-repo-shape",
                   cwd=adopted["source"]).stdout
     for text in (follow_ups, message):

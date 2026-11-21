@@ -248,9 +248,9 @@ def legs_arguments(tmp_path: Path, source=None) -> dict:
 
 
 class SplitPlan(dict):
-    """The plan `_commit_the_split` reads: `follow_ups` through `get`, for
-    the split message, and `entries`, which #189's `submodules:` record
-    is built from. These sources keep no submodule, so it has none."""
+    """The plan `_commit_the_split` reads: `entries`, which #189's
+    `submodules:` record is built from. These sources keep no submodule, so
+    it has none. Its follow-ups are handed in (#1206)."""
 
     entries = ()
 
@@ -268,7 +268,7 @@ def split_arguments(tmp_path: Path, source) -> dict:
         paths_for={SPEC: ["specs/"], CODE: ["src/"], "root": [README],
                    "drop": []},
         seeded=[], spec_path=SPEC, code_path=CODE, branch=BRANCH,
-        leg_commits={SPEC: "a" * 40, CODE: "b" * 40})
+        leg_commits={SPEC: "a" * 40, CODE: "b" * 40}, follow_ups=[])
 
 
 def the_notice(err: str) -> str:
@@ -491,7 +491,7 @@ def verify_arguments(tmp_path: Path, source) -> dict:
     commit. The legs and the split are stand-ins, never read: the failure
     comes first."""
     arguments = split_arguments(tmp_path, source)
-    for split_only in ("plan", "values", "leg_commits"):
+    for split_only in ("plan", "values", "leg_commits", "follow_ups"):
         del arguments[split_only]
     return dict(arguments, split_commit="e" * 40)
 

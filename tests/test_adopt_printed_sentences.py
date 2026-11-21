@@ -49,7 +49,7 @@ import pytest
 
 from conftest import (ADOPT, REPO, clone_just_pushed, cloned_just_pushed,
                       findings, git, load_without_bytecode, make_source_repo,
-                      planned, run_script, write_plan)
+                      planned, printed_follow_ups, run_script, write_plan)
 from test_adopt_contracts_dir import (EDITS, MAKEFILE_FOLLOW_UP, MOUNTS,
                                       OWN_MAKEFILE, OWN_MAKEFILE_FOLLOW_UP,
                                       PROJECT, READER, SPLIT_BRANCH, TREE,
@@ -135,7 +135,7 @@ def test_plan_says_where_a_kept_makefile_leaves_the_block(tmp_path):
     plan = tmp_path / "adoption-plan.yaml"
     written = write_plan(source, plan, project=PROJECT)
     assert written.returncode == 0, written.stderr + written.stdout
-    follow_ups = [str(item) for item in load_yaml(plan)["follow_ups"]]
+    follow_ups = printed_follow_ups(written.stdout)
     assert makefile_lines(follow_ups) == [OWN_MAKEFILE_FOLLOW_UP]
     assert MAKEFILE_FOLLOW_UP not in follow_ups
     assert any(item.startswith("merge shape/Makefile into Makefile")
@@ -267,7 +267,7 @@ def test_every_read_across_line_the_plan_writes_is_found(adopter, tmp_path):
     plan = tmp_path / "adoption-plan.yaml"
     written = write_plan(source, plan, project=PROJECT)
     assert written.returncode == 0, written.stderr + written.stdout
-    follow_ups = [str(item) for item in load_yaml(plan)["follow_ups"]]
+    follow_ups = printed_follow_ups(written.stdout)
     assert [item for item in follow_ups if item == READ_ACROSS_SPECS]
     assert adopter.holds_a_read_across(follow_ups)
     by_hand = adopter._search_by_hand("specs/", "git said no")

@@ -958,6 +958,19 @@ def write_plan(source: Path, out: Path, project: str = "Northwind",
                       "--out", str(out), *extra)
 
 
+def printed_follow_ups(stdout: str) -> list[str]:
+    """The items of `adopt-project.py plan`'s `follow-ups (N):` list, as its
+    report prints them (`_shown`). The plan file stores none since #1206:
+    `check` and `execute` work them out from the plan as it stands."""
+    _, found, rest = stdout.partition("\nfollow-ups (")
+    assert found, stdout
+    count, _, rest = rest.partition("):\n")
+    items = rest.splitlines()[:int(count)]
+    assert len(items) == int(count), stdout
+    assert all(item.startswith("  - ") for item in items), items
+    return [item[len("  - "):] for item in items]
+
+
 def resolve(plan_path: Path, path: str, leg: str,
             why: str = "answered by the test") -> None:
     """Answer one `review_required` entry the way a human or an AI would.

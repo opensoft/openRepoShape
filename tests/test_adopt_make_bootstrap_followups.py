@@ -44,14 +44,14 @@ from pathlib import Path
 import pytest
 
 from conftest import (ADOPT, REPO, git, load_without_bytecode,
-                      make_source_repo, run_script, write_plan)
+                      make_source_repo, printed_follow_ups, run_script,
+                      write_plan)
 from test_adopt_contracts_dir import (EDITS, PROJECT, SPLIT_BRANCH, TREE,
                                       needs_filter_repo)
 from test_adopt_e2e import local_next, next_block, pasted
 
 sys.path.insert(0, str(REPO / "scripts"))
 import shape_materialize  # noqa: E402
-from repo_shape import load_yaml  # noqa: E402
 
 needs_make = pytest.mark.skipif(
     shutil.which("make") is None or sys.platform == "win32",
@@ -469,11 +469,12 @@ def test_an_adoption_keeping_a_gnumakefile_directory(tmp_path, by_policy):
     NEXT, read from the plan as it stands, names `python3
     scripts/bootstrap.py` and says GNU make stops there; in the clone NEXT's
     own clone line makes, `make -n bootstrap` stops at the directory, and
-    the printed command, run with this test's interpreter, exits 0. Where
-    the rule kept it, `plan` wrote the `CONTRACTS_DIR` line that says so,
-    `check` prints it and the split commit's message carries it. (Where the
-    question was answered, that line was written before the answer and does
-    not name the directory: #1132's item 5, its own issue.)"""
+    the printed command, run with this test's interpreter, exits 0. Both
+    ways, `check` prints the `CONTRACTS_DIR` line that says so and the split
+    commit's message carries it, and where the rule kept it `plan` printed
+    it too. Where the question was answered, `plan` printed its line before
+    the answer, naming no directory, and `check` and `execute` read the plan
+    as it stands since #1206 (#1132's item 5)."""
     source = make_source_repo(
         tmp_path / "Thing",
         {**TREE, "GNUmakefile/rules.mk": "build:\n\t@echo source build\n"},
@@ -483,15 +484,18 @@ def test_an_adoption_keeping_a_gnumakefile_directory(tmp_path, by_policy):
              if by_policy else ())
     written = write_plan(source, plan, project=PROJECT, extra=extra)
     assert written.returncode == 0, written.stderr + written.stdout
+    (planned,) = [item for item in printed_follow_ups(written.stdout)
+                  if "wires `CONTRACTS_DIR`" in item]
     if not by_policy:
         answered(plan, "GNUmakefile/", "root")
-    (line,) = [str(item) for item in load_yaml(plan)["follow_ups"]
-               if "wires `CONTRACTS_DIR`" in str(item)]
-    if by_policy:
-        assert line.endswith(f", but {stops('GNUmakefile', EXPORTS)}"), line
     checked = run_script(ADOPT, "check", "--plan", str(plan))
     assert checked.returncode == 0, checked.stderr + checked.stdout
-    assert f"  follow-up: {line}" in checked.stdout
+    (line,) = [said[len("  follow-up: "):]
+               for said in checked.stdout.splitlines()
+               if said.startswith("  follow-up: ")
+               and "wires `CONTRACTS_DIR`" in said]
+    assert line.endswith(f", but {stops('GNUmakefile', EXPORTS)}"), line
+    assert (planned == line) is by_policy, (planned, line)
 
     result = run_script(ADOPT, "execute", "--plan", str(plan), "--yes",
                         "--local-remote-dir", str(tmp_path / "remotes"),

@@ -47,8 +47,8 @@ from pathlib import Path
 import pytest
 
 import test_adopt_github_exits as on_github
-from conftest import (ADOPT, WINDOWS_SKIP, git, make_source_repo, run_script,
-                      write_plan)
+from conftest import (ADOPT, WINDOWS_SKIP, git, make_source_repo,
+                      printed_follow_ups, run_script, write_plan)
 from test_adopt_git_rm_bytes import (C_LOCALE, NORTHWIND, SPLIT_BRANCH,
                                      UTF8, c_locale_or_skip,
                                      needs_filter_repo, tree_bytes)
@@ -210,11 +210,14 @@ def test_plan_greps_for_a_spec_directory_outside_ascii(tmp_path):
     `git grep` for `Ärger/` in the code paths, and wrote no plan. Now the
     plan it writes is the one UTF-8 mode writes, byte for byte, and its
     follow-ups name each code path that names the spec directory: git found
-    both."""
+    both. They are the ones `plan` prints, which the plan stores no more
+    (#1206): two read-across lines under each locale, and UTF-8 mode's name
+    both paths as they are (the C locale's stdout spells a name outside
+    ASCII escaped)."""
     env = c_locale_or_skip()
     source = make_source_repo(tmp_path / NORTHWIND, NAMED_BY_CODE, edits=())
 
-    def written(locale: dict) -> bytes:
+    def written(locale: dict) -> tuple[bytes, list[str]]:
         plan = tmp_path / f"plan-{locale['PYTHONUTF8']}" / "adoption-plan.yaml"
         plan.parent.mkdir()
         result = run_script(ADOPT, "plan", "--source", str(source),
@@ -223,15 +226,18 @@ def test_plan_greps_for_a_spec_directory_outside_ascii(tmp_path):
                             "2026-09-02", "--out", str(plan),
                             env={**env, **locale})
         assert result.returncode == 0, result.stderr + result.stdout
-        return plan.read_bytes()
+        return plan.read_bytes(), [
+            item for item in printed_follow_ups(result.stdout)
+            if " in the code leg names `" in item]
 
-    text = written(C_LOCALE)
-    assert text == written(UTF8_MODE)
-    across = [line for line in text.decode().splitlines()
-              if f"names `{SPEC_DIR}/`" in line]
+    (text, in_c), (in_utf8, across) = written(C_LOCALE), written(UTF8_MODE)
+    assert text == in_utf8
+    assert len(in_c) == len(across) == 2, (in_c, across)
     assert sorted(path for line in across
                   for path in (IN_A_CODE_DIR, A_CODE_FILE)
-                  if path in line) == sorted((IN_A_CODE_DIR, A_CODE_FILE))
+                  if path in line
+                  and f"names `{SPEC_DIR}/`" in line) == sorted(
+        (IN_A_CODE_DIR, A_CODE_FILE))
 
 
 # --- `check` and `execute`, a relative submodule url (L1-35) ----------------

@@ -52,8 +52,8 @@ from pathlib import Path
 import pytest
 
 from conftest import (ADOPT, REPO, findings, git, load_without_bytecode,
-                      make_source_repo, refused_before_any_leg, run_script,
-                      write_plan)
+                      make_source_repo, printed_follow_ups,
+                      refused_before_any_leg, run_script, write_plan)
 from test_adopt_contracts_dir import (EDITS, MAKEFILE_FOLLOW_UP,
                                       OWN_MAKEFILE_FOLLOW_UP, PROJECT,
                                       SPEC_PATH, SPLIT_BRANCH, TREE,
@@ -87,17 +87,20 @@ WIRES = (
 SHAPES = f"the shape's {WIRES}"
 
 
-def written_as(twin: str = "") -> str:
+def written_as(twin: str = "", *, directory: bool = False) -> str:
     """Where the shape's Makefile is written when the source keeps no
     `Makefile`: the root's `Makefile`, or, where the source keeps `twin`, a
     name a disk that ignores case reads as `Makefile`, `shape/Makefile`
-    there."""
+    there. A FILE `twin` is one the two are merged into; a DIRECTORY
+    `twin/` is none, so the line names it as a directory and says nothing of
+    a merge (#1206)."""
     if not twin:
         return "; it is written as the root's `Makefile`"
+    taking = f"directory `{twin}/`" if directory else f"`{twin}`"
     return ("; it is written as the root's `Makefile`, or as "
             "`shape/Makefile` once case is ignored, as a macOS or Windows "
-            f"disk does, where the source's `{twin}` is that path, until the "
-            "two are merged")
+            f"disk does, where the source's {taking} is that path"
+            + ("" if directory else ", until the two are merged"))
 
 
 def reads(name: str, joint: str = "; and") -> str:
@@ -167,8 +170,9 @@ TWIN_ROWS = [pytest.param(row.values[0], id=row.id)
              for row in ROWS if keeps_twins(row.values[0])]
 CLONE_ROWS = [row for row in ROWS[1:] if not keeps_twins(row.values[0])]
 
-#: `(path, leg)` rows no shipped rule writes, which a `--path-policy` rule can
-#: (a person's answer in the plan changes no follow-up): `MAKEFILE` kept in
+#: `(path, leg)` rows no shipped rule writes, which a `--path-policy` rule can,
+#: and since #1206 a person's answer in the plan too, which `check` and
+#: `execute` read as the plan stands: `MAKEFILE` kept in
 #: the root, a name GNU make never reads where case is kept and one a disk
 #: that ignores case takes for `Makefile`; `makefile` and `GNUmakefile` sent
 #: to the legs, which leaves the root nothing GNU make reads but the shape's;
@@ -178,14 +182,18 @@ CLONE_ROWS = [row for row in ROWS[1:] if not keeps_twins(row.values[0])]
 #: no test failed on it). GNU make 4.3 stops on it with `makefile: Is a
 #: directory.` (r1046's measure), so the case is contrived, and since #1132
 #: the line says GNU make stops there, where it said what a kept `makefile`
-#: file gets.
+#: file gets. Since #1206 it also names the directory as the path a disk that
+#: ignores case takes for `Makefile`, "the source's directory `makefile/`",
+#: and says nothing of the two being merged: nothing merges a Makefile into
+#: a directory.
 ANSWERED = [
     pytest.param((("MAKEFILE", "root"),), SHAPES + written_as("MAKEFILE"),
                  id="MAKEFILE"),
     pytest.param((("makefile", "code"), ("GNUmakefile", "spec")),
                  MAKEFILE_FOLLOW_UP, id="sent-to-legs"),
     pytest.param((("makefile/", "root"),),
-                 SHAPES + written_as("makefile") + stops_at("makefile"),
+                 SHAPES + written_as("makefile", directory=True)
+                 + stops_at("makefile"),
                  id="makefile-directory"),
 ]
 
@@ -225,9 +233,27 @@ def test_a_name_only_a_disk_that_ignores_case_takes_for_makefile(
     A name sent to a leg is in no root at all. A kept directory is the entry
     `makefile/`, no file: the line names it `makefile` all the same as the
     name a disk that ignores case takes for `Makefile`, so `twins` must read
-    the entry without its slash, and says GNU make stops at the directory
-    `makefile/` (#1132)."""
+    the entry without its slash, says GNU make stops at the directory
+    `makefile/` (#1132), and names it "the source's directory `makefile/`"
+    with no "until the two are merged", which a directory cannot be (#1206)."""
     assert makefile_lines(follow_ups_of(adopter, monkeypatch, rows)) == [said]
+
+
+@pytest.mark.parametrize("kept, merged", [
+    pytest.param("makefile", True, id="a-file"),
+    pytest.param("makefile/", False, id="a-directory"),
+])
+def test_only_a_kept_file_is_merged_into(adopter, monkeypatch, kept, merged):
+    """A kept `makefile` is a path a disk that ignores case reads as
+    `Makefile`, and "until the two are merged" is said of a kept FILE, and
+    not of a kept DIRECTORY `makefile/`, which GNU make stops at instead
+    (#1206)."""
+    line, = makefile_lines(follow_ups_of(adopter, monkeypatch,
+                                         [(kept, "root")]))
+    assert ("until the two are merged" in line) is merged
+    assert ("where the source's directory `makefile/` is that path"
+            in line) is (not merged)
+    assert ("where the source's `makefile` is that path" in line) is merged
 
 
 @pytest.mark.parametrize("kept, said, first", ROWS)
@@ -284,7 +310,7 @@ def test_plan_writes_the_line_and_check_prints_it(tmp_path, kept, said,
     plan = tmp_path / "adoption-plan.yaml"
     written = write_plan(source, plan, project=PROJECT)
     assert written.returncode == 0, written.stderr + written.stdout
-    follow_ups = [str(item) for item in load_yaml(plan)["follow_ups"]]
+    follow_ups = printed_follow_ups(written.stdout)
     assert makefile_lines(follow_ups) == [said]
     checked = run_script(ADOPT, "check", "--plan", str(plan))
     if keeps_twins(kept):
