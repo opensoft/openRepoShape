@@ -45,9 +45,11 @@ from pathlib import Path
 
 import pytest
 
-from conftest import (REPO, git, load_without_bytecode, skip_message,
+from conftest import (A_BYTE_READ_AS_A_SURROGATE, REPO, git,
+                      load_without_bytecode, skip_message,
                       skip_where_a_name_cannot_be_not_utf_8,
                       skip_where_fsencode_gives_a_surrogate_no_byte,
+                      skip_where_the_locale_does_not_spell_it_as_utf_8,
                       windows_fsencode)
 from test_bootstrap_spelling import (ASSEMBLY_TEMPLATE, DASH, bootstrap_of,
                                      edit, pin12, run)
@@ -371,21 +373,32 @@ def test_a_name_that_is_not_utf8_is_still_carried_and_the_branch_made(
     shared helper asks `os.fsencode` first, which is what Windows answers
     (NTFS takes the name, and `_argument_fault` refuses the branch there,
     which `test_where_a_surrogate_is_three_bytes_and_no_byte_it_is_refused`
-    holds), and then the disk, which macOS refuses (#663)."""
+    holds), and then the disk, which macOS refuses (#663).
+
+    Under a locale of one byte to a character, Latin-1 say, the tool prints
+    the byte 0xff as the character U+00FF, and the line the test expects
+    spells it `a\\udcffb` (#1301). The run, `could not create branch` and
+    HEAD's bytes judge there, and the test skips on its premise before it
+    reads the line that spells the name."""
     skip_where_a_name_cannot_be_not_utf_8(tmp_path)
     code, out, err = run(bootstrap_of(project), "--skip-validators",
                          "--branch", "a\udcffb", encoding=ENCODING,
                          tmp_path=tmp_path, cwd=project)
     assert code == 0 and "Traceback" not in err, out + err
     for leg in ("spec", "code"):
-        assert (f"  [{leg}] {leg}: branch a\\udcffb created at "
-                f"{pin12(project, leg)} {DASH} at the pin") in out.split(
-                    "\n"), out
         assert "could not create branch" not in out, out
         head = subprocess.run(["git", "symbolic-ref", "--quiet", "HEAD"],
                               cwd=str(project / leg), capture_output=True,
                               check=True).stdout
         assert head == b"refs/heads/a\xffb\n", head
+        assert git("rev-parse", "HEAD", cwd=project / leg
+                   ).stdout.strip()[:12] == pin12(project, leg)
+    skip_where_the_locale_does_not_spell_it_as_utf_8(
+        "a\udcffb", A_BYTE_READ_AS_A_SURROGATE)
+    for leg in ("spec", "code"):
+        assert (f"  [{leg}] {leg}: branch a\\udcffb created at "
+                f"{pin12(project, leg)} {DASH} at the pin") in out.split(
+                    "\n"), out
 
 
 def test_the_branch_test_skips_where_fsencode_makes_no_byte_of_the_surrogate(

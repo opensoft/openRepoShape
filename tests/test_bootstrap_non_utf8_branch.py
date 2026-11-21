@@ -67,7 +67,8 @@ from pathlib import Path
 
 import pytest
 
-from conftest import git, run_script
+from conftest import (A_BYTE_READ_AS_A_SURROGATE, git, run_script,
+                      skip_where_the_locale_does_not_spell_it_as_utf_8)
 from test_bootstrap_after_bump import (  # noqa: F401
     MAIN, bootstrap, bootstrapped, head_ref, moved_back, rev, root,
 )
@@ -215,7 +216,13 @@ def test_a_branch_past_the_pin_is_moved_back_whatever_its_upstream_is_named(
     existing branch`. Both are moved back now, the line naming the upstream
     and the command as `move_back_to_pin` spells them (#932: the byte as the
     `printf` a shell turns back into it), and HEAD is on the branch whose
-    name is the bytes git was given."""
+    name is the bytes git was given.
+
+    Under a locale of one byte to a character, Latin-1 say, the byte 0xff is
+    the character U+00FF, which the tool prints as it is and not as
+    `\\udcff` (#1301). The run, the branch at the pin and HEAD's bytes judge
+    there, and the row skips on its premise before it reads the line that
+    spells the name."""
     if byte:
         needs_the_byte(tmp_path)
     leg = root / "spec"
@@ -225,6 +232,12 @@ def test_a_branch_past_the_pin_is_moved_back_whatever_its_upstream_is_named(
                         "--branch", raw, cwd=root)
     assert result.returncode == 0, result.stderr + result.stdout
     assert "Traceback" not in result.stderr, result.stderr
+    assert rev(leg, f"refs/heads/{raw}") == pin
+    assert rev(leg) == pin
+    assert head_bytes(leg) == b"refs/heads/" + os.fsencode(raw) + b"\n"
+    if byte:
+        skip_where_the_locale_does_not_spell_it_as_utf_8(
+            raw, A_BYTE_READ_AS_A_SURROGATE)
     spelled = bootstrap_module.spelled
     held = "origin/" + upstream
     word = word or f"'{held}'"
@@ -233,9 +246,6 @@ def test_a_branch_past_the_pin_is_moved_back_whatever_its_upstream_is_named(
             f"-> {pin[:12]}, the pin; nothing is lost, {spelled(held)} still "
             f"holds those commits, and `{command}` brings the branch "
             "forward") in result.stdout.split("\n"), result.stdout
-    assert rev(leg, f"refs/heads/{raw}") == pin
-    assert rev(leg) == pin
-    assert head_bytes(leg) == b"refs/heads/" + os.fsencode(raw) + b"\n"
 
 
 @NEEDS_A_UTF8_PROCESS
@@ -276,7 +286,12 @@ def test_a_leg_on_a_branch_whose_name_is_not_utf8_is_placed_on_every_run(
     """L4-125: `git branch $'a\\xffb'`, the leg checked out on it, then
     bootstrap twice. Without `--branch` each run puts the leg on `main`,
     the first saying the leg left `a<ff>b`; with `--branch $'a\\xffb'` each
-    run says `on` it. Every run exits 0 with the validators run."""
+    run says `on` it. Every run exits 0 with the validators run.
+
+    Under a locale of one byte to a character, Latin-1 say, the tool prints
+    the byte 0xff as the character U+00FF and not as `a\\udcffb` (#1301).
+    Both runs, the line `on main` and HEAD's bytes judge there, and the row
+    skips on its premise before it reads a line that spells the name."""
     needs_the_byte(tmp_path)
     leg = root / "spec"
     pin = rev(leg)
@@ -284,20 +299,28 @@ def test_a_leg_on_a_branch_whose_name_is_not_utf8_is_placed_on_every_run(
     git("checkout", "-q", "a\udcffb", cwd=leg)
     args = ("--branch", "a\udcffb") if given else ()
     on = r"a\udcffb" if given else "main"
+    placed = f"  [spec] spec: on {on} at {pin[:12]} (branch tip == pin)\n"
     left = ("          the leg was on a\\udcffb, which keeps its commits; it "
             "is on main now\n")
+    printed = []
     for run in (1, 2):
         result = run_script(root / "scripts" / "bootstrap.py", *args,
                             cwd=root)
         assert result.returncode == 0, result.stderr + result.stdout
         assert "Traceback" not in result.stderr, result.stderr
         assert result.stdout.endswith("bootstrap ok\n"), result.stdout
-        placed = f"  [spec] spec: on {on} at {pin[:12]} (branch tip == pin)\n"
-        assert placed in result.stdout, result.stdout
-        assert (placed + left in result.stdout) is (
-            not given and run == 1), result.stdout
+        if not given:
+            assert placed in result.stdout, result.stdout
+        printed.append(result.stdout)
     assert head_bytes(leg) == (b"refs/heads/a\xffb\n" if given
                                else b"refs/heads/main\n")
+    assert rev(leg) == pin
+    skip_where_the_locale_does_not_spell_it_as_utf_8(
+        "a\udcffb", A_BYTE_READ_AS_A_SURROGATE)
+    for run, stdout in enumerate(printed, 1):
+        if given:
+            assert placed in stdout, stdout
+        assert (placed + left in stdout) is (not given and run == 1), stdout
 
 
 @NEEDS_A_UTF8_PROCESS
