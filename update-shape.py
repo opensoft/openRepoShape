@@ -701,7 +701,8 @@ def open_upstream(spec: str) -> Upstream:
         if not _holds_a_repository(path):
             raise Refusal(
                 "update-upstream-not-a-repo",
-                f"--upstream {spec} exists but is not a git repository",
+                f"--upstream {shown_path(spec)} exists but is not a git "
+                "repository",
                 "Remediation: point it at a clone of openRepoShape, or pass "
                 "`--upstream opensoft/openRepoShape` to clone one.")
         return Upstream(path, str(path))
@@ -813,7 +814,10 @@ def pin_source(pin: dict, pin_path: Path) -> str:
     it costs no root that a tool made.
     """
     declared = str(pin.get("source_repository") or SHAPE_REPOSITORY)
-    named = f"{pin_path}: `source_repository:`"
+    # `named` is the pin as `read_pin` names it, spelled by `shown_path`
+    # (#1318). It is handed to `checked_value` as its `what`, so the
+    # `unsafe-value` refusal spells the pin the same way.
+    named = f"{shown_path(pin_path)}: `source_repository:`"
     candidate = _named_here(declared)
     if candidate is not None and not _holds_a_repository(candidate.resolve()):
         raise Refusal(
@@ -2477,7 +2481,10 @@ def keep_local_exits(path: str) -> str:
 
 def report(root: Path, upstream: Upstream, pinned: str, target: str,
            pin_tree: str, target_tree: str, rows: list[Row]) -> None:
-    print(f"root        {root}")
+    # The root is NAMED as `shown_path` names it (#1318): a root with a bidi
+    # control, an ESC or a line break in its name reached the terminal raw
+    # under this header, and a line feed began a line of the name's choosing.
+    print(f"root        {shown_path(root)}")
     print(f"shape       {upstream.label}")
     print(f"pinned      {pinned[:12]} (tree {pin_tree[:12]}…)")
     print(f"target      {target[:12]} (tree {target_tree[:12]}…)")
@@ -2541,7 +2548,8 @@ def prepare(args, *, ask_source: bool = True
     upstream, and is asked whatever `ask_source` says."""
     root = root_of(args)
     if not _is_a(root, stat.S_ISDIR):
-        raise Refusal("update-root-missing", f"{root} is not a directory")
+        raise Refusal("update-root-missing",
+                      f"{shown_path(root)} is not a directory")
     _search(root)
     kind = root_kind(root)
     pin, rows = read_pin(root)
@@ -2825,9 +2833,10 @@ def current_branch(root: Path) -> str | None:
         raw = branch.encode("utf-8", "surrogateescape")
         raise Refusal(
             "update-branch-not-utf8",
-            f"{root} is on the branch {raw!r}, whose name is not UTF-8, so "
-            "no line this tool prints can name it: a line that named it "
-            "would name a branch that is not there. Nothing was written.",
+            f"{shown_path(root)} is on the branch {raw!r}, whose name is not "
+            "UTF-8, so no line this tool prints can name it: a line that "
+            "named it would name a branch that is not there. Nothing was "
+            "written.",
             "Remediation: give the branch a name that is UTF-8 text, then "
             "run the same command again: "
             + _by_hand(root, "branch", "-m") + " <a new name>") from None
