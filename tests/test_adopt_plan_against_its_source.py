@@ -44,7 +44,25 @@ each: the source keeps a branch `adopt`, which `check` finds as
 before the entries), or the plan's `tracking_branch:` is a value `execute`
 refuses as `unsafe-value` once the rule's problem is not in the way.
 
-Each row runs `check` and then `execute --yes` on one hand-edited plan, both
+AN UNANSWERED ENTRY, TOO (#1197). On #1210's head 791106c2, `execute`
+refused an unanswered entry with the rule, before all of these, and `check`
+listed it with the entries, after the split branch taken, the source's own
+paths, the coverage, the leg paths and a bad `leg:` on an entry before it.
+So beside any of those the two named different problems first:
+`plan-uncovered` against `plan-unresolved`, and the same for
+`plan-split-branch-taken`, `plan-unsafe-path`, `plan-empty-entry`,
+`plan-duplicate-path`, `plan-covered-twice`, `plan-bad-leg-path`,
+`plan-leg-path-collides`, `plan-bad-leg` and `plan-empty-symlink`. `check`
+now lists an unanswered entry with the rule's other problems, so both name
+it first. Each of those findings alone is named by both, as before.
+Two rows pin what the pair rows' `listed` cannot see, which counts each
+code once (RV1197): two unanswered entries, `.claude/` and `examples/`,
+each by its path ahead of the split branch taken, and a moved source
+beside an unanswered entry, named `plan-stale`, `plan-uncovered`, and
+then `plan-unresolved`, as before.
+
+Each row runs `check` and then `execute --yes` on one plan, hand-edited in
+every row but the empty link's, which `plan` writes as it is (#1197), both
 with the same `--local-remote-dir`, so no `gh` runs and no remote is asked,
 and asserts that no leg was made. `execute` refuses every plan here before
 it reads a remote: it asks for `git filter-repo` first, so the rows skip
@@ -53,12 +71,15 @@ where it is not installed.
 
 from __future__ import annotations
 
+import re
+
 import pytest
 
-from conftest import git
+from conftest import git, make_source_repo, planned
+from test_adopt_pins import ANSWERS
 from test_adopt_plan_value_order import (
-    ANOTHER_ORG, BAD_TRACKING_BRANCH, REFUSED_NAME, both_on, edited,
-    findings_of, named_first, needs_filter_repo, planned_with)
+    ANOTHER_ORG, BAD_LEG_PATH, BAD_TRACKING_BRANCH, REFUSED_NAME, both_on,
+    edited, findings_of, named_first, needs_filter_repo, planned_with)
 
 ANOTHER = "plan-not-the-source"
 NAME = "naming-unclassified"
@@ -69,6 +90,17 @@ UNANSWERED = "plan-unresolved"
 #: taken, and an unsafe `tracking_branch:`.
 TAKEN = "plan-split-branch-taken"
 TRACKING = "unsafe-value"
+#: More ordinary findings, each of which `check` listed before an
+#: unanswered entry on 791106c2 (#1197).
+UNCOVERED = "plan-uncovered"
+BAD_LEG = "plan-bad-leg"
+EMPTY_ENTRY = "plan-empty-entry"
+UNSAFE_PATH = "plan-unsafe-path"
+LEG_PATH = "plan-bad-leg-path"
+DUPLICATE = "plan-duplicate-path"
+COVERED_TWICE = "plan-covered-twice"
+COLLIDES = "plan-leg-path-collides"
+EMPTY_LINK = "plan-empty-symlink"
 
 #: The order both commands name the four in, the order a person mends them
 #: in (#1113).
@@ -89,10 +121,32 @@ PROBLEM = {
 
 #: Each ordinary finding, as `PROBLEM` reads it. The split branch taken is
 #: a branch `adopt` the source keeps, made as `test_adopt_split_branch.py`
-#: makes it, and an unsafe `tracking_branch:` is a hand edit.
+#: makes it, an uncovered path is `release.yaml` with its entry taken out,
+#: and each other is a hand edit: `.claude/`, an entry sorted before
+#: `examples/`, answered `banana`; an entry for a path the source does not
+#: hold; `docs/` respelled `-docs/`, a path that is a `git` option; a leg
+#: mounted at `../spec`; `LICENSE`'s entry written twice; an entry for a
+#: file `docs/` covers; and a leg mounted at `README.md`, which the root
+#: keeps.
 ORDINARY = {
     TAKEN: ((), {"taken"}),
     TRACKING: ((BAD_TRACKING_BRANCH,), set()),
+    UNCOVERED: ((), {"uncovered"}),
+    BAD_LEG: ((("  - path: .claude/\n    leg: root\n",
+                "  - path: .claude/\n    leg: banana\n"),), set()),
+    EMPTY_ENTRY: ((("  - path: openspec/\n",
+                    "  - path: nothing.md\n    leg: root\n"
+                    "  - path: openspec/\n"),), set()),
+    UNSAFE_PATH: ((("  - path: docs/\n", "  - path: -docs/\n"),), set()),
+    LEG_PATH: ((BAD_LEG_PATH,), set()),
+    DUPLICATE: ((("  - path: Makefile\n",
+                  "  - path: LICENSE\n    leg: root\n  - path: Makefile\n"),),
+                set()),
+    COVERED_TWICE: ((("  - path: examples/\n",
+                      "  - path: docs/architecture.md\n    leg: spec\n"
+                      "  - path: examples/\n"),), set()),
+    COLLIDES: ((("\n  spec_path: spec\n", "\n  spec_path: README.md\n"),),
+               set()),
 }
 
 
@@ -107,7 +161,26 @@ def holding(base, *problems: str) -> str:
         # `planned_with` makes the source at `base / "Thing"`; the branch
         # comes after `plan`, which would find it taken itself.
         git("branch", "adopt", cwd=base / "Thing")
+    if "uncovered" in holds:
+        # #1197's edit: `release.yaml` is in the source and in no entry.
+        entry = re.search(r"  - path: release\.yaml\n(    .*\n)*", text)
+        text = text.replace(entry[0], "", 1)
     return text
+
+
+def an_empty_link(base) -> str:
+    """The text of the plan `plan` writes for a new source at `base` that
+    keeps `dangling`, a symlink whose target is empty (#303), made in the
+    index as `test_adopt_empty_symlinks.py` makes it, with every question
+    answered but the link's own: `plan` leaves it at `leg: null` itself."""
+    source = make_source_repo(base / "Thing")
+    empty = base / "empty-target"
+    empty.write_bytes(b"")
+    blob = git("hash-object", "-w", str(empty), cwd=source).stdout.strip()
+    git("update-index", "--add", "--cacheinfo", f"120000,{blob},dangling",
+        cwd=source)
+    git("commit", "-q", "-m", "an empty link", cwd=source)
+    return planned(source, base, dict(ANSWERS)).read_text(encoding="utf-8")
 
 
 def code_of(line: str) -> str:
@@ -175,9 +248,10 @@ def test_each_problem_alone_is_named_by_its_own_code(tmp_path, problem):
 
 #: The rule's problem beside an ordinary finding, by test id: `(the rule's
 #: problem, the ordinary finding)`. Both commands name the rule's problem
-#: first. `unanswered-and-taken` is left out: `check` lists an unanswered
-#: entry with the entries, after the split branch, and `execute` refuses it
-#: first, so the two disagree on it before and after this fix (#1197).
+#: first. On 791106c2 `check` listed an unanswered entry with the entries,
+#: so each `unanswered-and-` row but `unanswered-and-tracking` was named
+#: differently by the two commands: `check` named the ordinary finding
+#: first (#1197).
 WITH_AN_ORDINARY_FINDING = {
     "another-and-taken": (ANOTHER, TAKEN),
     "name-and-taken": (NAME, TAKEN),
@@ -186,6 +260,15 @@ WITH_AN_ORDINARY_FINDING = {
     "name-and-tracking": (NAME, TRACKING),
     "moved-and-tracking": (MOVED, TRACKING),
     "unanswered-and-tracking": (UNANSWERED, TRACKING),
+    "unanswered-and-taken": (UNANSWERED, TAKEN),
+    "unanswered-and-uncovered": (UNANSWERED, UNCOVERED),
+    "unanswered-and-bad-leg": (UNANSWERED, BAD_LEG),
+    "unanswered-and-empty-entry": (UNANSWERED, EMPTY_ENTRY),
+    "unanswered-and-unsafe-path": (UNANSWERED, UNSAFE_PATH),
+    "unanswered-and-bad-leg-path": (UNANSWERED, LEG_PATH),
+    "unanswered-and-duplicate-path": (UNANSWERED, DUPLICATE),
+    "unanswered-and-covered-twice": (UNANSWERED, COVERED_TWICE),
+    "unanswered-and-collides": (UNANSWERED, COLLIDES),
 }
 
 #: The first `Remediation:` line `check` prints, where a row pins it: the
@@ -221,3 +304,95 @@ def test_the_rules_problem_is_named_before_an_ordinary_finding(tmp_path,
         fixes = [line for line in checked.stderr.splitlines()
                  if line.startswith("Remediation:")]
         assert fixes[0].startswith(FIRST_REMEDIATION[case]), checked.stderr
+
+
+@needs_filter_repo
+def test_an_empty_link_plan_leaves_unanswered_is_named_unanswered_by_both(
+        tmp_path):
+    """A PLAN AS `plan` WROTE IT, NO HAND EDIT (#1197): `plan` leaves the
+    entry of a symlink whose target is empty at `leg: null`, and `check`
+    finds the link too (#303). On 791106c2 `check` named
+    `plan-empty-symlink` first and `execute` refused `plan-unresolved`; both
+    now name the unanswered entry first, and `check` still lists the link,
+    with its remediation, in the same run."""
+    checked, executed = both_on(an_empty_link(tmp_path), tmp_path)
+    assert checked.returncode == 1, checked.stdout + checked.stderr
+    assert executed.returncode == 2, executed.stdout + executed.stderr
+    assert (code_of(named_first(checked)),
+            code_of(named_first(executed))) == (UNANSWERED, UNANSWERED), (
+        checked.stderr + executed.stderr)
+    assert named_first(executed).startswith(
+        f"REFUSED {UNANSWERED}: 1 path(s) still have `leg: null`: "
+        "`dangling`"), executed.stderr
+    assert [code_of(line) for line in findings_of(checked)] == [
+        UNANSWERED, EMPTY_LINK], checked.stderr
+
+
+def two_unanswered(base) -> str:
+    """The text of the plan `plan` writes for a new source at `base` with
+    `examples/` and `.claude/` both left at `leg: null`, and `release.yaml`
+    answered: two unanswered entries, and nothing else wrong with it."""
+    source = make_source_repo(base / "Thing")
+    return planned(source, base, {"release.yaml": "root"}).read_text(
+        encoding="utf-8")
+
+
+@needs_filter_repo
+def test_two_unanswered_entries_are_each_listed_before_the_split_branch_taken(
+        tmp_path):
+    """EACH BY ITS PATH (#1197, from RV1197): two unanswered entries,
+    `.claude/` and `examples/`, beside the split branch taken. `check`
+    lists the rule's `plan-unresolved` line for each, then the split branch
+    taken, and no entry's line after it; `execute` refuses both entries in
+    one refusal. A rule that listed only the first unanswered entry left the
+    other with the entries, after the split branch taken, and the pair rows,
+    which count each code once, did not see it."""
+    text = two_unanswered(tmp_path)
+    git("branch", "adopt", cwd=tmp_path / "Thing")
+    checked, executed = both_on(text, tmp_path)
+    assert checked.returncode == 1, checked.stdout + checked.stderr
+    assert executed.returncode == 2, executed.stdout + executed.stderr
+    assert [code_of(line) for line in findings_of(checked)] == [
+        UNANSWERED, UNANSWERED, TAKEN], checked.stderr
+    assert [line.split("`")[1] for line in findings_of(checked)
+            if code_of(line) == UNANSWERED] == [".claude/", "examples/"], (
+        checked.stderr)
+    assert named_first(executed).startswith(
+        f"REFUSED {UNANSWERED}: 2 path(s) still have `leg: null`: "
+        "`.claude/`, `examples/`"), executed.stderr
+
+
+@needs_filter_repo
+def test_a_moved_source_is_listed_before_the_uncovered_path_and_the_entry(
+        tmp_path):
+    """AS BEFORE (#1197, from RV1197): a source that has moved on, beside
+    an unanswered entry. The source's new file, `later.txt`, is in no entry,
+    so `check` lists exactly `plan-stale`, `plan-uncovered` and then the
+    entry's `plan-unresolved`, in that order: the rule lists the moved
+    source alone, and the unanswered entry stays with the entries. A rule
+    that listed the unanswered entry right after `plan-stale` put it before
+    `plan-uncovered`, and the pair rows, which count each code once, did
+    not see it. Both commands name the moved source first."""
+    checked, executed = both_on(holding(tmp_path, MOVED, UNANSWERED), tmp_path)
+    assert checked.returncode == 1, checked.stdout + checked.stderr
+    assert executed.returncode == 2, executed.stdout + executed.stderr
+    assert [code_of(line) for line in findings_of(checked)] == [
+        MOVED, UNCOVERED, UNANSWERED], checked.stderr
+    assert named_first(executed).startswith(f"REFUSED {MOVED}: "), (
+        executed.stderr)
+
+
+@needs_filter_repo
+@pytest.mark.parametrize("ordinary", sorted(ORDINARY))
+def test_each_ordinary_finding_alone_is_named_by_both(tmp_path, ordinary):
+    """THE CONTROLS, which pass on 791106c2 too: a plan that holds one
+    ordinary finding, every entry answered, is that finding first to
+    `check`, exit 1, and to `execute`, exit 2, before any leg exists, so
+    each hand edit above makes the finding it is named for."""
+    checked, executed = both_on(holding(tmp_path, ordinary), tmp_path)
+    assert checked.returncode == 1, checked.stdout + checked.stderr
+    assert executed.returncode == 2, executed.stdout + executed.stderr
+    assert (code_of(named_first(checked)),
+            code_of(named_first(executed))) == (ordinary, ordinary), (
+        checked.stderr + executed.stderr)
+    assert listed(checked) == [], checked.stderr
