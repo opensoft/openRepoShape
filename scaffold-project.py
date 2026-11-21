@@ -512,6 +512,25 @@ def seed_tree(role: str, values: dict, tracking: str, scratch: Path) -> str:
     return run(["git", "write-tree"], cwd=work).lower()
 
 
+#: THE MOUNT'S CLONE NAMES ITS REMOTE `origin`, WHATEVER
+#: `clone.defaultRemoteName` SAYS (#1275). `git submodule add` clones the
+#: leg's working tree into the root, and `git clone` names the remote it
+#: makes after that setting. `_build_assembly_root` then runs `git remote
+#: set-url origin` in the mount, and with `upstream` in the global git
+#: config that ended the run `REFUSED a git or gh command failed`, exit 2,
+#: `error: No such remote 'origin'`, after both legs were pushed and with
+#: the root's bare repository still empty. A setting git refuses, `a..b`,
+#: ended it at `submodule add` itself, exit 128, `'a..b' is not a valid
+#: remote name`. A `-c` ahead of the verb reaches the clone `git submodule
+#: add` makes as well as `git clone`'s own, and outranks the global file,
+#: `GIT_CONFIG_COUNT` and a parent's `GIT_CONFIG_PARAMETERS` (each measured
+#: with git 2.43), so the mount's remote is `origin` and the setting is not
+#: read. It is `adopt-project.py`'s spelling (#1261). The mount is the one
+#: clone this tool makes: every other repository is `git init`ed, which
+#: reads no remote name, and a work tree that has a remote is given `origin`
+#: by `git remote add origin`.
+REMOTE_NAMED_ORIGIN = ["-c", "clone.defaultRemoteName=origin"]
+
 #: THE ONE PROMPT RULE (#542, #915): what every git command this scaffold
 #: sends to a remote runs with, over the caller's environment. That is
 #: `only_commit`'s two (`PROBE_ENV`), `_take_held_seed`'s fetch and each
@@ -2635,9 +2654,9 @@ def _build_assembly_root(args, values: dict, names: dict, repositories: dict,
         # collision of another kind: refused up front by the collision check
         # where there is one, and by git at the mount where there is not.
         # `--force` changes neither.
-        run(["git", "-c", "protocol.file.allow=always", "submodule", "add",
-             "--force", "-q", str(work_root / names[role]), path],
-            cwd=assembly)
+        run(["git", "-c", "protocol.file.allow=always", *REMOTE_NAMED_ORIGIN,
+             "submodule", "add", "--force", "-q",
+             str(work_root / names[role]), path], cwd=assembly)
         run(["git", "config", "-f", ".gitmodules", f"submodule.{path}.url",
              urls[role]], cwd=assembly)
         run(["git", "remote", "set-url", "origin", urls[role]],
