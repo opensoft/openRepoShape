@@ -49,16 +49,30 @@ with the same `--local-remote-dir`, so no `gh` runs and no remote is asked,
 and asserts that no leg was made. `execute` refuses every plan here before
 it reads a remote: it asks for `git filter-repo` first, so the rows skip
 where it is not installed.
+
+THE LEG QUESTION BESIDE ANOTHER REPOSITORY (#1232). The rows of #1232 are
+the exception to the paragraph above: each runs `check`, and `execute`
+where it is refused first, given no `--local-remote-dir` or one that holds
+a leg's bare repository, with a `gh` of its own ahead of the session's
+guard that logs each call and exits 97. On 791106c2 `check`, given no
+`--local-remote-dir`, ran `gh repo view` of both legs of a plan for another
+repository, and its NOTE said `execute` asks again, where `execute` refuses
+`plan-not-the-source` first and asks nothing. Now it asks GitHub nothing
+there. The source's own plan is asked as before, and under
+`--local-remote-dir` the disk still is, beside `plan-not-the-source`: a
+leg's bare repository is `<dir>/<name>.git`, which no `org:` is part of.
 """
 
 from __future__ import annotations
 
+import os
+
 import pytest
 
-from conftest import git
+from conftest import ADOPT, git, run_script
 from test_adopt_plan_value_order import (
-    ANOTHER_ORG, BAD_TRACKING_BRANCH, REFUSED_NAME, both_on, edited,
-    findings_of, named_first, needs_filter_repo, planned_with)
+    ANOTHER_ORG, BAD_TRACKING_BRANCH, PLAN_FILE, REFUSED_NAME, both_on,
+    edited, findings_of, named_first, needs_filter_repo, planned_with)
 
 ANOTHER = "plan-not-the-source"
 NAME = "naming-unclassified"
@@ -171,6 +185,124 @@ def test_each_problem_alone_is_named_by_its_own_code(tmp_path, problem):
     assert named_first(executed).startswith(f"REFUSED {problem}: "), (
         executed.stderr)
     assert listed(checked) == [problem], checked.stderr
+
+
+#: How `check` names, in a NOTE on stdout, a question about a leg's
+#: repository that gh could not answer (#798).
+COULD_NOT_ASK = "NOTE `check` could not ask GitHub whether "
+#: A leg's bare repository already there, under `--local-remote-dir`.
+LEG_TAKEN = "leg-remote-exists"
+#: The two ways a plan names another repository than its source's (#499):
+#: an `org:` other than the source's, and a `legs.assembly:` other than its
+#: name, which keeps the source's `org:` and the legs' names, so `check`
+#: asked GitHub about the very legs the plan the remedy writes names.
+ANOTHER_REPOSITORY = {
+    "org": ANOTHER_ORG,
+    "assembly": ("\n  assembly: Northwind\n", "\n  assembly: Elsewhere\n"),
+}
+
+needs_a_posix_gh = pytest.mark.skipif(
+    os.name == "nt", reason="the logging gh is a #! script")
+
+
+def with_a_logging_gh(log, *args: str):
+    """`adopt-project.py <args>` with a `gh` first on PATH, ahead of the
+    session's guard, that appends each call's arguments to `log`, one line
+    each, and exits 97, as #1232 measured: `(the run, each call it made)`."""
+    stub = log.parent / "logging-gh"
+    stub.mkdir(exist_ok=True)
+    (stub / "gh").write_bytes(
+        b'#!/bin/sh\necho "$*" >> "$GH_STUB_LOG"\nexit 97\n')
+    (stub / "gh").chmod(0o755)
+    ran = run_script(ADOPT, *args, env={
+        "PATH": f"{stub}{os.pathsep}{os.environ['PATH']}",
+        "GH_STUB_LOG": str(log)})
+    return ran, (log.read_text(encoding="utf-8").splitlines()
+                 if log.exists() else [])
+
+
+@needs_filter_repo
+@needs_a_posix_gh
+@pytest.mark.parametrize("case", sorted(ANOTHER_REPOSITORY))
+def test_check_asks_github_nothing_about_another_repositorys_legs(tmp_path,
+                                                                 case):
+    """#1232: given no `--local-remote-dir`, `check` on a plan for another
+    repository runs no `gh` and prints no NOTE about a leg's repository, as
+    `execute` asks nothing before it refuses `plan-not-the-source` (#499),
+    and both still name that first, `check` exit 1 and `execute` exit 2. On
+    791106c2 `check` ran `gh repo view` of each leg, under the plan's
+    `org:`, and its NOTE said `execute` asks again."""
+    plan = tmp_path / PLAN_FILE
+    plan.write_bytes(edited(planned_with(tmp_path, {"held"}),
+                            ANOTHER_REPOSITORY[case]).encode("utf-8"))
+    checked, check_asked = with_a_logging_gh(
+        tmp_path / "check.log", "check", "--plan", str(plan))
+    executed, execute_asked = with_a_logging_gh(
+        tmp_path / "execute.log", "execute", "--plan", str(plan), "--yes",
+        "--work-dir", str(tmp_path / "work"))
+    assert (check_asked, execute_asked) == ([], []), checked.stdout
+    assert COULD_NOT_ASK not in checked.stdout, checked.stdout
+    assert checked.returncode == 1, checked.stdout + checked.stderr
+    assert executed.returncode == 2, executed.stdout + executed.stderr
+    assert (code_of(named_first(checked)),
+            code_of(named_first(executed))) == (ANOTHER, ANOTHER), (
+        checked.stderr + executed.stderr)
+    assert named_first(executed).startswith(f"REFUSED {ANOTHER}: "), (
+        executed.stderr)
+
+
+@needs_a_posix_gh
+def test_a_local_remote_dir_is_still_asked_beside_another_repository(
+        tmp_path):
+    """THE CHOICE UNDER `--local-remote-dir` (#1232), as on 791106c2: the
+    disk is still asked beside `plan-not-the-source`. It asks no remote,
+    and a leg's bare repository is `<dir>/<name>.git`, which no `org:` is
+    part of: with the spec leg's taken, `check` lists `leg-remote-exists`
+    after `plan-not-the-source`, the very finding it lists for the
+    source's own plan, the one the remedy writes, under the same
+    directory. Neither run asks `gh` anything."""
+    remotes = tmp_path / "remotes"
+    (remotes / "Northwind-spec.git").mkdir(parents=True)
+    own = planned_with(tmp_path, {"held"})
+    runs = {}
+    for name, text in (("own", own), ("another", edited(own, ANOTHER_ORG))):
+        plan = tmp_path / f"{name}.yaml"
+        plan.write_bytes(text.encode("utf-8"))
+        runs[name] = with_a_logging_gh(
+            tmp_path / f"{name}.log", "check", "--plan", str(plan),
+            "--local-remote-dir", str(remotes))
+    (own_checked, own_asked), (checked, asked) = runs["own"], runs["another"]
+    assert (own_asked, asked) == ([], []), (own_asked, asked)
+    assert (own_checked.returncode, checked.returncode) == (1, 1), (
+        own_checked.stderr + checked.stderr)
+    assert [code_of(line) for line in findings_of(checked)] == [
+        ANOTHER, LEG_TAKEN], checked.stderr
+    assert findings_of(checked)[1:] == findings_of(own_checked), (
+        own_checked.stderr + checked.stderr)
+
+
+@needs_a_posix_gh
+def test_check_still_asks_github_about_the_sources_own_legs(tmp_path):
+    """THE CONTROL, which passes on 791106c2 too (#1232): the source's own
+    plan, given no `--local-remote-dir`, is asked `gh repo view` of each
+    leg under its `org:`, and where gh cannot answer, `check` prints a NOTE
+    for each that says `execute` asks again, and passes."""
+    plan = tmp_path / PLAN_FILE
+    plan.write_bytes(planned_with(tmp_path, {"held"}).encode("utf-8"))
+    checked, asked = with_a_logging_gh(tmp_path / "check.log", "check",
+                                       "--plan", str(plan))
+    views = [f"repo view testorg/Northwind-{leg} --json nameWithOwner"
+             for leg in ("spec", "code")]
+    assert asked == views, asked
+    assert [line for line in checked.stdout.splitlines()
+            if line.startswith(COULD_NOT_ASK)] == [
+        f"{COULD_NOT_ASK}testorg/Northwind-{leg}, the {leg} leg's "
+        f"repository, already exists: `gh {view}` exited 97. It is no "
+        "finding here, so that `check` stays usable offline; `execute` asks "
+        "again before it makes either leg, and refuses as "
+        "`adopt-remote-unreadable` while gh cannot answer."
+        for leg, view in zip(("spec", "code"), views)], checked.stdout
+    assert checked.returncode == 0, checked.stdout + checked.stderr
 
 
 #: The rule's problem beside an ordinary finding, by test id: `(the rule's
