@@ -783,14 +783,17 @@ def older_validator(tmp_path_factory) -> dict:
     """A project scaffolded at A, and B: an upstream commit whose manifest
     validator asks a branch for a NUL alone, as one older than #715 does.
     So the root's own validators pass a hand-edited `main` followed by
-    U+00A0 after `apply`, and update-shape's own guard is what is asked."""
+    U+00A0 after `apply`, and update-shape's own guard is what is asked.
+    The line asked is `_branch_finding`'s since #1165, which added the
+    default-ignorable table to it."""
     _base, upstream, commit_a, clone = scaffold_upstream_and_project(
         tmp_path_factory, "w715-older-validator")
     source = upstream / CHANGED_SOURCE
     text = source.read_text(encoding="utf-8")
-    asked = "if not c.isprintable() or c.isspace()),"
+    asked = ("if not c.isprintable() or c.isspace()\n"
+             "                 or DEFAULT_IGNORABLE.match(c)), None)")
     assert text.count(asked) == 1, "the validator no longer asks this"
-    source.write_text(text.replace(asked, 'if c == "\\x00"),'),
+    source.write_text(text.replace(asked, 'if c == "\\x00"), None)'),
                       encoding="utf-8")
     git("-c", "user.name=t", "-c", "user.email=t@t", "commit", "-q", "-m",
         "An older manifest validator", "--", CHANGED_SOURCE, cwd=upstream)
