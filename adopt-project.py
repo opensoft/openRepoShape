@@ -6900,7 +6900,8 @@ def _leg_findings(plan: Plan, tree: list | None,
                   probe: "_SymlinkProbe | None" = None) -> list[str]:
     """`leg:` is answered with one of the four words, each leg's mount path
     is canonical (#169), and neither overlaps a path the assembly root holds
-    (#172); and the root keeps nothing where the shape writes (#262, #263).
+    (#172); and the root keeps nothing where the shape writes (#262, #263),
+    nor a case twin of a path the shape writes at its own name (#1049).
     `named_links` are the symlinks of the source that `plan-empty-symlink`
     and `plan-bad-symlink-target` name one by one (`_named_symlinks`, #908):
     one kept AT `project.yaml` is theirs, and `plan-root-blocks-manifest`
@@ -6961,6 +6962,10 @@ def _leg_findings(plan: Plan, tree: list | None,
                 f"one of {list(LEG_VALUES)}")
     if isinstance(plan.legs, dict):
         findings += _root_shape_findings(plan, tree, named_links)
+        # And a kept path that is a case twin of one the shape writes at its
+        # own name, which a split made where case is kept commits beside it
+        # (#1049).
+        findings += _root_case_twin_findings(plan, tree, named_links)
         # THE PINS, LAST (#273): each `pins:` entry `execute` cannot write a
         # pin file from, two pins at one file, and a path the root keeps
         # where a pin is written, the shape's own pin among them (#524).
@@ -7318,6 +7323,127 @@ def _root_shape_findings(plan: Plan, tree: list,
     return [f"FINDING {code}: " + _blocked_sentence(
                 code, rels, copies, rows, _CASE_ASIDE if folded else "")
             for (code, _), (rels, copies, rows, folded) in blocked.items()]
+
+
+# ---------------------------------------------------------------------------
+# A kept path that is a case twin of a path the shape writes (#1049)
+# ---------------------------------------------------------------------------
+#
+# `place` writes a path of `assembly_root_paths` at its own name where the
+# root holds nothing there, as `Path.exists()` says, and beside it, under
+# `shape/`, where the root does. A kept `makefile` is `Makefile` to that
+# question on a disk that ignores case, so there the shape's `Makefile` went
+# to `shape/Makefile`; on a disk that keeps case it is not, so the shape's
+# went to the root's `Makefile` and the split committed `Makefile` and
+# `makefile` side by side. `check` said `plan ok` to both. A clone of that
+# split onto a disk that ignores case checks out only one of the two: git
+# writes the index out in order, and where a path is already on the disk it
+# removes what is there and writes the entry, and `git clone` then warns
+# that "only one from the same colliding group is in the working tree"
+# (git v2.47.1 `entry.c` and `unpack-trees.c`, read, not run: no disk that
+# ignores case can be made where this was written).
+#
+# So `check` names each such path, on every disk, and `execute` refuses it
+# before either leg exists: a kept path, a symlink or a file, that differs
+# from a path the shape writes only in case, or a kept directory that does,
+# where the root keeps nothing at that path itself and no file, symlink or
+# submodule on the way to it. A root that keeps the path itself has the
+# shape's copy written beside it on every disk, and any twin of it there is
+# among the source's own paths. The manifest and the shape's own pin are
+# left to `plan-root-blocks-manifest` and `plan-root-holds-pin`, which ask
+# the disk that ignores case already and name a twin there; a submodule is
+# `plan-submodule-root`'s; and a symlink whose target `plan-empty-symlink`
+# or `plan-bad-symlink-target` names is theirs, as at the manifest (#908).
+# A symlink named here is not named again by the root walk, which meets it
+# as the path on a disk that ignores case (`_links_at_a_twin`): the remedy
+# that helps is this finding's, and a new target leaves the twin.
+#
+# The rows read are `_kept_in_root`'s, as `Source.tree()` lists them: no
+# disk is asked, so the finding is the same on every machine `check` runs
+# on, and on the macOS or Windows disk the assembly is cloned onto.
+
+#: `check`'s finding for a path the plan keeps in the root that is a case
+#: twin of a path the shape writes at its own name (#1049).
+ROOT_CASE_TWIN = "plan-root-case-twin"
+
+
+def _case_twins_of_the_shape(kept: list,
+                             named_links: frozenset | set = frozenset()
+                             ) -> list[tuple[str, tuple, list]]:
+    """`(shape path, group, kept rows)` for each thing the plan keeps in the
+    root that is a case twin of a path of `assembly_root_paths` the shape
+    writes at its own name (see the comment above), in the order the shape
+    writes them and then in tree order. `group` is `("at", path)` for a
+    kept row at the path once case is ignored, each one, and `("dir",
+    path)` for a kept directory there, one per spelling, with the rows below
+    it. `kept` is `_kept_in_root`'s `(path, mode, entry)` rows."""
+    paths = {row[0] for row in kept}
+    held = paths | {"/".join(row[0].split("/")[:end]) for row in kept
+                    for end in range(1, row[0].count("/") + 1)}
+    out = []
+    for rel in assembly_root_paths():
+        parts = rel.split("/")
+        if rel in (SHAPE_MANIFEST, SHAPE_PIN) or rel in held or any(
+                "/".join(parts[:end]) in paths for end in range(1, len(parts))):
+            continue
+        folded = rel.casefold()
+        groups: dict[tuple, list] = {}
+        for row in kept:
+            path, mode, _ = row
+            if mode == GITLINK_MODE:
+                continue
+            if path.casefold() == folded:
+                if path not in named_links:
+                    groups[("at", path)] = [row]
+            elif path.casefold().startswith(folded + "/"):
+                spelled = "/".join(path.split("/")[:len(parts)])
+                groups.setdefault(("dir", spelled), []).append(row)
+        out += [(rel, group, rows) for group, rows in groups.items()]
+    return out
+
+
+def _case_twin_sentence(rel: str, rows: list) -> str:
+    """What `plan-root-case-twin` says of the kept `rows`, a case twin of
+    the shape's `rel`, and what to do."""
+    path, mode, entry = rows[0]
+    relation, aside = _overlap(rel, path)
+    named = _first_and_more([row[0] for row in rows], _spelled)
+    under = "" if entry == path else f" under the entry {_spelled(entry)}"
+    return (
+        f"the plan keeps {_kind_of(mode)} {named} in the assembly "
+        f"root{under}, {'at' if relation == 'is' else 'inside'} `{rel}`"
+        f"{aside}, where the shape writes its own `{rel}`. A disk that keeps "
+        f"case holds the two apart, so there the shape's `{rel}` is written "
+        "at its own path and the split commits the two side by side, and a "
+        "clone of the assembly onto a disk that ignores case checks out only "
+        "one of them. So `execute` refuses this plan on every disk, before "
+        f"either leg exists: {_fix_the_kept_path(entry)}.")
+
+
+def _root_case_twin_findings(plan: Plan, tree: list,
+                             named_links: frozenset | set = frozenset()
+                             ) -> list[str]:
+    """`check`'s `plan-root-case-twin` findings (#1049): one for each kept
+    path, or kept directory, that is a case twin of a path the shape writes
+    at its own name (`_case_twins_of_the_shape`). `named_links` are the
+    symlinks `plan-empty-symlink` and `plan-bad-symlink-target` name, which
+    are left to them."""
+    return [f"FINDING {ROOT_CASE_TWIN}: " + _case_twin_sentence(rel, rows)
+            for rel, _, rows in _case_twins_of_the_shape(
+                _kept_in_root(plan.entries, tree), named_links)]
+
+
+def _links_at_a_twin(plan: Plan, tree: list) -> set[str]:
+    """Each symlink the plan keeps at a case twin of a path the shape
+    writes, which `plan-root-case-twin` names (#1049), so that the root
+    walk, which meets it as that path on a disk that ignores case, does not
+    name it again. Asked as `_leg_findings` asks it, of a plan whose `legs`
+    it can read."""
+    if not isinstance(plan.legs, dict):
+        return set()
+    return {group[1] for _, group, rows in _case_twins_of_the_shape(
+                _kept_in_root(plan.entries, tree))
+            if group[0] == "at" and rows[0][1] == SYMLINK_MODE}
 
 
 #: What a plan that splits a source's own submodules is told to do instead.
@@ -11007,11 +11133,17 @@ def _root_symlink_findings(plan: Plan, source: Source, tree: list,
 
     `probe` is `_entry_findings`' one probe, which `plan-file-reencoded`'s
     walks share, so git is asked that once (#654).
+
+    A symlink AT a case twin of a path the shape writes is #1049's
+    `plan-root-case-twin` (`_links_at_a_twin`), whose remedy helps where a
+    new target would leave the twin, and is not said again here, though
+    the walk on a disk that ignores case meets it as that path.
     """
     findings: list[str] = []
     if not any(mode == SYMLINK_MODE for _, mode, _, _ in tree):
         return findings
-    seen = _links_at_a_copy(plan, tree) | _links_at_a_pin(plan, tree)
+    seen = (_links_at_a_copy(plan, tree) | _links_at_a_pin(plan, tree)
+            | _links_at_a_twin(plan, tree))
     if probe is None:
         probe = _SymlinkProbe(source.work_root)
     for fold in (False, True):

@@ -74,6 +74,9 @@ CASE_ASIDE = " once case is ignored, as a macOS or Windows disk does"
 #: The two findings, and what `execute` writes in front of every one.
 IN_THE_WAY = "plan-root-blocks-shape"
 COPY_IN_THE_WAY = "plan-root-blocks-shape-copy"
+#: And #1049's, for a kept path that differs only in case from a path the
+#: shape writes at its own name.
+CASE_TWIN = "plan-root-case-twin"
 BLOCKED = "materialize-copy-blocked"
 RESERVED = ("`shape/` is reserved for the shape's own copies of files the "
             "root already holds")
@@ -619,6 +622,177 @@ def test_a_finding_that_mixes_copies_held_either_way_is_still_one(adopter):
         "file `shape`.")
 
 
+# --- a case twin of a path the shape writes (#1049) -------------------------
+#
+# The copy above is asked of each disk. What the split commits where case is
+# kept was not: a kept `makefile`, `readme.md` or `agents.md` holds no
+# `Makefile`, `README.md` or `AGENTS.md` there, so the shape writes its own
+# at that path, and the split holds the two side by side, which a clone onto
+# a disk that ignores case cannot hold apart. `check` said `plan ok`.
+
+def twins_found(adopter, entries: list, rows: list) -> list[str]:
+    """`plan-root-case-twin`'s lines among what `_leg_findings`, which
+    `check` and `execute` read, says of a plan keeping these entries."""
+    return [said for said in adopter._leg_findings(
+                keeping(adopter, *entries), rows)
+            if said.startswith(f"FINDING {CASE_TWIN}: ")]
+
+
+def in_another_case(path: str) -> str:
+    """`path` with the case of every letter in it swapped."""
+    return path.swapcase()
+
+
+#: What every twin finding says after naming the kept path, of the shape's
+#: path `{0}`, and its fix for the entry `{1}`.
+TWIN_CONSEQUENCE = (
+    "A disk that keeps case holds the two apart, so there the shape's `{0}` "
+    "is written at its own path and the split commits the two side by side, "
+    "and a clone of the assembly onto a disk that ignores case checks out "
+    "only one of them. So `execute` refuses this plan on every disk, before "
+    "either leg exists: send `{1}` to a leg, `drop` it, or rename it in the "
+    "source and re-run `plan`.")
+
+
+def test_a_kept_makefile_is_the_shapes_makefile_in_another_case(adopter):
+    """#1049's case, in the finding's words: the source's `makefile` and
+    the shape's `Makefile` side by side in the split."""
+    assert twins_found(adopter, [("makefile", "root")],
+                       [row("makefile")]) == [
+        f"FINDING {CASE_TWIN}: the plan keeps the file `makefile` in the "
+        f"assembly root, at `Makefile`{CASE_ASIDE}, where the shape writes "
+        "its own `Makefile`. " + TWIN_CONSEQUENCE.format("Makefile",
+                                                          "makefile")]
+
+
+def test_every_path_the_shape_writes_has_its_case_twin_found(adopter):
+    """No second list: each path of `assembly_root_paths`, kept in another
+    case, is named once, but the manifest and the shape's own pin, whose
+    own findings ask a disk that ignores case already
+    (`plan-root-blocks-manifest`, `plan-root-holds-pin`)."""
+    others = {adopter.SHAPE_MANIFEST, adopter.SHAPE_PIN}
+    for path in adopter.assembly_root_paths():
+        twin = in_another_case(path)
+        said = twins_found(adopter, [(twin, "root")], [row(twin)])
+        if path in others:
+            assert said == [], path
+            continue
+        assert len(said) == 1, (path, said)
+        assert said[0].startswith(
+            f"FINDING {CASE_TWIN}: the plan keeps the file `{twin}` in the "
+            f"assembly root, at `{path}`{CASE_ASIDE}, where the shape writes "
+            f"its own `{path}`. "), said
+
+
+@pytest.mark.parametrize("twin, code", [
+    pytest.param("Project.yaml", "plan-root-blocks-manifest",
+                 id="the-manifest"),
+    pytest.param("contracts/Shape-Pin.yaml", "plan-root-holds-pin",
+                 id="the-shapes-pin"),
+])
+def test_a_twin_of_the_manifest_or_the_pin_is_said_once_by_its_own_rule(
+        adopter, twin, code):
+    """The manifest and the shape's pin are read at their paths by the
+    root's own tools, so their rules refuse a twin already, once case is
+    ignored; this rule does not say the same path again."""
+    entry = twin.split("/")[0] + ("/" if "/" in twin else "")
+    said = adopter._leg_findings(keeping(adopter, (entry, "root")),
+                                 [row(twin)])
+    assert [line.split(":")[0] for line in said] == [f"FINDING {code}"]
+
+
+def test_a_kept_directory_in_the_case_of_a_shape_path_is_one_finding(
+        adopter):
+    """A directory `makefile/` is `Makefile` too, on a disk that ignores
+    case, where the shape writes its file: one finding, naming the first
+    path kept in it and counting the rest."""
+    rows = [row("makefile/notes.md"), row("makefile/more.md")]
+    assert twins_found(adopter, [("makefile/", "root")], rows) == [
+        f"FINDING {CASE_TWIN}: the plan keeps the file `makefile/notes.md` "
+        "and 1 more in the assembly root under the entry `makefile/`, inside "
+        f"`Makefile`{CASE_ASIDE}, where the shape writes its own `Makefile`. "
+        + TWIN_CONSEQUENCE.format("Makefile", "makefile/")]
+
+
+def test_each_twin_of_one_path_is_its_own_finding(adopter):
+    """`makefile` and `MAKEFILE` are each a second name for the shape's
+    `Makefile`: each is named, in the source tree's order, with its own
+    entry to change."""
+    said = twins_found(adopter, [("MAKEFILE", "root"), ("makefile", "root")],
+                       [row("MAKEFILE"), row("makefile")])
+    assert [line.split("`")[1] for line in said] == ["MAKEFILE", "makefile"]
+
+
+def test_the_twins_come_in_the_order_the_shape_writes(adopter):
+    """`README.md` is the first path the shape writes and `Makefile` the
+    tenth, whatever order the plan lists the twins in."""
+    said = twins_found(adopter, [("makefile", "root"), ("readme.md", "root")],
+                       [row("makefile"), row("readme.md")])
+    assert [line.split("`")[3] for line in said] == ["README.md", "Makefile"]
+
+
+@pytest.mark.parametrize("entries, rows", [
+    pytest.param([("Makefile", "root"), ("makefile", "root")],
+                 [row("Makefile"), row("makefile")],
+                 id="the-root-keeps-the-path-itself"),
+    pytest.param([("Makefile/", "root"), ("makefile", "root")],
+                 [row("Makefile/notes.md"), row("makefile")],
+                 id="the-root-keeps-a-directory-at-the-path"),
+    pytest.param([("makefile", "code")], [row("makefile")],
+                 id="sent-to-a-leg"),
+    pytest.param([("makefile", "drop")], [row("makefile")], id="dropped"),
+    pytest.param([("makefile", "root")], [row("makefile", "160000")],
+                 id="a-submodule"),
+    pytest.param([("makefiles", "root"), ("readme.md.orig", "root"),
+                  ("Makefile.am", "root")],
+                 [row("makefiles"), row("readme.md.orig"), row("Makefile.am")],
+                 id="names-that-only-share-a-prefix"),
+    pytest.param([("Scripts/", "root")], [row("Scripts/run.sh")],
+                 id="a-directory-the-shape-writes-into"),
+    pytest.param([("scripts", "root"), ("Scripts/", "root")],
+                 [row("scripts", "120000"), row("Scripts/bootstrap.py")],
+                 id="a-symlink-on-the-way-to-the-path"),
+])
+def test_what_is_no_twin_of_a_path_the_shape_writes_is_not_found(
+        adopter, entries, rows):
+    """Not over-refused. Where the root keeps the path itself, the shape's
+    copy goes under `shape/` on every disk, and a twin beside it is the
+    source's own; a path sent away or dropped, or a submodule, which
+    `plan-submodule-root` refuses, is no kept twin; a name that only begins
+    like one is another name; a directory the shape writes into, in another
+    case, is one directory on a disk that ignores case, with no path in it
+    twice; and where a symlink stands on the way to the path, the shape
+    writes through it and not at that path."""
+    assert twins_found(adopter, entries, rows) == []
+
+
+def test_a_link_that_its_own_finding_names_is_left_to_it(adopter):
+    """A kept link whose target `plan-empty-symlink` or
+    `plan-bad-symlink-target` names is that finding's alone, as at the
+    manifest (#908): no answer in the plan makes a link no clone makes."""
+    plan = keeping(adopter, ("makefile", "root"))
+    rows = [row("makefile", "120000")]
+    assert adopter._root_case_twin_findings(plan, rows, {"makefile"}) == []
+    said, = adopter._root_case_twin_findings(plan, rows)
+    assert said.startswith(f"FINDING {CASE_TWIN}: the plan keeps the symlink "
+                           "`makefile` in the assembly root, at `Makefile`")
+
+
+def test_leg_findings_says_it_after_what_stands_where_the_shape_writes(
+        adopter):
+    """`check` and `execute` read `_leg_findings`: the twin comes after the
+    findings of what stands where the shape writes and its copies, and
+    before the pins'."""
+    rows = [row("readme.md"), row("shape/README.md"),
+            row("contracts/shape-pin.yaml")]
+    said = adopter._leg_findings(
+        keeping(adopter, ("readme.md", "root"), ("shape/", "root"),
+                ("contracts/", "root")), rows)
+    assert [line.split(":")[0] for line in said] == [
+        f"FINDING {COPY_IN_THE_WAY}", f"FINDING {CASE_TWIN}",
+        "FINDING plan-root-holds-pin"]
+
+
 # --- one list ----------------------------------------------------------------
 
 def test_the_findings_come_in_the_order_the_shape_writes(adopter):
@@ -832,25 +1006,79 @@ def lower_case_readme_source(tmp_path: Path):
 def test_check_finds_what_only_a_disk_that_ignores_case_would_stop_at(
         tmp_path):
     """The case the review found: `check` said `plan ok`, and `execute`
-    on macOS or Windows made both legs and then stopped."""
+    on macOS or Windows made both legs and then stopped. The kept
+    `readme.md` is a finding of its own too, after it (#1049): where case
+    is kept the shape's `README.md` is written beside it, two paths a clone
+    onto a disk that ignores case cannot hold apart."""
     _, plan = lower_case_readme_source(tmp_path)
     result = check(plan)
     assert result.returncode == 1, result.stdout + result.stderr
-    finding, = findings_of(result)
+    finding, twin = findings_of(result)
     assert finding.startswith(
         f"FINDING {COPY_IN_THE_WAY}: the shape's copy of `README.md` is "
         "written to `shape/README.md`, because the root already holds "
         f"`README.md`{CASE_ASIDE}. ")
+    assert twin.startswith(f"FINDING {CASE_TWIN}: the plan keeps the file "
+                           "`readme.md` in the assembly root, at `README.md`"
+                           f"{CASE_ASIDE}, where the shape writes its own "
+                           "`README.md`. ")
     assert "plan ok" not in result.stdout
 
 
 def test_execute_refuses_it_before_any_leg_exists_too(
         adopter, no_filter_repo_probe, tmp_path):
     source, plan = lower_case_readme_source(tmp_path)
-    printed, = findings_of(check(plan))
+    printed = findings_of(check(plan))
+    assert [line.split(":")[0] for line in printed] == [
+        f"FINDING {COPY_IN_THE_WAY}", f"FINDING {CASE_TWIN}"]
     with pytest.raises(adopter.Refusal) as caught:
         adopter.cmd_execute(execute_args(tmp_path, plan))
     assert caught.value.code == COPY_IN_THE_WAY
+    for line in printed:
+        assert line in caught.value.detail
+    no_leg_was_created(tmp_path, source)
+
+
+def lower_case_readme_only(tmp_path: Path, leg: str = "root"):
+    """A source whose README is `readme.md`, answered `leg`, and nothing
+    else in the way: on main it adopted where case is kept, the split
+    holding the source's `readme.md` and the shape's `README.md`."""
+    tree = with_files({"readme.md": "# Thing\n"}, "README.md")
+    source, plan = kept_source(tmp_path, tree, "readme.md", leg)
+    return source, plan
+
+
+def test_check_names_a_kept_readme_in_another_case(tmp_path):
+    """#1049: `check` said `plan ok`, on every disk, and `execute` where
+    case is kept split the two side by side."""
+    _, plan = lower_case_readme_only(tmp_path)
+    result = check(plan)
+    assert result.returncode == 1, result.stdout + result.stderr
+    assert findings_of(result) == [
+        f"FINDING {CASE_TWIN}: the plan keeps the file `readme.md` in the "
+        f"assembly root, at `README.md`{CASE_ASIDE}, where the shape writes "
+        "its own `README.md`. " + TWIN_CONSEQUENCE.format("README.md",
+                                                           "readme.md")]
+    assert "plan ok" not in result.stdout
+
+
+@pytest.mark.parametrize("leg", ["spec", "drop"])
+def test_the_remediation_the_twin_finding_names_makes_check_pass(
+        tmp_path, leg):
+    """`send <entry> to a leg, drop it`: either, and the plan checks ok."""
+    _, plan = lower_case_readme_only(tmp_path, leg)
+    result = check(plan)
+    assert result.returncode == 0, result.stdout + result.stderr
+    assert "plan ok" in result.stdout
+
+
+def test_execute_refuses_a_kept_case_twin_before_any_leg_exists(
+        adopter, no_filter_repo_probe, tmp_path):
+    source, plan = lower_case_readme_only(tmp_path)
+    printed, = findings_of(check(plan))
+    with pytest.raises(adopter.Refusal) as caught:
+        adopter.cmd_execute(execute_args(tmp_path, plan))
+    assert caught.value.code == CASE_TWIN
     assert printed in caught.value.detail
     no_leg_was_created(tmp_path, source)
 

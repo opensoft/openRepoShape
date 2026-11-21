@@ -701,14 +701,11 @@ REFUSED = [
                   "there, where the shape's copy cannot be written"),
                  id="the-collision-directory-holds-a-directory-of-the-name"),
     # S1: a case twin is followed as a disk that ignores case follows it.
+    # One AT a shape path is #1049's `plan-root-case-twin` instead
+    # (`test_a_link_at_a_case_twin_is_one_finding_by_the_twin_rule`).
     pytest.param({}, {GITHUB_TWIN: OUTSIDE_CI}, {GITHUB_TWIN: ROOT},
                  (GITHUB_TWIN, OUTSIDE_CI, WORKFLOW, climbs(GITHUB_TWIN),
                   CASE_ASIDE), id="a-case-twin-above-a-shape-path"),
-    pytest.param({}, {GITIGNORE_TWIN: NOWHERE_GITIGNORE},
-                 {GITIGNORE_TWIN: ROOT},
-                 (GITIGNORE_TWIN, NOWHERE_GITIGNORE, ".gitignore",
-                  leads(GITIGNORE_TWIN, NOWHERE_GITIGNORE, NOT_IN_THE_TREE),
-                  CASE_ASIDE), id="a-case-twin-at-a-shape-path"),
 ]
 
 
@@ -721,6 +718,43 @@ def test_check_reports_the_link_and_execute_refuses_it_before_any_leg(
     makes no leg, so the corrected plan does not meet `leg-remote-exists`."""
     _, plan = planned(tmp_path, files, links, legs)
     refused_alike(adopter, tmp_path, plan, finding(*expected))
+
+
+#: #1049's finding, and S1's link at a case twin of `.gitignore` that leads
+#: nowhere: a disk that ignores case reads it as the shape's `.gitignore`.
+ROOT_CASE_TWIN = "plan-root-case-twin"
+A_LINK_AT_A_TWIN = ({}, {GITIGNORE_TWIN: NOWHERE_GITIGNORE},
+                    {GITIGNORE_TWIN: ROOT})
+
+
+@pytest.mark.parametrize("told", ["true", "false"],
+                         ids=["links-as-links", "links-as-files"])
+def test_a_link_at_a_case_twin_is_one_finding_by_the_twin_rule(
+        adopter, no_filter_repo_probe, monkeypatch, tmp_path, told):
+    """S1's link, `.GITIGNORE -> nowhere/gitignore`. The walk on a disk that
+    ignores case meets it as `.gitignore` and named it, where `git` checks a
+    symlink out as one, as `plan-root-symlink`, whose fix offered a new
+    target; where `git` checks it out as a file, `check` passed it. Since
+    #1049 it is `plan-root-case-twin`, on every disk and either way: a disk
+    that keeps case holds it apart from the shape's `.gitignore`, so the
+    split commits both, and a new target leaves the twin. One link, one
+    finding: the walk does not name it again, and `execute` refuses the plan
+    with that line before any leg exists."""
+    told_git(monkeypatch, told)
+    _, plan = planned(tmp_path, *A_LINK_AT_A_TWIN)
+    checked = check(plan)
+    assert checked.returncode == 1, checked.stderr + checked.stdout
+    said, = [line for line in checked.stderr.splitlines()
+             if line.startswith("FINDING ")]
+    assert said.startswith(
+        f"FINDING {ROOT_CASE_TWIN}: the plan keeps the symlink "
+        f"{ticked(GITIGNORE_TWIN)} in the assembly root, at `.gitignore`"
+        f"{CASE_ASIDE}, where the shape writes its own `.gitignore`. "), said
+    assert symlink_findings(checked) == []
+    refusal = refused_by(adopter, execute_args(tmp_path, plan))
+    assert refusal.code == ROOT_CASE_TWIN
+    assert f"  {said}" in refusal.detail.splitlines()
+    no_leg_was_created(tmp_path)
 
 
 def test_a_link_into_a_submodule_kept_in_the_root_is_reported(
@@ -869,6 +903,8 @@ EMPTY_SYMLINK = "plan-empty-symlink"
                  id="above-the-scripts"),
     pytest.param({"shape": ""}, {"shape": ROOT}, "shape",
                  id="above-the-copies"),
+    pytest.param({GITIGNORE_TWIN: ""}, {GITIGNORE_TWIN: ROOT},
+                 GITIGNORE_TWIN, id="at-a-case-twin"),
 ])
 def test_a_link_with_an_empty_target_is_mains_to_report(
         adopter, no_filter_repo_probe, tmp_path, links, legs, empty):
@@ -881,11 +917,13 @@ def test_a_link_with_an_empty_target_is_mains_to_report(
     above `shape`, the empty target walked on as the root would be a fault
     of its own (the scripts land in the root; a copy lands on the root's own
     `README.md`), so those two cases hold the walk to marking the link
-    empty."""
+    empty. One at a case twin of a path the shape writes gets no
+    `plan-root-case-twin` beside it either (#1049)."""
     _, plan = planned(tmp_path, {}, links, legs)
     checked = check(plan)
     assert checked.returncode == 1, checked.stderr + checked.stdout
     assert symlink_findings(checked) == [], checked.stderr
+    assert ROOT_CASE_TWIN not in checked.stderr
     said = [line for line in checked.stderr.splitlines()
             if line.startswith(f"FINDING {EMPTY_SYMLINK}: ")]
     assert len(said) == 1, checked.stderr
@@ -1633,19 +1671,16 @@ AT_A_FILE = [
 ]
 
 
-@pytest.mark.parametrize(PLANNED, [
-    *AT_A_FILE,
-    pytest.param({}, {GITIGNORE_TWIN: NOWHERE_GITIGNORE},
-                 {GITIGNORE_TWIN: ROOT}, id="a-case-twin"),
-])
+@pytest.mark.parametrize(PLANNED, AT_A_FILE)
 def test_with_symlinks_off_a_link_at_a_path_is_a_file_passed_by_both(
         adopter, tmp_path, monkeypatch, files, links, legs):
     """Where `git` checks a symlink out as a plain file (Git for Windows'
     default), nothing about where a link AT a path the shape writes leads is
     refused: `check` and `execute` each ask their own work directory, and
     neither the list of `check`'s findings nor the probe for a link the
-    shape writes beneath refuses it. A case twin is that file once case is
-    ignored, and a second name where it is kept."""
+    shape writes beneath refuses it. A link at a case twin of such a path is
+    refused there too, as #1049's twin, whatever it leads to
+    (`test_a_link_at_a_case_twin_is_one_finding_by_the_twin_rule`)."""
     _, plan = planned(tmp_path, files, links, legs)
     links_as_files(monkeypatch)
     passed_alike(adopter, tmp_path, plan)

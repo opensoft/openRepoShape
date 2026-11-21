@@ -16,6 +16,14 @@ A disk that ignores case was never asked: there the source's `makefile` IS
 `Makefile`, `place` finds the name taken, and the shape's goes beside it as
 `shape/Makefile`, where the line said the root's `Makefile` holds it.
 
+Nor was the split a disk that keeps case makes, which commits the shape's
+`Makefile` beside a kept `makefile`, two paths a clone onto a disk that
+ignores case cannot hold apart. Since #1049 `check` names such a kept path
+as `plan-root-case-twin`, on every disk, and `execute` refuses it before
+any leg exists: the rows that keep `makefile` and no `Makefile` still get
+the line from `plan` and see it printed by `check`, beside that finding,
+and are refused by `execute`, so they are in no clone.
+
 The line now says which file the shape's Makefile is written as, on each
 disk, and names the source's file GNU make reads at the root wherever that
 is not a `Makefile` the line already names. Each kept name in the rows below
@@ -126,6 +134,30 @@ ROWS = [
                  "GNUmakefile", id="all-three"),
 ]
 
+#: The code of #1049's finding and of `execute`'s refusal, and how the
+#: finding begins for a kept `makefile` with no `Makefile` beside it: a case
+#: twin of the shape's `Makefile`, which a split made where case is kept
+#: commits beside it.
+ROOT_CASE_TWIN = "plan-root-case-twin"
+TWIN_FINDING = (
+    f"FINDING {ROOT_CASE_TWIN}: the plan keeps the file `makefile` in the "
+    "assembly root, at `Makefile` once case is ignored, as a macOS or "
+    "Windows disk does, where the shape writes its own `Makefile`. ")
+
+
+def keeps_a_twin(kept: tuple) -> bool:
+    """Whether the root keeps `makefile` and no `Makefile`, so that the
+    shape writes its own `Makefile` beside it where case is kept."""
+    return "makefile" in kept and "Makefile" not in kept
+
+
+#: The rows `execute` refuses as #1049's twin, by their kept names; and the
+#: rows it splits that keep one of GNU make's names, whose clone `make` can
+#: run in.
+TWIN_ROWS = [pytest.param(row.values[0], id=row.id)
+             for row in ROWS if keeps_a_twin(row.values[0])]
+CLONE_ROWS = [row for row in ROWS[1:] if not keeps_a_twin(row.values[0])]
+
 #: `(path, leg)` rows no shipped rule writes, which a `--path-policy` rule can
 #: (a person's answer in the plan changes no follow-up): `MAKEFILE` kept in
 #: the root, a name GNU make never reads where case is kept and one a disk
@@ -220,7 +252,10 @@ def test_plan_writes_the_line_and_check_prints_it(tmp_path, kept, said,
                                                   first):
     """The rules keep each of GNU make's three names in the root
     (`root-project-makefile`), so `plan` writes the line for the source as
-    it is, and `check` prints it as the plan holds it."""
+    it is, and `check` prints it as the plan holds it. Where the root keeps
+    `makefile` and no `Makefile`, `check` also names it as the shape's
+    `Makefile` in another case (`plan-root-case-twin`, #1049) and exits 1,
+    on every disk."""
     if not disk_keeps_case(tmp_path):
         pytest.skip("this disk ignores case: it cannot hold the rows apart")
     source = make_source_repo(tmp_path / "Thing", tree_keeping(kept),
@@ -231,7 +266,15 @@ def test_plan_writes_the_line_and_check_prints_it(tmp_path, kept, said,
     follow_ups = [str(item) for item in load_yaml(plan)["follow_ups"]]
     assert makefile_lines(follow_ups) == [said]
     checked = run_script(ADOPT, "check", "--plan", str(plan))
-    assert checked.returncode == 0, checked.stderr + checked.stdout
+    found = [line for line in checked.stderr.splitlines()
+             if line.startswith("FINDING ")]
+    if keeps_a_twin(kept):
+        assert checked.returncode == 1, checked.stderr + checked.stdout
+        twin, = found
+        assert twin.startswith(TWIN_FINDING), twin
+    else:
+        assert checked.returncode == 0, checked.stderr + checked.stdout
+        assert found == []
     assert f"  follow-up: {said}" in checked.stdout
 
 
@@ -243,8 +286,36 @@ def make(clone: Path, *args: str) -> subprocess.CompletedProcess:
 
 
 @needs_filter_repo
+@pytest.mark.parametrize("kept", TWIN_ROWS)
+def test_execute_refuses_a_kept_makefile_beside_no_makefile(tmp_path, kept):
+    """The rows whose root keeps `makefile` and no `Makefile`: on main the
+    split made here committed the shape's `Makefile` beside the source's
+    `makefile`, two paths a clone onto a disk that ignores case cannot hold
+    apart, and said `adoption verified`. `execute` now refuses the plan as
+    `check`'s `plan-root-case-twin` before any leg exists, so the empty
+    `--local-remote-dir` stays empty and the source gets no split branch."""
+    if not disk_keeps_case(tmp_path):
+        pytest.skip("this disk ignores case: it cannot hold the rows apart")
+    source = make_source_repo(tmp_path / "Thing", tree_keeping(kept),
+                              edits=EDITS)
+    plan = tmp_path / "adoption-plan.yaml"
+    written = write_plan(source, plan, project=PROJECT)
+    assert written.returncode == 0, written.stderr + written.stdout
+    (tmp_path / "remotes").mkdir()
+    result = run_script(ADOPT, "execute", "--plan", str(plan), "--yes",
+                        "--local-remote-dir", str(tmp_path / "remotes"),
+                        "--work-dir", str(tmp_path / "work"))
+    assert result.returncode == 2, result.stdout + result.stderr
+    assert f"REFUSED {ROOT_CASE_TWIN}: 1 finding(s) in " in result.stderr
+    assert f"  {TWIN_FINDING}" in result.stderr
+    assert "adoption verified" not in result.stdout
+    assert list((tmp_path / "remotes").iterdir()) == [], "no leg was made"
+    assert git("branch", "--list", SPLIT_BRANCH, cwd=source).stdout == ""
+
+
+@needs_filter_repo
 @needs_make
-@pytest.mark.parametrize("kept, said, first", ROWS[1:])
+@pytest.mark.parametrize("kept, said, first", CLONE_ROWS)
 def test_the_split_message_names_the_file_make_reads_in_the_clone(
         tmp_path, kept, said, first):
     """The measurement the line rests on, on a disk that keeps case. After a
