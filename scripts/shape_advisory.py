@@ -473,8 +473,10 @@ class Tree:
 
     `text()` reads a symlink in a commit as the blob it is, the PATH it
     holds, as before. `text_through()` reads it as the disk's is read,
-    through it (#1163), where `is_link()` says it is one; only a leg's
-    `AGENTS.md` is read so (`_leg_by_agents_md`).
+    through it (#1163), where `is_link()` says it is one. A leg's
+    `AGENTS.md` is read so (`_leg_by_agents_md`), and so are `project.yaml`
+    and `family.yaml` (`_read_mapping`, #1272). `single-repository.yaml` is
+    not: a link there is named as one and never followed (`read_record`).
     """
 
     def __init__(self, root: Path, commit: str | None = None):
@@ -538,7 +540,7 @@ class Tree:
         commit, followed as git follows it there (`git cat-file
         --batch-check --follow-symlinks`): each link from the directory it is
         in, through a linked folder too, up to 40 links. `rel` is a name at
-        the root, as `AGENTS.md` is.
+        the root, as `AGENTS.md` and the two manifests are.
 
         GIT 2.43 FOLLOWS NO `.` SEGMENT (#1163), so it is not quite a
         checkout's `open()`: it answers `dangling` for a link spelled
@@ -583,9 +585,26 @@ def _read_mapping(tree: Tree, rel: str):
     three this file expects: a manifest nested past the recursion limit is
     as unreadable as one that does not parse, and the ratified rule is that
     the advisory never changes an exit status.
+
+    A SYMLINK IN THE COMMIT IS READ THROUGH, AS THE DISK'S IS (#1272). In a
+    commit a link is a blob that holds the PATH it leads to, and that path
+    read as YAML was no manifest: `adopt-project.py plan` and `check` advised
+    an assembly root whose `project.yaml` is a link, or a family holder whose
+    `family.yaml` is one, while the doctor, which reads the disk through the
+    link, named the root or the holder. So a link in the commit
+    (`Tree.is_link`) is followed inside it (`Tree.text_through`), as a leg's
+    `AGENTS.md` is (#1163). NOTHING THAT IS A FILE INSIDE THE COMMIT IS A
+    MANIFEST THIS READING SEES, by the rule above: a link that dangles,
+    loops, runs through a file or leads to a directory gives None, and one
+    that leads OUT of the commit raises `OutOfTheCommit`, also None here.
+    The plan is written against the commit, and a manifest the commit does
+    not hold declares nothing in it; the link's own path is never read as
+    the manifest. A regular file, and every reading of the disk, is read as
+    before.
     """
     try:
-        text = tree.text(rel)
+        text = (tree.text_through(rel) if tree.is_link(rel)
+                else tree.text(rel))
         data = parse_yaml(text.lstrip(BOM)) if text is not None else None
     except Exception:  # noqa: BLE001 - see the docstring
         return None
@@ -838,6 +857,18 @@ RECORD_ABSENT = "absent"
 RECORD_SILENCES = "silences"
 RECORD_SILENCES_NOTHING = "silences-nothing"
 
+#: Why a `single-repository.yaml` the commit holds as a SYMLINK silences
+#: nothing, whatever it leads to (#1272). Its blob is the PATH the link
+#: holds, not the record's text: read as YAML, it said `it could not be read
+#: (YamlError)` of a record that can be read, and a path spelled as a
+#: record's `kind:` line silenced the advisory. A later ruling to follow a
+#: link inside the commit narrows "a symlink in the commit" here to the
+#: links it still does not follow.
+RECORD_LINK_NOT_FOLLOWED = ("it is a symlink in the commit, which is not "
+                            "followed for this record, so whether it "
+                            "records that this project stays a single "
+                            "repository is not known here")
+
 
 def record_schema(shape: Path = SHAPE_ROOT) -> dict:
     """The record's schema, as data. A refusal when it cannot be read: it
@@ -917,6 +948,22 @@ def read_record(root, shape: Path = SHAPE_ROOT,
 
     `root` is a path, or a `Tree` -- which is how `adopt-project.py` asks
     this of the commit it plans rather than of the working tree.
+
+    A SYMLINK IN THE COMMIT IS NOT FOLLOWED, AND IS NAMED AS ONE (#1272). Its
+    blob is the PATH it leads to, and read as YAML that said `it could not
+    be read (YamlError)` of a record that can be read, where the disk, read
+    through the link, says `recorded-single`. Following the link inside the
+    commit, as `_read_mapping` follows a manifest's, would also change
+    `adopt-project.py`'s record question (`ask_about_a_record_only`, #528): a
+    linked record would take the record's rule and its default `drop`, a
+    ruling not yet made. So every link in the commit (`Tree.is_link`)
+    silences nothing with `RECORD_LINK_NOT_FOLLOWED`, a sentence that names
+    no exception, and `ask_about_a_record_only` asks the general question of
+    it, as it did of every link whose path did not parse as a record.
+    `is_link` is never True of the disk, which the doctor reads, nor of a
+    leg's INDEX (`Tree(mount, "")`, the doctor's leg audit), where `git
+    ls-tree` has no commit to list and fails, which `is_link` takes for no
+    link: both read as before.
     """
     tree = root if isinstance(root, Tree) else Tree(Path(root), commit)
     try:
@@ -925,6 +972,8 @@ def read_record(root, shape: Path = SHAPE_ROOT,
             return RECORD_ABSENT, [], []
         if kind != "file":
             return RECORD_SILENCES_NOTHING, ["it is not a file"], []
+        if tree.is_link(RECORD_FILE):
+            return RECORD_SILENCES_NOTHING, [RECORD_LINK_NOT_FOLLOWED], []
         data = parse_yaml(tree.text(RECORD_FILE).lstrip(BOM))
     except Exception as exc:  # noqa: BLE001 - see the docstring
         return RECORD_SILENCES_NOTHING, [f"it could not be read "
