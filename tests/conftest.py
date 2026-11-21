@@ -732,8 +732,8 @@ def clear_ambient_pin_sources(monkeypatch: pytest.MonkeyPatch) -> None:
 
 def run_script(script: Path, *args: str, cwd: Path | None = None,
                env: dict | None = None, input: str | None = None,
-               stdin: int | None = None,
-               merge_stderr: bool = False) -> subprocess.CompletedProcess:
+               stdin: int | None = None, merge_stderr: bool = False,
+               encoding: str | None = None) -> subprocess.CompletedProcess:
     """Run one tool under test, with stdin closed by default.
 
     A test in this suite is often asserting what a tool does when nobody is
@@ -754,6 +754,12 @@ def run_script(script: Path, *args: str, cwd: Path | None = None,
     does, and leaves `stderr` None. A tool's piped stdout is block-buffered
     and its stderr is not, so this is the only way a test sees the order a
     person reading that log sees.
+
+    `encoding` is what the output is decoded in, and None is this process's
+    own locale, as `subprocess.run(text=True)` reads it. A caller that tells
+    the child `PYTHONIOENCODING=utf-8` names it too (#1196): a parent in a
+    locale of one byte to a character, Latin-1 say, would read the two bytes
+    of U+00E9 as two characters.
     """
     asked = env or {}
     env = {**os.environ, **asked}
@@ -794,8 +800,8 @@ def run_script(script: Path, *args: str, cwd: Path | None = None,
                           stdout=subprocess.PIPE,
                           stderr=(subprocess.STDOUT if merge_stderr
                                   else subprocess.PIPE),
-                          text=True, check=False, env=env, input=input,
-                          stdin=stdin)
+                          text=True, encoding=encoding, check=False, env=env,
+                          input=input, stdin=stdin)
 
 
 def scaffold_dry_run_on_github(monkeypatch, capsys, *args: str):
@@ -1156,19 +1162,32 @@ def skip_where_fsencode_gives_a_surrogate_no_byte(text: str) -> None:
 
 def skip_where_a_name_cannot_be_not_utf_8(directory: Path) -> None:
     """Skip, as `POSIX_NAMES` skips on Windows, where a file name that is not
-    UTF-8 cannot be made under `directory`. Two systems say so:
+    UTF-8 cannot be made under `directory`. Three answers say so:
 
     - `skip_where_fsencode_gives_a_surrogate_no_byte` (Windows), asked first,
       before the disk is touched;
+    - a locale of one byte to a character, Latin-1 say (#1196), asked second,
+      also before the disk is touched: there the byte 0xFF is the character
+      U+00FF, so `os.fsdecode` gives it as text and not as the surrogate
+      U+DCFF, and a name that holds it is not one that is not UTF-8. A tool
+      prints it as it is, where the test expects it spelled. The disk and
+      `os.fsencode` take the byte in every locale, so only `os.fsdecode` can
+      say. UTF-8 and ASCII give U+DCFF, and neither skips;
     - a filesystem that refuses the name: macOS answers EILSEQ ("Illegal byte
       sequence"), so no clone can sit at such a path there.
 
-    The second is asked by making a directory `probe<U+DCFF>` under
+    The third is asked by making a directory `probe<U+DCFF>` under
     `directory` and removing it; any other error is the test's own and is
     raised.
     """
     probe = directory / f"probe{NOT_UTF_8_PROBE}"
     skip_where_fsencode_gives_a_surrogate_no_byte(probe.name)
+    read = os.fsdecode(b"\xff")
+    if read != NOT_UTF_8_PROBE:
+        pytest.skip(f"this system's file name encoding "
+                    f"({sys.getfilesystemencoding()}) reads the byte 0xFF as "
+                    f"{ascii(read)}, not as {ascii(NOT_UTF_8_PROBE)}, so no "
+                    f"file name here is one that is not UTF-8")
     try:
         probe.mkdir()
     except OSError as exc:
